@@ -1,0 +1,10 @@
+{
+  "description": "Tools for repo-wide maintenance.",
+  "scripts": {
+    "format": "prettier --check *.json *.md .github/workflows/*.yml",
+    "format:fix": "prettier --write *.json *.md .github/workflows/*.yml"
+  },
+  "devDependencies": {
+    "prettier": "^3.5.3"
+  }
+}
