@@ -1,8 +1,8 @@
 //! Note command: append to persistent notes file
 
+use crate::tui::app::App;
 use std::fs;
 use std::io::Write;
-use crate::tui::app::App;
 
 use super::CommandResult;
 
@@ -25,9 +25,7 @@ pub fn note(app: &mut App, content: Option<&str>) -> CommandResult {
     // Ensure parent directory exists
     if let Some(parent) = notes_path.parent() {
         if let Err(e) = fs::create_dir_all(parent) {
-            return CommandResult::error(format!(
-                "Failed to create notes directory: {e}"
-            ));
+            return CommandResult::error(format!("Failed to create notes directory: {e}"));
         }
     }
 
@@ -39,21 +37,14 @@ pub fn note(app: &mut App, content: Option<&str>) -> CommandResult {
     {
         Ok(f) => f,
         Err(e) => {
-            return CommandResult::error(format!(
-                "Failed to open notes file: {e}"
-            ));
+            return CommandResult::error(format!("Failed to open notes file: {e}"));
         }
     };
 
     // Write separator and note content
     if let Err(e) = writeln!(file, "\n---\n{}", note_content) {
-        return CommandResult::error(format!(
-            "Failed to write note: {e}"
-        ));
+        return CommandResult::error(format!("Failed to write note: {e}"));
     }
 
-    CommandResult::message(format!(
-        "Note appended to {}",
-        notes_path.display()
-    ))
+    CommandResult::message(format!("Note appended to {}", notes_path.display()))
 }
