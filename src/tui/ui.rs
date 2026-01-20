@@ -1234,6 +1234,9 @@ struct AutoRlmLoaded {
 }
 
 fn maybe_auto_switch_to_rlm(app: &mut App, input: &str) -> Option<String> {
+    if !app.auto_rlm {
+        return None;
+    }
     let already_rlm = app.mode == AppMode::Rlm;
     let decision = auto_rlm_decision(app, input, already_rlm)?;
 
@@ -3299,6 +3302,20 @@ mod tests {
             }
             _ => panic!("expected paste decision"),
         }
+    }
+
+    #[test]
+    fn auto_rlm_is_disabled_when_setting_off() {
+        let tmp = tempdir().expect("tempdir");
+        let mut app = make_test_app_with_workspace(tmp.path().to_path_buf());
+        app.auto_rlm = false;
+
+        let content = "a".repeat(AUTO_RLM_PASTE_MIN_CHARS + 5);
+        let input = format!("Summarize this\n\n{content}");
+        let override_query = maybe_auto_switch_to_rlm(&mut app, &input);
+
+        assert!(override_query.is_none());
+        assert_ne!(app.mode, AppMode::Rlm);
     }
 
     #[test]

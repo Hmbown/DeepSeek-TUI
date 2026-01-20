@@ -7,6 +7,7 @@ mod config;
 mod core;
 mod debug;
 mod init;
+mod note;
 mod queue;
 pub mod rlm;
 mod session;
@@ -119,6 +120,18 @@ pub const COMMANDS: &[CommandInfo] = &[
         aliases: &["dashboard", "api"],
         description: "Show DeepSeek dashboard and docs links",
         usage: "/deepseek",
+    },
+    CommandInfo {
+        name: "home",
+        aliases: &["stats", "overview"],
+        description: "Show home dashboard with stats and quick actions",
+        usage: "/home",
+    },
+    CommandInfo {
+        name: "note",
+        aliases: &[],
+        description: "Append note to persistent notes file (.deepseek/notes.md)",
+        usage: "/note <text>",
     },
     // Session commands
     CommandInfo {
@@ -288,6 +301,8 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "queue" | "queued" => queue::queue(app, arg),
         "subagents" | "agents" => core::subagents(app),
         "deepseek" | "dashboard" | "api" => core::deepseek_links(),
+        "home" | "stats" | "overview" => core::home_dashboard(app),
+        "note" => note::note(app, arg),
 
         // Session commands
         "save" => session::save(app, arg),

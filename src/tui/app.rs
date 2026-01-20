@@ -176,6 +176,7 @@ pub struct App {
     pub input_history: Vec<String>,
     pub history_index: Option<usize>,
     pub auto_compact: bool,
+    pub auto_rlm: bool,
     pub show_thinking: bool,
     pub show_tool_details: bool,
     #[allow(dead_code)]
@@ -335,6 +336,7 @@ impl App {
         let needs_onboarding = !has_api_key(config);
         let settings = Settings::load().unwrap_or_else(|_| Settings::default());
         let auto_compact = settings.auto_compact;
+        let auto_rlm = settings.auto_rlm;
         let show_thinking = settings.show_thinking;
         let show_tool_details = settings.show_tool_details;
         let max_input_history = settings.max_input_history;
@@ -421,6 +423,7 @@ impl App {
             input_history: Vec::new(),
             history_index: None,
             auto_compact,
+            auto_rlm,
             show_thinking,
             show_tool_details,
             compact_threshold: 50000,

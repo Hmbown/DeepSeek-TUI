@@ -15,6 +15,8 @@ pub struct Settings {
     pub theme: String,
     /// Auto-compact conversations when they get long
     pub auto_compact: bool,
+    /// Auto-switch to RLM mode when large inputs are detected
+    pub auto_rlm: bool,
     /// Show thinking blocks from the model
     pub show_thinking: bool,
     /// Show detailed tool output
@@ -34,6 +36,7 @@ impl Default for Settings {
         Self {
             theme: "default".to_string(),
             auto_compact: true,
+            auto_rlm: false,
             show_thinking: true,
             show_tool_details: true,
             default_mode: "agent".to_string(),
@@ -99,6 +102,9 @@ impl Settings {
             "auto_compact" | "compact" => {
                 self.auto_compact = parse_bool(value)?;
             }
+            "auto_rlm" => {
+                self.auto_rlm = parse_bool(value)?;
+            }
             "show_thinking" | "thinking" => {
                 self.show_thinking = parse_bool(value)?;
             }
@@ -154,6 +160,7 @@ impl Settings {
         lines.push("─────────────────────────────".to_string());
         lines.push(format!("  theme:              {}", self.theme));
         lines.push(format!("  auto_compact:       {}", self.auto_compact));
+        lines.push(format!("  auto_rlm:           {}", self.auto_rlm));
         lines.push(format!("  show_thinking:      {}", self.show_thinking));
         lines.push(format!("  show_tool_details:  {}", self.show_tool_details));
         lines.push(format!("  default_mode:       {}", self.default_mode));
@@ -179,6 +186,7 @@ impl Settings {
         vec![
             ("theme", "Color theme: default, dark, light"),
             ("auto_compact", "Auto-compact conversations: on/off"),
+            ("auto_rlm", "Auto-switch to RLM mode for large inputs: on/off"),
             ("show_thinking", "Show model thinking: on/off"),
             ("show_tool_details", "Show detailed tool output: on/off"),
             ("default_mode", "Default mode: agent, plan, yolo, rlm, duo"),
