@@ -1,0 +1,153 @@
+//! /init command - Generate AGENTS.md for project
+
+use std::fmt::Write;
+use std::path::Path;
+
+use crate::tui::app::App;
+
+use super::CommandResult;
+
+/// Generate an AGENTS.md file for the current project
+pub fn init(app: &mut App) -> CommandResult {
+    let workspace = &app.workspace;
+
+    // Check if AGENTS.md already exists
+    let agents_path = workspace.join("AGENTS.md");
+    if agents_path.exists() {
+        return CommandResult::error("AGENTS.md already exists. Delete it first to reinitialize.");
+    }
+
+    // Detect project type and generate appropriate content
+    let content = generate_project_doc(workspace);
+
+    // Write the file
+    match std::fs::write(&agents_path, &content) {
+        Ok(()) => CommandResult::message(format!(
+            "Created AGENTS.md at {}\n\nEdit this file to customize agent behavior for your project.",
+            agents_path.display()
+        )),
+        Err(e) => CommandResult::error(format!("Failed to create AGENTS.md: {e}")),
+    }
+}
+
+/// Generate project documentation based on detected project type
+fn generate_project_doc(workspace: &Path) -> String {
+    let mut doc = String::new();
+
+    // Header
+    doc.push_str("# Project Instructions\n\n");
+    doc.push_str("This file provides context for AI assistants working on this project.\n\n");
+
+    // Detect project type
+    let project_info = detect_project_type(workspace);
+    doc.push_str(&project_info);
+
+    // Add standard sections
+    doc.push_str("\n## Guidelines\n\n");
+    doc.push_str("- Follow existing code style and patterns\n");
+    doc.push_str("- Write tests for new functionality\n");
+    doc.push_str("- Keep changes focused and atomic\n");
+    doc.push_str("- Document public APIs\n");
+
+    doc.push_str("\n## Important Notes\n\n");
+    doc.push_str("<!-- Add project-specific notes here -->\n");
+
+    doc
+}
+
+/// Detect project type and return relevant information
+fn detect_project_type(workspace: &Path) -> String {
+    let mut info = String::new();
+
+    // Check for Rust project
+    if workspace.join("Cargo.toml").exists() {
+        info.push_str("## Project Type: Rust\n\n");
+        info.push_str("### Commands\n");
+        info.push_str("- Build: `cargo build`\n");
+        info.push_str("- Test: `cargo test`\n");
+        info.push_str("- Run: `cargo run`\n");
+        info.push_str("- Check: `cargo check`\n");
+        info.push_str("- Format: `cargo fmt`\n");
+        info.push_str("- Lint: `cargo clippy`\n\n");
+
+        // Try to extract project name from Cargo.toml
+        if let Some(name) = std::fs::read_to_string(workspace.join("Cargo.toml"))
+            .ok()
+            .and_then(|content| extract_cargo_name(&content))
+        {
+            let _ = write!(info, "### Project: {name}\n\n");
+        }
+    }
+    // Check for Node.js project
+    else if workspace.join("package.json").exists() {
+        info.push_str("## Project Type: Node.js\n\n");
+        info.push_str("### Commands\n");
+        info.push_str("- Install: `npm install`\n");
+        info.push_str("- Test: `npm test`\n");
+        info.push_str("- Build: `npm run build`\n");
+        info.push_str("- Start: `npm start`\n\n");
+
+        // Check for common frameworks
+        if workspace.join("next.config.js").exists() || workspace.join("next.config.ts").exists() {
+            info.push_str("### Framework: Next.js\n\n");
+        } else if workspace.join("vite.config.js").exists()
+            || workspace.join("vite.config.ts").exists()
+        {
+            info.push_str("### Framework: Vite\n\n");
+        }
+    }
+    // Check for Python project
+    else if workspace.join("pyproject.toml").exists() || workspace.join("setup.py").exists() {
+        info.push_str("## Project Type: Python\n\n");
+        info.push_str("### Commands\n");
+        if workspace.join("pyproject.toml").exists() {
+            info.push_str("- Install: `pip install -e .`\n");
+        }
+        info.push_str("- Test: `pytest`\n");
+        info.push_str("- Format: `black .`\n");
+        info.push_str("- Lint: `ruff check .`\n\n");
+    }
+    // Check for Go project
+    else if workspace.join("go.mod").exists() {
+        info.push_str("## Project Type: Go\n\n");
+        info.push_str("### Commands\n");
+        info.push_str("- Build: `go build`\n");
+        info.push_str("- Test: `go test ./...`\n");
+        info.push_str("- Run: `go run .`\n");
+        info.push_str("- Format: `go fmt ./...`\n\n");
+    }
+    // Unknown project type
+    else {
+        info.push_str("## Project Type: Unknown\n\n");
+        info.push_str("<!-- Add build/test commands here -->\n\n");
+    }
+
+    // Check for README
+    if workspace.join("README.md").exists() {
+        info.push_str("### Documentation\n");
+        info.push_str("See README.md for project overview.\n\n");
+    }
+
+    // Check for .gitignore
+    if workspace.join(".gitignore").exists() {
+        info.push_str("### Version Control\n");
+        info.push_str("This project uses Git. See .gitignore for excluded files.\n\n");
+    }
+
+    info
+}
+
+/// Extract project name from Cargo.toml
+fn extract_cargo_name(content: &str) -> Option<String> {
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with("name") && line.contains('=') {
+            let parts: Vec<&str> = line.splitn(2, '=').collect();
+            if parts.len() == 2 {
+                let name = parts[1].trim().trim_matches('"').trim_matches('\'');
+                return Some(name.to_string());
+            }
+        }
+    }
+    None
+}
