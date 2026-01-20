@@ -125,6 +125,9 @@ pub fn set_config(app: &mut App, args: Option<&str>) -> CommandResult {
             compaction.model = app.model.clone();
             action = Some(AppAction::UpdateCompaction(compaction));
         }
+        "auto_rlm" => {
+            app.auto_rlm = settings.auto_rlm;
+        }
         "show_thinking" | "thinking" => {
             app.show_thinking = settings.show_thinking;
             app.mark_history_updated();
