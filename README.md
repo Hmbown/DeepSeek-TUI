@@ -4,7 +4,6 @@ Your AI-powered terminal companion for DeepSeek models
 
 [![CI](https://github.com/Hmbown/DeepSeek-TUI/actions/workflows/ci.yml/badge.svg)](https://github.com/Hmbown/DeepSeek-TUI/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/deepseek-tui)](https://crates.io/crates/deepseek-tui)
-[![npm](https://img.shields.io/npm/v/@hmbown/deepseek-tui)](https://www.npmjs.com/package/@hmbown/deepseek-tui)
 
 Unofficial terminal UI (TUI) + CLI for the [DeepSeek platform](https://platform.deepseek.com) — chat with DeepSeek models and collaborate with AI assistants that can read, write, execute, and plan with approval-gated tool access.
 
@@ -34,10 +33,7 @@ Unofficial terminal UI (TUI) + CLI for the [DeepSeek platform](https://platform.
 2. **Install and run**:
 
 ```bash
-# Install via npm (recommended)
-npm install -g @hmbown/deepseek-tui
-
-# Or install via Cargo
+# Install via Cargo
 cargo install deepseek-tui --locked
 
 # Set your API key
@@ -53,17 +49,7 @@ If anything looks off, run `deepseek doctor` to diagnose configuration issues.
 
 ## 📦 Installation
 
-### Prebuilt via npm / bun (recommended)
-
-The npm package is a thin wrapper that downloads the platform‑appropriate Rust binary from GitHub Releases.
-
-```bash
-npm install -g @hmbown/deepseek-tui
-# or
-bun install -g @hmbown/deepseek-tui
-```
-
-### From crates.io (Rust)
+### From crates.io
 
 ```bash
 cargo install deepseek-tui --locked
@@ -255,9 +241,6 @@ Run `deepseek sessions` and try `deepseek --resume latest`.
 
 ### MCP tools missing
 Validate `~/.deepseek/mcp.json` (or `DEEPSEEK_MCP_CONFIG`) and restart.
-
-### Command not found (npm install)
-Ensure `npm` is installed and the global bin directory is in your `PATH`.
 
 ### Sandbox errors (macOS)
 Ensure `/usr/bin/sandbox-exec` exists (comes with macOS). For other platforms, sandboxing is limited.
