@@ -171,6 +171,8 @@ RLM mode is designed for "too big for context" tasks: large files, whole‑doc s
 
 ## 👥 Duo Mode
 
+> **Note:** Duo mode is experimental and may not work correctly in all cases. Use with caution.
+
 Duo mode implements the player‑coach autocoding paradigm for iterative development with built‑in validation:
 
 - **Player**: implements requirements (builder role)
@@ -262,13 +264,11 @@ Ensure `/usr/bin/sandbox-exec` exists (comes with macOS). For other platforms, s
 
 ## 📖 Documentation
 
-- `docs/README.md` – Overview of all documentation
 - `docs/CONFIGURATION.md` – Complete configuration reference
 - `docs/MCP.md` – Model Context Protocol guide
 - `docs/ARCHITECTURE.md` – Project architecture
 - `docs/RLM.md` – RLM mode deep‑dive
 - `docs/MODES.md` – Mode comparison and usage
-- `docs/PALETTE.md` – DeepSeek UI color palette
 - `CONTRIBUTING.md` – How to contribute to the project
 
 ## 🧪 Development
