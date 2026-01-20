@@ -1,0 +1,27 @@
+{
+  "name": "@hmbown/deepseek-tui",
+  "version": "0.1.0",
+  "description": "Unofficial DeepSeek CLI - downloads and runs the Rust binary",
+  "keywords": ["deepseek", "cli", "ai", "agent", "m2.1"],
+  "homepage": "https://github.com/Hmbown/DeepSeek-TUI",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Hmbown/DeepSeek-TUI.git"
+  },
+  "license": "MIT",
+  "author": "Hmbown",
+  "bin": {
+    "deepseek": "cli.js"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "files": [
+    "cli.js",
+    "install.js",
+    "bin"
+  ],
+  "engines": {
+    "node": ">=16"
+  }
+}

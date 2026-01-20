@@ -1,0 +1,114 @@
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║                         DeepSeek CLI Configuration                            ║
+# ║                                                                              ║
+# ║  Unofficial CLI for DeepSeek Platform - Not affiliated with DeepSeek Inc.     ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+# See `docs/CONFIGURATION.md` for how config is loaded (profiles, env overrides, etc.).
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# API Keys
+# ─────────────────────────────────────────────────────────────────────────────────
+api_key = "YOUR_DEEPSEEK_API_KEY" # must be non-empty
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Base URLs
+# ─────────────────────────────────────────────────────────────────────────────────
+base_url = "https://api.deepseek.com"
+# base_url = "https://api.deepseeki.com"         # China users
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Default Models
+# ─────────────────────────────────────────────────────────────────────────────────
+default_text_model = "deepseek-reasoner"  # also: deepseek-chat, deepseek-r1, deepseek-v3, deepseek-v3.2
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Paths
+# ─────────────────────────────────────────────────────────────────────────────────
+skills_dir = "~/.deepseek/skills"
+mcp_config_path = "~/.deepseek/mcp.json"
+notes_path = "~/.deepseek/notes.txt"
+
+# Parsed but currently unused (reserved for future versions):
+# tools_file = "./tools.json"
+# memory_path = "~/.deepseek/memory.md"
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Security
+# ─────────────────────────────────────────────────────────────────────────────────
+allow_shell = false
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# TUI
+# ─────────────────────────────────────────────────────────────────────────────────
+[tui]
+alternate_screen = "auto"   # auto | always | never
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Feature Flags
+# ─────────────────────────────────────────────────────────────────────────────────
+[features]
+shell_tool = true
+subagents = true
+web_search = true
+apply_patch = true
+mcp = true
+rlm = true
+duo = true
+exec_policy = true
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Retry Configuration
+# ─────────────────────────────────────────────────────────────────────────────────
+[retry]
+enabled = true
+max_retries = 3
+initial_delay = 1.0
+max_delay = 60.0
+exponential_base = 2.0
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Context Compaction (PLANNED - not yet implemented)
+# ─────────────────────────────────────────────────────────────────────────────────
+# [compaction]
+# enabled = false                  # Enable auto-compaction
+# token_threshold = 50000          # Trigger compaction above this token estimate
+# message_threshold = 50           # Or above this message count
+# model = "deepseek-chat"           # Model to use for summarization
+# cache_summary = true             # Cache the summary block
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# RLM Sandbox Configuration (PLANNED - not yet implemented)
+# ─────────────────────────────────────────────────────────────────────────────────
+# [rlm]
+# max_context_chars = 10000000     # Max characters for context (10MB)
+# max_search_results = 100         # Max search results
+# default_chunk_size = 2000        # Default chunk size
+# default_overlap = 200            # Default chunk overlap
+# session_dir = "~/.deepseek/rlm"   # Directory for RLM sessions
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Profile Example (for multiple environments)
+# ─────────────────────────────────────────────────────────────────────────────────
+# Select a profile with `deepseek --profile <name>` or `DEEPSEEK_PROFILE=<name>`.
+[profiles.work]
+api_key = "WORK_DEEPSEEK_API_KEY"
+base_url = "https://api.deepseek.com"
+
+[profiles.dev]
+api_key = "DEV_DEEPSEEK_API_KEY"
+allow_shell = true
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Hooks (optional)
+# ─────────────────────────────────────────────────────────────────────────────────
+# Hooks run shell commands on lifecycle events (session start/end, tool calls, etc.).
+# Configure as `[[hooks.hooks]]` under a `[hooks]` table.
+#
+# [hooks]
+# enabled = true
+# default_timeout_secs = 30
+#
+# [[hooks.hooks]]
+# event = "session_start"
+# command = "echo 'DeepSeek CLI session started'"

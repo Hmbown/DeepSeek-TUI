@@ -1,0 +1,57 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary: deepseek
+            artifact_name: deepseek-linux-x64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            binary: deepseek
+            artifact_name: deepseek-macos-x64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            binary: deepseek
+            artifact_name: deepseek-macos-arm64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary: deepseek.exe
+            artifact_name: deepseek-windows-x64.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - run: cargo build --release --target ${{ matrix.target }}
+      - name: Rename binary
+        shell: bash
+        run: |
+          cp target/${{ matrix.target }}/release/${{ matrix.binary }} ${{ matrix.artifact_name }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_name }}
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: List artifacts
+        run: find artifacts -type f
+      - uses: softprops/action-gh-release@v1
+        with:
+          files: artifacts/*/*
+          prerelease: false
