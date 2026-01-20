@@ -186,7 +186,10 @@ impl Settings {
         vec![
             ("theme", "Color theme: default, dark, light"),
             ("auto_compact", "Auto-compact conversations: on/off"),
-            ("auto_rlm", "Auto-switch to RLM mode for large inputs: on/off"),
+            (
+                "auto_rlm",
+                "Auto-switch to RLM mode for large inputs: on/off",
+            ),
             ("show_thinking", "Show model thinking: on/off"),
             ("show_tool_details", "Show detailed tool output: on/off"),
             ("default_mode", "Default mode: agent, plan, yolo, rlm, duo"),
