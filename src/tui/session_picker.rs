@@ -82,8 +82,8 @@ impl SessionPickerView {
             self.filtered = self
                 .sessions
                 .iter()
-                .cloned()
                 .filter(|session| fuzzy_match(&query, session))
+                .cloned()
                 .collect();
         }
 
@@ -140,9 +140,7 @@ impl SessionPickerView {
     }
 
     fn delete_selected(&mut self) -> Option<ViewEvent> {
-        let Some(session) = self.selected_session().cloned() else {
-            return None;
-        };
+        let session = self.selected_session().cloned()?;
         let manager = SessionManager::default_location().ok()?;
         if let Err(err) = manager.delete_session(&session.id) {
             self.status = Some(format!("Delete failed: {err}"));
@@ -337,6 +335,7 @@ impl ModalView for SessionPickerView {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_list_lines(
     sessions: &[SessionMetadata],
     selected: usize,
