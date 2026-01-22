@@ -287,8 +287,10 @@ impl ToolRegistryBuilder {
     /// Include search tools (`grep_files`).
     #[must_use]
     pub fn with_search_tools(self) -> Self {
+        use super::file_search::FileSearchTool;
         use super::search::GrepFilesTool;
         self.with_tool(Arc::new(GrepFilesTool))
+            .with_tool(Arc::new(FileSearchTool))
     }
 
     /// Include web search tools.
@@ -301,8 +303,15 @@ impl ToolRegistryBuilder {
     /// Include patch tools (`apply_patch`).
     #[must_use]
     pub fn with_patch_tools(self) -> Self {
-        use super::patch::ApplyPatchTool;
+        use super::apply_patch::ApplyPatchTool;
         self.with_tool(Arc::new(ApplyPatchTool))
+    }
+
+    /// Include the review tool.
+    #[must_use]
+    pub fn with_review_tool(self, client: Option<DeepSeekClient>, model: String) -> Self {
+        use super::review::ReviewTool;
+        self.with_tool(Arc::new(ReviewTool::new(client, model)))
     }
 
     /// Include note tool.

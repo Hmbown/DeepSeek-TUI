@@ -9,6 +9,7 @@ mod debug;
 mod init;
 mod note;
 mod queue;
+mod review;
 pub mod rlm;
 mod session;
 mod skills;
@@ -139,6 +140,12 @@ pub const COMMANDS: &[CommandInfo] = &[
         aliases: &[],
         description: "Save session to file",
         usage: "/save [path]",
+    },
+    CommandInfo {
+        name: "sessions",
+        aliases: &["resume"],
+        description: "Open session picker",
+        usage: "/sessions",
     },
     CommandInfo {
         name: "load",
@@ -275,6 +282,12 @@ pub const COMMANDS: &[CommandInfo] = &[
         description: "Activate a skill for next message",
         usage: "/skill <name>",
     },
+    CommandInfo {
+        name: "review",
+        aliases: &[],
+        description: "Run a structured code review on a file, diff, or PR",
+        usage: "/review <target>",
+    },
     // Debug/cost command
     CommandInfo {
         name: "cost",
@@ -306,6 +319,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
 
         // Session commands
         "save" => session::save(app, arg),
+        "sessions" | "resume" => session::sessions(app),
         "load" => {
             if app.mode == AppMode::Rlm {
                 rlm::load(app, arg)
@@ -342,6 +356,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         // Skills commands
         "skills" => skills::list_skills(app),
         "skill" => skills::run_skill(app, arg),
+        "review" => review::review(app, arg),
 
         _ => CommandResult::error(format!(
             "Unknown command: /{command}. Type /help for available commands."

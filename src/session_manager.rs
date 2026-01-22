@@ -37,6 +37,9 @@ pub struct SessionMetadata {
     pub model: String,
     /// Workspace directory
     pub workspace: PathBuf,
+    /// Optional mode label (agent/plan/etc.)
+    #[serde(default)]
+    pub mode: Option<String>,
 }
 
 /// A saved session containing full conversation history
@@ -207,6 +210,25 @@ pub fn create_saved_session(
     total_tokens: u64,
     system_prompt: Option<&SystemPrompt>,
 ) -> SavedSession {
+    create_saved_session_with_mode(
+        messages,
+        model,
+        workspace,
+        total_tokens,
+        system_prompt,
+        None,
+    )
+}
+
+/// Create a new `SavedSession` from conversation state with optional mode label
+pub fn create_saved_session_with_mode(
+    messages: &[Message],
+    model: &str,
+    workspace: &Path,
+    total_tokens: u64,
+    system_prompt: Option<&SystemPrompt>,
+    mode: Option<&str>,
+) -> SavedSession {
     let id = Uuid::new_v4().to_string();
     let now = Utc::now();
 
@@ -232,6 +254,7 @@ pub fn create_saved_session(
             total_tokens,
             model: model.to_string(),
             workspace: workspace.to_path_buf(),
+            mode: mode.map(str::to_string),
         },
         messages: messages.to_vec(),
         system_prompt: system_prompt_to_string(system_prompt),

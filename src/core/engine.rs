@@ -679,6 +679,9 @@ impl Engine {
                 .with_plan_tool(plan_state.clone())
         };
 
+        builder =
+            builder.with_review_tool(self.deepseek_client.clone(), self.session.model.clone());
+
         if self.config.features.enabled(Feature::ApplyPatch) && mode != AppMode::Plan {
             builder = builder.with_patch_tools();
         }

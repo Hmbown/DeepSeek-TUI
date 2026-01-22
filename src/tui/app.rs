@@ -35,8 +35,9 @@ use std::sync::{Arc, Mutex};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OnboardingState {
     Welcome,
-    EnteringKey,
-    Success,
+    ApiKey,
+    TrustDirectory,
+    Tips,
     None,
 }
 
@@ -138,6 +139,8 @@ pub struct TuiOptions {
     pub use_memory: bool,
     /// Start in agent mode (defaults to agent; --yolo starts in YOLO)
     pub start_in_agent_mode: bool,
+    /// Skip onboarding screens
+    pub skip_onboarding: bool,
     /// Auto-approve tool executions (yolo mode)
     pub yolo: bool,
     /// Resume a previous session by ID
@@ -192,6 +195,7 @@ pub struct App {
     pub ui_theme: UiTheme,
     // Onboarding
     pub onboarding: OnboardingState,
+    pub onboarding_needs_api_key: bool,
     pub api_key_input: String,
     pub api_key_cursor: usize,
     // Hooks system
@@ -329,11 +333,14 @@ impl App {
             mcp_config_path: _,
             use_memory: _,
             start_in_agent_mode,
+            skip_onboarding,
             yolo,
             resume_session_id: _,
         } = options;
         // Check if API key exists
-        let needs_onboarding = !has_api_key(config);
+        let needs_api_key = !has_api_key(config);
+        let was_onboarded = crate::tui::onboarding::is_onboarded();
+        let needs_onboarding = !skip_onboarding && (!was_onboarded || needs_api_key);
         let settings = Settings::load().unwrap_or_else(|_| Settings::default());
         let auto_compact = settings.auto_compact;
         let auto_rlm = settings.auto_rlm;
@@ -435,10 +442,15 @@ impl App {
             subagent_cache: Vec::new(),
             ui_theme,
             onboarding: if needs_onboarding {
-                OnboardingState::Welcome
+                if was_onboarded && needs_api_key {
+                    OnboardingState::ApiKey
+                } else {
+                    OnboardingState::Welcome
+                }
             } else {
                 OnboardingState::None
             },
+            onboarding_needs_api_key: needs_api_key,
             api_key_input: String::new(),
             api_key_cursor: 0,
             hooks,
@@ -490,17 +502,9 @@ impl App {
 
         match save_api_key(&key) {
             Ok(path) => {
-                self.onboarding = OnboardingState::Success;
                 self.api_key_input.clear();
                 self.api_key_cursor = 0;
-                // Add welcome message after successful setup
-                self.add_message(HistoryCell::System {
-                    content: format!(
-                        "Welcome to DeepSeek CLI! Model: {} | Workspace: {}",
-                        self.model,
-                        self.workspace.display()
-                    ),
-                });
+                self.onboarding_needs_api_key = false;
                 Ok(path)
             }
             Err(source) => Err(ApiKeyError::SaveFailed { source }),
@@ -509,6 +513,16 @@ impl App {
 
     pub fn finish_onboarding(&mut self) {
         self.onboarding = OnboardingState::None;
+        if let Err(err) = crate::tui::onboarding::mark_onboarded() {
+            self.status_message = Some(format!("Failed to mark onboarding: {err}"));
+        }
+        self.add_message(HistoryCell::System {
+            content: format!(
+                "Welcome to DeepSeek CLI! Model: {} | Workspace: {}",
+                self.model,
+                self.workspace.display()
+            ),
+        });
     }
 
     pub fn set_mode(&mut self, mode: AppMode) {
@@ -909,6 +923,7 @@ mod tests {
             mcp_config_path: PathBuf::from("mcp.json"),
             use_memory: false,
             start_in_agent_mode: yolo,
+            skip_onboarding: false,
             yolo,
             resume_session_id: None,
         }

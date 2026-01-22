@@ -12,7 +12,7 @@
 //!
 //! - **macOS**: Uses Seatbelt (sandbox-exec) for mandatory access control
 //! - **Linux**: Uses Landlock (kernel 5.13+) for filesystem access control
-//! - **Windows**: Falls back to no sandboxing
+//! - **Windows**: Windows Sandbox/AppContainer/Restricted token (best-effort)
 //!
 //! # Usage
 //!
@@ -34,6 +34,9 @@ pub mod seatbelt;
 
 #[cfg(target_os = "linux")]
 pub mod landlock;
+
+#[cfg(target_os = "windows")]
+pub mod windows;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -166,6 +169,10 @@ pub enum SandboxType {
     /// Linux Landlock sandboxing (kernel 5.13+).
     #[cfg(target_os = "linux")]
     LinuxLandlock,
+
+    /// Windows sandboxing (Windows Sandbox/AppContainer/Restricted token).
+    #[cfg(target_os = "windows")]
+    Windows,
 }
 
 impl std::fmt::Display for SandboxType {
@@ -176,6 +183,8 @@ impl std::fmt::Display for SandboxType {
             SandboxType::MacosSeatbelt => write!(f, "macos-seatbelt"),
             #[cfg(target_os = "linux")]
             SandboxType::LinuxLandlock => write!(f, "linux-landlock"),
+            #[cfg(target_os = "windows")]
+            SandboxType::Windows => write!(f, "windows-sandbox"),
         }
     }
 }
@@ -241,6 +250,13 @@ pub fn get_platform_sandbox() -> Option<SandboxType> {
     {
         if landlock::is_available() {
             return Some(SandboxType::LinuxLandlock);
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if windows::is_available() {
+            return Some(SandboxType::Windows);
         }
     }
 
@@ -320,6 +336,9 @@ impl SandboxManager {
 
             #[cfg(target_os = "linux")]
             SandboxType::LinuxLandlock => Self::prepare_landlock(spec),
+
+            #[cfg(target_os = "windows")]
+            SandboxType::Windows => Self::prepare_windows(spec),
         }
     }
 
@@ -399,6 +418,35 @@ impl SandboxManager {
         }
     }
 
+    /// Prepare a Windows-sandboxed execution environment.
+    ///
+    /// Note: Windows sandboxing requires a helper process for full isolation.
+    /// This implementation marks intent and defers enforcement to a helper.
+    #[cfg(target_os = "windows")]
+    fn prepare_windows(spec: &CommandSpec) -> ExecEnv {
+        let mut command = vec![spec.program.clone()];
+        command.extend(spec.args.clone());
+
+        let mut env = spec.env.clone();
+        let kind = windows::select_best_kind(&spec.sandbox_policy, &spec.cwd);
+        env.insert("DEEPSEEK_SANDBOX".to_string(), format!("windows:{kind}"));
+        if !spec.sandbox_policy.has_network_access() {
+            env.insert(
+                "DEEPSEEK_SANDBOX_BLOCK_NETWORK".to_string(),
+                "1".to_string(),
+            );
+        }
+
+        ExecEnv {
+            command,
+            cwd: spec.cwd.clone(),
+            env,
+            timeout: spec.timeout,
+            sandbox_type: SandboxType::Windows,
+            policy: spec.sandbox_policy.clone(),
+        }
+    }
+
     /// Check if a command failure was due to sandbox denial.
     ///
     /// This helps distinguish between legitimate command failures and
@@ -415,6 +463,9 @@ impl SandboxManager {
 
             #[cfg(target_os = "linux")]
             SandboxType::LinuxLandlock => landlock::detect_denial(exit_code, stderr),
+
+            #[cfg(target_os = "windows")]
+            SandboxType::Windows => windows::detect_denial(exit_code, stderr),
         }
     }
 
@@ -448,6 +499,22 @@ impl SandboxManager {
                 } else {
                     format!(
                         "Landlock blocked operation: {}",
+                        stderr.lines().next().unwrap_or("unknown")
+                    )
+                }
+            }
+
+            #[cfg(target_os = "windows")]
+            SandboxType::Windows => {
+                if stderr.contains("Access is denied") {
+                    "Windows sandbox blocked access. The command lacked required privileges."
+                        .to_string()
+                } else if stderr.contains("network") {
+                    "Windows sandbox blocked network access. Enable network_access in policy if needed."
+                        .to_string()
+                } else {
+                    format!(
+                        "Windows sandbox blocked operation: {}",
                         stderr.lines().next().unwrap_or("unknown")
                     )
                 }

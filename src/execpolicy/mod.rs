@@ -4,9 +4,11 @@ pub mod amend;
 pub mod decision;
 pub mod error;
 pub mod execpolicycheck;
+pub mod matcher;
 pub mod parser;
 pub mod policy;
 pub mod rule;
+pub mod rules;
 
 pub use amend::AmendError;
 pub use amend::blocking_append_allow_prefix_rule;
@@ -20,3 +22,6 @@ pub use policy::Policy;
 pub use rule::Rule;
 pub use rule::RuleMatch;
 pub use rule::RuleRef;
+pub use rules::{
+    ExecPolicyConfig, ExecPolicyDecision, default_execpolicy_path, load_default_policy,
+};
