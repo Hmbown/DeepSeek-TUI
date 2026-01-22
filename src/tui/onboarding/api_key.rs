@@ -7,23 +7,24 @@ use crate::palette;
 use crate::tui::app::App;
 
 pub fn lines(app: &App) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
-    lines.push(Line::from(Span::styled(
-        "API Key Setup",
-        Style::default()
-            .fg(palette::DEEPSEEK_SKY)
-            .add_modifier(Modifier::BOLD),
-    )));
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "Enter your DEEPSEEK_API_KEY to continue.",
-        Style::default().fg(palette::TEXT_PRIMARY),
-    )));
-    lines.push(Line::from(Span::styled(
-        "Get your key at https://platform.deepseek.com",
-        Style::default().fg(palette::DEEPSEEK_SKY),
-    )));
-    lines.push(Line::from(""));
+    let mut lines = vec![
+        Line::from(Span::styled(
+            "API Key Setup",
+            Style::default()
+                .fg(palette::DEEPSEEK_SKY)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Enter your DEEPSEEK_API_KEY to continue.",
+            Style::default().fg(palette::TEXT_PRIMARY),
+        )),
+        Line::from(Span::styled(
+            "Get your key at https://platform.deepseek.com",
+            Style::default().fg(palette::DEEPSEEK_SKY),
+        )),
+        Line::from(""),
+    ];
 
     let masked = mask_key(&app.api_key_input);
     let display = if masked.is_empty() {

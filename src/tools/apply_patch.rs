@@ -264,13 +264,13 @@ fn parse_unified_diff_files(
             continue;
         }
 
-        if line.starts_with("--- ") {
-            old_path = Some(line[4..].trim().to_string());
+        if let Some(stripped) = line.strip_prefix("--- ") {
+            old_path = Some(stripped.trim().to_string());
             continue;
         }
 
-        if line.starts_with("+++ ") {
-            let new_path = Some(line[4..].trim().to_string());
+        if let Some(stripped) = line.strip_prefix("+++ ") {
+            let new_path = Some(stripped.trim().to_string());
             let (path, delete_after, create_flag) =
                 resolve_diff_paths(old_path.as_deref(), new_path.as_deref(), create_if_missing)?;
             if let Some(file) = current.take() {
