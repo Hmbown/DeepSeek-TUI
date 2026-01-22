@@ -37,7 +37,11 @@ pub fn save(app: &mut App, path: Option<&str>) -> CommandResult {
 
     match std::fs::create_dir_all(&sessions_dir) {
         Ok(()) => {
-            match std::fs::write(&save_path, serde_json::to_string_pretty(&session).unwrap()) {
+            let json = match serde_json::to_string_pretty(&session) {
+                Ok(j) => j,
+                Err(e) => return CommandResult::error(format!("Failed to serialize session: {e}")),
+            };
+            match std::fs::write(&save_path, json) {
                 Ok(()) => {
                     app.current_session_id = Some(session.metadata.id.clone());
                     CommandResult::message(format!(

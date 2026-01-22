@@ -8,7 +8,33 @@ use async_trait::async_trait;
 use regex::Regex;
 use serde::Serialize;
 use serde_json::{Value, json};
+use std::sync::OnceLock;
 use std::time::Duration;
+
+// Cached regex patterns for HTML parsing
+static TITLE_RE: OnceLock<Regex> = OnceLock::new();
+static SNIPPET_RE: OnceLock<Regex> = OnceLock::new();
+static TAG_RE: OnceLock<Regex> = OnceLock::new();
+
+fn get_title_re() -> &'static Regex {
+    TITLE_RE.get_or_init(|| {
+        Regex::new(r#"<a[^>]*class=\"result__a\"[^>]*href=\"([^\"]+)\"[^>]*>(.*?)</a>"#)
+            .expect("title regex pattern is valid")
+    })
+}
+
+fn get_snippet_re() -> &'static Regex {
+    SNIPPET_RE.get_or_init(|| {
+        Regex::new(
+            r#"<a[^>]*class=\"result__snippet\"[^>]*>(.*?)</a>|<div[^>]*class=\"result__snippet\"[^>]*>(.*?)</div>"#,
+        )
+        .expect("snippet regex pattern is valid")
+    })
+}
+
+fn get_tag_re() -> &'static Regex {
+    TAG_RE.get_or_init(|| Regex::new(r"<[^>]+>").expect("tag regex pattern is valid"))
+}
 
 const DEFAULT_MAX_RESULTS: usize = 5;
 const MAX_RESULTS: usize = 10;
@@ -140,12 +166,8 @@ impl ToolSpec for WebSearchTool {
 }
 
 fn parse_duckduckgo_results(html: &str, max_results: usize) -> Vec<WebSearchEntry> {
-    let title_re =
-        Regex::new(r#"<a[^>]*class=\"result__a\"[^>]*href=\"([^\"]+)\"[^>]*>(.*?)</a>"#).unwrap();
-    let snippet_re = Regex::new(
-        r#"<a[^>]*class=\"result__snippet\"[^>]*>(.*?)</a>|<div[^>]*class=\"result__snippet\"[^>]*>(.*?)</div>"#,
-    )
-    .unwrap();
+    let title_re = get_title_re();
+    let snippet_re = get_snippet_re();
     let snippets: Vec<String> = snippet_re
         .captures_iter(html)
         .filter_map(|cap| cap.get(1).or_else(|| cap.get(2)))
@@ -202,8 +224,7 @@ fn normalize_text(text: &str) -> String {
 }
 
 fn strip_html_tags(text: &str) -> String {
-    let tag_re = Regex::new(r"<[^>]+>").unwrap();
-    tag_re.replace_all(text, "").to_string()
+    get_tag_re().replace_all(text, "").to_string()
 }
 
 fn decode_html_entities(text: &str) -> String {

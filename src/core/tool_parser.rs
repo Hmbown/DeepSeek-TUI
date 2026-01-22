@@ -53,7 +53,8 @@ static THINKING_REGEX: OnceLock<Regex> = OnceLock::new();
 fn get_tool_call_regex() -> &'static Regex {
     TOOL_CALL_REGEX.get_or_init(|| {
         // Match [TOOL_CALL] ... [/TOOL_CALL] blocks
-        Regex::new(r"(?s)\[TOOL_CALL\]\s*(.*?)\s*\[/TOOL_CALL\]").unwrap()
+        Regex::new(r"(?s)\[TOOL_CALL\]\s*(.*?)\s*\[/TOOL_CALL\]")
+            .expect("TOOL_CALL regex pattern is valid")
     })
 }
 
@@ -61,21 +62,22 @@ fn get_xml_tool_call_regex() -> &'static Regex {
     XML_TOOL_CALL_REGEX.get_or_init(|| {
         // Match <deepseek:tool_call>...</deepseek:tool_call> or similar XML patterns
         Regex::new(r"(?s)<(?:deepseek:)?tool_call[^>]*>\s*(.*?)\s*</(?:deepseek:)?tool_call>")
-            .unwrap()
+            .expect("XML tool_call regex pattern is valid")
     })
 }
 
 fn get_invoke_regex() -> &'static Regex {
     INVOKE_REGEX.get_or_init(|| {
         // Match <invoke name="tool_name">...</invoke> patterns
-        Regex::new(r#"(?s)<invoke\s+name\s*=\s*"([^"]+)"[^>]*>(.*?)</invoke>"#).unwrap()
+        Regex::new(r#"(?s)<invoke\s+name\s*=\s*"([^"]+)"[^>]*>(.*?)</invoke>"#)
+            .expect("invoke regex pattern is valid")
     })
 }
 
 fn get_thinking_regex() -> &'static Regex {
     THINKING_REGEX.get_or_init(|| {
         // Match thinking blocks including partial closing tags
-        Regex::new(r"(?s)</?(?:think|thinking)[^>]*>").unwrap()
+        Regex::new(r"(?s)</?(?:think|thinking)[^>]*>").expect("thinking regex pattern is valid")
     })
 }
 

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-01-22
+
+### Fixed
+- Session save no longer panics on serialization errors
+- Web search regex patterns are now cached for better performance
+- Improved panic messages for regex compilation failures
+
+## [0.2.1] - 2026-01-22
+
+### Fixed
+- Resolve clippy warnings for Rust 1.92
+
 ## [0.2.0] - 2026-01-20
 
 ### Changed
@@ -99,7 +111,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hooks system and config profiles
 - Example skills and launch assets
 
-[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.2.1...v0.2.2
+[0.2.1]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Hmbown/DeepSeek-TUI/releases/tag/v0.2.0
 [0.0.2]: https://github.com/Hmbown/DeepSeek-TUI/releases/tag/v0.0.2
 [0.0.1]: https://github.com/Hmbown/DeepSeek-CLI/releases/tag/v0.0.1
