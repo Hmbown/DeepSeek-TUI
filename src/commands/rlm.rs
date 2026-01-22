@@ -232,6 +232,7 @@ mod tests {
             mcp_config_path: PathBuf::from("mcp.json"),
             use_memory: false,
             start_in_agent_mode: false,
+            skip_onboarding: false,
             yolo: false,
             resume_session_id: None,
         };

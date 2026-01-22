@@ -12,6 +12,8 @@ pub enum ModalKind {
     Elevation,
     Help,
     SubAgents,
+    Pager,
+    SessionPicker,
 }
 
 #[derive(Debug, Clone)]
@@ -28,6 +30,13 @@ pub enum ViewEvent {
         option: ElevationOption,
     },
     SubAgentsRefresh,
+    SessionSelected {
+        session_id: String,
+    },
+    SessionDeleted {
+        session_id: String,
+        title: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -244,6 +253,9 @@ impl ModalView for HelpView {
         help_lines.push(Line::from("  Ctrl+U       - Clear input line"));
         help_lines.push(Line::from("  Ctrl+A / E   - Move to start/end of line"));
         help_lines.push(Line::from("  Alt+Up/Down  - Scroll transcript"));
+        help_lines.push(Line::from("  Ctrl+R       - Session picker"));
+        help_lines.push(Line::from("  l            - Pager for last message"));
+        help_lines.push(Line::from("  Enter (sel)  - Pager for selection"));
         help_lines.push(Line::from(
             "  Ctrl+Shift+C - Copy selection (Cmd+C on macOS)",
         ));

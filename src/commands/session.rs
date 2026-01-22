@@ -4,9 +4,10 @@ use std::fmt::Write;
 use std::path::PathBuf;
 
 use crate::compaction::CompactionConfig;
-use crate::session_manager::create_saved_session;
+use crate::session_manager::create_saved_session_with_mode;
 use crate::tui::app::{App, AppAction};
 use crate::tui::history::{HistoryCell, history_cells_from_message};
+use crate::tui::session_picker::SessionPickerView;
 
 use super::CommandResult;
 
@@ -20,12 +21,13 @@ pub fn save(app: &mut App, path: Option<&str>) -> CommandResult {
     };
 
     let messages = app.api_messages.clone();
-    let session = create_saved_session(
+    let session = create_saved_session_with_mode(
         &messages,
         &app.model,
         &app.workspace,
         u64::from(app.total_tokens),
         app.system_prompt.as_ref(),
+        Some(app.mode.label()),
     );
 
     let sessions_dir = save_path
@@ -163,6 +165,12 @@ pub fn export(app: &mut App, path: Option<&str>) -> CommandResult {
         Ok(()) => CommandResult::message(format!("Exported to {}", export_path.display())),
         Err(e) => CommandResult::error(format!("Failed to export: {e}")),
     }
+}
+
+/// Open the session picker UI
+pub fn sessions(app: &mut App) -> CommandResult {
+    app.view_stack.push(SessionPickerView::new());
+    CommandResult::ok()
 }
 
 fn render_tool_cell(tool: &crate::tui::history::ToolCell, width: u16) -> String {

@@ -39,6 +39,7 @@ mod hooks;
 mod llm_client;
 mod logging;
 mod mcp;
+mod mcp_server;
 mod models;
 mod palette;
 mod pricing;
@@ -118,6 +119,10 @@ struct Cli {
     /// Disable the alternate screen buffer (inline mode)
     #[arg(long = "no-alt-screen")]
     no_alt_screen: bool,
+
+    /// Skip onboarding screens
+    #[arg(long)]
+    skip_onboarding: bool,
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -167,6 +172,8 @@ enum Commands {
     Features(FeaturesCli),
     /// Run a command inside the sandbox
     Sandbox(SandboxArgs),
+    /// Run a local server (e.g. MCP)
+    Serve(ServeArgs),
     /// Resume a previous session by ID (use --last for most recent)
     Resume {
         /// Conversation/session id (UUID or prefix)
@@ -249,6 +256,13 @@ struct ApplyArgs {
     /// Patch file to apply (defaults to stdin)
     #[arg(value_name = "PATCH_FILE")]
     patch_file: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone)]
+struct ServeArgs {
+    /// Start MCP server over stdio
+    #[arg(long)]
+    mcp: bool,
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -394,6 +408,16 @@ async fn main() -> Result<()> {
                 run_features_command(&config, command)
             }
             Commands::Sandbox(args) => run_sandbox_command(args),
+            Commands::Serve(args) => {
+                let workspace = cli.workspace.clone().unwrap_or_else(|| {
+                    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+                });
+                if args.mcp {
+                    mcp_server::run_mcp_server(workspace)
+                } else {
+                    bail!("No server mode specified. Use --mcp.")
+                }
+            }
             Commands::Resume { session_id, last } => {
                 let config = load_config_from_cli(&cli)?;
                 let resume_id = resolve_session_id(session_id, last)?;
@@ -1329,6 +1353,7 @@ async fn run_interactive(
             mcp_config_path: config.mcp_config_path(),
             use_memory: false,
             start_in_agent_mode: cli.yolo,
+            skip_onboarding: cli.skip_onboarding,
             yolo: cli.yolo, // YOLO mode auto-approves all tool executions
             resume_session_id,
             max_subagents,

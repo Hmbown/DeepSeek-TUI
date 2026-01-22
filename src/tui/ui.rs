@@ -22,7 +22,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Paragraph, Wrap},
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -37,13 +37,19 @@ use crate::models::{ContentBlock, Message, SystemPrompt, context_window_for_mode
 use crate::palette;
 use crate::prompts;
 use crate::rlm;
-use crate::session_manager::{SessionManager, create_saved_session, update_session};
+use crate::session_manager::{
+    SavedSession, SessionManager, create_saved_session_with_mode, update_session,
+};
+use crate::tools::ReviewOutput;
 use crate::tools::spec::{ToolError, ToolResult};
 use crate::tools::subagent::{SubAgentResult, SubAgentStatus};
 use crate::tui::event_broker::EventBroker;
+use crate::tui::onboarding;
+use crate::tui::pager::PagerView;
 use crate::tui::paste_burst::CharDecision;
 use crate::tui::scrolling::{ScrollDirection, TranscriptScroll};
 use crate::tui::selection::TranscriptSelectionPoint;
+use crate::tui::session_picker::SessionPickerView;
 use crate::utils::estimate_message_chars;
 
 use super::app::{App, AppAction, AppMode, OnboardingState, QueuedMessage, TuiOptions};
@@ -51,10 +57,10 @@ use super::approval::{
     ApprovalMode, ApprovalRequest, ApprovalView, ElevationRequest, ElevationView, ReviewDecision,
 };
 use super::history::{
-    ExecCell, ExecSource, ExploringCell, ExploringEntry, GenericToolCell, HistoryCell, McpToolCell,
-    PatchSummaryCell, PlanStep, PlanUpdateCell, ToolCell, ToolStatus, ViewImageCell, WebSearchCell,
-    extract_reasoning_summary, history_cells_from_message, summarize_mcp_output,
-    summarize_tool_args, summarize_tool_output,
+    DiffPreviewCell, ExecCell, ExecSource, ExploringCell, ExploringEntry, GenericToolCell,
+    HistoryCell, McpToolCell, PatchSummaryCell, PlanStep, PlanUpdateCell, ReviewCell, ToolCell,
+    ToolStatus, ViewImageCell, WebSearchCell, extract_reasoning_summary,
+    history_cells_from_message, summarize_mcp_output, summarize_tool_args, summarize_tool_output,
 };
 use super::views::{HelpView, ModalKind, ViewEvent};
 use super::widgets::{ChatWidget, ComposerWidget, HeaderData, HeaderWidget, Renderable};
@@ -84,16 +90,6 @@ const AUTO_RLM_EXCLUDED_DIRS: &[&str] = &[
     "dist",
     "build",
 ];
-
-// ASCII logo for onboarding screen only
-const LOGO: &str = r"
-██████╗ ███████╗███████╗██████╗ ███████╗███████╗███████╗██╗  ██╗
-██╔══██╗██╔════╝██╔════╝██╔══██╗██╔════╝██╔════╝██╔════╝██║ ██╔╝
-██║  ██║█████╗  █████╗  ██████╔╝███████╗█████╗  █████╗  █████╔╝
-██║  ██║██╔══╝  ██╔══╝  ██╔═══╝ ╚════██║██╔══╝  ██╔══╝  ██╔═██╗
-██████╔╝███████╗███████╗██║     ███████║███████╗███████╗██║  ██╗
-╚═════╝ ╚══════╝╚══════╝╚═╝     ╚══════╝╚══════╝╚══════╝╚═╝  ╚═╝
-";
 
 /// Run the interactive TUI event loop.
 ///
@@ -387,30 +383,34 @@ async fn run_event_loop(
                             let session = if let Some(ref existing_id) = app.current_session_id {
                                 // Update existing session
                                 if let Ok(existing) = manager.load_session(existing_id) {
-                                    update_session(
+                                    let mut updated = update_session(
                                         existing,
                                         &app.api_messages,
                                         u64::from(app.total_tokens),
                                         app.system_prompt.as_ref(),
-                                    )
+                                    );
+                                    updated.metadata.mode = Some(app.mode.label().to_string());
+                                    updated
                                 } else {
                                     // Session was deleted, create new
-                                    create_saved_session(
+                                    create_saved_session_with_mode(
                                         &app.api_messages,
                                         &app.model,
                                         &app.workspace,
                                         u64::from(app.total_tokens),
                                         app.system_prompt.as_ref(),
+                                        Some(app.mode.label()),
                                     )
                                 }
                             } else {
                                 // Create new session
-                                create_saved_session(
+                                create_saved_session_with_mode(
                                     &app.api_messages,
                                     &app.model,
                                     &app.workspace,
                                     u64::from(app.total_tokens),
                                     app.system_prompt.as_ref(),
+                                    Some(app.mode.label()),
                                 )
                             };
 
@@ -511,9 +511,19 @@ async fn run_event_loop(
                                 ),
                             });
                         } else {
+                            let tool_input = app
+                                .pending_tool_uses
+                                .iter()
+                                .find(|(tool_id, _, _)| tool_id == &id)
+                                .map(|(_, _, input)| input.clone())
+                                .unwrap_or_else(|| serde_json::json!({}));
+
+                            if tool_name == "apply_patch" {
+                                maybe_add_patch_preview(app, &tool_input);
+                            }
+
                             // Create approval request and show overlay
-                            let request =
-                                ApprovalRequest::new(&id, &tool_name, &serde_json::json!({}));
+                            let request = ApprovalRequest::new(&id, &tool_name, &tool_input);
                             app.view_stack.push(ApprovalView::new(request));
                             app.add_message(HistoryCell::System {
                                 content: format!(
@@ -586,7 +596,7 @@ async fn run_event_loop(
 
             // Handle bracketed paste events
             if let Event::Paste(text) = &evt {
-                if app.onboarding == OnboardingState::EnteringKey {
+                if app.onboarding == OnboardingState::ApiKey {
                     // Paste into API key input
                     app.insert_api_key_str(text);
                 } else {
@@ -620,45 +630,77 @@ async fn run_event_loop(
 
             // Handle onboarding flow
             if app.onboarding != OnboardingState::None {
+                let advance_onboarding = |app: &mut App| {
+                    app.status_message = None;
+                    if app.onboarding_needs_api_key {
+                        app.onboarding = OnboardingState::ApiKey;
+                    } else if !app.trust_mode && onboarding::needs_trust(&app.workspace) {
+                        app.onboarding = OnboardingState::TrustDirectory;
+                    } else {
+                        app.onboarding = OnboardingState::Tips;
+                    }
+                };
+
                 match key.code {
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         let _ = engine_handle.send(Op::Shutdown).await;
                         return Ok(());
                     }
                     KeyCode::Esc => {
-                        if app.onboarding == OnboardingState::EnteringKey {
+                        if app.onboarding == OnboardingState::ApiKey {
                             app.onboarding = OnboardingState::Welcome;
                             app.api_key_input.clear();
                             app.api_key_cursor = 0;
+                            app.status_message = None;
                         }
                     }
                     KeyCode::Enter => match app.onboarding {
                         OnboardingState::Welcome => {
-                            app.onboarding = OnboardingState::EnteringKey;
+                            advance_onboarding(app);
                         }
-                        OnboardingState::EnteringKey => match app.submit_api_key() {
-                            Ok(path) => {
-                                app.status_message =
-                                    Some(format!("API key saved to {}", path.display()));
+                        OnboardingState::ApiKey => match app.submit_api_key() {
+                            Ok(_) => {
+                                advance_onboarding(app);
                             }
                             Err(e) => {
                                 app.status_message = Some(e.to_string());
                             }
                         },
-                        OnboardingState::Success => {
+                        OnboardingState::TrustDirectory => {}
+                        OnboardingState::Tips => {
                             app.finish_onboarding();
                         }
                         OnboardingState::None => {}
                     },
-                    KeyCode::Backspace if app.onboarding == OnboardingState::EnteringKey => {
+                    KeyCode::Char('y') | KeyCode::Char('Y')
+                        if app.onboarding == OnboardingState::TrustDirectory =>
+                    {
+                        match onboarding::mark_trusted(&app.workspace) {
+                            Ok(_) => {
+                                app.trust_mode = true;
+                                app.status_message = None;
+                                app.onboarding = OnboardingState::Tips;
+                            }
+                            Err(err) => {
+                                app.status_message =
+                                    Some(format!("Failed to trust workspace: {err}"));
+                            }
+                        }
+                    }
+                    KeyCode::Char('n') | KeyCode::Char('N')
+                        if app.onboarding == OnboardingState::TrustDirectory =>
+                    {
+                        app.status_message = None;
+                        app.onboarding = OnboardingState::Tips;
+                    }
+                    KeyCode::Backspace if app.onboarding == OnboardingState::ApiKey => {
                         app.delete_api_key_char();
                     }
-                    KeyCode::Char(c) if app.onboarding == OnboardingState::EnteringKey => {
+                    KeyCode::Char(c) if app.onboarding == OnboardingState::ApiKey => {
                         app.insert_api_key_char(c);
                     }
                     KeyCode::Char('v') | KeyCode::Char('V')
-                        if is_paste_shortcut(&key)
-                            && app.onboarding == OnboardingState::EnteringKey =>
+                        if is_paste_shortcut(&key) && app.onboarding == OnboardingState::ApiKey =>
                     {
                         // Cmd+V / Ctrl+V paste (bracketed paste handled above)
                         app.paste_api_key_from_clipboard();
@@ -705,6 +747,20 @@ async fn run_event_loop(
 
             // Global keybindings
             match key.code {
+                KeyCode::Enter if app.input.is_empty() && app.transcript_selection.is_active() => {
+                    if open_pager_for_selection(app) {
+                        continue;
+                    }
+                }
+                KeyCode::Char('l') if key.modifiers.is_empty() && app.input.is_empty() => {
+                    if open_pager_for_last_message(app) {
+                        continue;
+                    }
+                }
+                KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    app.view_stack.push(SessionPickerView::new());
+                    continue;
+                }
                 KeyCode::Char('c') | KeyCode::Char('C')
                     if key.modifiers.contains(KeyModifiers::CONTROL)
                         && app.transcript_selection.is_active() =>
@@ -1663,7 +1719,7 @@ fn render(f: &mut Frame, app: &mut App) {
 
     // Show onboarding screen if needed
     if app.onboarding != OnboardingState::None {
-        render_onboarding(f, size, app);
+        onboarding::render(f, size, app);
         return;
     }
 
@@ -1809,12 +1865,67 @@ async fn handle_view_events(app: &mut App, engine_handle: &EngineHandle, events:
                     }
                 }
             }
+            ViewEvent::SessionSelected { session_id } => {
+                let manager = match SessionManager::default_location() {
+                    Ok(manager) => manager,
+                    Err(err) => {
+                        app.status_message =
+                            Some(format!("Failed to open sessions directory: {err}"));
+                        continue;
+                    }
+                };
+
+                match manager.load_session(&session_id) {
+                    Ok(session) => {
+                        apply_loaded_session(app, &session);
+                        let _ = engine_handle
+                            .send(Op::SyncSession {
+                                messages: app.api_messages.clone(),
+                                system_prompt: app.system_prompt.clone(),
+                                model: app.model.clone(),
+                                workspace: app.workspace.clone(),
+                            })
+                            .await;
+                        app.status_message =
+                            Some(format!("Session loaded (ID: {})", &session_id[..8]));
+                    }
+                    Err(err) => {
+                        app.status_message =
+                            Some(format!("Failed to load session {session_id}: {err}"));
+                    }
+                }
+            }
+            ViewEvent::SessionDeleted { session_id, title } => {
+                app.status_message =
+                    Some(format!("Deleted session {} ({})", &session_id[..8], title));
+            }
             ViewEvent::SubAgentsRefresh => {
                 app.status_message = Some("Refreshing sub-agents...".to_string());
                 let _ = engine_handle.send(Op::ListSubAgents).await;
             }
         }
     }
+}
+
+fn apply_loaded_session(app: &mut App, session: &SavedSession) {
+    app.api_messages.clone_from(&session.messages);
+    app.history.clear();
+    for msg in &app.api_messages {
+        app.history.extend(history_cells_from_message(msg));
+    }
+    app.mark_history_updated();
+    app.transcript_selection.clear();
+    app.model.clone_from(&session.metadata.model);
+    app.workspace.clone_from(&session.metadata.workspace);
+    app.total_tokens = u32::try_from(session.metadata.total_tokens).unwrap_or(u32::MAX);
+    app.total_conversation_tokens = app.total_tokens;
+    app.current_session_id = Some(session.metadata.id.clone());
+    if let Some(sp) = session.system_prompt.as_ref() {
+        app.system_prompt = Some(SystemPrompt::Text(sp.clone()));
+    } else {
+        app.system_prompt = None;
+    }
+    app.scroll_to_bottom();
 }
 
 fn pause_terminal(
@@ -1992,6 +2103,8 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
         ));
     }
 
+    spans.extend(footer_key_hints(area.width, app));
+
     if let Some(ref msg) = app.status_message {
         spans.push(Span::raw(" | "));
         spans.push(Span::styled(
@@ -2002,6 +2115,33 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
 
     let footer = Paragraph::new(Line::from(spans));
     f.render_widget(footer, area);
+}
+
+fn footer_key_hints(width: u16, app: &App) -> Vec<Span<'static>> {
+    let mut hints = vec!["F1 help", "Ctrl+R sessions", "l pager", "Ctrl+V paste"];
+    if app.transcript_selection.is_active() {
+        hints.push("Enter preview");
+    }
+
+    let max_hints = if width < 70 {
+        1
+    } else if width < 100 {
+        2
+    } else if width < 130 {
+        3
+    } else {
+        hints.len()
+    };
+
+    let mut spans = Vec::new();
+    for hint in hints.into_iter().take(max_hints) {
+        spans.push(Span::raw(" | "));
+        spans.push(Span::styled(
+            hint.to_string(),
+            Style::default().fg(palette::TEXT_DIM),
+        ));
+    }
+    spans
 }
 
 fn rlm_usage_badge(app: &App) -> Option<(String, Style)> {
@@ -2357,6 +2497,48 @@ fn selection_to_text(app: &App) -> Option<String> {
     Some(out)
 }
 
+fn open_pager_for_selection(app: &mut App) -> bool {
+    let Some(text) = selection_to_text(app) else {
+        return false;
+    };
+    let width = app
+        .last_transcript_area
+        .map(|area| area.width)
+        .unwrap_or(80);
+    let pager = PagerView::from_text("Selection", &text, width.saturating_sub(2));
+    app.view_stack.push(pager);
+    true
+}
+
+fn open_pager_for_last_message(app: &mut App) -> bool {
+    let Some(cell) = app.history.last() else {
+        return false;
+    };
+    let width = app
+        .last_transcript_area
+        .map(|area| area.width)
+        .unwrap_or(80);
+    let text = history_cell_to_text(cell, width);
+    let pager = PagerView::from_text("Message", &text, width.saturating_sub(2));
+    app.view_stack.push(pager);
+    true
+}
+
+fn history_cell_to_text(cell: &HistoryCell, width: u16) -> String {
+    cell.lines(width)
+        .into_iter()
+        .map(line_to_string)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn line_to_string(line: Line<'static>) -> String {
+    line.spans
+        .into_iter()
+        .map(|span| span.content.to_string())
+        .collect::<String>()
+}
+
 fn is_copy_shortcut(key: &KeyEvent) -> bool {
     let is_c = matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C'));
     if !is_c {
@@ -2413,196 +2595,6 @@ fn slice_text(text: &str, start: usize, end: usize) -> String {
         }
     }
     out
-}
-
-#[allow(clippy::too_many_lines)]
-fn render_onboarding(f: &mut Frame, area: Rect, app: &App) {
-    // Clear the entire screen with a dark background
-    let block = Block::default().style(Style::default().bg(palette::DEEPSEEK_INK));
-    f.render_widget(block, area);
-
-    // Center the content
-    let content_width = 70.min(area.width.saturating_sub(4));
-    let content_height = 24.min(area.height.saturating_sub(4));
-    let content_area = Rect {
-        x: (area.width - content_width) / 2,
-        y: (area.height - content_height) / 2,
-        width: content_width,
-        height: content_height,
-    };
-
-    match app.onboarding {
-        OnboardingState::Welcome => {
-            let mut lines = vec![];
-
-            // Logo
-            for (i, line) in LOGO.lines().enumerate() {
-                let color = match i % 3 {
-                    0 => palette::DEEPSEEK_BLUE,
-                    1 => palette::DEEPSEEK_SKY,
-                    _ => palette::DEEPSEEK_RED,
-                };
-                lines.push(Line::from(Span::styled(
-                    line,
-                    Style::default().fg(color).bold(),
-                )));
-            }
-
-            lines.push(Line::from(""));
-            lines.push(Line::from(vec![
-                Span::styled("Welcome to ", Style::default().fg(palette::TEXT_PRIMARY)),
-                Span::styled(
-                    "DeepSeek CLI 🐳",
-                    Style::default().fg(palette::DEEPSEEK_BLUE).bold(),
-                ),
-            ]));
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                "Unofficial CLI for the DeepSeek API",
-                Style::default().fg(palette::TEXT_MUTED).italic(),
-            )));
-            lines.push(Line::from(Span::styled(
-                "Not affiliated with DeepSeek Inc.",
-                Style::default().fg(palette::TEXT_MUTED).italic(),
-            )));
-            lines.push(Line::from(""));
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                "To get started, you'll need a DeepSeek API key.",
-                Style::default().fg(palette::TEXT_PRIMARY),
-            )));
-            lines.push(Line::from(Span::styled(
-                "Get yours at: https://platform.deepseek.com",
-                Style::default().fg(palette::DEEPSEEK_SKY),
-            )));
-            lines.push(Line::from(""));
-            lines.push(Line::from(""));
-            lines.push(Line::from(vec![
-                Span::styled("Press ", Style::default().fg(palette::TEXT_MUTED)),
-                Span::styled("Enter", Style::default().fg(palette::TEXT_PRIMARY).bold()),
-                Span::styled(
-                    " to enter your API key",
-                    Style::default().fg(palette::TEXT_MUTED),
-                ),
-            ]));
-            lines.push(Line::from(vec![
-                Span::styled("Press ", Style::default().fg(palette::TEXT_MUTED)),
-                Span::styled("Ctrl+C", Style::default().fg(palette::TEXT_PRIMARY).bold()),
-                Span::styled(" to exit", Style::default().fg(palette::TEXT_MUTED)),
-            ]));
-
-            let paragraph = Paragraph::new(lines)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(palette::DEEPSEEK_BLUE)),
-                )
-                .centered();
-            f.render_widget(paragraph, content_area);
-        }
-        OnboardingState::EnteringKey => {
-            let mut lines = vec![
-                Line::from(Span::styled(
-                    "Enter Your API Key",
-                    Style::default().fg(palette::DEEPSEEK_BLUE).bold(),
-                )),
-                Line::from(""),
-                Line::from(Span::styled(
-                    "Paste your DeepSeek API key below:",
-                    Style::default().fg(palette::TEXT_PRIMARY),
-                )),
-                Line::from(""),
-            ];
-
-            // API key input field (masked)
-            let masked_key = if app.api_key_input.is_empty() {
-                Span::styled(
-                    "(paste your key here)",
-                    Style::default().fg(palette::TEXT_MUTED).italic(),
-                )
-            } else {
-                // Show first 8 chars, mask the rest
-                let visible = app.api_key_input.chars().take(8).collect::<String>();
-                let hidden = "*".repeat(app.api_key_input.len().saturating_sub(8));
-                Span::styled(
-                    format!("{visible}{hidden}"),
-                    Style::default().fg(palette::STATUS_SUCCESS),
-                )
-            };
-            lines.push(Line::from(masked_key));
-            lines.push(Line::from(""));
-            lines.push(Line::from(""));
-
-            // Status message
-            if let Some(ref msg) = app.status_message {
-                lines.push(Line::from(Span::styled(
-                    msg,
-                    Style::default().fg(palette::STATUS_WARNING),
-                )));
-                lines.push(Line::from(""));
-            }
-
-            lines.push(Line::from(vec![
-                Span::styled("Press ", Style::default().fg(palette::TEXT_MUTED)),
-                Span::styled("Enter", Style::default().fg(palette::TEXT_PRIMARY).bold()),
-                Span::styled(" to save", Style::default().fg(palette::TEXT_MUTED)),
-            ]));
-            lines.push(Line::from(vec![
-                Span::styled("Press ", Style::default().fg(palette::TEXT_MUTED)),
-                Span::styled("Esc", Style::default().fg(palette::TEXT_PRIMARY).bold()),
-                Span::styled(" to go back", Style::default().fg(palette::TEXT_MUTED)),
-            ]));
-
-            let paragraph = Paragraph::new(lines)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(palette::DEEPSEEK_SKY)),
-                )
-                .centered();
-            f.render_widget(paragraph, content_area);
-        }
-        OnboardingState::Success => {
-            let lines = vec![
-                Line::from(Span::styled(
-                    "API Key Saved!",
-                    Style::default().fg(palette::STATUS_SUCCESS).bold(),
-                )),
-                Line::from(""),
-                Line::from(Span::styled(
-                    "Your API key has been saved to:",
-                    Style::default().fg(palette::TEXT_PRIMARY),
-                )),
-                Line::from(Span::styled(
-                    "~/.deepseek/config.toml",
-                    Style::default().fg(palette::DEEPSEEK_SKY),
-                )),
-                Line::from(""),
-                Line::from(""),
-                Line::from(Span::styled(
-                    "You're all set! Start chatting with DeepSeek",
-                    Style::default().fg(palette::TEXT_PRIMARY),
-                )),
-                Line::from(""),
-                Line::from(""),
-                Line::from(vec![
-                    Span::styled("Press ", Style::default().fg(palette::TEXT_MUTED)),
-                    Span::styled("Enter", Style::default().fg(palette::TEXT_PRIMARY).bold()),
-                    Span::styled(" to continue", Style::default().fg(palette::TEXT_MUTED)),
-                ]),
-            ];
-
-            let paragraph = Paragraph::new(lines)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(palette::STATUS_SUCCESS)),
-                )
-                .centered();
-            f.render_widget(paragraph, content_area);
-        }
-        OnboardingState::None => {}
-    }
 }
 
 fn extract_reasoning_header(text: &str) -> Option<String> {
@@ -2773,6 +2765,19 @@ fn handle_tool_call_started(app: &mut App, id: &str, name: &str, input: &serde_j
         return;
     }
 
+    if name == "review" {
+        let target = review_target_label(input);
+        app.add_message(HistoryCell::Tool(ToolCell::Review(ReviewCell {
+            target,
+            status: ToolStatus::Running,
+            output: None,
+            error: None,
+        })));
+        app.tool_cells
+            .insert(id, app.history.len().saturating_sub(1));
+        return;
+    }
+
     if is_mcp_tool(name) {
         app.add_message(HistoryCell::Tool(ToolCell::Mcp(McpToolCell {
             tool: name.to_string(),
@@ -2914,6 +2919,22 @@ fn handle_tool_call_complete(
                 }
                 app.mark_history_updated();
             }
+            HistoryCell::Tool(ToolCell::Review(review)) => {
+                review.status = status;
+                match result.as_ref() {
+                    Ok(tool_result) => {
+                        if tool_result.success {
+                            review.output = Some(ReviewOutput::from_str(&tool_result.content));
+                        } else {
+                            review.error = Some(tool_result.content.clone());
+                        }
+                    }
+                    Err(err) => {
+                        review.error = Some(err.to_string());
+                    }
+                }
+                app.mark_history_updated();
+            }
             HistoryCell::Tool(ToolCell::Mcp(mcp)) => {
                 match result.as_ref() {
                     Ok(tool_result) => {
@@ -3019,6 +3040,39 @@ fn web_search_query(input: &serde_json::Value) -> String {
         .to_string()
 }
 
+fn review_target_label(input: &serde_json::Value) -> String {
+    let target = input
+        .get("target")
+        .and_then(|v| v.as_str())
+        .unwrap_or("review")
+        .trim();
+    let kind = input
+        .get("kind")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    let staged = input
+        .get("staged")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let target_lower = target.to_ascii_lowercase();
+
+    if kind == "diff"
+        || target_lower == "diff"
+        || target_lower == "git diff"
+        || target_lower == "staged"
+        || target_lower == "cached"
+    {
+        if staged || target_lower == "staged" || target_lower == "cached" {
+            return "git diff --cached".to_string();
+        }
+        return "git diff".to_string();
+    }
+
+    target.to_string()
+}
+
 fn parse_plan_input(input: &serde_json::Value) -> (Option<String>, Vec<PlanStep>) {
     let explanation = input
         .get("explanation")
@@ -3044,12 +3098,40 @@ fn parse_plan_input(input: &serde_json::Value) -> (Option<String>, Vec<PlanStep>
 }
 
 fn parse_patch_summary(input: &serde_json::Value) -> (String, String) {
+    if let Some(changes) = input.get("changes").and_then(|v| v.as_array()) {
+        let count = changes.len();
+        let path = changes
+            .get(0)
+            .and_then(|c| c.get("path"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| "<file>".to_string());
+        let label = if count <= 1 {
+            path
+        } else {
+            format!("{count} files")
+        };
+        let summary = format!("Changes: {count} file(s)");
+        return (label, summary);
+    }
+
+    let patch_text = input.get("patch").and_then(|v| v.as_str()).unwrap_or("");
+    let paths = extract_patch_paths(patch_text);
     let path = input
         .get("path")
         .and_then(|v| v.as_str())
-        .unwrap_or("<file>")
-        .to_string();
-    let patch_text = input.get("patch").and_then(|v| v.as_str()).unwrap_or("");
+        .map(str::to_string)
+        .or_else(|| {
+            if paths.len() == 1 {
+                paths.first().cloned()
+            } else if paths.is_empty() {
+                None
+            } else {
+                Some(format!("{} files", paths.len()))
+            }
+        })
+        .unwrap_or_else(|| "<file>".to_string());
+
     let (adds, removes) = count_patch_changes(patch_text);
     let summary = if adds == 0 && removes == 0 {
         "Patch applied".to_string()
@@ -3057,6 +3139,88 @@ fn parse_patch_summary(input: &serde_json::Value) -> (String, String) {
         format!("Changes: +{adds} / -{removes}")
     };
     (path, summary)
+}
+
+fn extract_patch_paths(patch: &str) -> Vec<String> {
+    let mut paths = Vec::new();
+    for line in patch.lines() {
+        if let Some(rest) = line.strip_prefix("+++ ") {
+            let raw = rest.trim();
+            if raw == "/dev/null" || raw == "dev/null" {
+                continue;
+            }
+            let raw = raw.strip_prefix("b/").unwrap_or(raw);
+            if !paths.contains(&raw.to_string()) {
+                paths.push(raw.to_string());
+            }
+        } else if let Some(rest) = line.strip_prefix("diff --git ") {
+            let parts: Vec<&str> = rest.split_whitespace().collect();
+            if let Some(path) = parts.get(1).or_else(|| parts.get(0)) {
+                let raw = path.trim();
+                let raw = raw
+                    .strip_prefix("b/")
+                    .or_else(|| raw.strip_prefix("a/"))
+                    .unwrap_or(raw);
+                if !paths.contains(&raw.to_string()) {
+                    paths.push(raw.to_string());
+                }
+            }
+        }
+    }
+    paths
+}
+
+fn maybe_add_patch_preview(app: &mut App, input: &serde_json::Value) {
+    if let Some(patch) = input.get("patch").and_then(|v| v.as_str()) {
+        app.add_message(HistoryCell::Tool(ToolCell::DiffPreview(DiffPreviewCell {
+            title: "Patch Preview".to_string(),
+            diff: patch.to_string(),
+        })));
+        app.mark_history_updated();
+        return;
+    }
+
+    if let Some(changes) = input.get("changes").and_then(|v| v.as_array()) {
+        let preview = format_changes_preview(changes);
+        if !preview.trim().is_empty() {
+            app.add_message(HistoryCell::Tool(ToolCell::DiffPreview(DiffPreviewCell {
+                title: "Changes Preview".to_string(),
+                diff: preview,
+            })));
+            app.mark_history_updated();
+        }
+    }
+}
+
+fn format_changes_preview(changes: &[serde_json::Value]) -> String {
+    let mut out = String::new();
+    for change in changes {
+        let path = change
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("<file>");
+        let content = change.get("content").and_then(|v| v.as_str()).unwrap_or("");
+
+        out.push_str(&format!("diff --git a/{path} b/{path}\n"));
+        out.push_str(&format!("--- a/{path}\n+++ b/{path}\n"));
+        out.push_str("@@ -0,0 +1,1 @@\n");
+
+        let mut count = 0usize;
+        for line in content.lines() {
+            out.push('+');
+            out.push_str(line);
+            out.push('\n');
+            count += 1;
+            if count >= 20 {
+                out.push_str("+... (truncated)\n");
+                break;
+            }
+        }
+        if content.is_empty() {
+            out.push_str("+\n");
+        }
+    }
+    out
 }
 
 fn count_patch_changes(patch: &str) -> (usize, usize) {
@@ -3217,6 +3381,7 @@ mod tests {
             mcp_config_path: PathBuf::from("mcp.json"),
             use_memory: false,
             start_in_agent_mode: false,
+            skip_onboarding: false,
             yolo: false,
             resume_session_id: None,
         };

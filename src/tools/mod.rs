@@ -4,11 +4,13 @@
 
 // === Modules ===
 
+pub mod apply_patch;
 pub mod duo;
 pub mod file;
-pub mod patch;
+pub mod file_search;
 pub mod plan;
 pub mod registry;
+pub mod review;
 pub mod rlm;
 pub mod search;
 pub mod shell;
@@ -26,13 +28,17 @@ pub use spec::ToolContext;
 pub use registry::{ToolRegistry, ToolRegistryBuilder};
 
 // Re-export search tools
+pub use file_search::FileSearchTool;
 pub use search::GrepFilesTool;
 
 // Re-export web search tools
 pub use web_search::WebSearchTool;
 
 // Re-export patch tools
-pub use patch::ApplyPatchTool;
+pub use apply_patch::ApplyPatchTool;
+
+// Re-export review tools
+pub use review::{ReviewOutput, ReviewTool};
 
 // Re-export file tools
 pub use file::{EditFileTool, ListDirTool, ReadFileTool, WriteFileTool};

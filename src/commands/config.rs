@@ -194,7 +194,8 @@ pub fn trust(app: &mut App) -> CommandResult {
 pub fn logout(app: &mut App) -> CommandResult {
     match clear_api_key() {
         Ok(()) => {
-            app.onboarding = OnboardingState::Welcome;
+            app.onboarding = OnboardingState::ApiKey;
+            app.onboarding_needs_api_key = true;
             app.api_key_input.clear();
             app.api_key_cursor = 0;
             CommandResult::message("Logged out. Enter a new API key to continue.")
@@ -224,6 +225,7 @@ mod tests {
             mcp_config_path: PathBuf::from("mcp.json"),
             use_memory: false,
             start_in_agent_mode: false,
+            skip_onboarding: false,
             yolo: false,
             resume_session_id: None,
         };

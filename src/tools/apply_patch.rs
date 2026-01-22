@@ -4,6 +4,7 @@
 //! supporting multi-hunk patches and fuzzy matching.
 
 use std::fs;
+use std::path::PathBuf;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -12,7 +13,7 @@ use thiserror::Error;
 
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
-    optional_bool, optional_u64, required_str,
+    optional_bool, optional_str, optional_u64, required_str,
 };
 
 /// Maximum lines of context for fuzzy matching (increased for better tolerance)
@@ -24,6 +25,8 @@ const MAX_FUZZ: usize = 50;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PatchResult {
     pub success: bool,
+    pub files_applied: usize,
+    pub files_total: usize,
     pub hunks_applied: usize,
     pub hunks_total: usize,
     pub fuzz_used: usize,
@@ -50,6 +53,30 @@ pub enum HunkLine {
 
 /// Tool for applying unified diff patches to files
 pub struct ApplyPatchTool;
+
+#[derive(Debug, Clone)]
+struct FilePatch {
+    path: String,
+    hunks: Vec<Hunk>,
+    delete_after: bool,
+    create_if_missing: bool,
+}
+
+#[derive(Debug, Clone)]
+struct PendingWrite {
+    path: PathBuf,
+    content: Option<String>,
+    original: Option<String>,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct PatchStats {
+    files_applied: usize,
+    files_total: usize,
+    hunks_applied: usize,
+    hunks_total: usize,
+    fuzz_used: usize,
+}
 
 // === Errors ===
 
@@ -87,6 +114,18 @@ impl ToolSpec for ApplyPatchTool {
                     "type": "string",
                     "description": "Unified diff patch content"
                 },
+                "changes": {
+                    "type": "array",
+                    "description": "Optional full file replacements (path + content).",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "path": { "type": "string" },
+                            "content": { "type": "string" }
+                        },
+                        "required": ["path", "content"]
+                    }
+                },
                 "fuzz": {
                     "type": "integer",
                     "description": "Maximum fuzz factor for fuzzy matching (default: 3)"
@@ -96,7 +135,10 @@ impl ToolSpec for ApplyPatchTool {
                     "description": "Create the file if it doesn't exist (for new file patches)"
                 }
             },
-            "required": ["path", "patch"]
+            "oneOf": [
+                { "required": ["patch"] },
+                { "required": ["changes"] }
+            ]
         })
     }
 
@@ -113,88 +155,66 @@ impl ToolSpec for ApplyPatchTool {
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let path_str = required_str(&input, "path")?;
-        let patch_text = required_str(&input, "patch")?;
         let fuzz = optional_u64(&input, "fuzz", MAX_FUZZ as u64).min(MAX_FUZZ as u64);
         let fuzz = usize::try_from(fuzz).unwrap_or(MAX_FUZZ);
         let create_if_missing = optional_bool(&input, "create_if_missing", false);
 
-        let file_path = context.resolve_path(path_str)?;
+        if let Some(changes_value) = input.get("changes") {
+            let pending = build_pending_writes_from_changes(changes_value, context)?;
+            let stats = PatchStats {
+                files_total: pending.len(),
+                files_applied: pending.len(),
+                ..PatchStats::default()
+            };
+            apply_pending_writes(&pending)?;
+            let result = PatchResult {
+                success: true,
+                files_applied: stats.files_applied,
+                files_total: stats.files_total,
+                hunks_applied: stats.hunks_applied,
+                hunks_total: stats.hunks_total,
+                fuzz_used: stats.fuzz_used,
+                message: format!("Applied {} file change(s)", stats.files_applied),
+            };
+            return ToolResult::json(&result)
+                .map_err(|e| ToolError::execution_failed(e.to_string()));
+        }
 
-        // Read existing file content (or empty for new files)
-        let original_content = if file_path.exists() {
-            fs::read_to_string(&file_path).map_err(|e| {
-                ToolError::execution_failed(format!(
-                    "Failed to read {}: {}",
-                    file_path.display(),
-                    e
-                ))
-            })?
-        } else if create_if_missing {
-            String::new()
+        let patch_text = required_str(&input, "patch")?;
+        let path_override = optional_str(&input, "path");
+        let file_patches = if let Some(path) = path_override {
+            let hunks = parse_unified_diff(patch_text)?;
+            if hunks.is_empty() {
+                return Err(ToolError::invalid_input("No valid hunks found in patch"));
+            }
+            vec![FilePatch {
+                path: path.to_string(),
+                hunks,
+                delete_after: false,
+                create_if_missing,
+            }]
         } else {
-            return Err(ToolError::execution_failed(format!(
-                "File {} does not exist. Set create_if_missing=true for new files.",
-                file_path.display()
-            )));
+            let file_patches = parse_unified_diff_files(patch_text, create_if_missing)?;
+            if file_patches.is_empty() {
+                return Err(ToolError::invalid_input(
+                    "No valid file patches found in unified diff",
+                ));
+            }
+            file_patches
         };
 
-        // Parse the patch
-        let hunks = parse_unified_diff(patch_text)?;
-        if hunks.is_empty() {
-            return Err(ToolError::invalid_input("No valid hunks found in patch"));
-        }
-
-        // Apply hunks
-        let mut lines: Vec<String> = original_content.lines().map(String::from).collect();
-        let mut total_fuzz = 0;
-        let mut hunks_applied = 0;
-        let mut cumulative_offset: isize = 0; // Track line drift across hunks
-
-        for hunk in &hunks {
-            match apply_hunk(&mut lines, hunk, fuzz, &mut cumulative_offset) {
-                Ok(fuzz_used) => {
-                    total_fuzz += fuzz_used;
-                    hunks_applied += 1;
-                }
-                Err(e) => {
-                    return Err(ToolError::execution_failed(format!(
-                        "Failed to apply hunk at line {}: {}",
-                        hunk.old_start, e
-                    )));
-                }
-            }
-        }
-
-        // Write the patched file
-        let new_content = lines.join("\n");
-
-        // Create parent directories if needed
-        if let Some(parent) = file_path.parent() {
-            fs::create_dir_all(parent).map_err(|e| {
-                ToolError::execution_failed(format!(
-                    "Failed to create directory {}: {}",
-                    parent.display(),
-                    e
-                ))
-            })?;
-        }
-
-        fs::write(&file_path, &new_content).map_err(|e| {
-            ToolError::execution_failed(format!("Failed to write {}: {}", file_path.display(), e))
-        })?;
-
+        let (pending, stats) = build_pending_writes_from_patches(file_patches, context, fuzz)?;
+        apply_pending_writes(&pending)?;
         let result = PatchResult {
             success: true,
-            hunks_applied,
-            hunks_total: hunks.len(),
-            fuzz_used: total_fuzz,
+            files_applied: stats.files_applied,
+            files_total: stats.files_total,
+            hunks_applied: stats.hunks_applied,
+            hunks_total: stats.hunks_total,
+            fuzz_used: stats.fuzz_used,
             message: format!(
-                "Applied {}/{} hunks to {} (fuzz: {})",
-                hunks_applied,
-                hunks.len(),
-                file_path.display(),
-                total_fuzz
+                "Applied {}/{} hunks across {} file(s) (fuzz: {})",
+                stats.hunks_applied, stats.hunks_total, stats.files_applied, stats.fuzz_used
             ),
         };
 
@@ -224,6 +244,93 @@ fn parse_unified_diff(patch: &str) -> Result<Vec<Hunk>, ToolError> {
     }
 
     Ok(hunks)
+}
+
+fn parse_unified_diff_files(
+    patch: &str,
+    create_if_missing: bool,
+) -> Result<Vec<FilePatch>, ToolError> {
+    let mut files = Vec::new();
+    let mut lines = patch.lines().peekable();
+    let mut current: Option<FilePatch> = None;
+    let mut old_path: Option<String> = None;
+
+    while let Some(line) = lines.next() {
+        if line.starts_with("diff --git ") {
+            if let Some(file) = current.take() {
+                files.push(file);
+            }
+            old_path = None;
+            continue;
+        }
+
+        if line.starts_with("--- ") {
+            old_path = Some(line[4..].trim().to_string());
+            continue;
+        }
+
+        if line.starts_with("+++ ") {
+            let new_path = Some(line[4..].trim().to_string());
+            let (path, delete_after, create_flag) =
+                resolve_diff_paths(old_path.as_deref(), new_path.as_deref(), create_if_missing)?;
+            if let Some(file) = current.take() {
+                files.push(file);
+            }
+            current = Some(FilePatch {
+                path,
+                hunks: Vec::new(),
+                delete_after,
+                create_if_missing: create_flag,
+            });
+            continue;
+        }
+
+        if line.starts_with("@@") {
+            let Some(file) = current.as_mut() else {
+                return Err(ToolError::invalid_input(
+                    "Patch hunk encountered before file header",
+                ));
+            };
+            let hunk = parse_hunk_header(line, &mut lines)?;
+            file.hunks.push(hunk);
+        }
+    }
+
+    if let Some(file) = current {
+        files.push(file);
+    }
+
+    Ok(files)
+}
+
+fn resolve_diff_paths(
+    old_path: Option<&str>,
+    new_path: Option<&str>,
+    create_if_missing: bool,
+) -> Result<(String, bool, bool), ToolError> {
+    let old_norm = old_path.and_then(normalize_diff_path);
+    let new_norm = new_path.and_then(normalize_diff_path);
+    let delete_after = new_norm.is_none();
+    let create_flag = create_if_missing || old_norm.is_none();
+    let path = new_norm
+        .or(old_norm)
+        .ok_or_else(|| ToolError::invalid_input("Patch is missing both old and new file paths"))?;
+    Ok((path, delete_after, create_flag))
+}
+
+fn normalize_diff_path(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    if raw == "/dev/null" || raw == "dev/null" {
+        return None;
+    }
+    let raw = raw
+        .strip_prefix("a/")
+        .or_else(|| raw.strip_prefix("b/"))
+        .unwrap_or(raw);
+    Some(raw.to_string())
 }
 
 /// Parse a hunk header and its content
@@ -269,6 +376,14 @@ where
                 hunk_lines.push(HunkLine::Context(content.to_string()));
                 lines.next();
             }
+            Some(line)
+                if line.starts_with("diff ")
+                    || line.starts_with("--- ")
+                    || line.starts_with("+++ ") =>
+            {
+                // Start of a new file patch - don't consume, let outer loop handle it
+                break;
+            }
             Some(line) if !line.starts_with('\\') => {
                 // Treat as context line without leading space
                 hunk_lines.push(HunkLine::Context((*line).to_string()));
@@ -304,6 +419,205 @@ fn parse_range(range: &str) -> Result<(usize, usize), ToolError> {
         1
     };
     Ok((start, count))
+}
+
+fn build_pending_writes_from_changes(
+    changes_value: &Value,
+    context: &ToolContext,
+) -> Result<Vec<PendingWrite>, ToolError> {
+    let changes = changes_value
+        .as_array()
+        .ok_or_else(|| ToolError::invalid_input("changes must be an array of {path, content}"))?;
+    if changes.is_empty() {
+        return Err(ToolError::invalid_input("changes cannot be empty"));
+    }
+
+    let mut pending = Vec::new();
+    for change in changes {
+        let path = change
+            .get("path")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ToolError::missing_field("changes[].path"))?;
+        let content = change
+            .get("content")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ToolError::missing_field("changes[].content"))?;
+
+        let resolved = context.resolve_path(path)?;
+        let original = if resolved.exists() {
+            Some(read_file_content(&resolved)?)
+        } else {
+            None
+        };
+
+        pending.push(PendingWrite {
+            path: resolved,
+            content: Some(content.to_string()),
+            original,
+        });
+    }
+
+    Ok(pending)
+}
+
+fn build_pending_writes_from_patches(
+    file_patches: Vec<FilePatch>,
+    context: &ToolContext,
+    fuzz: usize,
+) -> Result<(Vec<PendingWrite>, PatchStats), ToolError> {
+    let mut pending = Vec::new();
+    let mut stats = PatchStats::default();
+    stats.files_total = file_patches.len();
+
+    for file_patch in file_patches {
+        if file_patch.hunks.is_empty() {
+            return Err(ToolError::invalid_input(format!(
+                "Patch for {} has no hunks",
+                file_patch.path
+            )));
+        }
+
+        let resolved = context.resolve_path(&file_patch.path)?;
+        let original = if resolved.exists() {
+            Some(read_file_content(&resolved)?)
+        } else {
+            None
+        };
+
+        if original.is_none() && !file_patch.create_if_missing {
+            return Err(ToolError::execution_failed(format!(
+                "File {} does not exist. Set create_if_missing=true for new files.",
+                resolved.display()
+            )));
+        }
+
+        if file_patch.delete_after && original.is_none() {
+            return Err(ToolError::execution_failed(format!(
+                "File {} does not exist to delete.",
+                resolved.display()
+            )));
+        }
+
+        let base_content = original.clone().unwrap_or_default();
+        let mut lines: Vec<String> = if base_content.is_empty() {
+            Vec::new()
+        } else {
+            base_content.lines().map(String::from).collect()
+        };
+
+        let (applied, fuzz_used) = apply_hunks_to_lines(&mut lines, &file_patch.hunks, fuzz)?;
+        stats.hunks_applied += applied;
+        stats.hunks_total += file_patch.hunks.len();
+        stats.fuzz_used += fuzz_used;
+        stats.files_applied += 1;
+
+        if file_patch.delete_after {
+            pending.push(PendingWrite {
+                path: resolved,
+                content: None,
+                original,
+            });
+        } else {
+            let new_content = lines.join("\n");
+            pending.push(PendingWrite {
+                path: resolved,
+                content: Some(new_content),
+                original,
+            });
+        }
+    }
+
+    Ok((pending, stats))
+}
+
+fn apply_pending_writes(pending: &[PendingWrite]) -> Result<(), ToolError> {
+    let mut applied = Vec::new();
+
+    for entry in pending {
+        let result = if let Some(content) = entry.content.as_ref() {
+            if let Some(parent) = entry.path.parent() {
+                fs::create_dir_all(parent).map_err(|e| {
+                    ToolError::execution_failed(format!(
+                        "Failed to create directory {}: {}",
+                        parent.display(),
+                        e
+                    ))
+                })?;
+            }
+            fs::write(&entry.path, content).map_err(|e| {
+                ToolError::execution_failed(format!(
+                    "Failed to write {}: {}",
+                    entry.path.display(),
+                    e
+                ))
+            })
+        } else if entry.path.exists() {
+            fs::remove_file(&entry.path).map_err(|e| {
+                ToolError::execution_failed(format!(
+                    "Failed to delete {}: {}",
+                    entry.path.display(),
+                    e
+                ))
+            })
+        } else {
+            Ok(())
+        };
+
+        if let Err(err) = result {
+            rollback_pending_writes(&applied);
+            return Err(err);
+        }
+
+        applied.push(entry.clone());
+    }
+
+    Ok(())
+}
+
+fn rollback_pending_writes(applied: &[PendingWrite]) {
+    for entry in applied.iter().rev() {
+        match entry.original.as_ref() {
+            Some(content) => {
+                let _ = fs::write(&entry.path, content);
+            }
+            None => {
+                let _ = fs::remove_file(&entry.path);
+            }
+        }
+    }
+}
+
+fn read_file_content(path: &PathBuf) -> Result<String, ToolError> {
+    fs::read_to_string(path).map_err(|e| {
+        ToolError::execution_failed(format!("Failed to read {}: {}", path.display(), e))
+    })
+}
+
+fn apply_hunks_to_lines(
+    lines: &mut Vec<String>,
+    hunks: &[Hunk],
+    fuzz: usize,
+) -> Result<(usize, usize), ToolError> {
+    let mut total_fuzz = 0;
+    let mut hunks_applied = 0;
+    let mut cumulative_offset: isize = 0;
+
+    for hunk in hunks {
+        match apply_hunk(lines, hunk, fuzz, &mut cumulative_offset) {
+            Ok(fuzz_used) => {
+                total_fuzz += fuzz_used;
+                hunks_applied += 1;
+            }
+            Err(e) => {
+                return Err(ToolError::execution_failed(format!(
+                    "Failed to apply hunk at line {}: {}",
+                    hunk.old_start, e
+                )));
+            }
+        }
+    }
+
+    Ok((hunks_applied, total_fuzz))
 }
 
 /// Apply a hunk to the file content with fuzzy matching
@@ -591,6 +905,75 @@ mod tests {
 
         assert!(result.success);
         assert!(tmp.path().join("new_file.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn test_apply_patch_changes_list() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+
+        fs::write(tmp.path().join("one.txt"), "old\n").expect("write");
+
+        let tool = ApplyPatchTool;
+        let result = tool
+            .execute(
+                json!({
+                    "changes": [
+                        { "path": "one.txt", "content": "new\n" },
+                        { "path": "two.txt", "content": "second\n" }
+                    ]
+                }),
+                &ctx,
+            )
+            .await
+            .expect("execute");
+
+        assert!(result.success);
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("one.txt")).unwrap(),
+            "new\n"
+        );
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("two.txt")).unwrap(),
+            "second\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_apply_patch_multi_file_diff() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+
+        fs::write(tmp.path().join("a.txt"), "line1\nline2\n").expect("write");
+        fs::write(tmp.path().join("b.txt"), "alpha\nbeta\n").expect("write");
+
+        let patch = r"diff --git a/a.txt b/a.txt
+--- a/a.txt
++++ b/a.txt
+@@ -1,2 +1,2 @@
+ line1
+-line2
++line2-mod
+diff --git a/b.txt b/b.txt
+--- a/b.txt
++++ b/b.txt
+@@ -1,2 +1,3 @@
+ alpha
++beta2
+ beta
+";
+
+        let tool = ApplyPatchTool;
+        let result = tool
+            .execute(json!({"patch": patch}), &ctx)
+            .await
+            .expect("execute");
+
+        assert!(result.success);
+        let a = fs::read_to_string(tmp.path().join("a.txt")).unwrap();
+        let b = fs::read_to_string(tmp.path().join("b.txt")).unwrap();
+        assert!(a.contains("line2-mod"));
+        assert!(b.contains("beta2"));
     }
 
     #[test]

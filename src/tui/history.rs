@@ -3,13 +3,16 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use ratatui::style::{Modifier, Style, Stylize};
+use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 use unicode_width::UnicodeWidthStr;
 
 use crate::models::{ContentBlock, Message};
 use crate::palette;
+use crate::tools::review::ReviewOutput;
+use crate::tui::diff_render;
+use crate::tui::markdown_render;
 
 // === Constants ===
 
@@ -144,6 +147,8 @@ pub enum ToolCell {
     Exploring(ExploringCell),
     PlanUpdate(PlanUpdateCell),
     PatchSummary(PatchSummaryCell),
+    Review(ReviewCell),
+    DiffPreview(DiffPreviewCell),
     Mcp(McpToolCell),
     ViewImage(ViewImageCell),
     WebSearch(WebSearchCell),
@@ -158,6 +163,8 @@ impl ToolCell {
             ToolCell::Exploring(cell) => cell.lines(width),
             ToolCell::PlanUpdate(cell) => cell.lines(width),
             ToolCell::PatchSummary(cell) => cell.lines(width),
+            ToolCell::Review(cell) => cell.lines(width),
+            ToolCell::DiffPreview(cell) => cell.lines(width),
             ToolCell::Mcp(cell) => cell.lines(width),
             ToolCell::ViewImage(cell) => cell.lines(width),
             ToolCell::WebSearch(cell) => cell.lines(width),
@@ -393,6 +400,154 @@ impl PatchSummaryCell {
         if let Some(error) = self.error.as_ref() {
             lines.extend(render_tool_output(error, width, TOOL_COMMAND_LINE_LIMIT));
         }
+        lines
+    }
+}
+
+/// Cell for structured review output.
+#[derive(Debug, Clone)]
+pub struct ReviewCell {
+    pub target: String,
+    pub status: ToolStatus,
+    pub output: Option<ReviewOutput>,
+    pub error: Option<String>,
+}
+
+impl ReviewCell {
+    pub fn lines(&self, width: u16) -> Vec<Line<'static>> {
+        let mut lines = Vec::new();
+        let (label, color) = match self.status {
+            ToolStatus::Running => ("Reviewing", palette::STATUS_WARNING),
+            ToolStatus::Success => ("Review Complete", palette::STATUS_SUCCESS),
+            ToolStatus::Failed => ("Review Failed", palette::STATUS_ERROR),
+        };
+        lines.push(Line::from(Span::styled(
+            label,
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        )));
+
+        if !self.target.trim().is_empty() {
+            lines.extend(wrap_plain_line(
+                &format!("  Target: {}", self.target.trim()),
+                Style::default().fg(palette::TEXT_MUTED),
+                width,
+            ));
+        }
+
+        if self.status == ToolStatus::Running {
+            return lines;
+        }
+
+        if let Some(error) = self.error.as_ref() {
+            lines.extend(render_tool_output(error, width, TOOL_COMMAND_LINE_LIMIT));
+            return lines;
+        }
+
+        let Some(output) = self.output.as_ref() else {
+            return lines;
+        };
+
+        if !output.summary.trim().is_empty() {
+            lines.extend(wrap_plain_line(
+                &format!("Summary: {}", output.summary.trim()),
+                Style::default().fg(palette::TEXT_PRIMARY),
+                width,
+            ));
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "Issues",
+            Style::default()
+                .fg(palette::DEEPSEEK_BLUE)
+                .add_modifier(Modifier::BOLD),
+        )));
+        if output.issues.is_empty() {
+            lines.extend(wrap_plain_line(
+                "  (none)",
+                Style::default().fg(palette::TEXT_MUTED),
+                width,
+            ));
+        } else {
+            for issue in &output.issues {
+                let severity = issue.severity.trim().to_ascii_lowercase();
+                let color = review_severity_color(&severity);
+                let location = format_review_location(issue.path.as_ref(), issue.line);
+                let label = if location.is_empty() {
+                    format!("  - [{}] {}", severity, issue.title.trim())
+                } else {
+                    format!("  - [{}] {} ({})", severity, issue.title.trim(), location)
+                };
+                lines.extend(wrap_plain_line(&label, Style::default().fg(color), width));
+                if !issue.description.trim().is_empty() {
+                    lines.extend(wrap_plain_line(
+                        &format!("    {}", issue.description.trim()),
+                        Style::default().fg(palette::TEXT_MUTED),
+                        width,
+                    ));
+                }
+            }
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "Suggestions",
+            Style::default()
+                .fg(palette::DEEPSEEK_BLUE)
+                .add_modifier(Modifier::BOLD),
+        )));
+        if output.suggestions.is_empty() {
+            lines.extend(wrap_plain_line(
+                "  (none)",
+                Style::default().fg(palette::TEXT_MUTED),
+                width,
+            ));
+        } else {
+            for suggestion in &output.suggestions {
+                let location = format_review_location(suggestion.path.as_ref(), suggestion.line);
+                let label = if location.is_empty() {
+                    format!("  - {}", suggestion.suggestion.trim())
+                } else {
+                    format!("  - {} ({})", suggestion.suggestion.trim(), location)
+                };
+                lines.extend(wrap_plain_line(
+                    &label,
+                    Style::default().fg(palette::TEXT_PRIMARY),
+                    width,
+                ));
+            }
+        }
+
+        if !output.overall_assessment.trim().is_empty() {
+            lines.push(Line::from(""));
+            lines.extend(wrap_plain_line(
+                &format!("Overall: {}", output.overall_assessment.trim()),
+                Style::default().fg(palette::TEXT_PRIMARY),
+                width,
+            ));
+        }
+
+        lines
+    }
+}
+
+/// Cell for showing a diff preview before applying changes.
+#[derive(Debug, Clone)]
+pub struct DiffPreviewCell {
+    pub title: String,
+    pub diff: String,
+}
+
+impl DiffPreviewCell {
+    pub fn lines(&self, width: u16) -> Vec<Line<'static>> {
+        let mut lines = Vec::new();
+        lines.push(Line::from(Span::styled(
+            self.title.clone(),
+            Style::default()
+                .fg(palette::DEEPSEEK_BLUE)
+                .add_modifier(Modifier::BOLD),
+        )));
+        lines.extend(diff_render::render_diff(&self.diff, width));
         lines
     }
 }
@@ -839,26 +994,24 @@ fn render_message(prefix: &str, content: &str, style: Style, width: u16) -> Vec<
     let prefix_width_u16 = u16::try_from(prefix_width.saturating_add(2)).unwrap_or(u16::MAX);
     let content_width = usize::from(width.saturating_sub(prefix_width_u16).max(1));
     let mut lines = Vec::new();
-    for (i, line) in content.lines().enumerate() {
-        let wrapped = wrap_text(line, content_width);
-        for (j, part) in wrapped.iter().enumerate() {
-            if i == 0 && j == 0 {
-                lines.push(Line::from(vec![
-                    Span::styled(prefix.to_string(), style.add_modifier(Modifier::BOLD)),
-                    Span::raw(" "),
-                    Span::styled(part.to_string(), style),
-                ]));
-            } else {
-                let indent = " ".repeat(prefix_width + 1);
-                lines.push(Line::from(vec![
-                    Span::raw(indent),
-                    Span::styled(part.to_string(), style),
-                ]));
-            }
+    let rendered = markdown_render::render_markdown(content, content_width as u16, style);
+    for (idx, line) in rendered.into_iter().enumerate() {
+        if idx == 0 {
+            let mut spans = vec![
+                Span::styled(prefix.to_string(), style.add_modifier(Modifier::BOLD)),
+                Span::raw(" "),
+            ];
+            spans.extend(line.spans);
+            lines.push(Line::from(spans));
+        } else {
+            let indent = " ".repeat(prefix_width + 1);
+            let mut spans = vec![Span::raw(indent)];
+            spans.extend(line.spans);
+            lines.push(Line::from(spans));
         }
-        if line.is_empty() {
-            lines.push(Line::from(""));
-        }
+    }
+    if lines.is_empty() {
+        lines.push(Line::from(""));
     }
     lines
 }
@@ -920,6 +1073,24 @@ fn render_tool_output(output: &str, width: u16, line_limit: usize) -> Vec<Line<'
         ]));
     }
     lines
+}
+
+fn review_severity_color(severity: &str) -> Color {
+    match severity {
+        "error" => palette::STATUS_ERROR,
+        "warning" => palette::STATUS_WARNING,
+        _ => palette::STATUS_INFO,
+    }
+}
+
+fn format_review_location(path: Option<&String>, line: Option<u32>) -> String {
+    let path = path.map(|p| p.trim().to_string()).filter(|p| !p.is_empty());
+    match (path, line) {
+        (Some(path), Some(line)) => format!("{path}:{line}"),
+        (Some(path), None) => path,
+        (None, Some(line)) => format!("line {line}"),
+        (None, None) => String::new(),
+    }
 }
 
 fn render_exec_output(output: &str, width: u16, line_limit: usize) -> Vec<Line<'static>> {
