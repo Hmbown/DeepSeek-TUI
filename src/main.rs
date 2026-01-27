@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use clap_complete::{Shell, generate};
 use dotenvy::dotenv;
@@ -33,6 +33,7 @@ mod compaction;
 mod config;
 mod core;
 mod duo;
+mod eval;
 mod execpolicy;
 mod features;
 mod hooks;
@@ -56,8 +57,10 @@ mod tools;
 mod tui;
 mod ui;
 mod utils;
+mod working_set;
 
-use crate::config::Config;
+use crate::config::{Config, MAX_SUBAGENTS};
+use crate::eval::{EvalHarness, EvalHarnessConfig, ScenarioStepKind};
 use crate::llm_client::LlmClient;
 use crate::mcp::{McpConfig, McpPool};
 use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt};
@@ -88,7 +91,7 @@ struct Cli {
     #[arg(long)]
     yolo: bool,
 
-    /// Maximum number of concurrent sub-agents (1-5)
+    /// Maximum number of concurrent sub-agents (1-20)
     #[arg(long)]
     max_subagents: Option<usize>,
 
@@ -161,6 +164,8 @@ enum Commands {
     Review(ReviewArgs),
     /// Apply a patch file (or stdin) to the working tree
     Apply(ApplyArgs),
+    /// Run the offline evaluation harness (no network/LLM calls)
+    Eval(EvalArgs),
     /// Manage MCP servers
     Mcp {
         #[command(subcommand)]
@@ -207,6 +212,25 @@ struct ExecArgs {
     /// Enable agentic mode with tool access and auto-approvals
     #[arg(long, default_value_t = false)]
     auto: bool,
+}
+
+#[derive(Args, Debug, Clone)]
+struct EvalArgs {
+    /// Intentionally fail a specific step (list, read, search, edit, patch, shell)
+    #[arg(long, value_name = "STEP")]
+    fail_step: Option<String>,
+    /// Shell command to run during the exec step
+    #[arg(long, default_value = "printf eval-harness")]
+    shell_command: String,
+    /// Token that must appear in shell output for validation
+    #[arg(long, default_value = "eval-harness")]
+    shell_expect_token: String,
+    /// Maximum characters stored per step output summary
+    #[arg(long, default_value_t = 240)]
+    max_output_chars: usize,
+    /// Emit machine-readable JSON output
+    #[arg(long, default_value_t = false)]
+    json: bool,
 }
 
 #[derive(Args, Debug, Default, Clone)]
@@ -375,9 +399,10 @@ async fn main() -> Result<()> {
                     let workspace = cli.workspace.clone().unwrap_or_else(|| {
                         std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
                     });
-                    let max_subagents = cli
-                        .max_subagents
-                        .map_or_else(|| config.max_subagents(), |value| value.clamp(1, 5));
+                    let max_subagents = cli.max_subagents.map_or_else(
+                        || config.max_subagents(),
+                        |value| value.clamp(1, MAX_SUBAGENTS),
+                    );
                     let auto_mode = args.auto || cli.yolo;
                     run_exec_agent(
                         &config,
@@ -398,6 +423,7 @@ async fn main() -> Result<()> {
                 run_review(&config, args).await
             }
             Commands::Apply(args) => run_apply(args),
+            Commands::Eval(args) => run_eval(args),
             Commands::Mcp { command } => {
                 let config = load_config_from_cli(&cli)?;
                 run_mcp_command(&config, command).await
@@ -466,6 +492,74 @@ fn generate_completions(shell: Shell) {
     let mut cmd = Cli::command();
     let name = cmd.get_name().to_string();
     generate(shell, &mut cmd, name, &mut io::stdout());
+}
+
+/// Run the offline evaluation harness (no network/LLM calls).
+fn run_eval(args: EvalArgs) -> Result<()> {
+    let fail_step = match args.fail_step.as_deref() {
+        Some(value) => ScenarioStepKind::parse(value)
+            .map(Some)
+            .ok_or_else(|| anyhow!("invalid --fail-step '{value}'"))?,
+        None => None,
+    };
+
+    let config = EvalHarnessConfig {
+        fail_step,
+        shell_command: args.shell_command,
+        shell_expect_token: args.shell_expect_token,
+        max_output_chars: args.max_output_chars,
+        ..EvalHarnessConfig::default()
+    };
+
+    let harness = EvalHarness::new(config);
+    let run = harness.run().context("evaluation harness failed")?;
+    let report = run.to_report();
+
+    if args.json {
+        let json = serde_json::to_string_pretty(&report)?;
+        println!("{json}");
+    } else {
+        println!("Offline Eval Harness");
+        println!("scenario: {}", report.scenario_name);
+        println!("workspace: {}", report.workspace_root.display());
+        println!("success: {}", report.metrics.success);
+        println!("steps: {}", report.metrics.steps);
+        println!("tool_errors: {}", report.metrics.tool_errors);
+        println!("duration_ms: {}", report.metrics.duration.as_millis());
+
+        if !report.metrics.per_tool.is_empty() {
+            println!("per_tool:");
+            for (kind, stats) in &report.metrics.per_tool {
+                println!(
+                    "  {} invocations={} errors={} duration_ms={}",
+                    kind.tool_name(),
+                    stats.invocations,
+                    stats.errors,
+                    stats.total_duration.as_millis()
+                );
+            }
+        }
+
+        let failed_steps: Vec<_> = report.steps.iter().filter(|s| !s.success).collect();
+        if !failed_steps.is_empty() {
+            println!("failed_steps:");
+            for step in failed_steps {
+                let error = step.error.as_deref().unwrap_or("unknown error");
+                println!(
+                    "  {} tool={} error={}",
+                    step.kind.tool_name(),
+                    step.tool_name,
+                    error
+                );
+            }
+        }
+    }
+
+    if report.metrics.success {
+        Ok(())
+    } else {
+        bail!("offline evaluation harness reported failure")
+    }
 }
 
 /// Run system diagnostics
@@ -1335,9 +1429,10 @@ async fn run_interactive(
         .default_text_model
         .clone()
         .unwrap_or_else(|| "deepseek-reasoner".to_string());
-    let max_subagents = cli
-        .max_subagents
-        .map_or_else(|| config.max_subagents(), |value| value.clamp(1, 5));
+    let max_subagents = cli.max_subagents.map_or_else(
+        || config.max_subagents(),
+        |value| value.clamp(1, MAX_SUBAGENTS),
+    );
     let use_alt_screen = should_use_alt_screen(cli, config);
 
     tui::run_tui(
@@ -1416,8 +1511,8 @@ async fn run_exec_agent(
     use crate::core::ops::Op;
     use crate::duo::DuoSession;
     use crate::rlm::RlmSession;
-    use crate::tools::plan::PlanState;
-    use crate::tools::todo::TodoList;
+    use crate::tools::plan::new_shared_plan_state;
+    use crate::tools::todo::new_shared_todo_list;
     use crate::tui::app::AppMode;
 
     let engine_config = EngineConfig {
@@ -1433,8 +1528,8 @@ async fn run_exec_agent(
         rlm_session: Arc::new(Mutex::new(RlmSession::default())),
         duo_session: Arc::new(Mutex::new(DuoSession::new())),
         compaction: CompactionConfig::default(),
-        todos: Arc::new(Mutex::new(TodoList::new())),
-        plan_state: Arc::new(Mutex::new(PlanState::default())),
+        todos: new_shared_todo_list(),
+        plan_state: new_shared_plan_state(),
     };
 
     let engine_handle = spawn_engine(engine_config, config);

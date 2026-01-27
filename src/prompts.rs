@@ -32,6 +32,7 @@ pub fn system_prompt_for_mode(mode: AppMode) -> SystemPrompt {
 pub fn system_prompt_for_mode_with_context(
     mode: AppMode,
     workspace: &Path,
+    working_set_summary: Option<&str>,
     rlm_summary: Option<&str>,
     duo_summary: Option<&str>,
 ) -> SystemPrompt {
@@ -52,6 +53,12 @@ pub fn system_prompt_for_mode_with_context(
     } else {
         base_prompt.trim().to_string()
     };
+
+    if let Some(summary) = working_set_summary
+        && !summary.trim().is_empty()
+    {
+        full_prompt = format!("{full_prompt}\n\n{summary}");
+    }
 
     if mode == AppMode::Rlm {
         let summary = rlm_summary.unwrap_or("No RLM contexts loaded.");

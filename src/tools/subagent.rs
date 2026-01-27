@@ -6,8 +6,9 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::sync::Mutex;
 
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
@@ -17,6 +18,7 @@ use tokio::{sync::mpsc, task::JoinHandle};
 use uuid::Uuid;
 
 use crate::client::DeepSeekClient;
+use crate::config::MAX_SUBAGENTS;
 use crate::core::events::Event;
 use crate::llm_client::LlmClient;
 use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt, Tool};
@@ -87,15 +89,47 @@ impl SubAgentType {
                 "read_file",
                 "write_file",
                 "edit_file",
+                "apply_patch",
+                "grep_files",
+                "file_search",
+                "web_search",
                 "exec_shell",
                 "note",
                 "todo_write",
+                "todo_add",
+                "todo_update",
+                "todo_list",
+                "update_plan",
             ],
-            Self::Explore => vec!["list_dir", "read_file", "grep_files", "exec_shell"],
-            Self::Plan => vec!["list_dir", "read_file", "note", "update_plan", "todo_write"],
-            Self::Review => vec!["list_dir", "read_file", "grep_files", "note"],
+            Self::Explore => vec![
+                "list_dir",
+                "read_file",
+                "grep_files",
+                "file_search",
+                "web_search",
+                "exec_shell",
+            ],
+            Self::Plan => vec![
+                "list_dir",
+                "read_file",
+                "grep_files",
+                "file_search",
+                "note",
+                "update_plan",
+                "todo_write",
+                "todo_add",
+                "todo_update",
+                "todo_list",
+            ],
+            Self::Review => vec!["list_dir", "read_file", "grep_files", "file_search", "note"],
             Self::Custom => vec![], // Must be provided by caller.
         }
+    }
+}
+
+impl Default for SubAgentType {
+    fn default() -> Self {
+        Self::General
     }
 }
 
@@ -215,11 +249,23 @@ impl SubAgentManager {
     }
 
     /// Count running agents.
-    fn running_count(&self) -> usize {
+    pub fn running_count(&self) -> usize {
         self.agents
             .values()
             .filter(|agent| agent.status == SubAgentStatus::Running)
             .count()
+    }
+
+    /// Return the maximum number of allowed agents.
+    #[must_use]
+    pub fn max_agents(&self) -> usize {
+        self.max_agents
+    }
+
+    /// Return remaining capacity for new agents.
+    #[must_use]
+    pub fn available_slots(&self) -> usize {
+        self.max_agents.saturating_sub(self.running_count())
     }
 
     /// Spawn a new background sub-agent.
@@ -338,7 +384,7 @@ pub type SharedSubAgentManager = Arc<Mutex<SubAgentManager>>;
 /// Create a shared sub-agent manager with a configurable limit.
 #[must_use]
 pub fn new_shared_subagent_manager(workspace: PathBuf, max_agents: usize) -> SharedSubAgentManager {
-    let max_agents = max_agents.clamp(1, 5);
+    let max_agents = max_agents.clamp(1, MAX_SUBAGENTS);
     Arc::new(Mutex::new(SubAgentManager::new(workspace, max_agents)))
 }
 
@@ -423,10 +469,7 @@ impl ToolSpec for AgentSpawnTool {
                     .collect::<Vec<_>>()
             });
 
-        let mut manager = self
-            .manager
-            .lock()
-            .map_err(|_| ToolError::execution_failed("Failed to lock sub-agent manager"))?;
+        let mut manager = self.manager.lock().await;
 
         let result = manager
             .spawn_background(
@@ -503,10 +546,7 @@ impl ToolSpec for AgentResultTool {
         let result = if block {
             wait_for_result(&self.manager, agent_id, Duration::from_millis(timeout_ms)).await?
         } else {
-            let manager = self
-                .manager
-                .lock()
-                .map_err(|_| ToolError::execution_failed("Failed to lock sub-agent manager"))?;
+            let manager = self.manager.lock().await;
             manager
                 .get_result(agent_id)
                 .map_err(|e| ToolError::execution_failed(e.to_string()))?
@@ -570,10 +610,7 @@ impl ToolSpec for AgentCancelTool {
 
     async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
         let agent_id = required_str(&input, "agent_id")?;
-        let mut manager = self
-            .manager
-            .lock()
-            .map_err(|_| ToolError::execution_failed("Failed to lock sub-agent manager"))?;
+        let mut manager = self.manager.lock().await;
         let result = manager
             .cancel(agent_id)
             .map_err(|e| ToolError::execution_failed(format!("Failed to cancel sub-agent: {e}")))?;
@@ -621,10 +658,7 @@ impl ToolSpec for AgentListTool {
         _input: Value,
         _context: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
-        let manager = self
-            .manager
-            .lock()
-            .map_err(|_| ToolError::execution_failed("Failed to lock sub-agent manager"))?;
+        let manager = self.manager.lock().await;
         let results = manager.list();
         ToolResult::json(&results).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
@@ -656,11 +690,10 @@ async fn run_subagent_task(task: SubAgentTask) {
     )
     .await;
 
-    if let Ok(mut manager) = task.manager_handle.lock() {
-        match &result {
-            Ok(res) => manager.update_from_result(&task.agent_id, res.clone()),
-            Err(err) => manager.update_failed(&task.agent_id, err.to_string()),
-        }
+    let mut manager = task.manager_handle.lock().await;
+    match &result {
+        Ok(res) => manager.update_from_result(&task.agent_id, res.clone()),
+        Err(err) => manager.update_failed(&task.agent_id, err.to_string()),
     }
 
     if let Some(event_tx) = task.runtime.event_tx {
@@ -794,9 +827,7 @@ async fn wait_for_result(
 
     loop {
         let snapshot = {
-            let manager = manager
-                .lock()
-                .map_err(|_| ToolError::execution_failed("Failed to lock sub-agent manager"))?;
+            let manager = manager.lock().await;
             manager
                 .get_result(agent_id)
                 .map_err(|e| ToolError::execution_failed(e.to_string()))?
@@ -829,6 +860,8 @@ impl SubAgentToolRegistry {
             .with_file_tools()
             .with_search_tools()
             .with_note_tool()
+            .with_patch_tools()
+            .with_web_tools()
             .with_todo_tool(todo_list)
             .with_plan_tool(plan_state);
 

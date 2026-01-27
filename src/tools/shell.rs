@@ -29,6 +29,9 @@ use crate::sandbox::{
 
 /// Maximum output size before truncation (30KB like Claude Code)
 const MAX_OUTPUT_SIZE: usize = 30_000;
+/// Limits for summary strings in tool metadata.
+const SUMMARY_MAX_LINES: usize = 3;
+const SUMMARY_MAX_CHARS: usize = 240;
 
 /// Status of a shell process
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -49,6 +52,24 @@ pub struct ShellResult {
     pub stdout: String,
     pub stderr: String,
     pub duration_ms: u64,
+    /// Original stdout length in bytes.
+    #[serde(default)]
+    pub stdout_len: usize,
+    /// Original stderr length in bytes.
+    #[serde(default)]
+    pub stderr_len: usize,
+    /// Bytes omitted from stdout due to truncation.
+    #[serde(default)]
+    pub stdout_omitted: usize,
+    /// Bytes omitted from stderr due to truncation.
+    #[serde(default)]
+    pub stderr_omitted: usize,
+    /// Whether stdout was truncated.
+    #[serde(default)]
+    pub stdout_truncated: bool,
+    /// Whether stderr was truncated.
+    #[serde(default)]
+    pub stderr_truncated: bool,
     /// Whether the command was executed in a sandbox.
     #[serde(default)]
     pub sandboxed: bool,
@@ -134,13 +155,21 @@ impl BackgroundShell {
     /// Get a snapshot of the current state
     pub fn snapshot(&self) -> ShellResult {
         let sandboxed = !matches!(self.sandbox_type, SandboxType::None);
+        let (stdout, stdout_meta) = truncate_with_meta(&self.stdout);
+        let (stderr, stderr_meta) = truncate_with_meta(&self.stderr);
         ShellResult {
             task_id: Some(self.id.clone()),
             status: self.status.clone(),
             exit_code: self.exit_code,
-            stdout: truncate_output(&self.stdout),
-            stderr: truncate_output(&self.stderr),
+            stdout,
+            stderr,
             duration_ms: u64::try_from(self.started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+            stdout_len: stdout_meta.original_len,
+            stderr_len: stderr_meta.original_len,
+            stdout_omitted: stdout_meta.omitted,
+            stderr_omitted: stderr_meta.omitted,
+            stdout_truncated: stdout_meta.truncated,
+            stderr_truncated: stderr_meta.truncated,
             sandboxed,
             sandbox_type: if sandboxed {
                 Some(self.sandbox_type.to_string())
@@ -319,11 +348,14 @@ impl ShellManager {
         if let Some(status) = child.wait_timeout(timeout)? {
             let stdout = stdout_thread.join().unwrap_or_default();
             let stderr = stderr_thread.join().unwrap_or_default();
-            let stderr_str = String::from_utf8_lossy(&stderr);
+            let stdout_str = String::from_utf8_lossy(&stdout).to_string();
+            let stderr_str = String::from_utf8_lossy(&stderr).to_string();
             let exit_code = status.code().unwrap_or(-1);
 
             // Check if sandbox denied the operation
             let sandbox_denied = SandboxManager::was_denied(sandbox_type, exit_code, &stderr_str);
+            let (stdout, stdout_meta) = truncate_with_meta(&stdout_str);
+            let (stderr, stderr_meta) = truncate_with_meta(&stderr_str);
 
             Ok(ShellResult {
                 task_id: None,
@@ -333,9 +365,15 @@ impl ShellManager {
                     ShellStatus::Failed
                 },
                 exit_code: status.code(),
-                stdout: truncate_output(&String::from_utf8_lossy(&stdout)),
-                stderr: truncate_output(&stderr_str),
+                stdout,
+                stderr,
                 duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                stdout_len: stdout_meta.original_len,
+                stderr_len: stderr_meta.original_len,
+                stdout_omitted: stdout_meta.omitted,
+                stderr_omitted: stderr_meta.omitted,
+                stdout_truncated: stdout_meta.truncated,
+                stderr_truncated: stderr_meta.truncated,
                 sandboxed,
                 sandbox_type: if sandboxed {
                     Some(sandbox_type.to_string())
@@ -350,14 +388,24 @@ impl ShellManager {
             let status = child.wait().ok();
             let stdout = stdout_thread.join().unwrap_or_default();
             let stderr = stderr_thread.join().unwrap_or_default();
+            let stdout_str = String::from_utf8_lossy(&stdout).to_string();
+            let stderr_str = String::from_utf8_lossy(&stderr).to_string();
+            let (stdout, stdout_meta) = truncate_with_meta(&stdout_str);
+            let (stderr, stderr_meta) = truncate_with_meta(&stderr_str);
 
             Ok(ShellResult {
                 task_id: None,
                 status: ShellStatus::TimedOut,
                 exit_code: status.and_then(|s| s.code()),
-                stdout: truncate_output(&String::from_utf8_lossy(&stdout)),
-                stderr: truncate_output(&String::from_utf8_lossy(&stderr)),
+                stdout,
+                stderr,
                 duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                stdout_len: stdout_meta.original_len,
+                stderr_len: stderr_meta.original_len,
+                stdout_omitted: stdout_meta.omitted,
+                stderr_omitted: stderr_meta.omitted,
+                stdout_truncated: stdout_meta.truncated,
+                stderr_truncated: stderr_meta.truncated,
                 sandboxed,
                 sandbox_type: if sandboxed {
                     Some(sandbox_type.to_string())
@@ -411,6 +459,12 @@ impl ShellManager {
                 stdout: String::new(),
                 stderr: String::new(),
                 duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                stdout_len: 0,
+                stderr_len: 0,
+                stdout_omitted: 0,
+                stderr_omitted: 0,
+                stdout_truncated: false,
+                stderr_truncated: false,
                 sandboxed,
                 sandbox_type: if sandboxed {
                     Some(sandbox_type.to_string())
@@ -430,6 +484,12 @@ impl ShellManager {
                 stdout: String::new(),
                 stderr: String::new(),
                 duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                stdout_len: 0,
+                stderr_len: 0,
+                stdout_omitted: 0,
+                stderr_omitted: 0,
+                stdout_truncated: false,
+                stderr_truncated: false,
                 sandboxed,
                 sandbox_type: if sandboxed {
                     Some(sandbox_type.to_string())
@@ -518,6 +578,12 @@ impl ShellManager {
             stdout: String::new(),
             stderr: String::new(),
             duration_ms: 0,
+            stdout_len: 0,
+            stderr_len: 0,
+            stdout_omitted: 0,
+            stderr_omitted: 0,
+            stdout_truncated: false,
+            stderr_truncated: false,
             sandboxed,
             sandbox_type: if sandboxed {
                 Some(sandbox_type.to_string())
@@ -599,19 +665,100 @@ impl ShellManager {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct TruncationMeta {
+    original_len: usize,
+    omitted: usize,
+    truncated: bool,
+}
+
+fn truncate_with_meta(output: &str) -> (String, TruncationMeta) {
+    let original_len = output.len();
+    if original_len <= MAX_OUTPUT_SIZE {
+        return (
+            output.to_string(),
+            TruncationMeta {
+                original_len,
+                omitted: 0,
+                truncated: false,
+            },
+        );
+    }
+
+    let cut_index = char_boundary_at_or_before(output, MAX_OUTPUT_SIZE);
+    let truncated = &output[..cut_index];
+    let omitted = original_len.saturating_sub(cut_index);
+    let note =
+        format!("...\n\n[Output truncated at {MAX_OUTPUT_SIZE} bytes. {omitted} bytes omitted.]");
+
+    (
+        format!("{truncated}{note}"),
+        TruncationMeta {
+            original_len,
+            omitted,
+            truncated: true,
+        },
+    )
+}
+
+fn char_boundary_at_or_before(text: &str, max_bytes: usize) -> usize {
+    if max_bytes >= text.len() {
+        return text.len();
+    }
+
+    let mut last_end = 0usize;
+    for (idx, ch) in text.char_indices() {
+        let end = idx.saturating_add(ch.len_utf8());
+        if end > max_bytes {
+            break;
+        }
+        last_end = end;
+    }
+
+    last_end.min(text.len())
+}
+
+fn strip_truncation_note(text: &str) -> &str {
+    text.split_once("\n\n[Output truncated at")
+        .map_or(text, |(prefix, _)| prefix)
+}
+
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+
+    let mut end = text.len();
+    for (count, (idx, _)) in text.char_indices().enumerate() {
+        if count == max_chars {
+            end = idx;
+            break;
+        }
+    }
+
+    format!("{}...", &text[..end])
+}
+
+fn summarize_output(text: &str) -> String {
+    let stripped = strip_truncation_note(text);
+    let summary = stripped
+        .lines()
+        .take(SUMMARY_MAX_LINES)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string();
+
+    if summary.is_empty() {
+        String::new()
+    } else {
+        truncate_chars(&summary, SUMMARY_MAX_CHARS)
+    }
+}
+
 /// Truncate output to `MAX_OUTPUT_SIZE`
 fn truncate_output(output: &str) -> String {
-    if output.len() <= MAX_OUTPUT_SIZE {
-        output.to_string()
-    } else {
-        let truncated = &output[..MAX_OUTPUT_SIZE];
-        format!(
-            "{}...\n\n[Output truncated at {} characters. {} characters omitted.]",
-            truncated,
-            MAX_OUTPUT_SIZE,
-            output.len() - MAX_OUTPUT_SIZE
-        )
-    }
+    truncate_with_meta(output).0
 }
 
 /// Thread-safe wrapper for `ShellManager`
@@ -777,6 +924,13 @@ impl ToolSpec for ExecShellTool {
         match result {
             Ok(result) => {
                 let task_id_str = result.task_id.clone().unwrap_or_default();
+                let stdout_summary = summarize_output(&result.stdout);
+                let stderr_summary = summarize_output(&result.stderr);
+                let summary = if !stderr_summary.is_empty() {
+                    stderr_summary.clone()
+                } else {
+                    stdout_summary.clone()
+                };
                 let output = if interactive {
                     format!(
                         "Interactive command completed (exit code: {:?})",
@@ -808,7 +962,18 @@ impl ToolSpec for ExecShellTool {
                         "status": format!("{:?}", result.status),
                         "duration_ms": result.duration_ms,
                         "sandboxed": result.sandboxed,
+                        "sandbox_type": result.sandbox_type,
+                        "sandbox_denied": result.sandbox_denied,
                         "task_id": result.task_id,
+                        "stdout_len": result.stdout_len,
+                        "stderr_len": result.stderr_len,
+                        "stdout_truncated": result.stdout_truncated,
+                        "stderr_truncated": result.stderr_truncated,
+                        "stdout_omitted": result.stdout_omitted,
+                        "stderr_omitted": result.stderr_omitted,
+                        "summary": summary,
+                        "stdout_summary": stdout_summary,
+                        "stderr_summary": stderr_summary,
                         "safety_level": format!("{:?}", safety.level),
                         "interactive": interactive,
                         "execpolicy": execpolicy_decision.as_ref().map(|decision| match decision {
@@ -900,6 +1065,8 @@ impl ToolSpec for NoteTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::spec::ToolContext;
+    use serde_json::{Value, json};
     use tempfile::tempdir;
 
     fn echo_command(message: &str) -> String {
@@ -1012,5 +1179,47 @@ mod tests {
 
         assert!(truncated.len() < long_output.len());
         assert!(truncated.contains("truncated"));
+    }
+
+    #[test]
+    fn test_truncate_with_meta_reports_omission_counts() {
+        let long_output = format!("line1\nline2\n{}", "x".repeat(60_000));
+        let (truncated, meta) = truncate_with_meta(&long_output);
+
+        assert!(meta.truncated);
+        assert!(meta.original_len >= long_output.len());
+        assert!(meta.omitted > 0);
+        assert!(truncated.contains("bytes omitted"));
+    }
+
+    #[test]
+    fn test_summarize_output_strips_truncation_note() {
+        let long_output = "x".repeat(60_000);
+        let truncated = truncate_output(&long_output);
+        let summary = summarize_output(&truncated);
+        assert!(!summary.contains("Output truncated at"));
+    }
+
+    #[tokio::test]
+    async fn test_exec_shell_metadata_includes_summaries() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path());
+        let tool = ExecShellTool;
+
+        let result = tool
+            .execute(json!({"command": echo_command("hello")}), &ctx)
+            .await
+            .expect("execute");
+        assert!(result.success);
+
+        let meta = result.metadata.expect("metadata");
+        let summary = meta
+            .get("summary")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        assert!(summary.contains("hello"));
+        assert!(meta.get("stdout_len").is_some());
+        assert!(meta.get("stdout_truncated").is_some());
     }
 }

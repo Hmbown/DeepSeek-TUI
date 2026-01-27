@@ -1107,6 +1107,7 @@ async fn dispatch_user_message(
     app.system_prompt = Some(prompts::system_prompt_for_mode_with_context(
         app.mode,
         &app.workspace,
+        None,
         rlm_summary.as_deref(),
         duo_summary.as_deref(),
     ));

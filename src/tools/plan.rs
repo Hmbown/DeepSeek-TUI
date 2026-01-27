@@ -1,7 +1,8 @@
 //! Plan tool implementation with step tracking and validation
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::sync::Mutex;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -388,10 +389,7 @@ impl ToolSpec for UpdatePlanTool {
             plan: plan_args,
         };
 
-        let mut state = self
-            .plan_state
-            .lock()
-            .map_err(|e| ToolError::execution_failed(format!("Failed to lock plan state: {e}")))?;
+        let mut state = self.plan_state.lock().await;
 
         state.update(args);
 

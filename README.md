@@ -16,7 +16,7 @@ Unofficial terminal UI (TUI) + CLI for the [DeepSeek platform](https://platform.
 - **File operations**: List directories, read/write/edit files, apply patches, search files with regex
 - **Shell execution**: Run commands with timeout support, background execution with task management
 - **Task management**: Todo lists, implementation plans, persistent notes
-- **Sub-agent system**: Spawn, manage, and cancel background agents for parallel work
+- **Sub-agent system**: Spawn, coordinate, and cancel background agents (including swarms)
 - **Web search**: Integrated web search with DuckDuckGo
 - **Multi‑model support** – DeepSeek‑Reasoner, DeepSeek‑Chat, and other DeepSeek models
 - **Context‑aware** – loads project‑specific instructions from `AGENTS.md`
@@ -77,7 +77,7 @@ On first run, the TUI can prompt for your API key and save it to `~/.deepseek/co
 api_key = "YOUR_DEEPSEEK_API_KEY"   # must be non‑empty
 default_text_model = "deepseek-reasoner" # optional
 allow_shell = false                 # optional
-max_subagents = 3                   # optional (1‑5)
+max_subagents = 3                   # optional (1‑20)
 ```
 
 Useful environment variables:
@@ -131,6 +131,7 @@ DeepSeek CLI exposes a comprehensive set of tools to the model across 5 categori
 
 #### Sub‑Agents
 - **`agent_spawn`** – Create background sub‑agents for focused tasks
+- **`agent_swarm`** – Launch a dependency‑aware swarm of sub‑agents
 - **`agent_result`** – Retrieve results from sub‑agents
 - **`agent_list`** – List all active and completed agents
 - **`agent_cancel`** – Cancel running sub‑agents

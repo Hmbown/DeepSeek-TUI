@@ -37,6 +37,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Run tests
         run: cargo test --all-features
+      - name: Run Offline Eval Harness
+        run: cargo run --all-features -- eval
 
   build:
     name: Build

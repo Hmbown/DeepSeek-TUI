@@ -293,6 +293,28 @@ impl ToolRegistryBuilder {
             .with_tool(Arc::new(FileSearchTool))
     }
 
+    /// Include git inspection tools (`git_status`, `git_diff`).
+    #[must_use]
+    pub fn with_git_tools(self) -> Self {
+        use super::git::{GitDiffTool, GitStatusTool};
+        self.with_tool(Arc::new(GitStatusTool))
+            .with_tool(Arc::new(GitDiffTool))
+    }
+
+    /// Include workspace diagnostics tool.
+    #[must_use]
+    pub fn with_diagnostics_tool(self) -> Self {
+        use super::diagnostics::DiagnosticsTool;
+        self.with_tool(Arc::new(DiagnosticsTool))
+    }
+
+    /// Include cargo test runner tool.
+    #[must_use]
+    pub fn with_test_runner_tool(self) -> Self {
+        use super::test_runner::RunTestsTool;
+        self.with_tool(Arc::new(RunTestsTool))
+    }
+
     /// Include web search tools.
     #[must_use]
     pub fn with_web_tools(self) -> Self {
@@ -329,7 +351,10 @@ impl ToolRegistryBuilder {
             .with_note_tool()
             .with_search_tools()
             .with_web_tools()
-            .with_patch_tools();
+            .with_patch_tools()
+            .with_git_tools()
+            .with_diagnostics_tool()
+            .with_test_runner_tool();
 
         if allow_shell {
             builder.with_shell_tools()
@@ -403,11 +428,16 @@ impl ToolRegistryBuilder {
         runtime: super::subagent::SubAgentRuntime,
     ) -> Self {
         use super::subagent::{AgentCancelTool, AgentListTool, AgentResultTool, AgentSpawnTool};
+        use super::swarm::AgentSwarmTool;
 
-        self.with_tool(Arc::new(AgentSpawnTool::new(manager.clone(), runtime)))
-            .with_tool(Arc::new(AgentResultTool::new(manager.clone())))
-            .with_tool(Arc::new(AgentCancelTool::new(manager.clone())))
-            .with_tool(Arc::new(AgentListTool::new(manager)))
+        self.with_tool(Arc::new(AgentSpawnTool::new(
+            manager.clone(),
+            runtime.clone(),
+        )))
+        .with_tool(Arc::new(AgentSwarmTool::new(manager.clone(), runtime)))
+        .with_tool(Arc::new(AgentResultTool::new(manager.clone())))
+        .with_tool(Arc::new(AgentCancelTool::new(manager.clone())))
+        .with_tool(Arc::new(AgentListTool::new(manager)))
     }
 
     /// Build the registry with the given context.

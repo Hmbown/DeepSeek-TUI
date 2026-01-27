@@ -40,9 +40,8 @@ pub fn clear(app: &mut App) -> CommandResult {
     app.transcript_selection.clear();
     app.total_conversation_tokens = 0;
     app.clear_todos();
-    if let Ok(mut plan) = app.plan_state.lock() {
-        *plan = PlanState::default();
-    }
+    let mut plan = app.plan_state.blocking_lock();
+    *plan = PlanState::default();
     app.tool_log.clear();
     CommandResult::message("Conversation cleared")
 }

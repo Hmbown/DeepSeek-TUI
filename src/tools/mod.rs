@@ -5,9 +5,11 @@
 // === Modules ===
 
 pub mod apply_patch;
+pub mod diagnostics;
 pub mod duo;
 pub mod file;
 pub mod file_search;
+pub mod git;
 pub mod plan;
 pub mod registry;
 pub mod review;
@@ -16,6 +18,8 @@ pub mod search;
 pub mod shell;
 pub mod spec;
 pub mod subagent;
+pub mod swarm;
+pub mod test_runner;
 pub mod todo;
 pub mod web_search;
 
@@ -43,11 +47,20 @@ pub use review::{ReviewOutput, ReviewTool};
 // Re-export file tools
 pub use file::{EditFileTool, ListDirTool, ReadFileTool, WriteFileTool};
 
+// Re-export diagnostics tool
+pub use diagnostics::DiagnosticsTool;
+
+// Re-export git tools
+pub use git::{GitDiffTool, GitStatusTool};
+
 // Re-export shell types
 pub use shell::ExecShellTool;
 
 // Re-export subagent types
 pub use subagent::SubAgent;
+
+// Re-export test runner tool
+pub use test_runner::RunTestsTool;
 
 // Re-export todo types
 pub use todo::TodoWriteTool;
