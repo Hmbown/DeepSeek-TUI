@@ -61,8 +61,9 @@ mod working_set;
 
 use crate::config::{Config, MAX_SUBAGENTS};
 use crate::eval::{EvalHarness, EvalHarnessConfig, ScenarioStepKind};
+use crate::features::Feature;
 use crate::llm_client::LlmClient;
-use crate::mcp::{McpConfig, McpPool};
+use crate::mcp::{McpConfig, McpPool, McpServerConfig};
 use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt};
 use crate::session_manager::{SessionManager, create_saved_session};
 use crate::tui::history::{summarize_tool_args, summarize_tool_output};
@@ -133,6 +134,8 @@ struct Cli {
 enum Commands {
     /// Run system diagnostics and check configuration
     Doctor,
+    /// Bootstrap MCP config and/or skills directories
+    Setup(SetupArgs),
     /// Generate shell completions
     Completions {
         /// Shell to generate completions for
@@ -214,6 +217,25 @@ struct ExecArgs {
     auto: bool,
 }
 
+#[derive(Args, Debug, Clone, Default)]
+struct SetupArgs {
+    /// Initialize MCP configuration at the configured path
+    #[arg(long, default_value_t = false)]
+    mcp: bool,
+    /// Initialize skills directory and an example skill
+    #[arg(long, default_value_t = false)]
+    skills: bool,
+    /// Initialize both MCP config and skills (default when no flags provided)
+    #[arg(long, default_value_t = false)]
+    all: bool,
+    /// Create a local workspace skills directory (./skills)
+    #[arg(long, default_value_t = false)]
+    local: bool,
+    /// Overwrite existing template files
+    #[arg(long, default_value_t = false)]
+    force: bool,
+}
+
 #[derive(Args, Debug, Clone)]
 struct EvalArgs {
     /// Intentionally fail a specific step (list, read, search, edit, patch, shell)
@@ -293,6 +315,12 @@ struct ServeArgs {
 enum McpCommand {
     /// List configured MCP servers
     List,
+    /// Create a template MCP config at the configured path
+    Init {
+        /// Overwrite an existing MCP config file
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
     /// Connect to MCP servers and report status
     Connect {
         /// Optional server name to connect to
@@ -378,8 +406,15 @@ async fn main() -> Result<()> {
     if let Some(command) = cli.command.clone() {
         return match command {
             Commands::Doctor => {
-                run_doctor().await;
+                let config = load_config_from_cli(&cli)?;
+                let workspace = resolve_workspace(&cli);
+                run_doctor(&config, &workspace, cli.config.as_deref()).await;
                 Ok(())
+            }
+            Commands::Setup(args) => {
+                let config = load_config_from_cli(&cli)?;
+                let workspace = resolve_workspace(&cli);
+                run_setup(&config, &workspace, args)
             }
             Commands::Completions { shell } => {
                 generate_completions(shell);
@@ -562,8 +597,175 @@ fn run_eval(args: EvalArgs) -> Result<()> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WriteStatus {
+    Created,
+    Overwritten,
+    SkippedExists,
+}
+
+fn ensure_parent_dir(path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!("Failed to create directory for {}", parent.display())
+        })?;
+    }
+    Ok(())
+}
+
+fn write_template_file(path: &Path, contents: &str, force: bool) -> Result<WriteStatus> {
+    ensure_parent_dir(path)?;
+
+    if path.exists() && !force {
+        return Ok(WriteStatus::SkippedExists);
+    }
+
+    let status = if path.exists() {
+        WriteStatus::Overwritten
+    } else {
+        WriteStatus::Created
+    };
+
+    std::fs::write(path, contents)
+        .with_context(|| format!("Failed to write template at {}", path.display()))?;
+
+    Ok(status)
+}
+
+fn mcp_template_json() -> Result<String> {
+    let mut cfg = McpConfig::default();
+    cfg.servers.insert(
+        "example".to_string(),
+        McpServerConfig {
+            command: "node".to_string(),
+            args: vec!["./path/to/your-mcp-server.js".to_string()],
+            env: std::collections::HashMap::new(),
+            connect_timeout: None,
+            execute_timeout: None,
+            read_timeout: None,
+            disabled: true,
+        },
+    );
+    serde_json::to_string_pretty(&cfg)
+        .map_err(|e| anyhow!("Failed to render MCP template JSON: {e}"))
+}
+
+fn init_mcp_config(path: &Path, force: bool) -> Result<WriteStatus> {
+    let template = mcp_template_json()?;
+    write_template_file(path, &template, force)
+}
+
+fn skills_template(name: &str) -> String {
+    format!(
+        "\
+---\n\
+name: {name}\n\
+description: Quick repo diagnostics and setup guidance\n\
+allowed-tools: diagnostics, list_dir, read_file, grep_files, git_status, git_diff\n\
+---\n\n\
+When this skill is active:\n\
+1. Run the diagnostics tool to report workspace and sandbox status.\n\
+2. Skim key project files (README.md, Cargo.toml, AGENTS.md) before editing.\n\
+3. Prefer small, validated changes and summarize what you verified.\n\
+"
+    )
+}
+
+fn init_skills_dir(skills_dir: &Path, force: bool) -> Result<(PathBuf, WriteStatus)> {
+    std::fs::create_dir_all(skills_dir)
+        .with_context(|| format!("Failed to create skills dir {}", skills_dir.display()))?;
+
+    let skill_name = "getting-started";
+    let skill_path = skills_dir.join(skill_name).join("SKILL.md");
+    ensure_parent_dir(&skill_path)?;
+
+    let status = write_template_file(&skill_path, &skills_template(skill_name), force)?;
+    Ok((skill_path, status))
+}
+
+fn run_setup(config: &Config, workspace: &Path, args: SetupArgs) -> Result<()> {
+    use crate::palette;
+    use colored::Colorize;
+
+    let (aqua_r, aqua_g, aqua_b) = palette::DEEPSEEK_SKY_RGB;
+    let (sky_r, sky_g, sky_b) = palette::DEEPSEEK_SKY_RGB;
+
+    let mut run_mcp = args.mcp || args.all;
+    let mut run_skills = args.skills || args.all;
+    if !run_mcp && !run_skills {
+        run_mcp = true;
+        run_skills = true;
+    }
+
+    println!(
+        "{}",
+        "DeepSeek Setup"
+            .truecolor(aqua_r, aqua_g, aqua_b)
+            .bold()
+    );
+    println!("{}", "==============".truecolor(sky_r, sky_g, sky_b));
+    println!("Workspace: {}", workspace.display());
+
+    if run_mcp {
+        let mcp_path = config.mcp_config_path();
+        let status = init_mcp_config(&mcp_path, args.force)?;
+        match status {
+            WriteStatus::Created => {
+                println!("  ✓ Created MCP config at {}", mcp_path.display());
+            }
+            WriteStatus::Overwritten => {
+                println!("  ✓ Overwrote MCP config at {}", mcp_path.display());
+            }
+            WriteStatus::SkippedExists => {
+                println!("  · MCP config already exists at {}", mcp_path.display());
+            }
+        }
+        println!("    Next: edit the file, then run `deepseek mcp list` or `deepseek mcp tools`.");
+    }
+
+    if run_skills {
+        let skills_dir = if args.local {
+            workspace.join("skills")
+        } else {
+            config.skills_dir()
+        };
+        let (skill_path, status) = init_skills_dir(&skills_dir, args.force)?;
+        match status {
+            WriteStatus::Created => {
+                println!("  ✓ Created example skill at {}", skill_path.display());
+            }
+            WriteStatus::Overwritten => {
+                println!("  ✓ Overwrote example skill at {}", skill_path.display());
+            }
+            WriteStatus::SkippedExists => {
+                println!("  · Example skill already exists at {}", skill_path.display());
+            }
+        }
+        if args.local {
+            println!(
+                "    Local skills dir enabled for this workspace: {}",
+                skills_dir.display()
+            );
+        } else {
+            println!("    Skills dir: {}", skills_dir.display());
+        }
+        println!("    Next: run the TUI and use `/skills` then `/skill getting-started`.");
+    }
+
+    let sandbox = crate::sandbox::get_platform_sandbox();
+    if let Some(kind) = sandbox {
+        println!("  ✓ Sandbox available: {kind}");
+    } else {
+        println!("  · Sandbox not available on this platform (best-effort only).");
+    }
+
+    Ok(())
+}
+
 /// Run system diagnostics
-async fn run_doctor() {
+async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Option<&Path>) {
     use crate::palette;
     use colored::Colorize;
 
@@ -587,24 +789,29 @@ async fn run_doctor() {
     println!("  rust: {}", rustc_version());
     println!();
 
-    // Check configuration
+    // Configuration summary
     println!("{}", "Configuration:".bold());
-    let config_dir =
+    let default_config_dir =
         dirs::home_dir().map_or_else(|| PathBuf::from(".deepseek"), |h| h.join(".deepseek"));
+    let config_path = config_path_override
+        .map(PathBuf::from)
+        .or_else(|| std::env::var("DEEPSEEK_CONFIG_PATH").ok().map(PathBuf::from))
+        .unwrap_or_else(|| default_config_dir.join("config.toml"));
 
-    let config_file = config_dir.join("config.toml");
-    if config_file.exists() {
+    if config_path.exists() {
         println!(
             "  {} config.toml found at {}",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
-            config_file.display()
+            config_path.display()
         );
     } else {
         println!(
-            "  {} config.toml not found (will use defaults)",
-            "!".truecolor(sky_r, sky_g, sky_b)
+            "  {} config.toml not found at {} (using defaults/env)",
+            "!".truecolor(sky_r, sky_g, sky_b),
+            config_path.display()
         );
     }
+    println!("  workspace: {}", workspace.display());
 
     // Check API keys
     println!();
@@ -615,25 +822,19 @@ async fn run_doctor() {
             "✓".truecolor(aqua_r, aqua_g, aqua_b)
         );
         true
+    } else if config.deepseek_api_key().is_ok() {
+        println!(
+            "  {} DeepSeek API key found in effective config",
+            "✓".truecolor(aqua_r, aqua_g, aqua_b)
+        );
+        true
     } else {
-        let key_in_config = Config::load(None, None)
-            .ok()
-            .and_then(|c| c.deepseek_api_key().ok())
-            .is_some();
-        if key_in_config {
-            println!(
-                "  {} DeepSeek API key found in config",
-                "✓".truecolor(aqua_r, aqua_g, aqua_b)
-            );
-            true
-        } else {
-            println!(
-                "  {} DeepSeek API key not configured",
-                "✗".truecolor(red_r, red_g, red_b)
-            );
-            println!("    Run 'deepseek' to configure interactively, or set DEEPSEEK_API_KEY");
-            false
-        }
+        println!(
+            "  {} DeepSeek API key not configured",
+            "✗".truecolor(red_r, red_g, red_b)
+        );
+        println!("    Run 'deepseek' to configure interactively, or set DEEPSEEK_API_KEY");
+        false
     };
 
     // API connectivity test
@@ -641,7 +842,6 @@ async fn run_doctor() {
     println!("{}", "API Connectivity:".bold());
     if has_api_key {
         print!("  {} Testing connection to DeepSeek API...", "·".dimmed());
-        // Flush to show progress immediately
         use std::io::Write;
         std::io::stdout().flush().ok();
 
@@ -659,7 +859,6 @@ async fn run_doctor() {
                     "\r  {} API connection failed",
                     "✗".truecolor(red_r, red_g, red_b)
                 );
-                // Provide helpful diagnostics based on error type
                 if error_msg.contains("401") || error_msg.contains("Unauthorized") {
                     println!("    Invalid API key. Check your DEEPSEEK_API_KEY or config.toml");
                 } else if error_msg.contains("403") || error_msg.contains("Forbidden") {
@@ -681,68 +880,124 @@ async fn run_doctor() {
         println!("  {} Skipped (no API key configured)", "·".dimmed());
     }
 
-    // Check MCP configuration
+    // MCP configuration
     println!();
     println!("{}", "MCP Servers:".bold());
-    let mcp_config = config_dir.join("mcp.json");
-    if mcp_config.exists() {
-        println!("  {} mcp.json found", "✓".truecolor(aqua_r, aqua_g, aqua_b));
-        if let Ok(content) = std::fs::read_to_string(&mcp_config)
-            && let Ok(config) = serde_json::from_str::<crate::mcp::McpConfig>(&content)
-        {
-            if config.servers.is_empty() {
+    let features = config.features();
+    if features.enabled(Feature::Mcp) {
+        println!("  {} MCP feature flag enabled", "✓".truecolor(aqua_r, aqua_g, aqua_b));
+    } else {
+        println!("  {} MCP feature flag disabled", "!".truecolor(sky_r, sky_g, sky_b));
+    }
+
+    let mcp_config_path = config.mcp_config_path();
+    if mcp_config_path.exists() {
+        println!(
+            "  {} MCP config found at {}",
+            "✓".truecolor(aqua_r, aqua_g, aqua_b),
+            mcp_config_path.display()
+        );
+        match load_mcp_config(&mcp_config_path) {
+            Ok(cfg) if cfg.servers.is_empty() => {
                 println!("  {} 0 server(s) configured", "·".dimmed());
-            } else {
+            }
+            Ok(cfg) => {
                 println!(
                     "  {} {} server(s) configured",
                     "·".dimmed(),
-                    config.servers.len()
+                    cfg.servers.len()
                 );
-                for name in config.servers.keys() {
+                for name in cfg.servers.keys() {
                     println!("    - {name}");
                 }
             }
+            Err(err) => {
+                println!(
+                    "  {} MCP config parse error: {}",
+                    "✗".truecolor(red_r, red_g, red_b),
+                    err
+                );
+            }
         }
     } else {
-        println!("  {} mcp.json not found (no MCP servers)", "·".dimmed());
+        println!(
+            "  {} MCP config not found at {}",
+            "·".dimmed(),
+            mcp_config_path.display()
+        );
+        println!("    Run `deepseek mcp init` or `deepseek setup --mcp`.");
     }
 
-    // Check skills directory
+    // Skills configuration
     println!();
     println!("{}", "Skills:".bold());
-    let skills_dir = config_dir.join("skills");
-    if skills_dir.exists() {
-        let skill_count = std::fs::read_dir(skills_dir)
+    let global_skills_dir = config.skills_dir();
+    let local_skills_dir = workspace.join("skills");
+    let selected_skills_dir = if local_skills_dir.exists() {
+        &local_skills_dir
+    } else {
+        &global_skills_dir
+    };
+
+    let describe_dir = |dir: &Path| -> usize {
+        std::fs::read_dir(dir)
             .map(|entries| entries.filter_map(std::result::Result::ok).count())
-            .unwrap_or(0);
+            .unwrap_or(0)
+    };
+
+    if local_skills_dir.exists() {
         println!(
-            "  {} skills directory found ({} items)",
+            "  {} local skills dir found at {} ({} items)",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
-            skill_count
+            local_skills_dir.display(),
+            describe_dir(&local_skills_dir)
         );
     } else {
-        println!("  {} skills directory not found", "·".dimmed());
+        println!(
+            "  {} local skills dir not found at {}",
+            "·".dimmed(),
+            local_skills_dir.display()
+        );
     }
 
-    // Platform-specific checks
+    if global_skills_dir.exists() {
+        println!(
+            "  {} global skills dir found at {} ({} items)",
+            "✓".truecolor(aqua_r, aqua_g, aqua_b),
+            global_skills_dir.display(),
+            describe_dir(&global_skills_dir)
+        );
+    } else {
+        println!(
+            "  {} global skills dir not found at {}",
+            "·".dimmed(),
+            global_skills_dir.display()
+        );
+    }
+
+    println!("  {} selected skills dir: {}", "·".dimmed(), selected_skills_dir.display());
+    if !local_skills_dir.exists() && !global_skills_dir.exists() {
+        println!("    Run `deepseek setup --skills` (or add --local for ./skills).");
+    }
+
+    // Platform and sandbox checks
     println!();
     println!("{}", "Platform:".bold());
     println!("  OS: {}", std::env::consts::OS);
     println!("  Arch: {}", std::env::consts::ARCH);
 
-    #[cfg(target_os = "macos")]
-    {
-        if std::path::Path::new("/usr/bin/sandbox-exec").exists() {
-            println!(
-                "  {} macOS sandbox available",
-                "✓".truecolor(aqua_r, aqua_g, aqua_b)
-            );
-        } else {
-            println!(
-                "  {} macOS sandbox not available",
-                "!".truecolor(sky_r, sky_g, sky_b)
-            );
-        }
+    let sandbox = crate::sandbox::get_platform_sandbox();
+    if let Some(kind) = sandbox {
+        println!(
+            "  {} sandbox available: {}",
+            "✓".truecolor(aqua_r, aqua_g, aqua_b),
+            kind
+        );
+    } else {
+        println!(
+            "  {} sandbox not available (commands run best-effort)",
+            "!".truecolor(sky_r, sky_g, sky_b)
+        );
     }
 
     println!();
@@ -944,6 +1199,12 @@ fn init_project() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn resolve_workspace(cli: &Cli) -> PathBuf {
+    cli.workspace
+        .clone()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
 }
 
 fn load_config_from_cli(cli: &Cli) -> Result<Config> {
@@ -1173,6 +1434,25 @@ fn read_patch_from_stdin() -> Result<String> {
 async fn run_mcp_command(config: &Config, command: McpCommand) -> Result<()> {
     let config_path = config.mcp_config_path();
     match command {
+        McpCommand::Init { force } => {
+            let status = init_mcp_config(&config_path, force)?;
+            match status {
+                WriteStatus::Created => {
+                    println!("Created MCP config at {}", config_path.display());
+                }
+                WriteStatus::Overwritten => {
+                    println!("Overwrote MCP config at {}", config_path.display());
+                }
+                WriteStatus::SkippedExists => {
+                    println!(
+                        "MCP config already exists at {} (use --force to overwrite)",
+                        config_path.display()
+                    );
+                }
+            }
+            println!("Edit the file, then run `deepseek mcp list` or `deepseek mcp tools`.");
+            Ok(())
+        }
         McpCommand::List => {
             let cfg = load_mcp_config(&config_path)?;
             if cfg.servers.is_empty() {

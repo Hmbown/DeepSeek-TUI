@@ -39,6 +39,9 @@ cargo install deepseek-tui --locked
 # Set your API key
 export DEEPSEEK_API_KEY="YOUR_DEEPSEEK_API_KEY"
 
+# Bootstrap MCP + skills templates (recommended)
+deepseek setup
+
 # Start chatting
 deepseek
 ```
@@ -87,6 +90,9 @@ Useful environment variables:
 - `DEEPSEEK_PROFILE` (selects `[profiles.<name>]` from the config; errors if missing)
 - `DEEPSEEK_CONFIG_PATH` (override config path)
 - `DEEPSEEK_MCP_CONFIG`, `DEEPSEEK_SKILLS_DIR`, `DEEPSEEK_NOTES_PATH`, `DEEPSEEK_MEMORY_PATH`, `DEEPSEEK_ALLOW_SHELL`, `DEEPSEEK_MAX_SUBAGENTS`
+
+To bootstrap MCP and skills at their resolved locations, run `deepseek setup`. To
+only create an MCP template, run `deepseek mcp init`.
 
 See `config.example.toml` and `docs/CONFIGURATION.md` for a full reference.
 
@@ -141,7 +147,7 @@ DeepSeek CLI exposes a comprehensive set of tools to the model across 5 categori
 - **Workspace boundary**: File tools are restricted to `--workspace` unless you enable `/trust` (YOLO enables trust automatically).
 - **Approvals**: The TUI requests approval depending on mode and tool category (file writes, shell).
 - **Web search**: `web_search` uses DuckDuckGo HTML results and is auto‑approved.
-- **Skills**: Reusable workflows stored as `SKILL.md` directories (default: `~/.deepseek/skills`). Use `/skills` and `/skill <name>`.
+- **Skills**: Reusable workflows stored as `SKILL.md` directories (default: `~/.deepseek/skills`, or `./skills` per workspace). Use `/skills` and `/skill <name>`. Bootstrap with `deepseek setup --skills` (add `--local` for `./skills`).
 - **MCP**: Load external tool servers via `~/.deepseek/mcp.json` (supports `servers` and `mcpServers`). MCP tools currently execute without TUI approval prompts, so only enable servers you trust. See `docs/MCP.md`.
 
 ## 🧠 RLM (Reasoning & Large‑scale Memory)
@@ -240,11 +246,18 @@ Set `DEEPSEEK_BASE_URL` to `https://api.deepseeki.com` (China).
 ### Session issues
 Run `deepseek sessions` and try `deepseek --resume latest`.
 
+### Skills missing
+Run `deepseek setup --skills` to create a global skills directory, or add `--local`
+to create `./skills` for the current workspace. Then run `deepseek doctor` to see
+which skills directory is selected.
+
 ### MCP tools missing
-Validate `~/.deepseek/mcp.json` (or `DEEPSEEK_MCP_CONFIG`) and restart.
+Run `deepseek mcp init` (or `deepseek setup --mcp`), then restart. `deepseek doctor`
+now checks the MCP path resolved from your config/env overrides.
 
 ### Sandbox errors (macOS)
-Ensure `/usr/bin/sandbox-exec` exists (comes with macOS). For other platforms, sandboxing is limited.
+Run `deepseek doctor` to confirm sandbox availability. On macOS, ensure
+`/usr/bin/sandbox-exec` exists. For other platforms, sandboxing is limited.
 
 ## 📖 Documentation
 
