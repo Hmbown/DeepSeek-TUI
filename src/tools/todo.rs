@@ -1,6 +1,7 @@
 //! Todo list tool and supporting data structures.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -327,10 +328,7 @@ impl ToolSpec for TodoAddTool {
             .and_then(TodoStatus::from_str)
             .unwrap_or(TodoStatus::Pending);
 
-        let mut list = self
-            .todo_list
-            .lock()
-            .map_err(|e| ToolError::execution_failed(format!("Failed to lock todo list: {e}")))?;
+        let mut list = self.todo_list.lock().await;
         let item = list.add(content.to_string(), status);
         let snapshot = list.snapshot();
 
@@ -407,10 +405,7 @@ impl ToolSpec for TodoUpdateTool {
             .and_then(TodoStatus::from_str)
             .ok_or_else(|| ToolError::invalid_input("Missing or invalid 'status'"))?;
 
-        let mut list = self
-            .todo_list
-            .lock()
-            .map_err(|e| ToolError::execution_failed(format!("Failed to lock todo list: {e}")))?;
+        let mut list = self.todo_list.lock().await;
         let updated = list.update_status(id, status);
         let snapshot = list.snapshot();
         let result = serde_json::to_string_pretty(&snapshot).unwrap_or_else(|_| "{}".to_string());
@@ -468,10 +463,7 @@ impl ToolSpec for TodoListTool {
         _input: serde_json::Value,
         _context: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
-        let list = self
-            .todo_list
-            .lock()
-            .map_err(|e| ToolError::execution_failed(format!("Failed to lock todo list: {e}")))?;
+        let list = self.todo_list.lock().await;
         let snapshot = list.snapshot();
         let result = serde_json::to_string_pretty(&snapshot).unwrap_or_else(|_| "{}".to_string());
         Ok(ToolResult::success(format!(
@@ -539,10 +531,7 @@ impl ToolSpec for TodoWriteTool {
             .and_then(|v| v.as_array())
             .ok_or_else(|| ToolError::invalid_input("Missing or invalid 'todos' array"))?;
 
-        let mut list = self
-            .todo_list
-            .lock()
-            .map_err(|e| ToolError::execution_failed(format!("Failed to lock todo list: {e}")))?;
+        let mut list = self.todo_list.lock().await;
 
         // Clear and rebuild the list
         list.clear();

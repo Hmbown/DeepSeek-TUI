@@ -4,6 +4,7 @@
 
 use crate::models::{Message, SystemPrompt, Usage};
 use crate::project_context::{ProjectContext, load_project_context_with_parents};
+use crate::working_set::WorkingSet;
 use std::path::PathBuf;
 
 /// Session state for the engine.
@@ -41,6 +42,9 @@ pub struct Session {
 
     /// Project context loaded from AGENTS.md, etc.
     pub project_context: Option<ProjectContext>,
+
+    /// Repo-aware working set for context management.
+    pub working_set: WorkingSet,
 }
 
 /// Cumulative usage statistics for a session.
@@ -96,6 +100,7 @@ impl Session {
             } else {
                 None
             },
+            working_set: WorkingSet::default(),
         }
     }
 
@@ -109,6 +114,12 @@ impl Session {
     /// Add a message to the conversation
     pub fn add_message(&mut self, message: Message) {
         self.messages.push(message);
+    }
+
+    /// Rebuild the working set from current messages (best effort).
+    pub fn rebuild_working_set(&mut self) {
+        self.working_set
+            .rebuild_from_messages(&self.messages, &self.workspace);
     }
 
     /// Clear the conversation history

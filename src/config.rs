@@ -11,6 +11,9 @@ use serde::Deserialize;
 use crate::features::{Features, FeaturesToml, is_known_feature_key};
 use crate::hooks::HooksConfig;
 
+pub const DEFAULT_MAX_SUBAGENTS: usize = 5;
+pub const MAX_SUBAGENTS: usize = 20;
+
 // === Types ===
 
 /// Raw retry configuration loaded from config files.
@@ -209,7 +212,9 @@ impl Config {
     /// Return the maximum number of concurrent sub-agents.
     #[must_use]
     pub fn max_subagents(&self) -> usize {
-        self.max_subagents.unwrap_or(5).clamp(1, 5)
+        self.max_subagents
+            .unwrap_or(DEFAULT_MAX_SUBAGENTS)
+            .clamp(1, MAX_SUBAGENTS)
     }
 
     /// Get hooks configuration, returning default if not configured.
@@ -321,7 +326,7 @@ fn apply_env_overrides(config: &mut Config) {
     if let Ok(value) = std::env::var("DEEPSEEK_MAX_SUBAGENTS")
         && let Ok(parsed) = value.parse::<usize>()
     {
-        config.max_subagents = Some(parsed.clamp(1, 5));
+        config.max_subagents = Some(parsed.clamp(1, MAX_SUBAGENTS));
     }
 }
 

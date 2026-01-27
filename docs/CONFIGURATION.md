@@ -46,7 +46,7 @@ These override config values:
 - `DEEPSEEK_NOTES_PATH`
 - `DEEPSEEK_MEMORY_PATH`
 - `DEEPSEEK_ALLOW_SHELL` (`1`/`true` enables)
-- `DEEPSEEK_MAX_SUBAGENTS` (clamped to `1..=5`)
+- `DEEPSEEK_MAX_SUBAGENTS` (clamped to `1..=20`)
 
 ## Settings File (Persistent UI Preferences)
 
@@ -76,7 +76,7 @@ Common settings keys:
 - `base_url` (string, optional): defaults to `https://api.deepseek.com` (OpenAI-compatible Responses API).
 - `default_text_model` (string, optional): defaults to `deepseek-reasoner`. Other available models include `deepseek-chat`, `deepseek-r1`, `deepseek-v3`, `deepseek-v3.2`. Check the DeepSeek API for the latest model list.
 - `allow_shell` (bool, optional): defaults to `false`.
-- `max_subagents` (int, optional): defaults to `5` and is clamped to `1..=5`.
+- `max_subagents` (int, optional): defaults to `5` and is clamped to `1..=20`.
 - `skills_dir` (string, optional): defaults to `~/.deepseek/skills` (each skill is a directory containing `SKILL.md`).
 - `mcp_config_path` (string, optional): defaults to `~/.deepseek/mcp.json`.
 - `notes_path` (string, optional): defaults to `~/.deepseek/notes.txt` and is used by the `note` tool.

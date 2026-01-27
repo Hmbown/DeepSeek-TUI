@@ -54,8 +54,7 @@ Run `deepseek --help` for the canonical list. Common flags:
 - `--yolo`: start in YOLO mode
 - `-r, --resume <ID|PREFIX|latest>`: resume a saved session
 - `-c, --continue`: resume the most recent session
-- `--max-subagents <N>`: clamp to `1..=5`
+- `--max-subagents <N>`: clamp to `1..=20`
 - `--profile <NAME>`: select config profile
 - `--config <PATH>`: config file path
 - `-v, --verbose`: verbose logging
-

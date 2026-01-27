@@ -3,7 +3,11 @@
 #![allow(dead_code)]
 
 use anyhow::Result;
+use regex::Regex;
+use std::collections::{BTreeSet, HashSet};
 use std::fmt::Write;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use crate::client::DeepSeekClient;
@@ -34,35 +38,375 @@ impl Default for CompactionConfig {
     }
 }
 
-pub fn estimate_tokens(messages: &[Message]) -> usize {
-    // Rough estimate: ~4 chars per token
-    messages
-        .iter()
-        .map(|m| {
-            m.content
-                .iter()
-                .map(|c| match c {
-                    ContentBlock::Text { text, .. } => text.len() / 4,
-                    ContentBlock::Thinking { thinking } => thinking.len() / 4,
-                    ContentBlock::ToolUse { input, .. } => serde_json::to_string(input)
-                        .map(|s| s.len() / 4)
-                        .unwrap_or(100),
-                    ContentBlock::ToolResult { content, .. } => content.len() / 4,
-                })
-                .sum::<usize>()
-        })
-        .sum()
+const KEEP_RECENT_MESSAGES: usize = 4;
+const RECENT_WORKING_SET_WINDOW: usize = 12;
+const MAX_WORKING_SET_PATHS: usize = 24;
+const MIN_SUMMARIZE_MESSAGES: usize = 6;
+
+#[derive(Debug, Clone, Default)]
+struct CompactionPlan {
+    pinned_indices: BTreeSet<usize>,
+    summarize_indices: Vec<usize>,
+    working_set_paths: HashSet<String>,
 }
 
-pub fn should_compact(messages: &[Message], config: &CompactionConfig) -> bool {
+fn path_regex() -> &'static Regex {
+    static PATH_RE: OnceLock<Regex> = OnceLock::new();
+    PATH_RE.get_or_init(|| {
+        Regex::new(
+            r"(?x)
+            (?:
+                (?P<root>
+                    Cargo\.toml|
+                    Cargo\.lock|
+                    README\.md|
+                    CHANGELOG\.md|
+                    AGENTS\.md|
+                    config\.example\.toml
+                )
+            )
+            |
+            (?P<path>
+                (?:[A-Za-z0-9._-]+/)+
+                [A-Za-z0-9._-]+
+                \.(?:rs|toml|md|json|ya?ml|txt|lock)
+            )
+        ",
+        )
+        .expect("path regex is valid")
+    })
+}
+
+fn normalize_path_candidate(candidate: &str, workspace: Option<&Path>) -> Option<String> {
+    if candidate.is_empty() {
+        return None;
+    }
+
+    let cleaned = candidate.replace('\\', "/");
+    let mut path = PathBuf::from(cleaned);
+
+    if path.is_absolute() {
+        let ws = workspace?;
+        if let Ok(stripped) = path.strip_prefix(ws) {
+            path = stripped.to_path_buf();
+        } else {
+            return None;
+        }
+    }
+
+    let rel = path.to_string_lossy().trim_start_matches("./").to_string();
+    if rel.is_empty() || rel.contains("..") {
+        return None;
+    }
+
+    if let Some(ws) = workspace {
+        let repo_path = ws.join(&rel);
+        if repo_path.exists() || looks_repo_relative(&rel) {
+            return Some(rel);
+        }
+        return None;
+    }
+
+    if looks_repo_relative(&rel) {
+        return Some(rel);
+    }
+
+    None
+}
+
+fn looks_repo_relative(path: &str) -> bool {
+    matches!(
+        path,
+        "Cargo.toml"
+            | "Cargo.lock"
+            | "README.md"
+            | "CHANGELOG.md"
+            | "AGENTS.md"
+            | "config.example.toml"
+    ) || path.starts_with("src/")
+        || path.starts_with("tests/")
+        || path.starts_with("docs/")
+        || path.starts_with("examples/")
+        || path.starts_with("benches/")
+        || path.starts_with("crates/")
+        || path.starts_with(".github/")
+        || (path.contains('/') && path.rsplit('.').next().is_some())
+}
+
+fn extract_paths_from_text(text: &str, workspace: Option<&Path>) -> Vec<String> {
+    path_regex()
+        .captures_iter(text)
+        .filter_map(|caps| {
+            let candidate = caps
+                .name("path")
+                .or_else(|| caps.name("root"))
+                .map(|m| m.as_str())?;
+            normalize_path_candidate(candidate, workspace)
+        })
+        .collect()
+}
+
+fn extract_paths_from_tool_input(
+    input: &serde_json::Value,
+    workspace: Option<&Path>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    let Some(obj) = input.as_object() else {
+        return out;
+    };
+
+    for key in ["path", "file", "target", "cwd"] {
+        if let Some(val) = obj.get(key).and_then(serde_json::Value::as_str)
+            && let Some(path) = normalize_path_candidate(val, workspace)
+        {
+            out.push(path);
+        }
+    }
+
+    for key in ["paths", "files", "targets"] {
+        if let Some(vals) = obj.get(key).and_then(serde_json::Value::as_array) {
+            for val in vals {
+                if let Some(s) = val.as_str()
+                    && let Some(path) = normalize_path_candidate(s, workspace)
+                {
+                    out.push(path);
+                }
+            }
+        }
+    }
+
+    out
+}
+
+fn message_text(msg: &Message) -> String {
+    let mut text = String::new();
+    for block in &msg.content {
+        match block {
+            ContentBlock::Text { text: t, .. } => {
+                let _ = writeln!(text, "{t}");
+            }
+            ContentBlock::Thinking { .. } => {}
+            ContentBlock::ToolUse { name, input, .. } => {
+                let _ = writeln!(text, "[tool_use:{name}] {input}");
+            }
+            ContentBlock::ToolResult { content, .. } => {
+                let _ = writeln!(text, "{content}");
+            }
+        }
+    }
+    text
+}
+
+fn extract_paths_from_message(message: &Message, workspace: Option<&Path>) -> Vec<String> {
+    let mut paths = Vec::new();
+    for block in &message.content {
+        let candidates = match block {
+            ContentBlock::Text { text, .. } => extract_paths_from_text(text, workspace),
+            ContentBlock::ToolResult { content, .. } => extract_paths_from_text(content, workspace),
+            ContentBlock::ToolUse { input, .. } => extract_paths_from_tool_input(input, workspace),
+            ContentBlock::Thinking { .. } => Vec::new(),
+        };
+        paths.extend(candidates);
+    }
+    paths
+}
+
+fn derive_working_set_paths(
+    messages: &[Message],
+    workspace: Option<&Path>,
+    seed_indices: &[usize],
+) -> HashSet<String> {
+    let mut paths: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    let mut seeds: Vec<usize> = seed_indices
+        .iter()
+        .copied()
+        .filter(|idx| *idx < messages.len())
+        .collect();
+    seeds.sort_unstable_by(|a, b| b.cmp(a));
+
+    for idx in seeds {
+        for candidate in extract_paths_from_message(&messages[idx], workspace) {
+            if seen.insert(candidate.clone()) {
+                paths.push(candidate);
+                if paths.len() >= MAX_WORKING_SET_PATHS {
+                    return paths.into_iter().collect();
+                }
+            }
+        }
+    }
+
+    for msg in messages.iter().rev().take(RECENT_WORKING_SET_WINDOW) {
+        for candidate in extract_paths_from_message(msg, workspace) {
+            if seen.insert(candidate.clone()) {
+                paths.push(candidate);
+                if paths.len() >= MAX_WORKING_SET_PATHS {
+                    return paths.into_iter().collect();
+                }
+            }
+        }
+    }
+
+    paths.into_iter().collect()
+}
+
+fn should_pin_message(text: &str, working_set_paths: &HashSet<String>) -> bool {
+    let lower = text.to_lowercase();
+
+    let mentions_working_set = working_set_paths.iter().any(|p| text.contains(p));
+    if mentions_working_set {
+        return true;
+    }
+
+    let error_markers = [
+        "error:",
+        "error ",
+        "failed",
+        "panic",
+        "traceback",
+        "stack trace",
+        "assertion failed",
+        "test failed",
+    ];
+    if error_markers.iter().any(|m| lower.contains(m)) {
+        return true;
+    }
+
+    let patch_markers = [
+        "diff --git",
+        "+++ b/",
+        "--- a/",
+        "*** begin patch",
+        "*** update file:",
+        "*** add file:",
+        "*** delete file:",
+        "```diff",
+        "apply_patch",
+    ];
+    patch_markers.iter().any(|m| lower.contains(m))
+}
+
+fn plan_compaction(
+    messages: &[Message],
+    workspace: Option<&Path>,
+    keep_recent: usize,
+    external_pins: Option<&[usize]>,
+    external_working_set_paths: Option<&[String]>,
+) -> CompactionPlan {
+    let mut pinned_indices: BTreeSet<usize> = BTreeSet::new();
+    let len = messages.len();
+    if len == 0 {
+        return CompactionPlan::default();
+    }
+
+    // Always pin the tail of the conversation to preserve immediate context.
+    let recent_start = len.saturating_sub(keep_recent);
+    pinned_indices.extend(recent_start..len);
+
+    // Derive a repo-aware working set from recent messages/tool calls and
+    // merge it with any externally provided working-set paths.
+    let seed_indices = external_pins.unwrap_or(&[]);
+    let mut working_set_paths = derive_working_set_paths(messages, workspace, seed_indices);
+    if let Some(paths) = external_working_set_paths {
+        for path in paths {
+            if let Some(normalized) = normalize_path_candidate(path, workspace) {
+                let _ = working_set_paths.insert(normalized);
+            }
+        }
+    }
+
+    for (idx, msg) in messages.iter().enumerate() {
+        if pinned_indices.contains(&idx) {
+            continue;
+        }
+        let text = message_text(msg);
+        if should_pin_message(&text, &working_set_paths) {
+            pinned_indices.insert(idx);
+        }
+    }
+
+    // External pins are authoritative and should be preserved even if they
+    // were not detected by the heuristics above.
+    if let Some(pins) = external_pins {
+        pinned_indices.extend(pins.iter().copied().filter(|idx| *idx < len));
+    }
+
+    let summarize_indices = (0..len)
+        .filter(|idx| !pinned_indices.contains(idx))
+        .collect();
+
+    CompactionPlan {
+        pinned_indices,
+        summarize_indices,
+        working_set_paths,
+    }
+}
+
+fn estimate_tokens_for_message(message: &Message) -> usize {
+    message
+        .content
+        .iter()
+        .map(|c| match c {
+            ContentBlock::Text { text, .. } => text.len() / 4,
+            ContentBlock::Thinking { thinking } => thinking.len() / 4,
+            ContentBlock::ToolUse { input, .. } => serde_json::to_string(input)
+                .map(|s| s.len() / 4)
+                .unwrap_or(100),
+            ContentBlock::ToolResult { content, .. } => content.len() / 4,
+        })
+        .sum::<usize>()
+}
+
+pub fn estimate_tokens(messages: &[Message]) -> usize {
+    // Rough estimate: ~4 chars per token
+    messages.iter().map(estimate_tokens_for_message).sum()
+}
+
+pub fn should_compact(
+    messages: &[Message],
+    config: &CompactionConfig,
+    workspace: Option<&Path>,
+    external_pins: Option<&[usize]>,
+    external_working_set_paths: Option<&[String]>,
+) -> bool {
     if !config.enabled {
         return false;
     }
 
-    let token_estimate = estimate_tokens(messages);
-    let message_count = messages.len();
+    let plan = plan_compaction(
+        messages,
+        workspace,
+        KEEP_RECENT_MESSAGES,
+        external_pins,
+        external_working_set_paths,
+    );
+    let pinned_tokens: usize = plan
+        .pinned_indices
+        .iter()
+        .map(|&idx| estimate_tokens_for_message(&messages[idx]))
+        .sum();
+    let pinned_count = plan.pinned_indices.len();
 
-    token_estimate > config.token_threshold || message_count > config.message_threshold
+    let token_estimate: usize = plan
+        .summarize_indices
+        .iter()
+        .map(|&idx| estimate_tokens_for_message(&messages[idx]))
+        .sum();
+    let message_count = plan.summarize_indices.len();
+
+    // Pinned messages consume part of the budget, so compact earlier when needed.
+    let effective_token_threshold = config.token_threshold.saturating_sub(pinned_tokens);
+    let effective_message_threshold = config.message_threshold.saturating_sub(pinned_count);
+
+    let enough_unpinned = message_count >= MIN_SUMMARIZE_MESSAGES
+        || effective_token_threshold == 0
+        || effective_message_threshold == 0;
+    if !enough_unpinned {
+        return false;
+    }
+
+    token_estimate > effective_token_threshold || message_count > effective_message_threshold
 }
 
 fn truncate_chars(text: &str, max_chars: usize) -> &str {
@@ -115,6 +459,9 @@ pub async fn compact_messages_safe(
     client: &DeepSeekClient,
     messages: &[Message],
     config: &CompactionConfig,
+    workspace: Option<&Path>,
+    external_pins: Option<&[usize]>,
+    external_working_set_paths: Option<&[String]>,
 ) -> Result<CompactionResult> {
     const MAX_RETRIES: u32 = 3;
     const BASE_DELAY_MS: u64 = 1000;
@@ -128,7 +475,16 @@ pub async fn compact_messages_safe(
             tokio::time::sleep(delay).await;
         }
 
-        match compact_messages(client, messages, config).await {
+        match compact_messages(
+            client,
+            messages,
+            config,
+            workspace,
+            external_pins,
+            external_working_set_paths,
+        )
+        .await
+        {
             Ok((msgs, prompt)) => {
                 return Ok(CompactionResult {
                     messages: msgs,
@@ -154,28 +510,39 @@ pub async fn compact_messages(
     client: &DeepSeekClient,
     messages: &[Message],
     config: &CompactionConfig,
+    workspace: Option<&Path>,
+    external_pins: Option<&[usize]>,
+    external_working_set_paths: Option<&[String]>,
 ) -> Result<(Vec<Message>, Option<SystemPrompt>)> {
     if messages.is_empty() {
         return Ok((Vec::new(), None));
     }
 
-    // Keep the last few messages as-is
-    let keep_recent = 4;
-    let (to_summarize, recent) = if messages.len() <= keep_recent {
+    let plan = plan_compaction(
+        messages,
+        workspace,
+        KEEP_RECENT_MESSAGES,
+        external_pins,
+        external_working_set_paths,
+    );
+    if plan.summarize_indices.is_empty() {
         return Ok((messages.to_vec(), None));
-    } else {
-        let split_point = messages.len() - keep_recent;
-        (&messages[..split_point], &messages[split_point..])
-    };
+    }
 
-    // Create a summary of older messages
-    let summary = create_summary(client, to_summarize, &config.model).await?;
+    let to_summarize: Vec<Message> = plan
+        .summarize_indices
+        .iter()
+        .map(|&idx| messages[idx].clone())
+        .collect();
+
+    // Create a summary of the unpinned portion of the conversation
+    let summary = create_summary(client, &to_summarize, &config.model).await?;
 
     // Build new message list with summary as system block
     let summary_block = SystemBlock {
         block_type: "text".to_string(),
         text: format!(
-            "## Conversation Summary\n\nThe following is a summary of the earlier conversation:\n\n{summary}\n\n---\nRecent messages follow:"
+            "## Conversation Summary\n\nThe following summarizes earlier context that was not pinned to the working set:\n\n{summary}\n\n---\nPinned messages follow:"
         ),
         cache_control: if config.cache_summary {
             Some(CacheControl {
@@ -186,8 +553,14 @@ pub async fn compact_messages(
         },
     };
 
+    let pinned_messages = messages
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, msg)| plan.pinned_indices.contains(&idx).then_some(msg.clone()))
+        .collect();
+
     Ok((
-        recent.to_vec(),
+        pinned_messages,
         Some(SystemPrompt::Blocks(vec![summary_block])),
     ))
 }
@@ -316,6 +689,16 @@ pub fn merge_system_prompts(
 mod tests {
     use super::*;
 
+    fn msg(role: &str, text: &str) -> Message {
+        Message {
+            role: role.to_string(),
+            content: vec![ContentBlock::Text {
+                text: text.to_string(),
+                cache_control: None,
+            }],
+        }
+    }
+
     #[test]
     fn truncate_chars_respects_unicode_boundaries() {
         let text = "abc😀é";
@@ -388,7 +771,7 @@ mod tests {
                 }],
             })
             .collect();
-        assert!(!should_compact(&messages, &config));
+        assert!(!should_compact(&messages, &config, None, None, None));
     }
 
     #[test]
@@ -410,7 +793,7 @@ mod tests {
                 }],
             })
             .collect();
-        assert!(!should_compact(&few_messages, &config));
+        assert!(!should_compact(&few_messages, &config, None, None, None));
 
         // Over threshold
         let many_messages: Vec<Message> = (0..10)
@@ -422,6 +805,122 @@ mod tests {
                 }],
             })
             .collect();
-        assert!(should_compact(&many_messages, &config));
+        assert!(should_compact(&many_messages, &config, None, None, None));
+    }
+
+    #[test]
+    fn plan_compaction_pins_recent_and_working_set_paths() {
+        let messages = vec![
+            msg("user", "General discussion"),
+            msg("assistant", "Unrelated note"),
+            msg("user", "Earlier we touched src/core/engine.rs"),
+            msg("assistant", "More unrelated chatter"),
+            msg("user", "Let's keep working on src/core/engine.rs"),
+            msg("assistant", "Tool output mentions src/core/engine.rs too"),
+            msg("assistant", "Recent reasoning"),
+            msg("user", "Final recent instruction"),
+        ];
+
+        let plan = plan_compaction(&messages, None, KEEP_RECENT_MESSAGES, None, None);
+
+        assert!(plan.pinned_indices.contains(&2));
+        for idx in 4..messages.len() {
+            assert!(plan.pinned_indices.contains(&idx));
+        }
+        assert!(plan.summarize_indices.contains(&0));
+        assert!(plan.summarize_indices.contains(&1));
+        assert!(plan.summarize_indices.contains(&3));
+    }
+
+    #[test]
+    fn plan_compaction_respects_external_pins() {
+        let messages = vec![
+            msg("user", "noise 0"),
+            msg("assistant", "noise 1"),
+            msg("user", "noise 2"),
+            msg("assistant", "noise 3"),
+            msg("user", "recent 4"),
+            msg("assistant", "recent 5"),
+            msg("assistant", "recent 6"),
+            msg("user", "recent 7"),
+        ];
+
+        let pins = vec![1usize];
+        let plan = plan_compaction(&messages, None, KEEP_RECENT_MESSAGES, Some(&pins), None);
+
+        assert!(plan.pinned_indices.contains(&1));
+        assert!(!plan.summarize_indices.contains(&1));
+    }
+
+    #[test]
+    fn plan_compaction_uses_external_working_set_paths() {
+        let mut messages = vec![msg("user", "edit src/core/engine.rs now")];
+        messages.extend((1..20).map(|i| msg("assistant", &format!("noise {i}"))));
+
+        let working_set_paths = vec!["src/core/engine.rs".to_string()];
+        let plan = plan_compaction(
+            &messages,
+            None,
+            KEEP_RECENT_MESSAGES,
+            None,
+            Some(&working_set_paths),
+        );
+
+        assert!(plan.pinned_indices.contains(&0));
+    }
+
+    #[test]
+    fn should_compact_ignores_fully_pinned_context() {
+        let config = CompactionConfig {
+            enabled: true,
+            token_threshold: 10,
+            message_threshold: 2,
+            ..Default::default()
+        };
+
+        let messages: Vec<Message> = (0..12)
+            .map(|_| msg("user", "Work on src/compaction.rs right now"))
+            .collect();
+
+        assert!(!should_compact(&messages, &config, None, None, None));
+    }
+
+    #[test]
+    fn should_compact_counts_only_unpinned_messages() {
+        let config = CompactionConfig {
+            enabled: true,
+            token_threshold: 1_000_000,
+            message_threshold: 5,
+            ..Default::default()
+        };
+
+        let mut messages: Vec<Message> = (0..7)
+            .map(|i| msg("user", &format!("noise message {i}")))
+            .collect();
+        messages.push(msg("user", "Focus on src/core/engine.rs"));
+        messages.extend((0..4).map(|i| msg("assistant", &format!("recent {i}"))));
+
+        assert!(should_compact(&messages, &config, None, None, None));
+    }
+
+    #[test]
+    fn should_compact_when_pins_consume_budget() {
+        let config = CompactionConfig {
+            enabled: true,
+            token_threshold: 50,
+            message_threshold: 50,
+            ..Default::default()
+        };
+
+        let mut messages = vec![msg("user", "noise 0"), msg("assistant", "noise 1")];
+        messages.extend((0..4).map(|_| {
+            msg(
+                "assistant",
+                &format!("{} src/core/engine.rs", "x".repeat(400)),
+            )
+        }));
+
+        // Pinned recent messages exceed the token budget, so unpinned noise should trigger compaction.
+        assert!(should_compact(&messages, &config, None, None, None));
     }
 }

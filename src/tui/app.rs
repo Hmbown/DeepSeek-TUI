@@ -878,9 +878,8 @@ impl App {
     }
 
     pub fn clear_todos(&mut self) {
-        if let Ok(mut plan) = self.plan_state.lock() {
-            *plan = crate::tools::plan::PlanState::default();
-        }
+        let mut plan = self.plan_state.blocking_lock();
+        *plan = crate::tools::plan::PlanState::default();
     }
 }
 

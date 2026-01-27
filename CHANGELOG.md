@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-01-27
+
+### Added
+- Repo-aware working set tracking with prompt injection for active paths
+- Working set signals now pin relevant messages during auto-compaction
+- Offline eval harness (`deepseek eval`) with CI coverage in the test job
+- Shell tool now emits stdout/stderr summaries and truncation metadata
+- Dependency-aware `agent_swarm` tool for orchestrating multiple sub-agents
+- Expanded sub-agent tool access (apply_patch, web_search, file_search)
+
+### Changed
+- Auto-compaction now accounts for pinned budget and preserves working-set context
+- Apply patch tool validates patch shape, reports per-file summaries, and improves hunk mismatch diagnostics
+- Eval harness shell step now uses a Windows-safe default command
+- Increased `max_subagents` clamp to `1..=20`
+
 ## [0.2.2] - 2026-01-22
 
 ### Fixed
@@ -111,7 +127,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hooks system and config profiles
 - Example skills and launch assets
 
-[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Hmbown/DeepSeek-TUI/releases/tag/v0.2.0

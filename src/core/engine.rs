@@ -24,6 +24,7 @@ use crate::compaction::{
     CompactionConfig, compact_messages_safe, merge_system_prompts, should_compact,
 };
 use crate::config::Config;
+use crate::config::DEFAULT_MAX_SUBAGENTS;
 use crate::duo::{DuoSession, SharedDuoSession, session_summary as duo_session_summary};
 use crate::features::{Feature, Features};
 use crate::llm_client::LlmClient;
@@ -33,12 +34,12 @@ use crate::models::{
 };
 use crate::prompts;
 use crate::rlm::{RlmSession, SharedRlmSession, session_summary as rlm_session_summary};
-use crate::tools::plan::{PlanState, SharedPlanState};
+use crate::tools::plan::{SharedPlanState, new_shared_plan_state};
 use crate::tools::spec::{ApprovalRequirement, ToolError, ToolResult};
 use crate::tools::subagent::{
     SharedSubAgentManager, SubAgentRuntime, SubAgentType, new_shared_subagent_manager,
 };
-use crate::tools::todo::{SharedTodoList, TodoList};
+use crate::tools::todo::{SharedTodoList, new_shared_todo_list};
 use crate::tools::{ToolContext, ToolRegistryBuilder};
 use crate::tui::app::AppMode;
 
@@ -93,13 +94,13 @@ impl Default for EngineConfig {
             notes_path: PathBuf::from("notes.txt"),
             mcp_config_path: PathBuf::from("mcp.json"),
             max_steps: 100,
-            max_subagents: 5,
+            max_subagents: DEFAULT_MAX_SUBAGENTS,
             features: Features::with_defaults(),
             rlm_session: Arc::new(Mutex::new(RlmSession::default())),
             duo_session: Arc::new(Mutex::new(DuoSession::new())),
             compaction: CompactionConfig::default(),
-            todos: Arc::new(Mutex::new(TodoList::new())),
-            plan_state: Arc::new(Mutex::new(PlanState::default())),
+            todos: new_shared_todo_list(),
+            plan_state: new_shared_plan_state(),
         }
     }
 }
@@ -236,6 +237,19 @@ struct ToolExecOutcome {
     result: Result<ToolResult, ToolError>,
 }
 
+#[derive(Debug, Clone)]
+struct ToolExecutionPlan {
+    index: usize,
+    id: String,
+    name: String,
+    input: serde_json::Value,
+    interactive: bool,
+    approval_required: bool,
+    approval_description: String,
+    supports_parallel: bool,
+    read_only: bool,
+}
+
 // Hold the lock guard for the duration of a tool execution.
 enum ToolExecGuard<'a> {
     Read(tokio::sync::RwLockReadGuard<'a, ()>),
@@ -357,6 +371,38 @@ fn extract_balanced_segment(text: &str, open: char, close: char) -> Option<Strin
     end.map(|end_idx| text[start..end_idx].to_string())
 }
 
+fn should_parallelize_tool_batch(plans: &[ToolExecutionPlan]) -> bool {
+    !plans.is_empty()
+        && plans.iter().all(|plan| {
+            plan.read_only && plan.supports_parallel && !plan.approval_required && !plan.interactive
+        })
+}
+
+fn format_tool_error(err: &ToolError, tool_name: &str) -> String {
+    match err {
+        ToolError::InvalidInput { message } => {
+            format!("Invalid input for tool '{tool_name}': {message}")
+        }
+        ToolError::MissingField { field } => {
+            format!("Tool '{tool_name}' is missing required field '{field}'")
+        }
+        ToolError::PathEscape { path } => format!(
+            "Path escapes workspace: {}. Use a workspace-relative path or enable trust mode.",
+            path.display()
+        ),
+        ToolError::ExecutionFailed { message } => message.clone(),
+        ToolError::Timeout { seconds } => format!(
+            "Tool '{tool_name}' timed out after {seconds}s. Try a narrower scope or a longer timeout."
+        ),
+        ToolError::NotAvailable { message } => format!(
+            "Tool '{tool_name}' is not available: {message}. Check mode, feature flags, or tool name."
+        ),
+        ToolError::PermissionDenied { message } => format!(
+            "Tool '{tool_name}' was denied: {message}. Adjust approval mode or request permission."
+        ),
+    }
+}
+
 impl Engine {
     /// Create a new engine with the given configuration
     pub fn new(config: EngineConfig, api_config: &Config) -> (Self, EngineHandle) {
@@ -382,9 +428,11 @@ impl Engine {
         );
 
         // Set up system prompt with project context (default to agent mode)
+        let working_set_summary = session.working_set.summary_block(&config.workspace);
         let system_prompt = prompts::system_prompt_for_mode_with_context(
             AppMode::Agent,
             &config.workspace,
+            working_set_summary.as_deref(),
             None,
             None,
         );
@@ -472,19 +520,16 @@ impl Engine {
                         Some(self.tx_event.clone()),
                     );
 
-                    let result = self
-                        .subagent_manager
-                        .lock()
-                        .map_err(|_| anyhow::anyhow!("Failed to lock sub-agent manager"))
-                        .and_then(|mut manager| {
-                            manager.spawn_background(
-                                Arc::clone(&self.subagent_manager),
-                                runtime,
-                                SubAgentType::General,
-                                prompt.clone(),
-                                None,
-                            )
-                        });
+                    let result = {
+                        let mut manager = self.subagent_manager.lock().await;
+                        manager.spawn_background(
+                            Arc::clone(&self.subagent_manager),
+                            runtime,
+                            SubAgentType::General,
+                            prompt.clone(),
+                            None,
+                        )
+                    };
 
                     match result {
                         Ok(snapshot) => {
@@ -508,26 +553,11 @@ impl Engine {
                     }
                 }
                 Op::ListSubAgents => {
-                    let result = self
-                        .subagent_manager
-                        .lock()
-                        .map(|manager| manager.list())
-                        .map_err(|_| anyhow::anyhow!("Failed to lock sub-agent manager"));
-
-                    match result {
-                        Ok(agents) => {
-                            let _ = self.tx_event.send(Event::AgentList { agents }).await;
-                        }
-                        Err(err) => {
-                            let _ = self
-                                .tx_event
-                                .send(Event::error(
-                                    format!("Failed to list sub-agents: {err}"),
-                                    true,
-                                ))
-                                .await;
-                        }
-                    }
+                    let agents = {
+                        let manager = self.subagent_manager.lock().await;
+                        manager.list()
+                    };
+                    let _ = self.tx_event.send(Event::AgentList { agents }).await;
                 }
                 Op::ChangeMode { mode } => {
                     let _ = self
@@ -575,6 +605,7 @@ impl Engine {
                     } else {
                         None
                     };
+                    self.session.rebuild_working_set();
                     let _ = self
                         .tx_event
                         .send(Event::status("Session context synced".to_string()))
@@ -612,6 +643,10 @@ impl Engine {
             let _ = self.tx_event.send(Event::error(message, false)).await;
             return;
         }
+
+        self.session
+            .working_set
+            .observe_user_message(&content, &self.session.workspace);
 
         // Add user message to session
         let user_msg = Message {
@@ -652,9 +687,14 @@ impl Engine {
         } else {
             None
         };
+        let working_set_summary = self
+            .session
+            .working_set
+            .summary_block(&self.config.workspace);
         self.session.system_prompt = Some(prompts::system_prompt_for_mode_with_context(
             mode,
             &self.config.workspace,
+            working_set_summary.as_deref(),
             rlm_summary.as_deref(),
             duo_summary.as_deref(),
         ));
@@ -668,6 +708,8 @@ impl Engine {
             ToolRegistryBuilder::new()
                 .with_read_only_file_tools()
                 .with_search_tools()
+                .with_git_tools()
+                .with_diagnostics_tool()
                 .with_todo_tool(todo_list.clone())
                 .with_plan_tool(plan_state.clone())
         } else {
@@ -675,6 +717,9 @@ impl Engine {
                 .with_file_tools()
                 .with_note_tool()
                 .with_search_tools()
+                .with_git_tools()
+                .with_diagnostics_tool()
+                .with_test_runner_tool()
                 .with_todo_tool(todo_list.clone())
                 .with_plan_tool(plan_state.clone())
         };
@@ -932,6 +977,8 @@ impl Engine {
             .clone()
             .expect("DeepSeek client should be configured");
 
+        let mut consecutive_tool_error_steps = 0u32;
+
         loop {
             if self.cancel_token.is_cancelled() {
                 let _ = self.tx_event.send(Event::status("Request cancelled")).await;
@@ -946,8 +993,20 @@ impl Engine {
                 break;
             }
 
+            let compaction_pins = self
+                .session
+                .working_set
+                .pinned_message_indices(&self.session.messages, &self.session.workspace);
+            let compaction_paths = self.session.working_set.top_paths(24);
+
             if self.config.compaction.enabled
-                && should_compact(&self.session.messages, &self.config.compaction)
+                && should_compact(
+                    &self.session.messages,
+                    &self.config.compaction,
+                    Some(&self.session.workspace),
+                    Some(&compaction_pins),
+                    Some(&compaction_paths),
+                )
             {
                 let _ = self
                     .tx_event
@@ -957,6 +1016,9 @@ impl Engine {
                     &client,
                     &self.session.messages,
                     &self.config.compaction,
+                    Some(&self.session.workspace),
+                    Some(&compaction_pins),
+                    Some(&compaction_paths),
                 )
                 .await
                 {
@@ -1303,18 +1365,16 @@ impl Engine {
                 None
             };
 
-            let mut tool_tasks = FuturesUnordered::new();
-            let mut outcomes: Vec<Option<ToolExecOutcome>> = Vec::with_capacity(tool_uses.len());
-            outcomes.resize_with(tool_uses.len(), || None);
-
+            let mut plans: Vec<ToolExecutionPlan> = Vec::with_capacity(tool_uses.len());
             for (index, tool) in tool_uses.iter().enumerate() {
                 let tool_id = tool.id.clone();
                 let tool_name = tool.name.clone();
                 let tool_input = tool.input.clone();
                 crate::logging::info(format!(
-                    "Executing tool '{}' with input: {:?}",
+                    "Planning tool '{}' with input: {:?}",
                     tool_name, tool_input
                 ));
+
                 let interactive = tool_name == "exec_shell"
                     && tool_input
                         .get("interactive")
@@ -1323,166 +1383,216 @@ impl Engine {
 
                 let mut approval_required = false;
                 let mut approval_description = "Tool execution requires approval".to_string();
-                let mut supports_parallel = McpPool::is_mcp_tool(&tool_name);
-                if let Some(registry) = tool_registry
-                    && let Some(spec) = registry.get(&tool_name)
-                {
-                    approval_required = spec.approval_requirement() != ApprovalRequirement::Auto;
-                    approval_description = spec.description().to_string();
-                    supports_parallel = spec.supports_parallel();
-                }
+                let mut supports_parallel = false;
+                let mut read_only = false;
 
-                // Handle approval flow: returns (result_override, context_override)
-                let (result_override, context_override): (
-                    Option<Result<ToolResult, ToolError>>,
-                    Option<crate::tools::ToolContext>,
-                ) = if approval_required {
-                    let _ = self
-                        .tx_event
-                        .send(Event::ApprovalRequired {
-                            id: tool_id.clone(),
-                            tool_name: tool_name.clone(),
-                            description: approval_description,
-                        })
-                        .await;
-
-                    match self.await_tool_approval(&tool_id).await {
-                        Ok(ApprovalResult::Approved) => (None, None),
-                        Ok(ApprovalResult::Denied) => (
-                            Some(Err(ToolError::permission_denied(format!(
-                                "Tool '{tool_name}' denied by user"
-                            )))),
-                            None,
-                        ),
-                        Ok(ApprovalResult::RetryWithPolicy(policy)) => {
-                            // Create a context with the elevated sandbox policy
-                            let elevated_context = tool_registry
-                                .map(|r| r.context().clone().with_elevated_sandbox_policy(policy));
-                            (None, elevated_context)
-                        }
-                        Err(err) => (Some(Err(err)), None),
+                if !McpPool::is_mcp_tool(&tool_name) {
+                    if let Some(registry) = tool_registry
+                        && let Some(spec) = registry.get(&tool_name)
+                    {
+                        approval_required =
+                            spec.approval_requirement() != ApprovalRequirement::Auto;
+                        approval_description = spec.description().to_string();
+                        supports_parallel = spec.supports_parallel();
+                        read_only = spec.is_read_only();
                     }
-                } else {
-                    (None, None)
-                };
-
-                let registry = tool_registry;
-                let lock = tool_exec_lock.clone();
-                let mcp_pool = mcp_pool.clone();
-                let tx_event = self.tx_event.clone();
-
-                if let Some(result_override) = result_override {
-                    let started_at = Instant::now();
-                    let _ = self
-                        .tx_event
-                        .send(Event::ToolCallComplete {
-                            id: tool_id.clone(),
-                            name: tool_name.clone(),
-                            result: result_override.clone(),
-                        })
-                        .await;
-                    outcomes[index] = Some(ToolExecOutcome {
-                        index,
-                        id: tool_id,
-                        name: tool_name,
-                        input: tool_input,
-                        started_at,
-                        result: result_override,
-                    });
-                    continue;
                 }
 
-                if approval_required {
-                    let started_at = Instant::now();
-                    let result = Self::execute_tool_with_lock(
-                        lock,
-                        supports_parallel,
-                        interactive,
-                        self.tx_event.clone(),
-                        tool_name.clone(),
-                        tool_input.clone(),
-                        registry,
-                        mcp_pool.clone(),
-                        context_override,
-                    )
-                    .await;
-                    let _ = self
-                        .tx_event
-                        .send(Event::ToolCallComplete {
-                            id: tool_id.clone(),
-                            name: tool_name.clone(),
-                            result: result.clone(),
-                        })
-                        .await;
-                    outcomes[index] = Some(ToolExecOutcome {
-                        index,
-                        id: tool_id,
-                        name: tool_name,
-                        input: tool_input,
-                        started_at,
-                        result,
-                    });
-                    continue;
-                }
-
-                let started_at = Instant::now();
-                tool_tasks.push(async move {
-                    let result = Engine::execute_tool_with_lock(
-                        lock,
-                        supports_parallel,
-                        interactive,
-                        tx_event.clone(),
-                        tool_name.clone(),
-                        tool_input.clone(),
-                        registry,
-                        mcp_pool,
-                        None, // No context override for non-approval-required tools
-                    )
-                    .await;
-
-                    let _ = tx_event
-                        .send(Event::ToolCallComplete {
-                            id: tool_id.clone(),
-                            name: tool_name.clone(),
-                            result: result.clone(),
-                        })
-                        .await;
-
-                    ToolExecOutcome {
-                        index,
-                        id: tool_id,
-                        name: tool_name,
-                        input: tool_input,
-                        started_at,
-                        result,
-                    }
+                plans.push(ToolExecutionPlan {
+                    index,
+                    id: tool_id,
+                    name: tool_name,
+                    input: tool_input,
+                    interactive,
+                    approval_required,
+                    approval_description,
+                    supports_parallel,
+                    read_only,
                 });
             }
 
-            while let Some(outcome) = tool_tasks.next().await {
-                let index = outcome.index;
-                outcomes[index] = Some(outcome);
+            let parallel_allowed = should_parallelize_tool_batch(&plans);
+            if parallel_allowed && plans.len() > 1 {
+                let _ = self
+                    .tx_event
+                    .send(Event::status(format!(
+                        "Executing {} read-only tools in parallel",
+                        plans.len()
+                    )))
+                    .await;
+            } else if plans.len() > 1 {
+                let _ = self
+                    .tx_event
+                    .send(Event::status(
+                        "Executing tools sequentially (writes, approvals, or non-parallel tools detected)",
+                    ))
+                    .await;
             }
+
+            let mut outcomes: Vec<Option<ToolExecOutcome>> = Vec::with_capacity(plans.len());
+            outcomes.resize_with(plans.len(), || None);
+
+            if parallel_allowed {
+                let mut tool_tasks = FuturesUnordered::new();
+                for plan in plans {
+                    let registry = tool_registry;
+                    let lock = tool_exec_lock.clone();
+                    let mcp_pool = mcp_pool.clone();
+                    let tx_event = self.tx_event.clone();
+                    let started_at = Instant::now();
+
+                    tool_tasks.push(async move {
+                        let result = Engine::execute_tool_with_lock(
+                            lock,
+                            plan.supports_parallel,
+                            plan.interactive,
+                            tx_event.clone(),
+                            plan.name.clone(),
+                            plan.input.clone(),
+                            registry,
+                            mcp_pool,
+                            None,
+                        )
+                        .await;
+
+                        let _ = tx_event
+                            .send(Event::ToolCallComplete {
+                                id: plan.id.clone(),
+                                name: plan.name.clone(),
+                                result: result.clone(),
+                            })
+                            .await;
+
+                        ToolExecOutcome {
+                            index: plan.index,
+                            id: plan.id,
+                            name: plan.name,
+                            input: plan.input,
+                            started_at,
+                            result,
+                        }
+                    });
+                }
+
+                while let Some(outcome) = tool_tasks.next().await {
+                    let index = outcome.index;
+                    outcomes[index] = Some(outcome);
+                }
+            } else {
+                for plan in plans {
+                    let tool_id = plan.id.clone();
+                    let tool_name = plan.name.clone();
+                    let tool_input = plan.input.clone();
+
+                    // Handle approval flow: returns (result_override, context_override)
+                    let (result_override, context_override): (
+                        Option<Result<ToolResult, ToolError>>,
+                        Option<crate::tools::ToolContext>,
+                    ) = if plan.approval_required {
+                        let _ = self
+                            .tx_event
+                            .send(Event::ApprovalRequired {
+                                id: tool_id.clone(),
+                                tool_name: tool_name.clone(),
+                                description: plan.approval_description.clone(),
+                            })
+                            .await;
+
+                        match self.await_tool_approval(&tool_id).await {
+                            Ok(ApprovalResult::Approved) => (None, None),
+                            Ok(ApprovalResult::Denied) => (
+                                Some(Err(ToolError::permission_denied(format!(
+                                    "Tool '{tool_name}' denied by user"
+                                )))),
+                                None,
+                            ),
+                            Ok(ApprovalResult::RetryWithPolicy(policy)) => {
+                                let elevated_context = tool_registry.map(|r| {
+                                    r.context().clone().with_elevated_sandbox_policy(policy)
+                                });
+                                (None, elevated_context)
+                            }
+                            Err(err) => (Some(Err(err)), None),
+                        }
+                    } else {
+                        (None, None)
+                    };
+
+                    let started_at = Instant::now();
+                    let result = if let Some(result_override) = result_override {
+                        result_override
+                    } else {
+                        Self::execute_tool_with_lock(
+                            tool_exec_lock.clone(),
+                            plan.supports_parallel,
+                            plan.interactive,
+                            self.tx_event.clone(),
+                            tool_name.clone(),
+                            tool_input.clone(),
+                            tool_registry,
+                            mcp_pool.clone(),
+                            context_override,
+                        )
+                        .await
+                    };
+
+                    let _ = self
+                        .tx_event
+                        .send(Event::ToolCallComplete {
+                            id: tool_id.clone(),
+                            name: tool_name.clone(),
+                            result: result.clone(),
+                        })
+                        .await;
+
+                    outcomes[plan.index] = Some(ToolExecOutcome {
+                        index: plan.index,
+                        id: tool_id,
+                        name: tool_name,
+                        input: tool_input,
+                        started_at,
+                        result,
+                    });
+                }
+            }
+
+            let mut step_error_count = 0usize;
 
             for outcome in outcomes.into_iter().flatten() {
                 let duration = outcome.started_at.elapsed();
+                let tool_input = outcome.input.clone();
+                let tool_name_for_ws = outcome.name.clone();
                 let mut tool_call =
                     TurnToolCall::new(outcome.id.clone(), outcome.name.clone(), outcome.input);
 
                 match outcome.result {
                     Ok(output) => {
-                        tool_call.set_result(output.content.clone(), duration);
+                        let output_content = output.content;
+                        tool_call.set_result(output_content.clone(), duration);
+                        self.session.working_set.observe_tool_call(
+                            &tool_name_for_ws,
+                            &tool_input,
+                            Some(&output_content),
+                            &self.session.workspace,
+                        );
                         self.session.add_message(Message {
                             role: "user".to_string(),
                             content: vec![ContentBlock::ToolResult {
                                 tool_use_id: outcome.id,
-                                content: output.content,
+                                content: output_content,
                             }],
                         });
                     }
                     Err(e) => {
-                        let error = e.to_string();
+                        step_error_count += 1;
+                        let error = format_tool_error(&e, &outcome.name);
                         tool_call.set_error(error.clone(), duration);
+                        self.session.working_set.observe_tool_call(
+                            &tool_name_for_ws,
+                            &tool_input,
+                            Some(&error),
+                            &self.session.workspace,
+                        );
                         self.session.add_message(Message {
                             role: "user".to_string(),
                             content: vec![ContentBlock::ToolResult {
@@ -1494,6 +1604,22 @@ impl Engine {
                 }
 
                 turn.record_tool_call(tool_call);
+            }
+
+            if step_error_count > 0 {
+                consecutive_tool_error_steps = consecutive_tool_error_steps.saturating_add(1);
+            } else {
+                consecutive_tool_error_steps = 0;
+            }
+
+            if consecutive_tool_error_steps >= 3 {
+                let _ = self
+                    .tx_event
+                    .send(Event::status(
+                        "Stopping after repeated tool failures. Try a narrower scope or adjust approvals.",
+                    ))
+                    .await;
+                break;
             }
 
             turn.next_step();
@@ -1520,4 +1646,84 @@ pub fn spawn_engine(config: EngineConfig, api_config: &Config) -> EngineHandle {
     });
 
     handle
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::path::PathBuf;
+    use std::time::Instant;
+
+    fn make_plan(
+        read_only: bool,
+        supports_parallel: bool,
+        approval_required: bool,
+        interactive: bool,
+    ) -> ToolExecutionPlan {
+        ToolExecutionPlan {
+            index: 0,
+            id: "tool-1".to_string(),
+            name: "grep_files".to_string(),
+            input: json!({"pattern": "test"}),
+            interactive,
+            approval_required,
+            approval_description: "desc".to_string(),
+            supports_parallel,
+            read_only,
+        }
+    }
+
+    #[test]
+    fn parallel_batch_requires_read_only_parallel_tools() {
+        let plans = vec![make_plan(true, true, false, false)];
+        assert!(should_parallelize_tool_batch(&plans));
+
+        let plans = vec![
+            make_plan(true, true, false, false),
+            make_plan(true, true, false, false),
+        ];
+        assert!(should_parallelize_tool_batch(&plans));
+
+        let plans = vec![make_plan(false, true, false, false)];
+        assert!(!should_parallelize_tool_batch(&plans));
+
+        let plans = vec![make_plan(true, false, false, false)];
+        assert!(!should_parallelize_tool_batch(&plans));
+
+        let plans = vec![make_plan(true, true, true, false)];
+        assert!(!should_parallelize_tool_batch(&plans));
+
+        let plans = vec![make_plan(true, true, false, true)];
+        assert!(!should_parallelize_tool_batch(&plans));
+    }
+
+    #[test]
+    fn tool_error_messages_include_actionable_hints() {
+        let path_error = ToolError::path_escape(PathBuf::from("../escape.txt"));
+        let formatted = format_tool_error(&path_error, "read_file");
+        assert!(formatted.contains("escapes workspace"));
+
+        let missing_field = ToolError::missing_field("path");
+        let formatted = format_tool_error(&missing_field, "read_file");
+        assert!(formatted.contains("missing required field"));
+
+        let timeout = ToolError::Timeout { seconds: 5 };
+        let formatted = format_tool_error(&timeout, "exec_shell");
+        assert!(formatted.contains("timed out"));
+    }
+
+    #[test]
+    fn tool_exec_outcome_tracks_duration() {
+        let outcome = ToolExecOutcome {
+            index: 0,
+            id: "tool-1".to_string(),
+            name: "grep_files".to_string(),
+            input: json!({"pattern": "test"}),
+            started_at: Instant::now(),
+            result: Ok(ToolResult::success("ok")),
+        };
+
+        assert!(outcome.started_at.elapsed().as_nanos() > 0);
+    }
 }
