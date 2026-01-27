@@ -15,6 +15,9 @@ Overrides:
 
 If both are set, `--config` wins. Environment variable overrides are applied after the file is loaded.
 
+To bootstrap MCP and skills directories at their resolved paths, run `deepseek setup`.
+To only scaffold MCP, run `deepseek mcp init`.
+
 ## Profiles
 
 You can define multiple profiles in the same file:
@@ -124,4 +127,9 @@ Use `deepseek features list` to inspect known flags and their effective state.
 
 ## Notes On `deepseek doctor`
 
-`deepseek doctor` checks default locations under `~/.deepseek/` (including `config.toml` and `mcp.json`). If you override paths via `--config` or `DEEPSEEK_MCP_CONFIG`, the doctor output may not reflect those overrides.
+`deepseek doctor` now follows the same config resolution rules as the rest of the CLI.
+That means `--config` / `DEEPSEEK_CONFIG_PATH` are respected, and MCP/skills checks
+use the resolved `mcp_config_path` / `skills_dir` (including env overrides).
+
+To bootstrap missing MCP/skills paths, run `deepseek setup --all`. You can also
+run `deepseek setup --skills --local` to create a workspace-local `./skills` dir.

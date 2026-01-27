@@ -2,6 +2,16 @@
 
 DeepSeek CLI can load additional tools via MCP (Model Context Protocol). MCP servers are local processes that the CLI starts and communicates with over stdio.
 
+## Bootstrap MCP Config
+
+Create a starter MCP config at your resolved MCP path:
+
+```bash
+deepseek mcp init
+```
+
+`deepseek setup --mcp` performs the same MCP bootstrap alongside skills setup.
+
 ## Config File Location
 
 Default path:
@@ -12,6 +22,8 @@ Overrides:
 
 - Config: `mcp_config_path = "/path/to/mcp.json"`
 - Env: `DEEPSEEK_MCP_CONFIG=/path/to/mcp.json`
+
+`deepseek mcp init` (and `deepseek setup --mcp`) writes to this resolved path.
 
 After editing the file, restart the TUI.
 
@@ -61,7 +73,6 @@ MCP tools currently execute without TUI approval prompts. Only configure MCP ser
 
 ## Troubleshooting
 
-- Run `deepseek doctor` to confirm whether the default `~/.deepseek/mcp.json` exists.
-- If you override `mcp_config_path` / `DEEPSEEK_MCP_CONFIG`, note that `deepseek doctor` still checks `~/.deepseek/mcp.json`.
+- Run `deepseek doctor` to confirm the MCP config path it resolved and whether it exists.
+- If the MCP config is missing, run `deepseek mcp init --force` to regenerate it.
 - If tools don’t appear, verify the server command works from your shell and that the server supports MCP `tools/list`.
-
