@@ -507,7 +507,7 @@ fn build_chat_messages(
 
         if !tool_results.is_empty() {
             if pending_tool_calls.is_empty() {
-                logging::warn("Dropping tool results without matching tool_calls".to_string());
+                logging::warn("Dropping tool results without matching tool_calls");
             } else {
                 for (tool_id, tool_msg) in tool_results {
                     if pending_tool_calls.remove(&tool_id) {

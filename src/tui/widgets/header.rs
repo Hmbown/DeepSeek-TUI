@@ -36,8 +36,7 @@ impl<'a> HeaderData<'a> {
         // Calculate context percentage
         let context_percent = crate::models::context_window_for_model(model).map(|max| {
             let max_u32 = max;
-            let pct = (context_used * 100 / max_u32.max(1)).min(100) as u8;
-            pct
+            (context_used * 100 / max_u32.max(1)).min(100) as u8
         });
 
         Self {
