@@ -634,10 +634,7 @@ fn validate_swarm_tasks(tasks: &[SwarmTaskSpec]) -> Result<(), ToolError> {
             )));
         }
         if matches!(task.agent_type, Some(SubAgentType::Custom)) {
-            let tools = task
-                .allowed_tools
-                .as_deref()
-                .unwrap_or(&[]);
+            let tools = task.allowed_tools.as_deref().unwrap_or(&[]);
             if tools.is_empty() {
                 return Err(ToolError::invalid_input(format!(
                     "task '{id}' requires allowed_tools for custom type"

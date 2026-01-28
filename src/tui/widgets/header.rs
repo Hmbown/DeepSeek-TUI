@@ -81,9 +81,7 @@ impl<'a> HeaderWidget<'a> {
         let color = Self::mode_color(self.data.mode);
         Span::styled(
             format!("[{label}]"),
-            Style::default()
-                .fg(color)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
         )
     }
 
@@ -191,7 +189,10 @@ impl Renderable for HeaderWidget<'_> {
             } else {
                 model_str.to_string()
             };
-            spans.push(Span::styled(display_model, Style::default().fg(palette::TEXT_MUTED)));
+            spans.push(Span::styled(
+                display_model,
+                Style::default().fg(palette::TEXT_MUTED),
+            ));
         } else if available >= mode_width {
             // Minimal: just mode badge
             spans.push(mode_span);
