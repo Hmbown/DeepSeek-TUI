@@ -321,7 +321,8 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "save" => session::save(app, arg),
         "sessions" | "resume" => session::sessions(app),
         "load" => {
-            if app.mode == AppMode::Rlm {
+            let force_rlm = arg.is_some_and(|raw| raw.trim_start().starts_with('@'));
+            if app.mode == AppMode::Rlm || force_rlm {
                 rlm::load(app, arg)
             } else {
                 session::load(app, arg)
@@ -382,4 +383,56 @@ pub fn commands_matching(prefix: &str) -> Vec<&'static CommandInfo> {
             cmd.name.starts_with(&prefix) || cmd.aliases.iter().any(|a| a.starts_with(&prefix))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::execute;
+    use crate::config::Config;
+    use crate::tui::app::{App, AppMode, TuiOptions};
+    use std::fs;
+    use std::path::PathBuf;
+    use tempfile::tempdir;
+
+    fn make_test_app(workspace: PathBuf) -> App {
+        let skills_dir = workspace.join("skills");
+        let _ = fs::create_dir_all(&skills_dir);
+        let options = TuiOptions {
+            model: "test-model".to_string(),
+            workspace,
+            allow_shell: false,
+            use_alt_screen: false,
+            max_subagents: 1,
+            skills_dir,
+            memory_path: PathBuf::from("memory.md"),
+            notes_path: PathBuf::from("notes.txt"),
+            mcp_config_path: PathBuf::from("mcp.json"),
+            use_memory: false,
+            start_in_agent_mode: false,
+            skip_onboarding: true,
+            yolo: false,
+            resume_session_id: None,
+        };
+        App::new(options, &Config::default())
+    }
+
+    #[test]
+    fn load_at_path_uses_rlm_outside_rlm_mode() {
+        let tmp = tempdir().expect("tempdir");
+        let file = tmp.path().join("example.txt");
+        fs::write(&file, "hello").expect("write");
+
+        let mut app = make_test_app(tmp.path().to_path_buf());
+        app.mode = AppMode::Normal;
+
+        let result = execute("/load @example.txt", &mut app);
+        let message = result.message.unwrap_or_default();
+        assert!(
+            message.starts_with("Loaded "),
+            "expected RLM load message, got: {message}"
+        );
+
+        let session = app.rlm_session.lock().expect("lock session");
+        assert!(!session.contexts.is_empty());
+    }
 }
