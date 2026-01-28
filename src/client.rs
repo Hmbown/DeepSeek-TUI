@@ -3,6 +3,7 @@
 //! Uses the OpenAI Responses API when available, falling back to Chat Completions
 //! if the Responses endpoint is unsupported by the target base URL.
 
+use std::collections::HashSet;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -427,6 +428,7 @@ fn build_chat_messages(
 ) -> Vec<Value> {
     let mut out = Vec::new();
     let include_reasoning = requires_reasoning_content(model);
+    let mut pending_tool_calls: HashSet<String> = HashSet::new();
 
     if let Some(instructions) = system_to_instructions(system.cloned()) {
         if !instructions.trim().is_empty() {
@@ -442,7 +444,8 @@ fn build_chat_messages(
         let mut text_parts = Vec::new();
         let mut thinking_parts = Vec::new();
         let mut tool_calls = Vec::new();
-        let mut tool_results = Vec::new();
+        let mut tool_call_ids = Vec::new();
+        let mut tool_results: Vec<(String, Value)> = Vec::new();
 
         for block in &message.content {
             match block {
@@ -458,16 +461,17 @@ fn build_chat_messages(
                             "arguments": args,
                         }
                     }));
+                    tool_call_ids.push(id.clone());
                 }
                 ContentBlock::ToolResult {
                     tool_use_id,
                     content,
                 } => {
-                    tool_results.push(json!({
+                    tool_results.push((tool_use_id.clone(), json!({
                         "role": "tool",
                         "tool_call_id": tool_use_id,
                         "content": content,
-                    }));
+                    })));
                 }
             }
         }
@@ -483,6 +487,9 @@ fn build_chat_messages(
             }
             if !tool_calls.is_empty() {
                 msg["tool_calls"] = json!(tool_calls);
+                pending_tool_calls = tool_call_ids.into_iter().collect();
+            } else {
+                pending_tool_calls.clear();
             }
             out.push(msg);
         } else if role == "user" {
@@ -496,7 +503,21 @@ fn build_chat_messages(
         }
 
         if !tool_results.is_empty() {
-            out.extend(tool_results);
+            if pending_tool_calls.is_empty() {
+                logging::warn("Dropping tool results without matching tool_calls".to_string());
+            } else {
+                for (tool_id, tool_msg) in tool_results {
+                    if pending_tool_calls.remove(&tool_id) {
+                        out.push(tool_msg);
+                    } else {
+                        logging::warn(format!(
+                            "Dropping tool result for unknown tool_call_id: {tool_id}"
+                        ));
+                    }
+                }
+            }
+        } else if role != "assistant" {
+            pending_tool_calls.clear();
         }
     }
 
@@ -778,6 +799,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn chat_messages_include_reasoning_content_for_reasoner() {
@@ -818,5 +840,52 @@ mod tests {
             .find(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
             .expect("assistant message");
         assert!(assistant.get("reasoning_content").is_none());
+    }
+
+    #[test]
+    fn chat_messages_drop_orphan_tool_results() {
+        let messages = vec![Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "tool-1".to_string(),
+                content: "ok".to_string(),
+            }],
+        }];
+
+        let out = build_chat_messages(None, &messages, "deepseek-chat");
+        assert!(!out.iter().any(|value| {
+            value.get("role").and_then(Value::as_str) == Some("tool")
+        }));
+    }
+
+    #[test]
+    fn chat_messages_include_tool_results_when_call_present() {
+        let messages = vec![
+            Message {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::ToolUse {
+                    id: "tool-1".to_string(),
+                    name: "list_dir".to_string(),
+                    input: json!({}),
+                }],
+            },
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "tool-1".to_string(),
+                    content: "ok".to_string(),
+                }],
+            },
+        ];
+
+        let out = build_chat_messages(None, &messages, "deepseek-chat");
+        assert!(out.iter().any(|value| {
+            value.get("role").and_then(Value::as_str) == Some("tool")
+        }));
+        let assistant = out
+            .iter()
+            .find(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
+            .expect("assistant message");
+        assert!(assistant.get("tool_calls").is_some());
     }
 }
