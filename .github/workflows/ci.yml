@@ -18,6 +18,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: stable
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
       - name: Check formatting
@@ -34,6 +35,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
       - uses: Swatinem/rust-cache@v2
       - name: Run tests
         run: cargo test --all-features
@@ -49,6 +52,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
       - uses: Swatinem/rust-cache@v2
       - name: Build
         run: cargo build --release
@@ -60,6 +65,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
       - uses: Swatinem/rust-cache@v2
       - name: Build docs
         run: cargo doc --no-deps
