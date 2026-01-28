@@ -4,7 +4,7 @@
 
 use anyhow::Result;
 use regex::Regex;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -332,6 +332,9 @@ fn plan_compaction(
         pinned_indices.extend(pins.iter().copied().filter(|idx| *idx < len));
     }
 
+    // Ensure tool result messages are not kept without their corresponding tool call.
+    enforce_tool_call_pairs(messages, &mut pinned_indices);
+
     let summarize_indices = (0..len)
         .filter(|idx| !pinned_indices.contains(idx))
         .collect();
@@ -340,6 +343,55 @@ fn plan_compaction(
         pinned_indices,
         summarize_indices,
         working_set_paths,
+    }
+}
+
+fn enforce_tool_call_pairs(messages: &[Message], pinned_indices: &mut BTreeSet<usize>) {
+    if pinned_indices.is_empty() {
+        return;
+    }
+
+    let mut tool_call_indices: HashMap<String, usize> = HashMap::new();
+    for (idx, msg) in messages.iter().enumerate() {
+        for block in &msg.content {
+            if let ContentBlock::ToolUse { id, .. } = block {
+                tool_call_indices.insert(id.clone(), idx);
+            }
+        }
+    }
+
+    let mut to_add = Vec::new();
+    let mut to_remove = Vec::new();
+
+    for &idx in pinned_indices.iter() {
+        let msg = &messages[idx];
+        let mut tool_ids = Vec::new();
+        for block in &msg.content {
+            if let ContentBlock::ToolResult { tool_use_id, .. } = block {
+                tool_ids.push(tool_use_id.clone());
+            }
+        }
+        if tool_ids.is_empty() {
+            continue;
+        }
+
+        let mut found_any = false;
+        for tool_id in tool_ids {
+            if let Some(call_idx) = tool_call_indices.get(&tool_id).copied() {
+                to_add.push(call_idx);
+                found_any = true;
+            }
+        }
+        if !found_any {
+            to_remove.push(idx);
+        }
+    }
+
+    for idx in to_add {
+        pinned_indices.insert(idx);
+    }
+    for idx in to_remove {
+        pinned_indices.remove(&idx);
     }
 }
 
@@ -688,6 +740,7 @@ pub fn merge_system_prompts(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn msg(role: &str, text: &str) -> Message {
         Message {
@@ -867,6 +920,32 @@ mod tests {
         );
 
         assert!(plan.pinned_indices.contains(&0));
+    }
+
+    #[test]
+    fn plan_compaction_pins_tool_calls_for_tool_results() {
+        let messages = vec![
+            msg("user", "noise"),
+            Message {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::ToolUse {
+                    id: "tool-1".to_string(),
+                    name: "read_file".to_string(),
+                    input: json!({"path": "src/main.rs"}),
+                }],
+            },
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "tool-1".to_string(),
+                    content: "ok src/main.rs".to_string(),
+                }],
+            },
+        ];
+
+        let plan = plan_compaction(&messages, None, 1, None, None);
+        assert!(plan.pinned_indices.contains(&2));
+        assert!(plan.pinned_indices.contains(&1));
     }
 
     #[test]
