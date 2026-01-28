@@ -128,7 +128,6 @@ impl SubAgentType {
     }
 }
 
-
 /// Status of a sub-agent execution.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum SubAgentStatus {
