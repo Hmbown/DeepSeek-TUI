@@ -608,9 +608,8 @@ fn ensure_parent_dir(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
-        std::fs::create_dir_all(parent).with_context(|| {
-            format!("Failed to create directory for {}", parent.display())
-        })?;
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create directory for {}", parent.display()))?;
     }
     Ok(())
 }
@@ -701,9 +700,7 @@ fn run_setup(config: &Config, workspace: &Path, args: SetupArgs) -> Result<()> {
 
     println!(
         "{}",
-        "DeepSeek Setup"
-            .truecolor(aqua_r, aqua_g, aqua_b)
-            .bold()
+        "DeepSeek Setup".truecolor(aqua_r, aqua_g, aqua_b).bold()
     );
     println!("{}", "==============".truecolor(sky_r, sky_g, sky_b));
     println!("Workspace: {}", workspace.display());
@@ -740,7 +737,10 @@ fn run_setup(config: &Config, workspace: &Path, args: SetupArgs) -> Result<()> {
                 println!("  ✓ Overwrote example skill at {}", skill_path.display());
             }
             WriteStatus::SkippedExists => {
-                println!("  · Example skill already exists at {}", skill_path.display());
+                println!(
+                    "  · Example skill already exists at {}",
+                    skill_path.display()
+                );
             }
         }
         if args.local {
@@ -795,7 +795,11 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         dirs::home_dir().map_or_else(|| PathBuf::from(".deepseek"), |h| h.join(".deepseek"));
     let config_path = config_path_override
         .map(PathBuf::from)
-        .or_else(|| std::env::var("DEEPSEEK_CONFIG_PATH").ok().map(PathBuf::from))
+        .or_else(|| {
+            std::env::var("DEEPSEEK_CONFIG_PATH")
+                .ok()
+                .map(PathBuf::from)
+        })
         .unwrap_or_else(|| default_config_dir.join("config.toml"));
 
     if config_path.exists() {
@@ -885,9 +889,15 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     println!("{}", "MCP Servers:".bold());
     let features = config.features();
     if features.enabled(Feature::Mcp) {
-        println!("  {} MCP feature flag enabled", "✓".truecolor(aqua_r, aqua_g, aqua_b));
+        println!(
+            "  {} MCP feature flag enabled",
+            "✓".truecolor(aqua_r, aqua_g, aqua_b)
+        );
     } else {
-        println!("  {} MCP feature flag disabled", "!".truecolor(sky_r, sky_g, sky_b));
+        println!(
+            "  {} MCP feature flag disabled",
+            "!".truecolor(sky_r, sky_g, sky_b)
+        );
     }
 
     let mcp_config_path = config.mcp_config_path();
@@ -975,7 +985,11 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         );
     }
 
-    println!("  {} selected skills dir: {}", "·".dimmed(), selected_skills_dir.display());
+    println!(
+        "  {} selected skills dir: {}",
+        "·".dimmed(),
+        selected_skills_dir.display()
+    );
     if !local_skills_dir.exists() && !global_skills_dir.exists() {
         println!("    Run `deepseek setup --skills` (or add --local for ./skills).");
     }

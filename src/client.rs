@@ -467,11 +467,14 @@ fn build_chat_messages(
                     tool_use_id,
                     content,
                 } => {
-                    tool_results.push((tool_use_id.clone(), json!({
-                        "role": "tool",
-                        "tool_call_id": tool_use_id,
-                        "content": content,
-                    })));
+                    tool_results.push((
+                        tool_use_id.clone(),
+                        json!({
+                            "role": "tool",
+                            "tool_call_id": tool_use_id,
+                            "content": content,
+                        }),
+                    ));
                 }
             }
         }
@@ -853,9 +856,10 @@ mod tests {
         }];
 
         let out = build_chat_messages(None, &messages, "deepseek-chat");
-        assert!(!out.iter().any(|value| {
-            value.get("role").and_then(Value::as_str) == Some("tool")
-        }));
+        assert!(
+            !out.iter()
+                .any(|value| { value.get("role").and_then(Value::as_str) == Some("tool") })
+        );
     }
 
     #[test]
@@ -879,9 +883,10 @@ mod tests {
         ];
 
         let out = build_chat_messages(None, &messages, "deepseek-chat");
-        assert!(out.iter().any(|value| {
-            value.get("role").and_then(Value::as_str) == Some("tool")
-        }));
+        assert!(
+            out.iter()
+                .any(|value| { value.get("role").and_then(Value::as_str) == Some("tool") })
+        );
         let assistant = out
             .iter()
             .find(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))

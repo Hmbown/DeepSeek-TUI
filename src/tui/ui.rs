@@ -2085,27 +2085,27 @@ fn render_status_indicator(f: &mut Frame, area: Rect, app: &App, queued: &[Strin
 fn render_footer(f: &mut Frame, area: Rect, app: &App) {
     let width = area.width;
     let available = width as usize;
-    
+
     // Build left side: [MODE] context_bar
     let context_text = context_indicator(app);
     let mode_badge = Span::styled(
         format!(" {} ", app.mode.label()),
         mode_badge_style(app.mode),
     );
-    
+
     let context_info = Span::styled(
         context_text.clone(),
         Style::default().fg(palette::TEXT_MUTED),
     );
-    
+
     // Calculate widths for left side
     let mode_width = mode_badge.content.width();
     let context_width = context_text.width();
     let left_min_width = mode_width + 1 + context_width; // mode + space + context
-    
+
     // Build right side: key hints and other info
     let mut right_spans = Vec::new();
-    
+
     // Add scroll info if applicable
     let can_scroll = app.last_transcript_total > app.last_transcript_visible;
     if can_scroll && !matches!(app.transcript_scroll, TranscriptScroll::ToBottom) {
@@ -2114,7 +2114,7 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(palette::TEXT_DIM),
         ));
     }
-    
+
     // Add selection hint if active
     if app.transcript_selection.is_active() {
         right_spans.push(Span::styled(
@@ -2128,26 +2128,21 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
     if app.mode == AppMode::Rlm {
         if let Some((badge, style)) = rlm_usage_badge(app) {
             right_spans.push(Span::styled(badge, style));
-            right_spans.push(Span::styled(
-                " · ",
-                Style::default().fg(palette::TEXT_DIM),
-            ));
+            right_spans.push(Span::styled(" · ", Style::default().fg(palette::TEXT_DIM)));
         }
     }
-    
+
     // Add key hints
     right_spans.extend(footer_key_hints(width, app));
-    
+
     // Calculate right side width
-    let spans_width = |spans: &[Span]| -> usize {
-        spans.iter().map(|s| s.content.width()).sum()
-    };
+    let spans_width = |spans: &[Span]| -> usize { spans.iter().map(|s| s.content.width()).sum() };
     let mut right_width = spans_width(&right_spans);
-    
+
     // Determine layout based on available space
     let left_spans: Vec<Span>;
     let left_width: usize;
-    
+
     if width >= 80 {
         // Wide: show full context bar
         left_spans = vec![mode_badge, Span::raw(" "), context_info];
@@ -2157,10 +2152,11 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
         let percent = get_context_percent(app);
         let short_context = format!("{}%", percent);
         let short_width = mode_width + 1 + short_context.width();
-        left_spans = vec![mode_badge, Span::raw(" "), Span::styled(
-            short_context,
-            Style::default().fg(palette::TEXT_MUTED),
-        )];
+        left_spans = vec![
+            mode_badge,
+            Span::raw(" "),
+            Span::styled(short_context, Style::default().fg(palette::TEXT_MUTED)),
+        ];
         left_width = short_width;
     } else {
         // Narrow: just mode badge
@@ -2187,24 +2183,24 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
         }
     }
     let mid_spacing = available.saturating_sub(left_width + right_width);
-    
+
     // Combine all spans
     let mut all_spans = left_spans;
-    
+
     // Add spacing between left and right
     if mid_spacing > 0 {
         all_spans.push(Span::raw(" ".repeat(mid_spacing)));
     }
-    
+
     // Add right side spans
     all_spans.extend(right_spans);
-    
+
     // Add status message if present (replaces everything)
     if let Some(ref msg) = app.status_message {
         let status_span = Span::styled(msg, Style::default().fg(palette::DEEPSEEK_SKY));
         all_spans = vec![status_span];
     }
-    
+
     let footer = Paragraph::new(Line::from(all_spans));
     f.render_widget(footer, area);
 }
@@ -2216,12 +2212,13 @@ fn get_context_percent(app: &App) -> u8 {
     } else {
         estimated_context_tokens(app)
     };
-    
+
     if let Some(max) = context_window_for_model(&app.model) {
         if let Some(used) = used {
             let max_i64 = i64::from(max);
             let remaining = (max_i64 - used).max(0);
-            let percent_remaining = ((remaining.saturating_mul(100) + max_i64 / 2) / max_i64).clamp(0, 100);
+            let percent_remaining =
+                ((remaining.saturating_mul(100) + max_i64 / 2) / max_i64).clamp(0, 100);
             100 - percent_remaining as u8
         } else {
             0
@@ -2350,7 +2347,8 @@ fn context_indicator(app: &App) -> String {
         if let Some(used) = used {
             let max_i64 = i64::from(max);
             let remaining = (max_i64 - used).max(0);
-            let percent_remaining = ((remaining.saturating_mul(100) + max_i64 / 2) / max_i64).clamp(0, 100);
+            let percent_remaining =
+                ((remaining.saturating_mul(100) + max_i64 / 2) / max_i64).clamp(0, 100);
             let percent_used = (100 - percent_remaining) as u8;
             render_context_bar(percent_used, 10)
         } else {
