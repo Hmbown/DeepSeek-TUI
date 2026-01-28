@@ -30,7 +30,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
           targets: ${{ matrix.target }}
       - run: cargo build --release --target ${{ matrix.target }}
       - name: Rename binary
