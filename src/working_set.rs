@@ -389,7 +389,9 @@ fn clean_relative(path: &Path) -> PathBuf {
 }
 
 fn path_to_string(path: &Path) -> Option<String> {
-    path.as_os_str().to_str().map(ToOwned::to_owned)
+    path.as_os_str()
+        .to_str()
+        .map(|s| s.replace('\\', "/"))
 }
 
 fn extract_paths_from_message(message: &Message) -> Vec<String> {
