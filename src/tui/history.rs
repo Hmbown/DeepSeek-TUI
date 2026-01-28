@@ -52,8 +52,18 @@ impl HistoryCell {
     pub fn lines(&self, width: u16) -> Vec<Line<'static>> {
         match self {
             HistoryCell::User { content } => render_message("You", content, user_style(), width),
-            HistoryCell::Assistant { content, .. } => {
-                render_message("DeepSeek", content, assistant_style(), width)
+            HistoryCell::Assistant { content, streaming } => {
+                let mut lines = render_message("DeepSeek", content, assistant_style(), width);
+                if *streaming {
+                    // Add blinking cursor to last line
+                    if let Some(last) = lines.last_mut() {
+                        last.spans.push(Span::styled(
+                            "▋",
+                            Style::default().fg(palette::DEEPSEEK_SKY),
+                        ));
+                    }
+                }
+                lines
             }
             HistoryCell::System { content } => {
                 render_message("System", content, system_style(), width)
@@ -1220,11 +1230,13 @@ fn truncate_text(text: &str, max_len: usize) -> String {
 }
 
 fn user_style() -> Style {
-    Style::default().fg(palette::DEEPSEEK_BLUE)
+    Style::default()
+        .fg(palette::TEXT_PRIMARY)
+        .add_modifier(Modifier::BOLD)
 }
 
 fn assistant_style() -> Style {
-    Style::default().fg(palette::DEEPSEEK_BLUE)
+    Style::default().fg(palette::DEEPSEEK_SKY)
 }
 
 fn system_style() -> Style {

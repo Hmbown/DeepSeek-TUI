@@ -1,7 +1,9 @@
 //! Cached transcript rendering for the TUI.
 
-use ratatui::text::Line;
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
 
+use crate::palette;
 use crate::tui::history::{HistoryCell, TranscriptRenderOptions};
 use crate::tui::scrolling::TranscriptLineMeta;
 
@@ -60,7 +62,14 @@ impl TranscriptViewCache {
             }
 
             if cell_index + 1 < cells.len() && !cell.is_stream_continuation() {
-                lines.push(Line::from(""));
+                // Add subtle horizontal separator between messages
+                let separator = Span::styled(
+                    "─".repeat(usize::from(width)),
+                    Style::default()
+                        .fg(palette::TEXT_MUTED)
+                        .add_modifier(Modifier::DIM),
+                );
+                lines.push(Line::from(separator));
                 meta.push(TranscriptLineMeta::Spacer);
             }
         }

@@ -6,6 +6,7 @@ pub const DEEPSEEK_BLUE_RGB: (u8, u8, u8) = (53, 120, 229); // #3578E5
 pub const DEEPSEEK_SKY_RGB: (u8, u8, u8) = (106, 174, 242);
 #[allow(dead_code)]
 pub const DEEPSEEK_AQUA_RGB: (u8, u8, u8) = (54, 187, 212);
+#[allow(dead_code)]
 pub const DEEPSEEK_NAVY_RGB: (u8, u8, u8) = (24, 63, 138);
 pub const DEEPSEEK_INK_RGB: (u8, u8, u8) = (11, 21, 38);
 pub const DEEPSEEK_SLATE_RGB: (u8, u8, u8) = (18, 28, 46);
@@ -24,6 +25,7 @@ pub const DEEPSEEK_AQUA: Color = Color::Rgb(
     DEEPSEEK_AQUA_RGB.1,
     DEEPSEEK_AQUA_RGB.2,
 );
+#[allow(dead_code)]
 pub const DEEPSEEK_NAVY: Color = Color::Rgb(
     DEEPSEEK_NAVY_RGB.0,
     DEEPSEEK_NAVY_RGB.1,
@@ -48,6 +50,14 @@ pub const STATUS_WARNING: Color = DEEPSEEK_SKY;
 pub const STATUS_ERROR: Color = DEEPSEEK_RED;
 #[allow(dead_code)]
 pub const STATUS_INFO: Color = DEEPSEEK_BLUE;
+
+// Mode-specific accent colors for mode badges
+pub const MODE_NORMAL: Color = Color::Gray;
+pub const MODE_AGENT: Color = Color::Rgb(80, 150, 255);   // Bright blue
+pub const MODE_YOLO: Color = Color::Rgb(255, 100, 100);   // Warning red
+pub const MODE_PLAN: Color = Color::Rgb(255, 170, 60);    // Orange
+pub const MODE_RLM: Color = Color::Rgb(180, 100, 255);    // Purple (was INK!)
+pub const MODE_DUO: Color = Color::Rgb(100, 220, 180);    // Teal
 
 pub const SELECTION_BG: Color = Color::Rgb(26, 44, 74);
 pub const COMPOSER_BG: Color = DEEPSEEK_SLATE;

@@ -203,6 +203,75 @@ impl ModalView for HelpView {
             )]),
             Line::from(""),
             Line::from(vec![Span::styled(
+                "=== Navigation ===",
+                Style::default().fg(palette::DEEPSEEK_SKY).bold(),
+            )]),
+            Line::from("  Up / Down         - Scroll transcript (or navigate history)"),
+            Line::from("  Ctrl+Up / Ctrl+Down - Navigate input history"),
+            Line::from("  Alt+Up / Alt+Down - Scroll transcript"),
+            Line::from("  PageUp / PageDown - Scroll transcript by page"),
+            Line::from("  Home / End        - Jump to top / bottom of transcript"),
+            Line::from(""),
+            Line::from(vec![Span::styled(
+                "=== Input Editing ===",
+                Style::default().fg(palette::DEEPSEEK_SKY).bold(),
+            )]),
+            Line::from("  Left / Right      - Move cursor"),
+            Line::from("  Ctrl+A / Ctrl+E   - Jump to start / end of line"),
+            Line::from("  Backspace / Delete - Delete character before / after cursor"),
+            Line::from("  Ctrl+U            - Clear entire input line"),
+            Line::from(""),
+            Line::from(vec![Span::styled(
+                "=== Multi-line Input ===",
+                Style::default().fg(palette::DEEPSEEK_SKY).bold(),
+            )]),
+            Line::from("  Ctrl+J / Alt+Enter - Insert newline (without submitting)"),
+            Line::from(""),
+            Line::from(vec![Span::styled(
+                "=== Actions ===",
+                Style::default().fg(palette::DEEPSEEK_SKY).bold(),
+            )]),
+            Line::from("  Enter             - Submit message"),
+            Line::from("  Esc               - Cancel request / clear input"),
+            Line::from("  Ctrl+C            - Cancel request or exit application"),
+            Line::from("  Ctrl+D            - Exit when input is empty"),
+            Line::from("  l                 - Open pager for last message (when input empty)"),
+            Line::from("  Enter (selection) - Open pager for selected text"),
+            Line::from(""),
+            Line::from(vec![Span::styled(
+                "=== Modes ===",
+                Style::default().fg(palette::DEEPSEEK_SKY).bold(),
+            )]),
+            Line::from("  Tab               - Cycle through modes"),
+            Line::from("  Ctrl+X            - Toggle between Agent and Normal modes"),
+            Line::from(""),
+            Line::from(vec![Span::styled(
+                "=== Sessions ===",
+                Style::default().fg(palette::DEEPSEEK_SKY).bold(),
+            )]),
+            Line::from("  Ctrl+R            - Open session picker"),
+            Line::from(""),
+            Line::from(vec![Span::styled(
+                "=== Clipboard ===",
+                Style::default().fg(palette::DEEPSEEK_SKY).bold(),
+            )]),
+            Line::from("  Ctrl+V            - Paste from clipboard (Cmd+V on macOS)"),
+            Line::from("  Ctrl+Shift+C      - Copy selection (Cmd+C on macOS)"),
+            Line::from(""),
+            Line::from(vec![Span::styled(
+                "=== Help ===",
+                Style::default().fg(palette::DEEPSEEK_SKY).bold(),
+            )]),
+            Line::from("  F1 / Ctrl+/       - Toggle this help view"),
+            Line::from(""),
+            Line::from(vec![Span::styled(
+                "=== Mouse ===",
+                Style::default().fg(palette::DEEPSEEK_SKY).bold(),
+            )]),
+            Line::from("  Scroll wheel      - Scroll transcript"),
+            Line::from("  Drag to select    - Select text (auto-copies on release)"),
+            Line::from(""),
+            Line::from(vec![Span::styled(
                 "Modes:",
                 Style::default().fg(palette::DEEPSEEK_SKY).bold(),
             )]),
@@ -226,12 +295,12 @@ impl ModalView for HelpView {
             "RLM / Aleph:",
             Style::default().fg(palette::DEEPSEEK_SKY).bold(),
         )]));
-        help_lines.push(Line::from("  /rlm or /aleph - enter external memory mode"));
+        help_lines.push(Line::from("  /rlm or /aleph - Enter external memory mode"));
         help_lines.push(Line::from(
-            "  /load @path    - load a file into RLM context",
+            "  /load @path    - Load a file into RLM context",
         ));
-        help_lines.push(Line::from("  /repl          - toggle expression mode"));
-        help_lines.push(Line::from("  /status        - show contexts and usage"));
+        help_lines.push(Line::from("  /repl          - Toggle expression mode"));
+        help_lines.push(Line::from("  /status        - Show contexts and usage"));
 
         help_lines.push(Line::from(""));
         help_lines.push(Line::from(vec![Span::styled(
@@ -242,34 +311,6 @@ impl ModalView for HelpView {
             "  web_search   - Search the web (DuckDuckGo; MCP optional)",
         ));
         help_lines.push(Line::from("  mcp_*        - Tools exposed by MCP servers"));
-        help_lines.push(Line::from(""));
-        help_lines.push(Line::from(vec![Span::styled(
-            "Keyboard Shortcuts:",
-            Style::default().fg(palette::DEEPSEEK_SKY).bold(),
-        )]));
-        help_lines.push(Line::from("  Enter        - Send message"));
-        help_lines.push(Line::from("  Esc          - Cancel request / clear input"));
-        help_lines.push(Line::from("  Ctrl+C       - Exit"));
-        help_lines.push(Line::from("  Ctrl+U       - Clear input line"));
-        help_lines.push(Line::from("  Ctrl+A / E   - Move to start/end of line"));
-        help_lines.push(Line::from("  Alt+Up/Down  - Scroll transcript"));
-        help_lines.push(Line::from("  Ctrl+R       - Session picker"));
-        help_lines.push(Line::from("  l            - Pager for last message"));
-        help_lines.push(Line::from("  Enter (sel)  - Pager for selection"));
-        help_lines.push(Line::from(
-            "  Ctrl+Shift+C - Copy selection (Cmd+C on macOS)",
-        ));
-        help_lines.push(Line::from("  Ctrl+V       - Paste (Cmd+V on macOS)"));
-        help_lines.push(Line::from("  F1           - Toggle this help"));
-        help_lines.push(Line::from(""));
-        help_lines.push(Line::from(vec![Span::styled(
-            "Mouse:",
-            Style::default().fg(palette::DEEPSEEK_SKY).bold(),
-        )]));
-        help_lines.push(Line::from("  Scroll wheel - Scroll transcript"));
-        help_lines.push(Line::from(
-            "  Drag select  - Select text (auto‑copies on release)",
-        ));
         help_lines.push(Line::from(""));
 
         let total_lines = help_lines.len();

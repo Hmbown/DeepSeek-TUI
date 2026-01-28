@@ -719,6 +719,15 @@ async fn run_event_loop(
                 continue;
             }
 
+            if key.code == KeyCode::Char('/') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                if app.view_stack.top_kind() == Some(ModalKind::Help) {
+                    app.view_stack.pop();
+                } else {
+                    app.view_stack.push(HelpView::new());
+                }
+                continue;
+            }
+
             if !app.view_stack.is_empty() {
                 let events = app.view_stack.handle_key(key);
                 handle_view_events(app, &engine_handle, events).await;
@@ -781,6 +790,12 @@ async fn run_event_loop(
                         return Ok(());
                     }
                 }
+                KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    if app.input.is_empty() {
+                        let _ = engine_handle.send(Op::Shutdown).await;
+                        return Ok(());
+                    }
+                }
                 KeyCode::Esc => {
                     if app.is_loading {
                         engine_handle.cancel();
@@ -813,6 +828,12 @@ async fn run_event_loop(
                     }
                 }
                 // Input handling
+                KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    app.insert_char('\n');
+                }
+                KeyCode::Enter if key.modifiers.contains(KeyModifiers::ALT) => {
+                    app.insert_char('\n');
+                }
                 KeyCode::Enter => {
                     if let Some(input) = app.submit_input() {
                         if handle_plan_choice(app, &engine_handle, &input).await? {
@@ -871,6 +892,16 @@ async fn run_event_loop(
                                 }
                             }
                         } else {
+                            // Global @ file completion - works in any mode
+                            if let Some(path) = input.trim().strip_prefix('@') {
+                                let command = format!("/load @{path}");
+                                let result = commands::execute(&command, app);
+                                if let Some(msg) = result.message {
+                                    app.add_message(HistoryCell::System { content: msg });
+                                }
+                                continue;
+                            }
+
                             if app.mode == AppMode::Rlm && app.rlm_repl_active {
                                 if rlm_repl_should_route_to_chat(app, &input) {
                                     app.rlm_repl_active = false;
@@ -881,17 +912,6 @@ async fn run_event_loop(
                                     handle_rlm_input(app, input);
                                     continue;
                                 }
-                            }
-
-                            if app.mode == AppMode::Rlm
-                                && let Some(path) = input.trim().strip_prefix('@')
-                            {
-                                let command = format!("/load @{path}");
-                                let result = commands::execute(&command, app);
-                                if let Some(msg) = result.message {
-                                    app.add_message(HistoryCell::System { content: msg });
-                                }
-                                continue;
                             }
 
                             let queued = if let Some(mut draft) = app.queued_draft.take() {
@@ -964,6 +984,13 @@ async fn run_event_loop(
                 }
                 KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     app.clear_input();
+                }
+                KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    let new_mode = match app.mode {
+                        AppMode::Agent => AppMode::Normal,
+                        _ => AppMode::Agent,
+                    };
+                    app.set_mode(new_mode);
                 }
                 KeyCode::Char('v') if is_paste_shortcut(&key) => {
                     app.paste_from_clipboard();
@@ -1972,7 +1999,13 @@ fn render_status_indicator(f: &mut Frame, area: Rect, app: &App, queued: &[Strin
             None
         };
         let elapsed = app.turn_started_at.map(format_elapsed);
-        let spinner = deepseek_squiggle(app.turn_started_at);
+        // Use typing indicator when streaming content, otherwise use whale spinner
+        let has_streaming_content = app.streaming_message_index.is_some();
+        let spinner = if has_streaming_content {
+            typing_indicator(app.turn_started_at)
+        } else {
+            deepseek_squiggle(app.turn_started_at)
+        };
         let label = if app.show_thinking {
             deepseek_thinking_label(app.turn_started_at)
         } else {
@@ -2050,72 +2083,152 @@ fn render_status_indicator(f: &mut Frame, area: Rect, app: &App, queued: &[Strin
 }
 
 fn render_footer(f: &mut Frame, area: Rect, app: &App) {
-    let mut spans = vec![
-        Span::styled(
-            format!(" {} ", app.mode.label()),
-            mode_badge_style(app.mode),
-        ),
-        Span::raw(" | "),
-        Span::styled(
-            context_indicator(app),
-            Style::default().fg(palette::TEXT_MUTED),
-        ),
-    ];
-
-    if let Some((label, style)) = rlm_usage_badge(app) {
-        spans.push(Span::raw(" | "));
-        spans.push(Span::styled(label, style));
-    }
-
-    if let (Some(prompt), Some(completion)) = (app.last_prompt_tokens, app.last_completion_tokens) {
-        spans.push(Span::raw(" | "));
-        spans.push(Span::styled(
-            format!("last tokens in/out: {prompt}/{completion}"),
-            Style::default().fg(palette::TEXT_MUTED),
-        ));
-    }
-
+    let width = area.width;
+    let available = width as usize;
+    
+    // Build left side: [MODE] context_bar
+    let context_text = context_indicator(app);
+    let mode_badge = Span::styled(
+        format!(" {} ", app.mode.label()),
+        mode_badge_style(app.mode),
+    );
+    
+    let context_info = Span::styled(
+        context_text.clone(),
+        Style::default().fg(palette::TEXT_MUTED),
+    );
+    
+    // Calculate widths for left side
+    let mode_width = mode_badge.content.width();
+    let context_width = context_text.width();
+    let left_min_width = mode_width + 1 + context_width; // mode + space + context
+    
+    // Build right side: key hints and other info
+    let mut right_spans = Vec::new();
+    
+    // Add scroll info if applicable
     let can_scroll = app.last_transcript_total > app.last_transcript_visible;
-    if can_scroll {
-        spans.push(Span::raw(" | "));
-        spans.push(Span::styled(
-            "Alt+Up/Down scroll",
-            Style::default().fg(palette::TEXT_MUTED),
-        ));
-    }
-
     if can_scroll && !matches!(app.transcript_scroll, TranscriptScroll::ToBottom) {
-        spans.push(Span::raw(" | "));
-        spans.push(Span::styled(
-            format!(
-                "Scrolled {}/{}",
-                app.last_transcript_top + 1,
-                app.last_transcript_total.max(1)
-            ),
-            Style::default().fg(palette::TEXT_MUTED),
+        right_spans.push(Span::styled(
+            format!("{}% ", app.last_transcript_top + 1),
+            Style::default().fg(palette::TEXT_DIM),
         ));
     }
-
+    
+    // Add selection hint if active
     if app.transcript_selection.is_active() {
-        spans.push(Span::raw(" | "));
-        spans.push(Span::styled(
+        right_spans.push(Span::styled(
             copy_selection_hint(),
+            Style::default().fg(palette::TEXT_DIM),
+        ));
+        right_spans.push(Span::raw(" "));
+    }
+
+    // Add RLM usage badge when in RLM mode
+    if app.mode == AppMode::Rlm {
+        if let Some((badge, style)) = rlm_usage_badge(app) {
+            right_spans.push(Span::styled(badge, style));
+            right_spans.push(Span::styled(
+                " · ",
+                Style::default().fg(palette::TEXT_DIM),
+            ));
+        }
+    }
+    
+    // Add key hints
+    right_spans.extend(footer_key_hints(width, app));
+    
+    // Calculate right side width
+    let spans_width = |spans: &[Span]| -> usize {
+        spans.iter().map(|s| s.content.width()).sum()
+    };
+    let mut right_width = spans_width(&right_spans);
+    
+    // Determine layout based on available space
+    let left_spans: Vec<Span>;
+    let left_width: usize;
+    
+    if width >= 80 {
+        // Wide: show full context bar
+        left_spans = vec![mode_badge, Span::raw(" "), context_info];
+        left_width = left_min_width;
+    } else if width >= 50 {
+        // Medium: show percentage only
+        let percent = get_context_percent(app);
+        let short_context = format!("{}%", percent);
+        let short_width = mode_width + 1 + short_context.width();
+        left_spans = vec![mode_badge, Span::raw(" "), Span::styled(
+            short_context,
             Style::default().fg(palette::TEXT_MUTED),
-        ));
+        )];
+        left_width = short_width;
+    } else {
+        // Narrow: just mode badge
+        left_spans = vec![mode_badge];
+        left_width = mode_width;
     }
 
-    spans.extend(footer_key_hints(area.width, app));
-
+    // Trim right side if it doesn't fit
+    let available_for_right = available.saturating_sub(left_width);
+    if right_width > available_for_right {
+        while right_width > available_for_right && !right_spans.is_empty() {
+            if let Some(span) = right_spans.pop() {
+                right_width = right_width.saturating_sub(span.content.width());
+            }
+        }
+        while let Some(last) = right_spans.last() {
+            let content = last.content.as_ref();
+            if content.trim().is_empty() || content == " · " {
+                let span = right_spans.pop().unwrap();
+                right_width = right_width.saturating_sub(span.content.width());
+            } else {
+                break;
+            }
+        }
+    }
+    let mid_spacing = available.saturating_sub(left_width + right_width);
+    
+    // Combine all spans
+    let mut all_spans = left_spans;
+    
+    // Add spacing between left and right
+    if mid_spacing > 0 {
+        all_spans.push(Span::raw(" ".repeat(mid_spacing)));
+    }
+    
+    // Add right side spans
+    all_spans.extend(right_spans);
+    
+    // Add status message if present (replaces everything)
     if let Some(ref msg) = app.status_message {
-        spans.push(Span::raw(" | "));
-        spans.push(Span::styled(
-            msg,
-            Style::default().fg(palette::DEEPSEEK_SKY),
-        ));
+        let status_span = Span::styled(msg, Style::default().fg(palette::DEEPSEEK_SKY));
+        all_spans = vec![status_span];
     }
-
-    let footer = Paragraph::new(Line::from(spans));
+    
+    let footer = Paragraph::new(Line::from(all_spans));
     f.render_widget(footer, area);
+}
+
+/// Get context usage percentage for compact display
+fn get_context_percent(app: &App) -> u8 {
+    let used = if app.total_conversation_tokens > 0 {
+        Some(i64::from(app.total_conversation_tokens))
+    } else {
+        estimated_context_tokens(app)
+    };
+    
+    if let Some(max) = context_window_for_model(&app.model) {
+        if let Some(used) = used {
+            let max_i64 = i64::from(max);
+            let remaining = (max_i64 - used).max(0);
+            let percent_remaining = ((remaining.saturating_mul(100) + max_i64 / 2) / max_i64).clamp(0, 100);
+            100 - percent_remaining as u8
+        } else {
+            0
+        }
+    } else {
+        0
+    }
 }
 
 fn footer_key_hints(width: u16, app: &App) -> Vec<Span<'static>> {
@@ -2124,19 +2237,21 @@ fn footer_key_hints(width: u16, app: &App) -> Vec<Span<'static>> {
         hints.push("Enter preview");
     }
 
-    let max_hints = if width < 70 {
+    let max_hints = if width < 60 {
         1
-    } else if width < 100 {
+    } else if width < 90 {
         2
-    } else if width < 130 {
+    } else if width < 120 {
         3
     } else {
         hints.len()
     };
 
     let mut spans = Vec::new();
-    for hint in hints.into_iter().take(max_hints) {
-        spans.push(Span::raw(" | "));
+    for (idx, hint) in hints.into_iter().take(max_hints).enumerate() {
+        if idx > 0 {
+            spans.push(Span::styled(" · ", Style::default().fg(palette::TEXT_DIM)));
+        }
         spans.push(Span::styled(
             hint.to_string(),
             Style::default().fg(palette::TEXT_DIM),
@@ -2180,12 +2295,12 @@ fn rlm_usage_badge(app: &App) -> Option<(String, Style)> {
 
 fn mode_color(mode: AppMode) -> Color {
     match mode {
-        AppMode::Normal => palette::DEEPSEEK_SLATE,
-        AppMode::Agent => palette::DEEPSEEK_BLUE,
-        AppMode::Yolo => palette::DEEPSEEK_SKY,
-        AppMode::Plan => palette::DEEPSEEK_SKY,
-        AppMode::Rlm => palette::DEEPSEEK_INK,
-        AppMode::Duo => palette::DEEPSEEK_NAVY,
+        AppMode::Normal => palette::MODE_NORMAL,
+        AppMode::Agent => palette::MODE_AGENT,
+        AppMode::Yolo => palette::MODE_YOLO,
+        AppMode::Plan => palette::MODE_PLAN,
+        AppMode::Rlm => palette::MODE_RLM,
+        AppMode::Duo => palette::MODE_DUO,
     }
 }
 
@@ -2213,6 +2328,17 @@ fn prompt_for_mode(mode: AppMode, rlm_repl_active: bool) -> &'static str {
     }
 }
 
+fn render_context_bar(percentage: u8, width: usize) -> String {
+    let filled = (percentage as usize * width / 100).min(width);
+    let empty = width - filled;
+    format!(
+        "[{}{}] {}%",
+        "█".repeat(filled),
+        "░".repeat(empty),
+        percentage
+    )
+}
+
 fn context_indicator(app: &App) -> String {
     let used = if app.total_conversation_tokens > 0 {
         Some(i64::from(app.total_conversation_tokens))
@@ -2224,15 +2350,16 @@ fn context_indicator(app: &App) -> String {
         if let Some(used) = used {
             let max_i64 = i64::from(max);
             let remaining = (max_i64 - used).max(0);
-            let percent = ((remaining.saturating_mul(100) + max_i64 / 2) / max_i64).clamp(0, 100);
-            format!("{percent}% context left")
+            let percent_remaining = ((remaining.saturating_mul(100) + max_i64 / 2) / max_i64).clamp(0, 100);
+            let percent_used = (100 - percent_remaining) as u8;
+            render_context_bar(percent_used, 10)
         } else {
-            "100% context left".to_string()
+            render_context_bar(0, 10)
         }
     } else if let Some(used) = used {
         format!("{used} used")
     } else {
-        "100% context left".to_string()
+        render_context_bar(0, 10)
     }
 }
 
@@ -2267,6 +2394,16 @@ fn deepseek_squiggle(start: Option<Instant>) -> &'static str {
     let elapsed_ms = start.map_or(0, |t| t.elapsed().as_millis());
     let idx = ((elapsed_ms / 220) as usize) % FRAMES.len();
     FRAMES[idx]
+}
+
+/// Braille pattern frames for typing/thinking indicator animation.
+const TYPING_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/// Returns the typing indicator frame based on elapsed time.
+fn typing_indicator(start: Option<Instant>) -> &'static str {
+    let elapsed_ms = start.map_or(0, |t| t.elapsed().as_millis());
+    let idx = ((elapsed_ms / 80) as usize) % TYPING_FRAMES.len();
+    TYPING_FRAMES[idx]
 }
 
 fn deepseek_thinking_label(start: Option<Instant>) -> &'static str {

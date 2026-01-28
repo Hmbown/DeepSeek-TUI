@@ -636,8 +636,7 @@ fn validate_swarm_tasks(tasks: &[SwarmTaskSpec]) -> Result<(), ToolError> {
         if matches!(task.agent_type, Some(SubAgentType::Custom)) {
             let tools = task
                 .allowed_tools
-                .as_ref()
-                .map(Vec::as_slice)
+                .as_deref()
                 .unwrap_or(&[]);
             if tools.is_empty() {
                 return Err(ToolError::invalid_input(format!(
