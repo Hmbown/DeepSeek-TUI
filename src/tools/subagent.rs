@@ -39,10 +39,11 @@ const RESULT_POLL_INTERVAL: Duration = Duration::from_millis(250);
 // === Types ===
 
 /// Sub-agent execution types with specialized behavior and tool access.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SubAgentType {
     /// General purpose - full tool access for multi-step tasks.
+    #[default]
     General,
     /// Fast exploration - read-only tools for codebase search.
     Explore,
@@ -127,11 +128,6 @@ impl SubAgentType {
     }
 }
 
-impl Default for SubAgentType {
-    fn default() -> Self {
-        Self::General
-    }
-}
 
 /// Status of a sub-agent execution.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
