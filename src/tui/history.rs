@@ -28,7 +28,7 @@ pub enum HistoryCell {
     User { content: String },
     Assistant { content: String, streaming: bool },
     System { content: String },
-    ThinkingSummary { summary: String },
+    Thinking { content: String, streaming: bool },
     Tool(ToolCell),
 }
 
@@ -68,8 +68,17 @@ impl HistoryCell {
             HistoryCell::System { content } => {
                 render_message("System", content, system_style(), width)
             }
-            HistoryCell::ThinkingSummary { summary } => {
-                render_message("Thinking", summary, thinking_style(), width)
+            HistoryCell::Thinking { content, streaming } => {
+                let mut lines = render_thinking(content, width);
+                if *streaming {
+                    if let Some(last) = lines.last_mut() {
+                        last.spans.push(Span::styled(
+                            "▋",
+                            Style::default().fg(palette::DEEPSEEK_SKY),
+                        ));
+                    }
+                }
+                lines
             }
             HistoryCell::Tool(cell) => cell.lines(width),
         }
@@ -81,7 +90,7 @@ impl HistoryCell {
         options: TranscriptRenderOptions,
     ) -> Vec<Line<'static>> {
         match self {
-            HistoryCell::ThinkingSummary { .. } if !options.show_thinking => Vec::new(),
+            HistoryCell::Thinking { .. } if !options.show_thinking => Vec::new(),
             HistoryCell::Tool(cell) if !options.show_tool_details => {
                 let mut lines = cell.lines(width);
                 if lines.len() > 2 {
@@ -140,9 +149,10 @@ pub fn history_cells_from_message(msg: &Message) -> Vec<HistoryCell> {
 
     if !thinking_blocks.is_empty() {
         let reasoning = thinking_blocks.join("\n");
-        if let Some(summary) = extract_reasoning_summary(&reasoning) {
-            cells.push(HistoryCell::ThinkingSummary { summary });
-        }
+        cells.push(HistoryCell::Thinking {
+            content: reasoning,
+            streaming: false,
+        });
     }
 
     cells
@@ -958,6 +968,7 @@ pub fn output_is_image(output: &str) -> bool {
     .any(|ext| lower.contains(ext))
 }
 
+#[cfg(test)]
 #[must_use]
 pub fn extract_reasoning_summary(text: &str) -> Option<String> {
     let mut lines = text.lines().peekable();
@@ -997,6 +1008,27 @@ pub fn extract_reasoning_summary(text: &str) -> Option<String> {
     } else {
         Some(fallback.to_string())
     }
+}
+
+fn render_thinking(content: &str, width: u16) -> Vec<Line<'static>> {
+    let style = thinking_style();
+    let prefix = "│ ";
+
+    let content_width = usize::from(width.saturating_sub(2).max(1));
+    let rendered = markdown_render::render_markdown(content, content_width as u16, style);
+
+    let mut lines = Vec::new();
+
+    for line in rendered {
+        let mut spans = vec![Span::styled(prefix, style)];
+        spans.extend(line.spans);
+        lines.push(Line::from(spans));
+    }
+
+    if lines.is_empty() {
+        lines.push(Line::from(vec![Span::styled(prefix, style)]));
+    }
+    lines
 }
 
 fn render_message(prefix: &str, content: &str, style: Style, width: u16) -> Vec<Line<'static>> {

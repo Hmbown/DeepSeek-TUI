@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::Result;
+use chrono::Local;
 use crossterm::{
     event::{
         self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
@@ -59,8 +60,8 @@ use super::approval::{
 use super::history::{
     DiffPreviewCell, ExecCell, ExecSource, ExploringCell, ExploringEntry, GenericToolCell,
     HistoryCell, McpToolCell, PatchSummaryCell, PlanStep, PlanUpdateCell, ReviewCell, ToolCell,
-    ToolStatus, ViewImageCell, WebSearchCell, extract_reasoning_summary,
-    history_cells_from_message, summarize_mcp_output, summarize_tool_args, summarize_tool_output,
+    ToolStatus, ViewImageCell, WebSearchCell, history_cells_from_message, summarize_mcp_output,
+    summarize_tool_args, summarize_tool_output,
 };
 use super::views::{HelpView, ModalKind, ViewEvent};
 use super::widgets::{ChatWidget, ComposerWidget, HeaderData, HeaderWidget, Renderable};
@@ -320,17 +321,36 @@ async fn run_event_loop(
                     EngineEvent::ThinkingStarted { .. } => {
                         app.reasoning_buffer.clear();
                         app.reasoning_header = None;
+
+                        app.add_message(HistoryCell::Thinking {
+                            content: String::new(),
+                            streaming: true,
+                        });
+                        app.streaming_message_index = Some(app.history.len().saturating_sub(1));
                     }
                     EngineEvent::ThinkingDelta { content, .. } => {
                         app.reasoning_buffer.push_str(&content);
                         if app.reasoning_header.is_none() {
                             app.reasoning_header = extract_reasoning_header(&app.reasoning_buffer);
                         }
+
+                        if let Some(index) = app.streaming_message_index {
+                            if let Some(HistoryCell::Thinking { content: c, .. }) =
+                                app.history.get_mut(index)
+                            {
+                                c.push_str(&content);
+                            }
+                        }
                     }
                     EngineEvent::ThinkingComplete { .. } => {
-                        if let Some(summary) = extract_reasoning_summary(&app.reasoning_buffer) {
-                            app.add_message(HistoryCell::ThinkingSummary { summary });
+                        if let Some(index) = app.streaming_message_index.take() {
+                            if let Some(HistoryCell::Thinking { streaming, .. }) =
+                                app.history.get_mut(index)
+                            {
+                                *streaming = false;
+                            }
                         }
+
                         if !app.reasoning_buffer.is_empty() {
                             app.last_reasoning = Some(app.reasoning_buffer.clone());
                         }
@@ -2084,129 +2104,121 @@ fn render_status_indicator(f: &mut Frame, area: Rect, app: &App, queued: &[Strin
 
 fn render_footer(f: &mut Frame, area: Rect, app: &App) {
     let width = area.width;
-    let available = width as usize;
+    let available_width = width as usize;
 
-    // Build left side: [MODE] context_bar
-    let context_text = context_indicator(app);
-    let mode_badge = Span::styled(
-        format!(" {} ", app.mode.label()),
-        mode_badge_style(app.mode),
-    );
-
-    let context_info = Span::styled(
-        context_text.clone(),
-        Style::default().fg(palette::TEXT_MUTED),
-    );
-
-    // Calculate widths for left side
-    let mode_width = mode_badge.content.width();
-    let context_width = context_text.width();
-    let left_min_width = mode_width + 1 + context_width; // mode + space + context
-
-    // Build right side: key hints and other info
-    let mut right_spans = Vec::new();
-
-    // Add scroll info if applicable
-    let can_scroll = app.last_transcript_total > app.last_transcript_visible;
-    if can_scroll && !matches!(app.transcript_scroll, TranscriptScroll::ToBottom) {
-        right_spans.push(Span::styled(
-            format!("{}% ", app.last_transcript_top + 1),
-            Style::default().fg(palette::TEXT_DIM),
-        ));
-    }
-
-    // Add selection hint if active
-    if app.transcript_selection.is_active() {
-        right_spans.push(Span::styled(
-            copy_selection_hint(),
-            Style::default().fg(palette::TEXT_DIM),
-        ));
-        right_spans.push(Span::raw(" "));
-    }
-
-    // Add RLM usage badge when in RLM mode
-    if app.mode == AppMode::Rlm {
-        if let Some((badge, style)) = rlm_usage_badge(app) {
-            right_spans.push(Span::styled(badge, style));
-            right_spans.push(Span::styled(" · ", Style::default().fg(palette::TEXT_DIM)));
-        }
-    }
-
-    // Add key hints
-    right_spans.extend(footer_key_hints(width, app));
-
-    // Calculate right side width
-    let spans_width = |spans: &[Span]| -> usize { spans.iter().map(|s| s.content.width()).sum() };
-    let mut right_width = spans_width(&right_spans);
-
-    // Determine layout based on available space
-    let left_spans: Vec<Span>;
-    let left_width: usize;
-
-    if width >= 80 {
-        // Wide: show full context bar
-        left_spans = vec![mode_badge, Span::raw(" "), context_info];
-        left_width = left_min_width;
-    } else if width >= 50 {
-        // Medium: show percentage only
-        let percent = get_context_percent(app);
-        let short_context = format!("{}%", percent);
-        let short_width = mode_width + 1 + short_context.width();
-        left_spans = vec![
-            mode_badge,
-            Span::raw(" "),
-            Span::styled(short_context, Style::default().fg(palette::TEXT_MUTED)),
-        ];
-        left_width = short_width;
-    } else {
-        // Narrow: just mode badge
-        left_spans = vec![mode_badge];
-        left_width = mode_width;
-    }
-
-    // Trim right side if it doesn't fit
-    let available_for_right = available.saturating_sub(left_width);
-    if right_width > available_for_right {
-        while right_width > available_for_right && !right_spans.is_empty() {
-            if let Some(span) = right_spans.pop() {
-                right_width = right_width.saturating_sub(span.content.width());
-            }
-        }
-        while let Some(last) = right_spans.last() {
-            let content = last.content.as_ref();
-            if content.trim().is_empty() || content == " · " {
-                let span = right_spans.pop().unwrap();
-                right_width = right_width.saturating_sub(span.content.width());
-            } else {
-                break;
-            }
-        }
-    }
-    let mid_spacing = available.saturating_sub(left_width + right_width);
-
-    // Combine all spans
-    let mut all_spans = left_spans;
-
-    // Add spacing between left and right
-    if mid_spacing > 0 {
-        all_spans.push(Span::raw(" ".repeat(mid_spacing)));
-    }
-
-    // Add right side spans
-    all_spans.extend(right_spans);
-
-    // Add status message if present (replaces everything)
+    // Status message override (Toast)
     if let Some(ref msg) = app.status_message {
         let status_span = Span::styled(msg, Style::default().fg(palette::DEEPSEEK_SKY));
-        all_spans = vec![status_span];
+        f.render_widget(Paragraph::new(Line::from(vec![status_span])), area);
+        return;
+    }
+
+    // 1. Time (Left)
+    let time_str = Local::now().format("%H:%M").to_string();
+    let time_span = Span::styled(
+        format!("{}  ", time_str),
+        Style::default().fg(palette::TEXT_DIM),
+    );
+
+    // 2. Mode (Left) - Lowercase, colored
+    let mode_str = app.mode.label().to_lowercase();
+    let mode_style = mode_badge_style(app.mode);
+    let mode_span = Span::styled(format!("{}  ", mode_str), mode_style);
+
+    // 3. Agent Info (Left)
+    let model = &app.model;
+    let status_suffix = if app.is_loading { ", thinking" } else { "" };
+    let agent_text = format!("agent ({}{})", model, status_suffix);
+    let agent_span = Span::styled(agent_text, Style::default().fg(palette::TEXT_DIM));
+
+    // Left side assembly
+    let left_spans = vec![time_span, mode_span, agent_span];
+
+    // 4. Context (Right)
+    let percent = get_context_percent_decimal(app);
+    let context_text = format!("context: {:.1}%", percent);
+    let context_style = if percent > 90.0 {
+        Style::default().fg(palette::STATUS_ERROR)
+    } else if percent > 75.0 {
+        Style::default().fg(palette::STATUS_WARNING)
+    } else {
+        Style::default().fg(palette::TEXT_DIM)
+    };
+    let context_span = Span::styled(context_text, context_style);
+
+    // 5. Right side extras (Scroll, Selection, RLM) - Minimalist
+    let mut right_extras = Vec::new();
+
+    // Scroll %
+    let can_scroll = app.last_transcript_total > app.last_transcript_visible;
+    if can_scroll && !matches!(app.transcript_scroll, TranscriptScroll::ToBottom) {
+        right_extras.push(Span::styled(
+            format!(" {}% ", app.last_transcript_top + 1),
+            Style::default().fg(palette::TEXT_DIM),
+        ));
+    }
+
+    // Selection
+    if app.transcript_selection.is_active() {
+        right_extras.push(Span::styled(
+            " [SEL] ",
+            Style::default().fg(palette::TEXT_DIM),
+        ));
+    }
+
+    // RLM Badge
+    if app.mode == AppMode::Rlm {
+        if let Some((badge, style)) = rlm_usage_badge(app) {
+            right_extras.push(Span::styled(" ", Style::default()));
+            right_extras.push(Span::styled(badge, style));
+        }
+    }
+
+    // Assemble Right Side
+    // context_span is always last
+    let mut right_spans = right_extras;
+    right_spans.push(Span::raw("   ")); // Space before context
+    right_spans.push(context_span);
+
+    // Calculate Widths
+    let left_width: usize = left_spans.iter().map(|s| s.content.width()).sum();
+    let right_width: usize = right_spans.iter().map(|s| s.content.width()).sum();
+
+    // Spacer
+    let spacer_width = available_width.saturating_sub(left_width + right_width);
+
+    let mut all_spans = left_spans;
+    if spacer_width > 0 {
+        all_spans.push(Span::raw(" ".repeat(spacer_width)));
+        all_spans.extend(right_spans);
+    } else {
+        // Fallback for narrow screens: Drop agent info
+        let simple_left = vec![
+            Span::styled(
+                format!("{}  ", time_str),
+                Style::default().fg(palette::TEXT_DIM),
+            ),
+            Span::styled(format!("{} ", mode_str), mode_style),
+        ];
+        let simple_right = vec![Span::styled(
+            format!(" {:.0}%", percent),
+            Style::default().fg(palette::TEXT_DIM),
+        )];
+
+        let sl_width: usize = simple_left.iter().map(|s| s.content.width()).sum();
+        let sr_width: usize = simple_right.iter().map(|s| s.content.width()).sum();
+        let sp_width = available_width.saturating_sub(sl_width + sr_width);
+
+        all_spans = simple_left;
+        all_spans.push(Span::raw(" ".repeat(sp_width)));
+        all_spans.extend(simple_right);
     }
 
     let footer = Paragraph::new(Line::from(all_spans));
     f.render_widget(footer, area);
 }
 
-/// Get context usage percentage for compact display
-fn get_context_percent(app: &App) -> u8 {
+fn get_context_percent_decimal(app: &App) -> f32 {
     let used = if app.total_conversation_tokens > 0 {
         Some(i64::from(app.total_conversation_tokens))
     } else {
@@ -2215,46 +2227,16 @@ fn get_context_percent(app: &App) -> u8 {
 
     if let Some(max) = context_window_for_model(&app.model) {
         if let Some(used) = used {
-            let max_i64 = i64::from(max);
-            let remaining = (max_i64 - used).max(0);
-            let percent_remaining =
-                ((remaining.saturating_mul(100) + max_i64 / 2) / max_i64).clamp(0, 100);
-            100 - percent_remaining as u8
+            let max_f64 = max as f64;
+            let used_f64 = used as f64;
+            let percent = (used_f64 / max_f64) * 100.0;
+            percent.clamp(0.0, 100.0) as f32
         } else {
-            0
+            0.0
         }
     } else {
-        0
+        0.0
     }
-}
-
-fn footer_key_hints(width: u16, app: &App) -> Vec<Span<'static>> {
-    let mut hints = vec!["F1 help", "Ctrl+R sessions", "l pager", "Ctrl+V paste"];
-    if app.transcript_selection.is_active() {
-        hints.push("Enter preview");
-    }
-
-    let max_hints = if width < 60 {
-        1
-    } else if width < 90 {
-        2
-    } else if width < 120 {
-        3
-    } else {
-        hints.len()
-    };
-
-    let mut spans = Vec::new();
-    for (idx, hint) in hints.into_iter().take(max_hints).enumerate() {
-        if idx > 0 {
-            spans.push(Span::styled(" · ", Style::default().fg(palette::TEXT_DIM)));
-        }
-        spans.push(Span::styled(
-            hint.to_string(),
-            Style::default().fg(palette::TEXT_DIM),
-        ));
-    }
-    spans
 }
 
 fn rlm_usage_badge(app: &App) -> Option<(String, Style)> {
@@ -2322,42 +2304,6 @@ fn prompt_for_mode(mode: AppMode, rlm_repl_active: bool) -> &'static str {
             }
         }
         AppMode::Duo => "duo> ",
-    }
-}
-
-fn render_context_bar(percentage: u8, width: usize) -> String {
-    let filled = (percentage as usize * width / 100).min(width);
-    let empty = width - filled;
-    format!(
-        "[{}{}] {}%",
-        "█".repeat(filled),
-        "░".repeat(empty),
-        percentage
-    )
-}
-
-fn context_indicator(app: &App) -> String {
-    let used = if app.total_conversation_tokens > 0 {
-        Some(i64::from(app.total_conversation_tokens))
-    } else {
-        estimated_context_tokens(app)
-    };
-
-    if let Some(max) = context_window_for_model(&app.model) {
-        if let Some(used) = used {
-            let max_i64 = i64::from(max);
-            let remaining = (max_i64 - used).max(0);
-            let percent_remaining =
-                ((remaining.saturating_mul(100) + max_i64 / 2) / max_i64).clamp(0, 100);
-            let percent_used = (100 - percent_remaining) as u8;
-            render_context_bar(percent_used, 10)
-        } else {
-            render_context_bar(0, 10)
-        }
-    } else if let Some(used) = used {
-        format!("{used} used")
-    } else {
-        render_context_bar(0, 10)
     }
 }
 
@@ -2701,10 +2647,6 @@ fn is_paste_shortcut(key: &KeyEvent) -> bool {
 
     // Ctrl+V on Linux/Windows
     key.modifiers.contains(KeyModifiers::CONTROL)
-}
-
-fn copy_selection_hint() -> &'static str {
-    "Release to copy selection"
 }
 
 fn should_scroll_with_arrows(_app: &App) -> bool {

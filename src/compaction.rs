@@ -351,11 +351,20 @@ fn enforce_tool_call_pairs(messages: &[Message], pinned_indices: &mut BTreeSet<u
         return;
     }
 
+    // Build maps for tool calls and results
     let mut tool_call_indices: HashMap<String, usize> = HashMap::new();
+    let mut tool_result_indices: HashMap<String, usize> = HashMap::new();
+
     for (idx, msg) in messages.iter().enumerate() {
         for block in &msg.content {
-            if let ContentBlock::ToolUse { id, .. } = block {
-                tool_call_indices.insert(id.clone(), idx);
+            match block {
+                ContentBlock::ToolUse { id, .. } => {
+                    tool_call_indices.insert(id.clone(), idx);
+                }
+                ContentBlock::ToolResult { tool_use_id, .. } => {
+                    tool_result_indices.insert(tool_use_id.clone(), idx);
+                }
+                _ => {}
             }
         }
     }
@@ -363,6 +372,8 @@ fn enforce_tool_call_pairs(messages: &[Message], pinned_indices: &mut BTreeSet<u
     let mut to_add = Vec::new();
     let mut to_remove = Vec::new();
 
+    // Pass 1: If a tool result is pinned, ensure its tool call is also pinned.
+    // If the tool call is not found, remove the orphaned result.
     for &idx in pinned_indices.iter() {
         let msg = &messages[idx];
         let mut tool_ids = Vec::new();
@@ -384,6 +395,19 @@ fn enforce_tool_call_pairs(messages: &[Message], pinned_indices: &mut BTreeSet<u
         }
         if !found_any {
             to_remove.push(idx);
+        }
+    }
+
+    // Pass 2: If a tool call is pinned, ensure its tool result is also pinned.
+    // This prevents "orphaned tool calls" API errors.
+    for &idx in pinned_indices.iter() {
+        let msg = &messages[idx];
+        for block in &msg.content {
+            if let ContentBlock::ToolUse { id, .. } = block {
+                if let Some(result_idx) = tool_result_indices.get(id).copied() {
+                    to_add.push(result_idx);
+                }
+            }
         }
     }
 
