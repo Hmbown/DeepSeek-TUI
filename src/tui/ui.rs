@@ -1129,6 +1129,9 @@ async fn dispatch_user_message(
     engine_handle: &EngineHandle,
     message: QueuedMessage,
 ) -> Result<()> {
+    // Set immediately to prevent double-dispatch before TurnStarted event arrives.
+    app.is_loading = true;
+
     let override_query = maybe_auto_switch_to_rlm(app, &message.display);
     let content = if let Some(query) = override_query.as_deref() {
         message.content_with_query(query)

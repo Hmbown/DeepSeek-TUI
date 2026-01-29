@@ -524,6 +524,94 @@ fn build_chat_messages(
         }
     }
 
+    // Safety net: after compaction, an assistant message may have tool_calls
+    // whose results were summarized away. The API rejects these, so strip
+    // the tool_calls (downgrading to a plain assistant message) and remove
+    // the now-orphaned tool result messages.
+    let mut i = 0;
+    while i < out.len() {
+        let is_assistant_with_tools = out[i].get("role").and_then(Value::as_str)
+            == Some("assistant")
+            && out[i].get("tool_calls").is_some();
+
+        if is_assistant_with_tools {
+            let expected_ids: HashSet<String> = out[i]
+                .get("tool_calls")
+                .and_then(Value::as_array)
+                .map(|calls| {
+                    calls
+                        .iter()
+                        .filter_map(|c| c.get("id").and_then(Value::as_str).map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            // Collect tool result IDs immediately following this assistant message.
+            let mut found_ids: HashSet<String> = HashSet::new();
+            let mut tool_result_end = i + 1;
+            while tool_result_end < out.len() {
+                if out[tool_result_end].get("role").and_then(Value::as_str) == Some("tool") {
+                    if let Some(id) = out[tool_result_end]
+                        .get("tool_call_id")
+                        .and_then(Value::as_str)
+                    {
+                        found_ids.insert(id.to_string());
+                    }
+                    tool_result_end += 1;
+                } else {
+                    break;
+                }
+            }
+
+            // Also scan non-contiguous tool results up to the next assistant message
+            // in case compaction left gaps.
+            let mut scan = tool_result_end;
+            while scan < out.len() {
+                if out[scan].get("role").and_then(Value::as_str) == Some("assistant") {
+                    break;
+                }
+                if out[scan].get("role").and_then(Value::as_str) == Some("tool") {
+                    if let Some(id) = out[scan].get("tool_call_id").and_then(Value::as_str) {
+                        found_ids.insert(id.to_string());
+                    }
+                }
+                scan += 1;
+            }
+
+            if !expected_ids.is_subset(&found_ids) {
+                let missing: Vec<_> = expected_ids.difference(&found_ids).collect();
+                logging::warn(format!(
+                    "Stripping orphaned tool_calls from assistant message \
+                     (expected {} tool results, found {}, missing: {:?})",
+                    expected_ids.len(),
+                    found_ids.len(),
+                    missing
+                ));
+                if let Some(obj) = out[i].as_object_mut() {
+                    obj.remove("tool_calls");
+                }
+                // Remove contiguous tool results first
+                if tool_result_end > i + 1 {
+                    out.drain((i + 1)..tool_result_end);
+                }
+                // Remove any remaining non-contiguous tool results referencing expected_ids
+                // (scan backward to avoid index shifting issues)
+                let mut j = out.len();
+                while j > i + 1 {
+                    j -= 1;
+                    if out[j].get("role").and_then(Value::as_str) == Some("tool") {
+                        if let Some(id) = out[j].get("tool_call_id").and_then(Value::as_str) {
+                            if expected_ids.contains(id) {
+                                out.remove(j);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+
     out
 }
 
@@ -892,5 +980,140 @@ mod tests {
             .find(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
             .expect("assistant message");
         assert!(assistant.get("tool_calls").is_some());
+    }
+
+    #[test]
+    fn chat_messages_strips_orphaned_tool_calls_after_compaction() {
+        // Simulates post-compaction state: assistant has tool_calls but the
+        // tool result messages were summarized away.
+        let messages = vec![
+            Message {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::ToolUse {
+                    id: "tool-orphan".to_string(),
+                    name: "read_file".to_string(),
+                    input: json!({"path": "src/main.rs"}),
+                }],
+            },
+            // No tool result follows — it was removed by compaction.
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "continue".to_string(),
+                    cache_control: None,
+                }],
+            },
+        ];
+
+        let out = build_chat_messages(None, &messages, "deepseek-chat");
+        let assistant = out
+            .iter()
+            .find(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
+            .expect("assistant message");
+        // The safety net should have stripped tool_calls.
+        assert!(
+            assistant.get("tool_calls").is_none(),
+            "orphaned tool_calls should be stripped by safety net"
+        );
+    }
+
+    #[test]
+    fn chat_messages_keeps_valid_tool_calls_intact() {
+        // Complete call+result pair should NOT be stripped.
+        let messages = vec![
+            Message {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::ToolUse {
+                    id: "tool-ok".to_string(),
+                    name: "list_dir".to_string(),
+                    input: json!({}),
+                }],
+            },
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "tool-ok".to_string(),
+                    content: "files".to_string(),
+                }],
+            },
+        ];
+
+        let out = build_chat_messages(None, &messages, "deepseek-chat");
+        let assistant = out
+            .iter()
+            .find(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
+            .expect("assistant message");
+        assert!(
+            assistant.get("tool_calls").is_some(),
+            "valid tool_calls should remain intact"
+        );
+        assert!(
+            out.iter()
+                .any(|value| value.get("role").and_then(Value::as_str) == Some("tool")),
+            "tool result should remain"
+        );
+    }
+
+    #[test]
+    fn chat_messages_strips_partial_tool_results() {
+        let messages = vec![
+            Message {
+                role: "assistant".to_string(),
+                content: vec![
+                    ContentBlock::ToolUse {
+                        id: "t1".to_string(),
+                        name: "read_file".to_string(),
+                        input: json!({"path": "a.rs"}),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "t2".to_string(),
+                        name: "read_file".to_string(),
+                        input: json!({"path": "b.rs"}),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "t3".to_string(),
+                        name: "shell".to_string(),
+                        input: json!({"cmd": "ls"}),
+                    },
+                ],
+            },
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "t1".to_string(),
+                    content: "content a".to_string(),
+                }],
+            },
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "t2".to_string(),
+                    content: "content b".to_string(),
+                }],
+            },
+            // No result for t3
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "continue".to_string(),
+                    cache_control: None,
+                }],
+            },
+        ];
+
+        let out = build_chat_messages(None, &messages, "deepseek-chat");
+        let assistant = out
+            .iter()
+            .find(|v| v.get("role").and_then(Value::as_str) == Some("assistant"))
+            .expect("assistant message");
+        assert!(
+            assistant.get("tool_calls").is_none(),
+            "partial tool_calls should be stripped"
+        );
+        assert!(
+            !out.iter()
+                .any(|v| v.get("role").and_then(Value::as_str) == Some("tool")),
+            "all orphaned tool results should be removed"
+        );
     }
 }

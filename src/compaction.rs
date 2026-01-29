@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use crate::client::DeepSeekClient;
 use crate::llm_client::LlmClient;
+use crate::logging;
 use crate::models::{
     CacheControl, ContentBlock, Message, MessageRequest, SystemBlock, SystemPrompt,
 };
@@ -351,71 +352,96 @@ fn enforce_tool_call_pairs(messages: &[Message], pinned_indices: &mut BTreeSet<u
         return;
     }
 
-    // Build maps for tool calls and results
-    let mut tool_call_indices: HashMap<String, usize> = HashMap::new();
-    let mut tool_result_indices: HashMap<String, usize> = HashMap::new();
+    // Build maps: tool_id → message index across ALL messages (not just pinned).
+    let mut call_id_to_idx: HashMap<String, usize> = HashMap::new();
+    let mut result_id_to_idx: HashMap<String, usize> = HashMap::new();
 
     for (idx, msg) in messages.iter().enumerate() {
         for block in &msg.content {
             match block {
                 ContentBlock::ToolUse { id, .. } => {
-                    tool_call_indices.insert(id.clone(), idx);
+                    call_id_to_idx.insert(id.clone(), idx);
                 }
                 ContentBlock::ToolResult { tool_use_id, .. } => {
-                    tool_result_indices.insert(tool_use_id.clone(), idx);
+                    result_id_to_idx.insert(tool_use_id.clone(), idx);
                 }
                 _ => {}
             }
         }
     }
 
-    let mut to_add = Vec::new();
-    let mut to_remove = Vec::new();
+    // Fixpoint loop: re-check until stable.
+    // Newly pinned messages may introduce new pair requirements;
+    // removed messages may orphan their counterparts.
+    // Track permanently removed indices so they cannot be re-added
+    // by a counterpart in a later iteration (prevents oscillation).
+    let mut permanently_removed: HashSet<usize> = HashSet::new();
 
-    // Pass 1: If a tool result is pinned, ensure its tool call is also pinned.
-    // If the tool call is not found, remove the orphaned result.
-    for &idx in pinned_indices.iter() {
-        let msg = &messages[idx];
-        let mut tool_ids = Vec::new();
-        for block in &msg.content {
-            if let ContentBlock::ToolResult { tool_use_id, .. } = block {
-                tool_ids.push(tool_use_id.clone());
-            }
-        }
-        if tool_ids.is_empty() {
-            continue;
-        }
+    let max_iters = messages.len().max(10);
+    let mut converged = false;
+    for _ in 0..max_iters {
+        let mut to_add = Vec::new();
+        let mut to_remove = Vec::new();
 
-        let mut found_any = false;
-        for tool_id in tool_ids {
-            if let Some(call_idx) = tool_call_indices.get(&tool_id).copied() {
-                to_add.push(call_idx);
-                found_any = true;
-            }
-        }
-        if !found_any {
-            to_remove.push(idx);
-        }
-    }
+        let snapshot: Vec<usize> = pinned_indices.iter().copied().collect();
 
-    // Pass 2: If a tool call is pinned, ensure its tool result is also pinned.
-    // This prevents "orphaned tool calls" API errors.
-    for &idx in pinned_indices.iter() {
-        let msg = &messages[idx];
-        for block in &msg.content {
-            if let ContentBlock::ToolUse { id, .. } = block {
-                if let Some(result_idx) = tool_result_indices.get(id).copied() {
-                    to_add.push(result_idx);
+        for idx in snapshot {
+            let msg = &messages[idx];
+            for block in &msg.content {
+                match block {
+                    // Pinned result → its call must also be pinned (or remove result)
+                    ContentBlock::ToolResult { tool_use_id, .. } => {
+                        match call_id_to_idx.get(tool_use_id) {
+                            Some(&call_idx) if !permanently_removed.contains(&call_idx) => {
+                                to_add.push(call_idx);
+                            }
+                            _ => {
+                                to_remove.push(idx);
+                            }
+                        }
+                    }
+                    // Pinned call → its result must also be pinned (or remove call)
+                    ContentBlock::ToolUse { id, .. } => match result_id_to_idx.get(id) {
+                        Some(&result_idx) if !permanently_removed.contains(&result_idx) => {
+                            to_add.push(result_idx);
+                        }
+                        _ => {
+                            to_remove.push(idx);
+                        }
+                    },
+                    _ => {}
                 }
             }
         }
-    }
 
-    for idx in to_add {
-        pinned_indices.insert(idx);
+        // Removals take priority: if a message is both needed and orphaned,
+        // remove it now; the fixpoint loop will cascade the orphaning.
+        let remove_set: HashSet<usize> = to_remove.iter().copied().collect();
+        let mut changed = false;
+        for idx in to_add {
+            if !remove_set.contains(&idx) && pinned_indices.insert(idx) {
+                changed = true;
+            }
+        }
+        for idx in to_remove {
+            if pinned_indices.remove(&idx) {
+                permanently_removed.insert(idx);
+                changed = true;
+            }
+        }
+
+        if !changed {
+            converged = true;
+            break;
+        }
     }
-    for idx in to_remove {
-        pinned_indices.remove(&idx);
+    if !converged {
+        logging::warn(format!(
+            "enforce_tool_call_pairs did not converge after {max_iters} iterations \
+             ({} messages, {} pinned)",
+            messages.len(),
+            pinned_indices.len()
+        ));
     }
 }
 
@@ -1025,5 +1051,232 @@ mod tests {
 
         // Pinned recent messages exceed the token budget, so unpinned noise should trigger compaction.
         assert!(should_compact(&messages, &config, None, None, None));
+    }
+
+    #[test]
+    fn enforce_tool_call_pairs_removes_orphaned_tool_call() {
+        // An assistant message with a tool call but no matching result anywhere
+        // in the history should be removed from the pinned set.
+        let messages = vec![
+            msg("user", "noise"),
+            Message {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::ToolUse {
+                    id: "orphan-call".to_string(),
+                    name: "read_file".to_string(),
+                    input: json!({"path": "src/main.rs"}),
+                }],
+            },
+            msg("assistant", "recent"),
+        ];
+
+        let mut pinned = BTreeSet::from([0, 1, 2]);
+        enforce_tool_call_pairs(&messages, &mut pinned);
+
+        // The orphaned tool call message (index 1) should be removed.
+        assert!(
+            !pinned.contains(&1),
+            "orphaned tool call should be removed from pinned set"
+        );
+        // Other messages stay.
+        assert!(pinned.contains(&0));
+        assert!(pinned.contains(&2));
+    }
+
+    #[test]
+    fn enforce_tool_call_pairs_removes_orphaned_tool_result() {
+        // A tool result whose call doesn't exist anywhere should be removed.
+        let messages = vec![
+            msg("user", "noise"),
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "orphan-result".to_string(),
+                    content: "ok".to_string(),
+                }],
+            },
+            msg("assistant", "recent"),
+        ];
+
+        let mut pinned = BTreeSet::from([0, 1, 2]);
+        enforce_tool_call_pairs(&messages, &mut pinned);
+
+        assert!(
+            !pinned.contains(&1),
+            "orphaned tool result should be removed from pinned set"
+        );
+        assert!(pinned.contains(&0));
+        assert!(pinned.contains(&2));
+    }
+
+    #[test]
+    fn enforce_tool_call_pairs_preserves_valid_pairs() {
+        // A complete call+result pair should remain intact.
+        let messages = vec![
+            msg("user", "do something"),
+            Message {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::ToolUse {
+                    id: "tool-ok".to_string(),
+                    name: "list_dir".to_string(),
+                    input: json!({}),
+                }],
+            },
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "tool-ok".to_string(),
+                    content: "files here".to_string(),
+                }],
+            },
+            msg("assistant", "done"),
+        ];
+
+        let mut pinned = BTreeSet::from([1, 2, 3]);
+        enforce_tool_call_pairs(&messages, &mut pinned);
+
+        assert!(pinned.contains(&1), "tool call should stay pinned");
+        assert!(pinned.contains(&2), "tool result should stay pinned");
+        assert!(pinned.contains(&3));
+    }
+
+    #[test]
+    fn enforce_tool_call_pairs_pins_transitive_pairs() {
+        // If only the result is initially pinned, the call should be pulled in.
+        // The call message may also contain another tool call whose result should
+        // then be pulled in transitively.
+        let messages = vec![
+            msg("user", "start"),
+            Message {
+                role: "assistant".to_string(),
+                content: vec![
+                    ContentBlock::ToolUse {
+                        id: "t1".to_string(),
+                        name: "read_file".to_string(),
+                        input: json!({"path": "a.rs"}),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "t2".to_string(),
+                        name: "read_file".to_string(),
+                        input: json!({"path": "b.rs"}),
+                    },
+                ],
+            },
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "t1".to_string(),
+                    content: "content of a.rs".to_string(),
+                }],
+            },
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "t2".to_string(),
+                    content: "content of b.rs".to_string(),
+                }],
+            },
+            msg("assistant", "done"),
+        ];
+
+        // Only pin the result for t1 initially.
+        let mut pinned = BTreeSet::from([2, 4]);
+        enforce_tool_call_pairs(&messages, &mut pinned);
+
+        // The call message (index 1) should be pulled in because t1's result is pinned.
+        assert!(
+            pinned.contains(&1),
+            "call message should be transitively pinned"
+        );
+        // Since the call message also contains t2, t2's result (index 3) should also be pinned.
+        assert!(
+            pinned.contains(&3),
+            "t2 result should be transitively pinned via the call message"
+        );
+    }
+
+    #[test]
+    fn enforce_tool_call_pairs_cascading_removal() {
+        // Removing an orphaned call should cascade to remove its result.
+        // Message 1: assistant with t1 (call) — t1 has a result at index 2
+        // Message 2: user with t1 (result)
+        // Message 3: assistant with t2 (call) — t2 has NO result
+        // Message 4: user with t2 result referencing the call
+        //
+        // If t2 has no result in history, message 3 is removed. That's straightforward.
+        // Here we test: if a call message is removed because ONE of its calls is orphaned,
+        // the result for the other call also gets removed in subsequent iterations.
+        let messages = vec![
+            msg("user", "start"),
+            Message {
+                role: "assistant".to_string(),
+                content: vec![
+                    ContentBlock::ToolUse {
+                        id: "good".to_string(),
+                        name: "read_file".to_string(),
+                        input: json!({}),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "orphan".to_string(),
+                        name: "shell".to_string(),
+                        input: json!({}),
+                    },
+                ],
+            },
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "good".to_string(),
+                    content: "ok".to_string(),
+                }],
+            },
+            // Note: NO result for "orphan" exists anywhere
+            msg("assistant", "done"),
+        ];
+
+        let mut pinned = BTreeSet::from([1, 2, 3]);
+        enforce_tool_call_pairs(&messages, &mut pinned);
+
+        // Message 1 has an orphaned tool call ("orphan"), so it's removed.
+        assert!(
+            !pinned.contains(&1),
+            "message with orphaned call should be removed"
+        );
+        // Message 2 (result for "good") now has no matching call pinned, so it's also removed.
+        assert!(
+            !pinned.contains(&2),
+            "result whose call was removed should cascade-remove"
+        );
+        // Message 3 (plain text) stays.
+        assert!(pinned.contains(&3));
+    }
+
+    #[test]
+    fn enforce_tool_call_pairs_converges_long_chain() {
+        let mut messages = vec![msg("user", "start")];
+        for i in 0..15 {
+            messages.push(Message {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::ToolUse {
+                    id: format!("t{i}"),
+                    name: "read_file".to_string(),
+                    input: json!({}),
+                }],
+            });
+            messages.push(Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: format!("t{i}"),
+                    content: format!("result {i}"),
+                }],
+            });
+        }
+        messages.push(msg("assistant", "done"));
+
+        let mut pinned: BTreeSet<usize> = (0..messages.len()).collect();
+        enforce_tool_call_pairs(&messages, &mut pinned);
+
+        // All pairs should remain intact (no orphans)
+        assert_eq!(pinned.len(), messages.len());
     }
 }
