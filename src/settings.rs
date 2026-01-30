@@ -34,9 +34,9 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            theme: "default".to_string(),
+            theme: "whale".to_string(),
             auto_compact: true,
-            auto_rlm: false,
+            auto_rlm: true,
             show_thinking: true,
             show_tool_details: true,
             default_mode: "agent".to_string(),
@@ -92,9 +92,9 @@ impl Settings {
     pub fn set(&mut self, key: &str, value: &str) -> Result<()> {
         match key {
             "theme" => {
-                if !["default", "dark", "light"].contains(&value) {
+                if !["default", "dark", "light", "whale"].contains(&value) {
                     anyhow::bail!(
-                        "Failed to update setting: invalid theme '{value}'. Expected: default, dark, light."
+                        "Failed to update setting: invalid theme '{value}'. Expected: default, dark, light, whale."
                     );
                 }
                 self.theme = value.to_string();

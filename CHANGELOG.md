@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-01-30
+
+### Added
+- Intelligent context offloading: large tool results (>15k chars) are automatically moved to RLM memory to preserve the context window
+- Persistent history context: compacted messages are offloaded to RLM `history` variable for recall
+- Full MCP protocol support: SSE transport, Resources (`resources/list`, `resources/read`), and Prompts (`prompts/list`, `prompts/get`)
+- `mcp_read_resource` and `mcp_get_prompt` virtual tools exposed to the model
+- Dialectical Duo mode with specialized TUI rendering (`Player` / `Coach` history cells)
+- Dynamic system prompt refreshing at each turn for up-to-date RLM/Duo/working-set context
+- `project_map` tool for automatic codebase structure discovery
+- `delegate_to_agent` alias for streamlined sub-agent delegation
+
+### Changed
+- Default theme changed to 'Whale' with updated color palette
+- `with_agent_tools` now includes `project_map`, `test_runner`, and conditionally RLM tools for all agent modes
+- MCP `McpServerConfig.command` is now `Option<String>` to support URL-only (SSE) servers
+
+### Fixed
+- MCP test compilation errors for updated `McpServerConfig` struct shape
+
+## [0.3.4] - 2026-01-29
+
+### Changed
+- Updated Cargo.lock dependencies
+
+### Fixed
+- Compaction tool-call pairing: enforce bidirectional tool-call/tool-result integrity with fixpoint convergence
+- Safety net scanning to drop orphan tool results in the request builder
+- Double-dispatch race in parallel tool execution
+
+## [0.3.3] - 2026-01-28
+
+### Added
+- TUI polish: Kimi-style footer with mode/model/token display
+- Streaming thinking blocks with dedicated rendering
+- Loading animation improvements
+
 ## [0.3.2] - 2026-01-28
 
 ### Fixed
@@ -145,7 +182,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hooks system and config profiles
 - Example skills and launch assets
 
-[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.5...HEAD
+[0.3.5]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.4...v0.3.5
+[0.3.4]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.3...v0.3.4
+[0.3.3]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.2.2...v0.3.0

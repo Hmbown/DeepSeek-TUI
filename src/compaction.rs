@@ -528,6 +528,8 @@ pub struct CompactionResult {
     pub messages: Vec<Message>,
     /// Summary system prompt
     pub summary_prompt: Option<SystemPrompt>,
+    /// Messages that were removed from the active window
+    pub removed_messages: Vec<Message>,
     /// Number of retries used before success
     pub retries_used: u32,
 }
@@ -587,10 +589,11 @@ pub async fn compact_messages_safe(
         )
         .await
         {
-            Ok((msgs, prompt)) => {
+            Ok((msgs, prompt, removed)) => {
                 return Ok(CompactionResult {
                     messages: msgs,
                     summary_prompt: prompt,
+                    removed_messages: removed,
                     retries_used: attempt,
                 });
             }
@@ -615,9 +618,9 @@ pub async fn compact_messages(
     workspace: Option<&Path>,
     external_pins: Option<&[usize]>,
     external_working_set_paths: Option<&[String]>,
-) -> Result<(Vec<Message>, Option<SystemPrompt>)> {
+) -> Result<(Vec<Message>, Option<SystemPrompt>, Vec<Message>)> {
     if messages.is_empty() {
-        return Ok((Vec::new(), None));
+        return Ok((Vec::new(), None, Vec::new()));
     }
 
     let plan = plan_compaction(
@@ -628,7 +631,7 @@ pub async fn compact_messages(
         external_working_set_paths,
     );
     if plan.summarize_indices.is_empty() {
-        return Ok((messages.to_vec(), None));
+        return Ok((messages.to_vec(), None, Vec::new()));
     }
 
     let to_summarize: Vec<Message> = plan
@@ -664,6 +667,7 @@ pub async fn compact_messages(
     Ok((
         pinned_messages,
         Some(SystemPrompt::Blocks(vec![summary_block])),
+        to_summarize,
     ))
 }
 

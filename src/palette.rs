@@ -84,6 +84,12 @@ pub fn ui_theme(name: &str) -> UiTheme {
             selection_bg: Color::Rgb(38, 64, 112),
             header_bg: DEEPSEEK_SLATE,
         },
+        "whale" => UiTheme {
+            name: "whale",
+            composer_bg: DEEPSEEK_SLATE,
+            selection_bg: DEEPSEEK_NAVY,
+            header_bg: DEEPSEEK_INK,
+        },
         _ => UiTheme {
             name: "default",
             composer_bg: COMPOSER_BG,

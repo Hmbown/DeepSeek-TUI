@@ -659,6 +659,75 @@ impl ToolSpec for AgentListTool {
     }
 }
 
+/// Tool to delegate a task to a specialized agent (alias for agent_spawn).
+pub struct DelegateToAgentTool {
+    manager: SharedSubAgentManager,
+    runtime: SubAgentRuntime,
+}
+
+impl DelegateToAgentTool {
+    /// Create a new delegation tool.
+    #[must_use]
+    pub fn new(manager: SharedSubAgentManager, runtime: SubAgentRuntime) -> Self {
+        Self { manager, runtime }
+    }
+}
+
+#[async_trait]
+impl ToolSpec for DelegateToAgentTool {
+    fn name(&self) -> &'static str {
+        "delegate_to_agent"
+    }
+
+    fn description(&self) -> &'static str {
+        "Delegate a task to a specialized sub-agent. This is an alias for agent_spawn."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "agent_name": {
+                    "type": "string",
+                    "description": "Name or type of the agent: general, explore, plan, review"
+                },
+                "objective": {
+                    "type": "string",
+                    "description": "The goal or task description for the agent"
+                }
+            },
+            "required": ["objective"]
+        })
+    }
+
+    fn capabilities(&self) -> Vec<ToolCapability> {
+        vec![
+            ToolCapability::ExecutesCode,
+            ToolCapability::RequiresApproval,
+        ]
+    }
+
+    fn approval_requirement(&self) -> ApprovalRequirement {
+        ApprovalRequirement::Required
+    }
+
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+        let objective = required_str(&input, "objective")?.to_string();
+        let agent_type_str = input
+            .get("agent_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("general");
+
+        let spawn_input = json!({
+            "prompt": objective,
+            "type": agent_type_str
+        });
+
+        let spawn_tool = AgentSpawnTool::new(self.manager.clone(), self.runtime.clone());
+        spawn_tool.execute(spawn_input, context).await
+    }
+}
+
 // === Sub-agent Execution ===
 
 struct SubAgentTask {

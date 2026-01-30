@@ -68,11 +68,12 @@ impl Default for McpTimeouts {
 /// Configuration for a single MCP server
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct McpServerConfig {
-    pub command: String,
+    pub command: Option<String>,
     #[serde(default)]
     pub args: Vec<String>,
     #[serde(default)]
     pub env: HashMap<String, String>,
+    pub url: Option<String>,
     #[serde(default)]
     pub connect_timeout: Option<u64>,
     #[serde(default)]
@@ -109,6 +110,37 @@ pub struct McpTool {
     pub input_schema: serde_json::Value,
 }
 
+/// Resource discovered from an MCP server
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct McpResource {
+    pub uri: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(rename = "mimeType", default)]
+    pub mime_type: Option<String>,
+}
+
+/// Prompt discovered from an MCP server
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct McpPrompt {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub arguments: Vec<McpPromptArgument>,
+}
+
+/// Argument for an MCP prompt
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct McpPromptArgument {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub required: bool,
+}
+
 // === Connection State ===
 
 /// State of an MCP connection
@@ -121,13 +153,176 @@ pub enum ConnectionState {
 
 // === McpConnection - Async Connection Management ===
 
-/// Manages a single async connection to an MCP server
-pub struct McpConnection {
-    name: String,
+// === Transport Trait ===
+
+#[async_trait::async_trait]
+pub trait McpTransport: Send + Sync {
+    async fn send(&mut self, msg: serde_json::Value) -> Result<()>;
+    async fn recv(&mut self) -> Result<serde_json::Value>;
+}
+
+pub struct StdioTransport {
     _child: Child,
     stdin: ChildStdin,
     reader: tokio::io::BufReader<ChildStdout>,
+}
+
+#[async_trait::async_trait]
+impl McpTransport for StdioTransport {
+    async fn send(&mut self, msg: serde_json::Value) -> Result<()> {
+        let line = serde_json::to_string(&msg)? + "\n";
+        self.stdin.write_all(line.as_bytes()).await?;
+        self.stdin.flush().await?;
+        Ok(())
+    }
+
+    async fn recv(&mut self) -> Result<serde_json::Value> {
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let bytes = self.reader.read_line(&mut line).await?;
+            if bytes == 0 {
+                anyhow::bail!("Stdio transport closed");
+            }
+
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                return Ok(value);
+            }
+        }
+    }
+}
+
+pub struct SseTransport {
+    client: reqwest::Client,
+    base_url: String,
+    endpoint_url: Option<String>,
+    receiver: tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>,
+}
+
+impl SseTransport {
+    pub async fn connect(client: reqwest::Client, url: String) -> Result<Self> {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let client_clone = client.clone();
+        let url_clone = url.clone();
+
+        // Start SSE background task
+        tokio::spawn(async move {
+            if let Err(e) = Self::run_sse_loop(client_clone, url_clone, tx).await {
+                tracing::error!("SSE loop error: {}", e);
+            }
+        });
+
+        // The endpoint URL will be discovered from the first "endpoint" event
+        Ok(Self {
+            client,
+            base_url: url,
+            endpoint_url: None,
+            receiver: rx,
+        })
+    }
+
+    async fn run_sse_loop(
+        client: reqwest::Client,
+        url: String,
+        tx: tokio::sync::mpsc::UnboundedSender<serde_json::Value>,
+    ) -> Result<()> {
+        let response = client.get(&url).send().await?;
+        if !response.status().is_success() {
+            anyhow::bail!("Failed to connect to SSE: {}", response.status());
+        }
+
+        let mut stream = response.bytes_stream();
+        use futures_util::StreamExt;
+        let mut buffer = String::new();
+
+        while let Some(item) = stream.next().await {
+            let chunk = item?;
+            let s = String::from_utf8_lossy(&chunk);
+            buffer.push_str(&s);
+
+            while let Some(pos) = buffer.find("\n\n") {
+                let event_block = buffer[..pos].to_string();
+                buffer = buffer[pos + 2..].to_string();
+
+                let mut event_type = "message";
+                let mut data = String::new();
+
+                for line in event_block.lines() {
+                    if let Some(stripped) = line.strip_prefix("event: ") {
+                        event_type = stripped;
+                    } else if let Some(stripped) = line.strip_prefix("data: ") {
+                        data.push_str(stripped);
+                    }
+                }
+
+                match event_type {
+                    "endpoint" => {
+                        // Special internal message to set endpoint
+                        let _ = tx.send(serde_json::json!({
+                            "__internal_sse_endpoint__": data
+                        }));
+                    }
+                    "message" => {
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&data) {
+                            let _ = tx.send(val);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl McpTransport for SseTransport {
+    async fn send(&mut self, msg: serde_json::Value) -> Result<()> {
+        let endpoint = self
+            .endpoint_url
+            .as_ref()
+            .context("SSE endpoint not yet discovered")?;
+        let response = self.client.post(endpoint).json(&msg).send().await?;
+        if !response.status().is_success() {
+            anyhow::bail!("Failed to send message via SSE POST: {}", response.status());
+        }
+        Ok(())
+    }
+
+    async fn recv(&mut self) -> Result<serde_json::Value> {
+        loop {
+            let msg = self.receiver.recv().await.context("SSE transport closed")?;
+            if let Some(endpoint) = msg.get("__internal_sse_endpoint__") {
+                let url_str = endpoint.as_str().context("Invalid endpoint format")?;
+                // Handle relative vs absolute URLs
+                if url_str.starts_with("http") {
+                    self.endpoint_url = Some(url_str.to_string());
+                } else {
+                    let base = reqwest::Url::parse(&self.base_url)?;
+                    let joined = base.join(url_str)?;
+                    self.endpoint_url = Some(joined.to_string());
+                }
+                continue;
+            }
+            return Ok(msg);
+        }
+    }
+}
+
+// === McpConnection - Async Connection Management ===
+
+/// Manages a single async connection to an MCP server
+pub struct McpConnection {
+    name: String,
+    transport: Box<dyn McpTransport>,
     tools: Vec<McpTool>,
+    resources: Vec<McpResource>,
+    prompts: Vec<McpPrompt>,
     request_id: AtomicU64,
     state: ConnectionState,
     config: McpServerConfig,
@@ -142,30 +337,48 @@ impl McpConnection {
     ) -> Result<Self> {
         let connect_timeout_secs = config.effective_connect_timeout(global_timeouts);
 
-        let mut cmd = tokio::process::Command::new(&config.command);
-        cmd.args(&config.args)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .kill_on_drop(true);
+        let transport: Box<dyn McpTransport> = if let Some(url) = &config.url {
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(connect_timeout_secs))
+                .build()?;
+            Box::new(SseTransport::connect(client, url.clone()).await?)
+        } else if let Some(command) = &config.command {
+            let mut cmd = tokio::process::Command::new(command);
+            cmd.args(&config.args)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .kill_on_drop(true);
 
-        for (key, value) in &config.env {
-            cmd.env(key, value);
-        }
+            for (key, value) in &config.env {
+                cmd.env(key, value);
+            }
 
-        let mut child = cmd
-            .spawn()
-            .with_context(|| format!("Failed to spawn MCP server '{name}'"))?;
+            let mut child = cmd
+                .spawn()
+                .with_context(|| format!("Failed to spawn MCP server '{name}'"))?;
 
-        let stdin = child.stdin.take().context("Failed to get MCP stdin")?;
-        let stdout = child.stdout.take().context("Failed to get MCP stdout")?;
+            let stdin = child.stdin.take().context("Failed to get MCP stdin")?;
+            let stdout = child.stdout.take().context("Failed to get MCP stdout")?;
+
+            Box::new(StdioTransport {
+                _child: child,
+                stdin,
+                reader: tokio::io::BufReader::new(stdout),
+            })
+        } else {
+            anyhow::bail!(
+                "MCP server '{}' config must have either 'command' or 'url'",
+                name
+            );
+        };
 
         let mut conn = Self {
             name: name.clone(),
-            _child: child,
-            stdin,
-            reader: tokio::io::BufReader::new(stdout),
+            transport,
             tools: Vec::new(),
+            resources: Vec::new(),
+            prompts: Vec::new(),
             request_id: AtomicU64::new(1),
             state: ConnectionState::Connecting,
             config,
@@ -176,13 +389,13 @@ impl McpConnection {
             .await
             .with_context(|| format!("MCP server '{name}' initialization timed out"))??;
 
-        // Discover tools with timeout
+        // Discover tools, resources, and prompts with timeout
         tokio::time::timeout(
             Duration::from_secs(connect_timeout_secs),
-            conn.discover_tools(),
+            conn.discover_all(),
         )
         .await
-        .with_context(|| format!("MCP server '{name}' tool discovery timed out"))??;
+        .with_context(|| format!("MCP server '{name}' discovery timed out"))??;
 
         conn.state = ConnectionState::Ready;
         Ok(conn)
@@ -201,7 +414,11 @@ impl McpConnection {
                     "name": "deepseek-cli",
                     "version": env!("CARGO_PKG_VERSION")
                 },
-                "capabilities": { "tools": {} }
+                "capabilities": {
+                    "tools": {},
+                    "resources": {},
+                    "prompts": {}
+                }
             }
         }))
         .await?;
@@ -215,6 +432,16 @@ impl McpConnection {
         }))
         .await?;
 
+        Ok(())
+    }
+
+    /// Discover tools, resources, and prompts
+    async fn discover_all(&mut self) -> Result<()> {
+        // We use join! to discover everything concurrently if possible,
+        // but for now let's keep it sequential for simplicity in error handling
+        self.discover_tools().await?;
+        self.discover_resources().await?;
+        self.discover_prompts().await?;
         Ok(())
     }
 
@@ -240,6 +467,50 @@ impl McpConnection {
         Ok(())
     }
 
+    /// Discover available resources from the MCP server
+    async fn discover_resources(&mut self) -> Result<()> {
+        let list_id = self.next_id();
+        self.send(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": list_id,
+            "method": "resources/list",
+            "params": {}
+        }))
+        .await?;
+
+        let response = self.recv(list_id).await?;
+
+        if let Some(result) = response.get("result")
+            && let Some(resources) = result.get("resources")
+        {
+            self.resources = serde_json::from_value(resources.clone()).unwrap_or_default();
+        }
+
+        Ok(())
+    }
+
+    /// Discover available prompts from the MCP server
+    async fn discover_prompts(&mut self) -> Result<()> {
+        let list_id = self.next_id();
+        self.send(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": list_id,
+            "method": "prompts/list",
+            "params": {}
+        }))
+        .await?;
+
+        let response = self.recv(list_id).await?;
+
+        if let Some(result) = response.get("result")
+            && let Some(prompts) = result.get("prompts")
+        {
+            self.prompts = serde_json::from_value(prompts.clone()).unwrap_or_default();
+        }
+
+        Ok(())
+    }
+
     /// Call a tool on this MCP server
     pub async fn call_tool(
         &mut self,
@@ -247,9 +518,62 @@ impl McpConnection {
         arguments: serde_json::Value,
         timeout_secs: u64,
     ) -> Result<serde_json::Value> {
+        self.call_method(
+            "tools/call",
+            serde_json::json!({
+                "name": tool_name,
+                "arguments": arguments
+            }),
+            timeout_secs,
+        )
+        .await
+    }
+
+    /// Read a resource from this MCP server
+    pub async fn read_resource(
+        &mut self,
+        uri: &str,
+        timeout_secs: u64,
+    ) -> Result<serde_json::Value> {
+        self.call_method(
+            "resources/read",
+            serde_json::json!({
+                "uri": uri
+            }),
+            timeout_secs,
+        )
+        .await
+    }
+
+    /// Get a prompt from this MCP server
+    pub async fn get_prompt(
+        &mut self,
+        prompt_name: &str,
+        arguments: serde_json::Value,
+        timeout_secs: u64,
+    ) -> Result<serde_json::Value> {
+        self.call_method(
+            "prompts/get",
+            serde_json::json!({
+                "name": prompt_name,
+                "arguments": arguments
+            }),
+            timeout_secs,
+        )
+        .await
+    }
+
+    /// Generic method to call an MCP method
+    async fn call_method(
+        &mut self,
+        method: &str,
+        params: serde_json::Value,
+        timeout_secs: u64,
+    ) -> Result<serde_json::Value> {
         if self.state != ConnectionState::Ready {
             anyhow::bail!(
-                "Failed to call MCP tool: connection '{}' is not ready",
+                "Failed to call MCP method '{}': connection '{}' is not ready",
+                method,
                 self.name
             );
         }
@@ -258,11 +582,8 @@ impl McpConnection {
         self.send(serde_json::json!({
             "jsonrpc": "2.0",
             "id": call_id,
-            "method": "tools/call",
-            "params": {
-                "name": tool_name,
-                "arguments": arguments
-            }
+            "method": method,
+            "params": params
         }))
         .await?;
 
@@ -270,14 +591,15 @@ impl McpConnection {
             .await
             .with_context(|| {
                 format!(
-                    "MCP tool '{}' on server '{}' timed out after {}s",
-                    tool_name, self.name, timeout_secs
+                    "MCP method '{}' on server '{}' timed out after {}s",
+                    method, self.name, timeout_secs
                 )
             })??;
 
         if let Some(error) = response.get("error") {
             return Err(anyhow::anyhow!(
-                "MCP error: {}",
+                "MCP error in '{}': {}",
+                method,
                 serde_json::to_string_pretty(error)?
             ));
         }
@@ -291,6 +613,16 @@ impl McpConnection {
     /// Get discovered tools
     pub fn tools(&self) -> &[McpTool] {
         &self.tools
+    }
+
+    /// Get discovered resources
+    pub fn resources(&self) -> &[McpResource] {
+        &self.resources
+    }
+
+    /// Get discovered prompts
+    pub fn prompts(&self) -> &[McpPrompt] {
+        &self.prompts
     }
 
     /// Get server name
@@ -318,50 +650,32 @@ impl McpConnection {
     }
 
     async fn send(&mut self, msg: serde_json::Value) -> Result<()> {
-        let line = serde_json::to_string(&msg)? + "\n";
-        self.stdin.write_all(line.as_bytes()).await?;
-        self.stdin.flush().await?;
-        Ok(())
+        self.transport.send(msg).await
     }
 
     async fn recv(&mut self, expected_id: u64) -> Result<serde_json::Value> {
-        let mut line = String::new();
         loop {
-            line.clear();
-            let bytes = self.reader.read_line(&mut line).await?;
-            if bytes == 0 {
+            let value = self.transport.recv().await.inspect_err(|_e| {
                 self.state = ConnectionState::Disconnected;
-                anyhow::bail!(
-                    "Failed to read MCP response: server '{}' closed connection",
-                    self.name
-                );
-            }
+            })?;
 
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
+            // Check if this is a response with the expected id
+            if value.get("id").and_then(serde_json::Value::as_u64) == Some(expected_id) {
+                return Ok(value);
             }
-
-            if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                // Check if this is a response with the expected id
-                if value.get("id").and_then(serde_json::Value::as_u64) == Some(expected_id) {
-                    return Ok(value);
-                }
-                // Skip notifications (no id) and responses with different ids
-            }
+            // Skip notifications (no id) and responses with different ids
         }
     }
 
     /// Gracefully close the connection
     pub fn close(&mut self) {
         self.state = ConnectionState::Disconnected;
-        // Child process will be killed on drop due to kill_on_drop(true)
     }
 }
 
 impl Drop for McpConnection {
     fn drop(&mut self) {
-        // Child is automatically killed due to kill_on_drop(true)
+        // StdioTransport will be dropped and child killed
     }
 }
 
@@ -467,17 +781,125 @@ impl McpPool {
         tools
     }
 
+    /// Get all discovered resources with server-prefixed names
+    pub fn all_resources(&self) -> Vec<(String, &McpResource)> {
+        let mut resources = Vec::new();
+        for (server, conn) in &self.connections {
+            for resource in conn.resources() {
+                // Format: mcp_{server}_{resource_name}
+                // Note: resource names might contain spaces, we should probably slugify them
+                let safe_name = resource.name.replace(' ', "_").to_lowercase();
+                resources.push((format!("mcp_{}_{}", server, safe_name), resource));
+            }
+        }
+        resources
+    }
+
+    /// Get all discovered prompts with server-prefixed names
+    pub fn all_prompts(&self) -> Vec<(String, &McpPrompt)> {
+        let mut prompts = Vec::new();
+        for (server, conn) in &self.connections {
+            for prompt in conn.prompts() {
+                // Format: mcp_{server}_{prompt}
+                prompts.push((format!("mcp_{}_{}", server, prompt.name), prompt));
+            }
+        }
+        prompts
+    }
+
+    /// Read a resource from a specific server
+    pub async fn read_resource(
+        &mut self,
+        server_name: &str,
+        uri: &str,
+    ) -> Result<serde_json::Value> {
+        let global_timeouts = self.config.timeouts;
+        let conn = self.get_or_connect(server_name).await?;
+        let timeout = conn.config().effective_read_timeout(&global_timeouts);
+        conn.read_resource(uri, timeout).await
+    }
+
+    /// Get a prompt from a specific server
+    pub async fn get_prompt(
+        &mut self,
+        server_name: &str,
+        prompt_name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let global_timeouts = self.config.timeouts;
+        let conn = self.get_or_connect(server_name).await?;
+        let timeout = conn.config().effective_execute_timeout(&global_timeouts);
+        conn.get_prompt(prompt_name, arguments, timeout).await
+    }
+
+    /// Parse a prefixed name into (server_name, tool_name)
+    fn parse_prefixed_name<'a>(&self, prefixed_name: &'a str) -> Result<(&'a str, &'a str)> {
+        if !prefixed_name.starts_with("mcp_") {
+            anyhow::bail!("Invalid MCP tool name: {}", prefixed_name);
+        }
+        let rest = &prefixed_name[4..];
+        let Some((server, tool)) = rest.split_once('_') else {
+            anyhow::bail!("Invalid MCP tool name format: {}", prefixed_name);
+        };
+        Ok((server, tool))
+    }
+
     /// Convert discovered tools to API Tool format
     pub fn to_api_tools(&self) -> Vec<crate::models::Tool> {
-        self.all_tools()
-            .into_iter()
-            .map(|(name, tool)| crate::models::Tool {
+        let mut api_tools = Vec::new();
+
+        // Add regular tools
+        for (name, tool) in self.all_tools() {
+            api_tools.push(crate::models::Tool {
                 name,
                 description: tool.description.clone().unwrap_or_default(),
                 input_schema: tool.input_schema.clone(),
                 cache_control: None,
-            })
-            .collect()
+            });
+        }
+
+        // Add resource reading tools if resources exist
+        let resources = self.all_resources();
+        if !resources.is_empty() {
+            api_tools.push(crate::models::Tool {
+                name: "mcp_read_resource".to_string(),
+                description: "Read a resource from an MCP server using its URI".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "server": { "type": "string", "description": "The name of the MCP server" },
+                        "uri": { "type": "string", "description": "The URI of the resource to read" }
+                    },
+                    "required": ["server", "uri"]
+                }),
+                            cache_control: None,
+                        });
+        }
+
+        // Add prompt getting tools if prompts exist
+        let prompts = self.all_prompts();
+        if !prompts.is_empty() {
+            api_tools.push(crate::models::Tool {
+                name: "mcp_get_prompt".to_string(),
+                description: "Get a prompt from an MCP server".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "server": { "type": "string", "description": "The name of the MCP server" },
+                        "name": { "type": "string", "description": "The name of the prompt" },
+                        "arguments": {
+                            "type": "object",
+                            "description": "Optional arguments for the prompt",
+                            "additionalProperties": { "type": "string" }
+                        }
+                    },
+                    "required": ["server", "name"]
+                }),
+                cache_control: None,
+            });
+        }
+
+        api_tools
     }
 
     /// Call a tool by its prefixed name (mcp_{server}_{tool})
@@ -486,14 +908,35 @@ impl McpPool {
         prefixed_name: &str,
         arguments: serde_json::Value,
     ) -> Result<serde_json::Value> {
-        let parts: Vec<&str> = prefixed_name.splitn(3, '_').collect();
-        if parts.len() != 3 || parts[0] != "mcp" {
-            anyhow::bail!(
-                "Failed to parse MCP tool name '{prefixed_name}': expected format mcp_{{server}}_{{tool}}"
-            );
+        if prefixed_name == "mcp_read_resource" {
+            let server_name = arguments
+                .get("server")
+                .and_then(|v| v.as_str())
+                .context("Missing 'server' argument")?;
+            let uri = arguments
+                .get("uri")
+                .and_then(|v| v.as_str())
+                .context("Missing 'uri' argument")?;
+            return self.read_resource(server_name, uri).await;
         }
 
-        let (server_name, tool_name) = (parts[1], parts[2]);
+        if prefixed_name == "mcp_get_prompt" {
+            let server_name = arguments
+                .get("server")
+                .and_then(|v| v.as_str())
+                .context("Missing 'server' argument")?;
+            let name = arguments
+                .get("name")
+                .and_then(|v| v.as_str())
+                .context("Missing 'name' argument")?;
+            let args = arguments
+                .get("arguments")
+                .cloned()
+                .unwrap_or(serde_json::json!({}));
+            return self.get_prompt(server_name, name, args).await;
+        }
+
+        let (server_name, tool_name) = self.parse_prefixed_name(prefixed_name)?;
         // Copy the global timeouts to avoid borrow conflict
         let global_timeouts = self.config.timeouts;
         let conn = self.get_or_connect(server_name).await?;
@@ -899,7 +1342,7 @@ mod tests {
         assert!(config.servers.contains_key("test"));
 
         let server = config.servers.get("test").unwrap();
-        assert_eq!(server.command, "node");
+        assert_eq!(server.command, Some("node".to_string()));
         assert_eq!(server.args, vec!["server.js"]);
         assert_eq!(server.env.get("FOO"), Some(&"bar".to_string()));
     }
@@ -909,9 +1352,10 @@ mod tests {
         let global = McpTimeouts::default();
 
         let server_with_override = McpServerConfig {
-            command: "test".to_string(),
+            command: Some("test".to_string()),
             args: vec![],
             env: HashMap::new(),
+            url: None,
             connect_timeout: Some(20),
             execute_timeout: None,
             read_timeout: Some(180),
