@@ -308,6 +308,13 @@ impl ToolRegistryBuilder {
         self.with_tool(Arc::new(DiagnosticsTool))
     }
 
+    /// Include project mapping tools.
+    #[must_use]
+    pub fn with_project_tools(self) -> Self {
+        use super::project::ProjectMapTool;
+        self.with_tool(Arc::new(ProjectMapTool))
+    }
+
     /// Include cargo test runner tool.
     #[must_use]
     pub fn with_test_runner_tool(self) -> Self {
@@ -345,8 +352,14 @@ impl ToolRegistryBuilder {
 
     /// Include all agent tools (file tools + shell + note + search + patch).
     #[must_use]
-    pub fn with_agent_tools(self, allow_shell: bool) -> Self {
-        let builder = self
+    pub fn with_agent_tools(
+        self,
+        allow_shell: bool,
+        rlm_session: Option<SharedRlmSession>,
+        client: Option<DeepSeekClient>,
+        model: String,
+    ) -> Self {
+        let mut builder = self
             .with_file_tools()
             .with_note_tool()
             .with_search_tools()
@@ -354,7 +367,12 @@ impl ToolRegistryBuilder {
             .with_patch_tools()
             .with_git_tools()
             .with_diagnostics_tool()
+            .with_project_tools()
             .with_test_runner_tool();
+
+        if let Some(session) = rlm_session {
+            builder = builder.with_rlm_tools(session, client, model);
+        }
 
         if allow_shell {
             builder.with_shell_tools()
@@ -387,8 +405,11 @@ impl ToolRegistryBuilder {
         allow_shell: bool,
         todo_list: super::todo::SharedTodoList,
         plan_state: super::plan::SharedPlanState,
+        rlm_session: Option<SharedRlmSession>,
+        client: Option<DeepSeekClient>,
+        model: String,
     ) -> Self {
-        self.with_agent_tools(allow_shell)
+        self.with_agent_tools(allow_shell, rlm_session, client, model)
             .with_todo_tool(todo_list)
             .with_plan_tool(plan_state)
     }
@@ -427,10 +448,16 @@ impl ToolRegistryBuilder {
         manager: super::subagent::SharedSubAgentManager,
         runtime: super::subagent::SubAgentRuntime,
     ) -> Self {
-        use super::subagent::{AgentCancelTool, AgentListTool, AgentResultTool, AgentSpawnTool};
+        use super::subagent::{
+            AgentCancelTool, AgentListTool, AgentResultTool, AgentSpawnTool, DelegateToAgentTool,
+        };
         use super::swarm::AgentSwarmTool;
 
         self.with_tool(Arc::new(AgentSpawnTool::new(
+            manager.clone(),
+            runtime.clone(),
+        )))
+        .with_tool(Arc::new(DelegateToAgentTool::new(
             manager.clone(),
             runtime.clone(),
         )))

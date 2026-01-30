@@ -638,9 +638,10 @@ fn mcp_template_json() -> Result<String> {
     cfg.servers.insert(
         "example".to_string(),
         McpServerConfig {
-            command: "node".to_string(),
+            command: Some("node".to_string()),
             args: vec!["./path/to/your-mcp-server.js".to_string()],
             env: std::collections::HashMap::new(),
+            url: None,
             connect_timeout: None,
             execute_timeout: None,
             read_timeout: None,
@@ -1485,7 +1486,14 @@ async fn run_mcp_command(config: &Config, command: McpCommand) -> Result<()> {
                 } else {
                     format!(" {}", server.args.join(" "))
                 };
-                println!("  - {name} [{status}] {}{}", server.command, args);
+                let cmd_str = if let Some(cmd) = server.command {
+                    format!("{cmd}{args}")
+                } else if let Some(url) = server.url {
+                    url
+                } else {
+                    "unknown".to_string()
+                };
+                println!("  - {name} [{status}] {cmd_str}");
             }
             Ok(())
         }

@@ -51,7 +51,15 @@ pub fn system_prompt_for_mode_with_context(
     let mut full_prompt = if let Some(project_block) = project_context.as_system_block() {
         format!("{}\n\n{}", base_prompt.trim(), project_block)
     } else {
-        base_prompt.trim().to_string()
+        // Fallback: Generate an automatic project map summary
+        let summary = crate::utils::summarize_project(workspace);
+        let tree = crate::utils::project_tree(workspace, 2); // Shallow tree for prompt
+        format!(
+            "{}\n\n### Project Structure (Automatic Map)\n**Summary:** {}\n\n**Tree:**\n```\n{}\n```",
+            base_prompt.trim(),
+            summary,
+            tree
+        )
     };
 
     if let Some(summary) = working_set_summary

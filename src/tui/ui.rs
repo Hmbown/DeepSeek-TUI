@@ -60,8 +60,8 @@ use super::approval::{
 use super::history::{
     DiffPreviewCell, ExecCell, ExecSource, ExploringCell, ExploringEntry, GenericToolCell,
     HistoryCell, McpToolCell, PatchSummaryCell, PlanStep, PlanUpdateCell, ReviewCell, ToolCell,
-    ToolStatus, ViewImageCell, WebSearchCell, history_cells_from_message, summarize_mcp_output,
-    summarize_tool_args, summarize_tool_output,
+    ToolStatus, ViewImageCell, WebSearchCell, history_cells_from_message_with_mode,
+    summarize_mcp_output, summarize_tool_args, summarize_tool_output,
 };
 use super::views::{HelpView, ModalKind, ViewEvent};
 use super::widgets::{ChatWidget, ComposerWidget, HeaderData, HeaderWidget, Renderable};
@@ -154,8 +154,19 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
                         &saved.metadata.id[..8]
                     ),
                 });
+
+                let duo_phase = if app.mode == AppMode::Duo {
+                    app.duo_session
+                        .lock()
+                        .ok()
+                        .and_then(|s| s.active_state.as_ref().map(|st| st.phase))
+                } else {
+                    None
+                };
+
                 for msg in &saved.messages {
-                    app.history.extend(history_cells_from_message(msg));
+                    app.history
+                        .extend(history_cells_from_message_with_mode(msg, duo_phase));
                 }
                 app.mark_history_updated();
                 app.status_message = Some(format!("Resumed session: {}", &saved.metadata.id[..8]));
@@ -268,19 +279,46 @@ async fn run_event_loop(
                         let index = if let Some(index) = app.streaming_message_index {
                             index
                         } else {
-                            app.add_message(HistoryCell::Assistant {
-                                content: String::new(),
-                                streaming: true,
-                            });
+                            let duo_phase = if app.mode == AppMode::Duo {
+                                app.duo_session
+                                    .lock()
+                                    .ok()
+                                    .and_then(|s| s.active_state.as_ref().map(|st| st.phase))
+                            } else {
+                                None
+                            };
+
+                            let cell = match duo_phase {
+                                Some(crate::duo::DuoPhase::Player)
+                                | Some(crate::duo::DuoPhase::Init) => HistoryCell::Player {
+                                    content: String::new(),
+                                    streaming: true,
+                                },
+                                Some(crate::duo::DuoPhase::Coach) => HistoryCell::Coach {
+                                    content: String::new(),
+                                    streaming: true,
+                                },
+                                _ => HistoryCell::Assistant {
+                                    content: String::new(),
+                                    streaming: true,
+                                },
+                            };
+
+                            app.add_message(cell);
                             let index = app.history.len().saturating_sub(1);
                             app.streaming_message_index = Some(index);
                             index
                         };
 
-                        if let Some(HistoryCell::Assistant { content, .. }) =
-                            app.history.get_mut(index)
-                        {
-                            content.clone_from(&current_streaming_text);
+                        if let Some(cell) = app.history.get_mut(index) {
+                            match cell {
+                                HistoryCell::Assistant { content, .. }
+                                | HistoryCell::Player { content, .. }
+                                | HistoryCell::Coach { content, .. } => {
+                                    content.clone_from(&current_streaming_text);
+                                }
+                                _ => {}
+                            }
                             app.mark_history_updated();
                         }
                     }
@@ -1961,8 +1999,19 @@ async fn handle_view_events(app: &mut App, engine_handle: &EngineHandle, events:
 fn apply_loaded_session(app: &mut App, session: &SavedSession) {
     app.api_messages.clone_from(&session.messages);
     app.history.clear();
+
+    let duo_phase = if app.mode == AppMode::Duo {
+        app.duo_session
+            .lock()
+            .ok()
+            .and_then(|s| s.active_state.as_ref().map(|st| st.phase))
+    } else {
+        None
+    };
+
     for msg in &app.api_messages {
-        app.history.extend(history_cells_from_message(msg));
+        app.history
+            .extend(history_cells_from_message_with_mode(msg, duo_phase));
     }
     app.mark_history_updated();
     app.transcript_selection.clear();
@@ -2337,9 +2386,11 @@ fn format_elapsed(start: Instant) -> String {
 }
 
 fn deepseek_squiggle(start: Option<Instant>) -> &'static str {
-    const FRAMES: [&str; 8] = ["🐳", "🐳·", "🐳··", "🐳···", "🐳··", "🐳·", "🐳", "🐳~"];
+    const FRAMES: [&str; 12] = [
+        "🐳", "🐳.", "🐳..", "🐳...", "🐳..", "🐳.", "🐋", "🐋.", "🐋..", "🐋...", "🐋..", "🐋.",
+    ];
     let elapsed_ms = start.map_or(0, |t| t.elapsed().as_millis());
-    let idx = ((elapsed_ms / 220) as usize) % FRAMES.len();
+    let idx = ((elapsed_ms / 180) as usize) % FRAMES.len();
     FRAMES[idx]
 }
 

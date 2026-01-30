@@ -631,6 +631,20 @@ impl RlmSession {
     pub fn record_query_usage(&mut self, usage: &Usage, chars_sent: usize, chars_received: usize) {
         self.usage.record(usage, chars_sent, chars_received);
     }
+
+    pub fn append_var(&mut self, name: &str, value: String) {
+        let active = self.active_context.clone();
+        if let Some(ctx) = self.contexts.get_mut(&active) {
+            ctx.append_var(name, value);
+        } else {
+            // Fallback to default context if active doesn't exist
+            let ctx = self
+                .contexts
+                .entry("default".to_string())
+                .or_insert_with(|| RlmContext::new("default", String::new(), None));
+            ctx.append_var(name, value);
+        }
+    }
 }
 
 pub fn context_id_from_path(path: &Path) -> String {

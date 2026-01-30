@@ -11,6 +11,7 @@ pub mod file;
 pub mod file_search;
 pub mod git;
 pub mod plan;
+pub mod project;
 pub mod registry;
 pub mod review;
 pub mod rlm;

@@ -7,6 +7,7 @@
 //! - Proper cancellation support
 //! - Tool execution orchestration
 
+use std::fmt::Write;
 use std::path::PathBuf;
 use std::pin::pin;
 use std::sync::{Arc, Mutex};
@@ -713,13 +714,19 @@ impl Engine {
                 .with_todo_tool(todo_list.clone())
                 .with_plan_tool(plan_state.clone())
         } else {
+            let rlm_opt = if self.config.features.enabled(Feature::Rlm) {
+                Some(self.config.rlm_session.clone())
+            } else {
+                None
+            };
+
             ToolRegistryBuilder::new()
-                .with_file_tools()
-                .with_note_tool()
-                .with_search_tools()
-                .with_git_tools()
-                .with_diagnostics_tool()
-                .with_test_runner_tool()
+                .with_agent_tools(
+                    self.session.allow_shell,
+                    rlm_opt,
+                    self.deepseek_client.clone(),
+                    self.session.model.clone(),
+                )
                 .with_todo_tool(todo_list.clone())
                 .with_plan_tool(plan_state.clone())
         };
@@ -825,6 +832,42 @@ impl Engine {
             self.session.notes_path.clone(),
             self.session.mcp_config_path.clone(),
             mode == AppMode::Yolo,
+        )
+    }
+
+    /// Automatically offload large tool results to RLM memory if enabled.
+    /// Returns either the original content or a pointer to the RLM context.
+    fn offload_to_rlm_if_needed(&self, tool_name: &str, content: String) -> String {
+        const OFFLOAD_THRESHOLD: usize = 15_000;
+
+        if !self.config.features.enabled(Feature::Rlm) || content.len() < OFFLOAD_THRESHOLD {
+            return content;
+        }
+
+        let mut session = match self.config.rlm_session.lock() {
+            Ok(s) => s,
+            Err(_) => return content,
+        };
+
+        let context_id = format!(
+            "auto_{}_{}",
+            tool_name,
+            &uuid::Uuid::new_v4().to_string()[..8]
+        );
+        let char_count = content.len();
+        let line_count = content.lines().count();
+
+        session.load_context(&context_id, content, None);
+
+        format!(
+            "[AUTOMATIC RLM OFFLOAD]\n\
+             The output of '{tool_name}' was too large ({char_count} chars, {line_count} lines) \
+             and has been moved to RLM memory to preserve your context window.\n\n\
+             Context ID: {context_id}\n\n\
+             You can explore this data using RLM tools:\n\
+             - `rlm_exec(code=\"lines(1, 100)\", context_id=\"{context_id}\")` to see the start\n\
+             - `rlm_exec(code=\"search(\\\"pattern\\\")\", context_id=\"{context_id}\")` to search\n\
+             - `rlm_query(query=\"...\", context_id=\"{context_id}\")` for deep analysis"
         )
     }
 
@@ -985,6 +1028,9 @@ impl Engine {
                 break;
             }
 
+            // Ensure system prompt is up to date with latest session states
+            self.refresh_system_prompt(_mode);
+
             if turn.at_max_steps() {
                 let _ = self
                     .tx_event
@@ -1025,6 +1071,49 @@ impl Engine {
                     Ok(result) => {
                         // Only update if we got valid messages (never corrupt state)
                         if !result.messages.is_empty() || self.session.messages.is_empty() {
+                            // Offload removed messages to RLM history if enabled
+                            if self.config.features.enabled(Feature::Rlm)
+                                && !result.removed_messages.is_empty()
+                            {
+                                if let Ok(mut rlm) = self.config.rlm_session.lock() {
+                                    let mut history_text = String::new();
+                                    for msg in &result.removed_messages {
+                                        let role = if msg.role == "user" {
+                                            "User"
+                                        } else {
+                                            "Assistant"
+                                        };
+                                        for block in &msg.content {
+                                            match block {
+                                                ContentBlock::Text { text, .. } => {
+                                                    let _ =
+                                                        writeln!(history_text, "{role}: {text}\n");
+                                                }
+                                                ContentBlock::ToolUse { name, input, .. } => {
+                                                    let _ = writeln!(
+                                                        history_text,
+                                                        "{role}: [Used tool: {name}] Input: {input}\n"
+                                                    );
+                                                }
+                                                ContentBlock::ToolResult { content, .. } => {
+                                                    let _ = writeln!(
+                                                        history_text,
+                                                        "Tool result: {content}\n"
+                                                    );
+                                                }
+                                                ContentBlock::Thinking { thinking } => {
+                                                    let _ = writeln!(
+                                                        history_text,
+                                                        "{role} (thinking): {thinking}\n"
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+                                    rlm.append_var("history", history_text);
+                                }
+                            }
+
                             self.session.messages = result.messages;
                             self.session.system_prompt = merge_system_prompts(
                                 self.session.system_prompt.as_ref(),
@@ -1567,7 +1656,10 @@ impl Engine {
 
                 match outcome.result {
                     Ok(output) => {
-                        let output_content = output.content;
+                        let original_content = output.content;
+                        let output_content =
+                            self.offload_to_rlm_if_needed(&outcome.name, original_content);
+
                         tool_call.set_result(output_content.clone(), duration);
                         self.session.working_set.observe_tool_call(
                             &tool_name_for_ws,
@@ -1634,6 +1726,36 @@ impl Engine {
     /// Get a mutable reference to the session
     pub fn session_mut(&mut self) -> &mut Session {
         &mut self.session
+    }
+
+    /// Refresh the system prompt based on current mode and context.
+    fn refresh_system_prompt(&mut self, mode: AppMode) {
+        let rlm_summary = self
+            .config
+            .rlm_session
+            .lock()
+            .ok()
+            .map(|session| rlm_session_summary(&session));
+
+        let duo_summary = self
+            .config
+            .duo_session
+            .lock()
+            .ok()
+            .map(|s| duo_session_summary(&s));
+
+        let working_set_summary = self
+            .session
+            .working_set
+            .summary_block(&self.config.workspace);
+
+        self.session.system_prompt = Some(prompts::system_prompt_for_mode_with_context(
+            mode,
+            &self.config.workspace,
+            working_set_summary.as_deref(),
+            rlm_summary.as_deref(),
+            duo_summary.as_deref(),
+        ));
     }
 }
 
