@@ -1,4 +1,4 @@
-//! Header bar widget displaying mode, model, context usage, and streaming state.
+//! Header bar widget displaying mode, model, and streaming state.
 
 use ratatui::{
     buffer::Buffer,
@@ -19,7 +19,6 @@ pub struct HeaderData<'a> {
     pub model: &'a str,
     pub mode: AppMode,
     pub is_streaming: bool,
-    pub context_percent: Option<u8>,
     pub background: ratatui::style::Color,
 }
 
@@ -29,21 +28,13 @@ impl<'a> HeaderData<'a> {
     pub fn new(
         mode: AppMode,
         model: &'a str,
-        context_used: u32,
         is_streaming: bool,
         background: ratatui::style::Color,
     ) -> Self {
-        // Calculate context percentage
-        let context_percent = crate::models::context_window_for_model(model).map(|max| {
-            let max_u32 = max;
-            (context_used * 100 / max_u32.max(1)).min(100) as u8
-        });
-
         Self {
             model,
             mode,
             is_streaming,
-            context_percent,
             background,
         }
     }
@@ -51,7 +42,7 @@ impl<'a> HeaderData<'a> {
 
 /// Header bar widget (1 line height).
 ///
-/// Layout: `[MODE] model-name | Context: XX% [streaming indicator]`
+/// Layout: `[MODE] model-name | [streaming indicator]`
 pub struct HeaderWidget<'a> {
     data: HeaderData<'a>,
 }
@@ -96,23 +87,6 @@ impl<'a> HeaderWidget<'a> {
         Span::styled(display_name, Style::default().fg(palette::TEXT_MUTED))
     }
 
-    /// Build the context usage span.
-    fn context_span(&self) -> Option<Span<'static>> {
-        let pct = self.data.context_percent?;
-        let color = if pct < 50 {
-            palette::TEXT_DIM
-        } else if pct < 80 {
-            palette::STATUS_WARNING
-        } else {
-            palette::STATUS_ERROR
-        };
-
-        Some(Span::styled(
-            format!(" {pct}% "),
-            Style::default().fg(color),
-        ))
-    }
-
     /// Build the streaming indicator span.
     fn streaming_indicator(&self) -> Option<Span<'static>> {
         if !self.data.is_streaming {
@@ -138,18 +112,16 @@ impl Renderable for HeaderWidget<'_> {
         let mode_span = self.mode_badge();
         let model_span = self.model_span();
 
-        // Build right section: context percentage + streaming indicator
-        let context_span = self.context_span();
+        // Build right section: streaming indicator
         let streaming_span = self.streaming_indicator();
 
         // Calculate widths
         let mode_width = mode_span.content.width();
         let model_width = model_span.content.width();
-        let context_width = context_span.as_ref().map_or(0, |s| s.content.width());
         let streaming_width = streaming_span.as_ref().map_or(0, |s| s.content.width());
 
         let left_width = mode_width + 1 + model_width; // mode + space + model
-        let right_width = context_width + streaming_width;
+        let right_width = streaming_width;
 
         let available = area.width as usize;
 
@@ -157,7 +129,7 @@ impl Renderable for HeaderWidget<'_> {
         let mut spans = Vec::new();
 
         if available >= left_width + right_width + 2 {
-            // Full layout: [MODE] model | (spacer) | context streaming
+            // Full layout: [MODE] model | (spacer) | streaming
             spans.push(mode_span);
             spans.push(Span::raw(" "));
             spans.push(model_span);
@@ -166,11 +138,6 @@ impl Renderable for HeaderWidget<'_> {
             let padding_needed = available.saturating_sub(left_width + right_width);
             if padding_needed > 0 {
                 spans.push(Span::raw(" ".repeat(padding_needed)));
-            }
-
-            // Add context percentage
-            if let Some(context) = context_span {
-                spans.push(context);
             }
 
             // Add streaming indicator

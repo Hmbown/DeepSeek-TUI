@@ -28,6 +28,28 @@ use crate::tui::selection::TranscriptSelection;
 use crate::tui::transcript::TranscriptViewCache;
 use crate::tui::views::ViewStack;
 use std::sync::{Arc, Mutex};
+use uuid::Uuid;
+
+/// Format a nice welcome banner similar to Kimi CLI.
+fn format_welcome_banner(model: &str, workspace: &PathBuf, session_id: &str, yolo: bool) -> String {
+    let mode_line = if yolo {
+        "\n\n🚀 YOLO mode — shell + trust + auto-approve enabled"
+    } else {
+        ""
+    };
+
+    format!(
+        r#"Welcome to DeepSeek TUI!
+Send /help for help information.{mode_line}
+
+Directory: {}
+Session: {}
+Model: {}"#,
+        workspace.display(),
+        &session_id[..8],
+        model
+    )
+}
 
 // === Types ===
 
@@ -163,7 +185,6 @@ pub struct App {
     pub transcript_cache: TranscriptViewCache,
     pub transcript_selection: TranscriptSelection,
     pub last_transcript_area: Option<Rect>,
-    pub last_scrollbar_area: Option<Rect>,
     pub last_transcript_top: usize,
     pub last_transcript_visible: usize,
     pub last_transcript_total: usize,
@@ -370,18 +391,10 @@ impl App {
         let history = if needs_onboarding {
             Vec::new() // No welcome message during onboarding
         } else {
-            let mode_msg = if yolo {
-                " | YOLO MODE (shell + trust + auto-approve)"
-            } else {
-                ""
-            };
+            // Generate a session ID for welcome display
+            let session_id = Uuid::new_v4().to_string();
             vec![HistoryCell::System {
-                content: format!(
-                    "Welcome to DeepSeek! Model: {} | Workspace: {}{}",
-                    model,
-                    workspace.display(),
-                    mode_msg
-                ),
+                content: format_welcome_banner(&model, &workspace, &session_id, yolo),
             }]
         };
 
@@ -415,7 +428,6 @@ impl App {
             transcript_cache: TranscriptViewCache::new(),
             transcript_selection: TranscriptSelection::default(),
             last_transcript_area: None,
-            last_scrollbar_area: None,
             last_transcript_top: 0,
             last_transcript_visible: 0,
             last_transcript_total: 0,
@@ -516,12 +528,10 @@ impl App {
         if let Err(err) = crate::tui::onboarding::mark_onboarded() {
             self.status_message = Some(format!("Failed to mark onboarding: {err}"));
         }
+        // Generate a session ID for welcome display
+        let session_id = Uuid::new_v4().to_string();
         self.add_message(HistoryCell::System {
-            content: format!(
-                "Welcome to DeepSeek CLI! Model: {} | Workspace: {}",
-                self.model,
-                self.workspace.display()
-            ),
+            content: format_welcome_banner(&self.model, &self.workspace, &session_id, self.yolo),
         });
     }
 
@@ -620,7 +630,6 @@ impl App {
 
         // Clear stale layout info
         self.last_transcript_area = None;
-        self.last_scrollbar_area = None;
         self.last_transcript_top = 0;
         self.last_transcript_visible = 0;
         self.last_transcript_total = 0;
