@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-02-02
+
+### Added
+- New welcome banner on startup showing "Welcome to DeepSeek TUI!" with directory, session ID, and model info
+- Visual context progress bar in footer showing usage with block characters [████░░░░░░] and percentage
+
+### Changed
+- Removed custom block-character scrollbar from chat area - now uses terminal's native scroll
+- Simplified header bar: removed context percentage indicator (moved to footer as progress bar)
+
 ## [0.3.5] - 2026-01-30
 
 ### Added

@@ -21,32 +21,12 @@ use unicode_width::UnicodeWidthStr;
 
 pub struct ChatWidget {
     content_area: Rect,
-    scrollbar_area: Option<Rect>,
     lines: Vec<Line<'static>>,
-    scrollbar: Option<ScrollbarState>,
-}
-
-struct ScrollbarState {
-    top: usize,
-    visible_lines: usize,
-    total_lines: usize,
 }
 
 impl ChatWidget {
     pub fn new(app: &mut App, area: Rect) -> Self {
-        let mut content_area = area;
-        let mut scrollbar_area = None;
-
-        let show_scrollbar = area.width > 1 && area.height > 1;
-        if show_scrollbar {
-            content_area.width = content_area.width.saturating_sub(1);
-            scrollbar_area = Some(Rect {
-                x: content_area.x + content_area.width,
-                y: content_area.y,
-                width: 1,
-                height: content_area.height,
-            });
-        }
+        let content_area = area;
 
         let render_options = app.transcript_render_options();
         app.transcript_cache.ensure(
@@ -74,7 +54,6 @@ impl ChatWidget {
         app.transcript_scroll = scroll_state;
 
         app.last_transcript_area = Some(content_area);
-        app.last_scrollbar_area = scrollbar_area;
         app.last_transcript_top = top;
         app.last_transcript_visible = visible_lines;
         app.last_transcript_total = total_lines;
@@ -94,17 +73,9 @@ impl ChatWidget {
             pad_lines_to_bottom(&mut lines, visible_lines);
         }
 
-        let scrollbar = scrollbar_area.map(|_| ScrollbarState {
-            top,
-            visible_lines,
-            total_lines,
-        });
-
         Self {
             content_area,
-            scrollbar_area,
             lines,
-            scrollbar,
         }
     }
 }
@@ -113,16 +84,6 @@ impl Renderable for ChatWidget {
     fn render(&self, _area: Rect, buf: &mut Buffer) {
         let paragraph = Paragraph::new(self.lines.clone());
         paragraph.render(self.content_area, buf);
-
-        if let (Some(scrollbar_area), Some(scrollbar)) = (self.scrollbar_area, &self.scrollbar) {
-            render_scrollbar(
-                buf,
-                scrollbar_area,
-                scrollbar.top,
-                scrollbar.visible_lines,
-                scrollbar.total_lines,
-            );
-        }
     }
 
     fn desired_height(&self, _width: u16) -> u16 {
@@ -590,37 +551,6 @@ fn apply_selection_to_line(
     }
 
     result
-}
-
-fn render_scrollbar(buf: &mut Buffer, area: Rect, top: usize, visible: usize, total: usize) {
-    if total <= visible || area.height == 0 {
-        return;
-    }
-
-    let height = usize::from(area.height);
-    let max_start = total.saturating_sub(visible).max(1);
-    let thumb_height = visible
-        .saturating_mul(height)
-        .div_ceil(total)
-        .clamp(1, height);
-    let track = height.saturating_sub(thumb_height).max(1);
-    let thumb_start = (top.saturating_mul(track) + max_start / 2) / max_start;
-
-    let mut lines = Vec::new();
-    for row in 0..height {
-        let ch = if row >= thumb_start && row < thumb_start + thumb_height {
-            "█"
-        } else {
-            "│"
-        };
-        lines.push(Line::from(Span::styled(
-            ch,
-            Style::default().fg(palette::TEXT_MUTED),
-        )));
-    }
-
-    let scrollbar = Paragraph::new(lines);
-    scrollbar.render(area, buf);
 }
 
 fn composer_height(input: &str, width: u16, available_height: u16, prompt: &str) -> u16 {
