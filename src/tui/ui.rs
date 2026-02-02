@@ -1849,7 +1849,6 @@ fn render(f: &mut Frame, app: &mut App) {
         let header_data = HeaderData::new(
             app.mode,
             &app.model,
-            app.total_conversation_tokens,
             app.is_loading,
             app.ui_theme.header_bg,
         );
@@ -2186,17 +2185,25 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
     // Left side assembly
     let left_spans = vec![time_span, mode_span, agent_span];
 
-    // 4. Context (Right)
+    // 4. Context Progress Bar (Right)
     let percent = get_context_percent_decimal(app);
-    let context_text = format!("context: {:.1}%", percent);
-    let context_style = if percent > 90.0 {
-        Style::default().fg(palette::STATUS_ERROR)
+    let bar_width = 10; // Width of the progress bar
+    let filled = ((percent / 100.0) * bar_width as f32).round() as usize;
+    let filled = filled.min(bar_width);
+    let empty = bar_width - filled;
+    
+    let bar_color = if percent > 90.0 {
+        palette::STATUS_ERROR
     } else if percent > 75.0 {
-        Style::default().fg(palette::STATUS_WARNING)
+        palette::STATUS_WARNING
     } else {
-        Style::default().fg(palette::TEXT_DIM)
+        palette::DEEPSEEK_SKY
     };
-    let context_span = Span::styled(context_text, context_style);
+    
+    let bar_filled = "█".repeat(filled);
+    let bar_empty = "░".repeat(empty);
+    let context_text = format!("[{}{}] {:.0}%", bar_filled, bar_empty, percent);
+    let context_span = Span::styled(context_text, Style::default().fg(bar_color));
 
     // 5. Right side extras (Scroll, Selection, RLM) - Minimalist
     let mut right_extras = Vec::new();
@@ -2252,9 +2259,11 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
             ),
             Span::styled(format!("{} ", mode_str), mode_style),
         ];
+        let bar_filled_narrow = "█".repeat(filled.min(5));
+        let bar_empty_narrow = "░".repeat(5 - filled.min(5));
         let simple_right = vec![Span::styled(
-            format!(" {:.0}%", percent),
-            Style::default().fg(palette::TEXT_DIM),
+            format!("[{}{}] {:.0}%", bar_filled_narrow, bar_empty_narrow, percent),
+            Style::default().fg(bar_color),
         )];
 
         let sl_width: usize = simple_left.iter().map(|s| s.content.width()).sum();
@@ -2458,11 +2467,6 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
             app.pending_scroll_delta += update.delta_lines;
         }
         MouseEventKind::Down(MouseButton::Left) => {
-            if is_inside_scrollbar(app, mouse) {
-                jump_scrollbar(app, mouse);
-                return;
-            }
-
             if let Some(point) = selection_point_from_mouse(app, mouse) {
                 app.transcript_selection.anchor = Some(point);
                 app.transcript_selection.head = Some(point);
@@ -2482,11 +2486,6 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
             }
         }
         MouseEventKind::Drag(MouseButton::Left) => {
-            if is_inside_scrollbar(app, mouse) {
-                jump_scrollbar(app, mouse);
-                return;
-            }
-
             if app.transcript_selection.dragging
                 && let Some(point) = selection_point_from_mouse(app, mouse)
             {
@@ -2551,36 +2550,6 @@ fn selection_point_from_position(
         line_index,
         column: col,
     })
-}
-
-fn is_inside_scrollbar(app: &App, mouse: MouseEvent) -> bool {
-    let Some(area) = app.last_scrollbar_area else {
-        return false;
-    };
-    mouse.column >= area.x
-        && mouse.column < area.x + area.width
-        && mouse.row >= area.y
-        && mouse.row < area.y + area.height
-}
-
-fn jump_scrollbar(app: &mut App, mouse: MouseEvent) {
-    let Some(area) = app.last_scrollbar_area else {
-        return;
-    };
-    if app.last_transcript_total <= app.last_transcript_visible {
-        return;
-    }
-
-    let rel = usize::from(mouse.row.saturating_sub(area.y));
-    let height = usize::from(area.height.max(1));
-    let max_start = app
-        .last_transcript_total
-        .saturating_sub(app.last_transcript_visible)
-        .max(1);
-    let target = (rel.saturating_mul(max_start) + height / 2) / height;
-    if let Some(anchor) = TranscriptScroll::anchor_for(app.transcript_cache.line_meta(), target) {
-        app.transcript_scroll = anchor;
-    }
 }
 
 fn selection_has_content(app: &App) -> bool {
