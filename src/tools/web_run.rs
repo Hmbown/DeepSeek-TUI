@@ -4,8 +4,8 @@
 //! tool call to perform multiple web actions and cite sources with ref_ids.
 
 use super::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, optional_u64,
-    required_str,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
+    optional_u64, required_str,
 };
 use async_trait::async_trait;
 use regex::Regex;
@@ -297,7 +297,8 @@ impl ToolSpec for WebRunTool {
                     })
                     .unwrap_or_default();
 
-                let (entries, warning) = run_search(&query, max_results, timeout_ms, &domains).await?;
+                let (entries, warning) =
+                    run_search(&query, max_results, timeout_ms, &domains).await?;
                 let mut warnings = Vec::new();
                 if recency > 0 {
                     warnings.push(format!(
@@ -361,15 +362,11 @@ impl ToolSpec for WebRunTool {
                 let page = get_page(&ref_id).ok_or_else(|| {
                     ToolError::invalid_input(format!("Unknown ref_id '{ref_id}'"))
                 })?;
-                let link = page
-                    .links
-                    .iter()
-                    .find(|l| l.id == link_id)
-                    .ok_or_else(|| {
-                        ToolError::invalid_input(format!(
-                            "Link id {link_id} not found for ref_id '{ref_id}'"
-                        ))
-                    })?;
+                let link = page.links.iter().find(|l| l.id == link_id).ok_or_else(|| {
+                    ToolError::invalid_input(format!(
+                        "Link id {link_id} not found for ref_id '{ref_id}'"
+                    ))
+                })?;
                 let target = link.url.clone();
                 let fetched = resolve_or_fetch_page(&target, DEFAULT_OPEN_TIMEOUT_MS).await?;
                 click_counter += 1;
@@ -623,10 +620,7 @@ fn parse_pdf_page(
 ) -> Result<WebPage, ToolError> {
     let text = pdf_extract_text(bytes)?;
     let pages = split_pdf_pages(&text);
-    let lines = pages
-        .get(0)
-        .cloned()
-        .unwrap_or_else(Vec::new);
+    let lines = pages.get(0).cloned().unwrap_or_else(Vec::new);
 
     Ok(WebPage {
         url: url.to_string(),
@@ -657,7 +651,12 @@ fn split_pdf_pages(text: &str) -> Vec<Vec<String>> {
         .collect()
 }
 
-fn render_view(ref_id: &str, page: &WebPage, lineno: usize, response: ResponseLength) -> PageViewResult {
+fn render_view(
+    ref_id: &str,
+    page: &WebPage,
+    lineno: usize,
+    response: ResponseLength,
+) -> PageViewResult {
     let total = page.lines.len();
     let view_lines = response.view_lines();
     let start = if total == 0 {
@@ -735,7 +734,11 @@ fn find_in_page(
     }
 }
 
-fn screenshot_page(ref_id: &str, pageno: usize, page: &WebPage) -> Result<ScreenshotResult, ToolError> {
+fn screenshot_page(
+    ref_id: &str,
+    pageno: usize,
+    page: &WebPage,
+) -> Result<ScreenshotResult, ToolError> {
     let pages = page
         .pdf_pages
         .as_ref()
@@ -860,7 +863,9 @@ fn replace_links(html: &str, base_url: &str) -> (String, Vec<WebLink>) {
     for cap in re.captures_iter(html) {
         let Some(full) = cap.get(0) else { continue };
         let Some(href) = cap.get(1) else { continue };
-        let Some(text_match) = cap.get(2) else { continue };
+        let Some(text_match) = cap.get(2) else {
+            continue;
+        };
 
         output.push_str(&html[last..full.start()]);
         let text = normalize_whitespace(&strip_tags(text_match.as_str()));
@@ -965,7 +970,11 @@ fn parse_duckduckgo_results(html: &str, max_results: usize) -> Vec<SearchEntry> 
             .map(|s| s.to_string())
             .filter(|s| !s.is_empty());
 
-        results.push(SearchEntry { title, url, snippet });
+        results.push(SearchEntry {
+            title,
+            url,
+            snippet,
+        });
     }
 
     results
@@ -1025,13 +1034,9 @@ fn url_encode(input: &str) -> String {
     let mut encoded = String::new();
     for ch in input.bytes() {
         match ch {
-            b'A'..=b'Z'
-            | b'a'..=b'z'
-            | b'0'..=b'9'
-            | b'-'
-            | b'_'
-            | b'.'
-            | b'~' => encoded.push(ch as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(ch as char)
+            }
             b' ' => encoded.push('+'),
             _ => encoded.push_str(&format!("%{ch:02X}")),
         }

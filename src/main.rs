@@ -1010,9 +1010,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         selected_skills_dir.display()
     );
     if !agents_skills_dir.exists() && !local_skills_dir.exists() && !global_skills_dir.exists() {
-        println!(
-            "    Run `deepseek setup --skills` (or add --local for ./skills)."
-        );
+        println!("    Run `deepseek setup --skills` (or add --local for ./skills).");
     }
 
     // Platform and sandbox checks

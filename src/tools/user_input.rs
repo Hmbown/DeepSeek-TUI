@@ -152,7 +152,11 @@ impl ToolSpec for RequestUserInputTool {
         ApprovalRequirement::Auto
     }
 
-    async fn execute(&self, _input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        _input: Value,
+        _context: &ToolContext,
+    ) -> Result<ToolResult, ToolError> {
         Err(ToolError::execution_failed(
             "request_user_input must be handled by the engine",
         ))

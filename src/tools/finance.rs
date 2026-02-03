@@ -88,7 +88,9 @@ impl ToolSpec for FinanceTool {
             .timeout(Duration::from_millis(TIMEOUT_MS))
             .user_agent(USER_AGENT)
             .build()
-            .map_err(|e| ToolError::execution_failed(format!("Failed to build HTTP client: {e}")))?;
+            .map_err(|e| {
+                ToolError::execution_failed(format!("Failed to build HTTP client: {e}"))
+            })?;
 
         let mut results = Vec::with_capacity(requests.len());
         for req in requests {
@@ -253,9 +255,7 @@ async fn fetch_stooq_price(
     req: &FinanceRequest,
 ) -> Result<FinanceResult, ToolError> {
     let symbol = normalize_stooq_symbol(&req.ticker, &req.market);
-    let url = format!(
-        "https://stooq.com/q/l/?s={symbol}&f=sd2t2ohlcv&h&e=csv"
-    );
+    let url = format!("https://stooq.com/q/l/?s={symbol}&f=sd2t2ohlcv&h&e=csv");
     let resp = client
         .get(&url)
         .send()
@@ -339,13 +339,9 @@ fn url_encode(input: &str) -> String {
     let mut encoded = String::new();
     for ch in input.bytes() {
         match ch {
-            b'A'..=b'Z'
-            | b'a'..=b'z'
-            | b'0'..=b'9'
-            | b'-'
-            | b'_'
-            | b'.'
-            | b'~' => encoded.push(ch as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(ch as char)
+            }
             b' ' => encoded.push('+'),
             _ => encoded.push_str(&format!("%{ch:02X}")),
         }

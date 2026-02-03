@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 use wait_timeout::ChildExt;
 
-use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
 use crate::sandbox::{
     CommandSpec,
@@ -120,8 +120,12 @@ impl ShellExitStatus {
 impl ShellChild {
     fn try_wait(&mut self) -> std::io::Result<Option<ShellExitStatus>> {
         match self {
-            ShellChild::Process(child) => child.try_wait().map(|status| status.map(ShellExitStatus::from_std)),
-            ShellChild::Pty(child) => child.try_wait().map(|status| status.map(ShellExitStatus::from_pty)),
+            ShellChild::Process(child) => child
+                .try_wait()
+                .map(|status| status.map(ShellExitStatus::from_std)),
+            ShellChild::Pty(child) => child
+                .try_wait()
+                .map(|status| status.map(ShellExitStatus::from_pty)),
         }
     }
 
@@ -286,10 +290,8 @@ impl BackgroundShell {
     }
 
     fn take_delta(&mut self) -> (String, String, usize, usize, usize, usize) {
-        let (stdout_delta, stdout_total) = take_delta_from_buffer(
-            &self.stdout_buffer,
-            &mut self.stdout_cursor,
-        );
+        let (stdout_delta, stdout_total) =
+            take_delta_from_buffer(&self.stdout_buffer, &mut self.stdout_cursor);
         let (stderr_delta, stderr_total) = if let Some(buffer) = self.stderr_buffer.as_ref() {
             take_delta_from_buffer(buffer, &mut self.stderr_cursor)
         } else {
@@ -810,7 +812,10 @@ impl ShellManager {
             let stderr_handle = child.stderr.take().context("Failed to capture stderr")?;
             let stdin_handle = child.stdin.take().map(StdinWriter::Pipe);
 
-            let stdout_thread = Some(spawn_reader_thread(stdout_handle, Arc::clone(&stdout_buffer)));
+            let stdout_thread = Some(spawn_reader_thread(
+                stdout_handle,
+                Arc::clone(&stdout_buffer),
+            ));
             let stderr_thread = stderr_buffer
                 .as_ref()
                 .map(|buffer| spawn_reader_thread(stderr_handle, Arc::clone(buffer)));
@@ -940,8 +945,14 @@ impl ShellManager {
             shell.poll();
         }
 
-        let (stdout_delta, stderr_delta, stdout_delta_len, stderr_delta_len, stdout_total, stderr_total) =
-            shell.take_delta();
+        let (
+            stdout_delta,
+            stderr_delta,
+            stdout_delta_len,
+            stderr_delta_len,
+            stdout_total,
+            stderr_total,
+        ) = shell.take_delta();
         let (stdout, stdout_meta) = truncate_with_meta(&stdout_delta);
         let (stderr, stderr_meta) = truncate_with_meta(&stderr_delta);
         let sandboxed = !matches!(shell.sandbox_type, SandboxType::None);
@@ -1065,10 +1076,7 @@ fn char_boundary_at_or_before(text: &str, max_bytes: usize) -> usize {
     last_end.min(text.len())
 }
 
-fn take_delta_from_buffer(
-    buffer: &Arc<Mutex<Vec<u8>>>,
-    cursor: &mut usize,
-) -> (Vec<u8>, usize) {
+fn take_delta_from_buffer(buffer: &Arc<Mutex<Vec<u8>>>, cursor: &mut usize) -> (Vec<u8>, usize) {
     let data = buffer.lock().map(|d| d.clone()).unwrap_or_default();
     let start = (*cursor).min(data.len());
     let delta = data[start..].to_vec();
@@ -1427,10 +1435,7 @@ fn build_shell_delta_tool_result(delta: ShellDeltaResult) -> ToolResult {
         match result.status {
             ShellStatus::Running => "Background task running (no new output).".to_string(),
             ShellStatus::Completed => "(no new output)".to_string(),
-            ShellStatus::Failed => format!(
-                "Command failed (exit code: {:?})",
-                result.exit_code
-            ),
+            ShellStatus::Failed => format!("Command failed (exit code: {:?})", result.exit_code),
             ShellStatus::TimedOut => "Command timed out (no new output).".to_string(),
             ShellStatus::Killed => "Command killed (no new output).".to_string(),
         }
@@ -1442,10 +1447,7 @@ fn build_shell_delta_tool_result(delta: ShellDeltaResult) -> ToolResult {
 
     ToolResult {
         content: output,
-        success: matches!(
-            result.status,
-            ShellStatus::Completed | ShellStatus::Running
-        ),
+        success: matches!(result.status, ShellStatus::Completed | ShellStatus::Running),
         metadata: Some(json!({
             "exit_code": result.exit_code,
             "status": format!("{:?}", result.status),

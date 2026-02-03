@@ -322,8 +322,7 @@ impl SubAgentManager {
 
         let tools = build_allowed_tools(&agent_type, allowed_tools, runtime.allow_shell)?;
         let (input_tx, input_rx) = mpsc::unbounded_channel();
-        let mut agent =
-            SubAgent::new(agent_type.clone(), prompt.clone(), tools.clone(), input_tx);
+        let mut agent = SubAgent::new(agent_type.clone(), prompt.clone(), tools.clone(), input_tx);
         let agent_id = agent.id.clone();
         let started_at = agent.started_at;
         let max_steps = self.max_steps;
@@ -1257,7 +1256,10 @@ fn build_allowed_tools(
         tools.retain(|tool| {
             !matches!(
                 tool.as_str(),
-                "exec_shell" | "exec_shell_wait" | "exec_shell_interact" | "exec_wait"
+                "exec_shell"
+                    | "exec_shell_wait"
+                    | "exec_shell_interact"
+                    | "exec_wait"
                     | "exec_interact"
             )
         });

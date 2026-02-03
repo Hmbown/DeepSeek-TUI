@@ -176,7 +176,10 @@ impl ModalView for UserInputView {
                 Span::raw(format!("{prefix} ")),
                 Span::styled(option.label.clone(), style),
                 Span::raw(" - "),
-                Span::styled(option.description.clone(), Style::default().fg(palette::TEXT_MUTED)),
+                Span::styled(
+                    option.description.clone(),
+                    Style::default().fg(palette::TEXT_MUTED),
+                ),
             ]));
         }
 

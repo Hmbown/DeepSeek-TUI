@@ -36,6 +36,7 @@ use crate::models::{
 use crate::prompts;
 use crate::rlm::{RlmSession, SharedRlmSession, session_summary as rlm_session_summary};
 use crate::tools::plan::{SharedPlanState, new_shared_plan_state};
+use crate::tools::shell::{SharedShellManager, new_shared_shell_manager};
 use crate::tools::spec::{ApprovalRequirement, ToolError, ToolResult};
 use crate::tools::subagent::{
     SharedSubAgentManager, SubAgentRuntime, SubAgentType, new_shared_subagent_manager,
@@ -43,7 +44,6 @@ use crate::tools::subagent::{
 use crate::tools::todo::{SharedTodoList, new_shared_todo_list};
 use crate::tools::user_input::{UserInputRequest, UserInputResponse};
 use crate::tools::{ToolContext, ToolRegistryBuilder};
-use crate::tools::shell::{new_shared_shell_manager, SharedShellManager};
 use crate::tui::app::AppMode;
 
 use super::events::Event;
@@ -1858,13 +1858,12 @@ impl Engine {
                     if tool_name == REQUEST_USER_INPUT_NAME {
                         let started_at = Instant::now();
                         let result = match UserInputRequest::from_value(&tool_input) {
-                            Ok(request) => self
-                                .await_user_input(&tool_id, request)
-                                .await
-                                .and_then(|response| {
+                            Ok(request) => self.await_user_input(&tool_id, request).await.and_then(
+                                |response| {
                                     ToolResult::json(&response)
                                         .map_err(|e| ToolError::execution_failed(e.to_string()))
-                                }),
+                                },
+                            ),
                             Err(err) => Err(err),
                         };
 

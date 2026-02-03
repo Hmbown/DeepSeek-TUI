@@ -5,17 +5,15 @@
 // === Modules ===
 
 pub mod apply_patch;
+pub mod calculator;
 pub mod diagnostics;
 pub mod duo;
-pub mod calculator;
-pub mod finance;
 pub mod file;
 pub mod file_search;
+pub mod finance;
 pub mod git;
-pub mod sports;
-pub mod time;
-pub mod plan;
 pub mod parallel;
+pub mod plan;
 pub mod project;
 pub mod registry;
 pub mod review;
@@ -23,14 +21,16 @@ pub mod rlm;
 pub mod search;
 pub mod shell;
 pub mod spec;
+pub mod sports;
 pub mod subagent;
 pub mod swarm;
 pub mod test_runner;
+pub mod time;
 pub mod todo;
 pub mod user_input;
-pub mod web_search;
-pub mod web_run;
 pub mod weather;
+pub mod web_run;
+pub mod web_search;
 
 // === Re-exports ===
 
@@ -52,8 +52,8 @@ pub use time::TimeTool;
 pub use weather::WeatherTool;
 
 // Re-export web search tools
-pub use web_search::WebSearchTool;
 pub use web_run::WebRunTool;
+pub use web_search::WebSearchTool;
 
 // Re-export patch tools
 pub use apply_patch::ApplyPatchTool;

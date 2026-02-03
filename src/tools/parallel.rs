@@ -46,7 +46,11 @@ impl ToolSpec for MultiToolUseParallelTool {
         ApprovalRequirement::Auto
     }
 
-    async fn execute(&self, _input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        _input: Value,
+        _context: &ToolContext,
+    ) -> Result<ToolResult, ToolError> {
         Err(ToolError::execution_failed(
             "multi_tool_use.parallel must be handled by the engine",
         ))
