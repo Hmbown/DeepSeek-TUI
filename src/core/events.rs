@@ -7,6 +7,7 @@ use serde_json::Value;
 
 use crate::models::Usage;
 use crate::tools::spec::{ToolError, ToolResult};
+use crate::tools::user_input::UserInputRequest;
 use crate::tools::subagent::SubAgentResult;
 
 /// Events emitted by the engine to update the UI.
@@ -87,6 +88,12 @@ pub enum Event {
         id: String,
         tool_name: String,
         description: String,
+    },
+
+    /// Request user input for a tool call
+    UserInputRequired {
+        id: String,
+        request: UserInputRequest,
     },
 
     /// Request user decision after sandbox denial

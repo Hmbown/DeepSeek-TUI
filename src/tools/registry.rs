@@ -280,8 +280,12 @@ impl ToolRegistryBuilder {
     /// Include shell execution tool.
     #[must_use]
     pub fn with_shell_tools(self) -> Self {
-        use super::shell::ExecShellTool;
+        use super::shell::{ExecShellTool, ShellInteractTool, ShellWaitTool};
         self.with_tool(Arc::new(ExecShellTool))
+            .with_tool(Arc::new(ShellWaitTool::new("exec_shell_wait")))
+            .with_tool(Arc::new(ShellInteractTool::new("exec_shell_interact")))
+            .with_tool(Arc::new(ShellWaitTool::new("exec_wait")))
+            .with_tool(Arc::new(ShellInteractTool::new("exec_interact")))
     }
 
     /// Include search tools (`grep_files`).
@@ -325,8 +329,35 @@ impl ToolRegistryBuilder {
     /// Include web search tools.
     #[must_use]
     pub fn with_web_tools(self) -> Self {
+        use super::web_run::WebRunTool;
         use super::web_search::WebSearchTool;
         self.with_tool(Arc::new(WebSearchTool))
+            .with_tool(Arc::new(WebRunTool))
+    }
+
+    /// Include multi-tool parallel wrapper.
+    #[must_use]
+    pub fn with_parallel_tool(self) -> Self {
+        use super::parallel::MultiToolUseParallelTool;
+        self.with_tool(Arc::new(MultiToolUseParallelTool))
+    }
+
+    /// Include request_user_input tool.
+    #[must_use]
+    pub fn with_user_input_tool(self) -> Self {
+        use super::user_input::RequestUserInputTool;
+        self.with_tool(Arc::new(RequestUserInputTool))
+    }
+
+    /// Include structured data tools (weather/finance/sports/time/calculator).
+    #[must_use]
+    pub fn with_structured_data_tools(self) -> Self {
+        use super::{CalculatorTool, FinanceTool, SportsTool, TimeTool, WeatherTool};
+        self.with_tool(Arc::new(WeatherTool))
+            .with_tool(Arc::new(FinanceTool))
+            .with_tool(Arc::new(SportsTool))
+            .with_tool(Arc::new(TimeTool))
+            .with_tool(Arc::new(CalculatorTool))
     }
 
     /// Include patch tools (`apply_patch`).
@@ -364,6 +395,9 @@ impl ToolRegistryBuilder {
             .with_note_tool()
             .with_search_tools()
             .with_web_tools()
+            .with_user_input_tool()
+            .with_parallel_tool()
+            .with_structured_data_tools()
             .with_patch_tools()
             .with_git_tools()
             .with_diagnostics_tool()
@@ -449,7 +483,8 @@ impl ToolRegistryBuilder {
         runtime: super::subagent::SubAgentRuntime,
     ) -> Self {
         use super::subagent::{
-            AgentCancelTool, AgentListTool, AgentResultTool, AgentSpawnTool, DelegateToAgentTool,
+            AgentCancelTool, AgentListTool, AgentResultTool, AgentSendInputTool, AgentSpawnTool,
+            AgentWaitTool, DelegateToAgentTool,
         };
         use super::swarm::AgentSwarmTool;
 
@@ -463,6 +498,10 @@ impl ToolRegistryBuilder {
         )))
         .with_tool(Arc::new(AgentSwarmTool::new(manager.clone(), runtime)))
         .with_tool(Arc::new(AgentResultTool::new(manager.clone())))
+        .with_tool(Arc::new(AgentSendInputTool::new(manager.clone(), "send_input")))
+        .with_tool(Arc::new(AgentWaitTool::new(manager.clone(), "wait")))
+        .with_tool(Arc::new(AgentSendInputTool::new(manager.clone(), "agent_send_input")))
+        .with_tool(Arc::new(AgentWaitTool::new(manager.clone(), "agent_wait")))
         .with_tool(Arc::new(AgentCancelTool::new(manager.clone())))
         .with_tool(Arc::new(AgentListTool::new(manager)))
     }

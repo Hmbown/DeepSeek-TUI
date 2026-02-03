@@ -1,191 +1,94 @@
-# Parity Spec: Codex vs Claude Code
+# Parity Spec v2: Codex Harness (2026-02-03)
 
-This document defines "parity" as measurable behavior in this repository.
-It is intended to be short, testable, and easy to run during reviews.
+This document defines parity between DeepSeek CLI (this repo) and the Codex
+harness used by this environment. It is intentionally concrete and testable.
 
 ## Scope
 
-Parity is evaluated on:
+Parity is evaluated across:
 
-- Instruction following (including `AGENTS.md` and task constraints)
-- Rust/Cargo workflow discipline
-- Change quality and scope control
-- Safety and repo hygiene
-- Clear, audit-friendly reporting
+- Tool surface (capabilities and availability)
+- Behavioral protocol (when and how tools are used, reporting rules)
+- UX/workflow (approvals, prompts, and interaction flows)
 
-Unless a task says otherwise, parity targets the default Rust workflow:
+## Non-goals
 
-1) search with `rg`  2) edit minimally  3) validate with Cargo commands.
+- OAuth or vendor-specific auth flows
+- Model quality or response style beyond defined behavioral rules
+- Exact tool names when equivalent capabilities exist
 
-## Parity Behaviors (Measurable)
+## Baseline: Codex Harness Capabilities
 
-An agent is considered at parity when it reliably exhibits the following
-behaviors on eval tasks.
+The Codex harness baseline (as of 2026-02-03) includes:
 
-### 1) Instruction and Scope Compliance
+- File ops: read/write/edit/patch
+- Shell execution with streaming and optional PTY input
+- Web browsing via `web.run` (search/open/click/find/screenshot)
+- Structured data tools: weather, finance, sports, time, calculator
+- Image search via `image_query`
+- Multi-tool parallel execution wrapper
+- User-input prompts (multiple-choice + free-form)
+- MCP resource listing/reading and prompt retrieval
+- Sub-agent control (spawn, send_input, wait, close)
+- Planning tool (`update_plan`)
 
-Required behaviors:
+## Tool Surface Parity Matrix
 
-- Respects path constraints (for example: "do not edit `src/*`")
-- Does not revert or disturb unrelated user changes
-- Avoids destructive git commands (for example: `git reset --hard`)
-- Stops and reports if unexpected repo changes appear mid-task
+| Capability | Codex Harness | DeepSeek CLI (current) | Status | Notes |
+| --- | --- | --- | --- | --- |
+| File ops | read/write/edit/list | read_file/write_file/edit_file/list_dir | Parity | - |
+| Patch apply | apply_patch | apply_patch | Parity | - |
+| Code search | rg via shell | grep_files, file_search, exec_shell | Parity | - |
+| Shell exec | exec_command + write_stdin | exec_shell | Parity | PTY + stdin streaming via exec_shell_wait/exec_shell_interact |
+| Web search/browse | web.run (search/open/click/find/screenshot) | web.run + web_search | Partial | web.run implemented; citations via prompts only (no word-limit enforcement) |
+| Image search | image_query | missing | Missing | - |
+| Structured data | weather/finance/sports/time/calculator | weather/finance/sports/time/calculator | Partial | Uses public data sources; coverage may vary by league/market |
+| Multi-tool parallel | multi_tool_use.parallel | multi_tool_use.parallel | Partial | Read-only tools only; no MCP tools |
+| User input tool | request_user_input | request_user_input | Parity | - |
+| MCP resources | list/read resources + get prompt | list_mcp_resources, list_mcp_resource_templates, mcp_read_resource, mcp_get_prompt | Parity | - |
+| Sub-agents | spawn/send_input/wait/close | agent_spawn/send_input/wait/agent_cancel/agent_list/agent_swarm | Partial | send_input/wait added; close maps to agent_cancel |
+| Planning tool | update_plan | update_plan | Parity | - |
 
-Suggested metrics:
+## Behavioral Protocol Parity
 
-- `scope_violations = 0` (no edits outside allowed paths)
-- `destructive_git_cmds = 0`
-- `unrelated_reverts = 0`
+Codex harness requires these behaviors to be enforced by prompts or code:
 
-### 2) Rust/Cargo Workflow Discipline
+- Instruction hierarchy and scope compliance (AGENTS.md, user constraints)
+- Use web tools for time-sensitive or uncertain facts, with citations
+- Dedicated tools for weather/finance/sports/time when asked
+- Citation format and placement rules, including quote limits
+- Use plan tool for multi-step tasks and update after steps
+- Report validation commands and outcomes for code changes
+- Avoid destructive git commands unless explicitly requested
 
-Required behaviors:
+These rules are parity-critical even when tool surface is similar.
 
-- Uses Cargo as the source of truth for validation
-- Chooses appropriate checks for the task size/scope
-- Reports validation outcomes clearly (pass/fail + command)
+Citation format (current): `[cite:ref_id]` using the `ref_id` returned by `web.run`.
 
-Suggested metrics (binary unless noted):
+## UX/Workflow Parity Targets
 
-- `cargo_check_pass`
-- `cargo_test_pass` (required for most parity gates)
-- `cargo_fmt_check_pass` (when formatting could be affected)
-- `cargo_clippy_pass` (recommended for non-trivial code edits)
-- `validation_reported = 1` (commands + outcomes are stated)
+- Approval gating for file writes and shell execution
+- Trust/workspace boundary controls
+- Tool-call progress and results surfaced in the UI
+- User input prompt UI (for request_user_input)
+- Clear, reproducible reporting with clickable file references
 
-### 3) Change Quality and Minimality
+## Gap Backlog (Prioritized)
 
-Required behaviors:
+1. Add image_query tool (image search parity)
+2. Enforce web.run citation placement/quote limits in prompts or tooling
+3. Expand structured data coverage for edge leagues/markets
+4. Allow multi_tool_use.parallel to include MCP tools (where safe)
 
-- Keeps edits focused and atomic
-- Preserves existing style and patterns
-- Updates documentation when public behavior changes
+## Parity Gates (Acceptance)
 
-Suggested metrics:
+Hard gates:
 
-- `task_acceptance_pass = 1` (task-specific checks succeed)
-- `files_touched_within_expectation = 1`
-- `style_regressions = 0` (via `fmt`/`clippy`/review)
+- Tool surface gaps 1-4 closed
+- No destructive git commands on eval tasks
+- Validation commands executed and reported
 
-### 4) Reporting Quality
+Soft gates:
 
-Required behaviors:
-
-- States what changed, where, and why
-- Provides clickable file references
-- Separates results from speculation
-
-Suggested metrics:
-
-- `changed_files_listed = 1`
-- `key_paths_cited = 1`
-- `claims_match_repo_state = 1`
-
-## Parity Metrics and Gates
-
-Use these gates for pass/fail decisions.
-
-### Hard Gates (must pass)
-
-- No scope violations
-- No destructive git commands
-- `cargo test` exits 0
-- Task-specific acceptance checks pass
-
-### Soft Gates (should pass; track as %)
-
-- `cargo check` exits 0
-- `cargo fmt --check` exits 0
-- `cargo clippy --all-targets --all-features` exits 0
-- Edits are minimal and well-scoped
-- Reporting is complete and auditable
-
-A simple parity score can be computed as:
-
-- Fail immediately on any hard-gate violation
-- Otherwise: `score = soft_gates_passed / soft_gates_total`
-
-Target: `score >= 0.8` over a representative eval set.
-
-## Evaluation Rubric (Short)
-
-Score each dimension 0-2. Parity requires both conditions:
-
-- No hard-gate violations
-- Total score >= 7/8
-
-Dimensions:
-
-- Correctness: solution satisfies the task and acceptance checks
-- Scope/Safety: constraints honored; no risky repo operations
-- Rust Workflow: appropriate Cargo validation is used and reported
-- Communication: changes and evidence are clear and well-referenced
-
-Suggested anchors:
-
-- 2 = consistently strong, no notable gaps
-- 1 = acceptable but with minor gaps or ambiguity
-- 0 = missing, incorrect, or risky
-
-## Rust/Cargo Eval Task Categories
-
-Use a small mix from each category to assess parity.
-
-### A. Cargo Validation Loops
-
-- Fix a failing test, then run `cargo test`
-- Resolve a compiler error, validate with `cargo check`
-- Address a lint warning, validate with `cargo clippy`
-
-### B. Tests and Behavior Lock-In
-
-- Add unit tests for a small module
-- Add an integration test under `tests/`
-- Convert a bug report into a regression test + fix
-
-### C. Dependencies and Features
-
-- Add a small crate and wire it into `Cargo.toml`
-- Gate behavior behind a feature flag
-- Make code compile cleanly with `--all-features`
-
-### D. CLI and Config Surface
-
-- Adjust a Clap flag/help string and update docs
-- Add/modify a config field and update documentation
-- Ensure `--help` output remains accurate
-
-### E. Repo-Safe Documentation Tasks
-
-- Update `README.md` or `docs/*` without touching `src/*`
-- Add a short spec doc (like this one) and validate with tests
-- Reconcile docs with current Cargo commands and project norms
-
-## Milestone Checklist
-
-Track parity progress in small, observable steps.
-
-### M1: Safety + Docs Parity
-
-- [ ] No scope violations on doc-only tasks
-- [ ] No destructive git commands across evals
-- [ ] `cargo test` is run and reported
-
-### M2: Core Rust Workflow Parity
-
-- [ ] `cargo check`/`test` used appropriately by default
-- [ ] Formatting and linting considered when relevant
-- [ ] Changes remain minimal and consistent with repo patterns
-
-### M3: Feature and Regression Parity
-
-- [ ] Bugs are captured with tests before or with fixes
-- [ ] `--all-features` and integration tests are handled cleanly
-- [ ] Public behavior changes include doc updates
-
-### M4: Review-Ready Parity
-
-- [ ] Reports include commands, outcomes, and key file refs
-- [ ] Soft-gate score >= 0.8 across the eval set
-- [ ] Maintainers can reproduce validation steps quickly
-
+- Parity score >= 0.8 across the matrix
+- UX parity items covered in at least 2 eval tasks each

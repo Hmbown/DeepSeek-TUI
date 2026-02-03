@@ -121,6 +121,18 @@ pub struct McpResource {
     pub mime_type: Option<String>,
 }
 
+/// Resource template discovered from an MCP server
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct McpResourceTemplate {
+    #[serde(rename = "uriTemplate")]
+    pub uri_template: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(rename = "mimeType", default)]
+    pub mime_type: Option<String>,
+}
+
 /// Prompt discovered from an MCP server
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct McpPrompt {
@@ -322,6 +334,7 @@ pub struct McpConnection {
     transport: Box<dyn McpTransport>,
     tools: Vec<McpTool>,
     resources: Vec<McpResource>,
+    resource_templates: Vec<McpResourceTemplate>,
     prompts: Vec<McpPrompt>,
     request_id: AtomicU64,
     state: ConnectionState,
@@ -378,6 +391,7 @@ impl McpConnection {
             transport,
             tools: Vec::new(),
             resources: Vec::new(),
+            resource_templates: Vec::new(),
             prompts: Vec::new(),
             request_id: AtomicU64::new(1),
             state: ConnectionState::Connecting,
@@ -441,6 +455,7 @@ impl McpConnection {
         // but for now let's keep it sequential for simplicity in error handling
         self.discover_tools().await?;
         self.discover_resources().await?;
+        self.discover_resource_templates().await?;
         self.discover_prompts().await?;
         Ok(())
     }
@@ -484,6 +499,33 @@ impl McpConnection {
             && let Some(resources) = result.get("resources")
         {
             self.resources = serde_json::from_value(resources.clone()).unwrap_or_default();
+        }
+
+        Ok(())
+    }
+
+    /// Discover available resource templates from the MCP server
+    async fn discover_resource_templates(&mut self) -> Result<()> {
+        let list_id = self.next_id();
+        self.send(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": list_id,
+            "method": "resources/templates/list",
+            "params": {}
+        }))
+        .await?;
+
+        let response = self.recv(list_id).await?;
+
+        if let Some(result) = response.get("result") {
+            let templates = result
+                .get("resourceTemplates")
+                .or_else(|| result.get("templates"))
+                .or_else(|| result.get("resource_templates"));
+            if let Some(templates) = templates {
+                self.resource_templates =
+                    serde_json::from_value(templates.clone()).unwrap_or_default();
+            }
         }
 
         Ok(())
@@ -618,6 +660,11 @@ impl McpConnection {
     /// Get discovered resources
     pub fn resources(&self) -> &[McpResource] {
         &self.resources
+    }
+
+    /// Get discovered resource templates
+    pub fn resource_templates(&self) -> &[McpResourceTemplate] {
+        &self.resource_templates
     }
 
     /// Get discovered prompts
@@ -795,6 +842,91 @@ impl McpPool {
         resources
     }
 
+    /// Get all discovered resource templates with server-prefixed names
+    pub fn all_resource_templates(&self) -> Vec<(String, &McpResourceTemplate)> {
+        let mut templates = Vec::new();
+        for (server, conn) in &self.connections {
+            for template in conn.resource_templates() {
+                let safe_name = template.name.replace(' ', "_").to_lowercase();
+                templates.push((format!("mcp_{}_{}", server, safe_name), template));
+            }
+        }
+        templates
+    }
+
+    async fn list_resources(&mut self, server: Option<String>) -> Result<Vec<serde_json::Value>> {
+        if let Some(server_name) = server {
+            let conn = self.get_or_connect(&server_name).await?;
+            let resources = conn
+                .resources()
+                .iter()
+                .map(|resource| {
+                    serde_json::json!({
+                        "server": server_name.clone(),
+                        "uri": resource.uri,
+                        "name": resource.name,
+                        "description": resource.description,
+                        "mime_type": resource.mime_type,
+                    })
+                })
+                .collect();
+            return Ok(resources);
+        }
+
+        let _ = self.connect_all().await;
+        let mut items = Vec::new();
+        for (server, conn) in &self.connections {
+            for resource in conn.resources() {
+                items.push(serde_json::json!({
+                    "server": server,
+                    "uri": resource.uri,
+                    "name": resource.name,
+                    "description": resource.description,
+                    "mime_type": resource.mime_type,
+                }));
+            }
+        }
+        Ok(items)
+    }
+
+    async fn list_resource_templates(
+        &mut self,
+        server: Option<String>,
+    ) -> Result<Vec<serde_json::Value>> {
+        if let Some(server_name) = server {
+            let conn = self.get_or_connect(&server_name).await?;
+            let templates = conn
+                .resource_templates()
+                .iter()
+                .map(|template| {
+                    serde_json::json!({
+                        "server": server_name.clone(),
+                        "uri_template": template.uri_template,
+                        "name": template.name,
+                        "description": template.description,
+                        "mime_type": template.mime_type,
+                    })
+                })
+                .collect();
+            return Ok(templates);
+        }
+
+        let _ = self.connect_all().await;
+        let mut items = Vec::new();
+        for (server, conn) in &self.connections {
+            for template in conn.resource_templates() {
+                items.push(serde_json::json!({
+                    "server": server,
+                    "uri_template": template.uri_template,
+                    "name": template.name,
+                    "description": template.description,
+                    "mime_type": template.mime_type,
+                }));
+            }
+        }
+        Ok(items)
+    }
+
     /// Get all discovered prompts with server-prefixed names
     pub fn all_prompts(&self) -> Vec<(String, &McpPrompt)> {
         let mut prompts = Vec::new();
@@ -858,6 +990,31 @@ impl McpPool {
             });
         }
 
+        if !self.config.servers.is_empty() {
+            api_tools.push(crate::models::Tool {
+                name: "list_mcp_resources".to_string(),
+                description: "List available MCP resources across servers (optionally filtered by server).".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "server": { "type": "string", "description": "Optional MCP server name to filter by" }
+                    }
+                }),
+                cache_control: None,
+            });
+            api_tools.push(crate::models::Tool {
+                name: "list_mcp_resource_templates".to_string(),
+                description: "List available MCP resource templates across servers (optionally filtered by server).".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "server": { "type": "string", "description": "Optional MCP server name to filter by" }
+                    }
+                }),
+                cache_control: None,
+            });
+        }
+
         // Add resource reading tools if resources exist
         let resources = self.all_resources();
         if !resources.is_empty() {
@@ -874,6 +1031,19 @@ impl McpPool {
                 }),
                             cache_control: None,
                         });
+            api_tools.push(crate::models::Tool {
+                name: "read_mcp_resource".to_string(),
+                description: "Alias for mcp_read_resource.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "server": { "type": "string", "description": "The name of the MCP server" },
+                        "uri": { "type": "string", "description": "The URI of the resource to read" }
+                    },
+                    "required": ["server", "uri"]
+                }),
+                cache_control: None,
+            });
         }
 
         // Add prompt getting tools if prompts exist
@@ -908,7 +1078,37 @@ impl McpPool {
         prefixed_name: &str,
         arguments: serde_json::Value,
     ) -> Result<serde_json::Value> {
+        if prefixed_name == "list_mcp_resources" {
+            let server = arguments
+                .get("server")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            let resources = self.list_resources(server).await?;
+            return Ok(serde_json::json!({ "resources": resources }));
+        }
+
+        if prefixed_name == "list_mcp_resource_templates" {
+            let server = arguments
+                .get("server")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            let templates = self.list_resource_templates(server).await?;
+            return Ok(serde_json::json!({ "templates": templates }));
+        }
+
         if prefixed_name == "mcp_read_resource" {
+            let server_name = arguments
+                .get("server")
+                .and_then(|v| v.as_str())
+                .context("Missing 'server' argument")?;
+            let uri = arguments
+                .get("uri")
+                .and_then(|v| v.as_str())
+                .context("Missing 'uri' argument")?;
+            return self.read_resource(server_name, uri).await;
+        }
+
+        if prefixed_name == "read_mcp_resource" {
             let server_name = arguments
                 .get("server")
                 .and_then(|v| v.as_str())
@@ -975,6 +1175,12 @@ impl McpPool {
     /// Check if a tool name is an MCP tool
     pub fn is_mcp_tool(name: &str) -> bool {
         name.starts_with("mcp_")
+            || matches!(
+                name,
+                "list_mcp_resources"
+                    | "list_mcp_resource_templates"
+                    | "read_mcp_resource"
+            )
     }
 }
 
@@ -1371,6 +1577,9 @@ mod tests {
     fn test_mcp_pool_is_mcp_tool() {
         assert!(McpPool::is_mcp_tool("mcp_filesystem_read"));
         assert!(McpPool::is_mcp_tool("mcp_git_status"));
+        assert!(McpPool::is_mcp_tool("list_mcp_resources"));
+        assert!(McpPool::is_mcp_tool("list_mcp_resource_templates"));
+        assert!(McpPool::is_mcp_tool("read_mcp_resource"));
         assert!(!McpPool::is_mcp_tool("read_file"));
         assert!(!McpPool::is_mcp_tool("exec_shell"));
     }

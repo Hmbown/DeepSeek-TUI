@@ -35,6 +35,15 @@ Discovered MCP tools are exposed to the model as:
 
 Example: a server named `git` with a tool named `status` becomes `mcp_git_status`.
 
+## Resource and Prompt Helpers
+
+The CLI also exposes helper tools when MCP is enabled:
+
+- `list_mcp_resources` (optional `server` filter)
+- `list_mcp_resource_templates` (optional `server` filter)
+- `mcp_read_resource` / `read_mcp_resource` (aliases)
+- `mcp_get_prompt`
+
 ## Minimal Example
 
 ```json

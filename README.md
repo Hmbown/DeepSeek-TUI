@@ -17,7 +17,9 @@ Unofficial terminal UI (TUI) + CLI for the [DeepSeek platform](https://platform.
 - **Shell execution**: Run commands with timeout support, background execution with task management
 - **Task management**: Todo lists, implementation plans, persistent notes
 - **Sub-agent system**: Spawn, coordinate, and cancel background agents (including swarms)
-- **Web search**: Integrated web search with DuckDuckGo
+- **User input prompts**: Ask structured, multiple-choice questions during tool flows
+- **Web browsing**: `web.run` search/open/click/find/screenshot with citation-ready sources
+- **Structured data tools**: weather, finance, sports, time, calculator
 - **Multi‑model support** – DeepSeek‑Reasoner, DeepSeek‑Chat, and other DeepSeek models
 - **Context‑aware** – loads project‑specific instructions from `AGENTS.md`
 - **Session management** – resume, fork, and search past conversations
@@ -124,7 +126,17 @@ DeepSeek CLI exposes a comprehensive set of tools to the model across 5 categori
 - **`edit_file`** – Search and replace text in files
 - **`apply_patch`** – Apply unified diff patches with fuzzy matching
 - **`grep_files`** – Search files by regex pattern with context lines
-- **`web_search`** – Search the web and return concise results
+- **`web.run`** – Browse the web (search/open/click/find/screenshot) with ref_ids for citations
+- **`web_search`** – Quick web search (fallback when citations are not needed)
+- **`request_user_input`** – Ask the user short multiple-choice questions
+- **`multi_tool_use.parallel`** – Execute multiple read-only tools in parallel
+
+#### Structured Data
+- **`weather`** – Daily weather forecast for a location
+- **`finance`** – Latest price for a stock, fund, index, or cryptocurrency
+- **`sports`** – Schedules or standings for a league
+- **`time`** – Current time for a UTC offset
+- **`calculator`** – Evaluate arithmetic expressions
 
 #### Shell Execution
 - **`exec_shell`** – Run shell commands with timeout support
@@ -146,8 +158,9 @@ DeepSeek CLI exposes a comprehensive set of tools to the model across 5 categori
 
 - **Workspace boundary**: File tools are restricted to `--workspace` unless you enable `/trust` (YOLO enables trust automatically).
 - **Approvals**: The TUI requests approval depending on mode and tool category (file writes, shell).
-- **Web search**: `web_search` uses DuckDuckGo HTML results and is auto‑approved.
-- **Skills**: Reusable workflows stored as `SKILL.md` directories (default: `~/.deepseek/skills`, or `./skills` per workspace). Use `/skills` and `/skill <name>`. Bootstrap with `deepseek setup --skills` (add `--local` for `./skills`).
+- **Web browsing**: `web.run` uses DuckDuckGo HTML results and is auto‑approved.
+- **Web search**: `web_search` is a quick fallback when citations are not needed.
+- **Skills**: Reusable workflows stored as `SKILL.md` directories. The resolved skills dir prefers workspace-local `.agents/skills`, then `./skills`, then `~/.deepseek/skills`. Use `/skills` and `/skill <name>`. Bootstrap with `deepseek setup --skills` (add `--local` for `./skills`).
 - **MCP**: Load external tool servers via `~/.deepseek/mcp.json` (supports `servers` and `mcpServers`). MCP tools currently execute without TUI approval prompts, so only enable servers you trust. See `docs/MCP.md`.
 
 ## 🧠 RLM (Reasoning & Large‑scale Memory)
@@ -248,8 +261,9 @@ Run `deepseek sessions` and try `deepseek --resume latest`.
 
 ### Skills missing
 Run `deepseek setup --skills` to create a global skills directory, or add `--local`
-to create `./skills` for the current workspace. Then run `deepseek doctor` to see
-which skills directory is selected.
+to create `./skills` for the current workspace. If you want the preferred
+workspace-local path, create `.agents/skills` manually. Then run `deepseek doctor`
+to see which skills directory is selected.
 
 ### MCP tools missing
 Run `deepseek mcp init` (or `deepseek setup --mcp`), then restart. `deepseek doctor`

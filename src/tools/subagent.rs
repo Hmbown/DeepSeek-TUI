@@ -4,7 +4,7 @@
 //! and retrieve results. Sub-agents run with a filtered toolset and
 //! inherit the workspace configuration from the main session.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -93,8 +93,19 @@ impl SubAgentType {
                 "apply_patch",
                 "grep_files",
                 "file_search",
+                "web.run",
                 "web_search",
+                "multi_tool_use.parallel",
+                "weather",
+                "finance",
+                "sports",
+                "time",
+                "calculator",
                 "exec_shell",
+                "exec_shell_wait",
+                "exec_shell_interact",
+                "exec_wait",
+                "exec_interact",
                 "note",
                 "todo_write",
                 "todo_add",
@@ -107,15 +118,32 @@ impl SubAgentType {
                 "read_file",
                 "grep_files",
                 "file_search",
+                "web.run",
                 "web_search",
+                "multi_tool_use.parallel",
+                "weather",
+                "finance",
+                "sports",
+                "time",
+                "calculator",
                 "exec_shell",
+                "exec_shell_wait",
+                "exec_shell_interact",
+                "exec_wait",
+                "exec_interact",
             ],
             Self::Plan => vec![
                 "list_dir",
                 "read_file",
                 "grep_files",
                 "file_search",
+                "web.run",
                 "note",
+                "weather",
+                "finance",
+                "sports",
+                "time",
+                "calculator",
                 "update_plan",
                 "todo_write",
                 "todo_add",
@@ -146,6 +174,12 @@ pub struct SubAgentResult {
     pub result: Option<String>,
     pub steps_taken: u32,
     pub duration_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+struct SubAgentInput {
+    text: String,
+    interrupt: bool,
 }
 
 /// Runtime configuration for spawning sub-agents.
@@ -188,12 +222,18 @@ pub struct SubAgent {
     pub steps_taken: u32,
     pub started_at: Instant,
     pub allowed_tools: Vec<String>,
+    input_tx: Option<mpsc::UnboundedSender<SubAgentInput>>,
     task_handle: Option<JoinHandle<()>>,
 }
 
 impl SubAgent {
     /// Create a new sub-agent.
-    fn new(agent_type: SubAgentType, prompt: String, allowed_tools: Vec<String>) -> Self {
+    fn new(
+        agent_type: SubAgentType,
+        prompt: String,
+        allowed_tools: Vec<String>,
+        input_tx: mpsc::UnboundedSender<SubAgentInput>,
+    ) -> Self {
         let id = format!("agent_{}", &Uuid::new_v4().to_string()[..8]);
 
         Self {
@@ -205,6 +245,7 @@ impl SubAgent {
             steps_taken: 0,
             started_at: Instant::now(),
             allowed_tools,
+            input_tx: Some(input_tx),
             task_handle: None,
         }
     }
@@ -280,7 +321,9 @@ impl SubAgentManager {
         }
 
         let tools = build_allowed_tools(&agent_type, allowed_tools, runtime.allow_shell)?;
-        let mut agent = SubAgent::new(agent_type.clone(), prompt.clone(), tools.clone());
+        let (input_tx, input_rx) = mpsc::unbounded_channel();
+        let mut agent =
+            SubAgent::new(agent_type.clone(), prompt.clone(), tools.clone(), input_tx);
         let agent_id = agent.id.clone();
         let started_at = agent.started_at;
         let max_steps = self.max_steps;
@@ -301,6 +344,7 @@ impl SubAgentManager {
             allowed_tools: tools,
             started_at,
             max_steps,
+            input_rx,
         };
         let handle = tokio::spawn(run_subagent_task(task));
         agent.task_handle = Some(handle);
@@ -337,6 +381,28 @@ impl SubAgentManager {
         }
 
         Ok(agent.snapshot())
+    }
+
+    /// Send input to a running sub-agent.
+    pub fn send_input(&mut self, agent_id: &str, text: String, interrupt: bool) -> Result<()> {
+        let agent = self
+            .agents
+            .get_mut(agent_id)
+            .ok_or_else(|| anyhow!("Agent {agent_id} not found"))?;
+
+        if agent.status != SubAgentStatus::Running {
+            return Err(anyhow!("Agent {agent_id} is not running"));
+        }
+
+        let tx = agent
+            .input_tx
+            .as_ref()
+            .ok_or_else(|| anyhow!("Agent {agent_id} cannot accept input"))?;
+
+        tx.send(SubAgentInput { text, interrupt })
+            .map_err(|_| anyhow!("Failed to send input to agent {agent_id}"))?;
+
+        Ok(())
     }
 
     /// List all agents and their status.
@@ -659,6 +725,181 @@ impl ToolSpec for AgentListTool {
     }
 }
 
+/// Tool to send input to a running sub-agent.
+pub struct AgentSendInputTool {
+    manager: SharedSubAgentManager,
+    name: &'static str,
+}
+
+impl AgentSendInputTool {
+    /// Create a new send-input tool.
+    #[must_use]
+    pub fn new(manager: SharedSubAgentManager, name: &'static str) -> Self {
+        Self { manager, name }
+    }
+}
+
+#[async_trait]
+impl ToolSpec for AgentSendInputTool {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn description(&self) -> &'static str {
+        "Send input to a running sub-agent."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "agent_id": {
+                    "type": "string",
+                    "description": "ID returned by agent_spawn"
+                },
+                "id": {
+                    "type": "string",
+                    "description": "Alias for agent_id"
+                },
+                "message": {
+                    "type": "string",
+                    "description": "Message to deliver to the agent"
+                },
+                "input": {
+                    "type": "string",
+                    "description": "Alias for message"
+                },
+                "interrupt": {
+                    "type": "boolean",
+                    "description": "Prioritize this message over pending inputs"
+                }
+            },
+            "required": ["message"]
+        })
+    }
+
+    fn capabilities(&self) -> Vec<ToolCapability> {
+        vec![]
+    }
+
+    async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
+        let agent_id = input
+            .get("agent_id")
+            .or_else(|| input.get("id"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError::missing_field("agent_id"))?;
+        let message = input
+            .get("message")
+            .or_else(|| input.get("input"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError::missing_field("message"))?;
+        let interrupt = optional_bool(&input, "interrupt", false);
+
+        let mut manager = self.manager.lock().await;
+        manager
+            .send_input(agent_id, message.to_string(), interrupt)
+            .map_err(|e| ToolError::execution_failed(e.to_string()))?;
+        let snapshot = manager
+            .get_result(agent_id)
+            .map_err(|e| ToolError::execution_failed(e.to_string()))?;
+
+        ToolResult::json(&snapshot).map_err(|e| ToolError::execution_failed(e.to_string()))
+    }
+}
+
+/// Tool to wait for sub-agents to complete.
+pub struct AgentWaitTool {
+    manager: SharedSubAgentManager,
+    name: &'static str,
+}
+
+impl AgentWaitTool {
+    /// Create a new wait tool.
+    #[must_use]
+    pub fn new(manager: SharedSubAgentManager, name: &'static str) -> Self {
+        Self { manager, name }
+    }
+}
+
+#[async_trait]
+impl ToolSpec for AgentWaitTool {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn description(&self) -> &'static str {
+        "Wait for one or more sub-agents to reach a terminal status."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "ids": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Agent IDs to wait on"
+                },
+                "agent_id": {
+                    "type": "string",
+                    "description": "Single agent ID"
+                },
+                "timeout_ms": {
+                    "type": "integer",
+                    "description": "Max wait time in milliseconds (default: 30000)"
+                }
+            }
+        })
+    }
+
+    fn capabilities(&self) -> Vec<ToolCapability> {
+        vec![ToolCapability::ReadOnly]
+    }
+
+    async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
+        let timeout_ms = optional_u64(&input, "timeout_ms", 30_000).clamp(1000, 300_000);
+        let mut ids: Vec<String> = Vec::new();
+        if let Some(list) = input.get("ids").and_then(|v| v.as_array()) {
+            ids.extend(
+                list.iter()
+                    .filter_map(|item| item.as_str().map(str::to_string)),
+            );
+        }
+        if ids.is_empty() {
+            if let Some(id) = input.get("agent_id").and_then(|v| v.as_str()) {
+                ids.push(id.to_string());
+            }
+        }
+        if ids.is_empty() {
+            return Err(ToolError::missing_field("ids"));
+        }
+
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        loop {
+            let snapshots = {
+                let manager = self.manager.lock().await;
+                ids.iter()
+                    .map(|id| {
+                        manager
+                            .get_result(id)
+                            .map_err(|e| ToolError::execution_failed(e.to_string()))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+            };
+
+            let any_done = snapshots
+                .iter()
+                .any(|snapshot| snapshot.status != SubAgentStatus::Running);
+            if any_done || Instant::now() >= deadline {
+                return ToolResult::json(&snapshots)
+                    .map_err(|e| ToolError::execution_failed(e.to_string()));
+            }
+
+            tokio::time::sleep(RESULT_POLL_INTERVAL).await;
+        }
+    }
+}
+
 /// Tool to delegate a task to a specialized agent (alias for agent_spawn).
 pub struct DelegateToAgentTool {
     manager: SharedSubAgentManager,
@@ -739,6 +980,7 @@ struct SubAgentTask {
     allowed_tools: Vec<String>,
     started_at: Instant,
     max_steps: u32,
+    input_rx: mpsc::UnboundedReceiver<SubAgentInput>,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -751,6 +993,7 @@ async fn run_subagent_task(task: SubAgentTask) {
         task.allowed_tools,
         task.started_at,
         task.max_steps,
+        task.input_rx,
     )
     .await;
 
@@ -781,6 +1024,7 @@ async fn run_subagent(
     allowed_tools: Vec<String>,
     started_at: Instant,
     max_steps: u32,
+    mut input_rx: mpsc::UnboundedReceiver<SubAgentInput>,
 ) -> Result<SubAgentResult> {
     let system_prompt = agent_type.system_prompt();
     let tool_registry = SubAgentToolRegistry::new(
@@ -802,9 +1046,29 @@ async fn run_subagent(
 
     let mut steps = 0;
     let mut final_result: Option<String> = None;
+    let mut pending_inputs: VecDeque<SubAgentInput> = VecDeque::new();
 
     for _step in 0..max_steps {
         steps += 1;
+
+        while let Ok(input) = input_rx.try_recv() {
+            if input.interrupt {
+                pending_inputs.clear();
+            }
+            pending_inputs.push_back(input);
+        }
+
+        while let Some(input) = pending_inputs.pop_front() {
+            if !input.text.trim().is_empty() {
+                messages.push(Message {
+                    role: "user".to_string(),
+                    content: vec![ContentBlock::Text {
+                        text: input.text,
+                        cache_control: None,
+                    }],
+                });
+            }
+        }
 
         let request = MessageRequest {
             model: runtime.model.clone(),
@@ -843,7 +1107,16 @@ async fn run_subagent(
         });
 
         if tool_uses.is_empty() {
-            break;
+            while let Ok(input) = input_rx.try_recv() {
+                if input.interrupt {
+                    pending_inputs.clear();
+                }
+                pending_inputs.push_back(input);
+            }
+            if pending_inputs.is_empty() {
+                break;
+            }
+            continue;
         }
 
         let mut tool_results: Vec<ContentBlock> = Vec::new();
@@ -981,7 +1254,13 @@ fn build_allowed_tools(
     }
 
     if !allow_shell {
-        tools.retain(|tool| tool != "exec_shell");
+        tools.retain(|tool| {
+            !matches!(
+                tool.as_str(),
+                "exec_shell" | "exec_shell_wait" | "exec_shell_interact" | "exec_wait"
+                    | "exec_interact"
+            )
+        });
     }
 
     Ok(tools)
@@ -1109,6 +1388,10 @@ mod tests {
     fn test_allowed_tools_shell_filter() {
         let tools = build_allowed_tools(&SubAgentType::General, None, false).unwrap();
         assert!(!tools.contains(&"exec_shell".to_string()));
+        assert!(!tools.contains(&"exec_shell_wait".to_string()));
+        assert!(!tools.contains(&"exec_shell_interact".to_string()));
+        assert!(!tools.contains(&"exec_wait".to_string()));
+        assert!(!tools.contains(&"exec_interact".to_string()));
     }
 
     #[test]
@@ -1120,10 +1403,12 @@ mod tests {
     #[test]
     fn test_running_count_respects_limit() {
         let mut manager = SubAgentManager::new(PathBuf::from("."), 1);
+        let (input_tx, _input_rx) = mpsc::unbounded_channel();
         let mut agent = SubAgent::new(
             SubAgentType::Explore,
             "prompt".to_string(),
             vec!["read_file".to_string()],
+            input_tx,
         );
         agent.status = SubAgentStatus::Running;
         manager.agents.insert(agent.id.clone(), agent);
