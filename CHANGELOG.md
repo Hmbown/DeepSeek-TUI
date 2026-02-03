@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-02-03
+
+### Added
+- Tooling parity updates: `weather`, `finance`, `sports`, `time`, `calculator`, `request_user_input`, `multi_tool_use.parallel`, `web.run`
+- Shell streaming helpers: `exec_shell_wait` and `exec_shell_interact`
+- Sub-agent controls: `send_input` and `wait` (with aliases)
+- MCP resource helpers: `list_mcp_resources`, `list_mcp_resource_templates`, and `read_mcp_resource` alias
+
+### Changed
+- Skills directory selection now prefers workspace `.agents/skills`, then `./skills`, then global
+- Docs and prompts updated to reflect new tool surface and parity notes
+
 ## [0.3.6] - 2026-02-02
 
 ### Added
