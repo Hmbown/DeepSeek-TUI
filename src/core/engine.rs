@@ -41,7 +41,9 @@ use crate::tools::subagent::{
     SharedSubAgentManager, SubAgentRuntime, SubAgentType, new_shared_subagent_manager,
 };
 use crate::tools::todo::{SharedTodoList, new_shared_todo_list};
+use crate::tools::user_input::{UserInputRequest, UserInputResponse};
 use crate::tools::{ToolContext, ToolRegistryBuilder};
+use crate::tools::shell::{new_shared_shell_manager, SharedShellManager};
 use crate::tui::app::AppMode;
 
 use super::events::Event;
@@ -117,6 +119,8 @@ pub struct EngineHandle {
     cancel_token: CancellationToken,
     /// Send approval decisions to the engine
     tx_approval: mpsc::Sender<ApprovalDecision>,
+    /// Send user input responses to the engine
+    tx_user_input: mpsc::Sender<UserInputDecision>,
 }
 
 impl EngineHandle {
@@ -167,6 +171,29 @@ impl EngineHandle {
             .await?;
         Ok(())
     }
+
+    /// Submit a response for request_user_input.
+    pub async fn submit_user_input(
+        &self,
+        id: impl Into<String>,
+        response: UserInputResponse,
+    ) -> Result<()> {
+        self.tx_user_input
+            .send(UserInputDecision::Submitted {
+                id: id.into(),
+                response,
+            })
+            .await?;
+        Ok(())
+    }
+
+    /// Cancel a request_user_input prompt.
+    pub async fn cancel_user_input(&self, id: impl Into<String>) -> Result<()> {
+        self.tx_user_input
+            .send(UserInputDecision::Cancelled { id: id.into() })
+            .await?;
+        Ok(())
+    }
 }
 
 // === Engine ===
@@ -178,9 +205,11 @@ pub struct Engine {
     deepseek_client_error: Option<String>,
     session: Session,
     subagent_manager: SharedSubAgentManager,
+    shell_manager: SharedShellManager,
     mcp_pool: Option<Arc<AsyncMutex<McpPool>>>,
     rx_op: mpsc::Receiver<Op>,
     rx_approval: mpsc::Receiver<ApprovalDecision>,
+    rx_user_input: mpsc::Receiver<UserInputDecision>,
     tx_event: mpsc::Sender<Event>,
     cancel_token: CancellationToken,
     tool_exec_lock: Arc<RwLock<()>>,
@@ -198,6 +227,17 @@ enum ApprovalDecision {
     RetryWithPolicy {
         id: String,
         policy: crate::sandbox::SandboxPolicy,
+    },
+}
+
+#[derive(Debug, Clone)]
+enum UserInputDecision {
+    Submitted {
+        id: String,
+        response: UserInputResponse,
+    },
+    Cancelled {
+        id: String,
     },
 }
 
@@ -251,6 +291,20 @@ struct ToolExecutionPlan {
     read_only: bool,
 }
 
+#[derive(Debug, serde::Serialize)]
+struct ParallelToolResultEntry {
+    tool_name: String,
+    success: bool,
+    content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct ParallelToolResult {
+    results: Vec<ParallelToolResultEntry>,
+}
+
 // Hold the lock guard for the duration of a tool execution.
 enum ToolExecGuard<'a> {
     Read(tokio::sync::RwLockReadGuard<'a, ()>),
@@ -264,6 +318,9 @@ const TOOL_CALL_START_MARKERS: [&str; 5] = [
     "<invoke ",
     "<function_calls>",
 ];
+
+const MULTI_TOOL_PARALLEL_NAME: &str = "multi_tool_use.parallel";
+const REQUEST_USER_INPUT_NAME: &str = "request_user_input";
 const TOOL_CALL_END_MARKERS: [&str; 5] = [
     "[/TOOL_CALL]",
     "</deepseek:tool_call>",
@@ -372,6 +429,52 @@ fn extract_balanced_segment(text: &str, open: char, close: char) -> Option<Strin
     end.map(|end_idx| text[start..end_idx].to_string())
 }
 
+fn normalize_parallel_tool_name(raw: &str) -> String {
+    let mut name = raw.trim();
+    for prefix in ["functions.", "tools.", "tool."] {
+        if let Some(stripped) = name.strip_prefix(prefix) {
+            name = stripped;
+            break;
+        }
+    }
+    name.to_string()
+}
+
+fn parse_parallel_tool_calls(
+    input: &serde_json::Value,
+) -> Result<Vec<(String, serde_json::Value)>, ToolError> {
+    let tool_uses = input
+        .get("tool_uses")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| ToolError::missing_field("tool_uses"))?;
+    if tool_uses.is_empty() {
+        return Err(ToolError::invalid_input(
+            "multi_tool_use.parallel requires at least one tool call",
+        ));
+    }
+
+    let mut calls = Vec::with_capacity(tool_uses.len());
+    for item in tool_uses {
+        let name = item
+            .get("recipient_name")
+            .or_else(|| item.get("tool_name"))
+            .or_else(|| item.get("name"))
+            .or_else(|| item.get("tool"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError::missing_field("recipient_name"))?;
+        let params = item
+            .get("parameters")
+            .or_else(|| item.get("input"))
+            .or_else(|| item.get("args"))
+            .or_else(|| item.get("arguments"))
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        calls.push((normalize_parallel_tool_name(name), params));
+    }
+
+    Ok(calls)
+}
+
 fn should_parallelize_tool_batch(plans: &[ToolExecutionPlan]) -> bool {
     !plans.is_empty()
         && plans.iter().all(|plan| {
@@ -410,6 +513,7 @@ impl Engine {
         let (tx_op, rx_op) = mpsc::channel(32);
         let (tx_event, rx_event) = mpsc::channel(256);
         let (tx_approval, rx_approval) = mpsc::channel(64);
+        let (tx_user_input, rx_user_input) = mpsc::channel(32);
         let cancel_token = CancellationToken::new();
         let tool_exec_lock = Arc::new(RwLock::new(()));
 
@@ -441,6 +545,7 @@ impl Engine {
 
         let subagent_manager =
             new_shared_subagent_manager(config.workspace.clone(), config.max_subagents);
+        let shell_manager = new_shared_shell_manager(config.workspace.clone());
 
         let engine = Engine {
             config,
@@ -448,9 +553,11 @@ impl Engine {
             deepseek_client_error,
             session,
             subagent_manager,
+            shell_manager,
             mcp_pool: None,
             rx_op,
             rx_approval,
+            rx_user_input,
             tx_event,
             cancel_token: cancel_token.clone(),
             tool_exec_lock,
@@ -461,6 +568,7 @@ impl Engine {
             rx_event: Arc::new(RwLock::new(rx_event)),
             cancel_token,
             tx_approval,
+            tx_user_input,
         };
 
         (engine, handle)
@@ -731,8 +839,11 @@ impl Engine {
                 .with_plan_tool(plan_state.clone())
         };
 
-        builder =
-            builder.with_review_tool(self.deepseek_client.clone(), self.session.model.clone());
+        builder = builder
+            .with_review_tool(self.deepseek_client.clone(), self.session.model.clone())
+            .with_user_input_tool()
+            .with_parallel_tool()
+            .with_structured_data_tools();
 
         if self.config.features.enabled(Feature::ApplyPatch) && mode != AppMode::Plan {
             builder = builder.with_patch_tools();
@@ -833,6 +944,7 @@ impl Engine {
             self.session.mcp_config_path.clone(),
             mode == AppMode::Yolo,
         )
+        .with_shell_manager(self.shell_manager.clone())
     }
 
     /// Automatically offload large tool results to RLM memory if enabled.
@@ -928,6 +1040,103 @@ impl Engine {
         Ok(ToolResult::success(content))
     }
 
+    async fn execute_parallel_tool(
+        &mut self,
+        input: serde_json::Value,
+        tool_registry: Option<&crate::tools::ToolRegistry>,
+        tool_exec_lock: Arc<RwLock<()>>,
+    ) -> Result<ToolResult, ToolError> {
+        let calls = parse_parallel_tool_calls(&input)?;
+        let Some(registry) = tool_registry else {
+            return Err(ToolError::not_available(
+                "tool registry unavailable for multi_tool_use.parallel",
+            ));
+        };
+
+        let mut tasks = FuturesUnordered::new();
+        for (tool_name, tool_input) in calls {
+            if tool_name == MULTI_TOOL_PARALLEL_NAME {
+                return Err(ToolError::invalid_input(
+                    "multi_tool_use.parallel cannot call itself",
+                ));
+            }
+            if McpPool::is_mcp_tool(&tool_name) {
+                return Err(ToolError::invalid_input(
+                    "multi_tool_use.parallel does not support MCP tools",
+                ));
+            }
+            let Some(spec) = registry.get(&tool_name) else {
+                return Err(ToolError::not_available(format!(
+                    "tool '{tool_name}' is not registered"
+                )));
+            };
+            if !spec.is_read_only() {
+                return Err(ToolError::invalid_input(format!(
+                    "Tool '{tool_name}' is not read-only and cannot run in parallel"
+                )));
+            }
+            if spec.approval_requirement() != ApprovalRequirement::Auto {
+                return Err(ToolError::invalid_input(format!(
+                    "Tool '{tool_name}' requires approval and cannot run in parallel"
+                )));
+            }
+            if !spec.supports_parallel() {
+                return Err(ToolError::invalid_input(format!(
+                    "Tool '{tool_name}' does not support parallel execution"
+                )));
+            }
+
+            let registry_ref = registry;
+            let lock = tool_exec_lock.clone();
+            let tx_event = self.tx_event.clone();
+            tasks.push(async move {
+                let result = Engine::execute_tool_with_lock(
+                    lock,
+                    true,
+                    false,
+                    tx_event,
+                    tool_name.clone(),
+                    tool_input.clone(),
+                    Some(registry_ref),
+                    None,
+                    None,
+                )
+                .await;
+                (tool_name, result)
+            });
+        }
+
+        let mut results = Vec::new();
+        while let Some((tool_name, result)) = tasks.next().await {
+            match result {
+                Ok(output) => {
+                    let mut error = None;
+                    if !output.success {
+                        error = Some(output.content.clone());
+                    }
+                    results.push(ParallelToolResultEntry {
+                        tool_name,
+                        success: output.success,
+                        content: output.content,
+                        error,
+                    });
+                }
+                Err(err) => {
+                    let message = format!("{err}");
+                    results.push(ParallelToolResultEntry {
+                        tool_name,
+                        success: false,
+                        content: format!("Error: {message}"),
+                        error: Some(message),
+                    });
+                }
+            }
+        }
+
+        ToolResult::json(&ParallelToolResult { results })
+            .map_err(|e| ToolError::execution_failed(e.to_string()))
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn execute_tool_with_lock(
         lock: Arc<RwLock<()>>,
@@ -998,6 +1207,48 @@ impl Engine {
                         }
                         ApprovalDecision::RetryWithPolicy { id, policy } if id == tool_id => {
                             return Ok(ApprovalResult::RetryWithPolicy(policy));
+                        }
+                        _ => continue,
+                    }
+                }
+            }
+        }
+    }
+
+    async fn await_user_input(
+        &mut self,
+        tool_id: &str,
+        request: UserInputRequest,
+    ) -> Result<UserInputResponse, ToolError> {
+        let _ = self
+            .tx_event
+            .send(Event::UserInputRequired {
+                id: tool_id.to_string(),
+                request,
+            })
+            .await;
+
+        loop {
+            tokio::select! {
+                _ = self.cancel_token.cancelled() => {
+                    return Err(ToolError::execution_failed(
+                        "Request cancelled while awaiting user input".to_string(),
+                    ));
+                }
+                decision = self.rx_user_input.recv() => {
+                    let Some(decision) = decision else {
+                        return Err(ToolError::execution_failed(
+                            "User input channel closed".to_string(),
+                        ));
+                    };
+                    match decision {
+                        UserInputDecision::Submitted { id, response } if id == tool_id => {
+                            return Ok(response);
+                        }
+                        UserInputDecision::Cancelled { id } if id == tool_id => {
+                            return Err(ToolError::execution_failed(
+                                "User input cancelled".to_string(),
+                            ));
                         }
                         _ => continue,
                     }
@@ -1464,11 +1715,12 @@ impl Engine {
                     tool_name, tool_input
                 ));
 
-                let interactive = tool_name == "exec_shell"
+                let interactive = (tool_name == "exec_shell"
                     && tool_input
                         .get("interactive")
                         .and_then(serde_json::Value::as_bool)
-                        == Some(true);
+                        == Some(true))
+                    || tool_name == REQUEST_USER_INPUT_NAME;
 
                 let mut approval_required = false;
                 let mut approval_description = "Tool execution requires approval".to_string();
@@ -1572,6 +1824,69 @@ impl Engine {
                     let tool_id = plan.id.clone();
                     let tool_name = plan.name.clone();
                     let tool_input = plan.input.clone();
+
+                    if tool_name == MULTI_TOOL_PARALLEL_NAME {
+                        let started_at = Instant::now();
+                        let result = self
+                            .execute_parallel_tool(
+                                tool_input.clone(),
+                                tool_registry,
+                                tool_exec_lock.clone(),
+                            )
+                            .await;
+
+                        let _ = self
+                            .tx_event
+                            .send(Event::ToolCallComplete {
+                                id: tool_id.clone(),
+                                name: tool_name.clone(),
+                                result: result.clone(),
+                            })
+                            .await;
+
+                        outcomes[plan.index] = Some(ToolExecOutcome {
+                            index: plan.index,
+                            id: tool_id,
+                            name: tool_name,
+                            input: tool_input,
+                            started_at,
+                            result,
+                        });
+                        continue;
+                    }
+
+                    if tool_name == REQUEST_USER_INPUT_NAME {
+                        let started_at = Instant::now();
+                        let result = match UserInputRequest::from_value(&tool_input) {
+                            Ok(request) => self
+                                .await_user_input(&tool_id, request)
+                                .await
+                                .and_then(|response| {
+                                    ToolResult::json(&response)
+                                        .map_err(|e| ToolError::execution_failed(e.to_string()))
+                                }),
+                            Err(err) => Err(err),
+                        };
+
+                        let _ = self
+                            .tx_event
+                            .send(Event::ToolCallComplete {
+                                id: tool_id.clone(),
+                                name: tool_name.clone(),
+                                result: result.clone(),
+                            })
+                            .await;
+
+                        outcomes[plan.index] = Some(ToolExecOutcome {
+                            index: plan.index,
+                            id: tool_id,
+                            name: tool_name,
+                            input: tool_input,
+                            started_at,
+                            result,
+                        });
+                        continue;
+                    }
 
                     // Handle approval flow: returns (result_override, context_override)
                     let (result_override, context_override): (

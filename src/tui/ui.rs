@@ -51,6 +51,7 @@ use crate::tui::paste_burst::CharDecision;
 use crate::tui::scrolling::{ScrollDirection, TranscriptScroll};
 use crate::tui::selection::TranscriptSelectionPoint;
 use crate::tui::session_picker::SessionPickerView;
+use crate::tui::user_input::UserInputView;
 use crate::utils::estimate_message_chars;
 
 use super::app::{App, AppAction, AppMode, OnboardingState, QueuedMessage, TuiOptions};
@@ -589,6 +590,12 @@ async fn run_event_loop(
                                 ),
                             });
                         }
+                    }
+                    EngineEvent::UserInputRequired { id, request } => {
+                        app.view_stack.push(UserInputView::new(id.clone(), request));
+                        app.add_message(HistoryCell::System {
+                            content: "User input requested".to_string(),
+                        });
                     }
                     EngineEvent::ToolCallProgress { id, output } => {
                         app.status_message =
@@ -1949,6 +1956,15 @@ async fn handle_view_events(app: &mut App, engine_handle: &EngineHandle, events:
                     }
                 }
             }
+            ViewEvent::UserInputSubmitted { tool_id, response } => {
+                let _ = engine_handle.submit_user_input(tool_id, response).await;
+            }
+            ViewEvent::UserInputCancelled { tool_id } => {
+                let _ = engine_handle.cancel_user_input(tool_id).await;
+                app.add_message(HistoryCell::System {
+                    content: "User input cancelled".to_string(),
+                });
+            }
             ViewEvent::SessionSelected { session_id } => {
                 let manager = match SessionManager::default_location() {
                     Ok(manager) => manager,
@@ -3127,10 +3143,19 @@ fn is_view_image_tool(name: &str) -> bool {
 }
 
 fn is_web_search_tool(name: &str) -> bool {
-    matches!(name, "web_search" | "search_web" | "search") || name.ends_with("_web_search")
+    matches!(name, "web_search" | "search_web" | "search" | "web.run")
+        || name.ends_with("_web_search")
 }
 
 fn web_search_query(input: &serde_json::Value) -> String {
+    if let Some(searches) = input.get("search_query").and_then(|v| v.as_array()) {
+        if let Some(first) = searches.first() {
+            if let Some(q) = first.get("q").and_then(|v| v.as_str()) {
+                return q.to_string();
+            }
+        }
+    }
+
     input
         .get("query")
         .or_else(|| input.get("q"))

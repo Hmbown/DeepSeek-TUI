@@ -80,7 +80,7 @@ Common settings keys:
 - `default_text_model` (string, optional): defaults to `deepseek-reasoner`. Other available models include `deepseek-chat`, `deepseek-r1`, `deepseek-v3`, `deepseek-v3.2`. Check the DeepSeek API for the latest model list.
 - `allow_shell` (bool, optional): defaults to `false`.
 - `max_subagents` (int, optional): defaults to `5` and is clamped to `1..=20`.
-- `skills_dir` (string, optional): defaults to `~/.deepseek/skills` (each skill is a directory containing `SKILL.md`).
+- `skills_dir` (string, optional): defaults to `~/.deepseek/skills` (each skill is a directory containing `SKILL.md`). Workspace-local `.agents/skills` or `./skills` are preferred when present.
 - `mcp_config_path` (string, optional): defaults to `~/.deepseek/mcp.json`.
 - `notes_path` (string, optional): defaults to `~/.deepseek/notes.txt` and is used by the `note` tool.
 - `memory_path` (string, optional): defaults to `~/.deepseek/memory.md`.
@@ -110,7 +110,7 @@ want to force on or off.
 [features]
 shell_tool = true
 subagents = true
-web_search = true
+web_search = true # enables web.run and web_search
 apply_patch = true
 mcp = true
 rlm = true

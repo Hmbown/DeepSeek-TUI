@@ -18,13 +18,24 @@ EXPLORATION:
 - list_dir: Browse directories in the workspace
 - read_file: Read file contents to understand context
 - grep_files: Search files by regex
-- web_search: Search the web for up-to-date information (if enabled)
+- web.run: Browse the web (search/open/click/find/screenshot) with ref_ids for citations
+- web_search: Quick web search (fallback when citations are not needed)
+- request_user_input: Ask the user short multiple-choice questions
+- multi_tool_use.parallel: Execute multiple read-only tools in parallel
+- weather: Get a daily weather forecast for a location
+- finance: Get the latest price for a stock, fund, index, or crypto
+- sports: Get schedules or standings for a league
+- time: Get current time for a UTC offset
+- calculator: Evaluate a basic arithmetic expression
+- list_mcp_resources: List MCP resources (optionally filtered by server)
+- list_mcp_resource_templates: List MCP resource templates
 - git_status: Inspect repository status safely
 - git_diff: Inspect diffs to understand current changes
 - diagnostics: Report workspace, git, sandbox, and toolchain info
 
 Guidelines:
 - Prefer tool-centric planning: use grep_files/list_dir/read_file to ground the plan in the actual codebase.
+- Use web.run for time-sensitive or uncertain facts, and cite sources as [cite:ref_id].
 - Use update_plan to create structured plans with one step in_progress at a time.
 - Each step should be specific, actionable, and include expected outcomes.
 - Include explicit verification steps (tests/checks) after each planned change.

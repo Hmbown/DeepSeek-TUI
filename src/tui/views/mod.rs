@@ -4,12 +4,14 @@ use std::fmt;
 
 use crate::palette;
 use crate::tools::subagent::{SubAgentResult, SubAgentStatus, SubAgentType};
+use crate::tools::UserInputResponse;
 use crate::tui::approval::{ElevationOption, ReviewDecision};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModalKind {
     Approval,
     Elevation,
+    UserInput,
     Help,
     SubAgents,
     Pager,
@@ -28,6 +30,13 @@ pub enum ViewEvent {
         tool_id: String,
         tool_name: String,
         option: ElevationOption,
+    },
+    UserInputSubmitted {
+        tool_id: String,
+        response: UserInputResponse,
+    },
+    UserInputCancelled {
+        tool_id: String,
     },
     SubAgentsRefresh,
     SessionSelected {
@@ -308,7 +317,37 @@ impl ModalView for HelpView {
             Style::default().fg(palette::DEEPSEEK_SKY).bold(),
         )]));
         help_lines.push(Line::from(
-            "  web_search   - Search the web (DuckDuckGo; MCP optional)",
+            "  web.run      - Browse the web (search/open/click/find/screenshot)",
+        ));
+        help_lines.push(Line::from(
+            "  web_search   - Quick web search (DuckDuckGo; MCP optional)",
+        ));
+        help_lines.push(Line::from(
+            "  request_user_input - Ask the user to choose from short prompts",
+        ));
+        help_lines.push(Line::from(
+            "  multi_tool_use.parallel - Execute multiple tools in parallel",
+        ));
+        help_lines.push(Line::from(
+            "  weather     - Daily forecast for a location",
+        ));
+        help_lines.push(Line::from(
+            "  finance     - Stock/crypto price lookup",
+        ));
+        help_lines.push(Line::from(
+            "  sports      - League schedules/standings",
+        ));
+        help_lines.push(Line::from(
+            "  time        - Current time for UTC offsets",
+        ));
+        help_lines.push(Line::from(
+            "  calculator  - Evaluate arithmetic expressions",
+        ));
+        help_lines.push(Line::from(
+            "  list_mcp_resources - List MCP resources (optionally by server)",
+        ));
+        help_lines.push(Line::from(
+            "  list_mcp_resource_templates - List MCP resource templates",
         ));
         help_lines.push(Line::from("  mcp_*        - Tools exposed by MCP servers"));
         help_lines.push(Line::from(""));

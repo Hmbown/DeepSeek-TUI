@@ -51,7 +51,7 @@ alternate_screen = "auto"   # auto | always | never
 [features]
 shell_tool = true
 subagents = true
-web_search = true
+web_search = true # enables web.run and web_search
 apply_patch = true
 mcp = true
 rlm = true

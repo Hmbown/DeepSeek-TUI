@@ -12,7 +12,10 @@ Tool selection guidance:
 - Use read tools to confirm context; avoid guessing about file contents.
 - Prefer targeted edits (apply_patch/edit) over full rewrites when possible.
 - Use shell tools for build/test/format/lint and other objective verification.
-- Use web search only when the answer may be time-sensitive or unclear locally.
+- Use web.run for time-sensitive or uncertain facts; include citations as [cite:ref_id].
+- Use multi_tool_use.parallel for multiple read-only tool calls that can run together.
+- Use request_user_input to ask short multiple-choice questions when needed.
+- Use weather/finance/sports/time/calculator tools for their respective domains when applicable.
 
 Planning and progress:
 - For non-trivial tasks, publish a checklist with update_plan.

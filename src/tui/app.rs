@@ -407,8 +407,11 @@ impl App {
 
         let history_len = history.len() as u64;
 
+        let agents_skills_dir = workspace.join(".agents").join("skills");
         let local_skills_dir = workspace.join("skills");
-        let skills_dir = if local_skills_dir.exists() {
+        let skills_dir = if agents_skills_dir.exists() {
+            agents_skills_dir
+        } else if local_skills_dir.exists() {
             local_skills_dir
         } else {
             global_skills_dir

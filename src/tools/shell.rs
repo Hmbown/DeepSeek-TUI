@@ -13,11 +13,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 use wait_timeout::ChildExt;
+
+use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 
 use crate::sandbox::{
     CommandSpec,
@@ -81,6 +83,104 @@ pub struct ShellResult {
     pub sandbox_denied: bool,
 }
 
+struct ShellDeltaResult {
+    result: ShellResult,
+    stdout_total_len: usize,
+    stderr_total_len: usize,
+}
+
+enum ShellChild {
+    Process(Child),
+    Pty(Box<dyn portable_pty::Child + Send>),
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ShellExitStatus {
+    code: Option<i32>,
+    success: bool,
+}
+
+impl ShellExitStatus {
+    fn from_std(status: std::process::ExitStatus) -> Self {
+        Self {
+            code: status.code(),
+            success: status.success(),
+        }
+    }
+
+    fn from_pty(status: portable_pty::ExitStatus) -> Self {
+        let code = i32::try_from(status.exit_code()).unwrap_or(i32::MAX);
+        Self {
+            code: Some(code),
+            success: status.success(),
+        }
+    }
+}
+
+impl ShellChild {
+    fn try_wait(&mut self) -> std::io::Result<Option<ShellExitStatus>> {
+        match self {
+            ShellChild::Process(child) => child.try_wait().map(|status| status.map(ShellExitStatus::from_std)),
+            ShellChild::Pty(child) => child.try_wait().map(|status| status.map(ShellExitStatus::from_pty)),
+        }
+    }
+
+    fn wait(&mut self) -> std::io::Result<ShellExitStatus> {
+        match self {
+            ShellChild::Process(child) => child.wait().map(ShellExitStatus::from_std),
+            ShellChild::Pty(child) => child.wait().map(ShellExitStatus::from_pty),
+        }
+    }
+
+    fn kill(&mut self) -> std::io::Result<()> {
+        match self {
+            ShellChild::Process(child) => child.kill(),
+            ShellChild::Pty(child) => child.kill(),
+        }
+    }
+}
+
+enum StdinWriter {
+    Pipe(ChildStdin),
+    Pty(Box<dyn Write + Send>),
+}
+
+impl StdinWriter {
+    fn write_all(&mut self, data: &[u8]) -> std::io::Result<()> {
+        match self {
+            StdinWriter::Pipe(stdin) => stdin.write_all(data),
+            StdinWriter::Pty(writer) => writer.write_all(data),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            StdinWriter::Pipe(stdin) => stdin.flush(),
+            StdinWriter::Pty(writer) => writer.flush(),
+        }
+    }
+}
+
+fn spawn_reader_thread<R: Read + Send + 'static>(
+    mut reader: R,
+    buffer: Arc<Mutex<Vec<u8>>>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut chunk = [0u8; 4096];
+        loop {
+            match reader.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if let Ok(mut guard) = buffer.lock() {
+                        guard.extend_from_slice(&chunk[..n]);
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    })
+}
+
 /// A background shell process being tracked
 pub struct BackgroundShell {
     pub id: String,
@@ -88,13 +188,16 @@ pub struct BackgroundShell {
     pub working_dir: PathBuf,
     pub status: ShellStatus,
     pub exit_code: Option<i32>,
-    pub stdout: String,
-    pub stderr: String,
     pub started_at: Instant,
     pub sandbox_type: SandboxType,
-    child: Option<Child>,
-    stdout_thread: Option<std::thread::JoinHandle<Vec<u8>>>,
-    stderr_thread: Option<std::thread::JoinHandle<Vec<u8>>>,
+    stdout_buffer: Arc<Mutex<Vec<u8>>>,
+    stderr_buffer: Option<Arc<Mutex<Vec<u8>>>>,
+    stdout_cursor: usize,
+    stderr_cursor: usize,
+    stdin: Option<StdinWriter>,
+    child: Option<ShellChild>,
+    stdout_thread: Option<std::thread::JoinHandle<()>>,
+    stderr_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl BackgroundShell {
@@ -107,8 +210,8 @@ impl BackgroundShell {
         if let Some(ref mut child) = self.child {
             match child.try_wait() {
                 Ok(Some(status)) => {
-                    self.exit_code = status.code();
-                    self.status = if status.success() {
+                    self.exit_code = status.code;
+                    self.status = if status.success {
                         ShellStatus::Completed
                     } else {
                         ShellStatus::Failed
@@ -119,6 +222,7 @@ impl BackgroundShell {
                 Ok(None) => false, // Still running
                 Err(_) => {
                     self.status = ShellStatus::Failed;
+                    self.collect_output();
                     true
                 }
             }
@@ -129,34 +233,111 @@ impl BackgroundShell {
 
     /// Collect output from the background threads
     fn collect_output(&mut self) {
-        if let Some(handle) = self.stdout_thread.take()
-            && let Ok(data) = handle.join()
-        {
-            self.stdout = String::from_utf8_lossy(&data).to_string();
+        if let Some(handle) = self.stdout_thread.take() {
+            let _ = handle.join();
         }
-        if let Some(handle) = self.stderr_thread.take()
-            && let Ok(data) = handle.join()
-        {
-            self.stderr = String::from_utf8_lossy(&data).to_string();
+        if let Some(handle) = self.stderr_thread.take() {
+            let _ = handle.join();
         }
+    }
+
+    fn write_stdin(&mut self, input: &str, close: bool) -> Result<()> {
+        if let Some(stdin) = self.stdin.as_mut() {
+            if !input.is_empty() {
+                stdin
+                    .write_all(input.as_bytes())
+                    .context("Failed to write to stdin")?;
+                stdin.flush().ok();
+            }
+            if close {
+                self.stdin = None;
+            }
+            return Ok(());
+        }
+
+        if input.is_empty() && close {
+            return Ok(());
+        }
+
+        Err(anyhow!("stdin is not available for task {}", self.id))
+    }
+
+    fn full_output(&self) -> (String, String, usize, usize) {
+        let stdout_bytes = self
+            .stdout_buffer
+            .lock()
+            .map(|data| data.clone())
+            .unwrap_or_default();
+        let stderr_bytes = self
+            .stderr_buffer
+            .as_ref()
+            .and_then(|buffer| buffer.lock().ok().map(|data| data.clone()))
+            .unwrap_or_default();
+
+        let stdout_len = stdout_bytes.len();
+        let stderr_len = stderr_bytes.len();
+
+        (
+            String::from_utf8_lossy(&stdout_bytes).to_string(),
+            String::from_utf8_lossy(&stderr_bytes).to_string(),
+            stdout_len,
+            stderr_len,
+        )
+    }
+
+    fn take_delta(&mut self) -> (String, String, usize, usize, usize, usize) {
+        let (stdout_delta, stdout_total) = take_delta_from_buffer(
+            &self.stdout_buffer,
+            &mut self.stdout_cursor,
+        );
+        let (stderr_delta, stderr_total) = if let Some(buffer) = self.stderr_buffer.as_ref() {
+            take_delta_from_buffer(buffer, &mut self.stderr_cursor)
+        } else {
+            (Vec::new(), 0)
+        };
+
+        let stdout_delta_len = stdout_delta.len();
+        let stderr_delta_len = stderr_delta.len();
+
+        (
+            String::from_utf8_lossy(&stdout_delta).to_string(),
+            String::from_utf8_lossy(&stderr_delta).to_string(),
+            stdout_delta_len,
+            stderr_delta_len,
+            stdout_total,
+            stderr_total,
+        )
+    }
+
+    fn sandbox_denied(&self) -> bool {
+        if matches!(self.status, ShellStatus::Running) {
+            return false;
+        }
+        let (_, stderr_full, _, _) = self.full_output();
+        SandboxManager::was_denied(
+            self.sandbox_type,
+            self.exit_code.unwrap_or(-1),
+            &stderr_full,
+        )
     }
 
     /// Kill the process
     fn kill(&mut self) -> Result<()> {
         if let Some(ref mut child) = self.child {
             child.kill().context("Failed to kill process")?;
-            let _ = child.wait(); // Reap the zombie
-            self.status = ShellStatus::Killed;
-            self.collect_output();
+            let _ = child.wait();
         }
+        self.status = ShellStatus::Killed;
+        self.collect_output();
         Ok(())
     }
 
     /// Get a snapshot of the current state
     pub fn snapshot(&self) -> ShellResult {
         let sandboxed = !matches!(self.sandbox_type, SandboxType::None);
-        let (stdout, stdout_meta) = truncate_with_meta(&self.stdout);
-        let (stderr, stderr_meta) = truncate_with_meta(&self.stderr);
+        let (stdout_full, stderr_full, _, _) = self.full_output();
+        let (stdout, stdout_meta) = truncate_with_meta(&stdout_full);
+        let (stderr, stderr_meta) = truncate_with_meta(&stderr_full);
         ShellResult {
             task_id: Some(self.id.clone()),
             status: self.status.clone(),
@@ -176,7 +357,7 @@ impl BackgroundShell {
             } else {
                 None
             },
-            sandbox_denied: false, // Determined after completion
+            sandbox_denied: self.sandbox_denied(),
         }
     }
 }
@@ -245,6 +426,28 @@ impl ShellManager {
         background: bool,
         policy_override: Option<ExecutionSandboxPolicy>,
     ) -> Result<ShellResult> {
+        self.execute_with_options(
+            command,
+            working_dir,
+            timeout_ms,
+            background,
+            None,
+            false,
+            policy_override,
+        )
+    }
+
+    /// Execute a shell command with stdin/TTY options.
+    pub fn execute_with_options(
+        &mut self,
+        command: &str,
+        working_dir: Option<&str>,
+        timeout_ms: u64,
+        background: bool,
+        stdin_data: Option<&str>,
+        tty: bool,
+        policy_override: Option<ExecutionSandboxPolicy>,
+    ) -> Result<ShellResult> {
         let work_dir = working_dir.map_or_else(|| self.default_workspace.clone(), PathBuf::from);
 
         // Clamp timeout to max 10 minutes (600000ms)
@@ -259,9 +462,14 @@ impl ShellManager {
         let exec_env = self.sandbox_manager.prepare(&spec);
 
         if background {
-            self.spawn_background_sandboxed(command, &work_dir, &exec_env)
+            self.spawn_background_sandboxed(command, &work_dir, &exec_env, stdin_data, tty)
         } else {
-            Self::execute_sync_sandboxed(command, &work_dir, timeout_ms, &exec_env)
+            if tty {
+                return Err(anyhow!(
+                    "TTY mode requires background execution (set background: true)."
+                ));
+            }
+            Self::execute_sync_sandboxed(command, &work_dir, timeout_ms, stdin_data, &exec_env)
         }
     }
 
@@ -300,6 +508,7 @@ impl ShellManager {
         original_command: &str,
         working_dir: &std::path::Path,
         timeout_ms: u64,
+        stdin_data: Option<&str>,
         exec_env: &ExecEnv,
     ) -> Result<ShellResult> {
         let started = Instant::now();
@@ -317,6 +526,10 @@ impl ShellManager {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
+        if stdin_data.is_some() {
+            cmd.stdin(Stdio::piped());
+        }
+
         // Set environment variables from exec_env
         for (key, value) in &exec_env.env {
             cmd.env(key, value);
@@ -325,6 +538,15 @@ impl ShellManager {
         let mut child = cmd
             .spawn()
             .with_context(|| format!("Failed to execute: {original_command}"))?;
+
+        if let Some(input) = stdin_data {
+            if let Some(mut stdin) = child.stdin.take() {
+                stdin
+                    .write_all(input.as_bytes())
+                    .context("Failed to write to stdin")?;
+                stdin.flush().ok();
+            }
+        }
 
         let stdout_handle = child.stdout.take().context("Failed to capture stdout")?;
         let stderr_handle = child.stderr.take().context("Failed to capture stderr")?;
@@ -507,6 +729,8 @@ impl ShellManager {
         original_command: &str,
         working_dir: &std::path::Path,
         exec_env: &ExecEnv,
+        stdin_data: Option<&str>,
+        tty: bool,
     ) -> Result<ShellResult> {
         let task_id = format!("shell_{}", &Uuid::new_v4().to_string()[..8]);
         let started = Instant::now();
@@ -517,57 +741,109 @@ impl ShellManager {
         let program = exec_env.program();
         let args = exec_env.args();
 
-        let mut cmd = Command::new(program);
-        cmd.args(args)
-            .current_dir(working_dir)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        let stdout_buffer = Arc::new(Mutex::new(Vec::new()));
+        let stderr_buffer = if tty {
+            None
+        } else {
+            Some(Arc::new(Mutex::new(Vec::new())))
+        };
 
-        // Set environment variables from exec_env
-        for (key, value) in &exec_env.env {
-            cmd.env(key, value);
-        }
+        let (child, stdin, stdout_thread, stderr_thread) = if tty {
+            let pty_system = native_pty_system();
+            let pair = pty_system
+                .openpty(PtySize {
+                    rows: 24,
+                    cols: 80,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                })
+                .context("Failed to open PTY")?;
 
-        let mut child = cmd
-            .spawn()
-            .with_context(|| format!("Failed to spawn background: {original_command}"))?;
+            let mut cmd = CommandBuilder::new(program);
+            for arg in args {
+                cmd.arg(arg);
+            }
+            cmd.cwd(working_dir);
+            for (key, value) in &exec_env.env {
+                cmd.env(key, value);
+            }
 
-        let stdout_handle = child.stdout.take();
-        let stderr_handle = child.stderr.take();
+            let child = pair
+                .slave
+                .spawn_command(cmd)
+                .with_context(|| format!("Failed to spawn PTY command: {original_command}"))?;
+            drop(pair.slave);
 
-        // Spawn threads to collect output
-        let stdout_thread = stdout_handle.map(|handle| {
-            std::thread::spawn(move || {
-                let mut reader = handle;
-                let mut buf = Vec::new();
-                let _ = reader.read_to_end(&mut buf);
-                buf
-            })
-        });
+            let reader = pair
+                .master
+                .try_clone_reader()
+                .context("Failed to clone PTY reader")?;
+            let stdout_thread = Some(spawn_reader_thread(reader, Arc::clone(&stdout_buffer)));
+            let writer = pair
+                .master
+                .take_writer()
+                .context("Failed to take PTY writer")?;
 
-        let stderr_thread = stderr_handle.map(|handle| {
-            std::thread::spawn(move || {
-                let mut reader = handle;
-                let mut buf = Vec::new();
-                let _ = reader.read_to_end(&mut buf);
-                buf
-            })
-        });
+            (
+                ShellChild::Pty(child),
+                Some(StdinWriter::Pty(writer)),
+                stdout_thread,
+                None,
+            )
+        } else {
+            let mut cmd = Command::new(program);
+            cmd.args(args)
+                .current_dir(working_dir)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
 
-        let bg_shell = BackgroundShell {
+            for (key, value) in &exec_env.env {
+                cmd.env(key, value);
+            }
+
+            let mut child = cmd
+                .spawn()
+                .with_context(|| format!("Failed to spawn background: {original_command}"))?;
+
+            let stdout_handle = child.stdout.take().context("Failed to capture stdout")?;
+            let stderr_handle = child.stderr.take().context("Failed to capture stderr")?;
+            let stdin_handle = child.stdin.take().map(StdinWriter::Pipe);
+
+            let stdout_thread = Some(spawn_reader_thread(stdout_handle, Arc::clone(&stdout_buffer)));
+            let stderr_thread = stderr_buffer
+                .as_ref()
+                .map(|buffer| spawn_reader_thread(stderr_handle, Arc::clone(buffer)));
+
+            (
+                ShellChild::Process(child),
+                stdin_handle,
+                stdout_thread,
+                stderr_thread,
+            )
+        };
+
+        let mut bg_shell = BackgroundShell {
             id: task_id.clone(),
             command: original_command.to_string(),
             working_dir: working_dir.to_path_buf(),
             status: ShellStatus::Running,
             exit_code: None,
-            stdout: String::new(),
-            stderr: String::new(),
             started_at: started,
             sandbox_type,
+            stdout_buffer,
+            stderr_buffer,
+            stdout_cursor: 0,
+            stderr_cursor: 0,
+            stdin,
             child: Some(child),
             stdout_thread,
             stderr_thread,
         };
+
+        if let Some(input) = stdin_data {
+            bg_shell.write_stdin(input, false)?;
+        }
 
         self.processes.insert(task_id.clone(), bg_shell);
 
@@ -626,6 +902,77 @@ impl ShellManager {
         }
 
         Ok(shell.snapshot())
+    }
+
+    /// Write data to stdin of a background process.
+    pub fn write_stdin(&mut self, task_id: &str, input: &str, close: bool) -> Result<()> {
+        let shell = self
+            .processes
+            .get_mut(task_id)
+            .ok_or_else(|| anyhow!("Task {task_id} not found"))?;
+        shell.write_stdin(input, close)?;
+        Ok(())
+    }
+
+    /// Get incremental output from a background process, consuming any new output.
+    fn get_output_delta(
+        &mut self,
+        task_id: &str,
+        wait: bool,
+        timeout_ms: u64,
+    ) -> Result<ShellDeltaResult> {
+        let shell = self
+            .processes
+            .get_mut(task_id)
+            .ok_or_else(|| anyhow!("Task {task_id} not found"))?;
+
+        if wait && shell.status == ShellStatus::Running {
+            let timeout = Duration::from_millis(timeout_ms.clamp(1000, 600_000));
+            let deadline = Instant::now() + timeout;
+
+            while shell.status == ShellStatus::Running && Instant::now() < deadline {
+                if shell.poll() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        } else {
+            shell.poll();
+        }
+
+        let (stdout_delta, stderr_delta, stdout_delta_len, stderr_delta_len, stdout_total, stderr_total) =
+            shell.take_delta();
+        let (stdout, stdout_meta) = truncate_with_meta(&stdout_delta);
+        let (stderr, stderr_meta) = truncate_with_meta(&stderr_delta);
+        let sandboxed = !matches!(shell.sandbox_type, SandboxType::None);
+
+        let result = ShellResult {
+            task_id: Some(shell.id.clone()),
+            status: shell.status.clone(),
+            exit_code: shell.exit_code,
+            stdout,
+            stderr,
+            duration_ms: u64::try_from(shell.started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+            stdout_len: stdout_meta.original_len.max(stdout_delta_len),
+            stderr_len: stderr_meta.original_len.max(stderr_delta_len),
+            stdout_omitted: stdout_meta.omitted,
+            stderr_omitted: stderr_meta.omitted,
+            stdout_truncated: stdout_meta.truncated,
+            stderr_truncated: stderr_meta.truncated,
+            sandboxed,
+            sandbox_type: if sandboxed {
+                Some(shell.sandbox_type.to_string())
+            } else {
+                None
+            },
+            sandbox_denied: shell.sandbox_denied(),
+        };
+
+        Ok(ShellDeltaResult {
+            result,
+            stdout_total_len: stdout_total,
+            stderr_total_len: stderr_total,
+        })
     }
 
     /// Kill a running background process
@@ -716,6 +1063,17 @@ fn char_boundary_at_or_before(text: &str, max_bytes: usize) -> usize {
     }
 
     last_end.min(text.len())
+}
+
+fn take_delta_from_buffer(
+    buffer: &Arc<Mutex<Vec<u8>>>,
+    cursor: &mut usize,
+) -> (Vec<u8>, usize) {
+    let data = buffer.lock().map(|d| d.clone()).unwrap_or_default();
+    let start = (*cursor).min(data.len());
+    let delta = data[start..].to_vec();
+    *cursor = data.len();
+    (delta, data.len())
 }
 
 fn strip_truncation_note(text: &str) -> &str {
@@ -820,6 +1178,14 @@ impl ToolSpec for ExecShellTool {
                 "interactive": {
                     "type": "boolean",
                     "description": "Run interactively with terminal IO (default: false)"
+                },
+                "stdin": {
+                    "type": "string",
+                    "description": "Optional stdin data to send before waiting (non-interactive only)"
+                },
+                "tty": {
+                    "type": "boolean",
+                    "description": "Allocate a pseudo-terminal for interactive programs (implies background)"
                 }
             },
             "required": ["command"]
@@ -847,12 +1213,31 @@ impl ToolSpec for ExecShellTool {
         let timeout_ms = optional_u64(&input, "timeout_ms", 120_000).min(600_000);
         let background = optional_bool(&input, "background", false);
         let interactive = optional_bool(&input, "interactive", false);
+        let tty = optional_bool(&input, "tty", false);
+        let stdin_data = input
+            .get("stdin")
+            .or_else(|| input.get("input"))
+            .or_else(|| input.get("data"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
 
         if interactive && background {
             return Ok(ToolResult::error(
                 "Interactive commands cannot run in background mode.",
             ));
         }
+        if interactive && tty {
+            return Ok(ToolResult::error(
+                "Interactive mode cannot be combined with TTY sessions.",
+            ));
+        }
+        if interactive && stdin_data.is_some() {
+            return Ok(ToolResult::error(
+                "Interactive mode cannot be combined with stdin data.",
+            ));
+        }
+
+        let background = background || tty;
 
         let mut execpolicy_decision: Option<ExecPolicyDecision> = None;
         if let Some(policy) = load_default_policy()
@@ -904,21 +1289,24 @@ impl ToolSpec for ExecShellTool {
             }
         }
 
-        // Create a shell manager for this execution
-        // If there's an elevated sandbox policy, use it; otherwise use default
-        let mut manager = if let Some(ref policy) = context.elevated_sandbox_policy {
-            ShellManager::with_sandbox(context.workspace.clone(), policy.clone())
-        } else {
-            ShellManager::new(context.workspace.clone())
-        };
-
-        // Pass the elevated policy as override if set
         let policy_override = context.elevated_sandbox_policy.clone();
+        let mut manager = context
+            .shell_manager
+            .lock()
+            .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
 
         let result = if interactive {
             manager.execute_interactive(command, None, timeout_ms)
         } else {
-            manager.execute_with_policy(command, None, timeout_ms, background, policy_override)
+            manager.execute_with_options(
+                command,
+                None,
+                timeout_ms,
+                background,
+                stdin_data.as_deref(),
+                tty,
+                policy_override,
+            )
         };
 
         match result {
@@ -993,6 +1381,255 @@ impl ToolSpec for ExecShellTool {
                 })
             }
             Err(e) => Ok(ToolResult::error(format!("Shell execution failed: {e}"))),
+        }
+    }
+}
+
+pub struct ShellWaitTool {
+    name: &'static str,
+}
+
+impl ShellWaitTool {
+    pub const fn new(name: &'static str) -> Self {
+        Self { name }
+    }
+}
+
+pub struct ShellInteractTool {
+    name: &'static str,
+}
+
+impl ShellInteractTool {
+    pub const fn new(name: &'static str) -> Self {
+        Self { name }
+    }
+}
+
+fn required_task_id<'a>(input: &'a serde_json::Value) -> Result<&'a str, ToolError> {
+    input
+        .get("task_id")
+        .or_else(|| input.get("id"))
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| ToolError::missing_field("task_id"))
+}
+
+fn build_shell_delta_tool_result(delta: ShellDeltaResult) -> ToolResult {
+    let result = delta.result;
+    let stdout_summary = summarize_output(&result.stdout);
+    let stderr_summary = summarize_output(&result.stderr);
+    let summary = if !stderr_summary.is_empty() {
+        stderr_summary.clone()
+    } else {
+        stdout_summary.clone()
+    };
+
+    let output = if result.stdout.is_empty() && result.stderr.is_empty() {
+        match result.status {
+            ShellStatus::Running => "Background task running (no new output).".to_string(),
+            ShellStatus::Completed => "(no new output)".to_string(),
+            ShellStatus::Failed => format!(
+                "Command failed (exit code: {:?})",
+                result.exit_code
+            ),
+            ShellStatus::TimedOut => "Command timed out (no new output).".to_string(),
+            ShellStatus::Killed => "Command killed (no new output).".to_string(),
+        }
+    } else if result.stderr.is_empty() {
+        result.stdout.clone()
+    } else {
+        format!("{}\n\nSTDERR:\n{}", result.stdout, result.stderr)
+    };
+
+    ToolResult {
+        content: output,
+        success: matches!(
+            result.status,
+            ShellStatus::Completed | ShellStatus::Running
+        ),
+        metadata: Some(json!({
+            "exit_code": result.exit_code,
+            "status": format!("{:?}", result.status),
+            "duration_ms": result.duration_ms,
+            "sandboxed": result.sandboxed,
+            "sandbox_type": result.sandbox_type,
+            "sandbox_denied": result.sandbox_denied,
+            "task_id": result.task_id,
+            "stdout_len": result.stdout_len,
+            "stderr_len": result.stderr_len,
+            "stdout_truncated": result.stdout_truncated,
+            "stderr_truncated": result.stderr_truncated,
+            "stdout_omitted": result.stdout_omitted,
+            "stderr_omitted": result.stderr_omitted,
+            "stdout_total_len": delta.stdout_total_len,
+            "stderr_total_len": delta.stderr_total_len,
+            "summary": summary,
+            "stdout_summary": stdout_summary,
+            "stderr_summary": stderr_summary,
+            "stream_delta": true,
+        })),
+    }
+}
+
+#[async_trait]
+impl ToolSpec for ShellWaitTool {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn description(&self) -> &'static str {
+        "Wait for a background shell task and return incremental output."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "Task ID returned by exec_shell"
+                },
+                "timeout_ms": {
+                    "type": "integer",
+                    "description": "Timeout in milliseconds (default: 5000)"
+                },
+                "wait": {
+                    "type": "boolean",
+                    "description": "Wait for completion before returning (default: true)"
+                }
+            },
+            "required": ["task_id"]
+        })
+    }
+
+    fn capabilities(&self) -> Vec<ToolCapability> {
+        vec![ToolCapability::ReadOnly]
+    }
+
+    fn approval_requirement(&self) -> ApprovalRequirement {
+        ApprovalRequirement::Auto
+    }
+
+    async fn execute(
+        &self,
+        input: serde_json::Value,
+        context: &ToolContext,
+    ) -> Result<ToolResult, ToolError> {
+        let task_id = required_task_id(&input)?;
+        let wait = optional_bool(&input, "wait", true);
+        let timeout_ms = optional_u64(&input, "timeout_ms", 5_000);
+
+        let mut manager = context
+            .shell_manager
+            .lock()
+            .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
+        let delta = manager
+            .get_output_delta(task_id, wait, timeout_ms)
+            .map_err(|err| ToolError::execution_failed(err.to_string()))?;
+
+        Ok(build_shell_delta_tool_result(delta))
+    }
+}
+
+#[async_trait]
+impl ToolSpec for ShellInteractTool {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn description(&self) -> &'static str {
+        "Send input to a background shell task and return incremental output."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "Task ID returned by exec_shell"
+                },
+                "input": {
+                    "type": "string",
+                    "description": "Input to send to the task's stdin"
+                },
+                "stdin": {
+                    "type": "string",
+                    "description": "Alias for input"
+                },
+                "data": {
+                    "type": "string",
+                    "description": "Alias for input"
+                },
+                "timeout_ms": {
+                    "type": "integer",
+                    "description": "Wait for output after sending input (default: 1000)"
+                },
+                "close_stdin": {
+                    "type": "boolean",
+                    "description": "Close stdin after sending input"
+                }
+            },
+            "required": ["task_id"]
+        })
+    }
+
+    fn capabilities(&self) -> Vec<ToolCapability> {
+        vec![ToolCapability::ExecutesCode]
+    }
+
+    fn approval_requirement(&self) -> ApprovalRequirement {
+        ApprovalRequirement::Auto
+    }
+
+    async fn execute(
+        &self,
+        input: serde_json::Value,
+        context: &ToolContext,
+    ) -> Result<ToolResult, ToolError> {
+        let task_id = required_task_id(&input)?;
+        let close_stdin = optional_bool(&input, "close_stdin", false);
+        let timeout_ms = optional_u64(&input, "timeout_ms", 1_000);
+        let interaction_input = input
+            .get("input")
+            .or_else(|| input.get("stdin"))
+            .or_else(|| input.get("data"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+
+        {
+            let mut manager = context
+                .shell_manager
+                .lock()
+                .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
+            if !interaction_input.is_empty() || close_stdin {
+                manager
+                    .write_stdin(task_id, interaction_input, close_stdin)
+                    .map_err(|err| ToolError::execution_failed(err.to_string()))?;
+            }
+        }
+
+        let mut elapsed = 0u64;
+        loop {
+            let delta = {
+                let mut manager = context
+                    .shell_manager
+                    .lock()
+                    .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
+                manager
+                    .get_output_delta(task_id, false, 0)
+                    .map_err(|err| ToolError::execution_failed(err.to_string()))?
+            };
+
+            if !delta.result.stdout.is_empty()
+                || !delta.result.stderr.is_empty()
+                || delta.result.status != ShellStatus::Running
+                || elapsed >= timeout_ms
+            {
+                return Ok(build_shell_delta_tool_result(delta));
+            }
+
+            std::thread::sleep(Duration::from_millis(50));
+            elapsed = elapsed.saturating_add(50);
         }
     }
 }
@@ -1103,6 +1740,17 @@ mod tests {
         }
     }
 
+    fn echo_stdin_command() -> String {
+        #[cfg(windows)]
+        {
+            "more".to_string()
+        }
+        #[cfg(not(windows))]
+        {
+            "cat".to_string()
+        }
+    }
+
     #[test]
     fn test_sync_execution() {
         let tmp = tempdir().expect("tempdir");
@@ -1170,6 +1818,35 @@ mod tests {
         // Kill it
         let killed = manager.kill(&task_id).expect("kill");
         assert_eq!(killed.status, ShellStatus::Killed);
+    }
+
+    #[test]
+    fn test_write_stdin_streams_output() {
+        let tmp = tempdir().expect("tempdir");
+        let mut manager = ShellManager::new(tmp.path().to_path_buf());
+
+        let result = manager
+            .execute_with_options(&echo_stdin_command(), None, 5000, true, None, false, None)
+            .expect("execute");
+
+        let task_id = result
+            .task_id
+            .expect("background execution should return task_id");
+
+        manager
+            .write_stdin(&task_id, "hello\n", true)
+            .expect("write stdin");
+
+        let delta = manager
+            .get_output_delta(&task_id, true, 5000)
+            .expect("get_output_delta");
+
+        assert!(delta.result.stdout.contains("hello"));
+
+        let delta2 = manager
+            .get_output_delta(&task_id, false, 0)
+            .expect("get_output_delta");
+        assert!(delta2.result.stdout.is_empty());
     }
 
     #[test]

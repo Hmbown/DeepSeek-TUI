@@ -18,6 +18,7 @@ pub mod session_picker;
 pub mod streaming;
 pub mod transcript;
 pub mod ui;
+pub mod user_input;
 pub mod views;
 pub mod widgets;
 

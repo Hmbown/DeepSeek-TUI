@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
+use crate::tools::shell::{new_shared_shell_manager, SharedShellManager};
+
 /// Capabilities that a tool may have or require.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ToolCapability {
@@ -177,6 +179,8 @@ pub enum SandboxPolicy {
 pub struct ToolContext {
     /// The workspace root directory
     pub workspace: PathBuf,
+    /// Shared shell manager for background tasks and streaming IO.
+    pub shell_manager: SharedShellManager,
     /// Whether to allow paths outside workspace
     pub trust_mode: bool,
     /// Current sandbox policy
@@ -198,10 +202,12 @@ impl ToolContext {
     #[must_use]
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
         let workspace = workspace.into();
+        let shell_manager = new_shared_shell_manager(workspace.clone());
         let notes_path = workspace.join(".deepseek").join("notes.md");
         let mcp_config_path = workspace.join(".deepseek").join("mcp.json");
         Self {
             workspace,
+            shell_manager,
             trust_mode: false,
             sandbox_policy: SandboxPolicy::None,
             notes_path,
@@ -218,8 +224,11 @@ impl ToolContext {
         notes_path: impl Into<PathBuf>,
         mcp_config_path: impl Into<PathBuf>,
     ) -> Self {
+        let workspace = workspace.into();
+        let shell_manager = new_shared_shell_manager(workspace.clone());
         Self {
-            workspace: workspace.into(),
+            workspace,
+            shell_manager,
             trust_mode,
             sandbox_policy: SandboxPolicy::None,
             notes_path: notes_path.into(),
@@ -237,8 +246,11 @@ impl ToolContext {
         mcp_config_path: impl Into<PathBuf>,
         auto_approve: bool,
     ) -> Self {
+        let workspace = workspace.into();
+        let shell_manager = new_shared_shell_manager(workspace.clone());
         Self {
-            workspace: workspace.into(),
+            workspace,
+            shell_manager,
             trust_mode,
             sandbox_policy: SandboxPolicy::None,
             notes_path: notes_path.into(),
@@ -373,6 +385,12 @@ impl ToolContext {
     /// Set the sandbox policy.
     pub fn with_sandbox_policy(mut self, policy: SandboxPolicy) -> Self {
         self.sandbox_policy = policy;
+        self
+    }
+
+    /// Override the shared shell manager.
+    pub fn with_shell_manager(mut self, shell_manager: SharedShellManager) -> Self {
+        self.shell_manager = shell_manager;
         self
     }
 
