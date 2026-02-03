@@ -152,6 +152,7 @@ fn map_league(league: &str) -> Result<(String, String), ToolError> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn fetch_schedule(
     client: &reqwest::Client,
     sport: &str,

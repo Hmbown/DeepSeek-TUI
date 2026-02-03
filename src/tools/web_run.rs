@@ -920,7 +920,7 @@ fn wrap_line(text: &str, width: usize) -> Vec<String> {
     for word in text.split_whitespace() {
         if current.is_empty() {
             current.push_str(word);
-        } else if current.len() + word.len() + 1 <= width {
+        } else if current.len() + word.len() < width {
             current.push(' ');
             current.push_str(word);
         } else {
@@ -1000,9 +1000,7 @@ fn extract_query_param(url: &str, key: &str) -> Option<String> {
     let query_start = url.find('?')?;
     let query = &url[query_start + 1..];
     for part in query.split('&') {
-        let mut pieces = part.splitn(2, '=');
-        let k = pieces.next()?;
-        let v = pieces.next()?;
+        let (k, v) = part.split_once('=')?;
         if k == key {
             return Some(v.to_string());
         }
