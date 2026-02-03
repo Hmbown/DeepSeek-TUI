@@ -440,6 +440,7 @@ impl ShellManager {
     }
 
     /// Execute a shell command with stdin/TTY options.
+    #[allow(clippy::too_many_arguments)]
     pub fn execute_with_options(
         &mut self,
         command: &str,
@@ -1413,7 +1414,7 @@ impl ShellInteractTool {
     }
 }
 
-fn required_task_id<'a>(input: &'a serde_json::Value) -> Result<&'a str, ToolError> {
+fn required_task_id(input: &serde_json::Value) -> Result<&str, ToolError> {
     input
         .get("task_id")
         .or_else(|| input.get("id"))

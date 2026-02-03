@@ -1014,7 +1014,7 @@ async fn run_subagent_task(task: SubAgentTask) {
     }
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 async fn run_subagent(
     runtime: &SubAgentRuntime,
     agent_id: String,
