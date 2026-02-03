@@ -1,8 +1,8 @@
 //! Calculator tool for evaluating arithmetic expressions.
 
 use super::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, optional_str,
-    required_str,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
+    optional_str, required_str,
 };
 use async_trait::async_trait;
 use serde::Serialize;

@@ -1,8 +1,8 @@
 //! Weather tool backed by Open-Meteo (no API key required).
 
 use super::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, optional_u64,
-    optional_str, required_str,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
+    optional_str, optional_u64, required_str,
 };
 use async_trait::async_trait;
 use chrono::{NaiveDate, Utc};
@@ -101,7 +101,9 @@ impl ToolSpec for WeatherTool {
             .timeout(Duration::from_millis(TIMEOUT_MS))
             .user_agent(USER_AGENT)
             .build()
-            .map_err(|e| ToolError::execution_failed(format!("Failed to build HTTP client: {e}")))?;
+            .map_err(|e| {
+                ToolError::execution_failed(format!("Failed to build HTTP client: {e}"))
+            })?;
 
         let mut results = Vec::with_capacity(requests.len());
         for req in requests {
@@ -168,7 +170,10 @@ struct GeoResult {
     longitude: f64,
 }
 
-async fn geocode_location(client: &reqwest::Client, location: &str) -> Result<GeoResult, ToolError> {
+async fn geocode_location(
+    client: &reqwest::Client,
+    location: &str,
+) -> Result<GeoResult, ToolError> {
     let encoded = url_encode(location);
     let url = format!(
         "https://geocoding-api.open-meteo.com/v1/search?name={encoded}&count=1&language=en&format=json"
@@ -296,18 +301,9 @@ async fn fetch_forecast(
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string();
-        let max_c = maxes
-            .get(idx)
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0);
-        let min_c = mins
-            .get(idx)
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0);
-        let precip = precips
-            .get(idx)
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0);
+        let max_c = maxes.get(idx).and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let min_c = mins.get(idx).and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let precip = precips.get(idx).and_then(|v| v.as_f64()).unwrap_or(0.0);
         days.push(WeatherDay {
             date,
             temp_max_c: max_c,
@@ -329,13 +325,9 @@ fn url_encode(input: &str) -> String {
     let mut encoded = String::new();
     for ch in input.bytes() {
         match ch {
-            b'A'..=b'Z'
-            | b'a'..=b'z'
-            | b'0'..=b'9'
-            | b'-'
-            | b'_'
-            | b'.'
-            | b'~' => encoded.push(ch as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(ch as char)
+            }
             b' ' => encoded.push('+'),
             _ => encoded.push_str(&format!("%{ch:02X}")),
         }

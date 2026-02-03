@@ -122,7 +122,7 @@ fn parse_offset(raw: &str) -> Result<FixedOffset, ToolError> {
         _ => {
             return Err(ToolError::invalid_input(
                 "utc_offset must start with + or -",
-            ))
+            ));
         }
     };
     let hours: i32 = raw[1..3]

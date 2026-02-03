@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
-use crate::tools::shell::{new_shared_shell_manager, SharedShellManager};
+use crate::tools::shell::{SharedShellManager, new_shared_shell_manager};
 
 /// Capabilities that a tool may have or require.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

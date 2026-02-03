@@ -7,8 +7,8 @@ use serde_json::Value;
 
 use crate::models::Usage;
 use crate::tools::spec::{ToolError, ToolResult};
-use crate::tools::user_input::UserInputRequest;
 use crate::tools::subagent::SubAgentResult;
+use crate::tools::user_input::UserInputRequest;
 
 /// Events emitted by the engine to update the UI.
 #[derive(Debug, Clone)]

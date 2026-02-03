@@ -1177,9 +1177,7 @@ impl McpPool {
         name.starts_with("mcp_")
             || matches!(
                 name,
-                "list_mcp_resources"
-                    | "list_mcp_resource_templates"
-                    | "read_mcp_resource"
+                "list_mcp_resources" | "list_mcp_resource_templates" | "read_mcp_resource"
             )
     }
 }

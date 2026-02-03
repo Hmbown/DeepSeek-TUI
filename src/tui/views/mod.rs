@@ -3,8 +3,8 @@ use ratatui::{buffer::Buffer, layout::Rect};
 use std::fmt;
 
 use crate::palette;
-use crate::tools::subagent::{SubAgentResult, SubAgentStatus, SubAgentType};
 use crate::tools::UserInputResponse;
+use crate::tools::subagent::{SubAgentResult, SubAgentStatus, SubAgentType};
 use crate::tui::approval::{ElevationOption, ReviewDecision};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -328,18 +328,10 @@ impl ModalView for HelpView {
         help_lines.push(Line::from(
             "  multi_tool_use.parallel - Execute multiple tools in parallel",
         ));
-        help_lines.push(Line::from(
-            "  weather     - Daily forecast for a location",
-        ));
-        help_lines.push(Line::from(
-            "  finance     - Stock/crypto price lookup",
-        ));
-        help_lines.push(Line::from(
-            "  sports      - League schedules/standings",
-        ));
-        help_lines.push(Line::from(
-            "  time        - Current time for UTC offsets",
-        ));
+        help_lines.push(Line::from("  weather     - Daily forecast for a location"));
+        help_lines.push(Line::from("  finance     - Stock/crypto price lookup"));
+        help_lines.push(Line::from("  sports      - League schedules/standings"));
+        help_lines.push(Line::from("  time        - Current time for UTC offsets"));
         help_lines.push(Line::from(
             "  calculator  - Evaluate arithmetic expressions",
         ));

@@ -498,9 +498,15 @@ impl ToolRegistryBuilder {
         )))
         .with_tool(Arc::new(AgentSwarmTool::new(manager.clone(), runtime)))
         .with_tool(Arc::new(AgentResultTool::new(manager.clone())))
-        .with_tool(Arc::new(AgentSendInputTool::new(manager.clone(), "send_input")))
+        .with_tool(Arc::new(AgentSendInputTool::new(
+            manager.clone(),
+            "send_input",
+        )))
         .with_tool(Arc::new(AgentWaitTool::new(manager.clone(), "wait")))
-        .with_tool(Arc::new(AgentSendInputTool::new(manager.clone(), "agent_send_input")))
+        .with_tool(Arc::new(AgentSendInputTool::new(
+            manager.clone(),
+            "agent_send_input",
+        )))
         .with_tool(Arc::new(AgentWaitTool::new(manager.clone(), "agent_wait")))
         .with_tool(Arc::new(AgentCancelTool::new(manager.clone())))
         .with_tool(Arc::new(AgentListTool::new(manager)))

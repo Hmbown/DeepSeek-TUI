@@ -1,8 +1,8 @@
 //! Sports tool for schedules and standings (ESPN public APIs).
 
 use super::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, optional_u64,
-    optional_str, required_str,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
+    optional_str, optional_u64, required_str,
 };
 use async_trait::async_trait;
 use chrono::{NaiveDate, Utc};
@@ -103,7 +103,9 @@ impl ToolSpec for SportsTool {
             .timeout(Duration::from_millis(TIMEOUT_MS))
             .user_agent(USER_AGENT)
             .build()
-            .map_err(|e| ToolError::execution_failed(format!("Failed to build HTTP client: {e}")))?;
+            .map_err(|e| {
+                ToolError::execution_failed(format!("Failed to build HTTP client: {e}"))
+            })?;
 
         match action.as_str() {
             "schedule" => {
@@ -137,8 +139,14 @@ fn map_league(league: &str) -> Result<(String, String), ToolError> {
         "nhl" => Ok(("hockey".to_string(), "nhl".to_string())),
         "mlb" => Ok(("baseball".to_string(), "mlb".to_string())),
         "epl" => Ok(("soccer".to_string(), "eng.1".to_string())),
-        "ncaamb" => Ok(("basketball".to_string(), "mens-college-basketball".to_string())),
-        "ncaawb" => Ok(("basketball".to_string(), "womens-college-basketball".to_string())),
+        "ncaamb" => Ok((
+            "basketball".to_string(),
+            "mens-college-basketball".to_string(),
+        )),
+        "ncaawb" => Ok((
+            "basketball".to_string(),
+            "womens-college-basketball".to_string(),
+        )),
         "ipl" => Ok(("cricket".to_string(), "ipl".to_string())),
         _ => Err(ToolError::invalid_input("Unsupported league")),
     }
@@ -160,9 +168,7 @@ async fn fetch_schedule(
             "https://site.web.api.espn.com/apis/v2/sports/{sport}/{league}/scoreboard?dates={dates}"
         )
     } else {
-        format!(
-            "https://site.web.api.espn.com/apis/v2/sports/{sport}/{league}/scoreboard"
-        )
+        format!("https://site.web.api.espn.com/apis/v2/sports/{sport}/{league}/scoreboard")
     };
 
     let resp = client
@@ -215,9 +221,7 @@ async fn fetch_schedule(
                 }
             }
             if let Some(opponent_filter) = opponent {
-                if !team_matches(&home, opponent_filter)
-                    && !team_matches(&away, opponent_filter)
-                {
+                if !team_matches(&home, opponent_filter) && !team_matches(&away, opponent_filter) {
                     continue;
                 }
             }
@@ -275,10 +279,7 @@ fn split_competitors(competitors: &[Value]) -> (Option<SportsGameTeam>, Option<S
             .get("score")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
-        let home_away = comp
-            .get("homeAway")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let home_away = comp.get("homeAway").and_then(|v| v.as_str()).unwrap_or("");
         let team_info = SportsGameTeam {
             name,
             abbreviation,
@@ -303,9 +304,7 @@ async fn fetch_standings(
     sport: &str,
     league: &str,
 ) -> Result<SportsStandingsResponse, ToolError> {
-    let url = format!(
-        "https://site.web.api.espn.com/apis/v2/sports/{sport}/{league}/standings"
-    );
+    let url = format!("https://site.web.api.espn.com/apis/v2/sports/{sport}/{league}/standings");
     let resp = client
         .get(&url)
         .send()
