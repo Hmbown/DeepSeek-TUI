@@ -77,7 +77,7 @@ pub enum HookCondition {
     },
     /// Only run in specific modes
     Mode {
-        /// Mode: "plan", "agent", "yolo", "rlm", "duo"
+        /// Mode: "plan", "agent", "yolo"
         mode: String,
     },
     /// Only run when exit code matches (for `ToolCallAfter`)

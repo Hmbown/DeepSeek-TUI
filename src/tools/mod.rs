@@ -7,7 +7,6 @@
 pub mod apply_patch;
 pub mod calculator;
 pub mod diagnostics;
-pub mod duo;
 pub mod file;
 pub mod file_search;
 pub mod finance;
@@ -17,7 +16,6 @@ pub mod plan;
 pub mod project;
 pub mod registry;
 pub mod review;
-pub mod rlm;
 pub mod search;
 pub mod shell;
 pub mod spec;
@@ -90,6 +88,3 @@ pub use parallel::MultiToolUseParallelTool;
 
 // Re-export user input tool/types
 pub use user_input::{RequestUserInputTool, UserInputAnswer, UserInputRequest, UserInputResponse};
-
-// Re-export RLM tools
-pub use rlm::{RlmExecTool, RlmLoadTool, RlmQueryTool, RlmStatusTool};

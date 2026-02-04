@@ -125,9 +125,6 @@ pub fn set_config(app: &mut App, args: Option<&str>) -> CommandResult {
             compaction.model = app.model.clone();
             action = Some(AppAction::UpdateCompaction(compaction));
         }
-        "auto_rlm" => {
-            app.auto_rlm = settings.auto_rlm;
-        }
         "show_thinking" | "thinking" => {
             app.show_thinking = settings.show_thinking;
             app.mark_history_updated();
@@ -141,8 +138,6 @@ pub fn set_config(app: &mut App, args: Option<&str>) -> CommandResult {
                 "agent" | "normal" => AppMode::Agent,
                 "plan" => AppMode::Plan,
                 "yolo" => AppMode::Yolo,
-                "rlm" => AppMode::Rlm,
-                "duo" => AppMode::Duo,
                 _ => AppMode::Agent,
             };
             app.set_mode(mode);

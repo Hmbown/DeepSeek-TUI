@@ -27,8 +27,6 @@ const TOOL_TEXT_LIMIT: usize = 240;
 pub enum HistoryCell {
     User { content: String },
     Assistant { content: String, streaming: bool },
-    Player { content: String, streaming: bool },
-    Coach { content: String, streaming: bool },
     System { content: String },
     Thinking { content: String, streaming: bool },
     Tool(ToolCell),
@@ -58,30 +56,6 @@ impl HistoryCell {
                 let mut lines = render_message("DeepSeek", content, assistant_style(), width);
                 if *streaming {
                     // Add blinking cursor to last line
-                    if let Some(last) = lines.last_mut() {
-                        last.spans.push(Span::styled(
-                            "▋",
-                            Style::default().fg(palette::DEEPSEEK_SKY),
-                        ));
-                    }
-                }
-                lines
-            }
-            HistoryCell::Player { content, streaming } => {
-                let mut lines = render_message("Player", content, player_style(), width);
-                if *streaming {
-                    if let Some(last) = lines.last_mut() {
-                        last.spans.push(Span::styled(
-                            "▋",
-                            Style::default().fg(palette::DEEPSEEK_SKY),
-                        ));
-                    }
-                }
-                lines
-            }
-            HistoryCell::Coach { content, streaming } => {
-                let mut lines = render_message("Coach", content, coach_style(), width);
-                if *streaming {
                     if let Some(last) = lines.last_mut() {
                         last.spans.push(Span::styled(
                             "▋",
@@ -148,15 +122,6 @@ impl HistoryCell {
 /// Convert a message into history cells for rendering.
 #[must_use]
 pub fn history_cells_from_message(msg: &Message) -> Vec<HistoryCell> {
-    history_cells_from_message_with_mode(msg, None)
-}
-
-/// Convert a message into history cells with optional Duo phase context.
-#[must_use]
-pub fn history_cells_from_message_with_mode(
-    msg: &Message,
-    duo_phase: Option<crate::duo::DuoPhase>,
-) -> Vec<HistoryCell> {
     let mut cells = Vec::new();
     let mut text_blocks = Vec::new();
     let mut thinking_blocks = Vec::new();
@@ -174,23 +139,10 @@ pub fn history_cells_from_message_with_mode(
         match msg.role.as_str() {
             "user" => cells.push(HistoryCell::User { content }),
             "assistant" => {
-                let cell = match duo_phase {
-                    Some(crate::duo::DuoPhase::Player) | Some(crate::duo::DuoPhase::Init) => {
-                        HistoryCell::Player {
-                            content,
-                            streaming: false,
-                        }
-                    }
-                    Some(crate::duo::DuoPhase::Coach) => HistoryCell::Coach {
-                        content,
-                        streaming: false,
-                    },
-                    _ => HistoryCell::Assistant {
-                        content,
-                        streaming: false,
-                    },
-                };
-                cells.push(cell);
+                cells.push(HistoryCell::Assistant {
+                    content,
+                    streaming: false,
+                });
             }
             "system" => cells.push(HistoryCell::System { content }),
             _ => {}
@@ -1319,16 +1271,6 @@ fn user_style() -> Style {
 
 fn assistant_style() -> Style {
     Style::default().fg(palette::DEEPSEEK_SKY)
-}
-
-fn player_style() -> Style {
-    Style::default().fg(palette::MODE_DUO)
-}
-
-fn coach_style() -> Style {
-    Style::default()
-        .fg(palette::DEEPSEEK_BLUE)
-        .add_modifier(Modifier::BOLD)
 }
 
 fn system_style() -> Style {

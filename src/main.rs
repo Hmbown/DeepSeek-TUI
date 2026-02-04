@@ -32,7 +32,6 @@ mod commands;
 mod compaction;
 mod config;
 mod core;
-mod duo;
 mod eval;
 mod execpolicy;
 mod features;
@@ -48,7 +47,6 @@ mod project_context;
 mod project_doc;
 mod prompts;
 mod responses_api_proxy;
-mod rlm;
 mod sandbox;
 mod session_manager;
 mod settings;
@@ -1823,14 +1821,10 @@ async fn run_exec_agent(
     auto_approve: bool,
     trust_mode: bool,
 ) -> Result<()> {
-    use std::sync::{Arc, Mutex};
-
     use crate::compaction::CompactionConfig;
     use crate::core::engine::{EngineConfig, spawn_engine};
     use crate::core::events::Event;
     use crate::core::ops::Op;
-    use crate::duo::DuoSession;
-    use crate::rlm::RlmSession;
     use crate::tools::plan::new_shared_plan_state;
     use crate::tools::todo::new_shared_todo_list;
     use crate::tui::app::AppMode;
@@ -1845,8 +1839,6 @@ async fn run_exec_agent(
         max_steps: 100,
         max_subagents,
         features: config.features(),
-        rlm_session: Arc::new(Mutex::new(RlmSession::default())),
-        duo_session: Arc::new(Mutex::new(DuoSession::new())),
         compaction: CompactionConfig::default(),
         todos: new_shared_todo_list(),
         plan_state: new_shared_plan_state(),

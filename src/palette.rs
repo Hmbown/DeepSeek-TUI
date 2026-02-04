@@ -56,8 +56,6 @@ pub const MODE_NORMAL: Color = Color::Gray;
 pub const MODE_AGENT: Color = Color::Rgb(80, 150, 255); // Bright blue
 pub const MODE_YOLO: Color = Color::Rgb(255, 100, 100); // Warning red
 pub const MODE_PLAN: Color = Color::Rgb(255, 170, 60); // Orange
-pub const MODE_RLM: Color = Color::Rgb(180, 100, 255); // Purple (was INK!)
-pub const MODE_DUO: Color = Color::Rgb(100, 220, 180); // Teal
 
 pub const SELECTION_BG: Color = Color::Rgb(26, 44, 74);
 pub const COMPOSER_BG: Color = DEEPSEEK_SLATE;

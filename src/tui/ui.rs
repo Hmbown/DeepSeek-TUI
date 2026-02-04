@@ -1,9 +1,8 @@
 //! TUI event loop and rendering logic for `DeepSeek` CLI.
 
 use std::fmt::Write;
-use std::fs;
 use std::io::{self, Stdout};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Instant;
 
 use anyhow::Result;
@@ -37,7 +36,6 @@ use crate::hooks::HookEvent;
 use crate::models::{ContentBlock, Message, SystemPrompt, context_window_for_model};
 use crate::palette;
 use crate::prompts;
-use crate::rlm;
 use crate::session_manager::{
     SavedSession, SessionManager, create_saved_session_with_mode, update_session,
 };
@@ -61,8 +59,8 @@ use super::approval::{
 use super::history::{
     DiffPreviewCell, ExecCell, ExecSource, ExploringCell, ExploringEntry, GenericToolCell,
     HistoryCell, McpToolCell, PatchSummaryCell, PlanStep, PlanUpdateCell, ReviewCell, ToolCell,
-    ToolStatus, ViewImageCell, WebSearchCell, history_cells_from_message_with_mode,
-    summarize_mcp_output, summarize_tool_args, summarize_tool_output,
+    ToolStatus, ViewImageCell, WebSearchCell, history_cells_from_message, summarize_mcp_output,
+    summarize_tool_args, summarize_tool_output,
 };
 use super::views::{HelpView, ModalKind, ViewEvent};
 use super::widgets::{ChatWidget, ComposerWidget, HeaderData, HeaderWidget, Renderable};
@@ -70,28 +68,6 @@ use super::widgets::{ChatWidget, ComposerWidget, HeaderData, HeaderWidget, Rende
 // === Constants ===
 
 const MAX_QUEUED_PREVIEW: usize = 3;
-const AUTO_RLM_MIN_FILE_BYTES: u64 = 200_000;
-const AUTO_RLM_HINT_FILE_BYTES: u64 = 50_000;
-const AUTO_RLM_PASTE_MIN_CHARS: usize = 15_000;
-const AUTO_RLM_PASTE_HINT_CHARS: usize = 5_000;
-const AUTO_RLM_PASTE_QUERY_MAX_CHARS: usize = 800;
-const AUTO_RLM_PASTE_FIRST_LINE_MAX_CHARS: usize = 200;
-const RLM_BUDGET_WARN_QUERIES: u32 = 8;
-const RLM_BUDGET_WARN_INPUT_TOKENS: u64 = 60_000;
-const RLM_BUDGET_WARN_OUTPUT_TOKENS: u64 = 20_000;
-const RLM_BUDGET_HARD_QUERIES: u32 = 16;
-const RLM_BUDGET_HARD_INPUT_TOKENS: u64 = 120_000;
-const RLM_BUDGET_HARD_OUTPUT_TOKENS: u64 = 40_000;
-const AUTO_RLM_MAX_SCAN_ENTRIES: usize = 50_000;
-const AUTO_RLM_EXCLUDED_DIRS: &[&str] = &[
-    ".git",
-    "target",
-    "node_modules",
-    ".codex",
-    ".aleph",
-    "dist",
-    "build",
-];
 
 /// Run the interactive TUI event loop.
 ///
@@ -156,18 +132,8 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
                     ),
                 });
 
-                let duo_phase = if app.mode == AppMode::Duo {
-                    app.duo_session
-                        .lock()
-                        .ok()
-                        .and_then(|s| s.active_state.as_ref().map(|st| st.phase))
-                } else {
-                    None
-                };
-
                 for msg in &saved.messages {
-                    app.history
-                        .extend(history_cells_from_message_with_mode(msg, duo_phase));
+                    app.history.extend(history_cells_from_message(msg));
                 }
                 app.mark_history_updated();
                 app.status_message = Some(format!("Resumed session: {}", &saved.metadata.id[..8]));
@@ -197,8 +163,6 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         max_steps: 100,
         max_subagents: app.max_subagents,
         features: config.features(),
-        rlm_session: app.rlm_session.clone(),
-        duo_session: app.duo_session.clone(),
         compaction,
         todos: app.todos.clone(),
         plan_state: app.plan_state.clone(),
@@ -280,45 +244,18 @@ async fn run_event_loop(
                         let index = if let Some(index) = app.streaming_message_index {
                             index
                         } else {
-                            let duo_phase = if app.mode == AppMode::Duo {
-                                app.duo_session
-                                    .lock()
-                                    .ok()
-                                    .and_then(|s| s.active_state.as_ref().map(|st| st.phase))
-                            } else {
-                                None
-                            };
-
-                            let cell = match duo_phase {
-                                Some(crate::duo::DuoPhase::Player)
-                                | Some(crate::duo::DuoPhase::Init) => HistoryCell::Player {
-                                    content: String::new(),
-                                    streaming: true,
-                                },
-                                Some(crate::duo::DuoPhase::Coach) => HistoryCell::Coach {
-                                    content: String::new(),
-                                    streaming: true,
-                                },
-                                _ => HistoryCell::Assistant {
-                                    content: String::new(),
-                                    streaming: true,
-                                },
-                            };
-
-                            app.add_message(cell);
+                            app.add_message(HistoryCell::Assistant {
+                                content: String::new(),
+                                streaming: true,
+                            });
                             let index = app.history.len().saturating_sub(1);
                             app.streaming_message_index = Some(index);
                             index
                         };
 
                         if let Some(cell) = app.history.get_mut(index) {
-                            match cell {
-                                HistoryCell::Assistant { content, .. }
-                                | HistoryCell::Player { content, .. }
-                                | HistoryCell::Coach { content, .. } => {
-                                    content.clone_from(&current_streaming_text);
-                                }
-                                _ => {}
+                            if let HistoryCell::Assistant { content, .. } = cell {
+                                content.clone_from(&current_streaming_text);
                             }
                             app.mark_history_updated();
                         }
@@ -888,9 +825,6 @@ async fn run_event_loop(
                 }
                 KeyCode::Tab => {
                     app.cycle_mode();
-                    if app.mode == AppMode::Rlm {
-                        app.rlm_repl_active = false;
-                    }
                 }
                 // Input handling
                 KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -965,18 +899,6 @@ async fn run_event_loop(
                                     app.add_message(HistoryCell::System { content: msg });
                                 }
                                 continue;
-                            }
-
-                            if app.mode == AppMode::Rlm && app.rlm_repl_active {
-                                if rlm_repl_should_route_to_chat(app, &input) {
-                                    app.rlm_repl_active = false;
-                                    app.add_message(HistoryCell::System {
-                                        content: "RLM REPL paused (no context loaded). Routing to chat so the model can call rlm_load. Use /repl to return.".to_string(),
-                                    });
-                                } else {
-                                    handle_rlm_input(app, input);
-                                    continue;
-                                }
                             }
 
                             let queued = if let Some(mut draft) = app.queued_draft.take() {
@@ -1177,34 +1099,11 @@ async fn dispatch_user_message(
     // Set immediately to prevent double-dispatch before TurnStarted event arrives.
     app.is_loading = true;
 
-    let override_query = maybe_auto_switch_to_rlm(app, &message.display);
-    let content = if let Some(query) = override_query.as_deref() {
-        message.content_with_query(query)
-    } else {
-        message.content()
-    };
-    let rlm_summary = if app.mode == AppMode::Rlm {
-        app.rlm_session
-            .lock()
-            .ok()
-            .map(|session| rlm::session_summary(&session))
-    } else {
-        None
-    };
-    let duo_summary = if app.mode == AppMode::Duo {
-        app.duo_session
-            .lock()
-            .ok()
-            .map(|s| crate::duo::session_summary(&s))
-    } else {
-        None
-    };
+    let content = message.content();
     app.system_prompt = Some(prompts::system_prompt_for_mode_with_context(
         app.mode,
         &app.workspace,
         None,
-        rlm_summary.as_deref(),
-        duo_summary.as_deref(),
     ));
     app.add_message(HistoryCell::User {
         content: message.display.clone(),
@@ -1333,479 +1232,6 @@ async fn handle_plan_choice(
     Ok(true)
 }
 
-fn handle_rlm_input(app: &mut App, input: String) {
-    if let Some(path) = input.trim().strip_prefix('@') {
-        let command = format!("/load @{path}");
-        let result = commands::execute(&command, app);
-        if let Some(msg) = result.message {
-            app.add_message(HistoryCell::System { content: msg });
-        }
-        return;
-    }
-
-    app.add_message(HistoryCell::User {
-        content: input.clone(),
-    });
-
-    let content = match app.rlm_session.lock() {
-        Ok(mut session) => match rlm::eval_in_session(&mut session, &input) {
-            Ok(result) => {
-                let trimmed = result.trim();
-                if trimmed.is_empty() {
-                    "RLM: (no output)".to_string()
-                } else {
-                    format!("RLM:\n{result}")
-                }
-            }
-            Err(err) => format!("RLM error: {err}"),
-        },
-        Err(_) => "RLM error: failed to access session".to_string(),
-    };
-
-    app.add_message(HistoryCell::System { content });
-}
-
-struct AutoRlmDecision {
-    source: AutoRlmSource,
-    reason: String,
-}
-
-enum AutoRlmSource {
-    File(PathBuf),
-    Paste {
-        content: String,
-        query: Option<String>,
-    },
-    None,
-}
-
-struct AutoRlmLoaded {
-    context_id: String,
-    line_count: usize,
-    char_count: usize,
-}
-
-fn maybe_auto_switch_to_rlm(app: &mut App, input: &str) -> Option<String> {
-    if !app.auto_rlm {
-        return None;
-    }
-    let already_rlm = app.mode == AppMode::Rlm;
-    let decision = auto_rlm_decision(app, input, already_rlm)?;
-
-    if !already_rlm {
-        app.set_mode(AppMode::Rlm);
-        app.rlm_repl_active = false;
-    }
-
-    let mut messages = vec![if already_rlm {
-        format!("Auto-loaded RLM context ({})", decision.reason)
-    } else {
-        format!("Auto-switched to RLM mode ({})", decision.reason)
-    }];
-    let mut override_query = None;
-
-    match decision.source {
-        AutoRlmSource::File(path) => match load_file_into_rlm(app, &path) {
-            Ok(loaded) => {
-                messages.push(format!(
-                    "Loaded {} as '{}' ({} lines, {} chars)",
-                    format_load_path(app, &path),
-                    loaded.context_id,
-                    loaded.line_count,
-                    loaded.char_count
-                ));
-                override_query = Some(format!(
-                    "{}\n\nUse RLM context '{}' loaded from {}.",
-                    input.trim(),
-                    loaded.context_id,
-                    format_load_path(app, &path)
-                ));
-            }
-            Err(err) => {
-                messages.push(format!("RLM auto-load failed: {err}"));
-            }
-        },
-        AutoRlmSource::Paste { content, query } => match load_paste_into_rlm(app, content) {
-            Ok(loaded) => {
-                messages.push(format!(
-                    "Loaded pasted content as '{}' ({} lines, {} chars)",
-                    loaded.context_id, loaded.line_count, loaded.char_count
-                ));
-                let base_query = query.unwrap_or_else(|| {
-                    "Analyze the pasted content and answer the user request.".to_string()
-                });
-                override_query = Some(format!(
-                    "{base_query}\n\nRLM context: '{}'.",
-                    loaded.context_id
-                ));
-            }
-            Err(err) => {
-                messages.push(format!("RLM auto-load failed: {err}"));
-                override_query = Some(
-                    "The user pasted a large block, but auto-loading failed. Ask them to retry /load or paste again."
-                        .to_string(),
-                );
-            }
-        },
-        AutoRlmSource::None => {}
-    }
-
-    app.add_message(HistoryCell::System {
-        content: messages.join("\n"),
-    });
-
-    override_query
-}
-
-fn auto_rlm_decision(app: &App, input: &str, already_rlm: bool) -> Option<AutoRlmDecision> {
-    let input_lower = input.to_lowercase();
-    let wants_largest_file = input_lower.contains("largest file")
-        || input_lower.contains("biggest file")
-        || input_lower.contains("largest files");
-    let explicit_rlm_request = input_lower
-        .split_whitespace()
-        .any(|word| word.trim_matches(|c: char| !c.is_ascii_alphanumeric()) == "rlm")
-        || input_lower.contains("rlm mode");
-    let explicit_rlm = already_rlm || explicit_rlm_request;
-    let has_hint = input_lower.contains("chunk")
-        || input_lower.contains("chunking")
-        || input_lower.contains("huge")
-        || input_lower.contains("massive")
-        || input_lower.contains("entire repo")
-        || input_lower.contains("whole repo")
-        || input_lower.contains("full repo")
-        || input_lower.contains("whole project")
-        || input_lower.contains("entire project")
-        || input_lower.contains("full project")
-        || explicit_rlm;
-
-    if let Some(decision) = auto_rlm_paste_decision(input, explicit_rlm, has_hint) {
-        return Some(decision);
-    }
-
-    if wants_largest_file && let Some((path, size)) = find_largest_file(&app.workspace) {
-        return Some(AutoRlmDecision {
-            source: AutoRlmSource::File(path),
-            reason: format!("requested largest file ({} bytes)", size),
-        });
-    }
-
-    let Some(candidate) = detect_requested_file(input, &app.workspace) else {
-        if explicit_rlm_request && !already_rlm {
-            return Some(AutoRlmDecision {
-                source: AutoRlmSource::None,
-                reason: "explicit RLM request".to_string(),
-            });
-        }
-        return None;
-    };
-    if !app.trust_mode {
-        let workspace_root = app
-            .workspace
-            .canonicalize()
-            .unwrap_or_else(|_| app.workspace.clone());
-        let candidate_canonical = candidate
-            .canonicalize()
-            .unwrap_or_else(|_| candidate.clone());
-        if !candidate_canonical.starts_with(&workspace_root) {
-            return None;
-        }
-    }
-    let metadata = fs::metadata(&candidate).ok()?;
-    if !metadata.is_file() {
-        return None;
-    }
-
-    let size = metadata.len();
-    let min_bytes = if has_hint {
-        AUTO_RLM_HINT_FILE_BYTES
-    } else {
-        AUTO_RLM_MIN_FILE_BYTES
-    };
-    if size < min_bytes && !explicit_rlm {
-        return None;
-    }
-
-    let reason = if explicit_rlm_request && !already_rlm {
-        format!("explicit RLM file request ({} bytes)", size)
-    } else if already_rlm {
-        format!("RLM file request ({} bytes)", size)
-    } else {
-        format!("large file ({} bytes)", size)
-    };
-
-    Some(AutoRlmDecision {
-        source: AutoRlmSource::File(candidate),
-        reason,
-    })
-}
-
-fn auto_rlm_paste_decision(
-    input: &str,
-    explicit_rlm: bool,
-    has_hint: bool,
-) -> Option<AutoRlmDecision> {
-    let min_chars = if explicit_rlm || has_hint {
-        AUTO_RLM_PASTE_HINT_CHARS
-    } else {
-        AUTO_RLM_PASTE_MIN_CHARS
-    };
-
-    if input.len() < min_chars {
-        return None;
-    }
-
-    let (query, content) = split_paste_input(input);
-    if content.len() < min_chars {
-        return None;
-    }
-
-    Some(AutoRlmDecision {
-        source: AutoRlmSource::Paste { content, query },
-        reason: format!("pasted content ({} chars)", input.len()),
-    })
-}
-
-fn split_paste_input(input: &str) -> (Option<String>, String) {
-    let trimmed = input.trim();
-
-    if let Some(idx) = trimmed.find("```").or_else(|| trimmed.find("~~~")) {
-        let (prefix, rest) = trimmed.split_at(idx);
-        let query = clean_query_prefix(prefix);
-        if !query.is_empty() && query.len() <= AUTO_RLM_PASTE_QUERY_MAX_CHARS {
-            return (Some(query.to_string()), rest.trim_start().to_string());
-        }
-    }
-
-    if let Some(idx) = trimmed.find("\n\n") {
-        let (prefix, rest) = trimmed.split_at(idx);
-        let query = clean_query_prefix(prefix);
-        if !query.is_empty() && query.len() <= AUTO_RLM_PASTE_QUERY_MAX_CHARS {
-            return (Some(query.to_string()), rest.trim_start().to_string());
-        }
-    }
-
-    if let Some((first, rest)) = trimmed.split_once('\n') {
-        let query = clean_query_prefix(first);
-        if !query.is_empty() && query.len() <= AUTO_RLM_PASTE_FIRST_LINE_MAX_CHARS {
-            return (Some(query.to_string()), rest.trim_start().to_string());
-        }
-    }
-
-    (None, trimmed.to_string())
-}
-
-fn clean_query_prefix(prefix: &str) -> &str {
-    prefix.trim().trim_end_matches(':')
-}
-
-fn load_file_into_rlm(app: &mut App, path: &Path) -> Result<AutoRlmLoaded, String> {
-    let mut session = app
-        .rlm_session
-        .lock()
-        .map_err(|_| "Failed to access RLM session".to_string())?;
-    let base_id = rlm::context_id_from_path(path);
-    let context_id = rlm::unique_context_id(&session, &base_id);
-    let (line_count, char_count) = session
-        .load_file(&context_id, path)
-        .map_err(|err| err.to_string())?;
-    Ok(AutoRlmLoaded {
-        context_id,
-        line_count,
-        char_count,
-    })
-}
-
-fn load_paste_into_rlm(app: &mut App, content: String) -> Result<AutoRlmLoaded, String> {
-    let mut session = app
-        .rlm_session
-        .lock()
-        .map_err(|_| "Failed to access RLM session".to_string())?;
-    let context_id = rlm::unique_context_id(&session, "paste");
-    let line_count = content.lines().count();
-    let char_count = content.len();
-    session.load_context(&context_id, content, Some("pasted input".to_string()));
-    Ok(AutoRlmLoaded {
-        context_id,
-        line_count,
-        char_count,
-    })
-}
-
-fn detect_requested_file(input: &str, workspace: &Path) -> Option<PathBuf> {
-    if input.to_lowercase().contains("readme") {
-        let readme = ["README.md", "README", "README.txt"];
-        for name in readme {
-            let candidate = workspace.join(name);
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
-
-    for token in input.split_whitespace() {
-        let token = trim_token(token);
-        if token.is_empty() || token.contains("://") {
-            continue;
-        }
-        if !looks_like_path_token(token) {
-            continue;
-        }
-        if let Some(path) = resolve_candidate_path(token, workspace) {
-            return Some(path);
-        }
-    }
-
-    None
-}
-
-fn trim_token(token: &str) -> &str {
-    token
-        .trim_start_matches(['(', '[', '{', '"', '\'', '`'])
-        .trim_end_matches([')', ']', '}', ',', ';', ':', '"', '\'', '`', '.'])
-}
-
-fn looks_like_path_token(token: &str) -> bool {
-    let lower = token.to_lowercase();
-    if lower == "readme" || lower == "readme.md" {
-        return true;
-    }
-    if token.starts_with('@') || token.contains('/') || token.contains('\\') {
-        return true;
-    }
-    matches!(
-        token.rsplit('.').next(),
-        Some(
-            "md" | "txt"
-                | "rs"
-                | "toml"
-                | "json"
-                | "yaml"
-                | "yml"
-                | "py"
-                | "js"
-                | "ts"
-                | "tsx"
-                | "jsx"
-                | "go"
-                | "java"
-                | "c"
-                | "h"
-                | "cpp"
-                | "log"
-        )
-    )
-}
-
-fn resolve_candidate_path(token: &str, workspace: &Path) -> Option<PathBuf> {
-    let candidate = if let Some(stripped) = token.strip_prefix('@') {
-        workspace.join(stripped.trim_start_matches(['/', '\\']))
-    } else if Path::new(token).is_absolute() {
-        PathBuf::from(token)
-    } else {
-        workspace.join(token)
-    };
-
-    if candidate.is_file() {
-        return Some(candidate);
-    }
-    None
-}
-
-fn find_largest_file(workspace: &Path) -> Option<(PathBuf, u64)> {
-    let mut stack = vec![workspace.to_path_buf()];
-    let mut scanned = 0;
-    let mut largest: Option<(PathBuf, u64)> = None;
-
-    while let Some(dir) = stack.pop() {
-        if scanned >= AUTO_RLM_MAX_SCAN_ENTRIES {
-            break;
-        }
-        let Ok(entries) = fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            scanned += 1;
-            if scanned >= AUTO_RLM_MAX_SCAN_ENTRIES {
-                break;
-            }
-            let path = entry.path();
-            if path.is_dir() {
-                if let Some(name) = path.file_name().and_then(|s| s.to_str())
-                    && AUTO_RLM_EXCLUDED_DIRS.contains(&name)
-                {
-                    continue;
-                }
-                stack.push(path);
-            } else if path.is_file() {
-                let Ok(metadata) = entry.metadata() else {
-                    continue;
-                };
-                let size = metadata.len();
-                match largest {
-                    Some((_, current)) if size <= current => {}
-                    _ => largest = Some((path, size)),
-                }
-            }
-        }
-    }
-
-    largest
-}
-
-fn format_load_path(app: &App, path: &Path) -> String {
-    if let Ok(stripped) = path.strip_prefix(&app.workspace) {
-        return format!("@{}", stripped.display());
-    }
-    path.display().to_string()
-}
-
-fn looks_like_rlm_expr(input: &str) -> bool {
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        return false;
-    }
-    if trimmed.starts_with('/') {
-        return true;
-    }
-
-    let token = trimmed
-        .split(|c: char| c == '(' || c.is_whitespace())
-        .next()
-        .unwrap_or("");
-    matches!(
-        token,
-        "len"
-            | "line_count"
-            | "lines"
-            | "search"
-            | "chunk"
-            | "chunk_sections"
-            | "chunk_lines"
-            | "chunk_auto"
-            | "vars"
-            | "get"
-            | "set"
-            | "append"
-            | "del"
-            | "head"
-            | "tail"
-            | "peek"
-    )
-}
-
-fn rlm_repl_should_route_to_chat(app: &App, input: &str) -> bool {
-    let trimmed = input.trim();
-    if trimmed.is_empty() || looks_like_rlm_expr(trimmed) {
-        return false;
-    }
-
-    let Ok(session) = app.rlm_session.lock() else {
-        return false;
-    };
-    session.contexts.is_empty()
-}
-
 fn render(f: &mut Frame, app: &mut App) {
     let size = f.area();
 
@@ -1831,7 +1257,7 @@ fn render(f: &mut Frame, app: &mut App) {
     let status_lines = usize::from(app.is_loading);
     let status_height =
         u16::try_from(status_lines + queued_lines + editing_lines).unwrap_or(u16::MAX);
-    let prompt = prompt_for_mode(app.mode, app.rlm_repl_active);
+    let prompt = prompt_for_mode(app.mode);
     let available_height = size
         .height
         .saturating_sub(header_height + footer_height + status_height);
@@ -2011,18 +1437,8 @@ fn apply_loaded_session(app: &mut App, session: &SavedSession) {
     app.api_messages.clone_from(&session.messages);
     app.history.clear();
 
-    let duo_phase = if app.mode == AppMode::Duo {
-        app.duo_session
-            .lock()
-            .ok()
-            .and_then(|s| s.active_state.as_ref().map(|st| st.phase))
-    } else {
-        None
-    };
-
     for msg in &app.api_messages {
-        app.history
-            .extend(history_cells_from_message_with_mode(msg, duo_phase));
+        app.history.extend(history_cells_from_message(msg));
     }
     app.mark_history_updated();
     app.transcript_selection.clear();
@@ -2169,35 +1585,7 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
     let width = area.width;
     let available_width = width as usize;
 
-    // Status message override (Toast)
-    if let Some(ref msg) = app.status_message {
-        let status_span = Span::styled(msg, Style::default().fg(palette::DEEPSEEK_SKY));
-        f.render_widget(Paragraph::new(Line::from(vec![status_span])), area);
-        return;
-    }
-
-    // 1. Time (Left)
-    let time_str = Local::now().format("%H:%M").to_string();
-    let time_span = Span::styled(
-        format!("{}  ", time_str),
-        Style::default().fg(palette::TEXT_DIM),
-    );
-
-    // 2. Mode (Left) - Lowercase, colored
-    let mode_str = app.mode.label().to_lowercase();
-    let mode_style = mode_badge_style(app.mode);
-    let mode_span = Span::styled(format!("{}  ", mode_str), mode_style);
-
-    // 3. Agent Info (Left)
-    let model = &app.model;
-    let status_suffix = if app.is_loading { ", thinking" } else { "" };
-    let agent_text = format!("agent ({}{})", model, status_suffix);
-    let agent_span = Span::styled(agent_text, Style::default().fg(palette::TEXT_DIM));
-
-    // Left side assembly
-    let left_spans = vec![time_span, mode_span, agent_span];
-
-    // 4. Context Progress Bar (Right)
+    // 1. Context Progress Bar (Right)
     let percent = get_context_percent_decimal(app);
     let bar_width = 10; // Width of the progress bar
     let filled = ((percent / 100.0) * bar_width as f32).round() as usize;
@@ -2217,7 +1605,7 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
     let context_text = format!("[{}{}] {:.0}%", bar_filled, bar_empty, percent);
     let context_span = Span::styled(context_text, Style::default().fg(bar_color));
 
-    // 5. Right side extras (Scroll, Selection, RLM) - Minimalist
+    // 2. Right side extras (Scroll, Selection) - Minimalist
     let mut right_extras = Vec::new();
 
     // Scroll %
@@ -2237,23 +1625,49 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
         ));
     }
 
-    // RLM Badge
-    if app.mode == AppMode::Rlm {
-        if let Some((badge, style)) = rlm_usage_badge(app) {
-            right_extras.push(Span::styled(" ", Style::default()));
-            right_extras.push(Span::styled(badge, style));
-        }
-    }
-
     // Assemble Right Side
     // context_span is always last
     let mut right_spans = right_extras;
     right_spans.push(Span::raw("   ")); // Space before context
     right_spans.push(context_span);
 
+    let right_width: usize = right_spans.iter().map(|s| s.content.width()).sum();
+
+    // 3. Left side content (Status toast or standard footer)
+    let left_spans = if let Some(msg) = app.status_message.as_ref() {
+        let max_left = available_width
+            .saturating_sub(right_width)
+            .saturating_sub(1)
+            .max(1);
+        let truncated = truncate_line_to_width(msg, max_left);
+        vec![Span::styled(
+            truncated,
+            Style::default().fg(palette::DEEPSEEK_SKY),
+        )]
+    } else {
+        // Time (Left)
+        let time_str = Local::now().format("%H:%M").to_string();
+        let time_span = Span::styled(
+            format!("{}  ", time_str),
+            Style::default().fg(palette::TEXT_DIM),
+        );
+
+        // Mode (Left) - Lowercase, colored
+        let mode_str = app.mode.label().to_lowercase();
+        let mode_style = mode_badge_style(app.mode);
+        let mode_span = Span::styled(format!("{}  ", mode_str), mode_style);
+
+        // Agent Info (Left)
+        let model = &app.model;
+        let status_suffix = if app.is_loading { ", thinking" } else { "" };
+        let agent_text = format!("agent ({}{})", model, status_suffix);
+        let agent_span = Span::styled(agent_text, Style::default().fg(palette::TEXT_DIM));
+
+        vec![time_span, mode_span, agent_span]
+    };
+
     // Calculate Widths
     let left_width: usize = left_spans.iter().map(|s| s.content.width()).sum();
-    let right_width: usize = right_spans.iter().map(|s| s.content.width()).sum();
 
     // Spacer
     let spacer_width = available_width.saturating_sub(left_width + right_width);
@@ -2264,13 +1678,25 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
         all_spans.extend(right_spans);
     } else {
         // Fallback for narrow screens: Drop agent info
-        let simple_left = vec![
-            Span::styled(
-                format!("{}  ", time_str),
-                Style::default().fg(palette::TEXT_DIM),
-            ),
-            Span::styled(format!("{} ", mode_str), mode_style),
-        ];
+        let simple_left = if let Some(msg) = app.status_message.as_ref() {
+            let max_left = available_width.saturating_sub(10).saturating_sub(1).max(1);
+            let truncated = truncate_line_to_width(msg, max_left);
+            vec![Span::styled(
+                truncated,
+                Style::default().fg(palette::DEEPSEEK_SKY),
+            )]
+        } else {
+            let time_str = Local::now().format("%H:%M").to_string();
+            let mode_str = app.mode.label().to_lowercase();
+            let mode_style = mode_badge_style(app.mode);
+            vec![
+                Span::styled(
+                    format!("{}  ", time_str),
+                    Style::default().fg(palette::TEXT_DIM),
+                ),
+                Span::styled(format!("{} ", mode_str), mode_style),
+            ]
+        };
         let bar_filled_narrow = "█".repeat(filled.min(5));
         let bar_empty_narrow = "░".repeat(5 - filled.min(5));
         let simple_right = vec![Span::styled(
@@ -2315,47 +1741,12 @@ fn get_context_percent_decimal(app: &App) -> f32 {
     }
 }
 
-fn rlm_usage_badge(app: &App) -> Option<(String, Style)> {
-    let session = app.rlm_session.lock().ok()?;
-    let usage = &session.usage;
-    if usage.queries == 0 {
-        return None;
-    }
-
-    let warn = usage.queries >= RLM_BUDGET_WARN_QUERIES
-        || usage.input_tokens >= RLM_BUDGET_WARN_INPUT_TOKENS
-        || usage.output_tokens >= RLM_BUDGET_WARN_OUTPUT_TOKENS;
-    let hard = usage.queries >= RLM_BUDGET_HARD_QUERIES
-        || usage.input_tokens >= RLM_BUDGET_HARD_INPUT_TOKENS
-        || usage.output_tokens >= RLM_BUDGET_HARD_OUTPUT_TOKENS;
-
-    let style = if hard {
-        Style::default()
-            .fg(palette::STATUS_ERROR)
-            .add_modifier(Modifier::BOLD)
-    } else if warn {
-        Style::default().fg(palette::STATUS_WARNING)
-    } else {
-        Style::default().fg(palette::TEXT_MUTED)
-    };
-
-    Some((
-        format!(
-            "RLM q:{} in/out:{} /{}",
-            usage.queries, usage.input_tokens, usage.output_tokens
-        ),
-        style,
-    ))
-}
-
 fn mode_color(mode: AppMode) -> Color {
     match mode {
         AppMode::Normal => palette::MODE_NORMAL,
         AppMode::Agent => palette::MODE_AGENT,
         AppMode::Yolo => palette::MODE_YOLO,
         AppMode::Plan => palette::MODE_PLAN,
-        AppMode::Rlm => palette::MODE_RLM,
-        AppMode::Duo => palette::MODE_DUO,
     }
 }
 
@@ -2366,20 +1757,12 @@ fn mode_badge_style(mode: AppMode) -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
-fn prompt_for_mode(mode: AppMode, rlm_repl_active: bool) -> &'static str {
+fn prompt_for_mode(mode: AppMode) -> &'static str {
     match mode {
         AppMode::Normal => "> ",
         AppMode::Agent => "agent> ",
         AppMode::Yolo => "yolo> ",
         AppMode::Plan => "plan> ",
-        AppMode::Rlm => {
-            if rlm_repl_active {
-                "rlm(repl)> "
-            } else {
-                "rlm> "
-            }
-        }
-        AppMode::Duo => "duo> ",
     }
 }
 
@@ -3433,11 +2816,6 @@ fn exec_is_background(input: &serde_json::Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
-    use crate::tui::app::TuiOptions;
-    use std::fs;
-    use std::path::PathBuf;
-    use tempfile::tempdir;
 
     #[test]
     fn selection_point_from_position_ignores_top_padding() {
@@ -3491,121 +2869,6 @@ mod tests {
         .expect("point");
         assert_eq!(p1.line_index, 1);
         assert_eq!(p1.column, 0);
-    }
-
-    fn make_test_app_with_workspace(workspace: PathBuf) -> App {
-        let options = TuiOptions {
-            model: "test-model".to_string(),
-            workspace,
-            allow_shell: false,
-            use_alt_screen: true,
-            max_subagents: 1,
-            skills_dir: PathBuf::from("."),
-            memory_path: PathBuf::from("memory.md"),
-            notes_path: PathBuf::from("notes.txt"),
-            mcp_config_path: PathBuf::from("mcp.json"),
-            use_memory: false,
-            start_in_agent_mode: false,
-            skip_onboarding: false,
-            yolo: false,
-            resume_session_id: None,
-        };
-        App::new(options, &Config::default())
-    }
-
-    #[test]
-    fn looks_like_rlm_expr_detects_known_functions() {
-        assert!(looks_like_rlm_expr("lines(1, 10)"));
-        assert!(looks_like_rlm_expr("search(\"foo\")"));
-        assert!(looks_like_rlm_expr("vars()"));
-        assert!(!looks_like_rlm_expr("read the README"));
-    }
-
-    #[test]
-    fn rlm_repl_routes_to_chat_when_no_context_loaded() {
-        let app = make_test_app_with_workspace(PathBuf::from("."));
-        assert!(rlm_repl_should_route_to_chat(
-            &app,
-            "Please read the README"
-        ));
-        assert!(!rlm_repl_should_route_to_chat(&app, "lines(1, 5)"));
-    }
-
-    #[test]
-    fn rlm_repl_stays_in_repl_when_context_exists() {
-        let app = make_test_app_with_workspace(PathBuf::from("."));
-        {
-            let mut session = app.rlm_session.lock().expect("lock session");
-            session.load_context("ctx", "hello".to_string(), None);
-        }
-        assert!(!rlm_repl_should_route_to_chat(
-            &app,
-            "Please read the README"
-        ));
-    }
-
-    #[test]
-    fn auto_rlm_detects_large_file() {
-        let tmp = tempdir().expect("tempdir");
-        let big = tmp.path().join("big.txt");
-        let content = vec![b'a'; (AUTO_RLM_MIN_FILE_BYTES + 1) as usize];
-        fs::write(&big, content).expect("write");
-
-        let app = make_test_app_with_workspace(tmp.path().to_path_buf());
-        let decision = auto_rlm_decision(&app, "analyze big.txt", false).expect("decision");
-        assert!(matches!(decision.source, AutoRlmSource::File(path) if path == big));
-    }
-
-    #[test]
-    fn auto_rlm_uses_largest_file_hint() {
-        let tmp = tempdir().expect("tempdir");
-        let small = tmp.path().join("small.txt");
-        let big = tmp.path().join("bigger.txt");
-        fs::write(&small, b"tiny").expect("write");
-        fs::write(&big, b"this is larger").expect("write");
-
-        let app = make_test_app_with_workspace(tmp.path().to_path_buf());
-        let decision =
-            auto_rlm_decision(&app, "analyze the largest file", false).expect("decision");
-        assert!(matches!(decision.source, AutoRlmSource::File(path) if path == big));
-    }
-
-    #[test]
-    fn auto_rlm_triggers_on_explicit_request() {
-        let tmp = tempdir().expect("tempdir");
-        let app = make_test_app_with_workspace(tmp.path().to_path_buf());
-        let decision = auto_rlm_decision(&app, "use rlm mode", false).expect("decision");
-        assert!(matches!(decision.source, AutoRlmSource::None));
-    }
-
-    #[test]
-    fn auto_rlm_triggers_on_large_paste() {
-        let tmp = tempdir().expect("tempdir");
-        let app = make_test_app_with_workspace(tmp.path().to_path_buf());
-        let content = "a".repeat(AUTO_RLM_PASTE_MIN_CHARS + 5);
-        let input = format!("Summarize this\n\n{content}");
-        let decision = auto_rlm_decision(&app, &input, false).expect("decision");
-        match decision.source {
-            AutoRlmSource::Paste { content, query } => {
-                assert!(content.len() >= AUTO_RLM_PASTE_MIN_CHARS);
-                assert_eq!(query.as_deref(), Some("Summarize this"));
-            }
-            _ => panic!("expected paste decision"),
-        }
-    }
-
-    #[test]
-    fn auto_rlm_is_disabled_when_setting_off() {
-        let tmp = tempdir().expect("tempdir");
-        let mut app = make_test_app_with_workspace(tmp.path().to_path_buf());
-        app.auto_rlm = false;
-
-        let content = "a".repeat(AUTO_RLM_PASTE_MIN_CHARS + 5);
-        let input = format!("Summarize this\n\n{content}");
-        let override_query = maybe_auto_switch_to_rlm(&mut app, &input);
-
-        assert!(override_query.is_none());
-        assert_ne!(app.mode, AppMode::Rlm);
     }
 
     #[test]

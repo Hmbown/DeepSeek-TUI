@@ -157,8 +157,6 @@ pub fn export(app: &mut App, path: Option<&str>) -> CommandResult {
         let (role, body) = match cell {
             HistoryCell::User { content } => ("**You:**", content.clone()),
             HistoryCell::Assistant { content, .. } => ("**Assistant:**", content.clone()),
-            HistoryCell::Player { content, .. } => ("**Player:**", content.clone()),
-            HistoryCell::Coach { content, .. } => ("**Coach:**", content.clone()),
             HistoryCell::System { content } => ("*System:*", content.clone()),
             HistoryCell::Thinking { content, .. } => ("*Thinking:*", content.clone()),
             HistoryCell::Tool(tool) => ("**Tool:**", render_tool_cell(tool, 80)),

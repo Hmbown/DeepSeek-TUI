@@ -11,7 +11,7 @@ Unofficial terminal UI (TUI) + CLI for the [DeepSeek platform](https://platform.
 
 ## ✨ Features
 
-- **Interactive TUI** with multiple modes (Normal, Plan, Agent, YOLO, RLM, Duo)
+- **Interactive TUI** with multiple modes (Normal, Plan, Agent, YOLO)
 - **Comprehensive tool access** – File operations, shell execution, task management, and sub-agent systems
 - **File operations**: List directories, read/write/edit files, apply patches, search files with regex
 - **Shell execution**: Run commands with timeout support, background execution with task management
@@ -100,7 +100,7 @@ See `config.example.toml` and `docs/CONFIGURATION.md` for a full reference.
 
 ## 🎮 Modes
 
-In the TUI, press `Tab` to cycle modes: **Normal → Plan → Agent → YOLO → RLM → Duo → Normal**.
+In the TUI, press `Tab` to cycle modes: **Normal → Plan → Agent → YOLO → Normal**.
 
 | Mode | Description | Approval Behavior |
 |------|-------------|-------------------|
@@ -108,9 +108,6 @@ In the TUI, press `Tab` to cycle modes: **Normal → Plan → Agent → YOLO →
 | **Plan** | Design‑first prompting; same approvals as Normal | Manual approval for writes & shell |
 | **Agent** | Multi‑step tool use; asks before shell | Manual approval for shell, auto‑approve file writes |
 | **YOLO** | Enables shell + trust + auto‑approves all tools (dangerous) | Auto‑approve all tools |
-| **RLM** | Externalized context + REPL helpers; auto‑approves tools (best for large files) | Auto‑approve tools |
-| **Duo** | Player‑coach autocoding with iterative validation (based on g3 paper) | Depends on phase |
-
 Approval behavior is mode‑dependent, but you can also override it at runtime with `/set approval_mode auto|suggest|never`.
 
 ## 🛠️ Tools
@@ -162,30 +159,6 @@ DeepSeek CLI exposes a comprehensive set of tools to the model across 5 categori
 - **Web search**: `web_search` is a quick fallback when citations are not needed.
 - **Skills**: Reusable workflows stored as `SKILL.md` directories. The resolved skills dir prefers workspace-local `.agents/skills`, then `./skills`, then `~/.deepseek/skills`. Use `/skills` and `/skill <name>`. Bootstrap with `deepseek setup --skills` (add `--local` for `./skills`).
 - **MCP**: Load external tool servers via `~/.deepseek/mcp.json` (supports `servers` and `mcpServers`). MCP tools currently execute without TUI approval prompts, so only enable servers you trust. See `docs/MCP.md`.
-
-## 🧠 RLM (Reasoning & Large‑scale Memory)
-
-RLM mode is designed for "too big for context" tasks: large files, whole‑doc sweeps, and big pasted blocks.
-
-- Auto‑switch triggers: "largest file", explicit "RLM", large file requests, and large pastes.
-- Shortcut: `/rlm` (or `/aleph`) enters RLM mode directly.
-- In **RLM mode**, `/load @path` loads a file into the external context store (outside RLM mode, `/load` loads a saved chat JSON).
-- Use `/repl` to enter expression mode (e.g. `search("pattern")`, `lines(1, 80)`).
-- Power tools: `rlm_load`, `rlm_exec`, `rlm_status`, `rlm_query`.
-
-`rlm_query` can be expensive: prefer batching and check `/status` if you're doing lots of sub‑queries.
-
-## 👥 Duo Mode
-
-> **Note:** Duo mode is experimental and may not work correctly in all cases. Use with caution.
-
-Duo mode implements the player‑coach autocoding paradigm for iterative development with built‑in validation:
-
-- **Player**: implements requirements (builder role)
-- **Coach**: validates implementation against requirements (critic role)
-- Tools: `duo_init`, `duo_player`, `duo_coach`, `duo_advance`, `duo_status`
-
-Workflow: `init → player → coach → advance → (repeat until approved)`
 
 ## 📚 Examples
 
@@ -278,7 +251,6 @@ Run `deepseek doctor` to confirm sandbox availability. On macOS, ensure
 - `docs/CONFIGURATION.md` – Complete configuration reference
 - `docs/MCP.md` – Model Context Protocol guide
 - `docs/ARCHITECTURE.md` – Project architecture
-- `docs/RLM.md` – RLM mode deep‑dive
 - `docs/MODES.md` – Mode comparison and usage
 - `CONTRIBUTING.md` – How to contribute to the project
 

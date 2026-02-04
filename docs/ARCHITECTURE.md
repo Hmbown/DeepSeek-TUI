@@ -121,7 +121,6 @@ Responses API (with automatic fallback if needed).
 - **`utils.rs`** - Common utilities
 - **`logging.rs`** - Logging infrastructure
 - **`compaction.rs`** - Context compaction for long conversations
-- **`rlm.rs`** - Reflection/reasoning utilities
 - **`pricing.rs`** - Cost estimation
 - **`prompts.rs`** - System prompt templates
 - **`project_doc.rs`** - Project documentation handling

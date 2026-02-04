@@ -7,10 +7,9 @@
 //! - Proper cancellation support
 //! - Tool execution orchestration
 
-use std::fmt::Write;
 use std::path::PathBuf;
 use std::pin::pin;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
@@ -26,7 +25,6 @@ use crate::compaction::{
 };
 use crate::config::Config;
 use crate::config::DEFAULT_MAX_SUBAGENTS;
-use crate::duo::{DuoSession, SharedDuoSession, session_summary as duo_session_summary};
 use crate::features::{Feature, Features};
 use crate::llm_client::LlmClient;
 use crate::mcp::McpPool;
@@ -34,7 +32,6 @@ use crate::models::{
     ContentBlock, ContentBlockStart, Delta, Message, MessageRequest, StreamEvent, Tool, Usage,
 };
 use crate::prompts;
-use crate::rlm::{RlmSession, SharedRlmSession, session_summary as rlm_session_summary};
 use crate::tools::plan::{SharedPlanState, new_shared_plan_state};
 use crate::tools::shell::{SharedShellManager, new_shared_shell_manager};
 use crate::tools::spec::{ApprovalRequirement, ToolError, ToolResult};
@@ -75,10 +72,6 @@ pub struct EngineConfig {
     pub max_subagents: usize,
     /// Feature flags controlling tool availability.
     pub features: Features,
-    /// Shared RLM session state.
-    pub rlm_session: SharedRlmSession,
-    /// Shared Duo session state.
-    pub duo_session: SharedDuoSession,
     /// Auto-compaction settings for long conversations.
     pub compaction: CompactionConfig,
     /// Shared Todo list state.
@@ -99,8 +92,6 @@ impl Default for EngineConfig {
             max_steps: 100,
             max_subagents: DEFAULT_MAX_SUBAGENTS,
             features: Features::with_defaults(),
-            rlm_session: Arc::new(Mutex::new(RlmSession::default())),
-            duo_session: Arc::new(Mutex::new(DuoSession::new())),
             compaction: CompactionConfig::default(),
             todos: new_shared_todo_list(),
             plan_state: new_shared_plan_state(),
@@ -538,8 +529,6 @@ impl Engine {
             AppMode::Agent,
             &config.workspace,
             working_set_summary.as_deref(),
-            None,
-            None,
         );
         session.system_prompt = Some(system_prompt);
 
@@ -778,24 +767,6 @@ impl Engine {
         self.config.trust_mode = trust_mode;
 
         // Update system prompt to match the current mode
-        let rlm_summary = if mode == AppMode::Rlm {
-            self.config
-                .rlm_session
-                .lock()
-                .ok()
-                .map(|session| rlm_session_summary(&session))
-        } else {
-            None
-        };
-        let duo_summary = if mode == AppMode::Duo {
-            self.config
-                .duo_session
-                .lock()
-                .ok()
-                .map(|s| duo_session_summary(&s))
-        } else {
-            None
-        };
         let working_set_summary = self
             .session
             .working_set
@@ -804,8 +775,6 @@ impl Engine {
             mode,
             &self.config.workspace,
             working_set_summary.as_deref(),
-            rlm_summary.as_deref(),
-            duo_summary.as_deref(),
         ));
 
         // Build tool registry and tool list for the current mode
@@ -822,19 +791,8 @@ impl Engine {
                 .with_todo_tool(todo_list.clone())
                 .with_plan_tool(plan_state.clone())
         } else {
-            let rlm_opt = if self.config.features.enabled(Feature::Rlm) {
-                Some(self.config.rlm_session.clone())
-            } else {
-                None
-            };
-
             ToolRegistryBuilder::new()
-                .with_agent_tools(
-                    self.session.allow_shell,
-                    rlm_opt,
-                    self.deepseek_client.clone(),
-                    self.session.model.clone(),
-                )
+                .with_agent_tools(self.session.allow_shell)
                 .with_todo_tool(todo_list.clone())
                 .with_plan_tool(plan_state.clone())
         };
@@ -857,33 +815,9 @@ impl Engine {
         {
             builder = builder.with_shell_tools();
         }
-        if mode == AppMode::Rlm {
-            if self.config.features.enabled(Feature::Rlm) {
-                builder = builder.with_rlm_tools(
-                    self.config.rlm_session.clone(),
-                    self.deepseek_client.clone(),
-                    self.session.model.clone(),
-                );
-            } else {
-                let _ = self
-                    .tx_event
-                    .send(Event::status("RLM tools are disabled by feature flags"))
-                    .await;
-            }
-        }
-        if mode == AppMode::Duo {
-            if self.config.features.enabled(Feature::Duo) {
-                builder = builder.with_duo_tools(self.config.duo_session.clone());
-            } else {
-                let _ = self
-                    .tx_event
-                    .send(Event::status("Duo tools are disabled by feature flags"))
-                    .await;
-            }
-        }
 
         let tool_registry = match mode {
-            AppMode::Agent | AppMode::Yolo | AppMode::Rlm | AppMode::Duo => {
+            AppMode::Agent | AppMode::Yolo => {
                 if self.config.features.enabled(Feature::Subagents) {
                     let runtime = if let Some(client) = self.deepseek_client.clone() {
                         Some(SubAgentRuntime::new(
@@ -945,42 +879,6 @@ impl Engine {
             mode == AppMode::Yolo,
         )
         .with_shell_manager(self.shell_manager.clone())
-    }
-
-    /// Automatically offload large tool results to RLM memory if enabled.
-    /// Returns either the original content or a pointer to the RLM context.
-    fn offload_to_rlm_if_needed(&self, tool_name: &str, content: String) -> String {
-        const OFFLOAD_THRESHOLD: usize = 15_000;
-
-        if !self.config.features.enabled(Feature::Rlm) || content.len() < OFFLOAD_THRESHOLD {
-            return content;
-        }
-
-        let mut session = match self.config.rlm_session.lock() {
-            Ok(s) => s,
-            Err(_) => return content,
-        };
-
-        let context_id = format!(
-            "auto_{}_{}",
-            tool_name,
-            &uuid::Uuid::new_v4().to_string()[..8]
-        );
-        let char_count = content.len();
-        let line_count = content.lines().count();
-
-        session.load_context(&context_id, content, None);
-
-        format!(
-            "[AUTOMATIC RLM OFFLOAD]\n\
-             The output of '{tool_name}' was too large ({char_count} chars, {line_count} lines) \
-             and has been moved to RLM memory to preserve your context window.\n\n\
-             Context ID: {context_id}\n\n\
-             You can explore this data using RLM tools:\n\
-             - `rlm_exec(code=\"lines(1, 100)\", context_id=\"{context_id}\")` to see the start\n\
-             - `rlm_exec(code=\"search(\\\"pattern\\\")\", context_id=\"{context_id}\")` to search\n\
-             - `rlm_query(query=\"...\", context_id=\"{context_id}\")` for deep analysis"
-        )
     }
 
     async fn ensure_mcp_pool(&mut self) -> Result<Arc<AsyncMutex<McpPool>>, ToolError> {
@@ -1322,49 +1220,6 @@ impl Engine {
                     Ok(result) => {
                         // Only update if we got valid messages (never corrupt state)
                         if !result.messages.is_empty() || self.session.messages.is_empty() {
-                            // Offload removed messages to RLM history if enabled
-                            if self.config.features.enabled(Feature::Rlm)
-                                && !result.removed_messages.is_empty()
-                            {
-                                if let Ok(mut rlm) = self.config.rlm_session.lock() {
-                                    let mut history_text = String::new();
-                                    for msg in &result.removed_messages {
-                                        let role = if msg.role == "user" {
-                                            "User"
-                                        } else {
-                                            "Assistant"
-                                        };
-                                        for block in &msg.content {
-                                            match block {
-                                                ContentBlock::Text { text, .. } => {
-                                                    let _ =
-                                                        writeln!(history_text, "{role}: {text}\n");
-                                                }
-                                                ContentBlock::ToolUse { name, input, .. } => {
-                                                    let _ = writeln!(
-                                                        history_text,
-                                                        "{role}: [Used tool: {name}] Input: {input}\n"
-                                                    );
-                                                }
-                                                ContentBlock::ToolResult { content, .. } => {
-                                                    let _ = writeln!(
-                                                        history_text,
-                                                        "Tool result: {content}\n"
-                                                    );
-                                                }
-                                                ContentBlock::Thinking { thinking } => {
-                                                    let _ = writeln!(
-                                                        history_text,
-                                                        "{role} (thinking): {thinking}\n"
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    }
-                                    rlm.append_var("history", history_text);
-                                }
-                            }
-
                             self.session.messages = result.messages;
                             self.session.system_prompt = merge_system_prompts(
                                 self.session.system_prompt.as_ref(),
@@ -1970,9 +1825,7 @@ impl Engine {
 
                 match outcome.result {
                     Ok(output) => {
-                        let original_content = output.content;
-                        let output_content =
-                            self.offload_to_rlm_if_needed(&outcome.name, original_content);
+                        let output_content = output.content;
 
                         tool_call.set_result(output_content.clone(), duration);
                         self.session.working_set.observe_tool_call(
@@ -2044,20 +1897,6 @@ impl Engine {
 
     /// Refresh the system prompt based on current mode and context.
     fn refresh_system_prompt(&mut self, mode: AppMode) {
-        let rlm_summary = self
-            .config
-            .rlm_session
-            .lock()
-            .ok()
-            .map(|session| rlm_session_summary(&session));
-
-        let duo_summary = self
-            .config
-            .duo_session
-            .lock()
-            .ok()
-            .map(|s| duo_session_summary(&s));
-
         let working_set_summary = self
             .session
             .working_set
@@ -2067,8 +1906,6 @@ impl Engine {
             mode,
             &self.config.workspace,
             working_set_summary.as_deref(),
-            rlm_summary.as_deref(),
-            duo_summary.as_deref(),
         ));
     }
 }

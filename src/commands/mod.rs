@@ -10,11 +10,10 @@ mod init;
 mod note;
 mod queue;
 mod review;
-pub mod rlm;
 mod session;
 mod skills;
 
-use crate::tui::app::{App, AppAction, AppMode};
+use crate::tui::app::{App, AppAction};
 
 /// Result of executing a command
 #[derive(Debug, Clone)]
@@ -150,38 +149,8 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "load",
         aliases: &[],
-        description: "Load session from file (or RLM context in RLM mode)",
+        description: "Load session from file",
         usage: "/load [path]",
-    },
-    CommandInfo {
-        name: "rlm",
-        aliases: &[],
-        description: "Enter RLM (Aleph) mode and show quickstart",
-        usage: "/rlm",
-    },
-    CommandInfo {
-        name: "aleph",
-        aliases: &[],
-        description: "Alias for /rlm (external memory quickstart)",
-        usage: "/aleph",
-    },
-    CommandInfo {
-        name: "save-session",
-        aliases: &["save_session"],
-        description: "Save RLM session to file",
-        usage: "/save-session [path]",
-    },
-    CommandInfo {
-        name: "status",
-        aliases: &[],
-        description: "Show RLM context status",
-        usage: "/status",
-    },
-    CommandInfo {
-        name: "repl",
-        aliases: &[],
-        description: "Toggle RLM REPL mode",
-        usage: "/repl",
     },
     CommandInfo {
         name: "compact",
@@ -320,18 +289,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         // Session commands
         "save" => session::save(app, arg),
         "sessions" | "resume" => session::sessions(app),
-        "load" => {
-            let force_rlm = arg.is_some_and(|raw| raw.trim_start().starts_with('@'));
-            if app.mode == AppMode::Rlm || force_rlm {
-                rlm::load(app, arg)
-            } else {
-                session::load(app, arg)
-            }
-        }
-        "rlm" | "aleph" => rlm::enter(app),
-        "save-session" | "save_session" => rlm::save_session(app, arg),
-        "status" => rlm::status(app),
-        "repl" => rlm::repl(app),
+        "load" => session::load(app, arg),
         "compact" => session::compact(app),
         "export" => session::export(app, arg),
 
@@ -387,52 +345,5 @@ pub fn commands_matching(prefix: &str) -> Vec<&'static CommandInfo> {
 
 #[cfg(test)]
 mod tests {
-    use super::execute;
-    use crate::config::Config;
-    use crate::tui::app::{App, AppMode, TuiOptions};
-    use std::fs;
-    use std::path::PathBuf;
-    use tempfile::tempdir;
-
-    fn make_test_app(workspace: PathBuf) -> App {
-        let skills_dir = workspace.join("skills");
-        let _ = fs::create_dir_all(&skills_dir);
-        let options = TuiOptions {
-            model: "test-model".to_string(),
-            workspace,
-            allow_shell: false,
-            use_alt_screen: false,
-            max_subagents: 1,
-            skills_dir,
-            memory_path: PathBuf::from("memory.md"),
-            notes_path: PathBuf::from("notes.txt"),
-            mcp_config_path: PathBuf::from("mcp.json"),
-            use_memory: false,
-            start_in_agent_mode: false,
-            skip_onboarding: true,
-            yolo: false,
-            resume_session_id: None,
-        };
-        App::new(options, &Config::default())
-    }
-
-    #[test]
-    fn load_at_path_uses_rlm_outside_rlm_mode() {
-        let tmp = tempdir().expect("tempdir");
-        let file = tmp.path().join("example.txt");
-        fs::write(&file, "hello").expect("write");
-
-        let mut app = make_test_app(tmp.path().to_path_buf());
-        app.mode = AppMode::Normal;
-
-        let result = execute("/load @example.txt", &mut app);
-        let message = result.message.unwrap_or_default();
-        assert!(
-            message.starts_with("Loaded "),
-            "expected RLM load message, got: {message}"
-        );
-
-        let session = app.rlm_session.lock().expect("lock session");
-        assert!(!session.contexts.is_empty());
-    }
+    // No unit tests currently required for command routing.
 }

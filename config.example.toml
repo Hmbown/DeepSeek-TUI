@@ -54,8 +54,6 @@ subagents = true
 web_search = true # enables web.run and web_search
 apply_patch = true
 mcp = true
-rlm = true
-duo = true
 exec_policy = true
 
 # ─────────────────────────────────────────────────────────────────────────────────
@@ -77,16 +75,6 @@ exponential_base = 2.0
 # message_threshold = 50           # Or above this message count
 # model = "deepseek-chat"           # Model to use for summarization
 # cache_summary = true             # Cache the summary block
-
-# ─────────────────────────────────────────────────────────────────────────────────
-# RLM Sandbox Configuration (PLANNED - not yet implemented)
-# ─────────────────────────────────────────────────────────────────────────────────
-# [rlm]
-# max_context_chars = 10000000     # Max characters for context (10MB)
-# max_search_results = 100         # Max search results
-# default_chunk_size = 2000        # Default chunk size
-# default_overlap = 200            # Default chunk overlap
-# session_dir = "~/.deepseek/rlm"   # Directory for RLM sessions
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Profile Example (for multiple environments)

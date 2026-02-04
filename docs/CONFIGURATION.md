@@ -67,7 +67,7 @@ Common settings keys:
 - `auto_compact` (on/off)
 - `show_thinking` (on/off)
 - `show_tool_details` (on/off)
-- `default_mode` (normal, agent, plan, yolo, rlm, duo)
+- `default_mode` (normal, agent, plan, yolo)
 - `max_history` (number of input history entries)
 - `default_model` (model name override)
 
@@ -113,8 +113,6 @@ subagents = true
 web_search = true # enables web.run and web_search
 apply_patch = true
 mcp = true
-rlm = true
-duo = true
 exec_policy = true
 ```
 

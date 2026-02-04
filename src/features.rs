@@ -28,10 +28,6 @@ pub enum Feature {
     ApplyPatch,
     /// Enable MCP tools.
     Mcp,
-    /// Enable RLM tools.
-    Rlm,
-    /// Enable Duo tools.
-    Duo,
     /// Enable execpolicy integration/tooling.
     ExecPolicy,
 }
@@ -168,18 +164,6 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::Mcp,
         key: "mcp",
-        stage: Stage::Experimental,
-        default_enabled: true,
-    },
-    FeatureSpec {
-        id: Feature::Rlm,
-        key: "rlm",
-        stage: Stage::Experimental,
-        default_enabled: true,
-    },
-    FeatureSpec {
-        id: Feature::Duo,
-        key: "duo",
         stage: Stage::Experimental,
         default_enabled: true,
     },
