@@ -20,6 +20,22 @@ use crate::models::{
     StreamEvent, SystemPrompt, Tool, Usage,
 };
 
+fn to_api_tool_name(name: &str) -> String {
+    match name {
+        "web.run" => "web_run".to_string(),
+        "multi_tool_use.parallel" => "multi_tool_use_parallel".to_string(),
+        _ => name.to_string(),
+    }
+}
+
+fn from_api_tool_name(name: &str) -> String {
+    match name {
+        "web_run" => "web.run".to_string(),
+        "multi_tool_use_parallel" => "multi_tool_use.parallel".to_string(),
+        _ => name.to_string(),
+    }
+}
+
 // === Types ===
 
 /// Client for DeepSeek's OpenAI-compatible APIs.
@@ -276,7 +292,7 @@ fn build_responses_input(messages: &[Message]) -> Vec<Value> {
                     items.push(json!({
                         "type": "function_call",
                         "call_id": id,
-                        "name": name,
+                        "name": to_api_tool_name(name),
                         "arguments": args,
                     }));
                 }
@@ -301,7 +317,7 @@ fn build_responses_input(messages: &[Message]) -> Vec<Value> {
 fn tool_to_responses(tool: &Tool) -> Value {
     json!({
         "type": "function",
-        "name": tool.name,
+        "name": to_api_tool_name(&tool.name),
         "description": tool.description,
         "parameters": tool.input_schema,
     })
@@ -373,7 +389,7 @@ fn parse_responses_message(payload: &Value) -> Result<MessageResponse> {
                     };
                     content.push(ContentBlock::ToolUse {
                         id: call_id,
-                        name,
+                        name: from_api_tool_name(&name),
                         input,
                     });
                 }
@@ -619,7 +635,7 @@ fn tool_to_chat(tool: &Tool) -> Value {
     json!({
         "type": "function",
         "function": {
-            "name": tool.name,
+            "name": to_api_tool_name(&tool.name),
             "description": tool.description,
             "parameters": tool.input_schema,
         }
@@ -640,7 +656,7 @@ fn map_tool_choice_for_chat(choice: &Value) -> Option<Value> {
         "tool" => choice.get("name").and_then(Value::as_str).map(|name| {
             json!({
                 "type": "function",
-                "function": { "name": name }
+                "function": { "name": to_api_tool_name(name) }
             })
         }),
         _ => Some(choice.clone()),
@@ -715,7 +731,7 @@ fn parse_chat_message(payload: &Value) -> Result<MessageResponse> {
 
             content_blocks.push(ContentBlock::ToolUse {
                 id,
-                name,
+                name: from_api_tool_name(&name),
                 input: arguments,
             });
         }
