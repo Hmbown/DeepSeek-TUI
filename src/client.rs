@@ -21,19 +21,61 @@ use crate::models::{
 };
 
 fn to_api_tool_name(name: &str) -> String {
-    match name {
-        "web.run" => "web_run".to_string(),
-        "multi_tool_use.parallel" => "multi_tool_use_parallel".to_string(),
-        _ => name.to_string(),
+    let mut out = String::new();
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            out.push(ch);
+        } else if ch == '-' {
+            out.push_str("--");
+        } else {
+            out.push_str("-x");
+            out.push_str(&format!("{:06X}", ch as u32));
+            out.push('-');
+        }
     }
+    out
 }
 
 fn from_api_tool_name(name: &str) -> String {
-    match name {
-        "web_run" => "web.run".to_string(),
-        "multi_tool_use_parallel" => "multi_tool_use.parallel".to_string(),
-        _ => name.to_string(),
+    let mut out = String::new();
+    let mut iter = name.chars().peekable();
+    while let Some(ch) = iter.next() {
+        if ch != '-' {
+            out.push(ch);
+            continue;
+        }
+        if let Some('-') = iter.peek().copied() {
+            iter.next();
+            out.push('-');
+            continue;
+        }
+        if iter.peek().copied() == Some('x') {
+            iter.next();
+            let mut hex = String::new();
+            for _ in 0..6 {
+                if let Some(h) = iter.next() {
+                    hex.push(h);
+                } else {
+                    break;
+                }
+            }
+            if let Ok(code) = u32::from_str_radix(&hex, 16)
+                && let Some(decoded) = std::char::from_u32(code)
+            {
+                if let Some('-') = iter.peek().copied() {
+                    iter.next();
+                }
+                out.push(decoded);
+                continue;
+            }
+            out.push('-');
+            out.push('x');
+            out.push_str(&hex);
+            continue;
+        }
+        out.push('-');
     }
+    out
 }
 
 // === Types ===

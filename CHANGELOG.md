@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Map dotted tool names to API-safe identifiers for DeepSeek tool calls
+- Encode any invalid tool names for API tool lists while preserving internal names
 
 ## [0.3.10] - 2026-02-04
 
