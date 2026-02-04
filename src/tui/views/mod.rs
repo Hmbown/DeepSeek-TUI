@@ -284,7 +284,7 @@ impl ModalView for HelpView {
                 "Modes:",
                 Style::default().fg(palette::DEEPSEEK_SKY).bold(),
             )]),
-            Line::from("  Tab cycles modes: Plan → Agent → YOLO → RLM → Duo"),
+            Line::from("  Tab cycles modes: Plan → Agent → YOLO"),
             Line::from(""),
             Line::from(vec![Span::styled(
                 "Commands:",
@@ -298,18 +298,6 @@ impl ModalView for HelpView {
                 cmd.name, cmd.description
             )));
         }
-
-        help_lines.push(Line::from(""));
-        help_lines.push(Line::from(vec![Span::styled(
-            "RLM / Aleph:",
-            Style::default().fg(palette::DEEPSEEK_SKY).bold(),
-        )]));
-        help_lines.push(Line::from("  /rlm or /aleph - Enter external memory mode"));
-        help_lines.push(Line::from(
-            "  /load @path    - Load a file into RLM context",
-        ));
-        help_lines.push(Line::from("  /repl          - Toggle expression mode"));
-        help_lines.push(Line::from("  /status        - Show contexts and usage"));
 
         help_lines.push(Line::from(""));
         help_lines.push(Line::from(vec![Span::styled(

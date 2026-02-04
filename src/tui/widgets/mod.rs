@@ -5,7 +5,7 @@ pub use header::{HeaderData, HeaderWidget};
 pub use renderable::Renderable;
 
 use crate::palette;
-use crate::tui::app::{App, AppMode};
+use crate::tui::app::App;
 use crate::tui::approval::{ApprovalRequest, ElevationOption, ElevationRequest, ToolCategory};
 use crate::tui::scrolling::TranscriptScroll;
 use ratatui::{
@@ -128,15 +128,7 @@ impl Renderable for ComposerWidget<'_> {
 
         let mut lines = Vec::new();
         if self.app.input.is_empty() {
-            let placeholder = if self.app.mode == AppMode::Rlm {
-                if self.app.rlm_repl_active {
-                    "Type an RLM expression or /repl to exit..."
-                } else {
-                    "Ask a question or /repl to enter expression mode..."
-                }
-            } else {
-                "Type a message or /help for commands..."
-            };
+            let placeholder = "Type a message or /help for commands...";
             lines.push(Line::from(vec![
                 Span::styled(
                     self.prompt,

@@ -160,14 +160,6 @@ pub fn home_dashboard(app: &mut App) -> CommandResult {
             let _ = writeln!(stats, "Plan mode - Design before implementing");
             let _ = writeln!(stats, "  Use /plan to create structured checklists");
         }
-        AppMode::Rlm => {
-            let _ = writeln!(stats, "RLM mode - Recursive language model sandbox");
-            let _ = writeln!(stats, "  Use /repl to toggle REPL input");
-        }
-        AppMode::Duo => {
-            let _ = writeln!(stats, "Duo mode - Dialectical autocoding");
-            let _ = writeln!(stats, "  Player-coach loop for complex tasks");
-        }
     }
 
     CommandResult::message(stats)

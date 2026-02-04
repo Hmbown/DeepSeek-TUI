@@ -57,7 +57,7 @@ pub enum Event {
     /// The turn is complete (no more tool calls)
     TurnComplete { usage: Usage },
 
-    // === Sub-Agent Events (for RLM mode) ===
+    // === Sub-Agent Events ===
     /// A sub-agent has been spawned
     AgentSpawned { id: String, prompt: String },
 

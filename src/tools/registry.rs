@@ -12,9 +12,7 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use crate::client::DeepSeekClient;
-use crate::duo::SharedDuoSession;
 use crate::models::Tool;
-use crate::rlm::SharedRlmSession;
 
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
@@ -383,14 +381,8 @@ impl ToolRegistryBuilder {
 
     /// Include all agent tools (file tools + shell + note + search + patch).
     #[must_use]
-    pub fn with_agent_tools(
-        self,
-        allow_shell: bool,
-        rlm_session: Option<SharedRlmSession>,
-        client: Option<DeepSeekClient>,
-        model: String,
-    ) -> Self {
-        let mut builder = self
+    pub fn with_agent_tools(self, allow_shell: bool) -> Self {
+        let builder = self
             .with_file_tools()
             .with_note_tool()
             .with_search_tools()
@@ -403,10 +395,6 @@ impl ToolRegistryBuilder {
             .with_diagnostics_tool()
             .with_project_tools()
             .with_test_runner_tool();
-
-        if let Some(session) = rlm_session {
-            builder = builder.with_rlm_tools(session, client, model);
-        }
 
         if allow_shell {
             builder.with_shell_tools()
@@ -439,40 +427,10 @@ impl ToolRegistryBuilder {
         allow_shell: bool,
         todo_list: super::todo::SharedTodoList,
         plan_state: super::plan::SharedPlanState,
-        rlm_session: Option<SharedRlmSession>,
-        client: Option<DeepSeekClient>,
-        model: String,
     ) -> Self {
-        self.with_agent_tools(allow_shell, rlm_session, client, model)
+        self.with_agent_tools(allow_shell)
             .with_todo_tool(todo_list)
             .with_plan_tool(plan_state)
-    }
-
-    /// Include RLM tools for context execution and sub-queries.
-    #[must_use]
-    pub fn with_rlm_tools(
-        self,
-        session: SharedRlmSession,
-        client: Option<DeepSeekClient>,
-        model: String,
-    ) -> Self {
-        self.with_tool(Arc::new(super::rlm::RlmExecTool::new(session.clone())))
-            .with_tool(Arc::new(super::rlm::RlmLoadTool::new(session.clone())))
-            .with_tool(Arc::new(super::rlm::RlmStatusTool::new(session.clone())))
-            .with_tool(Arc::new(super::rlm::RlmQueryTool::new(
-                session, client, model,
-            )))
-    }
-
-    /// Include Duo tools for dialectical autocoding.
-    #[must_use]
-    pub fn with_duo_tools(self, session: SharedDuoSession) -> Self {
-        use super::duo::{DuoAdvanceTool, DuoCoachTool, DuoInitTool, DuoPlayerTool, DuoStatusTool};
-        self.with_tool(Arc::new(DuoInitTool::new(session.clone())))
-            .with_tool(Arc::new(DuoPlayerTool::new(session.clone())))
-            .with_tool(Arc::new(DuoCoachTool::new(session.clone())))
-            .with_tool(Arc::new(DuoAdvanceTool::new(session.clone())))
-            .with_tool(Arc::new(DuoStatusTool::new(session)))
     }
 
     /// Include sub-agent management tools.

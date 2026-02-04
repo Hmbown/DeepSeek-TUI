@@ -60,8 +60,6 @@ impl<'a> HeaderWidget<'a> {
             AppMode::Agent => palette::MODE_AGENT,
             AppMode::Yolo => palette::MODE_YOLO,
             AppMode::Plan => palette::MODE_PLAN,
-            AppMode::Rlm => palette::MODE_RLM,
-            AppMode::Duo => palette::MODE_DUO,
         }
     }
 

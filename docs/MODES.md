@@ -2,18 +2,17 @@
 
 DeepSeek CLI has two related concepts:
 
-- **TUI mode**: what kind of interaction you’re in (Normal/Plan/Agent/YOLO/RLM).
+- **TUI mode**: what kind of interaction you’re in (Normal/Plan/Agent/YOLO).
 - **Approval mode**: how aggressively the UI asks before executing tools.
 
 ## TUI Modes
 
-Press `Tab` to cycle: **Normal → Plan → Agent → YOLO → RLM → Normal**.
+Press `Tab` to cycle: **Normal → Plan → Agent → YOLO → Normal**.
 
 - **Normal**: chat-first. Approvals for file writes, shell, and paid tools.
 - **Plan**: design-first prompting. Approvals match Normal.
 - **Agent**: multi-step tool use. Approvals for shell and paid tools (file writes are allowed without a prompt).
 - **YOLO**: enables shell + trust mode and auto-approves all tools. Use only in trusted repos.
-- **RLM**: externalized context store + REPL helpers. Tools are auto-approved (best for large files and long-context work).
 
 ## Approval Mode
 
@@ -26,7 +25,7 @@ You can override approval behavior at runtime:
 ```
 
 - `suggest` (default): uses the per-mode rules above.
-- `auto`: auto-approves all tools (similar to YOLO/RLM approval behavior, but without forcing YOLO mode).
+- `auto`: auto-approves all tools (similar to YOLO approval behavior, but without forcing YOLO mode).
 - `never`: blocks any tool that isn’t considered safe/read-only.
 
 ## Workspace Boundary and Trust Mode

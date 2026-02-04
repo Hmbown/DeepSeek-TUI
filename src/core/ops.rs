@@ -29,7 +29,7 @@ pub enum Op {
     /// Deny a tool call that requires permission
     DenyToolCall { id: String },
 
-    /// Spawn a sub-agent (for RLM mode)
+    /// Spawn a sub-agent
     SpawnSubAgent { prompt: String },
 
     /// List current sub-agents and their status

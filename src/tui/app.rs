@@ -10,11 +10,9 @@ use thiserror::Error;
 
 use crate::compaction::CompactionConfig;
 use crate::config::{Config, has_api_key, save_api_key};
-use crate::duo::{SharedDuoSession, new_shared_duo_session};
 use crate::hooks::{HookContext, HookEvent, HookExecutor, HookResult};
 use crate::models::{Message, SystemPrompt};
 use crate::palette::{self, UiTheme};
-use crate::rlm::{RlmSession, SharedRlmSession};
 use crate::settings::Settings;
 use crate::tools::plan::{SharedPlanState, new_shared_plan_state};
 use crate::tools::subagent::SubAgentResult;
@@ -27,7 +25,6 @@ use crate::tui::scrolling::{MouseScrollState, TranscriptScroll};
 use crate::tui::selection::TranscriptSelection;
 use crate::tui::transcript::TranscriptViewCache;
 use crate::tui::views::ViewStack;
-use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 /// Format a nice welcome banner similar to Kimi CLI.
@@ -70,8 +67,6 @@ pub enum AppMode {
     Agent,
     Yolo,
     Plan,
-    Rlm,
-    Duo,
 }
 
 fn char_count(text: &str) -> usize {
@@ -119,8 +114,6 @@ impl AppMode {
             AppMode::Agent => "AGENT",
             AppMode::Yolo => "YOLO",
             AppMode::Plan => "PLAN",
-            AppMode::Rlm => "RLM",
-            AppMode::Duo => "DUO",
         }
     }
 
@@ -132,8 +125,6 @@ impl AppMode {
             AppMode::Agent => "Agent mode - autonomous task execution with tools",
             AppMode::Yolo => "YOLO mode - full tool access without approvals",
             AppMode::Plan => "Plan mode - design before implementing",
-            AppMode::Rlm => "RLM mode - recursive language model sandbox",
-            AppMode::Duo => "Duo mode - dialectical autocoding with player-coach loop",
         }
     }
 }
@@ -200,7 +191,6 @@ pub struct App {
     pub input_history: Vec<String>,
     pub history_index: Option<usize>,
     pub auto_compact: bool,
-    pub auto_rlm: bool,
     pub show_thinking: bool,
     pub show_tool_details: bool,
     #[allow(dead_code)]
@@ -242,12 +232,6 @@ pub struct App {
     pub plan_prompt_pending: bool,
     /// Whether update_plan was called during the current turn
     pub plan_tool_used_in_turn: bool,
-    /// RLM sandbox session state
-    pub rlm_session: SharedRlmSession,
-    /// Duo mode session state (player-coach autocoding loop)
-    pub duo_session: SharedDuoSession,
-    /// Whether RLM REPL input mode is active.
-    pub rlm_repl_active: bool,
     /// Todo list for `TodoWriteTool`
     #[allow(dead_code)] // For future engine integration
     pub todos: SharedTodoList,
@@ -314,14 +298,6 @@ impl QueuedMessage {
             self.display.clone()
         }
     }
-
-    pub fn content_with_query(&self, query: &str) -> String {
-        if let Some(skill_instruction) = self.skill_instruction.as_ref() {
-            format!("{skill_instruction}\n\n---\n\nUser request: {query}")
-        } else {
-            query.to_string()
-        }
-    }
 }
 
 // === Errors ===
@@ -364,7 +340,6 @@ impl App {
         let needs_onboarding = !skip_onboarding && (!was_onboarded || needs_api_key);
         let settings = Settings::load().unwrap_or_else(|_| Settings::default());
         let auto_compact = settings.auto_compact;
-        let auto_rlm = settings.auto_rlm;
         let show_thinking = settings.show_thinking;
         let show_tool_details = settings.show_tool_details;
         let max_input_history = settings.max_input_history;
@@ -376,8 +351,6 @@ impl App {
             "plan" => AppMode::Plan,
             "agent" | "normal" => AppMode::Agent,
             "yolo" => AppMode::Yolo,
-            "rlm" => AppMode::Rlm,
-            "duo" => AppMode::Duo,
             _ => AppMode::Agent,
         };
         let initial_mode = if yolo {
@@ -445,7 +418,6 @@ impl App {
             input_history: Vec::new(),
             history_index: None,
             auto_compact,
-            auto_rlm,
             show_thinking,
             show_tool_details,
             compact_threshold: 50000,
@@ -484,9 +456,6 @@ impl App {
             plan_state,
             plan_prompt_pending: false,
             plan_tool_used_in_turn: false,
-            rlm_session: Arc::new(Mutex::new(RlmSession::default())),
-            duo_session: new_shared_duo_session(),
-            rlm_repl_active: false,
             todos: new_shared_todo_list(),
             tool_log: Vec::new(),
             session_cost: 0.0,
@@ -550,7 +519,6 @@ impl App {
         } else {
             ApprovalMode::Suggest
         };
-        self.rlm_repl_active = false;
         if mode != AppMode::Plan {
             self.plan_prompt_pending = false;
             self.plan_tool_used_in_turn = false;
@@ -565,14 +533,12 @@ impl App {
         let _ = self.hooks.execute(HookEvent::ModeChange, &context);
     }
 
-    /// Cycle through modes: Plan → Agent → YOLO → RLM → Duo → Plan
+    /// Cycle through modes: Plan → Agent → YOLO → Plan
     pub fn cycle_mode(&mut self) {
         let next = match self.mode {
             AppMode::Plan => AppMode::Agent,
             AppMode::Agent => AppMode::Yolo,
-            AppMode::Yolo => AppMode::Rlm,
-            AppMode::Rlm => AppMode::Duo,
-            AppMode::Duo | AppMode::Normal => AppMode::Plan,
+            AppMode::Yolo | AppMode::Normal => AppMode::Plan,
         };
         self.set_mode(next);
     }

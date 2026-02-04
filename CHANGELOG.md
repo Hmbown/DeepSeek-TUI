@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.9] - 2026-02-04
+
+### Removed
+- RLM mode, tools, and documentation pending a faithful implementation of the MIT RLM design
+- Duo mode tools and prompts pending a citable research spec
+
+### Fixed
+- Footer context usage bar remains visible while status toasts are shown
+
+### Changed
+- Updated prompts and docs to reflect the simplified mode/tool surface
+
+## [0.3.8] - 2026-02-03
+
+### Fixed
+- Resolve clippy warnings (CI `-D warnings`) in new tool implementations
+
 ## [0.3.7] - 2026-02-03
 
 ### Added
