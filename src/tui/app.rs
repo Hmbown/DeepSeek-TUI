@@ -25,25 +25,22 @@ use crate::tui::scrolling::{MouseScrollState, TranscriptScroll};
 use crate::tui::selection::TranscriptSelection;
 use crate::tui::transcript::TranscriptViewCache;
 use crate::tui::views::ViewStack;
-use uuid::Uuid;
 
-/// Format a nice welcome banner similar to Kimi CLI.
-fn format_welcome_banner(model: &str, workspace: &PathBuf, session_id: &str, yolo: bool) -> String {
+
+/// Format a nice welcome banner.
+fn format_welcome_banner(model: &str, workspace: &PathBuf, yolo: bool) -> String {
     let mode_line = if yolo {
-        "\n\n🚀 YOLO mode — shell + trust + auto-approve enabled"
+        "\nYOLO mode — shell + trust + auto-approve enabled\n"
     } else {
         ""
     };
 
     format!(
-        r#"Welcome to DeepSeek TUI!
-Send /help for help information.{mode_line}
-
-Directory: {}
-Session: {}
-Model: {}"#,
+        "Tips: Tab to switch modes, F1 or /help for commands, Esc to cancel\n\
+         {mode_line}\n\
+         Directory: {}\n\
+         Model: {}",
         workspace.display(),
-        &session_id[..8],
         model
     )
 }
@@ -364,10 +361,8 @@ impl App {
         let history = if needs_onboarding {
             Vec::new() // No welcome message during onboarding
         } else {
-            // Generate a session ID for welcome display
-            let session_id = Uuid::new_v4().to_string();
             vec![HistoryCell::System {
-                content: format_welcome_banner(&model, &workspace, &session_id, yolo),
+                content: format_welcome_banner(&model, &workspace, yolo),
             }]
         };
 
@@ -500,10 +495,8 @@ impl App {
         if let Err(err) = crate::tui::onboarding::mark_onboarded() {
             self.status_message = Some(format!("Failed to mark onboarding: {err}"));
         }
-        // Generate a session ID for welcome display
-        let session_id = Uuid::new_v4().to_string();
         self.add_message(HistoryCell::System {
-            content: format_welcome_banner(&self.model, &self.workspace, &session_id, self.yolo),
+            content: format_welcome_banner(&self.model, &self.workspace, self.yolo),
         });
     }
 
@@ -533,7 +526,7 @@ impl App {
         let _ = self.hooks.execute(HookEvent::ModeChange, &context);
     }
 
-    /// Cycle through modes: Plan → Agent → YOLO → Plan
+    /// Cycle through modes: Plan -> Agent -> YOLO -> Plan
     pub fn cycle_mode(&mut self) {
         let next = match self.mode {
             AppMode::Plan => AppMode::Agent,

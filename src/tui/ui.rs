@@ -6,7 +6,6 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use anyhow::Result;
-use chrono::Local;
 use crossterm::{
     event::{
         self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
@@ -20,7 +19,7 @@ use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style, Stylize},
+    style::{Style, Stylize},
     text::{Line, Span},
     widgets::{Block, Paragraph, Wrap},
 };
@@ -1645,25 +1644,30 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(palette::DEEPSEEK_SKY),
         )]
     } else {
-        // Time (Left)
-        let time_str = Local::now().format("%H:%M").to_string();
-        let time_span = Span::styled(
-            format!("{}  ", time_str),
+        // Compact footer: session + token cost + help hint
+        let mut spans = Vec::new();
+
+        if let Some(ref sid) = app.current_session_id {
+            spans.push(Span::styled(
+                format!("session:{}  ", &sid[..8.min(sid.len())]),
+                Style::default().fg(palette::TEXT_DIM),
+            ));
+        }
+
+        if app.total_conversation_tokens > 0 {
+            let tokens_k = app.total_conversation_tokens as f64 / 1000.0;
+            spans.push(Span::styled(
+                format!("{tokens_k:.1}k tokens  "),
+                Style::default().fg(palette::TEXT_DIM),
+            ));
+        }
+
+        spans.push(Span::styled(
+            "F1 help",
             Style::default().fg(palette::TEXT_DIM),
-        );
+        ));
 
-        // Mode (Left) - Lowercase, colored
-        let mode_str = app.mode.label().to_lowercase();
-        let mode_style = mode_badge_style(app.mode);
-        let mode_span = Span::styled(format!("{}  ", mode_str), mode_style);
-
-        // Agent Info (Left)
-        let model = &app.model;
-        let status_suffix = if app.is_loading { ", thinking" } else { "" };
-        let agent_text = format!("agent ({}{})", model, status_suffix);
-        let agent_span = Span::styled(agent_text, Style::default().fg(palette::TEXT_DIM));
-
-        vec![time_span, mode_span, agent_span]
+        spans
     };
 
     // Calculate Widths
@@ -1677,7 +1681,7 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
         all_spans.push(Span::raw(" ".repeat(spacer_width)));
         all_spans.extend(right_spans);
     } else {
-        // Fallback for narrow screens: Drop agent info
+        // Fallback for narrow screens
         let simple_left = if let Some(msg) = app.status_message.as_ref() {
             let max_left = available_width.saturating_sub(10).saturating_sub(1).max(1);
             let truncated = truncate_line_to_width(msg, max_left);
@@ -1686,16 +1690,10 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
                 Style::default().fg(palette::DEEPSEEK_SKY),
             )]
         } else {
-            let time_str = Local::now().format("%H:%M").to_string();
-            let mode_str = app.mode.label().to_lowercase();
-            let mode_style = mode_badge_style(app.mode);
-            vec![
-                Span::styled(
-                    format!("{}  ", time_str),
-                    Style::default().fg(palette::TEXT_DIM),
-                ),
-                Span::styled(format!("{} ", mode_str), mode_style),
-            ]
+            vec![Span::styled(
+                "F1 help",
+                Style::default().fg(palette::TEXT_DIM),
+            )]
         };
         let bar_filled_narrow = "█".repeat(filled.min(5));
         let bar_empty_narrow = "░".repeat(5 - filled.min(5));
@@ -1739,22 +1737,6 @@ fn get_context_percent_decimal(app: &App) -> f32 {
     } else {
         0.0
     }
-}
-
-fn mode_color(mode: AppMode) -> Color {
-    match mode {
-        AppMode::Normal => palette::MODE_NORMAL,
-        AppMode::Agent => palette::MODE_AGENT,
-        AppMode::Yolo => palette::MODE_YOLO,
-        AppMode::Plan => palette::MODE_PLAN,
-    }
-}
-
-fn mode_badge_style(mode: AppMode) -> Style {
-    Style::default()
-        .fg(palette::TEXT_PRIMARY)
-        .bg(mode_color(mode))
-        .add_modifier(Modifier::BOLD)
 }
 
 fn prompt_for_mode(mode: AppMode) -> &'static str {
@@ -1812,13 +1794,7 @@ fn typing_indicator(start: Option<Instant>) -> &'static str {
 }
 
 fn deepseek_thinking_label(start: Option<Instant>) -> &'static str {
-    const TAGLINES: [&str; 5] = [
-        "Thinking",
-        "Plotting",
-        "Drafting",
-        "You're absolutely right! ... maybe.",
-        "Working",
-    ];
+    const TAGLINES: [&str; 4] = ["Thinking", "Reasoning", "Drafting", "Working"];
     const INITIAL_MS: u128 = 2400;
     let elapsed_ms = start.map_or(0, |t| t.elapsed().as_millis());
     if elapsed_ms < INITIAL_MS {

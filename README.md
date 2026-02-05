@@ -1,274 +1,212 @@
-# DeepSeek CLI 🤖
+# DeepSeek CLI
 
-Your AI-powered terminal companion for DeepSeek models
+An unofficial terminal UI and CLI for the [DeepSeek platform](https://platform.deepseek.com).
 
 [![CI](https://github.com/Hmbown/DeepSeek-TUI/actions/workflows/ci.yml/badge.svg)](https://github.com/Hmbown/DeepSeek-TUI/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/deepseek-tui)](https://crates.io/crates/deepseek-tui)
 
-Unofficial terminal UI (TUI) + CLI for the [DeepSeek platform](https://platform.deepseek.com) — chat with DeepSeek models and collaborate with AI assistants that can read, write, execute, and plan with approval-gated tool access.
+Chat with DeepSeek models directly from your terminal. The assistant can read and write files, run shell commands, search the web, manage tasks, and coordinate sub-agents — all with configurable approval gating.
 
 **Not affiliated with DeepSeek Inc.**
 
-## ✨ Features
+## Getting Started
 
-- **Interactive TUI** with multiple modes (Normal, Plan, Agent, YOLO)
-- **Comprehensive tool access** – File operations, shell execution, task management, and sub-agent systems
-- **File operations**: List directories, read/write/edit files, apply patches, search files with regex
-- **Shell execution**: Run commands with timeout support, background execution with task management
-- **Task management**: Todo lists, implementation plans, persistent notes
-- **Sub-agent system**: Spawn, coordinate, and cancel background agents (including swarms)
-- **User input prompts**: Ask structured, multiple-choice questions during tool flows
-- **Web browsing**: `web.run` search/open/click/find/screenshot/image_query with citation-ready sources
-- **Structured data tools**: weather, finance, sports, time, calculator
-- **Multi‑model support** – DeepSeek‑Reasoner, DeepSeek‑Chat, and other DeepSeek models
-- **Context‑aware** – loads project‑specific instructions from `AGENTS.md`
-- **Session management** – resume, fork, and search past conversations
-- **Skills system** – reusable workflows stored as `SKILL.md` directories
-- **Model Context Protocol (MCP)** – integrate external tool servers
-- **Sandboxed execution** (macOS) for safe shell commands
-- **Git integration** – code review, patch application, diff analysis
-- **Cross‑platform** – works on macOS, Linux, and Windows
+### 1. Install
 
-## 🚀 Quick Start
-
-1. **Get an API key** from [https://platform.deepseek.com](https://platform.deepseek.com)
-2. **Install and run**:
+Choose one of:
 
 ```bash
-# Install via Cargo
+# From crates.io (requires Rust 1.85+)
 cargo install deepseek-tui --locked
 
-# Set your API key
-export DEEPSEEK_API_KEY="YOUR_DEEPSEEK_API_KEY"
-
-# Bootstrap MCP + skills templates (recommended)
-deepseek setup
-
-# Start chatting
-deepseek
-```
-
-3. Press `F1` or type `/help` for the in‑app command list.
-
-If anything looks off, run `deepseek doctor` to diagnose configuration issues.
-
-## 📦 Installation
-
-### From crates.io
-
-```bash
-cargo install deepseek-tui --locked
-```
-
-### Build from source
-
-```bash
+# Or build from source
 git clone https://github.com/Hmbown/DeepSeek-TUI.git
 cd DeepSeek-TUI
 cargo build --release
-./target/release/deepseek --help
+# binary is at ./target/release/deepseek
 ```
 
-### Direct download
+Prebuilt binaries are also available on [GitHub Releases](https://github.com/Hmbown/DeepSeek-TUI/releases).
 
-Download a prebuilt binary from [GitHub Releases](https://github.com/Hmbown/DeepSeek-TUI/releases) and put it on your `PATH` as `deepseek`.
+### 2. Set your API key
 
-## ⚙️ Configuration
+Get a key from [platform.deepseek.com](https://platform.deepseek.com), then:
 
-On first run, the TUI can prompt for your API key and save it to `~/.deepseek/config.toml`. You can also create the file manually:
-
-```toml
-# ~/.deepseek/config.toml
-api_key = "YOUR_DEEPSEEK_API_KEY"   # must be non‑empty
-default_text_model = "deepseek-reasoner" # optional
-allow_shell = false                 # optional
-max_subagents = 3                   # optional (1‑20)
+```bash
+export DEEPSEEK_API_KEY="sk-..."
 ```
 
-Useful environment variables:
+Alternatively, run `deepseek` and the onboarding wizard will prompt you to enter and save the key.
 
-- `DEEPSEEK_API_KEY` (overrides `api_key`)
-- `DEEPSEEK_BASE_URL` (default: `https://api.deepseek.com`; China users may use `https://api.deepseeki.com`)
-- `DEEPSEEK_PROFILE` (selects `[profiles.<name>]` from the config; errors if missing)
-- `DEEPSEEK_CONFIG_PATH` (override config path)
-- `DEEPSEEK_MCP_CONFIG`, `DEEPSEEK_SKILLS_DIR`, `DEEPSEEK_NOTES_PATH`, `DEEPSEEK_MEMORY_PATH`, `DEEPSEEK_ALLOW_SHELL`, `DEEPSEEK_MAX_SUBAGENTS`
-
-To bootstrap MCP and skills at their resolved locations, run `deepseek setup`. To
-only create an MCP template, run `deepseek mcp init`.
-
-See `config.example.toml` and `docs/CONFIGURATION.md` for a full reference.
-
-## 🎮 Modes
-
-In the TUI, press `Tab` to cycle modes: **Normal → Plan → Agent → YOLO → Normal**.
-
-| Mode | Description | Approval Behavior |
-|------|-------------|-------------------|
-| **Normal** | Chat; asks before file writes or shell | Manual approval for writes & shell |
-| **Plan** | Design‑first prompting; same approvals as Normal | Manual approval for writes & shell |
-| **Agent** | Multi‑step tool use; asks before shell | Manual approval for shell, auto‑approve file writes |
-| **YOLO** | Enables shell + trust + auto‑approves all tools (dangerous) | Auto‑approve all tools |
-Approval behavior is mode‑dependent, but you can also override it at runtime with `/set approval_mode auto|suggest|never`.
-
-## 🛠️ Tools
-
-DeepSeek CLI exposes a comprehensive set of tools to the model across 5 categories, with 16+ individual tools available, all with approval gating based on the current mode.
-
-### Tool Categories
-
-#### File Operations
-- **`list_dir`** – List directory contents with file/directory metadata
-- **`read_file`** – Read UTF‑8 files from the workspace
-- **`write_file`** – Create or overwrite files
-- **`edit_file`** – Search and replace text in files
-- **`apply_patch`** – Apply unified diff patches with fuzzy matching
-- **`grep_files`** – Search files by regex pattern with context lines
-- **`web.run`** – Browse the web (search/open/click/find/screenshot/image_query) with ref_ids for citations
-- **`web_search`** – Quick web search (fallback when citations are not needed)
-- **`request_user_input`** – Ask the user short multiple-choice questions
-- **`multi_tool_use.parallel`** – Execute multiple read-only tools in parallel
-
-#### Structured Data
-- **`weather`** – Daily weather forecast for a location
-- **`finance`** – Latest price for a stock, fund, index, or cryptocurrency
-- **`sports`** – Schedules or standings for a league
-- **`time`** – Current time for a UTC offset
-- **`calculator`** – Evaluate arithmetic expressions
-
-#### Shell Execution
-- **`exec_shell`** – Run shell commands with timeout support
-- **Background execution** – Run commands in background with task ID return
-
-#### Task Management
-- **`todo_write`** – Create and update todo lists with status tracking
-- **`update_plan`** – Manage structured implementation plans
-- **`note`** – Append persistent notes across sessions
-
-#### Sub‑Agents
-- **`agent_spawn`** – Create background sub‑agents for focused tasks
-- **`agent_swarm`** – Launch a dependency‑aware swarm of sub‑agents
-- **`agent_result`** – Retrieve results from sub‑agents
-- **`agent_list`** – List all active and completed agents
-- **`agent_cancel`** – Cancel running sub‑agents
-
-### System Behavior
-
-- **Workspace boundary**: File tools are restricted to `--workspace` unless you enable `/trust` (YOLO enables trust automatically).
-- **Approvals**: The TUI requests approval depending on mode and tool category (file writes, shell).
-- **Web browsing**: `web.run` uses DuckDuckGo HTML results and is auto‑approved.
-- **Web search**: `web_search` is a quick fallback when citations are not needed.
-- **Skills**: Reusable workflows stored as `SKILL.md` directories. The resolved skills dir prefers workspace-local `.agents/skills`, then `./skills`, then `~/.deepseek/skills`. Use `/skills` and `/skill <name>`. Bootstrap with `deepseek setup --skills` (add `--local` for `./skills`).
-- **MCP**: Load external tool servers via `~/.deepseek/mcp.json` (supports `servers` and `mcpServers`). MCP tools currently execute without TUI approval prompts, so only enable servers you trust. See `docs/MCP.md`.
-
-## 📚 Examples
-
-### Interactive chat
+### 3. Run
 
 ```bash
 deepseek
 ```
 
-### One‑shot prompt (non‑interactive)
+On first launch the TUI opens in **Agent** mode. Press **Tab** to switch modes, **F1** or type `/help` to see all commands, and **Esc** to cancel a running request.
+
+### 4. Optional setup
 
 ```bash
-deepseek -p "Write a haiku about Rust"
+# Bootstrap MCP server config and skills templates
+deepseek setup
+
+# Verify your environment
+deepseek doctor
 ```
 
-### Agentic execution with tool access
+## Keyboard Shortcuts
 
-```bash
-deepseek exec --auto "Fix lint errors in the current directory"
+| Key | Action |
+|-----|--------|
+| `Enter` | Send message |
+| `Alt+Enter` / `Ctrl+J` | Insert newline |
+| `Tab` | Cycle modes (Plan / Agent / YOLO) |
+| `Esc` | Cancel request / clear input |
+| `Ctrl+C` | Cancel request or exit |
+| `Ctrl+R` | Search past sessions |
+| `F1` or `Ctrl+/` | Toggle help overlay |
+| `PageUp` / `PageDown` | Scroll transcript |
+| `Alt+Up` / `Alt+Down` | Scroll transcript (small) |
+| `l` (empty input) | Open last message in pager |
+
+## Modes
+
+Press `Tab` to cycle modes: **Plan -> Agent -> YOLO -> Plan**.
+
+| Mode | Description | Approvals |
+|------|-------------|-----------|
+| **Plan** | Design-first prompting; produces a plan before implementing | Manual for writes and shell |
+| **Agent** | Multi-step autonomous tool use | Auto-approve file writes, manual for shell |
+| **YOLO** | Full auto-approve (use with caution) | All tools auto-approved |
+
+Normal mode is also available (chat-only with manual approval for everything) and can be selected via `Esc` from Agent mode or `/set mode normal`.
+
+Override approval behavior at runtime: `/set approval_mode auto|suggest|never`.
+
+## Tools
+
+The model has access to 25+ tools across these categories:
+
+### File Operations
+- `list_dir` / `read_file` / `write_file` / `edit_file` — basic file I/O within the workspace
+- `apply_patch` — apply unified diffs with fuzzy matching
+- `grep_files` / `file_search` — search files by regex or name
+
+### Shell Execution
+- `exec_shell` — run commands with timeout support and background execution
+- `exec_shell_wait` / `exec_shell_interact` — wait on or send input to running commands
+
+### Web
+- `web.run` — multi-command browser (search / open / click / find / screenshot / image_query) with citation support
+- `web_search` — quick DuckDuckGo search when citations are not needed
+
+### Task Management
+- `todo_write` — create and track task lists with status
+- `update_plan` — structured implementation plans
+- `note` — persistent cross-session notes
+
+### Sub-Agents
+- `agent_spawn` / `agent_swarm` — launch background agents or dependency-aware swarms
+- `agent_result` / `agent_list` / `agent_cancel` — manage running agents
+
+### Structured Data
+- `weather` / `finance` / `sports` / `time` / `calculator`
+
+### Interaction
+- `request_user_input` — ask the user structured or multiple-choice questions
+- `multi_tool_use.parallel` — execute multiple read-only tools in parallel
+
+All file tools respect the `--workspace` boundary unless `/trust` is enabled (YOLO enables trust automatically). MCP tools execute without TUI approval prompts, so only enable servers you trust.
+
+## Configuration
+
+The TUI stores its config at `~/.deepseek/config.toml`:
+
+```toml
+api_key = "sk-..."
+default_text_model = "deepseek-reasoner"  # optional
+allow_shell = false                       # optional
+max_subagents = 3                         # optional (1-20)
 ```
 
-### Resume latest session
+### Environment Variables
+
+| Variable | Purpose |
+|----------|---------|
+| `DEEPSEEK_API_KEY` | API key (overrides config file) |
+| `DEEPSEEK_BASE_URL` | API endpoint (default: `https://api.deepseek.com`) |
+| `DEEPSEEK_PROFILE` | Select a `[profiles.<name>]` section from config |
+| `DEEPSEEK_CONFIG_PATH` | Override config file location |
+
+Additional overrides: `DEEPSEEK_MCP_CONFIG`, `DEEPSEEK_SKILLS_DIR`, `DEEPSEEK_NOTES_PATH`, `DEEPSEEK_MEMORY_PATH`, `DEEPSEEK_ALLOW_SHELL`, `DEEPSEEK_MAX_SUBAGENTS`.
+
+See `config.example.toml` and `docs/CONFIGURATION.md` for the full reference.
+
+## Examples
 
 ```bash
+# Interactive chat (default)
+deepseek
+
+# One-shot prompt (non-interactive, prints and exits)
+deepseek -p "Explain the borrow checker in two sentences"
+
+# Agentic execution with auto-approve
+deepseek exec --auto "Fix all clippy warnings in this project"
+
+# Resume latest session
 deepseek --continue
-```
 
-### Work on a specific project
-
-```bash
+# Work on a specific project directory
 deepseek --workspace /path/to/project
-```
 
-### Review staged git changes
-
-```bash
+# Review staged git changes
 deepseek review --staged
-```
 
-### Apply a patch file
-
-```bash
-deepseek apply patch.diff
-```
-
-### List saved sessions
-
-```bash
+# List saved sessions
 deepseek sessions --limit 50
-```
 
-### Generate shell completions
-
-```bash
+# Shell completions
 deepseek completions zsh > _deepseek
-deepseek completions bash > deepseek.bash
-deepseek completions fish > deepseek.fish
 ```
 
-## 🔧 Troubleshooting
+## Troubleshooting
 
-### No API key
-Set `DEEPSEEK_API_KEY` environment variable or run `deepseek` and complete onboarding.
+| Problem | Fix |
+|---------|-----|
+| No API key | Set `DEEPSEEK_API_KEY` or run `deepseek` to complete onboarding |
+| Config not found | Check `~/.deepseek/config.toml` (or `DEEPSEEK_CONFIG_PATH`) |
+| Wrong region | Set `DEEPSEEK_BASE_URL` to `https://api.deepseeki.com` (China) |
+| Session issues | Run `deepseek sessions` then `deepseek --resume latest` |
+| Skills missing | Run `deepseek setup --skills` (add `--local` for workspace-local) |
+| MCP tools missing | Run `deepseek mcp init`, then restart |
+| Sandbox errors (macOS) | Run `deepseek doctor` to confirm sandbox availability |
 
-### Config not found
-Check `~/.deepseek/config.toml` (or `DEEPSEEK_CONFIG_PATH`).
+## Documentation
 
-### Wrong region / base URL
-Set `DEEPSEEK_BASE_URL` to `https://api.deepseeki.com` (China).
+- [Configuration Reference](docs/CONFIGURATION.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Mode Comparison](docs/MODES.md)
+- [MCP Integration](docs/MCP.md)
+- [Contributing](CONTRIBUTING.md)
 
-### Session issues
-Run `deepseek sessions` and try `deepseek --resume latest`.
-
-### Skills missing
-Run `deepseek setup --skills` to create a global skills directory, or add `--local`
-to create `./skills` for the current workspace. If you want the preferred
-workspace-local path, create `.agents/skills` manually. Then run `deepseek doctor`
-to see which skills directory is selected.
-
-### MCP tools missing
-Run `deepseek mcp init` (or `deepseek setup --mcp`), then restart. `deepseek doctor`
-now checks the MCP path resolved from your config/env overrides.
-
-### Sandbox errors (macOS)
-Run `deepseek doctor` to confirm sandbox availability. On macOS, ensure
-`/usr/bin/sandbox-exec` exists. For other platforms, sandboxing is limited.
-
-## 📖 Documentation
-
-- `docs/CONFIGURATION.md` – Complete configuration reference
-- `docs/MCP.md` – Model Context Protocol guide
-- `docs/ARCHITECTURE.md` – Project architecture
-- `docs/MODES.md` – Mode comparison and usage
-- `CONTRIBUTING.md` – How to contribute to the project
-
-## 🧪 Development
+## Development
 
 ```bash
 cargo build
 cargo test
-cargo fmt
 cargo clippy
+cargo fmt
 ```
 
-See `CONTRIBUTING.md` for detailed guidelines.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
 
-## 📄 License
+## License
 
 MIT
 
 ---
 
-DeepSeek is a trademark of DeepSeek Inc. This is an unofficial project.
+DeepSeek is a trademark of DeepSeek Inc. This is an unofficial, community-driven project.
