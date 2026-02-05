@@ -18,7 +18,7 @@ EXPLORATION:
 - list_dir: Browse directories in the workspace
 - read_file: Read file contents to understand context
 - grep_files: Search files by regex
-- web.run: Browse the web (search/open/click/find/screenshot) with ref_ids for citations
+- web.run: Browse the web (search/open/click/find/screenshot/image_query) with ref_ids for citations
 - web_search: Quick web search (fallback when citations are not needed)
 - request_user_input: Ask the user short multiple-choice questions
 - multi_tool_use.parallel: Execute multiple read-only tools in parallel

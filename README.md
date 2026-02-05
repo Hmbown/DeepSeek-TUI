@@ -18,7 +18,7 @@ Unofficial terminal UI (TUI) + CLI for the [DeepSeek platform](https://platform.
 - **Task management**: Todo lists, implementation plans, persistent notes
 - **Sub-agent system**: Spawn, coordinate, and cancel background agents (including swarms)
 - **User input prompts**: Ask structured, multiple-choice questions during tool flows
-- **Web browsing**: `web.run` search/open/click/find/screenshot with citation-ready sources
+- **Web browsing**: `web.run` search/open/click/find/screenshot/image_query with citation-ready sources
 - **Structured data tools**: weather, finance, sports, time, calculator
 - **Multi‑model support** – DeepSeek‑Reasoner, DeepSeek‑Chat, and other DeepSeek models
 - **Context‑aware** – loads project‑specific instructions from `AGENTS.md`
@@ -123,7 +123,7 @@ DeepSeek CLI exposes a comprehensive set of tools to the model across 5 categori
 - **`edit_file`** – Search and replace text in files
 - **`apply_patch`** – Apply unified diff patches with fuzzy matching
 - **`grep_files`** – Search files by regex pattern with context lines
-- **`web.run`** – Browse the web (search/open/click/find/screenshot) with ref_ids for citations
+- **`web.run`** – Browse the web (search/open/click/find/screenshot/image_query) with ref_ids for citations
 - **`web_search`** – Quick web search (fallback when citations are not needed)
 - **`request_user_input`** – Ask the user short multiple-choice questions
 - **`multi_tool_use.parallel`** – Execute multiple read-only tools in parallel

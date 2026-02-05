@@ -9,7 +9,7 @@ use super::spec::{
 };
 use async_trait::async_trait;
 use regex::Regex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -151,10 +151,39 @@ struct ScreenshotResult {
     content: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct ImageResultEntry {
+    image: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thumbnail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    height: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ImageQueryResult {
+    query: String,
+    source: String,
+    count: usize,
+    results: Vec<ImageResultEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    warning: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Default)]
 struct WebRunOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     search_query: Option<Vec<SearchResult>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    image_query: Option<Vec<ImageQueryResult>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     open: Option<Vec<PageViewResult>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -176,7 +205,7 @@ impl ToolSpec for WebRunTool {
     }
 
     fn description(&self) -> &'static str {
-        "Browse the web (search/open/click/find/screenshot) and return structured results with ref_ids for citations."
+        "Browse the web (search/open/click/find/screenshot/image_query) and return structured results with ref_ids for citations."
     }
 
     fn input_schema(&self) -> Value {
@@ -190,6 +219,22 @@ impl ToolSpec for WebRunTool {
                         "properties": {
                             "q": { "type": "string" },
                             "recency": { "type": "integer" },
+                            "max_results": { "type": "integer" },
+                            "timeout_ms": { "type": "integer" },
+                            "domains": { "type": "array", "items": { "type": "string" } }
+                        },
+                        "required": ["q"]
+                    }
+                },
+                "image_query": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "q": { "type": "string" },
+                            "recency": { "type": "integer" },
+                            "max_results": { "type": "integer" },
+                            "timeout_ms": { "type": "integer" },
                             "domains": { "type": "array", "items": { "type": "string" } }
                         },
                         "required": ["q"]
@@ -329,6 +374,63 @@ impl ToolSpec for WebRunTool {
             }
             if !results.is_empty() {
                 output.search_query = Some(results);
+            }
+        }
+
+        if let Some(images) = input.get("image_query").and_then(|v| v.as_array()) {
+            let mut results = Vec::new();
+            for image in images {
+                let query = required_str(image, "q")?.trim().to_string();
+                if query.is_empty() {
+                    continue;
+                }
+                let recency = optional_u64(image, "recency", 0);
+                let max_results = usize::try_from(optional_u64(
+                    image,
+                    "max_results",
+                    response_length.max_results() as u64,
+                ))
+                .unwrap_or(response_length.max_results())
+                .clamp(1, MAX_RESULTS);
+                let timeout_ms = optional_u64(image, "timeout_ms", DEFAULT_TIMEOUT_MS).min(60_000);
+
+                let domains = image
+                    .get("domains")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+
+                let (entries, warning) =
+                    run_image_search(&query, max_results, timeout_ms, &domains).await?;
+
+                let mut warnings = Vec::new();
+                if recency > 0 {
+                    warnings.push(format!(
+                        "Recency filter not enforced (requested last {recency} days)"
+                    ));
+                }
+                if let Some(w) = warning {
+                    warnings.push(w);
+                }
+
+                results.push(ImageQueryResult {
+                    query,
+                    source: "duckduckgo_images".to_string(),
+                    count: entries.len(),
+                    results: entries,
+                    warning: if warnings.is_empty() {
+                        None
+                    } else {
+                        Some(warnings.join("; "))
+                    },
+                });
+            }
+            if !results.is_empty() {
+                output.image_query = Some(results);
             }
         }
 
@@ -518,6 +620,172 @@ fn domain_matches(url: &str, domains: &[String]) -> bool {
         let domain = domain.trim_start_matches("www.");
         host == domain || host.ends_with(&format!(".{domain}"))
     })
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct DuckDuckGoImageResponse {
+    #[serde(default)]
+    results: Vec<DuckDuckGoImageResult>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct DuckDuckGoImageResult {
+    image: String,
+    #[serde(default)]
+    thumbnail: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    width: Option<u32>,
+    #[serde(default)]
+    height: Option<u32>,
+}
+
+fn extract_duckduckgo_vqd(html: &str) -> Option<String> {
+    let html = html.trim();
+    if html.is_empty() {
+        return None;
+    }
+
+    for (prefix, suffix) in [("vqd='", "'"), ("vqd=\"", "\"")] {
+        if let Some(start) = html.find(prefix) {
+            let rest = &html[start + prefix.len()..];
+            if let Some(end) = rest.find(suffix) {
+                let token = rest[..end].trim();
+                if !token.is_empty() {
+                    return Some(token.to_string());
+                }
+            }
+        }
+    }
+
+    // Fallback: look for `vqd=` and accept a conservative token charset.
+    if let Some(start) = html.find("vqd=") {
+        let rest = &html[start + 4..];
+        let mut token = String::new();
+        for ch in rest.chars() {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                token.push(ch);
+            } else {
+                break;
+            }
+        }
+        if !token.is_empty() {
+            return Some(token);
+        }
+    }
+
+    None
+}
+
+async fn run_image_search(
+    query: &str,
+    max_results: usize,
+    timeout_ms: u64,
+    domains: &[String],
+) -> Result<(Vec<ImageResultEntry>, Option<String>), ToolError> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_millis(timeout_ms))
+        .user_agent(USER_AGENT)
+        .build()
+        .map_err(|e| ToolError::execution_failed(format!("Failed to build HTTP client: {e}")))?;
+
+    // Step 1: fetch the HTML page to obtain the `vqd` token used by the images API.
+    let encoded = url_encode(query);
+    let seed_url = format!("https://duckduckgo.com/?q={encoded}&iax=images&ia=images");
+    let seed_resp = client
+        .get(&seed_url)
+        .header(
+            "Accept",
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        )
+        .header("Accept-Language", "en-US,en;q=0.5")
+        .send()
+        .await
+        .map_err(|e| {
+            ToolError::execution_failed(format!("Image search seed request failed: {e}"))
+        })?;
+
+    let seed_status = seed_resp.status();
+    let seed_body = seed_resp.text().await.map_err(|e| {
+        ToolError::execution_failed(format!("Failed to read image seed response: {e}"))
+    })?;
+
+    if !seed_status.is_success() {
+        return Err(ToolError::execution_failed(format!(
+            "Image search seed request failed: HTTP {}",
+            seed_status.as_u16()
+        )));
+    }
+
+    let vqd = extract_duckduckgo_vqd(&seed_body).ok_or_else(|| {
+        ToolError::execution_failed("Failed to extract DuckDuckGo image token (vqd)")
+    })?;
+
+    // Step 2: query the DuckDuckGo images JSON endpoint.
+    let api_url = format!("https://duckduckgo.com/i.js?l=us-en&o=json&q={encoded}&vqd={vqd}&p=1");
+    let api_resp = client
+        .get(&api_url)
+        .header("Accept", "application/json")
+        .header("Referer", "https://duckduckgo.com/")
+        .send()
+        .await
+        .map_err(|e| ToolError::execution_failed(format!("Image search request failed: {e}")))?;
+
+    let api_status = api_resp.status();
+    let api_body = api_resp
+        .text()
+        .await
+        .map_err(|e| ToolError::execution_failed(format!("Failed to read image response: {e}")))?;
+
+    if !api_status.is_success() {
+        return Err(ToolError::execution_failed(format!(
+            "Image search failed: HTTP {}",
+            api_status.as_u16()
+        )));
+    }
+
+    let parsed: DuckDuckGoImageResponse = serde_json::from_str(&api_body).map_err(|e| {
+        ToolError::execution_failed(format!("Failed to parse image search JSON: {e}"))
+    })?;
+
+    let mut results = parsed
+        .results
+        .into_iter()
+        .filter(|item| !item.image.trim().is_empty())
+        .map(|item| ImageResultEntry {
+            image: item.image,
+            thumbnail: item.thumbnail,
+            title: item.title,
+            url: item.url,
+            source: item.source,
+            width: item.width,
+            height: item.height,
+        })
+        .collect::<Vec<_>>();
+
+    // Domain filter is applied to the source page URL when available.
+    let warning = if !domains.is_empty() {
+        let before = results.len();
+        results.retain(|entry| match entry.url.as_deref() {
+            Some(url) => domain_matches(url, domains),
+            None => true,
+        });
+        if before != results.len() {
+            Some("Filtered image results by domain list".to_string())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    results.truncate(max_results);
+    Ok((results, warning))
 }
 
 fn page_from_search(query: &str, results: &[SearchEntry]) -> WebPage {
@@ -1068,5 +1336,26 @@ mod tests {
         let wrapped = wrap_line(line, 20);
         assert!(wrapped.len() > 1);
         assert!(wrapped.iter().all(|l| l.len() <= 20));
+    }
+
+    #[test]
+    fn extracts_duckduckgo_vqd_token() {
+        let html_single = "<script>var x = {vqd='3-1234567890'};</script>";
+        assert_eq!(
+            extract_duckduckgo_vqd(html_single),
+            Some("3-1234567890".to_string())
+        );
+
+        let html_double = "<script>var x = {vqd=\"3-abcdef\"};</script>";
+        assert_eq!(
+            extract_duckduckgo_vqd(html_double),
+            Some("3-abcdef".to_string())
+        );
+
+        let html_plain = "https://duckduckgo.com/?q=test&vqd=3-xyz_123&ia=images";
+        assert_eq!(
+            extract_duckduckgo_vqd(html_plain),
+            Some("3-xyz_123".to_string())
+        );
     }
 }

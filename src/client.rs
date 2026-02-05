@@ -515,7 +515,7 @@ fn build_chat_messages(
                         "id": id,
                         "type": "function",
                         "function": {
-                            "name": name,
+                            "name": to_api_tool_name(name),
                             "arguments": args,
                         }
                     }));
@@ -1038,6 +1038,45 @@ mod tests {
             .find(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
             .expect("assistant message");
         assert!(assistant.get("tool_calls").is_some());
+    }
+
+    #[test]
+    fn chat_messages_encode_tool_call_names() {
+        let messages = vec![
+            Message {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::ToolUse {
+                    id: "tool-1".to_string(),
+                    name: "web.run".to_string(),
+                    input: json!({}),
+                }],
+            },
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "tool-1".to_string(),
+                    content: "ok".to_string(),
+                }],
+            },
+        ];
+
+        let out = build_chat_messages(None, &messages, "deepseek-chat");
+        let assistant = out
+            .iter()
+            .find(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
+            .expect("assistant message");
+        let tool_calls = assistant
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .expect("tool_calls array");
+        let function_name = tool_calls
+            .first()
+            .and_then(|call| call.get("function"))
+            .and_then(|func| func.get("name"))
+            .and_then(Value::as_str)
+            .expect("tool call function name");
+
+        assert_eq!(function_name, to_api_tool_name("web.run"));
     }
 
     #[test]

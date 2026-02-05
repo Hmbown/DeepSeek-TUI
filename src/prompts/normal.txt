@@ -11,7 +11,7 @@ Available tools in this mode:
 - edit_file: Search and replace text in a file (ask first)
 - apply_patch: Apply a unified diff patch (ask first)
 - grep_files: Search files by regex
-- web.run: Browse the web (search/open/click/find/screenshot) with ref_ids for citations
+- web.run: Browse the web (search/open/click/find/screenshot/image_query) with ref_ids for citations
 - web_search: Quick web search (fallback when citations are not needed)
 - request_user_input: Ask the user short multiple-choice questions
 - multi_tool_use.parallel: Execute multiple read-only tools in parallel

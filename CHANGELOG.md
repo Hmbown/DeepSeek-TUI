@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.14] - 2026-02-05
+
+### Added
+- `web.run` now supports `image_query` (DuckDuckGo image search)
+- `multi_tool_use.parallel` now supports safe MCP meta tools (`list_mcp_resources`, `mcp_read_resource`, etc.)
+
+### Fixed
+- Encode tool-call function names when rebuilding Chat Completions history (keeps dotted tool names API-safe)
+
+### Changed
+- Prompts: stronger `web.run` citation placement and quote-limit guidance
+
 ## [0.3.13] - 2026-02-04
 
 ### Fixed
