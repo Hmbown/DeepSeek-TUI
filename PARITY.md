@@ -40,10 +40,10 @@ The Codex harness baseline (as of 2026-02-03) includes:
 | Patch apply | apply_patch | apply_patch | Parity | - |
 | Code search | rg via shell | grep_files, file_search, exec_shell | Parity | - |
 | Shell exec | exec_command + write_stdin | exec_shell | Parity | PTY + stdin streaming via exec_shell_wait/exec_shell_interact |
-| Web search/browse | web.run (search/open/click/find/screenshot) | web.run + web_search | Partial | web.run implemented; citations via prompts only (no word-limit enforcement) |
-| Image search | image_query | missing | Missing | - |
+| Web search/browse | web.run (search/open/click/find/screenshot) | web.run + web_search | Partial | web.run implemented; citation placement + quote limits enforced via prompts (no word-limit enforcement) |
+| Image search | image_query | web.run image_query | Parity | DuckDuckGo image search via web.run.image_query |
 | Structured data | weather/finance/sports/time/calculator | weather/finance/sports/time/calculator | Partial | Uses public data sources; coverage may vary by league/market |
-| Multi-tool parallel | multi_tool_use.parallel | multi_tool_use.parallel | Partial | Read-only tools only; no MCP tools |
+| Multi-tool parallel | multi_tool_use.parallel | multi_tool_use.parallel | Partial | Read-only tools plus safe MCP meta tools (list/read/get prompt) |
 | User input tool | request_user_input | request_user_input | Parity | - |
 | MCP resources | list/read resources + get prompt | list_mcp_resources, list_mcp_resource_templates, mcp_read_resource, mcp_get_prompt | Parity | - |
 | Sub-agents | spawn/send_input/wait/close | agent_spawn/send_input/wait/agent_cancel/agent_list/agent_swarm | Partial | send_input/wait added; close maps to agent_cancel |
@@ -75,10 +75,10 @@ Citation format (current): `[cite:ref_id]` using the `ref_id` returned by `web.r
 
 ## Gap Backlog (Prioritized)
 
-1. Add image_query tool (image search parity)
-2. Enforce web.run citation placement/quote limits in prompts or tooling
-3. Expand structured data coverage for edge leagues/markets
-4. Allow multi_tool_use.parallel to include MCP tools (where safe)
+1. ✅ Add image_query support (image search parity)
+2. ✅ Enforce web.run citation placement/quote limits in prompts or tooling
+3. ☐ Expand structured data coverage for edge leagues/markets
+4. ✅ Allow multi_tool_use.parallel to include MCP tools (where safe)
 
 ## Parity Gates (Acceptance)
 
