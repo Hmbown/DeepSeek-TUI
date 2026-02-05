@@ -37,7 +37,7 @@ fn format_welcome_banner(model: &str, workspace: &PathBuf, yolo: bool) -> String
 
     format!(
         "Tips: Tab to switch modes, F1 or /help for commands, Esc to cancel\n\
-         {mode_line}\n\
+         {mode_line}\
          Directory: {}\n\
          Model: {}",
         workspace.display(),
