@@ -170,6 +170,8 @@ deepseek sessions --limit 50
 
 # Shell completions
 deepseek completions zsh > _deepseek
+deepseek completions bash > deepseek.bash
+deepseek completions fish > deepseek.fish
 ```
 
 ## Troubleshooting
