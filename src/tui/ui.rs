@@ -373,6 +373,15 @@ async fn run_event_loop(
                         app.last_prompt_tokens = Some(usage.input_tokens);
                         app.last_completion_tokens = Some(usage.output_tokens);
 
+                        // Update session cost
+                        if let Some(turn_cost) = crate::pricing::calculate_turn_cost(
+                            &app.model,
+                            usage.input_tokens,
+                            usage.output_tokens,
+                        ) {
+                            app.session_cost += turn_cost;
+                        }
+
                         // Auto-save session after each turn
                         if let Ok(manager) = SessionManager::default_location() {
                             let session = if let Some(ref existing_id) = app.current_session_id {
@@ -1278,8 +1287,14 @@ fn render(f: &mut Frame, app: &mut App) {
 
     // Render header
     {
+        let context_window = crate::models::context_window_for_model(&app.model);
         let header_data =
-            HeaderData::new(app.mode, &app.model, app.is_loading, app.ui_theme.header_bg);
+            HeaderData::new(app.mode, &app.model, app.is_loading, app.ui_theme.header_bg)
+                .with_usage(
+                    app.total_conversation_tokens,
+                    context_window,
+                    app.session_cost,
+                );
         let header_widget = HeaderWidget::new(header_data);
         let buf = f.buffer_mut();
         header_widget.render(chunks[0], buf);

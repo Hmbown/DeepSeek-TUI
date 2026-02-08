@@ -119,7 +119,13 @@ pub struct Usage {
 #[must_use]
 pub fn context_window_for_model(model: &str) -> Option<u32> {
     let lower = model.to_lowercase();
-    if lower.contains("deepseek-chat") || lower.contains("deepseek-reasoner") {
+    if lower.contains("deepseek-v3.2") {
+        return Some(128_000);
+    }
+    if lower.contains("deepseek-chat")
+        || lower.contains("deepseek-reasoner")
+        || lower.contains("deepseek-r1")
+    {
         return Some(128_000);
     }
     if lower.contains("deepseek") {

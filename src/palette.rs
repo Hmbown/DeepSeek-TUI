@@ -45,7 +45,7 @@ pub const TEXT_PRIMARY: Color = Color::White;
 pub const TEXT_MUTED: Color = Color::DarkGray;
 pub const TEXT_DIM: Color = Color::Gray;
 
-pub const STATUS_SUCCESS: Color = Color::Rgb(80, 200, 120); // Green
+pub const STATUS_SUCCESS: Color = DEEPSEEK_SKY;
 pub const STATUS_WARNING: Color = Color::Rgb(255, 170, 60); // Amber
 pub const STATUS_ERROR: Color = DEEPSEEK_RED;
 #[allow(dead_code)]

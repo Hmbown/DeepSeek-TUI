@@ -75,7 +75,7 @@ impl SessionManager {
         Self::new(home.join(".deepseek").join("sessions"))
     }
 
-    /// Save a session to disk
+    /// Save a session to disk using atomic write (temp file + rename).
     pub fn save_session(&self, session: &SavedSession) -> std::io::Result<PathBuf> {
         let filename = format!("{}.json", session.metadata.id);
         let path = self.sessions_dir.join(&filename);
@@ -83,7 +83,11 @@ impl SessionManager {
         let content = serde_json::to_string_pretty(session)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
-        fs::write(&path, content)?;
+        // Atomic write: write to temp file then rename to avoid corruption
+        let tmp_filename = format!(".{}.tmp", session.metadata.id);
+        let tmp_path = self.sessions_dir.join(&tmp_filename);
+        fs::write(&tmp_path, &content)?;
+        fs::rename(&tmp_path, &path)?;
 
         // Clean up old sessions if we have too many
         self.cleanup_old_sessions()?;

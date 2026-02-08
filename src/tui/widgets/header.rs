@@ -14,12 +14,29 @@ use crate::tui::app::AppMode;
 
 use super::Renderable;
 
+/// Format a token count for compact display (e.g., "12.3k", "1.2M").
+fn format_token_count(tokens: u32) -> String {
+    if tokens >= 1_000_000 {
+        format!("{:.1}M", tokens as f64 / 1_000_000.0)
+    } else if tokens >= 1_000 {
+        format!("{:.1}k", tokens as f64 / 1_000.0)
+    } else {
+        format!("{tokens}")
+    }
+}
+
 /// Data required to render the header bar.
 pub struct HeaderData<'a> {
     pub model: &'a str,
     pub mode: AppMode,
     pub is_streaming: bool,
     pub background: ratatui::style::Color,
+    /// Total tokens used in this session.
+    pub total_tokens: u32,
+    /// Context window size for the model (if known).
+    pub context_window: Option<u32>,
+    /// Accumulated session cost in USD.
+    pub session_cost: f64,
 }
 
 impl<'a> HeaderData<'a> {
@@ -36,7 +53,24 @@ impl<'a> HeaderData<'a> {
             mode,
             is_streaming,
             background,
+            total_tokens: 0,
+            context_window: None,
+            session_cost: 0.0,
         }
+    }
+
+    /// Set token/cost fields.
+    #[must_use]
+    pub fn with_usage(
+        mut self,
+        total_tokens: u32,
+        context_window: Option<u32>,
+        session_cost: f64,
+    ) -> Self {
+        self.total_tokens = total_tokens;
+        self.context_window = context_window;
+        self.session_cost = session_cost;
+        self
     }
 }
 
@@ -98,6 +132,41 @@ impl<'a> HeaderWidget<'a> {
                 .add_modifier(Modifier::BOLD),
         ))
     }
+
+    /// Build the token/cost info span for the right side of the header.
+    fn usage_span(&self) -> Option<Span<'static>> {
+        if self.data.total_tokens == 0 && self.data.session_cost < 0.0001 {
+            return None;
+        }
+
+        let mut parts = Vec::new();
+
+        // Token count with context window percentage
+        if self.data.total_tokens > 0 {
+            let token_str = format_token_count(self.data.total_tokens);
+            if let Some(ctx_window) = self.data.context_window {
+                let pct = (self.data.total_tokens as f64 / ctx_window as f64 * 100.0) as u32;
+                let pct_str = format!("{token_str} ({pct}%)");
+                parts.push(pct_str);
+            } else {
+                parts.push(token_str);
+            }
+        }
+
+        // Cost
+        if self.data.session_cost >= 0.0001 {
+            parts.push(crate::pricing::format_cost(self.data.session_cost));
+        }
+
+        if parts.is_empty() {
+            return None;
+        }
+
+        Some(Span::styled(
+            parts.join(" · "),
+            Style::default().fg(palette::TEXT_MUTED),
+        ))
+    }
 }
 
 impl Renderable for HeaderWidget<'_> {
@@ -110,16 +179,24 @@ impl Renderable for HeaderWidget<'_> {
         let mode_span = self.mode_badge();
         let model_span = self.model_span();
 
-        // Build right section: streaming indicator
+        // Build right section: usage info + streaming indicator
         let streaming_span = self.streaming_indicator();
+        let usage_span = self.usage_span();
 
         // Calculate widths
         let mode_width = mode_span.content.width();
         let model_width = model_span.content.width();
         let streaming_width = streaming_span.as_ref().map_or(0, |s| s.content.width());
+        let usage_width = usage_span.as_ref().map_or(0, |s| s.content.width());
+        let right_width = streaming_width
+            + usage_width
+            + if streaming_width > 0 && usage_width > 0 {
+                1
+            } else {
+                0
+            };
 
         let left_width = mode_width + 1 + model_width; // mode + space + model
-        let right_width = streaming_width;
 
         let available = area.width as usize;
 
@@ -127,7 +204,7 @@ impl Renderable for HeaderWidget<'_> {
         let mut spans = Vec::new();
 
         if available >= left_width + right_width + 2 {
-            // Full layout: [MODE] model | (spacer) | streaming
+            // Full layout: [MODE] model | (spacer) | usage streaming
             spans.push(mode_span);
             spans.push(Span::raw(" "));
             spans.push(model_span);
@@ -136,6 +213,14 @@ impl Renderable for HeaderWidget<'_> {
             let padding_needed = available.saturating_sub(left_width + right_width);
             if padding_needed > 0 {
                 spans.push(Span::raw(" ".repeat(padding_needed)));
+            }
+
+            // Add usage info
+            if let Some(usage) = usage_span {
+                spans.push(usage);
+                if streaming_span.is_some() {
+                    spans.push(Span::raw(" "));
+                }
             }
 
             // Add streaming indicator

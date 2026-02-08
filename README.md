@@ -32,8 +32,14 @@ Prebuilt binaries are also available on [GitHub Releases](https://github.com/Hmb
 
 Get a key from [platform.deepseek.com](https://platform.deepseek.com), then:
 
-```bash
-export DEEPSEEK_API_KEY="sk-..."
+On first run, the TUI can prompt for your API key and save it to `~/.deepseek/config.toml`. You can also create the file manually:
+
+```toml
+# ~/.deepseek/config.toml
+api_key = "YOUR_DEEPSEEK_API_KEY"   # must be non‑empty
+default_text_model = "deepseek-v3.2" # optional
+allow_shell = false                 # optional
+max_subagents = 3                   # optional (1‑20)
 ```
 
 Alternatively, run `deepseek` and the onboarding wizard will prompt you to enter and save the key.

@@ -20,7 +20,7 @@ base_url = "https://api.deepseek.com"
 # ─────────────────────────────────────────────────────────────────────────────────
 # Default Models
 # ─────────────────────────────────────────────────────────────────────────────────
-default_text_model = "deepseek-reasoner"  # also: deepseek-chat, deepseek-r1, deepseek-v3, deepseek-v3.2
+default_text_model = "deepseek-v3.2"  # also: deepseek-reasoner, deepseek-chat, deepseek-r1, deepseek-v3
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Paths

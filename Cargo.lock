@@ -674,7 +674,7 @@ dependencies = [
 
 [[package]]
 name = "deepseek-tui"
-version = "0.3.14"
+version = "0.3.15"
 dependencies = [
  "anyhow",
  "arboard",

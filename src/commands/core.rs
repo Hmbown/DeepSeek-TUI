@@ -53,11 +53,11 @@ pub fn exit() -> CommandResult {
 
 /// Available DeepSeek models
 const AVAILABLE_MODELS: &[&str] = &[
+    "deepseek-v3.2",
     "deepseek-reasoner",
     "deepseek-chat",
     "deepseek-r1",
     "deepseek-v3",
-    "deepseek-v3.2",
 ];
 
 /// Switch or view current model

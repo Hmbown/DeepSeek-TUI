@@ -427,7 +427,7 @@ async fn main() -> Result<()> {
                 let model = args
                     .model
                     .or_else(|| config.default_text_model.clone())
-                    .unwrap_or_else(|| "deepseek-reasoner".to_string());
+                    .unwrap_or_else(|| "deepseek-v3.2".to_string());
                 if args.auto || cli.yolo {
                     let workspace = cli.workspace.clone().unwrap_or_else(|| {
                         std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
@@ -500,7 +500,7 @@ async fn main() -> Result<()> {
         let model = config
             .default_text_model
             .clone()
-            .unwrap_or_else(|| "deepseek-reasoner".to_string());
+            .unwrap_or_else(|| "deepseek-v3.2".to_string());
         return run_one_shot(&config, &model, &prompt).await;
     }
 
@@ -1355,7 +1355,7 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
     let model = args
         .model
         .or_else(|| config.default_text_model.clone())
-        .unwrap_or_else(|| "deepseek-reasoner".to_string());
+        .unwrap_or_else(|| "deepseek-v3.2".to_string());
 
     let system = SystemPrompt::Text(
         "You are a senior code reviewer. Focus on bugs, risks, behavioral regressions, and missing tests. \
@@ -1746,7 +1746,7 @@ async fn run_interactive(
     let model = config
         .default_text_model
         .clone()
-        .unwrap_or_else(|| "deepseek-reasoner".to_string());
+        .unwrap_or_else(|| "deepseek-v3.2".to_string());
     let max_subagents = cli.max_subagents.map_or_else(
         || config.max_subagents(),
         |value| value.clamp(1, MAX_SUBAGENTS),

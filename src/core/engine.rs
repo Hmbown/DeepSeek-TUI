@@ -83,7 +83,7 @@ pub struct EngineConfig {
 impl Default for EngineConfig {
     fn default() -> Self {
         Self {
-            model: "deepseek-reasoner".to_string(),
+            model: "deepseek-v3.2".to_string(),
             workspace: PathBuf::from("."),
             allow_shell: false,
             trust_mode: false,
@@ -1481,6 +1481,13 @@ impl Engine {
                                             "Tool '{}' failed to parse final input buffer: '{}'",
                                             tool_state.name, tool_state.input_buffer
                                         ));
+                                        let _ = self
+                                            .tx_event
+                                            .send(Event::status(format!(
+                                                "⚠ Tool '{}' received malformed arguments from model",
+                                                tool_state.name
+                                            )))
+                                            .await;
                                     }
                                 } else {
                                     crate::logging::warn(format!(

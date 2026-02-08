@@ -460,7 +460,7 @@ api_key = "{api_key}"
 # base_url = "https://api.deepseek.com"
 
 # Default model
-default_text_model = "deepseek-reasoner"
+default_text_model = "deepseek-v3.2"
 "#
         )
     };

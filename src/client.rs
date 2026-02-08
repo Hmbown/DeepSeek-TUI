@@ -5,10 +5,9 @@
 
 use std::collections::HashSet;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use anyhow::{Context, Result};
-use futures_util::stream;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde_json::{Value, json};
 
@@ -88,7 +87,14 @@ pub struct DeepSeekClient {
     retry: RetryPolicy,
     default_model: String,
     use_chat_completions: AtomicBool,
+    /// Counter of chat-completions requests since last Responses API probe.
+    /// After RESPONSES_RECOVERY_INTERVAL requests, we retry the Responses API.
+    chat_fallback_counter: AtomicU32,
 }
+
+/// After this many chat-completions requests, retry the Responses API to see
+/// if it has recovered.
+const RESPONSES_RECOVERY_INTERVAL: u32 = 20;
 
 impl Clone for DeepSeekClient {
     fn clone(&self) -> Self {
@@ -99,6 +105,9 @@ impl Clone for DeepSeekClient {
             default_model: self.default_model.clone(),
             use_chat_completions: AtomicBool::new(
                 self.use_chat_completions.load(Ordering::Relaxed),
+            ),
+            chat_fallback_counter: AtomicU32::new(
+                self.chat_fallback_counter.load(Ordering::Relaxed),
             ),
         }
     }
@@ -115,7 +124,7 @@ impl DeepSeekClient {
         let default_model = config
             .default_text_model
             .clone()
-            .unwrap_or_else(|| "deepseek-reasoner".to_string());
+            .unwrap_or_else(|| "deepseek-v3.2".to_string());
 
         logging::info(format!("DeepSeek base URL: {base_url}"));
         logging::info(format!(
@@ -140,6 +149,7 @@ impl DeepSeekClient {
             retry,
             default_model,
             use_chat_completions: AtomicBool::new(false),
+            chat_fallback_counter: AtomicU32::new(0),
         })
     }
 
@@ -249,7 +259,25 @@ impl LlmClient for DeepSeekClient {
     }
 
     async fn create_message(&self, request: MessageRequest) -> Result<MessageResponse> {
+        // Check if it's time to probe Responses API recovery
         if self.use_chat_completions.load(Ordering::Relaxed) {
+            let count = self.chat_fallback_counter.fetch_add(1, Ordering::Relaxed);
+            if count > 0 && count % RESPONSES_RECOVERY_INTERVAL == 0 {
+                logging::info("Probing Responses API recovery...");
+                let request_clone = request.clone();
+                match self.create_message_responses(&request).await? {
+                    Ok(message) => {
+                        logging::info("Responses API recovered! Switching back.");
+                        self.use_chat_completions.store(false, Ordering::Relaxed);
+                        self.chat_fallback_counter.store(0, Ordering::Relaxed);
+                        return Ok(message);
+                    }
+                    Err(_) => {
+                        logging::info("Responses API still unavailable, continuing with chat.");
+                    }
+                }
+                return self.create_message_chat(&request_clone).await;
+            }
             return self.create_message_chat(&request).await;
         }
 
@@ -266,16 +294,145 @@ impl LlmClient for DeepSeekClient {
                     crate::utils::truncate_with_ellipsis(&fallback.body, 500, "...")
                 ));
                 self.use_chat_completions.store(true, Ordering::Relaxed);
+                self.chat_fallback_counter.store(0, Ordering::Relaxed);
                 self.create_message_chat(&request_clone).await
             }
         }
     }
 
     async fn create_message_stream(&self, request: MessageRequest) -> Result<StreamEventBox> {
-        let response = self.create_message(request).await?;
-        let events = build_stream_events(&response);
-        let stream = stream::iter(events.into_iter().map(Ok));
-        Ok(Pin::from(Box::new(stream)))
+        // Try true SSE streaming via chat completions (widely supported)
+        let messages =
+            build_chat_messages(request.system.as_ref(), &request.messages, &request.model);
+        let mut body = json!({
+            "model": request.model,
+            "messages": messages,
+            "max_tokens": request.max_tokens,
+            "stream": true,
+        });
+
+        if let Some(temperature) = request.temperature {
+            body["temperature"] = json!(temperature);
+        }
+        if let Some(top_p) = request.top_p {
+            body["top_p"] = json!(top_p);
+        }
+        if let Some(tools) = request.tools.as_ref() {
+            body["tools"] = json!(tools.iter().map(tool_to_chat).collect::<Vec<_>>());
+        }
+        if let Some(choice) = request.tool_choice.as_ref() {
+            if let Some(mapped) = map_tool_choice_for_chat(choice) {
+                body["tool_choice"] = mapped;
+            }
+        }
+
+        let url = format!(
+            "{}/v1/chat/completions",
+            self.base_url.trim_end_matches('/')
+        );
+        let response =
+            send_with_retry(&self.retry, || self.http_client.post(&url).json(&body)).await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            anyhow::bail!("SSE stream request failed: HTTP {status}: {error_text}");
+        }
+
+        let model = request.model.clone();
+        let byte_stream = response.bytes_stream();
+
+        let stream = async_stream::stream! {
+            use futures_util::StreamExt;
+
+            // Emit a synthetic MessageStart
+            yield Ok(StreamEvent::MessageStart {
+                message: MessageResponse {
+                    id: String::new(),
+                    r#type: "message".to_string(),
+                    role: "assistant".to_string(),
+                    content: Vec::new(),
+                    model: model.clone(),
+                    stop_reason: None,
+                    stop_sequence: None,
+                    usage: Usage { input_tokens: 0, output_tokens: 0 },
+                },
+            });
+
+            let mut line_buf = String::new();
+            let mut byte_buf = Vec::new();
+            let mut content_index: u32 = 0;
+            let mut text_started = false;
+            let mut thinking_started = false;
+            let mut tool_indices: std::collections::HashMap<u32, bool> = std::collections::HashMap::new();
+            let is_reasoning_model = requires_reasoning_content(&model);
+
+            let mut byte_stream = std::pin::pin!(byte_stream);
+
+            while let Some(chunk_result) = byte_stream.next().await {
+                let chunk = match chunk_result {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        yield Err(anyhow::anyhow!("Stream read error: {e}"));
+                        break;
+                    }
+                };
+
+                byte_buf.extend_from_slice(&chunk);
+
+                // Process complete SSE lines from the buffer
+                loop {
+                    let buf_str = String::from_utf8_lossy(&byte_buf);
+                    let Some(newline_pos) = buf_str.find('\n') else { break };
+                    let line: String = buf_str[..newline_pos].trim_end_matches('\r').to_string();
+                    let consumed = newline_pos + 1;
+                    byte_buf = byte_buf[consumed..].to_vec();
+
+                    if line.is_empty() {
+                        // Empty line = event boundary, process accumulated data
+                        if !line_buf.is_empty() {
+                            let data = std::mem::take(&mut line_buf);
+                            if data.trim() == "[DONE]" {
+                                // Stream complete
+                            } else if let Ok(chunk_json) = serde_json::from_str::<Value>(&data) {
+                                // Parse the SSE chunk into stream events
+                                for event in parse_sse_chunk(
+                                    &chunk_json,
+                                    &mut content_index,
+                                    &mut text_started,
+                                    &mut thinking_started,
+                                    &mut tool_indices,
+                                    is_reasoning_model,
+                                ) {
+                                    yield Ok(event);
+                                }
+                            }
+                        }
+                        continue;
+                    }
+
+                    if let Some(data) = line.strip_prefix("data: ") {
+                        line_buf.push_str(data);
+                    }
+                    // Ignore other SSE fields (event:, id:, retry:)
+                }
+            }
+
+            // Close any open blocks
+            if thinking_started {
+                yield Ok(StreamEvent::ContentBlockStop { index: content_index.saturating_sub(1) });
+            }
+            if text_started {
+                yield Ok(StreamEvent::ContentBlockStop { index: content_index.saturating_sub(1) });
+            }
+
+            yield Ok(StreamEvent::MessageStop);
+        };
+
+        Ok(Pin::from(Box::new(stream)
+            as Box<
+                dyn futures_util::Stream<Item = Result<StreamEvent>> + Send,
+            >))
     }
 }
 
@@ -709,6 +866,7 @@ fn requires_reasoning_content(model: &str) -> bool {
     let lower = model.to_lowercase();
     lower.contains("deepseek-reasoner")
         || lower.contains("deepseek-r1")
+        || lower.contains("deepseek-v3.2")
         || lower.contains("reasoner")
 }
 
@@ -817,6 +975,8 @@ fn parse_usage(usage: Option<&Value>) -> Usage {
 
 // === Streaming Helpers ===
 
+/// Build synthetic stream events from a non-streaming response (used as fallback).
+#[allow(dead_code)]
 fn build_stream_events(response: &MessageResponse) -> Vec<StreamEvent> {
     let mut events = Vec::new();
     let mut index = 0u32;
@@ -883,6 +1043,198 @@ fn build_stream_events(response: &MessageResponse) -> Vec<StreamEvent> {
         usage: Some(response.usage.clone()),
     });
     events.push(StreamEvent::MessageStop);
+
+    events
+}
+
+// === SSE Chunk Parser ===
+
+/// Parse a single SSE chunk from the Chat Completions streaming API into
+/// our internal `StreamEvent` representation.
+fn parse_sse_chunk(
+    chunk: &Value,
+    content_index: &mut u32,
+    text_started: &mut bool,
+    thinking_started: &mut bool,
+    tool_indices: &mut std::collections::HashMap<u32, bool>,
+    is_reasoning_model: bool,
+) -> Vec<StreamEvent> {
+    let mut events = Vec::new();
+
+    let Some(choices) = chunk.get("choices").and_then(Value::as_array) else {
+        // Usage-only chunk (sent at end with stream_options)
+        if let Some(usage_val) = chunk.get("usage") {
+            let usage = parse_usage(Some(usage_val));
+            events.push(StreamEvent::MessageDelta {
+                delta: MessageDelta {
+                    stop_reason: None,
+                    stop_sequence: None,
+                },
+                usage: Some(usage),
+            });
+        }
+        return events;
+    };
+
+    for choice in choices {
+        let delta = choice.get("delta");
+        let finish_reason = choice
+            .get("finish_reason")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+
+        if let Some(delta) = delta {
+            // Handle reasoning_content (DeepSeek-Reasoner thinking)
+            if is_reasoning_model {
+                if let Some(reasoning) = delta.get("reasoning_content").and_then(Value::as_str) {
+                    if !reasoning.is_empty() {
+                        if !*thinking_started {
+                            events.push(StreamEvent::ContentBlockStart {
+                                index: *content_index,
+                                content_block: ContentBlockStart::Thinking {
+                                    thinking: String::new(),
+                                },
+                            });
+                            *thinking_started = true;
+                        }
+                        events.push(StreamEvent::ContentBlockDelta {
+                            index: *content_index,
+                            delta: Delta::ThinkingDelta {
+                                thinking: reasoning.to_string(),
+                            },
+                        });
+                    }
+                }
+            }
+
+            // Handle regular content
+            if let Some(content) = delta.get("content").and_then(Value::as_str) {
+                if !content.is_empty() {
+                    // Close thinking block if transitioning to text
+                    if *thinking_started {
+                        events.push(StreamEvent::ContentBlockStop {
+                            index: *content_index,
+                        });
+                        *content_index += 1;
+                        *thinking_started = false;
+                    }
+                    if !*text_started {
+                        events.push(StreamEvent::ContentBlockStart {
+                            index: *content_index,
+                            content_block: ContentBlockStart::Text {
+                                text: String::new(),
+                            },
+                        });
+                        *text_started = true;
+                    }
+                    events.push(StreamEvent::ContentBlockDelta {
+                        index: *content_index,
+                        delta: Delta::TextDelta {
+                            text: content.to_string(),
+                        },
+                    });
+                }
+            }
+
+            // Handle tool calls
+            if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
+                for tc in tool_calls {
+                    let tc_index = tc.get("index").and_then(Value::as_u64).unwrap_or(0) as u32;
+
+                    if let std::collections::hash_map::Entry::Vacant(entry) =
+                        tool_indices.entry(tc_index)
+                    {
+                        // Close text block if transitioning to tool use
+                        if *text_started {
+                            events.push(StreamEvent::ContentBlockStop {
+                                index: *content_index,
+                            });
+                            *content_index += 1;
+                            *text_started = false;
+                        }
+                        if *thinking_started {
+                            events.push(StreamEvent::ContentBlockStop {
+                                index: *content_index,
+                            });
+                            *content_index += 1;
+                            *thinking_started = false;
+                        }
+
+                        let id = tc
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .unwrap_or("tool_call")
+                            .to_string();
+                        let name = tc
+                            .get("function")
+                            .and_then(|f| f.get("name"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string();
+
+                        entry.insert(true);
+                        events.push(StreamEvent::ContentBlockStart {
+                            index: *content_index,
+                            content_block: ContentBlockStart::ToolUse {
+                                id,
+                                name: from_api_tool_name(&name),
+                                input: json!({}),
+                            },
+                        });
+                    }
+
+                    // Stream tool call arguments
+                    if let Some(args) = tc
+                        .get("function")
+                        .and_then(|f| f.get("arguments"))
+                        .and_then(Value::as_str)
+                    {
+                        if !args.is_empty() {
+                            events.push(StreamEvent::ContentBlockDelta {
+                                index: *content_index,
+                                delta: Delta::InputJsonDelta {
+                                    partial_json: args.to_string(),
+                                },
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // Handle finish reason
+        if let Some(reason) = finish_reason {
+            // Close any open blocks
+            if *text_started {
+                events.push(StreamEvent::ContentBlockStop {
+                    index: *content_index,
+                });
+                *text_started = false;
+            }
+            if *thinking_started {
+                events.push(StreamEvent::ContentBlockStop {
+                    index: *content_index,
+                });
+                *thinking_started = false;
+            }
+            // Close tool blocks
+            for _ in tool_indices.drain() {
+                events.push(StreamEvent::ContentBlockStop {
+                    index: *content_index,
+                });
+            }
+
+            // Emit usage from the chunk if available
+            let chunk_usage = chunk.get("usage").map(|u| parse_usage(Some(u)));
+            events.push(StreamEvent::MessageDelta {
+                delta: MessageDelta {
+                    stop_reason: Some(reason),
+                    stop_sequence: None,
+                },
+                usage: chunk_usage,
+            });
+        }
+    }
 
     events
 }

@@ -33,7 +33,7 @@ impl Default for CompactionConfig {
             enabled: false,
             token_threshold: 50000,
             message_threshold: 50,
-            model: "deepseek-reasoner".to_string(),
+            model: "deepseek-v3.2".to_string(),
             cache_summary: true,
         }
     }
