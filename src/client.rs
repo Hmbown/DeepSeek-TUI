@@ -262,7 +262,7 @@ impl LlmClient for DeepSeekClient {
         // Check if it's time to probe Responses API recovery
         if self.use_chat_completions.load(Ordering::Relaxed) {
             let count = self.chat_fallback_counter.fetch_add(1, Ordering::Relaxed);
-            if count > 0 && count % RESPONSES_RECOVERY_INTERVAL == 0 {
+            if count > 0 && count.is_multiple_of(RESPONSES_RECOVERY_INTERVAL) {
                 logging::info("Probing Responses API recovery...");
                 let request_clone = request.clone();
                 match self.create_message_responses(&request).await? {
