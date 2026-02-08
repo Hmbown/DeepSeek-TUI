@@ -26,7 +26,6 @@ use crate::tui::selection::TranscriptSelection;
 use crate::tui::transcript::TranscriptViewCache;
 use crate::tui::views::ViewStack;
 
-
 /// Format a nice welcome banner.
 fn format_welcome_banner(model: &str, workspace: &PathBuf, yolo: bool) -> String {
     let mode_line = if yolo {
