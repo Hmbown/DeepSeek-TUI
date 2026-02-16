@@ -55,3 +55,7 @@ AI_HANDOFF.md
 .codex/
 docs/rlm-paper.txt
 .context/
+
+# Local runtime state
+.deepseek/
+session_*.json

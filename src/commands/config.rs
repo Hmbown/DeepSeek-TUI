@@ -218,7 +218,88 @@ mod tests {
     use crate::config::Config;
     use crate::tui::app::{App, TuiOptions};
     use crate::tui::approval::ApprovalMode;
+    use std::env;
+    use std::ffi::OsString;
+    use std::fs;
+    use std::path::Path;
     use std::path::PathBuf;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct EnvGuard {
+        home: Option<OsString>,
+        userprofile: Option<OsString>,
+        deepseek_config_path: Option<OsString>,
+    }
+
+    impl EnvGuard {
+        fn new(home: &Path) -> Self {
+            let home_str = OsString::from(home.as_os_str());
+            let config_path = home.join(".deepseek").join("config.toml");
+            let config_str = OsString::from(config_path.as_os_str());
+            let home_prev = env::var_os("HOME");
+            let userprofile_prev = env::var_os("USERPROFILE");
+            let deepseek_config_prev = env::var_os("DEEPSEEK_CONFIG_PATH");
+
+            // Safety: test-only environment mutation guarded by a global mutex.
+            unsafe {
+                env::set_var("HOME", &home_str);
+                env::set_var("USERPROFILE", &home_str);
+                env::set_var("DEEPSEEK_CONFIG_PATH", &config_str);
+            }
+
+            Self {
+                home: home_prev,
+                userprofile: userprofile_prev,
+                deepseek_config_path: deepseek_config_prev,
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(value) = self.home.take() {
+                // Safety: test-only environment mutation guarded by a global mutex.
+                unsafe {
+                    env::set_var("HOME", value);
+                }
+            } else {
+                // Safety: test-only environment mutation guarded by a global mutex.
+                unsafe {
+                    env::remove_var("HOME");
+                }
+            }
+
+            if let Some(value) = self.userprofile.take() {
+                // Safety: test-only environment mutation guarded by a global mutex.
+                unsafe {
+                    env::set_var("USERPROFILE", value);
+                }
+            } else {
+                // Safety: test-only environment mutation guarded by a global mutex.
+                unsafe {
+                    env::remove_var("USERPROFILE");
+                }
+            }
+
+            if let Some(value) = self.deepseek_config_path.take() {
+                // Safety: test-only environment mutation guarded by a global mutex.
+                unsafe {
+                    env::set_var("DEEPSEEK_CONFIG_PATH", value);
+                }
+            } else {
+                // Safety: test-only environment mutation guarded by a global mutex.
+                unsafe {
+                    env::remove_var("DEEPSEEK_CONFIG_PATH");
+                }
+            }
+        }
+    }
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     fn create_test_app() -> App {
         let options = TuiOptions {
@@ -364,15 +445,33 @@ mod tests {
 
     #[test]
     fn test_logout_clears_api_key_state() {
+        let _lock = env_lock().lock().unwrap();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-cli-logout-test-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root).unwrap();
+        let _guard = EnvGuard::new(&temp_root);
+
+        let config_path = temp_root.join(".deepseek").join("config.toml");
+        fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        fs::write(&config_path, "api_key = \"test-key\"\n").unwrap();
+
         let mut app = create_test_app();
-        // Note: This test may fail if API key is not set in environment
-        // but the state changes should still occur
         let result = logout(&mut app);
         assert!(result.message.is_some());
         assert_eq!(app.onboarding, OnboardingState::ApiKey);
         assert!(app.onboarding_needs_api_key);
         assert!(app.api_key_input.is_empty());
         assert_eq!(app.api_key_cursor, 0);
+
+        let updated = fs::read_to_string(config_path).unwrap();
+        assert!(!updated.contains("api_key"));
     }
 
     #[test]

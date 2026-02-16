@@ -123,7 +123,7 @@ impl Config {
     /// # Ok::<(), anyhow::Error>(())
     /// ```
     pub fn load(path: Option<PathBuf>, profile: Option<&str>) -> Result<Self> {
-        let path = path.or_else(default_config_path);
+        let path = resolve_load_config_path(path);
         let mut config = if let Some(path) = path.as_ref() {
             if path.exists() {
                 let contents = fs::read_to_string(path)
@@ -337,12 +337,50 @@ impl Config {
 // === Defaults ===
 
 fn default_config_path() -> Option<PathBuf> {
-    if let Ok(path) = std::env::var("DEEPSEEK_CONFIG_PATH")
-        && !path.trim().is_empty()
-    {
-        return Some(PathBuf::from(path));
-    }
+    env_config_path().or_else(home_config_path)
+}
+
+fn home_config_path() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(".deepseek").join("config.toml"))
+}
+
+fn env_config_path() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("DEEPSEEK_CONFIG_PATH") {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() {
+            return Some(expand_path(trimmed));
+        }
+    }
+    None
+}
+
+fn expand_pathbuf(path: PathBuf) -> PathBuf {
+    if let Some(raw) = path.to_str() {
+        return expand_path(raw);
+    }
+    path
+}
+
+fn resolve_load_config_path(path: Option<PathBuf>) -> Option<PathBuf> {
+    if let Some(path) = path {
+        return Some(expand_pathbuf(path));
+    }
+
+    if let Some(path) = env_config_path() {
+        if path.exists() {
+            return Some(path);
+        }
+
+        if let Some(home_path) = home_config_path()
+            && home_path.exists()
+        {
+            return Some(home_path);
+        }
+
+        return Some(path);
+    }
+
+    home_config_path()
 }
 
 fn default_managed_config_path() -> Option<PathBuf> {
@@ -847,6 +885,67 @@ mod tests {
             expected_skills.components().collect::<Vec<_>>()
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_load_uses_tilde_expanded_deepseek_config_path() -> Result<()> {
+        let _lock = env_lock().lock().unwrap();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-cli-load-tilde-test-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        let config_path = temp_root.join(".custom-deepseek").join("config.toml");
+        ensure_parent_dir(&config_path)?;
+        fs::write(&config_path, "api_key = \"test-key\"\n")?;
+
+        // Safety: test-only environment mutation guarded by a global mutex.
+        unsafe {
+            env::set_var("DEEPSEEK_CONFIG_PATH", "~/.custom-deepseek/config.toml");
+        }
+
+        let config = Config::load(None, None)?;
+        assert_eq!(config.api_key.as_deref(), Some("test-key"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_load_falls_back_to_home_config_when_env_path_missing() -> Result<()> {
+        let _lock = env_lock().lock().unwrap();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-cli-load-fallback-test-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        let home_config = temp_root.join(".deepseek").join("config.toml");
+        ensure_parent_dir(&home_config)?;
+        fs::write(&home_config, "api_key = \"home-key\"\n")?;
+
+        // Safety: test-only environment mutation guarded by a global mutex.
+        unsafe {
+            env::set_var(
+                "DEEPSEEK_CONFIG_PATH",
+                temp_root.join("missing-config.toml").as_os_str(),
+            );
+        }
+
+        let config = Config::load(None, None)?;
+        assert_eq!(config.api_key.as_deref(), Some("home-key"));
         Ok(())
     }
 
