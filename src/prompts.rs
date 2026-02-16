@@ -60,6 +60,18 @@ pub fn system_prompt_for_mode_with_context(
         full_prompt = format!("{full_prompt}\n\n{summary}");
     }
 
+    // Add compaction instruction for agent modes
+    if matches!(mode, AppMode::Agent | AppMode::Yolo) {
+        full_prompt.push_str(
+            "\n\n## Context Management\n\n\
+             When the conversation gets long (you'll see a context usage indicator), you can:\n\
+             1. Use `/compact` to summarize earlier context and free up space\n\
+             2. The system will preserve important information (files you're working on, recent messages, tool results)\n\
+             3. After compaction, you'll see a summary of what was discussed and can continue seamlessly\n\n\
+             If you notice context is getting long (>80%), proactively suggest using `/compact` to the user."
+        );
+    }
+
     SystemPrompt::Text(full_prompt)
 }
 

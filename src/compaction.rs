@@ -649,11 +649,25 @@ pub async fn compact_messages(
     // Create a summary of the unpinned portion of the conversation
     let summary = create_summary(client, &to_summarize, &config.model).await?;
 
-    // Build new message list with summary as system block
+    // Extract workflow context (files touched, tasks in progress, etc.)
+    let workflow_context = extract_workflow_context(&to_summarize, workspace);
+
+    // Build new message list with enhanced summary as system block
     let summary_block = SystemBlock {
         block_type: "text".to_string(),
         text: format!(
-            "## Conversation Summary\n\nThe following summarizes earlier context that was not pinned to the working set:\n\n{summary}\n\n---\nPinned messages follow:"
+            "## 📋 Conversation Summary (Auto-Generated)\n\n\
+             {summary}\n\n\
+             ---\n\n\
+             ## 🔍 Workflow Context\n\n\
+             {workflow_context}\n\n\
+             ---\n\n\
+             ## 💡 What to Do Next\n\n\
+             You have just resumed from a context compaction. The conversation above was summarized to save space. \
+             Review the summary and workflow context, then continue helping the user with their task. \
+             If you need more details about the summarized portion, ask the user to clarify.\n\n\
+             ---\n\n\
+             Pinned messages follow:"
         ),
         cache_control: if config.cache_summary {
             Some(CacheControl {
@@ -749,6 +763,101 @@ async fn create_summary(
         .join("\n");
 
     Ok(summary)
+}
+
+/// Extract workflow context from messages (files touched, tasks, etc.)
+fn extract_workflow_context(messages: &[Message], workspace: Option<&Path>) -> String {
+    let mut files_touched: Vec<String> = Vec::new();
+    let mut tools_used: Vec<String> = Vec::new();
+    let mut tasks_identified: Vec<String> = Vec::new();
+    
+    for msg in messages {
+        for block in &msg.content {
+            match block {
+                ContentBlock::ToolUse { name, input, .. } => {
+                    tools_used.push(name.clone());
+                    
+                    // Extract file paths from tool inputs
+                    if let Some(path) = extract_path_from_input(input) {
+                        if !files_touched.contains(&path) {
+                            files_touched.push(path);
+                        }
+                    }
+                }
+                ContentBlock::Text { text, .. } => {
+                    // Look for task/todo mentions
+                    if text.contains("TODO") || text.contains("task") || text.contains("need to") {
+                        let task = truncate_chars(text, 200).to_string();
+                        if !tasks_identified.contains(&task) {
+                            tasks_identified.push(task);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    
+    let mut context = String::new();
+    
+    if !files_touched.is_empty() {
+        context.push_str("**Files Modified/Read:**\n");
+        for file in &files_touched {
+            if let Some(ws) = workspace {
+                let relative = Path::new(file)
+                    .strip_prefix(ws)
+                    .unwrap_or(Path::new(file))
+                    .display();
+                context.push_str(&format!("- `{}`\n", relative));
+            } else {
+                context.push_str(&format!("- `{}`\n", file));
+            }
+        }
+        context.push('\n');
+    }
+    
+    if !tools_used.is_empty() {
+        context.push_str("**Tools Used:** ");
+        context.push_str(&tools_used.join(", "));
+        context.push_str("\n\n");
+    }
+    
+    if !tasks_identified.is_empty() {
+        context.push_str("**Tasks/TODOs Identified:**\n");
+        for task in &tasks_identified {
+            context.push_str(&format!("- {}\n", task));
+        }
+        context.push('\n');
+    }
+    
+    if context.is_empty() {
+        context.push_str("No specific workflow context detected. Continue assisting the user with their current task.\n");
+    }
+    
+    context
+}
+
+/// Extract file path from tool input JSON
+fn extract_path_from_input(input: &serde_json::Value) -> Option<String> {
+    // Try common path field names
+    for key in ["path", "file", "file_path", "filename"] {
+        if let Some(path) = input.get(key).and_then(|v| v.as_str()) {
+            return Some(path.to_string());
+        }
+    }
+    
+    // Try to find path in nested objects
+    if let Some(obj) = input.as_object() {
+        for (_, value) in obj {
+            if let Some(path) = value.as_str() {
+                if path.contains('/') || path.contains('\\') || path.contains('.') {
+                    return Some(path.to_string());
+                }
+            }
+        }
+    }
+    
+    None
 }
 
 pub fn merge_system_prompts(

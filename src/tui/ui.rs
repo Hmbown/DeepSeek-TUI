@@ -1102,6 +1102,10 @@ async fn run_event_loop(
                                             .send(Op::SetCompaction { config: compaction })
                                             .await;
                                     }
+                                    AppAction::CompactContext => {
+                                        app.status_message = Some("Compacting context...".to_string());
+                                        let _ = engine_handle.send(Op::CompactContext).await;
+                                    }
                                     AppAction::TaskAdd { prompt } => {
                                         let request = NewTaskRequest {
                                             prompt: prompt.clone(),

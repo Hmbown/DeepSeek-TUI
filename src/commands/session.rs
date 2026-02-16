@@ -118,16 +118,12 @@ pub fn load(app: &mut App, path: Option<&str>) -> CommandResult {
     )
 }
 
-/// Toggle auto-compaction
-pub fn compact(app: &mut App) -> CommandResult {
-    app.auto_compact = !app.auto_compact;
-
+/// Trigger context compaction
+pub fn compact(_app: &mut App) -> CommandResult {
+    // Trigger immediate compaction via engine
     CommandResult::with_message_and_action(
-        format!(
-            "Auto-compact: {}",
-            if app.auto_compact { "ON" } else { "OFF" }
-        ),
-        AppAction::UpdateCompaction(app.compaction_config()),
+        "Context compaction triggered...".to_string(),
+        AppAction::CompactContext,
     )
 }
 
@@ -325,22 +321,15 @@ mod tests {
     fn test_compact_toggles_state() {
         let tmpdir = TempDir::new().unwrap();
         let mut app = create_test_app_with_tmpdir(&tmpdir);
-        let initial = app.auto_compact;
 
         let result = compact(&mut app);
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
-        assert!(msg.contains("Auto-compact:"));
-        assert!(msg.contains(if initial { "OFF" } else { "ON" }));
-        assert_eq!(app.auto_compact, !initial);
+        assert!(msg.contains("compaction") || msg.contains("Compact"));
         assert!(matches!(
             result.action,
-            Some(AppAction::UpdateCompaction(_))
+            Some(AppAction::CompactContext)
         ));
-
-        // Toggle back
-        let _result2 = compact(&mut app);
-        assert_eq!(app.auto_compact, initial);
     }
 
     #[test]

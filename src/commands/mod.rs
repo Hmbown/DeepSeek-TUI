@@ -168,7 +168,7 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "compact",
         aliases: &[],
-        description: "Toggle auto-compaction",
+        description: "Trigger context compaction to free up space",
         usage: "/compact",
     },
     CommandInfo {
