@@ -17,6 +17,45 @@ use uuid::Uuid;
 
 /// Maximum number of sessions to retain
 const MAX_SESSIONS: usize = 50;
+const CURRENT_SESSION_SCHEMA_VERSION: u32 = 1;
+const CURRENT_QUEUE_SCHEMA_VERSION: u32 = 1;
+
+const fn default_session_schema_version() -> u32 {
+    CURRENT_SESSION_SCHEMA_VERSION
+}
+
+const fn default_queue_schema_version() -> u32 {
+    CURRENT_QUEUE_SCHEMA_VERSION
+}
+
+/// Persisted queued message for offline/degraded mode.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueuedSessionMessage {
+    pub display: String,
+    #[serde(default)]
+    pub skill_instruction: Option<String>,
+}
+
+/// Persisted queue state for recovery after restart/crash.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OfflineQueueState {
+    #[serde(default = "default_queue_schema_version")]
+    pub schema_version: u32,
+    #[serde(default)]
+    pub messages: Vec<QueuedSessionMessage>,
+    #[serde(default)]
+    pub draft: Option<QueuedSessionMessage>,
+}
+
+impl Default for OfflineQueueState {
+    fn default() -> Self {
+        Self {
+            schema_version: CURRENT_QUEUE_SCHEMA_VERSION,
+            messages: Vec::new(),
+            draft: None,
+        }
+    }
+}
 
 /// Session metadata stored with each saved session
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,6 +84,9 @@ pub struct SessionMetadata {
 /// A saved session containing full conversation history
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedSession {
+    /// Schema version for migration compatibility
+    #[serde(default = "default_session_schema_version")]
+    pub schema_version: u32,
     /// Session metadata
     pub metadata: SessionMetadata,
     /// Conversation messages
@@ -69,10 +111,7 @@ impl SessionManager {
 
     /// Create a `SessionManager` using the default location (~/.deepseek/sessions)
     pub fn default_location() -> std::io::Result<Self> {
-        let home = dirs::home_dir().ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::NotFound, "Home directory not found")
-        })?;
-        Self::new(home.join(".deepseek").join("sessions"))
+        Self::new(default_sessions_dir()?)
     }
 
     /// Save a session to disk using atomic write (temp file + rename).
@@ -95,6 +134,98 @@ impl SessionManager {
         Ok(path)
     }
 
+    /// Save a crash-recovery checkpoint for in-flight turns.
+    pub fn save_checkpoint(&self, session: &SavedSession) -> std::io::Result<PathBuf> {
+        let checkpoints = self.sessions_dir.join("checkpoints");
+        fs::create_dir_all(&checkpoints)?;
+        let path = checkpoints.join("latest.json");
+        let content = serde_json::to_string_pretty(session)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let tmp_path = checkpoints.join(".latest.tmp");
+        fs::write(&tmp_path, &content)?;
+        fs::rename(&tmp_path, &path)?;
+        Ok(path)
+    }
+
+    /// Load the most recent crash-recovery checkpoint if present.
+    pub fn load_checkpoint(&self) -> std::io::Result<Option<SavedSession>> {
+        let path = self.sessions_dir.join("checkpoints").join("latest.json");
+        if !path.exists() {
+            return Ok(None);
+        }
+        let content = fs::read_to_string(&path)?;
+        let session: SavedSession = serde_json::from_str(&content)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        if session.schema_version > CURRENT_SESSION_SCHEMA_VERSION {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "Checkpoint schema v{} is newer than supported v{}",
+                    session.schema_version, CURRENT_SESSION_SCHEMA_VERSION
+                ),
+            ));
+        }
+        Ok(Some(session))
+    }
+
+    /// Clear any crash-recovery checkpoint.
+    pub fn clear_checkpoint(&self) -> std::io::Result<()> {
+        let path = self.sessions_dir.join("checkpoints").join("latest.json");
+        if path.exists() {
+            fs::remove_file(path)?;
+        }
+        Ok(())
+    }
+
+    /// Save offline queue state (queued + draft messages).
+    pub fn save_offline_queue_state(&self, state: &OfflineQueueState) -> std::io::Result<PathBuf> {
+        let checkpoints = self.sessions_dir.join("checkpoints");
+        fs::create_dir_all(&checkpoints)?;
+        let path = checkpoints.join("offline_queue.json");
+        let content = serde_json::to_string_pretty(state)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let tmp_path = checkpoints.join(".offline_queue.tmp");
+        fs::write(&tmp_path, &content)?;
+        fs::rename(&tmp_path, &path)?;
+        Ok(path)
+    }
+
+    /// Load offline queue state if present.
+    pub fn load_offline_queue_state(&self) -> std::io::Result<Option<OfflineQueueState>> {
+        let path = self
+            .sessions_dir
+            .join("checkpoints")
+            .join("offline_queue.json");
+        if !path.exists() {
+            return Ok(None);
+        }
+        let content = fs::read_to_string(&path)?;
+        let state: OfflineQueueState = serde_json::from_str(&content)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        if state.schema_version > CURRENT_QUEUE_SCHEMA_VERSION {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "Offline queue schema v{} is newer than supported v{}",
+                    state.schema_version, CURRENT_QUEUE_SCHEMA_VERSION
+                ),
+            ));
+        }
+        Ok(Some(state))
+    }
+
+    /// Remove persisted offline queue state.
+    pub fn clear_offline_queue_state(&self) -> std::io::Result<()> {
+        let path = self
+            .sessions_dir
+            .join("checkpoints")
+            .join("offline_queue.json");
+        if path.exists() {
+            fs::remove_file(path)?;
+        }
+        Ok(())
+    }
+
     /// Load a session by ID
     pub fn load_session(&self, id: &str) -> std::io::Result<SavedSession> {
         let filename = format!("{id}.json");
@@ -103,6 +234,15 @@ impl SessionManager {
         let content = fs::read_to_string(&path)?;
         let session: SavedSession = serde_json::from_str(&content)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        if session.schema_version > CURRENT_SESSION_SCHEMA_VERSION {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "Session schema v{} is newer than supported v{}",
+                    session.schema_version, CURRENT_SESSION_SCHEMA_VERSION
+                ),
+            ));
+        }
 
         Ok(session)
     }
@@ -206,6 +346,14 @@ impl SessionManager {
     }
 }
 
+/// Resolve the default session directory path (`~/.deepseek/sessions`).
+pub fn default_sessions_dir() -> std::io::Result<PathBuf> {
+    let home = dirs::home_dir().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "Home directory not found")
+    })?;
+    Ok(home.join(".deepseek").join("sessions"))
+}
+
 /// Create a new `SavedSession` from conversation state
 pub fn create_saved_session(
     messages: &[Message],
@@ -249,6 +397,7 @@ pub fn create_saved_session_with_mode(
         .unwrap_or_else(|| "New Session".to_string());
 
     SavedSession {
+        schema_version: CURRENT_SESSION_SCHEMA_VERSION,
         metadata: SessionMetadata {
             id,
             title,
@@ -272,6 +421,7 @@ pub fn update_session(
     total_tokens: u64,
     system_prompt: Option<&SystemPrompt>,
 ) -> SavedSession {
+    session.schema_version = CURRENT_SESSION_SCHEMA_VERSION;
     session.messages = messages.to_vec();
     session.metadata.updated_at = Utc::now();
     session.metadata.message_count = messages.len();
@@ -294,15 +444,17 @@ fn system_prompt_to_string(system_prompt: Option<&SystemPrompt>) -> Option<Strin
     }
 }
 
-/// Truncate a string to create a title
+/// Truncate a string to create a title (character-safe for UTF-8)
 fn truncate_title(s: &str, max_len: usize) -> String {
     let s = s.trim();
     let first_line = s.lines().next().unwrap_or(s);
 
-    if first_line.len() <= max_len {
+    let char_count = first_line.chars().count();
+    if char_count <= max_len {
         first_line.to_string()
     } else {
-        format!("{}...", &first_line[..max_len - 3])
+        let truncated: String = first_line.chars().take(max_len - 3).collect();
+        format!("{truncated}...")
     }
 }
 
@@ -344,6 +496,7 @@ fn format_age(dt: &DateTime<Utc>) -> String {
 mod tests {
     use super::*;
     use crate::models::ContentBlock;
+    use std::fs;
     use tempfile::tempdir;
 
     fn make_test_message(role: &str, text: &str) -> Message {
@@ -467,5 +620,99 @@ mod tests {
         let updated = update_session(session, &new_messages, 100, None);
         assert_eq!(updated.messages.len(), 2);
         assert_eq!(updated.metadata.total_tokens, 100);
+    }
+
+    #[test]
+    fn test_checkpoint_round_trip_and_clear() {
+        let tmp = tempdir().expect("tempdir");
+        let manager = SessionManager::new(tmp.path().join("sessions")).expect("new");
+        let messages = vec![make_test_message("user", "checkpoint me")];
+        let session = create_saved_session(&messages, "test-model", tmp.path(), 12, None);
+
+        manager.save_checkpoint(&session).expect("save checkpoint");
+        let loaded = manager
+            .load_checkpoint()
+            .expect("load checkpoint")
+            .expect("checkpoint exists");
+        assert_eq!(loaded.metadata.id, session.metadata.id);
+
+        manager.clear_checkpoint().expect("clear checkpoint");
+        assert!(
+            manager
+                .load_checkpoint()
+                .expect("load checkpoint")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn test_offline_queue_round_trip_and_clear() {
+        let tmp = tempdir().expect("tempdir");
+        let manager = SessionManager::new(tmp.path().join("sessions")).expect("new");
+
+        let state = OfflineQueueState {
+            messages: vec![QueuedSessionMessage {
+                display: "queued message".to_string(),
+                skill_instruction: Some("Use skill".to_string()),
+            }],
+            draft: Some(QueuedSessionMessage {
+                display: "draft message".to_string(),
+                skill_instruction: None,
+            }),
+            ..OfflineQueueState::default()
+        };
+
+        manager
+            .save_offline_queue_state(&state)
+            .expect("save queue state");
+        let loaded = manager
+            .load_offline_queue_state()
+            .expect("load queue state")
+            .expect("queue state exists");
+        assert_eq!(loaded.messages.len(), 1);
+        assert_eq!(loaded.messages[0].display, "queued message");
+        assert!(loaded.draft.is_some());
+
+        manager
+            .clear_offline_queue_state()
+            .expect("clear queue state");
+        assert!(
+            manager
+                .load_offline_queue_state()
+                .expect("load queue state")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn test_checkpoint_rejects_newer_schema() {
+        let tmp = tempdir().expect("tempdir");
+        let manager = SessionManager::new(tmp.path().join("sessions")).expect("new");
+        let checkpoints = tmp.path().join("sessions").join("checkpoints");
+        fs::create_dir_all(&checkpoints).expect("create checkpoints dir");
+        let path = checkpoints.join("latest.json");
+        fs::write(
+            &path,
+            r#"{
+                "schema_version": 999,
+                "metadata": {
+                    "id": "sid",
+                    "title": "bad",
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "updated_at": "2026-01-01T00:00:00Z",
+                    "message_count": 0,
+                    "total_tokens": 0,
+                    "model": "m",
+                    "workspace": "/tmp",
+                    "mode": null
+                },
+                "messages": [],
+                "system_prompt": null
+            }"#,
+        )
+        .expect("write checkpoint");
+
+        let err = manager.load_checkpoint().expect_err("should reject schema");
+        assert!(err.to_string().contains("newer than supported"));
     }
 }

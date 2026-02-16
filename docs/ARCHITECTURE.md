@@ -35,6 +35,15 @@ This document provides an overview of the DeepSeek CLI architecture for develope
             │                     │                    │
             ▼                     ▼                    ▼
 ┌─────────────────────────────────────────────────────────────────┐
+│                  Runtime API + Task Management                  │
+│  ┌─────────────────────────────┐  ┌──────────────────────────┐  │
+│  │ HTTP/SSE Runtime API        │  │ Persistent Task Manager  │  │
+│  │ (runtime_api.rs)            │  │ (task_manager.rs)        │  │
+│  └─────────────────────────────┘  └──────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+            │                     │
+            ▼                     ▼
+┌─────────────────────────────────────────────────────────────────┐
 │                        LLM Layer                                │
 │  ┌──────────────────────────────────────────────────────────┐  │
 │  │              LLM Client Abstraction (llm_client.rs)       │  │
@@ -125,6 +134,9 @@ Responses API (with automatic fallback if needed).
 - **`prompts.rs`** - System prompt templates
 - **`project_doc.rs`** - Project documentation handling
 - **`session.rs`** - Session serialization
+- **`runtime_api.rs`** - HTTP/SSE runtime API (`deepseek serve --http`)
+- **`runtime_threads.rs`** - Durable thread/turn/item store + replayable event timeline
+- **`task_manager.rs`** - Durable queue, worker pool, task timelines and artifacts
 
 ## Data Flow
 
@@ -139,6 +151,14 @@ Responses API (with automatic fallback if needed).
 7. Results aggregated and sent back to LLM
 8. Final response rendered in TUI
 
+### Crash Recovery + Offline Queue
+
+1. Before sending user input, the TUI writes a checkpoint snapshot to `~/.deepseek/sessions/checkpoints/latest.json`
+2. If the process crashes mid-turn, startup restores that checkpoint automatically (unless explicit `--resume` is used)
+3. While degraded/offline, new prompts are queued in-memory and mirrored to `~/.deepseek/sessions/checkpoints/offline_queue.json`
+4. Queue edits (`/queue ...`) are persisted continuously so drafts and queued prompts survive restarts
+5. Successful turn completion clears the active checkpoint and writes a durable session snapshot
+
 ### Tool Execution
 
 1. LLM requests tool via `tool_use` content block
@@ -148,6 +168,31 @@ Responses API (with automatic fallback if needed).
 5. Tool executed (possibly sandboxed on macOS)
 6. Post-execution hooks run
 7. Result returned to agent loop
+
+### Background Tasks
+
+1. Client enqueues task (`/task add ...` or `POST /v1/tasks`)
+2. `task_manager.rs` persists task + queue entry under `~/.deepseek/tasks`
+3. Worker picks queued task (bounded pool), transitions to `running`
+4. Task creates/uses a runtime thread and starts a runtime turn
+5. `runtime_threads.rs` persists thread/turn/item records + monotonic event sequence
+6. Timeline/tool summaries/artifact references are persisted incrementally
+7. Final state (`completed|failed|canceled`) is durable and queryable via TUI/API
+
+### Runtime Thread/Turn Timeline
+
+1. API/TUI creates or resumes a thread (`/v1/threads*`)
+2. Turn starts on the thread (`/v1/threads/{id}/turns`)
+3. Engine events are mapped to item lifecycle events (`item.started|item.delta|item.completed`)
+4. Interrupt/steer operations apply to the active turn only
+5. Compaction (auto/manual) is emitted as `context_compaction` item lifecycle
+6. Clients replay history and resume with `/v1/threads/{id}/events?since_seq=<n>`
+
+### Durable Schema Gates
+
+- `session_manager.rs`, `runtime_threads.rs`, and `task_manager.rs` embed `schema_version` on persisted records.
+- On load, newer schema versions are rejected with explicit errors instead of silently truncating/overwriting data.
+- This allows safe forward migrations and prevents corruption when binaries and stored state are out of sync.
 
 ## Extension Points
 
@@ -182,14 +227,20 @@ command = "echo 'Running tool: $TOOL_NAME'"
 ## Key Design Decisions
 
 1. **Streaming-first**: All LLM responses stream for responsiveness
-2. **Tool safety**: Non-yolo mode requires approval for destructive operations
+2. **Tool safety**: Non-yolo mode requires approval for destructive operations, including side-effectful MCP tools
 3. **Extensibility**: MCP, skills, and hooks allow customization without code changes
 4. **Cross-platform**: Core works on Linux/macOS/Windows, sandboxing macOS-only
 5. **Minimal dependencies**: Careful dependency selection for build speed
+6. **Local-first runtime API**: HTTP/SSE endpoints are intended for trusted localhost access
 
 ## Configuration Files
 
 - `~/.deepseek/config.toml` - Main configuration
+- `/etc/deepseek/managed_config.toml` - Optional managed defaults layer (Unix)
+- `/etc/deepseek/requirements.toml` - Optional allowed-policy constraints (Unix)
 - `~/.deepseek/mcp.json` - MCP server configuration
 - `~/.deepseek/skills/` - User skills directory
 - `~/.deepseek/sessions/` - Session history
+- `~/.deepseek/sessions/checkpoints/` - Crash checkpoint + offline queue persistence
+- `~/.deepseek/tasks/` - Background task records, queue, timelines, artifacts
+- `~/.deepseek/audit.log` - Append-only audit events for credential + approval/elevation actions

@@ -11,7 +11,9 @@ use thiserror::Error;
 use crate::compaction::CompactionConfig;
 use crate::config::{Config, has_api_key, save_api_key};
 use crate::hooks::{HookContext, HookEvent, HookExecutor, HookResult};
-use crate::models::{Message, SystemPrompt};
+use crate::models::{
+    Message, SystemPrompt, compaction_message_threshold_for_model, compaction_threshold_for_model,
+};
 use crate::palette::{self, UiTheme};
 use crate::settings::Settings;
 use crate::tools::plan::{SharedPlanState, new_shared_plan_state};
@@ -102,6 +104,8 @@ fn sanitize_api_key_text(text: &str) -> String {
     text.chars().filter(|c| !c.is_control()).collect()
 }
 
+const MAX_SUBMITTED_INPUT_CHARS: usize = 16_000;
+
 impl AppMode {
     /// Short label used in the UI footer.
     pub fn label(self) -> &'static str {
@@ -177,6 +181,8 @@ pub struct App {
     pub last_transcript_total: usize,
     pub last_transcript_padding_top: usize,
     pub is_loading: bool,
+    /// Degraded connectivity mode; new user inputs are queued for later retry.
+    pub offline_mode: bool,
     pub status_message: Option<String>,
     pub model: String,
     pub workspace: PathBuf,
@@ -189,6 +195,7 @@ pub struct App {
     pub auto_compact: bool,
     pub show_thinking: bool,
     pub show_tool_details: bool,
+    pub sidebar_width_percent: u16,
     #[allow(dead_code)]
     pub compact_threshold: usize,
     pub max_input_history: usize,
@@ -239,6 +246,8 @@ pub struct App {
     pub active_skill: Option<String>,
     /// Tool call cells by tool id
     pub tool_cells: HashMap<String, usize>,
+    /// Full tool input/output keyed by history cell index.
+    pub tool_details_by_cell: HashMap<usize, ToolDetailRecord>,
     /// Active exploring cell index
     pub exploring_cell: Option<usize>,
     /// Mapping of exploring tool ids to (cell index, entry index)
@@ -263,17 +272,41 @@ pub struct App {
     pub queued_draft: Option<QueuedMessage>,
     /// Start time for current turn
     pub turn_started_at: Option<Instant>,
+    /// Current runtime turn id (if known).
+    pub runtime_turn_id: Option<String>,
+    /// Current runtime turn status (if known).
+    pub runtime_turn_status: Option<String>,
     /// Last prompt token usage
     pub last_prompt_tokens: Option<u32>,
     /// Last completion token usage
     pub last_completion_tokens: Option<u32>,
+    /// Cached background tasks for sidebar rendering.
+    pub task_panel: Vec<TaskPanelEntry>,
 }
 
 /// Message queued while the engine is busy.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueuedMessage {
     pub display: String,
     pub skill_instruction: Option<String>,
+}
+
+/// Detailed tool payload attached to a history cell.
+#[derive(Debug, Clone)]
+pub struct ToolDetailRecord {
+    pub tool_id: String,
+    pub tool_name: String,
+    pub input: Value,
+    pub output: Option<String>,
+}
+
+/// Lightweight task view for sidebar rendering.
+#[derive(Debug, Clone)]
+pub struct TaskPanelEntry {
+    pub id: String,
+    pub status: String,
+    pub prompt_summary: String,
+    pub duration_ms: Option<u64>,
 }
 
 impl QueuedMessage {
@@ -338,9 +371,11 @@ impl App {
         let auto_compact = settings.auto_compact;
         let show_thinking = settings.show_thinking;
         let show_tool_details = settings.show_tool_details;
+        let sidebar_width_percent = settings.sidebar_width_percent;
         let max_input_history = settings.max_input_history;
         let ui_theme = palette::ui_theme(&settings.theme);
         let model = settings.default_model.clone().unwrap_or_else(|| model);
+        let compact_threshold = compaction_threshold_for_model(&model);
 
         // Start in YOLO mode if --yolo flag was passed
         let preferred_mode = match settings.default_mode.as_str() {
@@ -403,6 +438,7 @@ impl App {
             last_transcript_total: 0,
             last_transcript_padding_top: 0,
             is_loading: false,
+            offline_mode: false,
             status_message: None,
             model,
             workspace,
@@ -414,7 +450,8 @@ impl App {
             auto_compact,
             show_thinking,
             show_tool_details,
-            compact_threshold: 50000,
+            sidebar_width_percent,
+            compact_threshold,
             max_input_history,
             total_tokens: 0,
             total_conversation_tokens: 0,
@@ -455,6 +492,7 @@ impl App {
             session_cost: 0.0,
             active_skill: None,
             tool_cells: HashMap::new(),
+            tool_details_by_cell: HashMap::new(),
             exploring_cell: None,
             exploring_entries: HashMap::new(),
             ignored_tool_calls: HashSet::new(),
@@ -467,8 +505,11 @@ impl App {
             queued_messages: VecDeque::new(),
             queued_draft: None,
             turn_started_at: None,
+            runtime_turn_id: None,
+            runtime_turn_status: None,
             last_prompt_tokens: None,
             last_completion_tokens: None,
+            task_panel: Vec::new(),
         }
     }
 
@@ -764,7 +805,14 @@ impl App {
             self.paste_burst.clear_after_explicit_paste();
             return None;
         }
-        let input = self.input.clone();
+        let mut input = self.input.clone();
+        if char_count(&input) > MAX_SUBMITTED_INPUT_CHARS {
+            input = input.chars().take(MAX_SUBMITTED_INPUT_CHARS).collect();
+            self.status_message = Some(format!(
+                "Input truncated to {} characters for safety",
+                MAX_SUBMITTED_INPUT_CHARS
+            ));
+        }
         if !input.starts_with('/') {
             self.input_history.push(input.clone());
             if self.max_input_history == 0 {
@@ -847,16 +895,32 @@ impl App {
         }
     }
 
-    pub fn clear_todos(&mut self) {
-        let mut plan = self.plan_state.blocking_lock();
-        *plan = crate::tools::plan::PlanState::default();
+    pub fn clear_todos(&mut self) -> bool {
+        if let Ok(mut plan) = self.plan_state.try_lock() {
+            *plan = crate::tools::plan::PlanState::default();
+            return true;
+        }
+        false
+    }
+
+    pub fn update_model_compaction_budget(&mut self) {
+        self.compact_threshold = compaction_threshold_for_model(&self.model);
+    }
+
+    pub fn compaction_config(&self) -> CompactionConfig {
+        let mut compaction = CompactionConfig::default();
+        compaction.enabled = self.auto_compact;
+        compaction.token_threshold = self.compact_threshold;
+        compaction.message_threshold = compaction_message_threshold_for_model(&self.model);
+        compaction.model = self.model.clone();
+        compaction
     }
 }
 
 // === Actions ===
 
 /// Actions emitted by the UI event loop.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum AppAction {
     Quit,
     #[allow(dead_code)] // For explicit /save command
@@ -871,13 +935,25 @@ pub enum AppAction {
     },
     SendMessage(String),
     ListSubAgents,
+    FetchModels,
     UpdateCompaction(CompactionConfig),
+    TaskAdd {
+        prompt: String,
+    },
+    TaskList,
+    TaskShow {
+        id: String,
+    },
+    TaskCancel {
+        id: String,
+    },
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::Config;
+    use crate::tools::plan::{PlanItemArg, StepStatus, UpdatePlanArgs};
 
     fn test_options(yolo: bool) -> TuiOptions {
         TuiOptions {
@@ -902,5 +978,174 @@ mod tests {
     fn test_trust_mode_follows_yolo_on_startup() {
         let app = App::new(test_options(true), &Config::default());
         assert!(app.trust_mode);
+    }
+
+    #[test]
+    fn submit_input_truncates_oversized_payloads() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "x".repeat(MAX_SUBMITTED_INPUT_CHARS + 128);
+        app.cursor_position = app.input.chars().count();
+
+        let submitted = app.submit_input().expect("expected submitted input");
+        assert_eq!(submitted.chars().count(), MAX_SUBMITTED_INPUT_CHARS);
+        assert!(
+            app.status_message
+                .as_ref()
+                .is_some_and(|msg| msg.contains("Input truncated"))
+        );
+    }
+
+    #[test]
+    fn clear_todos_resets_plan_state() {
+        let mut app = App::new(test_options(false), &Config::default());
+
+        {
+            let mut plan = app
+                .plan_state
+                .try_lock()
+                .expect("plan lock should be available");
+            plan.update(UpdatePlanArgs {
+                explanation: Some("test plan".to_string()),
+                plan: vec![PlanItemArg {
+                    step: "step 1".to_string(),
+                    status: StepStatus::InProgress,
+                }],
+            });
+            assert!(!plan.is_empty());
+        }
+
+        assert!(app.clear_todos());
+
+        let plan = app
+            .plan_state
+            .try_lock()
+            .expect("plan lock should be available");
+        assert!(plan.is_empty());
+    }
+
+    #[test]
+    fn test_cycle_mode_transitions() {
+        let mut app = App::new(test_options(false), &Config::default());
+        // Default mode should be Agent based on settings
+        let initial_mode = app.mode;
+        app.cycle_mode();
+        // Mode should have changed
+        assert_ne!(app.mode, initial_mode);
+    }
+
+    #[test]
+    fn test_clear_input() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "test input".to_string();
+        app.cursor_position = app.input.len();
+        app.clear_input();
+        assert!(app.input.is_empty());
+        assert_eq!(app.cursor_position, 0);
+    }
+
+    #[test]
+    fn test_queue_message() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.queue_message(QueuedMessage::new("test message".to_string(), None));
+        assert_eq!(app.queued_message_count(), 1);
+        assert!(app.queued_messages.front().is_some());
+    }
+
+    #[test]
+    fn test_remove_queued_message() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.queue_message(QueuedMessage::new("first".to_string(), None));
+        app.queue_message(QueuedMessage::new("second".to_string(), None));
+
+        // Remove first (index 0)
+        let removed = app.remove_queued_message(0);
+        assert!(removed.is_some());
+        assert_eq!(app.queued_message_count(), 1);
+
+        // Remove second (now at index 0)
+        let removed = app.remove_queued_message(0);
+        assert!(removed.is_some());
+        assert_eq!(app.queued_message_count(), 0);
+    }
+
+    #[test]
+    fn test_remove_queued_message_invalid_index() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.queue_message(QueuedMessage::new("test".to_string(), None));
+
+        // Try to remove non-existent index
+        let removed = app.remove_queued_message(100);
+        assert!(removed.is_none());
+    }
+
+    #[test]
+    fn test_set_mode_updates_state() {
+        let mut app = App::new(test_options(false), &Config::default());
+        let initial_mode = app.mode;
+        app.set_mode(AppMode::Yolo);
+        assert_eq!(app.mode, AppMode::Yolo);
+        assert_ne!(app.mode, initial_mode);
+        // Yolo mode should enable trust and shell
+        assert!(app.trust_mode);
+        assert!(app.allow_shell);
+    }
+
+    #[test]
+    fn test_mark_history_updated() {
+        let mut app = App::new(test_options(false), &Config::default());
+        let initial_version = app.history_version;
+        app.mark_history_updated();
+        assert!(app.history_version > initial_version);
+    }
+
+    #[test]
+    fn test_scroll_operations() {
+        let mut app = App::new(test_options(false), &Config::default());
+        // Just verify scroll methods can be called without panic
+        app.scroll_up(5);
+        app.scroll_down(3);
+    }
+
+    #[test]
+    fn test_add_message() {
+        let mut app = App::new(test_options(false), &Config::default());
+        let initial_len = app.history.len();
+        app.add_message(HistoryCell::User {
+            content: "test".to_string(),
+        });
+        assert_eq!(app.history.len(), initial_len + 1);
+    }
+
+    #[test]
+    fn test_compaction_config() {
+        let app = App::new(test_options(false), &Config::default());
+        let config = app.compaction_config();
+        // Config should be valid (just checking it returns something)
+        let _ = config.enabled;
+    }
+
+    #[test]
+    fn test_update_model_compaction_budget() {
+        let mut app = App::new(test_options(false), &Config::default());
+        let initial_threshold = app.compact_threshold;
+        app.model = "deepseek-reasoner".to_string();
+        app.update_model_compaction_budget();
+        // Threshold may have changed based on model
+        // deepseek-reasoner has 128k context, so threshold should be higher
+        assert!(app.compact_threshold >= initial_threshold);
+    }
+
+    #[test]
+    fn test_input_history_navigation() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input_history.push("first".to_string());
+        app.input_history.push("second".to_string());
+
+        // Navigate up
+        app.history_up();
+        assert!(app.history_index.is_some());
+
+        // Navigate down
+        app.history_down();
     }
 }

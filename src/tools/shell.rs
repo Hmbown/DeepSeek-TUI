@@ -21,6 +21,7 @@ use wait_timeout::ChildExt;
 
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
+use super::shell_output::{TruncationMeta, summarize_output, truncate_output, truncate_with_meta};
 use crate::sandbox::{
     CommandSpec,
     ExecEnv,
@@ -28,12 +29,6 @@ use crate::sandbox::{
     SandboxPolicy as ExecutionSandboxPolicy, // Rename to avoid conflict with spec::SandboxPolicy
     SandboxType,
 };
-
-/// Maximum output size before truncation (30KB like Claude Code)
-const MAX_OUTPUT_SIZE: usize = 30_000;
-/// Limits for summary strings in tool metadata.
-const SUMMARY_MAX_LINES: usize = 3;
-const SUMMARY_MAX_CHARS: usize = 240;
 
 /// Status of a shell process
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -360,6 +355,17 @@ impl BackgroundShell {
                 None
             },
             sandbox_denied: self.sandbox_denied(),
+        }
+    }
+}
+
+impl Drop for BackgroundShell {
+    fn drop(&mut self) {
+        if self.status == ShellStatus::Running {
+            if let Some(ref mut child) = self.child {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
         }
     }
 }
@@ -1024,108 +1030,12 @@ impl ShellManager {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-struct TruncationMeta {
-    original_len: usize,
-    omitted: usize,
-    truncated: bool,
-}
-
-fn truncate_with_meta(output: &str) -> (String, TruncationMeta) {
-    let original_len = output.len();
-    if original_len <= MAX_OUTPUT_SIZE {
-        return (
-            output.to_string(),
-            TruncationMeta {
-                original_len,
-                omitted: 0,
-                truncated: false,
-            },
-        );
-    }
-
-    let cut_index = char_boundary_at_or_before(output, MAX_OUTPUT_SIZE);
-    let truncated = &output[..cut_index];
-    let omitted = original_len.saturating_sub(cut_index);
-    let note =
-        format!("...\n\n[Output truncated at {MAX_OUTPUT_SIZE} bytes. {omitted} bytes omitted.]");
-
-    (
-        format!("{truncated}{note}"),
-        TruncationMeta {
-            original_len,
-            omitted,
-            truncated: true,
-        },
-    )
-}
-
-fn char_boundary_at_or_before(text: &str, max_bytes: usize) -> usize {
-    if max_bytes >= text.len() {
-        return text.len();
-    }
-
-    let mut last_end = 0usize;
-    for (idx, ch) in text.char_indices() {
-        let end = idx.saturating_add(ch.len_utf8());
-        if end > max_bytes {
-            break;
-        }
-        last_end = end;
-    }
-
-    last_end.min(text.len())
-}
-
 fn take_delta_from_buffer(buffer: &Arc<Mutex<Vec<u8>>>, cursor: &mut usize) -> (Vec<u8>, usize) {
     let data = buffer.lock().map(|d| d.clone()).unwrap_or_default();
     let start = (*cursor).min(data.len());
     let delta = data[start..].to_vec();
     *cursor = data.len();
     (delta, data.len())
-}
-
-fn strip_truncation_note(text: &str) -> &str {
-    text.split_once("\n\n[Output truncated at")
-        .map_or(text, |(prefix, _)| prefix)
-}
-
-fn truncate_chars(text: &str, max_chars: usize) -> String {
-    if text.chars().count() <= max_chars {
-        return text.to_string();
-    }
-
-    let mut end = text.len();
-    for (count, (idx, _)) in text.char_indices().enumerate() {
-        if count == max_chars {
-            end = idx;
-            break;
-        }
-    }
-
-    format!("{}...", &text[..end])
-}
-
-fn summarize_output(text: &str) -> String {
-    let stripped = strip_truncation_note(text);
-    let summary = stripped
-        .lines()
-        .take(SUMMARY_MAX_LINES)
-        .collect::<Vec<_>>()
-        .join("\n")
-        .trim()
-        .to_string();
-
-    if summary.is_empty() {
-        String::new()
-    } else {
-        truncate_chars(&summary, SUMMARY_MAX_CHARS)
-    }
-}
-
-/// Truncate output to `MAX_OUTPUT_SIZE`
-fn truncate_output(output: &str) -> String {
-    truncate_with_meta(output).0
 }
 
 /// Thread-safe wrapper for `ShellManager`
@@ -1703,203 +1613,4 @@ impl ToolSpec for NoteTool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::tools::spec::ToolContext;
-    use serde_json::{Value, json};
-    use tempfile::tempdir;
-
-    fn echo_command(message: &str) -> String {
-        format!("echo {message}")
-    }
-
-    fn sleep_command(seconds: u64) -> String {
-        #[cfg(windows)]
-        {
-            let ping_count = seconds.saturating_add(1);
-            let ps_path = r#"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"#;
-            format!(
-                "\"{ps_path}\" -NoProfile -Command \"Start-Sleep -Seconds {seconds}\" || ping 127.0.0.1 -n {ping_count} > NUL"
-            )
-        }
-        #[cfg(not(windows))]
-        {
-            format!("sleep {seconds}")
-        }
-    }
-
-    fn sleep_then_echo_command(seconds: u64, message: &str) -> String {
-        #[cfg(windows)]
-        {
-            let ping_count = seconds.saturating_add(1);
-            let ps_path = r#"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"#;
-            format!(
-                "\"{ps_path}\" -NoProfile -Command \"Start-Sleep -Seconds {seconds}; Write-Output {message}\" || (ping 127.0.0.1 -n {ping_count} > NUL && echo {message})"
-            )
-        }
-        #[cfg(not(windows))]
-        {
-            format!("sleep {seconds} && echo {message}")
-        }
-    }
-
-    fn echo_stdin_command() -> String {
-        #[cfg(windows)]
-        {
-            "more".to_string()
-        }
-        #[cfg(not(windows))]
-        {
-            "cat".to_string()
-        }
-    }
-
-    #[test]
-    fn test_sync_execution() {
-        let tmp = tempdir().expect("tempdir");
-        let mut manager = ShellManager::new(tmp.path().to_path_buf());
-
-        let result = manager
-            .execute(&echo_command("hello"), None, 5000, false)
-            .expect("execute");
-
-        assert_eq!(result.status, ShellStatus::Completed);
-        assert!(result.stdout.contains("hello"));
-        assert!(result.task_id.is_none());
-    }
-
-    #[test]
-    fn test_background_execution() {
-        let tmp = tempdir().expect("tempdir");
-        let mut manager = ShellManager::new(tmp.path().to_path_buf());
-
-        let result = manager
-            .execute(&sleep_then_echo_command(1, "done"), None, 5000, true)
-            .expect("execute");
-
-        assert_eq!(result.status, ShellStatus::Running);
-        assert!(result.task_id.is_some());
-
-        let task_id = result
-            .task_id
-            .expect("background execution should return task_id");
-
-        // Wait for completion
-        let final_result = manager
-            .get_output(&task_id, true, 5000)
-            .expect("get_output");
-
-        assert_eq!(final_result.status, ShellStatus::Completed);
-        assert!(final_result.stdout.contains("done"));
-    }
-
-    #[test]
-    fn test_timeout() {
-        let tmp = tempdir().expect("tempdir");
-        let mut manager = ShellManager::new(tmp.path().to_path_buf());
-
-        let result = manager
-            .execute(&sleep_command(10), None, 1000, false)
-            .expect("execute");
-
-        assert_eq!(result.status, ShellStatus::TimedOut);
-    }
-
-    #[test]
-    fn test_kill() {
-        let tmp = tempdir().expect("tempdir");
-        let mut manager = ShellManager::new(tmp.path().to_path_buf());
-
-        let result = manager
-            .execute(&sleep_command(60), None, 5000, true)
-            .expect("execute");
-
-        let task_id = result
-            .task_id
-            .expect("background execution should return task_id");
-
-        // Kill it
-        let killed = manager.kill(&task_id).expect("kill");
-        assert_eq!(killed.status, ShellStatus::Killed);
-    }
-
-    #[test]
-    fn test_write_stdin_streams_output() {
-        let tmp = tempdir().expect("tempdir");
-        let mut manager = ShellManager::new(tmp.path().to_path_buf());
-
-        let result = manager
-            .execute_with_options(&echo_stdin_command(), None, 5000, true, None, false, None)
-            .expect("execute");
-
-        let task_id = result
-            .task_id
-            .expect("background execution should return task_id");
-
-        manager
-            .write_stdin(&task_id, "hello\n", true)
-            .expect("write stdin");
-
-        let delta = manager
-            .get_output_delta(&task_id, true, 5000)
-            .expect("get_output_delta");
-
-        assert!(delta.result.stdout.contains("hello"));
-
-        let delta2 = manager
-            .get_output_delta(&task_id, false, 0)
-            .expect("get_output_delta");
-        assert!(delta2.result.stdout.is_empty());
-    }
-
-    #[test]
-    fn test_output_truncation() {
-        let long_output = "x".repeat(50_000);
-        let truncated = truncate_output(&long_output);
-
-        assert!(truncated.len() < long_output.len());
-        assert!(truncated.contains("truncated"));
-    }
-
-    #[test]
-    fn test_truncate_with_meta_reports_omission_counts() {
-        let long_output = format!("line1\nline2\n{}", "x".repeat(60_000));
-        let (truncated, meta) = truncate_with_meta(&long_output);
-
-        assert!(meta.truncated);
-        assert!(meta.original_len >= long_output.len());
-        assert!(meta.omitted > 0);
-        assert!(truncated.contains("bytes omitted"));
-    }
-
-    #[test]
-    fn test_summarize_output_strips_truncation_note() {
-        let long_output = "x".repeat(60_000);
-        let truncated = truncate_output(&long_output);
-        let summary = summarize_output(&truncated);
-        assert!(!summary.contains("Output truncated at"));
-    }
-
-    #[tokio::test]
-    async fn test_exec_shell_metadata_includes_summaries() {
-        let tmp = tempdir().expect("tempdir");
-        let ctx = ToolContext::new(tmp.path());
-        let tool = ExecShellTool;
-
-        let result = tool
-            .execute(json!({"command": echo_command("hello")}), &ctx)
-            .await
-            .expect("execute");
-        assert!(result.success);
-
-        let meta = result.metadata.expect("metadata");
-        let summary = meta
-            .get("summary")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        assert!(summary.contains("hello"));
-        assert!(meta.get("stdout_len").is_some());
-        assert!(meta.get("stdout_truncated").is_some());
-    }
-}
+mod tests;

@@ -1,7 +1,6 @@
 //! Config commands: config, set, settings, yolo, trust, logout
 
 use super::CommandResult;
-use crate::compaction::CompactionConfig;
 use crate::config::clear_api_key;
 use crate::palette;
 use crate::settings::Settings;
@@ -22,6 +21,7 @@ pub fn show_config(app: &mut App) -> CommandResult {
          Max sub-agents: {}\n\
          Trust mode:     {}\n\
          Auto-compact:   {}\n\
+         Sidebar width:  {}%\n\
          Total tokens:   {}\n\
          Project doc:    {}",
         app.mode.label(),
@@ -32,6 +32,7 @@ pub fn show_config(app: &mut App) -> CommandResult {
         app.max_subagents,
         if app.trust_mode { "yes" } else { "no" },
         if app.auto_compact { "yes" } else { "no" },
+        app.sidebar_width_percent,
         app.total_tokens,
         if has_project_doc {
             "loaded"
@@ -84,12 +85,18 @@ pub fn set_config(app: &mut App, args: Option<&str>) -> CommandResult {
     match key.as_str() {
         "model" => {
             app.model = value.to_string();
-            return CommandResult::message(format!("model = {value}"));
+            app.update_model_compaction_budget();
+            app.last_prompt_tokens = None;
+            app.last_completion_tokens = None;
+            return CommandResult::with_message_and_action(
+                format!("model = {value}"),
+                AppAction::UpdateCompaction(app.compaction_config()),
+            );
         }
         "approval_mode" | "approval" => {
             let mode = match value.to_lowercase().as_str() {
                 "auto" => Some(ApprovalMode::Auto),
-                "suggest" | "suggested" => Some(ApprovalMode::Suggest),
+                "suggest" | "suggested" | "on-request" | "untrusted" => Some(ApprovalMode::Suggest),
                 "never" => Some(ApprovalMode::Never),
                 _ => None,
             };
@@ -98,7 +105,9 @@ pub fn set_config(app: &mut App, args: Option<&str>) -> CommandResult {
                     app.approval_mode = m;
                     CommandResult::message(format!("approval_mode = {}", m.label()))
                 }
-                None => CommandResult::error("Invalid approval_mode. Use: auto, suggest, never"),
+                None => CommandResult::error(
+                    "Invalid approval_mode. Use: auto, suggest/on-request/untrusted, never",
+                ),
             };
         }
         _ => {}
@@ -119,11 +128,7 @@ pub fn set_config(app: &mut App, args: Option<&str>) -> CommandResult {
     match key.as_str() {
         "auto_compact" | "compact" => {
             app.auto_compact = settings.auto_compact;
-            let mut compaction = CompactionConfig::default();
-            compaction.enabled = app.auto_compact;
-            compaction.token_threshold = app.compact_threshold;
-            compaction.model = app.model.clone();
-            action = Some(AppAction::UpdateCompaction(compaction));
+            action = Some(AppAction::UpdateCompaction(app.compaction_config()));
         }
         "show_thinking" | "thinking" => {
             app.show_thinking = settings.show_thinking;
@@ -148,10 +153,18 @@ pub fn set_config(app: &mut App, args: Option<&str>) -> CommandResult {
         "default_model" => {
             if let Some(ref model) = settings.default_model {
                 app.model.clone_from(model);
+                app.update_model_compaction_budget();
+                app.last_prompt_tokens = None;
+                app.last_completion_tokens = None;
+                action = Some(AppAction::UpdateCompaction(app.compaction_config()));
             }
         }
         "theme" => {
             app.ui_theme = palette::ui_theme(&settings.theme);
+            app.mark_history_updated();
+        }
+        "sidebar_width" | "sidebar" => {
+            app.sidebar_width_percent = settings.sidebar_width_percent;
             app.mark_history_updated();
         }
         _ => {}
@@ -236,5 +249,147 @@ mod tests {
         assert!(app.yolo);
         assert_eq!(app.approval_mode, ApprovalMode::Auto);
         assert_eq!(app.mode, AppMode::Yolo);
+    }
+
+    #[test]
+    fn test_show_config_displays_all_fields() {
+        let mut app = create_test_app();
+        app.total_tokens = 1234;
+        let result = show_config(&mut app);
+        assert!(result.message.is_some());
+        let msg = result.message.unwrap();
+        assert!(msg.contains("Session Configuration"));
+        assert!(msg.contains("Mode:"));
+        assert!(msg.contains("Model:"));
+        assert!(msg.contains("Workspace:"));
+        assert!(msg.contains("Shell enabled:"));
+        assert!(msg.contains("Approval mode:"));
+        assert!(msg.contains("Max sub-agents:"));
+        assert!(msg.contains("Trust mode:"));
+        assert!(msg.contains("Auto-compact:"));
+        assert!(msg.contains("Sidebar width:"));
+        assert!(msg.contains("Total tokens:"));
+        assert!(msg.contains("Project doc:"));
+    }
+
+    #[test]
+    fn test_show_settings_loads_from_file() {
+        let mut app = create_test_app();
+        let result = show_settings(&mut app);
+        // Settings should load (may use defaults if file doesn't exist)
+        assert!(result.message.is_some());
+    }
+
+    #[test]
+    fn test_set_without_args_shows_usage() {
+        let mut app = create_test_app();
+        let result = set_config(&mut app, None);
+        assert!(result.message.is_some());
+        let msg = result.message.unwrap();
+        assert!(msg.contains("Usage: /set"));
+        assert!(msg.contains("Available settings:"));
+    }
+
+    #[test]
+    fn test_set_model_updates_app_state() {
+        let mut app = create_test_app();
+        let _old_model = app.model.clone();
+        let result = set_config(&mut app, Some("model deepseek-reasoner"));
+        assert!(result.message.is_some());
+        let msg = result.message.unwrap();
+        assert!(msg.contains("model = deepseek-reasoner"));
+        assert_eq!(app.model, "deepseek-reasoner");
+        assert!(matches!(
+            result.action,
+            Some(AppAction::UpdateCompaction(_))
+        ));
+    }
+
+    #[test]
+    fn test_set_model_with_save_flag() {
+        let mut app = create_test_app();
+        let _result = set_config(&mut app, Some("model deepseek-reasoner --save"));
+        // Note: This test may fail in environments where settings can't be saved
+        // The important thing is that the model is updated
+        assert_eq!(app.model, "deepseek-reasoner");
+    }
+
+    #[test]
+    fn test_set_approval_mode_valid_values() {
+        let mut app = create_test_app();
+        // Test auto
+        let result = set_config(&mut app, Some("approval_mode auto"));
+        assert!(result.message.is_some());
+        assert_eq!(app.approval_mode, ApprovalMode::Auto);
+
+        // Test suggest
+        let result = set_config(&mut app, Some("approval_mode suggest"));
+        assert!(result.message.is_some());
+        assert_eq!(app.approval_mode, ApprovalMode::Suggest);
+
+        // Test never
+        let result = set_config(&mut app, Some("approval_mode never"));
+        assert!(result.message.is_some());
+        assert_eq!(app.approval_mode, ApprovalMode::Never);
+    }
+
+    #[test]
+    fn test_set_approval_mode_invalid_value() {
+        let mut app = create_test_app();
+        let result = set_config(&mut app, Some("approval_mode invalid"));
+        assert!(result.message.is_some());
+        let msg = result.message.unwrap();
+        assert!(msg.contains("Invalid approval_mode"));
+    }
+
+    #[test]
+    fn test_set_without_save_flag() {
+        let mut app = create_test_app();
+        let result = set_config(&mut app, Some("auto_compact true"));
+        assert!(result.message.is_some());
+        let msg = result.message.unwrap();
+        assert!(msg.contains("(session only"));
+    }
+
+    #[test]
+    fn test_trust_enables_flag() {
+        let mut app = create_test_app();
+        assert!(!app.trust_mode);
+        let result = trust(&mut app);
+        assert!(result.message.is_some());
+        let msg = result.message.unwrap();
+        assert!(msg.contains("Trust mode enabled"));
+        assert!(app.trust_mode);
+    }
+
+    #[test]
+    fn test_logout_clears_api_key_state() {
+        let mut app = create_test_app();
+        // Note: This test may fail if API key is not set in environment
+        // but the state changes should still occur
+        let result = logout(&mut app);
+        assert!(result.message.is_some());
+        assert_eq!(app.onboarding, OnboardingState::ApiKey);
+        assert!(app.onboarding_needs_api_key);
+        assert!(app.api_key_input.is_empty());
+        assert_eq!(app.api_key_cursor, 0);
+    }
+
+    #[test]
+    fn test_set_invalid_setting() {
+        let mut app = create_test_app();
+        let _result = set_config(&mut app, Some("nonexistent value"));
+        // Should either error or handle as session setting
+        // The current implementation tries to set it in Settings
+        // which may succeed or fail depending on Settings implementation
+    }
+
+    #[test]
+    fn test_set_key_without_value() {
+        let mut app = create_test_app();
+        let result = set_config(&mut app, Some("model"));
+        assert!(result.message.is_some());
+        let msg = result.message.unwrap();
+        assert!(msg.contains("Usage: /set"));
     }
 }

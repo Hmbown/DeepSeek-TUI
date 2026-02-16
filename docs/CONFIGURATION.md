@@ -24,7 +24,7 @@ You can define multiple profiles in the same file:
 
 ```toml
 api_key = "PERSONAL_KEY"
-default_text_model = "deepseek-reasoner"
+default_text_model = "deepseek-v3.2"
 
 [profiles.work]
 api_key = "WORK_KEY"
@@ -49,7 +49,13 @@ These override config values:
 - `DEEPSEEK_NOTES_PATH`
 - `DEEPSEEK_MEMORY_PATH`
 - `DEEPSEEK_ALLOW_SHELL` (`1`/`true` enables)
+- `DEEPSEEK_APPROVAL_POLICY` (`on-request|untrusted|never`)
+- `DEEPSEEK_SANDBOX_MODE` (`read-only|workspace-write|danger-full-access|external-sandbox`)
+- `DEEPSEEK_MANAGED_CONFIG_PATH`
+- `DEEPSEEK_REQUIREMENTS_PATH`
 - `DEEPSEEK_MAX_SUBAGENTS` (clamped to `1..=20`)
+- `DEEPSEEK_TASKS_DIR` (runtime task queue/artifact storage, default `~/.deepseek/tasks`)
+- `DEEPSEEK_ALLOW_INSECURE_HTTP` (`1`/`true` allows non-local `http://` base URLs; default is reject)
 
 ## Settings File (Persistent UI Preferences)
 
@@ -77,8 +83,12 @@ Common settings keys:
 
 - `api_key` (string, required): must be non-empty (or set `DEEPSEEK_API_KEY`).
 - `base_url` (string, optional): defaults to `https://api.deepseek.com` (OpenAI-compatible Responses API).
-- `default_text_model` (string, optional): defaults to `deepseek-reasoner`. Other available models include `deepseek-chat`, `deepseek-r1`, `deepseek-v3`, `deepseek-v3.2`. Check the DeepSeek API for the latest model list.
+- `default_text_model` (string, optional): defaults to `deepseek-v3.2`. Any valid DeepSeek model ID is accepted; common IDs include `deepseek-chat`, `deepseek-reasoner`, `deepseek-r1`, `deepseek-v3`, and `deepseek-v3.2`. Check the DeepSeek API for the latest model list.
 - `allow_shell` (bool, optional): defaults to `false`.
+- `approval_policy` (string, optional): `on-request`, `untrusted`, or `never`. Runtime `/set approval_mode` also accepts `on-request` and `untrusted` aliases.
+- `sandbox_mode` (string, optional): `read-only`, `workspace-write`, `danger-full-access`, `external-sandbox`.
+- `managed_config_path` (string, optional): managed config file loaded after user/env config.
+- `requirements_path` (string, optional): requirements file used to enforce allowed approval/sandbox values.
 - `max_subagents` (int, optional): defaults to `5` and is clamped to `1..=20`.
 - `skills_dir` (string, optional): defaults to `~/.deepseek/skills` (each skill is a directory containing `SKILL.md`). Workspace-local `.agents/skills` or `./skills` are preferred when present.
 - `mcp_config_path` (string, optional): defaults to `~/.deepseek/mcp.json`.
@@ -122,6 +132,27 @@ You can also override features for a single run:
 - `deepseek --disable subagents`
 
 Use `deepseek features list` to inspect known flags and their effective state.
+
+## Managed Configuration and Requirements
+
+DeepSeek CLI supports a policy layering model:
+
+1. user config + profile + env overrides
+2. managed config (if present)
+3. requirements validation (if present)
+
+By default on Unix:
+- managed config: `/etc/deepseek/managed_config.toml`
+- requirements: `/etc/deepseek/requirements.toml`
+
+Requirements file shape:
+
+```toml
+allowed_approval_policies = ["on-request", "untrusted", "never"]
+allowed_sandbox_modes = ["read-only", "workspace-write"]
+```
+
+If configured values violate requirements, startup fails with a descriptive error.
 
 ## Notes On `deepseek doctor`
 

@@ -53,7 +53,7 @@ impl HistoryCell {
         match self {
             HistoryCell::User { content } => render_message("You", content, user_style(), width),
             HistoryCell::Assistant { content, streaming } => {
-                let mut lines = render_message("DeepSeek", content, assistant_style(), width);
+                let mut lines = render_message("Answer", content, assistant_style(), width);
                 if *streaming {
                     // Add blinking cursor to last line
                     if let Some(last) = lines.last_mut() {
@@ -69,7 +69,7 @@ impl HistoryCell {
                 render_message("System", content, system_style(), width)
             }
             HistoryCell::Thinking { content, streaming } => {
-                let mut lines = render_thinking(content, width);
+                let mut lines = render_thinking(content, width, *streaming);
                 if *streaming {
                     if let Some(last) = lines.last_mut() {
                         last.spans.push(Span::styled(
@@ -123,38 +123,64 @@ impl HistoryCell {
 #[must_use]
 pub fn history_cells_from_message(msg: &Message) -> Vec<HistoryCell> {
     let mut cells = Vec::new();
-    let mut text_blocks = Vec::new();
-    let mut thinking_blocks = Vec::new();
 
     for block in &msg.content {
         match block {
-            ContentBlock::Text { text, .. } => text_blocks.push(text.clone()),
-            ContentBlock::Thinking { thinking } => thinking_blocks.push(thinking.clone()),
-            _ => {}
-        }
-    }
-
-    if !text_blocks.is_empty() {
-        let content = text_blocks.join("\n");
-        match msg.role.as_str() {
-            "user" => cells.push(HistoryCell::User { content }),
-            "assistant" => {
-                cells.push(HistoryCell::Assistant {
-                    content,
-                    streaming: false,
-                });
+            ContentBlock::Text { text, .. } => match msg.role.as_str() {
+                "user" => {
+                    if let Some(HistoryCell::User { content }) = cells.last_mut() {
+                        if !content.is_empty() {
+                            content.push('\n');
+                        }
+                        content.push_str(text);
+                    } else {
+                        cells.push(HistoryCell::User {
+                            content: text.clone(),
+                        });
+                    }
+                }
+                "assistant" => {
+                    if let Some(HistoryCell::Assistant { content, .. }) = cells.last_mut() {
+                        if !content.is_empty() {
+                            content.push('\n');
+                        }
+                        content.push_str(text);
+                    } else {
+                        cells.push(HistoryCell::Assistant {
+                            content: text.clone(),
+                            streaming: false,
+                        });
+                    }
+                }
+                "system" => {
+                    if let Some(HistoryCell::System { content }) = cells.last_mut() {
+                        if !content.is_empty() {
+                            content.push('\n');
+                        }
+                        content.push_str(text);
+                    } else {
+                        cells.push(HistoryCell::System {
+                            content: text.clone(),
+                        });
+                    }
+                }
+                _ => {}
+            },
+            ContentBlock::Thinking { thinking } => {
+                if let Some(HistoryCell::Thinking { content, .. }) = cells.last_mut() {
+                    if !content.is_empty() {
+                        content.push('\n');
+                    }
+                    content.push_str(thinking);
+                } else {
+                    cells.push(HistoryCell::Thinking {
+                        content: thinking.clone(),
+                        streaming: false,
+                    });
+                }
             }
-            "system" => cells.push(HistoryCell::System { content }),
             _ => {}
         }
-    }
-
-    if !thinking_blocks.is_empty() {
-        let reasoning = thinking_blocks.join("\n");
-        cells.push(HistoryCell::Thinking {
-            content: reasoning,
-            streaming: false,
-        });
     }
 
     cells
@@ -1012,14 +1038,25 @@ pub fn extract_reasoning_summary(text: &str) -> Option<String> {
     }
 }
 
-fn render_thinking(content: &str, width: u16) -> Vec<Line<'static>> {
+fn render_thinking(content: &str, width: u16, streaming: bool) -> Vec<Line<'static>> {
     let style = thinking_style();
-    let prefix = "│ ";
+    let prefix = "┆ ";
+    let label = if streaming {
+        "[THINKING LIVE]"
+    } else {
+        "[THINKING]"
+    };
 
     let content_width = usize::from(width.saturating_sub(2).max(1));
     let rendered = markdown_render::render_markdown(content, content_width as u16, style);
 
     let mut lines = Vec::new();
+    lines.push(Line::from(Span::styled(
+        label,
+        Style::default()
+            .fg(palette::STATUS_WARNING)
+            .add_modifier(Modifier::BOLD),
+    )));
 
     for line in rendered {
         let mut spans = vec![Span::styled(prefix, style)];
@@ -1240,7 +1277,7 @@ fn status_symbol(started_at: Option<Instant>, status: ToolStatus) -> String {
     match status {
         ToolStatus::Running => {
             let elapsed_ms = started_at.map_or(0, |t| t.elapsed().as_millis());
-            if (elapsed_ms / 400).is_multiple_of(2) {
+            if (elapsed_ms / 900).is_multiple_of(2) {
                 "*".to_string()
             } else {
                 ".".to_string()
@@ -1279,8 +1316,8 @@ fn system_style() -> Style {
 
 fn thinking_style() -> Style {
     Style::default()
-        .fg(palette::TEXT_MUTED)
-        .add_modifier(Modifier::ITALIC | Modifier::DIM)
+        .fg(palette::TEXT_PRIMARY)
+        .add_modifier(Modifier::ITALIC)
 }
 
 #[cfg(test)]

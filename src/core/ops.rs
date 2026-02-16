@@ -52,6 +52,9 @@ pub enum Op {
         workspace: PathBuf,
     },
 
+    /// Run context compaction immediately.
+    CompactContext,
+
     /// Shutdown the engine
     Shutdown,
 }

@@ -2,6 +2,10 @@
 
 DeepSeek CLI can load additional tools via MCP (Model Context Protocol). MCP servers are local processes that the CLI starts and communicates with over stdio.
 
+Server mode note:
+- `deepseek serve --mcp` runs the MCP stdio server.
+- `deepseek serve --http` runs the runtime HTTP/SSE API (separate mode).
+
 ## Bootstrap MCP Config
 
 Create a starter MCP config at your resolved MCP path:
@@ -11,6 +15,19 @@ deepseek mcp init
 ```
 
 `deepseek setup --mcp` performs the same MCP bootstrap alongside skills setup.
+
+Common management commands:
+
+```bash
+deepseek mcp list
+deepseek mcp tools [server]
+deepseek mcp add <name> --command "<cmd>" --arg "<arg>"
+deepseek mcp add <name> --url "http://localhost:3000/mcp"
+deepseek mcp enable <name>
+deepseek mcp disable <name>
+deepseek mcp remove <name>
+deepseek mcp validate
+```
 
 ## Config File Location
 
@@ -75,10 +92,16 @@ Per-server settings:
 - `env` (object, optional)
 - `connect_timeout`, `execute_timeout`, `read_timeout` (seconds, optional)
 - `disabled` (bool, optional)
+- `enabled` (bool, optional, default `true`)
+- `required` (bool, optional): startup/connect validation fails if this server cannot initialize.
+- `enabled_tools` (array, optional): allowlist of tool names for this server.
+- `disabled_tools` (array, optional): denylist applied after `enabled_tools`.
 
-## Safety Caveat (Important)
+## Safety Notes
 
-MCP tools currently execute without TUI approval prompts. Only configure MCP servers you trust, and treat MCP server configuration as equivalent to running code on your machine.
+MCP tools now flow through the same tool-approval framework as built-in tools. Read-only MCP helpers (resource/prompt listing and reads) can run without prompts in suggestive approval modes, while side-effectful MCP tools require approval.
+
+You should still only configure MCP servers you trust, and treat MCP server configuration as equivalent to running code on your machine.
 
 ## Troubleshooting
 

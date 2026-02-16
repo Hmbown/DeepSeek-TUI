@@ -20,7 +20,7 @@ base_url = "https://api.deepseek.com"
 # ─────────────────────────────────────────────────────────────────────────────────
 # Default Models
 # ─────────────────────────────────────────────────────────────────────────────────
-default_text_model = "deepseek-v3.2"  # also: deepseek-reasoner, deepseek-chat, deepseek-r1, deepseek-v3
+default_text_model = "deepseek-v3.2"  # any valid model ID works (e.g. deepseek-chat, deepseek-reasoner, deepseek-r1, deepseek-v3, future deepseek-v4-mini)
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Paths
@@ -29,15 +29,22 @@ skills_dir = "~/.deepseek/skills"
 mcp_config_path = "~/.deepseek/mcp.json"
 notes_path = "~/.deepseek/notes.txt"
 
+memory_path = "~/.deepseek/memory.md"
+
 # Parsed but currently unused (reserved for future versions):
 # tools_file = "./tools.json"
-# memory_path = "~/.deepseek/memory.md"
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Security
 # ─────────────────────────────────────────────────────────────────────────────────
 allow_shell = false
+approval_policy = "on-request" # on-request | untrusted | never
+sandbox_mode = "workspace-write" # read-only | workspace-write | danger-full-access | external-sandbox
 max_subagents = 5 # optional (1-20)
+
+# Optional managed policy paths (defaults to /etc/deepseek/*.toml on unix):
+# managed_config_path = "/etc/deepseek/managed_config.toml"
+# requirements_path = "/etc/deepseek/requirements.toml"
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # TUI
@@ -67,7 +74,7 @@ max_delay = 60.0
 exponential_base = 2.0
 
 # ─────────────────────────────────────────────────────────────────────────────────
-# Context Compaction (PLANNED - not yet implemented)
+# Context Compaction (config-level tuning not yet wired; use /set auto_compact on|off)
 # ─────────────────────────────────────────────────────────────────────────────────
 # [compaction]
 # enabled = false                  # Enable auto-compaction
@@ -101,3 +108,9 @@ allow_shell = true
 # [[hooks.hooks]]
 # event = "session_start"
 # command = "echo 'DeepSeek CLI session started'"
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Requirements (admin constraints) example file
+# ─────────────────────────────────────────────────────────────────────────────────
+# allowed_approval_policies = ["on-request", "untrusted", "never"]
+# allowed_sandbox_modes = ["read-only", "workspace-write"]

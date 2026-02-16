@@ -7,7 +7,7 @@ DeepSeek CLI has two related concepts:
 
 ## TUI Modes
 
-Press `Tab` to cycle: **Normal → Plan → Agent → YOLO → Normal**.
+Press `Tab` to cycle: **Plan → Agent → YOLO → Plan**.
 
 - **Normal**: chat-first. Approvals for file writes, shell, and paid tools.
 - **Plan**: design-first prompting. Approvals match Normal.
@@ -38,9 +38,9 @@ By default, file tools are restricted to the `--workspace` directory. Enable tru
 
 YOLO mode enables trust mode automatically.
 
-## MCP Caveat (Important)
+## MCP Behavior
 
-MCP tools are exposed as `mcp_<server>_<tool>` and currently execute without TUI approval prompts. Only configure MCP servers you trust.
+MCP tools are exposed as `mcp_<server>_<tool>` and use the same approval flow as built-in tools. Read-only MCP helpers may auto-run in suggestive approval modes; MCP tools with possible side effects require approval.
 
 See `MCP.md`.
 

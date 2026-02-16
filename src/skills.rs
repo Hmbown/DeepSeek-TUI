@@ -4,6 +4,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use std::collections::HashMap;
+
+use crate::logging;
 
 // === Defaults ===
 
@@ -30,6 +33,7 @@ pub struct Skill {
 #[derive(Debug, Clone, Default)]
 pub struct SkillRegistry {
     skills: Vec<Skill>,
+    warnings: Vec<String>,
 }
 
 impl SkillRegistry {
@@ -47,45 +51,72 @@ impl SkillRegistry {
                     && ft.is_dir()
                 {
                     let skill_path = entry.path().join("SKILL.md");
-                    if let Ok(content) = fs::read_to_string(&skill_path)
-                        && let Some(skill) = Self::parse_skill(&skill_path, &content)
-                    {
-                        registry.skills.push(skill);
+                    match fs::read_to_string(&skill_path) {
+                        Ok(content) => match Self::parse_skill(&skill_path, &content) {
+                            Ok(skill) => registry.skills.push(skill),
+                            Err(reason) => registry.push_warning(format!(
+                                "Failed to parse {}: {reason}",
+                                skill_path.display()
+                            )),
+                        },
+                        Err(err) if skill_path.exists() => {
+                            registry.push_warning(format!(
+                                "Failed to read {}: {err}",
+                                skill_path.display()
+                            ));
+                        }
+                        Err(_) => {}
                     }
                 }
             }
+        } else {
+            registry.push_warning(format!("Failed to read skills directory {}", dir.display()));
         }
         registry
     }
 
-    fn parse_skill(_path: &Path, content: &str) -> Option<Skill> {
+    fn push_warning(&mut self, warning: String) {
+        logging::warn(&warning);
+        self.warnings.push(warning);
+    }
+
+    fn parse_skill(_path: &Path, content: &str) -> std::result::Result<Skill, String> {
         let trimmed = content.trim_start();
         let (frontmatter, body) = if trimmed.starts_with("---") {
-            let start = content.find("---")?;
+            let start = content
+                .find("---")
+                .ok_or_else(|| "missing frontmatter opening delimiter".to_string())?;
             let rest = &content[start + 3..];
-            let end = rest.find("---")?;
+            let end = rest
+                .find("---")
+                .ok_or_else(|| "missing frontmatter closing delimiter".to_string())?;
             (&rest[..end], &rest[end + 3..])
         } else {
-            let frontmatter_end = content.find("---")?;
-            (&content[..frontmatter_end], &content[frontmatter_end + 3..])
+            return Err("missing frontmatter opening delimiter '---'".to_string());
         };
-        let name = frontmatter
-            .lines()
-            .find(|l| l.starts_with("name:"))
-            .and_then(|l| l.split(':').nth(1))?
-            .trim()
-            .to_string();
 
-        let description = frontmatter
-            .lines()
-            .find(|l| l.starts_with("description:"))
-            .and_then(|l| l.split(':').nth(1))
-            .map(|s| s.trim().to_string())
-            .unwrap_or_default();
+        let mut metadata = HashMap::new();
+        for raw in frontmatter.lines() {
+            let line = raw.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some((key, value)) = line.split_once(':') {
+                metadata.insert(key.trim().to_ascii_lowercase(), value.trim().to_string());
+            }
+        }
+
+        let name = metadata
+            .get("name")
+            .filter(|name| !name.is_empty())
+            .cloned()
+            .ok_or_else(|| "missing required frontmatter field: name".to_string())?;
+
+        let description = metadata.get("description").cloned().unwrap_or_default();
 
         let body = body.trim().to_string();
 
-        Some(Skill {
+        Ok(Skill {
             name,
             description,
             body,
@@ -100,6 +131,11 @@ impl SkillRegistry {
     /// Return all loaded skills.
     pub fn list(&self) -> &[Skill] {
         &self.skills
+    }
+
+    /// Parse or I/O warnings encountered while discovering skills.
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
     }
 
     /// Check whether any skills were loaded.

@@ -151,3 +151,122 @@ fn extract_cargo_name(content: &str) -> Option<String> {
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::tui::app::{App, TuiOptions};
+    use tempfile::TempDir;
+
+    fn create_test_app_with_tmpdir(tmpdir: &TempDir) -> App {
+        let options = TuiOptions {
+            model: "deepseek-v3.2".to_string(),
+            workspace: tmpdir.path().to_path_buf(),
+            allow_shell: false,
+            use_alt_screen: true,
+            max_subagents: 1,
+            skills_dir: tmpdir.path().join("skills"),
+            memory_path: tmpdir.path().join("memory.md"),
+            notes_path: tmpdir.path().join("notes.txt"),
+            mcp_config_path: tmpdir.path().join("mcp.json"),
+            use_memory: false,
+            start_in_agent_mode: false,
+            skip_onboarding: true,
+            yolo: false,
+            resume_session_id: None,
+        };
+        App::new(options, &Config::default())
+    }
+
+    #[test]
+    fn test_init_creates_agents_md() {
+        let tmpdir = TempDir::new().unwrap();
+        let mut app = create_test_app_with_tmpdir(&tmpdir);
+        let result = init(&mut app);
+        assert!(result.message.is_some());
+        let msg = result.message.unwrap();
+        assert!(msg.contains("Created AGENTS.md"));
+        let agents_path = tmpdir.path().join("AGENTS.md");
+        assert!(agents_path.exists());
+    }
+
+    #[test]
+    fn test_init_fails_if_exists() {
+        let tmpdir = TempDir::new().unwrap();
+        let mut app = create_test_app_with_tmpdir(&tmpdir);
+        // Create file first
+        std::fs::write(tmpdir.path().join("AGENTS.md"), "existing").unwrap();
+        let result = init(&mut app);
+        assert!(result.message.is_some());
+        assert!(result.message.unwrap().contains("already exists"));
+    }
+
+    #[test]
+    fn test_detect_project_type_rust() {
+        let tmpdir = TempDir::new().unwrap();
+        std::fs::write(
+            tmpdir.path().join("Cargo.toml"),
+            "[package]\nname = \"test\"",
+        )
+        .unwrap();
+        let info = detect_project_type(tmpdir.path());
+        assert!(info.contains("Project Type: Rust"));
+        assert!(info.contains("cargo build"));
+        assert!(info.contains("cargo test"));
+    }
+
+    #[test]
+    fn test_detect_project_type_node() {
+        let tmpdir = TempDir::new().unwrap();
+        std::fs::write(tmpdir.path().join("package.json"), "{}").unwrap();
+        let info = detect_project_type(tmpdir.path());
+        assert!(info.contains("Project Type: Node.js"));
+        assert!(info.contains("npm install"));
+    }
+
+    #[test]
+    fn test_detect_project_type_python() {
+        let tmpdir = TempDir::new().unwrap();
+        std::fs::write(tmpdir.path().join("pyproject.toml"), "[project]").unwrap();
+        let info = detect_project_type(tmpdir.path());
+        assert!(info.contains("Project Type: Python"));
+    }
+
+    #[test]
+    fn test_detect_project_type_go() {
+        let tmpdir = TempDir::new().unwrap();
+        std::fs::write(tmpdir.path().join("go.mod"), "module test").unwrap();
+        let info = detect_project_type(tmpdir.path());
+        assert!(info.contains("Project Type: Go"));
+    }
+
+    #[test]
+    fn test_detect_project_type_unknown() {
+        let tmpdir = TempDir::new().unwrap();
+        let info = detect_project_type(tmpdir.path());
+        assert!(info.contains("Project Type: Unknown"));
+    }
+
+    #[test]
+    fn test_extract_cargo_name() {
+        let cargo = r#"
+[package]
+name = "my-project"
+version = "1.0.0"
+"#;
+        assert_eq!(extract_cargo_name(cargo), Some("my-project".to_string()));
+    }
+
+    #[test]
+    fn test_extract_cargo_name_single_quotes() {
+        let cargo = r#"name = 'single-quoted'"#;
+        assert_eq!(extract_cargo_name(cargo), Some("single-quoted".to_string()));
+    }
+
+    #[test]
+    fn test_extract_cargo_name_not_found() {
+        let cargo = "[package]\nversion = \"1.0.0\"";
+        assert_eq!(extract_cargo_name(cargo), None);
+    }
+}

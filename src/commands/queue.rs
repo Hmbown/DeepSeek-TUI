@@ -127,3 +127,177 @@ fn truncate_preview(text: &str) -> String {
     out.push_str("...");
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::tui::app::{App, QueuedMessage, TuiOptions};
+    use tempfile::TempDir;
+
+    fn create_test_app_with_tmpdir(tmpdir: &TempDir) -> App {
+        let options = TuiOptions {
+            model: "deepseek-v3.2".to_string(),
+            workspace: tmpdir.path().to_path_buf(),
+            allow_shell: false,
+            use_alt_screen: true,
+            max_subagents: 1,
+            skills_dir: tmpdir.path().join("skills"),
+            memory_path: tmpdir.path().join("memory.md"),
+            notes_path: tmpdir.path().join("notes.txt"),
+            mcp_config_path: tmpdir.path().join("mcp.json"),
+            use_memory: false,
+            start_in_agent_mode: false,
+            skip_onboarding: true,
+            yolo: false,
+            resume_session_id: None,
+        };
+        App::new(options, &Config::default())
+    }
+
+    #[test]
+    fn test_queue_list_empty() {
+        let tmpdir = TempDir::new().unwrap();
+        let mut app = create_test_app_with_tmpdir(&tmpdir);
+        let result = queue(&mut app, None);
+        assert!(result.message.is_some());
+        let msg = result.message.unwrap();
+        assert!(msg.contains("No queued messages"));
+    }
+
+    #[test]
+    fn test_queue_list_with_messages() {
+        let tmpdir = TempDir::new().unwrap();
+        let mut app = create_test_app_with_tmpdir(&tmpdir);
+        app.queued_messages
+            .push_back(QueuedMessage::new("First message".to_string(), None));
+        app.queued_messages
+            .push_back(QueuedMessage::new("Second message".to_string(), None));
+        let result = queue(&mut app, Some("list"));
+        assert!(result.message.is_some());
+        let msg = result.message.unwrap();
+        assert!(msg.contains("Queued messages (2)"));
+        assert!(msg.contains("1. First message"));
+        assert!(msg.contains("2. Second message"));
+    }
+
+    #[test]
+    fn test_queue_edit_missing_index() {
+        let tmpdir = TempDir::new().unwrap();
+        let mut app = create_test_app_with_tmpdir(&tmpdir);
+        app.queued_messages
+            .push_back(QueuedMessage::new("Test".to_string(), None));
+        let result = queue(&mut app, Some("edit"));
+        assert!(result.message.is_some());
+        assert!(result.message.unwrap().contains("Missing index"));
+    }
+
+    #[test]
+    fn test_queue_edit_invalid_index() {
+        let tmpdir = TempDir::new().unwrap();
+        let mut app = create_test_app_with_tmpdir(&tmpdir);
+        let result = queue(&mut app, Some("edit abc"));
+        assert!(result.message.is_some());
+        assert!(
+            result
+                .message
+                .unwrap()
+                .contains("must be a positive number")
+        );
+    }
+
+    #[test]
+    fn test_queue_edit_not_found() {
+        let tmpdir = TempDir::new().unwrap();
+        let mut app = create_test_app_with_tmpdir(&tmpdir);
+        let result = queue(&mut app, Some("edit 1"));
+        assert!(result.message.is_some());
+        assert!(result.message.unwrap().contains("not found"));
+    }
+
+    #[test]
+    fn test_queue_edit_already_editing() {
+        let tmpdir = TempDir::new().unwrap();
+        let mut app = create_test_app_with_tmpdir(&tmpdir);
+        app.queued_messages
+            .push_back(QueuedMessage::new("First".to_string(), None));
+        app.queued_messages
+            .push_back(QueuedMessage::new("Second".to_string(), None));
+        // Start editing
+        queue(&mut app, Some("edit 1"));
+        // Try to edit another
+        let result = queue(&mut app, Some("edit 2"));
+        assert!(result.message.is_some());
+        assert!(result.message.unwrap().contains("Already editing"));
+    }
+
+    #[test]
+    fn test_queue_edit_success() {
+        let tmpdir = TempDir::new().unwrap();
+        let mut app = create_test_app_with_tmpdir(&tmpdir);
+        app.queued_messages
+            .push_back(QueuedMessage::new("Original message".to_string(), None));
+        let result = queue(&mut app, Some("edit 1"));
+        assert!(result.message.is_some());
+        assert_eq!(app.input, "Original message");
+        assert_eq!(app.cursor_position, app.input.len());
+        assert!(app.queued_draft.is_some());
+    }
+
+    #[test]
+    fn test_queue_drop_success() {
+        let tmpdir = TempDir::new().unwrap();
+        let mut app = create_test_app_with_tmpdir(&tmpdir);
+        app.queued_messages
+            .push_back(QueuedMessage::new("To drop".to_string(), None));
+        let initial_count = app.queued_messages.len();
+        let result = queue(&mut app, Some("drop 1"));
+        assert!(result.message.is_some());
+        assert!(result.message.unwrap().contains("Dropped queued message"));
+        assert_eq!(app.queued_messages.len(), initial_count - 1);
+    }
+
+    #[test]
+    fn test_queue_clear() {
+        let tmpdir = TempDir::new().unwrap();
+        let mut app = create_test_app_with_tmpdir(&tmpdir);
+        app.queued_messages
+            .push_back(QueuedMessage::new("Message 1".to_string(), None));
+        app.queued_messages
+            .push_back(QueuedMessage::new("Message 2".to_string(), None));
+        let result = queue(&mut app, Some("clear"));
+        assert!(result.message.is_some());
+        assert!(result.message.unwrap().contains("Queue cleared"));
+        assert!(app.queued_messages.is_empty());
+    }
+
+    #[test]
+    fn test_queue_clear_already_empty() {
+        let tmpdir = TempDir::new().unwrap();
+        let mut app = create_test_app_with_tmpdir(&tmpdir);
+        let result = queue(&mut app, Some("clear"));
+        assert!(result.message.is_some());
+        assert!(result.message.unwrap().contains("Queue already empty"));
+    }
+
+    #[test]
+    fn test_truncate_preview_short_text() {
+        let result = truncate_preview("Short text");
+        assert_eq!(result, "Short text");
+    }
+
+    #[test]
+    fn test_truncate_preview_long_text() {
+        let long_text = "x".repeat(200);
+        let result = truncate_preview(&long_text);
+        assert!(result.len() <= PREVIEW_LIMIT + 3);
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn test_truncate_preview_unicode() {
+        let text = "Hello 世界 🌍";
+        let result = truncate_preview(text);
+        assert_eq!(result, text);
+    }
+}

@@ -5,7 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.16] - 2026-02-15
+
+### Added
+- `deepseek models` CLI command to fetch and list models from the configured `/v1/models` endpoint (with `--json` output mode).
+- `/models` slash command to fetch and display live model IDs in the TUI.
+- Slash-command autocomplete hints in the composer plus `Tab` completion for `/` commands.
+- Command palette modal (`Ctrl+K`) for quick insertion of slash commands and skills.
+- Persistent right sidebar in wide terminals showing live plan/todo/sub-agent state.
+- Expandable tool payload views (`v` in transcript, `v` in approval modal) for full params/output inspection.
+- Runtime HTTP/SSE API (`deepseek serve --http`) with durable thread/turn/item lifecycle, interrupt/steer, and replayable event timeline.
+- Background task queue (`/task add|list|show|cancel` and `POST /v1/tasks`) with persistent storage, bounded worker pool, and timeline/artifact tracking.
+
+### Changed
+- Centralized the default text model (`DEFAULT_TEXT_MODEL`) and shared common model list to reduce drift across runtime/config paths.
+- `/model` now clarifies that any valid DeepSeek model ID is accepted (including future releases), while still showing common model IDs.
+
+### Fixed
+- Expanded reasoning-model detection for chat history reconstruction (supports R-series and reasoner-style naming without hardcoding single versions).
+- Aligned docs/config examples with actual runtime default model (`deepseek-v3.2`).
 
 ## [0.3.14] - 2026-02-05
 
@@ -29,6 +47,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Map dotted tool names to API-safe identifiers for DeepSeek tool calls
 - Encode any invalid tool names for API tool lists while preserving internal names
+
+## [0.3.11] - 2026-02-04
+
+### Fixed
+- Fix tool name mapping for DeepSeek API
 
 ## [0.3.10] - 2026-02-04
 
@@ -249,15 +272,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hooks system and config profiles
 - Example skills and launch assets
 
-[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.5...HEAD
+[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.14...HEAD
+[0.3.14]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.13...v0.3.14
+[0.3.13]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.12...v0.3.13
+[0.3.12]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.11...v0.3.12
+[0.3.11]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.10...v0.3.11
+[0.3.10]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.6...v0.3.10
+[0.3.9]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.6...v0.3.10
+[0.3.8]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.6...v0.3.10
+[0.3.7]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.6...v0.3.10
+[0.3.6]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.2.2...v0.3.0
-[0.2.2]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.2.1...v0.2.2
-[0.2.1]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.2.0...v0.2.1
+[0.2.2]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.2.0...v0.2.2
+[0.2.1]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.2.0...v0.2.2
 [0.2.0]: https://github.com/Hmbown/DeepSeek-TUI/releases/tag/v0.2.0
 [0.0.2]: https://github.com/Hmbown/DeepSeek-TUI/releases/tag/v0.0.2
 [0.0.1]: https://github.com/Hmbown/DeepSeek-CLI/releases/tag/v0.0.1

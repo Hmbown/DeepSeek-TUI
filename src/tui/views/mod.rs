@@ -12,6 +12,7 @@ pub enum ModalKind {
     Approval,
     Elevation,
     UserInput,
+    CommandPalette,
     Help,
     SubAgents,
     Pager,
@@ -20,6 +21,13 @@ pub enum ModalKind {
 
 #[derive(Debug, Clone)]
 pub enum ViewEvent {
+    CommandPaletteSelected {
+        command: String,
+    },
+    OpenTextPager {
+        title: String,
+        content: String,
+    },
     ApprovalDecision {
         tool_id: String,
         tool_name: String,
@@ -244,14 +252,16 @@ impl ModalView for HelpView {
             Line::from("  Esc               - Cancel request / clear input"),
             Line::from("  Ctrl+C            - Cancel request or exit application"),
             Line::from("  Ctrl+D            - Exit when input is empty"),
+            Line::from("  Ctrl+K            - Open command palette"),
             Line::from("  l                 - Open pager for last message (when input empty)"),
+            Line::from("  v                 - Open tool details (when input empty)"),
             Line::from("  Enter (selection) - Open pager for selected text"),
             Line::from(""),
             Line::from(vec![Span::styled(
                 "=== Modes ===",
                 Style::default().fg(palette::DEEPSEEK_SKY).bold(),
             )]),
-            Line::from("  Tab               - Cycle through modes"),
+            Line::from("  Tab               - Complete /command or cycle modes"),
             Line::from("  Ctrl+X            - Toggle between Agent and Normal modes"),
             Line::from(""),
             Line::from(vec![Span::styled(

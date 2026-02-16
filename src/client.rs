@@ -6,13 +6,20 @@
 use std::collections::HashSet;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use tokio::sync::Mutex as AsyncMutex;
 
-use crate::config::{Config, RetryPolicy};
-use crate::llm_client::{LlmClient, StreamEventBox};
+use crate::config::{Config, DEFAULT_TEXT_MODEL, RetryPolicy};
+use crate::llm_client::{
+    LlmClient, LlmError, RetryConfig as LlmRetryConfig, StreamEventBox, extract_retry_after,
+    with_retry,
+};
 use crate::logging;
 use crate::models::{
     ContentBlock, ContentBlockStart, Delta, Message, MessageDelta, MessageRequest, MessageResponse,
@@ -74,15 +81,55 @@ fn from_api_tool_name(name: &str) -> String {
         }
         out.push('-');
     }
-    out
+
+    // Second pass: decode bare hex escapes (e.g. `x00002E`) that the model
+    // may produce when it mangles the `-x00002E-` delimiter form.  Only
+    // decode when the resulting character is one that `to_api_tool_name`
+    // would have encoded (not alphanumeric, not `_`, not `-`).
+    decode_bare_hex_escapes(&out)
+}
+
+/// Decode bare `x[0-9A-Fa-f]{6}` sequences (optionally followed by `-`)
+/// that survive the standard delimiter-based pass.  This handles cases
+/// where the model strips or replaces the leading `-` of `-x00002E-`.
+fn decode_bare_hex_escapes(input: &str) -> String {
+    use regex::Regex;
+    use std::sync::OnceLock;
+
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"x([0-9A-Fa-f]{6})-?").unwrap());
+
+    let result = re.replace_all(input, |caps: &regex::Captures| {
+        let hex = &caps[1];
+        if let Ok(code) = u32::from_str_radix(hex, 16)
+            && let Some(decoded) = std::char::from_u32(code)
+        {
+            // Only decode characters that to_api_tool_name would have encoded
+            if !decoded.is_ascii_alphanumeric() && decoded != '_' && decoded != '-' {
+                return decoded.to_string();
+            }
+        }
+        // Not a character we'd encode — leave as-is
+        caps[0].to_string()
+    });
+    result.into_owned()
 }
 
 // === Types ===
+
+/// Model descriptor returned by the provider's `/v1/models` endpoint.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct AvailableModel {
+    pub id: String,
+    pub owned_by: Option<String>,
+    pub created: Option<u64>,
+}
 
 /// Client for DeepSeek's OpenAI-compatible APIs.
 #[must_use]
 pub struct DeepSeekClient {
     http_client: reqwest::Client,
+    api_key: String,
     base_url: String,
     retry: RetryPolicy,
     default_model: String,
@@ -90,16 +137,172 @@ pub struct DeepSeekClient {
     /// Counter of chat-completions requests since last Responses API probe.
     /// After RESPONSES_RECOVERY_INTERVAL requests, we retry the Responses API.
     chat_fallback_counter: AtomicU32,
+    connection_health: Arc<AsyncMutex<ConnectionHealth>>,
+    rate_limiter: Arc<AsyncMutex<TokenBucket>>,
 }
 
 /// After this many chat-completions requests, retry the Responses API to see
 /// if it has recovered.
 const RESPONSES_RECOVERY_INTERVAL: u32 = 20;
+const CONNECTION_FAILURE_THRESHOLD: u32 = 2;
+const RECOVERY_PROBE_COOLDOWN: Duration = Duration::from_secs(15);
+
+const DEFAULT_CLIENT_RATE_LIMIT_RPS: f64 = 8.0;
+const DEFAULT_CLIENT_RATE_LIMIT_BURST: f64 = 16.0;
+const ALLOW_INSECURE_HTTP_ENV: &str = "DEEPSEEK_ALLOW_INSECURE_HTTP";
+
+const SSE_BACKPRESSURE_HIGH_WATERMARK: usize = 8 * 1024 * 1024; // 8 MB
+const SSE_BACKPRESSURE_SLEEP_MS: u64 = 10;
+const SSE_MAX_LINES_PER_CHUNK: usize = 256;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConnectionState {
+    Healthy,
+    Degraded,
+    Recovering,
+}
+
+#[derive(Debug)]
+struct ConnectionHealth {
+    state: ConnectionState,
+    consecutive_failures: u32,
+    last_failure: Option<Instant>,
+    last_success: Option<Instant>,
+    last_probe: Option<Instant>,
+}
+
+impl Default for ConnectionHealth {
+    fn default() -> Self {
+        Self {
+            state: ConnectionState::Healthy,
+            consecutive_failures: 0,
+            last_failure: None,
+            last_success: None,
+            last_probe: None,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct TokenBucket {
+    enabled: bool,
+    capacity: f64,
+    tokens: f64,
+    refill_per_sec: f64,
+    last_refill: Instant,
+}
+
+impl TokenBucket {
+    fn from_env() -> Self {
+        let rps = std::env::var("DEEPSEEK_RATE_LIMIT_RPS")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(DEFAULT_CLIENT_RATE_LIMIT_RPS)
+            .max(0.0);
+        let burst = std::env::var("DEEPSEEK_RATE_LIMIT_BURST")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(DEFAULT_CLIENT_RATE_LIMIT_BURST)
+            .max(1.0);
+        let enabled = rps > 0.0;
+        Self {
+            enabled,
+            capacity: burst,
+            tokens: burst,
+            refill_per_sec: rps,
+            last_refill: Instant::now(),
+        }
+    }
+
+    fn refill(&mut self, now: Instant) {
+        if !self.enabled {
+            return;
+        }
+        let elapsed = now.duration_since(self.last_refill).as_secs_f64();
+        self.last_refill = now;
+        self.tokens = (self.tokens + elapsed * self.refill_per_sec).min(self.capacity);
+    }
+
+    fn delay_until_available(&mut self, tokens: f64) -> Option<Duration> {
+        if !self.enabled {
+            return None;
+        }
+        let now = Instant::now();
+        self.refill(now);
+        if self.tokens >= tokens {
+            self.tokens -= tokens;
+            return None;
+        }
+        let needed = tokens - self.tokens;
+        self.tokens = 0.0;
+        if self.refill_per_sec <= 0.0 {
+            return Some(Duration::from_secs(1));
+        }
+        Some(Duration::from_secs_f64(needed / self.refill_per_sec))
+    }
+}
+
+fn apply_request_success(health: &mut ConnectionHealth, now: Instant) -> bool {
+    let recovered = health.state != ConnectionState::Healthy;
+    health.state = ConnectionState::Healthy;
+    health.consecutive_failures = 0;
+    health.last_success = Some(now);
+    recovered
+}
+
+fn apply_request_failure(health: &mut ConnectionHealth, now: Instant) {
+    health.consecutive_failures = health.consecutive_failures.saturating_add(1);
+    health.last_failure = Some(now);
+    if health.consecutive_failures >= CONNECTION_FAILURE_THRESHOLD {
+        health.state = ConnectionState::Degraded;
+    }
+}
+
+fn mark_recovery_probe_if_due(health: &mut ConnectionHealth, now: Instant) -> bool {
+    if health.state == ConnectionState::Healthy {
+        return false;
+    }
+    if health
+        .last_probe
+        .is_some_and(|last| now.duration_since(last) < RECOVERY_PROBE_COOLDOWN)
+    {
+        return false;
+    }
+    health.last_probe = Some(now);
+    health.state = ConnectionState::Recovering;
+    true
+}
+
+fn buffer_pool() -> &'static StdMutex<Vec<Vec<u8>>> {
+    static POOL: OnceLock<StdMutex<Vec<Vec<u8>>>> = OnceLock::new();
+    POOL.get_or_init(|| StdMutex::new(Vec::new()))
+}
+
+fn acquire_stream_buffer() -> Vec<u8> {
+    if let Ok(mut pool) = buffer_pool().lock() {
+        pool.pop().unwrap_or_else(|| Vec::with_capacity(8192))
+    } else {
+        Vec::with_capacity(8192)
+    }
+}
+
+fn release_stream_buffer(mut buf: Vec<u8>) {
+    buf.clear();
+    if buf.capacity() > 256 * 1024 {
+        buf.shrink_to(256 * 1024);
+    }
+    if let Ok(mut pool) = buffer_pool().lock() {
+        if pool.len() < 8 {
+            pool.push(buf);
+        }
+    }
+}
 
 impl Clone for DeepSeekClient {
     fn clone(&self) -> Self {
         Self {
             http_client: self.http_client.clone(),
+            api_key: self.api_key.clone(),
             base_url: self.base_url.clone(),
             retry: self.retry.clone(),
             default_model: self.default_model.clone(),
@@ -109,8 +312,59 @@ impl Clone for DeepSeekClient {
             chat_fallback_counter: AtomicU32::new(
                 self.chat_fallback_counter.load(Ordering::Relaxed),
             ),
+            connection_health: self.connection_health.clone(),
+            rate_limiter: self.rate_limiter.clone(),
         }
     }
+}
+
+// === Helpers ===
+
+/// Maximum bytes to read from an error response body (64 KB).
+const ERROR_BODY_MAX_BYTES: usize = 64 * 1024;
+
+/// Read an error response body with a size limit to prevent unbounded allocation.
+async fn bounded_error_text(response: reqwest::Response, max_bytes: usize) -> String {
+    match response.bytes().await {
+        Ok(bytes) => {
+            let truncated = &bytes[..bytes.len().min(max_bytes)];
+            String::from_utf8_lossy(truncated).into_owned()
+        }
+        Err(_) => String::new(),
+    }
+}
+
+fn validate_base_url_security(base_url: &str) -> Result<()> {
+    if base_url.starts_with("https://")
+        || base_url.starts_with("http://localhost")
+        || base_url.starts_with("http://127.0.0.1")
+        || base_url.starts_with("http://[::1]")
+    {
+        return Ok(());
+    }
+
+    if base_url.starts_with("http://")
+        && std::env::var(ALLOW_INSECURE_HTTP_ENV)
+            .ok()
+            .as_deref()
+            .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+    {
+        logging::warn(format!(
+            "Using insecure HTTP base URL because {} is set",
+            ALLOW_INSECURE_HTTP_ENV
+        ));
+        return Ok(());
+    }
+
+    if base_url.starts_with("http://") {
+        anyhow::bail!(
+            "Refusing insecure base URL '{}'. Use HTTPS or set {}=1 to override for trusted environments.",
+            base_url,
+            ALLOW_INSECURE_HTTP_ENV
+        );
+    }
+
+    Ok(())
 }
 
 // === DeepSeekClient ===
@@ -120,11 +374,12 @@ impl DeepSeekClient {
     pub fn new(config: &Config) -> Result<Self> {
         let api_key = config.deepseek_api_key()?;
         let base_url = config.deepseek_base_url();
+        validate_base_url_security(&base_url)?;
         let retry = config.retry_policy();
         let default_model = config
             .default_text_model
             .clone()
-            .unwrap_or_else(|| "deepseek-v3.2".to_string());
+            .unwrap_or_else(|| DEFAULT_TEXT_MODEL.to_string());
 
         logging::info(format!("DeepSeek base URL: {base_url}"));
         logging::info(format!(
@@ -132,25 +387,164 @@ impl DeepSeekClient {
             retry.enabled, retry.max_retries, retry.initial_delay, retry.max_delay
         ));
 
+        let http_client = Self::build_http_client(&api_key)?;
+
+        Ok(Self {
+            http_client,
+            api_key,
+            base_url,
+            retry,
+            default_model,
+            use_chat_completions: AtomicBool::new(false),
+            chat_fallback_counter: AtomicU32::new(0),
+            connection_health: Arc::new(AsyncMutex::new(ConnectionHealth::default())),
+            rate_limiter: Arc::new(AsyncMutex::new(TokenBucket::from_env())),
+        })
+    }
+
+    fn build_http_client(api_key: &str) -> Result<reqwest::Client> {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         headers.insert(
             AUTHORIZATION,
             HeaderValue::from_str(&format!("Bearer {api_key}"))?,
         );
-
-        let http_client = reqwest::Client::builder()
+        reqwest::Client::builder()
             .default_headers(headers)
-            .build()?;
+            .connect_timeout(Duration::from_secs(30))
+            .timeout(Duration::from_secs(300))
+            .min_tls_version(reqwest::tls::Version::TLS_1_2)
+            .build()
+            .map_err(Into::into)
+    }
 
-        Ok(Self {
-            http_client,
-            base_url,
-            retry,
-            default_model,
-            use_chat_completions: AtomicBool::new(false),
-            chat_fallback_counter: AtomicU32::new(0),
-        })
+    /// List available models from the provider.
+    pub async fn list_models(&self) -> Result<Vec<AvailableModel>> {
+        let url = format!("{}/v1/models", self.base_url.trim_end_matches('/'));
+        let response = self.send_with_retry(|| self.http_client.get(&url)).await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = bounded_error_text(response, ERROR_BODY_MAX_BYTES).await;
+            anyhow::bail!("Failed to list models: HTTP {status}: {error_text}");
+        }
+        let response_text = response.text().await.unwrap_or_default();
+
+        parse_models_response(&response_text)
+    }
+
+    async fn wait_for_rate_limit(&self) {
+        let maybe_delay = {
+            let mut limiter = self.rate_limiter.lock().await;
+            limiter.delay_until_available(1.0)
+        };
+        if let Some(delay) = maybe_delay {
+            tokio::time::sleep(delay).await;
+        }
+    }
+
+    async fn mark_request_success(&self) {
+        let mut health = self.connection_health.lock().await;
+        if apply_request_success(&mut health, Instant::now()) {
+            logging::info("Connection recovered");
+        }
+    }
+
+    async fn mark_request_failure(&self, reason: &str) {
+        let mut health = self.connection_health.lock().await;
+        apply_request_failure(&mut health, Instant::now());
+        logging::warn(format!(
+            "Connection degraded (failures={}): {}",
+            health.consecutive_failures, reason
+        ));
+    }
+
+    async fn maybe_probe_recovery(&self) {
+        let should_probe = {
+            let mut health = self.connection_health.lock().await;
+            mark_recovery_probe_if_due(&mut health, Instant::now())
+        };
+        if !should_probe {
+            return;
+        }
+        let health_url = format!("{}/v1/models", self.base_url.trim_end_matches('/'));
+        let probe = self.http_client.get(health_url).send().await;
+        match probe {
+            Ok(resp) if resp.status().is_success() => {
+                self.mark_request_success().await;
+                logging::info("Recovery probe succeeded");
+            }
+            Ok(resp) => {
+                self.mark_request_failure(&format!("probe status={}", resp.status()))
+                    .await;
+            }
+            Err(err) => {
+                self.mark_request_failure(&format!("probe error={err}"))
+                    .await;
+            }
+        }
+    }
+
+    async fn send_with_retry<F>(&self, mut build: F) -> Result<reqwest::Response>
+    where
+        F: FnMut() -> reqwest::RequestBuilder,
+    {
+        let retry_cfg: LlmRetryConfig = self.retry.clone().into();
+        let request_result = with_retry(
+            &retry_cfg,
+            || {
+                let request = build();
+                async move {
+                    self.wait_for_rate_limit().await;
+                    let response = request
+                        .send()
+                        .await
+                        .map_err(|err| LlmError::from_reqwest(&err))?;
+                    let status = response.status();
+                    if status.is_success() {
+                        return Ok(response);
+                    }
+                    let retryable = status.as_u16() == 429 || status.is_server_error();
+                    if !retryable {
+                        return Ok(response);
+                    }
+                    let retry_after = extract_retry_after(response.headers());
+                    let body = bounded_error_text(response, ERROR_BODY_MAX_BYTES).await;
+                    Err(LlmError::from_http_response_with_retry_after(
+                        status.as_u16(),
+                        &body,
+                        retry_after,
+                    ))
+                }
+            },
+            Some(Box::new(|err, attempt, delay| {
+                logging::warn(format!(
+                    "HTTP retry reason={} attempt={} delay={:.2}s",
+                    match err {
+                        LlmError::RateLimited { .. } => "rate_limited",
+                        LlmError::ServerError { .. } => "server_error",
+                        LlmError::NetworkError(_) => "network_error",
+                        LlmError::Timeout(_) => "timeout",
+                        _ => "other",
+                    },
+                    attempt + 1,
+                    delay.as_secs_f64(),
+                ));
+            })),
+        )
+        .await;
+
+        match request_result {
+            Ok(response) => {
+                self.mark_request_success().await;
+                Ok(response)
+            }
+            Err(err) => {
+                self.mark_request_failure(&err.to_string()).await;
+                self.maybe_probe_recovery().await;
+                Err(anyhow::anyhow!(err.to_string()))
+            }
+        }
     }
 
     async fn create_message_responses(
@@ -181,23 +575,26 @@ impl DeepSeekClient {
         }
 
         let url = format!("{}/v1/responses", self.base_url.trim_end_matches('/'));
-        let response =
-            send_with_retry(&self.retry, || self.http_client.post(&url).json(&body)).await?;
+        let response = self
+            .send_with_retry(|| self.http_client.post(&url).json(&body))
+            .await?;
 
         let status = response.status();
-        let response_text = response.text().await.unwrap_or_default();
 
         if status.as_u16() == 404 || status.as_u16() == 405 {
+            let body = bounded_error_text(response, ERROR_BODY_MAX_BYTES).await;
             return Ok(Err(ResponsesFallback {
                 status: status.as_u16(),
-                body: response_text,
+                body,
             }));
         }
 
         if !status.is_success() {
-            anyhow::bail!("Failed to call DeepSeek Responses API: HTTP {status}: {response_text}");
+            let error_text = bounded_error_text(response, ERROR_BODY_MAX_BYTES).await;
+            anyhow::bail!("Failed to call DeepSeek Responses API: HTTP {status}: {error_text}");
         }
 
+        let response_text = response.text().await.unwrap_or_default();
         let value: Value =
             serde_json::from_str(&response_text).context("Failed to parse Responses API JSON")?;
         let message = parse_responses_message(&value)?;
@@ -232,15 +629,17 @@ impl DeepSeekClient {
             "{}/v1/chat/completions",
             self.base_url.trim_end_matches('/')
         );
-        let response =
-            send_with_retry(&self.retry, || self.http_client.post(&url).json(&body)).await?;
+        let response = self
+            .send_with_retry(|| self.http_client.post(&url).json(&body))
+            .await?;
 
         let status = response.status();
-        let response_text = response.text().await.unwrap_or_default();
         if !status.is_success() {
-            anyhow::bail!("Failed to call DeepSeek Chat API: HTTP {status}: {response_text}");
+            let error_text = bounded_error_text(response, ERROR_BODY_MAX_BYTES).await;
+            anyhow::bail!("Failed to call DeepSeek Chat API: HTTP {status}: {error_text}");
         }
 
+        let response_text = response.text().await.unwrap_or_default();
         let value: Value =
             serde_json::from_str(&response_text).context("Failed to parse Chat API JSON")?;
         parse_chat_message(&value)
@@ -256,6 +655,28 @@ impl LlmClient for DeepSeekClient {
 
     fn model(&self) -> &str {
         &self.default_model
+    }
+
+    async fn health_check(&self) -> Result<bool> {
+        let health_url = format!("{}/v1/models", self.base_url.trim_end_matches('/'));
+        self.wait_for_rate_limit().await;
+        let response = self.http_client.get(health_url).send().await;
+        match response {
+            Ok(resp) if resp.status().is_success() => {
+                self.mark_request_success().await;
+                Ok(true)
+            }
+            Ok(resp) => {
+                self.mark_request_failure(&format!("health status={}", resp.status()))
+                    .await;
+                Ok(false)
+            }
+            Err(err) => {
+                self.mark_request_failure(&format!("health error={err}"))
+                    .await;
+                Ok(false)
+            }
+        }
     }
 
     async fn create_message(&self, request: MessageRequest) -> Result<MessageResponse> {
@@ -330,12 +751,13 @@ impl LlmClient for DeepSeekClient {
             "{}/v1/chat/completions",
             self.base_url.trim_end_matches('/')
         );
-        let response =
-            send_with_retry(&self.retry, || self.http_client.post(&url).json(&body)).await?;
+        let response = self
+            .send_with_retry(|| self.http_client.post(&url).json(&body))
+            .await?;
 
         let status = response.status();
         if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_default();
+            let error_text = bounded_error_text(response, ERROR_BODY_MAX_BYTES).await;
             anyhow::bail!("SSE stream request failed: HTTP {status}: {error_text}");
         }
 
@@ -360,7 +782,7 @@ impl LlmClient for DeepSeekClient {
             });
 
             let mut line_buf = String::new();
-            let mut byte_buf = Vec::new();
+            let mut byte_buf = acquire_stream_buffer();
             let mut content_index: u32 = 0;
             let mut text_started = false;
             let mut thinking_started = false;
@@ -380,13 +802,25 @@ impl LlmClient for DeepSeekClient {
 
                 byte_buf.extend_from_slice(&chunk);
 
+                // Guard against unbounded buffer growth (e.g., malformed stream without newlines)
+                const MAX_SSE_BUF: usize = 10 * 1024 * 1024; // 10 MB
+                if byte_buf.len() > MAX_SSE_BUF {
+                    yield Err(anyhow::anyhow!("SSE buffer exceeded {MAX_SSE_BUF} bytes — aborting stream"));
+                    break;
+                }
+
+                if byte_buf.len() > SSE_BACKPRESSURE_HIGH_WATERMARK {
+                    tokio::time::sleep(Duration::from_millis(SSE_BACKPRESSURE_SLEEP_MS)).await;
+                }
+
                 // Process complete SSE lines from the buffer
+                let mut lines_processed = 0usize;
                 loop {
                     let buf_str = String::from_utf8_lossy(&byte_buf);
                     let Some(newline_pos) = buf_str.find('\n') else { break };
                     let line: String = buf_str[..newline_pos].trim_end_matches('\r').to_string();
                     let consumed = newline_pos + 1;
-                    byte_buf = byte_buf[consumed..].to_vec();
+                    byte_buf.drain(..consumed);
 
                     if line.is_empty() {
                         // Empty line = event boundary, process accumulated data
@@ -415,6 +849,12 @@ impl LlmClient for DeepSeekClient {
                         line_buf.push_str(data);
                     }
                     // Ignore other SSE fields (event:, id:, retry:)
+
+                    lines_processed = lines_processed.saturating_add(1);
+                    if lines_processed >= SSE_MAX_LINES_PER_CHUNK {
+                        // Yield backpressure relief to avoid starving downstream consumers.
+                        break;
+                    }
                 }
             }
 
@@ -426,6 +866,7 @@ impl LlmClient for DeepSeekClient {
                 yield Ok(StreamEvent::ContentBlockStop { index: content_index.saturating_sub(1) });
             }
 
+            release_stream_buffer(byte_buf);
             yield Ok(StreamEvent::MessageStop);
         };
 
@@ -442,6 +883,38 @@ impl LlmClient for DeepSeekClient {
 struct ResponsesFallback {
     status: u16,
     body: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelsListResponse {
+    data: Vec<ModelListItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelListItem {
+    id: String,
+    #[serde(default)]
+    owned_by: Option<String>,
+    #[serde(default)]
+    created: Option<u64>,
+}
+
+fn parse_models_response(payload: &str) -> Result<Vec<AvailableModel>> {
+    let parsed: ModelsListResponse =
+        serde_json::from_str(payload).context("Failed to parse model list JSON")?;
+
+    let mut models = parsed
+        .data
+        .into_iter()
+        .map(|item| AvailableModel {
+            id: item.id,
+            owned_by: item.owned_by,
+            created: item.created,
+        })
+        .collect::<Vec<_>>();
+    models.sort_by(|a, b| a.id.cmp(&b.id));
+    models.dedup_by(|a, b| a.id == b.id);
+    Ok(models)
 }
 
 fn system_to_instructions(system: Option<SystemPrompt>) -> Option<String> {
@@ -696,14 +1169,25 @@ fn build_chat_messages(
 
         if role == "assistant" {
             let content = text_parts.join("\n");
+            let has_text = !content.trim().is_empty();
+            let has_tool_calls = !tool_calls.is_empty();
+
+            // DeepSeek rejects assistant messages where both `content` and
+            // `tool_calls` are missing/null. Skip such entries even if they
+            // carry reasoning-only metadata.
+            if !has_text && !has_tool_calls {
+                pending_tool_calls.clear();
+                continue;
+            }
+
             let mut msg = json!({
                 "role": "assistant",
-                "content": if content.is_empty() { Value::Null } else { json!(content) },
+                "content": if has_text { json!(content) } else { Value::Null },
             });
             if include_reasoning {
                 msg["reasoning_content"] = json!(thinking_parts.join("\n"));
             }
-            if !tool_calls.is_empty() {
+            if has_tool_calls {
                 msg["tool_calls"] = json!(tool_calls);
                 pending_tool_calls = tool_call_ids.into_iter().collect();
             } else {
@@ -805,6 +1289,27 @@ fn build_chat_messages(
                 if let Some(obj) = out[i].as_object_mut() {
                     obj.remove("tool_calls");
                 }
+                // If tool_calls were the only assistant content, remove the now-invalid
+                // assistant message entirely (DeepSeek requires content or tool_calls).
+                let assistant_content_empty = out[i]
+                    .get("content")
+                    .is_none_or(|v| v.is_null() || v.as_str().is_some_and(str::is_empty));
+                if assistant_content_empty {
+                    // Remove orphaned tool results tied to this stripped assistant call set.
+                    let mut j = out.len();
+                    while j > i + 1 {
+                        j -= 1;
+                        if out[j].get("role").and_then(Value::as_str) == Some("tool")
+                            && let Some(id) = out[j].get("tool_call_id").and_then(Value::as_str)
+                            && expected_ids.contains(id)
+                        {
+                            out.remove(j);
+                        }
+                    }
+                    out.remove(i);
+                    i = i.saturating_sub(1);
+                    continue;
+                }
                 // Remove contiguous tool results first
                 if tool_result_end > i + 1 {
                     out.drain((i + 1)..tool_result_end);
@@ -864,10 +1369,21 @@ fn map_tool_choice_for_chat(choice: &Value) -> Option<Value> {
 
 fn requires_reasoning_content(model: &str) -> bool {
     let lower = model.to_lowercase();
-    lower.contains("deepseek-reasoner")
-        || lower.contains("deepseek-r1")
-        || lower.contains("deepseek-v3.2")
+    lower.contains("deepseek-v3.2")
         || lower.contains("reasoner")
+        || lower.contains("-reasoning")
+        || lower.contains("-thinking")
+        || has_deepseek_r_series_marker(&lower)
+}
+
+fn has_deepseek_r_series_marker(model_lower: &str) -> bool {
+    const PREFIX: &str = "deepseek-r";
+    model_lower.match_indices(PREFIX).any(|(idx, _)| {
+        model_lower[idx + PREFIX.len()..]
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_ascii_digit())
+    })
 }
 
 fn parse_chat_message(payload: &Value) -> Result<MessageResponse> {
@@ -1239,68 +1755,59 @@ fn parse_sse_chunk(
     events
 }
 
-// === Retry Helpers ===
-
-async fn send_with_retry<F>(policy: &RetryPolicy, mut build: F) -> Result<reqwest::Response>
-where
-    F: FnMut() -> reqwest::RequestBuilder,
-{
-    let mut attempt: u32 = 0;
-
-    loop {
-        let result = build().send().await;
-
-        match result {
-            Ok(response) => {
-                let status = response.status();
-
-                // Return successful responses immediately
-                if status.is_success() {
-                    return Ok(response);
-                }
-
-                // Return non-retryable errors to let caller handle (e.g., 404 for fallback)
-                let retryable = status.as_u16() == 429 || status.is_server_error();
-                if !retryable {
-                    return Ok(response);
-                }
-
-                // Retry if policy allows and we haven't exceeded max retries
-                if !policy.enabled || attempt >= policy.max_retries {
-                    return Ok(response);
-                }
-
-                logging::warn(format!(
-                    "Retryable HTTP {} (attempt {} of {})",
-                    status.as_u16(),
-                    attempt + 1,
-                    policy.max_retries + 1
-                ));
-            }
-            Err(err) => {
-                if !policy.enabled || attempt >= policy.max_retries {
-                    return Err(err.into());
-                }
-                logging::warn(format!(
-                    "Request error: {} (attempt {} of {})",
-                    err,
-                    attempt + 1,
-                    policy.max_retries + 1
-                ));
-            }
-        }
-
-        let delay = policy.delay_for_attempt(attempt);
-        attempt += 1;
-        logging::info(format!("Retrying after {:.2}s", delay.as_secs_f64()));
-        tokio::time::sleep(delay).await;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn tool_name_roundtrip_dot() {
+        let original = "multi_tool_use.parallel";
+        let encoded = to_api_tool_name(original);
+        assert_eq!(encoded, "multi_tool_use-x00002E-parallel");
+        let decoded = from_api_tool_name(&encoded);
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn tool_name_decode_mangled_dot_prefix() {
+        // Model replaces leading `-` with `.` in `-x00002E-`
+        let mangled = "multi_tool_use.x00002E-parallel";
+        let decoded = from_api_tool_name(mangled);
+        assert_eq!(decoded, "multi_tool_use..parallel");
+    }
+
+    #[test]
+    fn tool_name_decode_bare_hex_no_trailing_dash() {
+        // Bare hex without trailing dash
+        let mangled = "foo_x00002Ebar";
+        let decoded = from_api_tool_name(mangled);
+        assert_eq!(decoded, "foo_.bar");
+    }
+
+    #[test]
+    fn tool_name_bare_hex_preserves_alnum() {
+        // x000041 = 'A' — should NOT be decoded (alphanumeric)
+        let input = "foox000041bar";
+        let decoded = from_api_tool_name(input);
+        assert_eq!(decoded, input);
+    }
+
+    #[test]
+    fn tool_name_bare_hex_preserves_underscore() {
+        // x00005F = '_' — should NOT be decoded
+        let input = "foox00005Fbar";
+        let decoded = from_api_tool_name(input);
+        assert_eq!(decoded, input);
+    }
+
+    #[test]
+    fn tool_name_roundtrip_colon() {
+        let original = "mcp__server:tool_name";
+        let encoded = to_api_tool_name(original);
+        let decoded = from_api_tool_name(&encoded);
+        assert_eq!(decoded, original);
+    }
 
     #[test]
     fn chat_messages_include_reasoning_content_for_reasoner() {
@@ -1328,7 +1835,7 @@ mod tests {
     }
 
     #[test]
-    fn chat_messages_skip_reasoning_content_for_chat_model() {
+    fn chat_messages_drop_thinking_only_assistant_for_chat_model() {
         let message = Message {
             role: "assistant".to_string(),
             content: vec![ContentBlock::Thinking {
@@ -1336,11 +1843,40 @@ mod tests {
             }],
         };
         let out = build_chat_messages(None, &[message], "deepseek-chat");
-        let assistant = out
-            .iter()
-            .find(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
-            .expect("assistant message");
-        assert!(assistant.get("reasoning_content").is_none());
+        assert!(
+            !out.iter()
+                .any(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
+        );
+    }
+
+    #[test]
+    fn chat_messages_drop_thinking_only_assistant_for_r_series_model() {
+        let message = Message {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::Thinking {
+                thinking: "plan".to_string(),
+            }],
+        };
+        let out = build_chat_messages(None, &[message], "deepseek-r2-lite-preview");
+        assert!(
+            !out.iter()
+                .any(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
+        );
+    }
+
+    #[test]
+    fn chat_messages_drop_thinking_only_assistant_for_v4_mini_model() {
+        let message = Message {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::Thinking {
+                thinking: "plan".to_string(),
+            }],
+        };
+        let out = build_chat_messages(None, &[message], "deepseek-v4-mini");
+        assert!(
+            !out.iter()
+                .any(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
+        );
     }
 
     #[test]
@@ -1457,12 +1993,17 @@ mod tests {
         let out = build_chat_messages(None, &messages, "deepseek-chat");
         let assistant = out
             .iter()
-            .find(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
-            .expect("assistant message");
-        // The safety net should have stripped tool_calls.
+            .find(|value| value.get("role").and_then(Value::as_str) == Some("assistant"));
+        // The safety net may drop the assistant message entirely if it only
+        // contained orphaned tool_calls and no text content.
         assert!(
-            assistant.get("tool_calls").is_none(),
-            "orphaned tool_calls should be stripped by safety net"
+            assistant.is_none(),
+            "assistant without content/tool_calls should be removed"
+        );
+        assert!(
+            !out.iter()
+                .any(|v| v.get("role").and_then(Value::as_str) == Some("tool")),
+            "orphaned tool results should also be removed"
         );
     }
 
@@ -1553,16 +2094,132 @@ mod tests {
         let out = build_chat_messages(None, &messages, "deepseek-chat");
         let assistant = out
             .iter()
-            .find(|v| v.get("role").and_then(Value::as_str) == Some("assistant"))
-            .expect("assistant message");
+            .find(|v| v.get("role").and_then(Value::as_str) == Some("assistant"));
         assert!(
-            assistant.get("tool_calls").is_none(),
-            "partial tool_calls should be stripped"
+            assistant.is_none(),
+            "assistant with only partial tool_calls should be removed"
         );
         assert!(
             !out.iter()
                 .any(|v| v.get("role").and_then(Value::as_str) == Some("tool")),
             "all orphaned tool results should be removed"
         );
+    }
+
+    #[test]
+    fn parse_models_response_parses_and_deduplicates() {
+        let payload = r#"{
+            "object": "list",
+            "data": [
+                {"id": "deepseek-r1", "object": "model", "owned_by": "deepseek", "created": 1},
+                {"id": "deepseek-chat", "object": "model"},
+                {"id": "deepseek-r1", "object": "model", "owned_by": "deepseek", "created": 1}
+            ]
+        }"#;
+
+        let models = parse_models_response(payload).expect("parse models");
+        assert_eq!(
+            models,
+            vec![
+                AvailableModel {
+                    id: "deepseek-chat".to_string(),
+                    owned_by: None,
+                    created: None
+                },
+                AvailableModel {
+                    id: "deepseek-r1".to_string(),
+                    owned_by: Some("deepseek".to_string()),
+                    created: Some(1)
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn token_bucket_enforces_delay_when_empty() {
+        let now = Instant::now();
+        let mut bucket = TokenBucket {
+            enabled: true,
+            capacity: 1.0,
+            tokens: 1.0,
+            refill_per_sec: 2.0,
+            last_refill: now,
+        };
+
+        assert!(bucket.delay_until_available(1.0).is_none());
+        let delay = bucket
+            .delay_until_available(1.0)
+            .expect("bucket should require refill delay");
+        assert!(
+            delay >= Duration::from_millis(400) && delay <= Duration::from_millis(600),
+            "unexpected refill delay: {delay:?}"
+        );
+    }
+
+    #[test]
+    fn stream_buffer_pool_reuses_released_buffers() {
+        let mut first = acquire_stream_buffer();
+        first.extend_from_slice(b"hello");
+        let released_capacity = first.capacity();
+        release_stream_buffer(first);
+
+        let second = acquire_stream_buffer();
+        assert!(second.is_empty());
+        assert!(
+            second.capacity() >= released_capacity,
+            "pooled buffer capacity should be reused"
+        );
+    }
+
+    #[test]
+    fn base_url_security_rejects_insecure_non_local_http() {
+        let err = validate_base_url_security("http://api.deepseek.com")
+            .expect_err("non-local insecure HTTP should be rejected");
+        assert!(err.to_string().contains("Refusing insecure base URL"));
+    }
+
+    #[test]
+    fn base_url_security_allows_localhost_http() {
+        assert!(validate_base_url_security("http://localhost:8080").is_ok());
+        assert!(validate_base_url_security("http://127.0.0.1:8080").is_ok());
+    }
+
+    #[test]
+    fn connection_health_degrades_and_recovers() {
+        let now = Instant::now();
+        let mut health = ConnectionHealth::default();
+        assert_eq!(health.state, ConnectionState::Healthy);
+
+        apply_request_failure(&mut health, now);
+        assert_eq!(health.state, ConnectionState::Healthy);
+
+        apply_request_failure(&mut health, now + Duration::from_millis(1));
+        assert_eq!(health.state, ConnectionState::Degraded);
+        assert_eq!(health.consecutive_failures, 2);
+
+        let recovered = apply_request_success(&mut health, now + Duration::from_secs(1));
+        assert!(recovered);
+        assert_eq!(health.state, ConnectionState::Healthy);
+        assert_eq!(health.consecutive_failures, 0);
+    }
+
+    #[test]
+    fn recovery_probe_respects_cooldown() {
+        let now = Instant::now();
+        let mut health = ConnectionHealth {
+            state: ConnectionState::Degraded,
+            ..ConnectionHealth::default()
+        };
+
+        assert!(mark_recovery_probe_if_due(&mut health, now));
+        assert_eq!(health.state, ConnectionState::Recovering);
+        assert!(!mark_recovery_probe_if_due(
+            &mut health,
+            now + Duration::from_secs(1)
+        ));
+        assert!(mark_recovery_probe_if_due(
+            &mut health,
+            now + RECOVERY_PROBE_COOLDOWN + Duration::from_millis(1)
+        ));
     }
 }

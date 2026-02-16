@@ -29,6 +29,7 @@ use anyhow::Result;
 use std::future::Future;
 use std::pin::Pin;
 use std::time::{Duration, Instant};
+use uuid::Uuid;
 
 // === LlmClient Trait ===
 
@@ -420,16 +421,11 @@ impl RetryConfig {
 
         let final_delay = if self.jitter {
             // Add random jitter to prevent thundering herd problem
-            // Uses a simple deterministic approach when rand is not available
             let jitter_range = capped_delay * self.jitter_factor;
-
-            // Simple pseudo-random jitter based on current time
-            // This avoids adding the rand crate as a dependency
-            let nanos = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.subsec_nanos())
-                .unwrap_or(0);
-            let random_factor = f64::from(nanos % 1000) / 1000.0; // 0.0 to 0.999
+            // Use UUID v4 entropy for jitter randomness.
+            let bytes = *Uuid::new_v4().as_bytes();
+            let sample = u16::from_le_bytes([bytes[0], bytes[1]]);
+            let random_factor = f64::from(sample) / f64::from(u16::MAX); // 0.0 to 1.0
             let jitter = jitter_range * (2.0 * random_factor - 1.0); // -range to +range
 
             (capped_delay + jitter).max(0.0)

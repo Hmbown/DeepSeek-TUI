@@ -18,6 +18,7 @@ pub mod registry;
 pub mod review;
 pub mod search;
 pub mod shell;
+mod shell_output;
 pub mod spec;
 pub mod sports;
 pub mod subagent;

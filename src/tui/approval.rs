@@ -98,7 +98,7 @@ impl ApprovalRequest {
 pub fn get_tool_category(name: &str) -> ToolCategory {
     if matches!(name, "write_file" | "edit_file" | "apply_patch") {
         ToolCategory::FileWrite
-    } else if name == "exec_shell" {
+    } else if name == "exec_shell" || name.starts_with("mcp_") || name.starts_with("list_mcp_") {
         ToolCategory::Shell
     } else {
         // Default to safe (includes read/list/todo/note/update_plan and unknown tools)
@@ -151,6 +151,15 @@ impl ApprovalView {
         })
     }
 
+    fn emit_params_pager(&self) -> ViewAction {
+        let content = serde_json::to_string_pretty(&self.request.params)
+            .unwrap_or_else(|_| self.request.params.to_string());
+        ViewAction::Emit(ViewEvent::OpenTextPager {
+            title: format!("Tool Params: {}", self.request.tool_name),
+            content,
+        })
+    }
+
     fn is_timed_out(&self) -> bool {
         match self.timeout {
             Some(timeout) => self.requested_at.elapsed() >= timeout,
@@ -178,6 +187,7 @@ impl ModalView for ApprovalView {
             KeyCode::Char('y') => self.emit_decision(ReviewDecision::Approved, false),
             KeyCode::Char('a') => self.emit_decision(ReviewDecision::ApprovedForSession, false),
             KeyCode::Char('n') => self.emit_decision(ReviewDecision::Denied, false),
+            KeyCode::Char('v') | KeyCode::Char('V') => self.emit_params_pager(),
             KeyCode::Esc => self.emit_decision(ReviewDecision::Abort, false),
             _ => ViewAction::None,
         }
@@ -430,5 +440,535 @@ impl ModalView for ElevationView {
     fn render(&self, area: ratatui::layout::Rect, buf: &mut ratatui::buffer::Buffer) {
         let elevation_widget = ElevationWidget::new(&self.request, self.selected);
         elevation_widget.render(area, buf);
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyModifiers};
+    use serde_json::json;
+
+    fn create_key_event(code: KeyCode) -> KeyEvent {
+        KeyEvent {
+            code,
+            modifiers: KeyModifiers::empty(),
+            kind: crossterm::event::KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        }
+    }
+
+    // ========================================================================
+    // Tool Category Tests
+    // ========================================================================
+
+    #[test]
+    fn test_get_tool_category_safe_tools() {
+        // Read-only operations should be Safe
+        assert_eq!(get_tool_category("read_file"), ToolCategory::Safe);
+        assert_eq!(get_tool_category("list_dir"), ToolCategory::Safe);
+        assert_eq!(get_tool_category("todo_write"), ToolCategory::Safe);
+        assert_eq!(get_tool_category("todo_read"), ToolCategory::Safe);
+        assert_eq!(get_tool_category("note"), ToolCategory::Safe);
+        assert_eq!(get_tool_category("update_plan"), ToolCategory::Safe);
+        assert_eq!(get_tool_category("unknown_tool"), ToolCategory::Safe);
+    }
+
+    #[test]
+    fn test_get_tool_category_file_write_tools() {
+        // File modification tools should be FileWrite
+        assert_eq!(get_tool_category("write_file"), ToolCategory::FileWrite);
+        assert_eq!(get_tool_category("edit_file"), ToolCategory::FileWrite);
+        assert_eq!(get_tool_category("apply_patch"), ToolCategory::FileWrite);
+    }
+
+    #[test]
+    fn test_get_tool_category_shell_tools() {
+        // Shell execution tools should be Shell
+        assert_eq!(get_tool_category("exec_shell"), ToolCategory::Shell);
+        assert_eq!(get_tool_category("mcp_tool"), ToolCategory::Shell);
+        assert_eq!(get_tool_category("list_mcp_tools"), ToolCategory::Shell);
+    }
+
+    // ========================================================================
+    // ApprovalRequest Tests
+    // ========================================================================
+
+    #[test]
+    fn test_approval_request_new() {
+        let params = json!({"path": "src/main.rs", "content": "test"});
+        let request = ApprovalRequest::new("test-id", "write_file", &params);
+
+        assert_eq!(request.id, "test-id");
+        assert_eq!(request.tool_name, "write_file");
+        assert_eq!(request.category, ToolCategory::FileWrite);
+        assert_eq!(request.params, params);
+    }
+
+    #[test]
+    fn test_approval_request_params_display_truncates() {
+        // Create params with a very long string
+        let long_content = "x".repeat(300);
+        let params = json!({"path": "src/main.rs", "content": long_content});
+        let request = ApprovalRequest::new("test-id", "write_file", &params);
+
+        let display = request.params_display();
+        // Should be truncated to around 200 chars
+        assert!(display.len() < 250);
+        assert!(display.contains("src/main.rs"));
+    }
+
+    #[test]
+    fn test_approval_request_params_display_short() {
+        let params = json!({"path": "src/main.rs"});
+        let request = ApprovalRequest::new("test-id", "read_file", &params);
+
+        let display = request.params_display();
+        assert!(display.contains("src/main.rs"));
+    }
+
+    // ========================================================================
+    // ApprovalView Tests
+    // ========================================================================
+
+    #[test]
+    fn test_approval_view_initial_state() {
+        let params = json!({"path": "src/main.rs"});
+        let request = ApprovalRequest::new("test-id", "read_file", &params);
+        let view = ApprovalView::new(request.clone());
+
+        assert_eq!(view.selected, 0);
+        assert!(view.timeout.is_none());
+    }
+
+    #[test]
+    fn test_approval_view_navigation() {
+        let params = json!({"path": "src/main.rs"});
+        let request = ApprovalRequest::new("test-id", "read_file", &params);
+        let mut view = ApprovalView::new(request);
+
+        // Initially at 0
+        assert_eq!(view.selected, 0);
+
+        // Navigate down
+        view.select_next();
+        assert_eq!(view.selected, 1);
+
+        view.select_next();
+        assert_eq!(view.selected, 2);
+
+        view.select_next();
+        assert_eq!(view.selected, 3);
+
+        // Should clamp at 3
+        view.select_next();
+        assert_eq!(view.selected, 3);
+
+        // Navigate up
+        view.select_prev();
+        assert_eq!(view.selected, 2);
+    }
+
+    #[test]
+    fn test_approval_view_keybindings_decisions() {
+        let params = json!({"path": "src/main.rs"});
+        let request = ApprovalRequest::new("test-id", "read_file", &params);
+        let mut view = ApprovalView::new(request.clone());
+
+        // Test 'y' -> Approved
+        let action = view.handle_key(create_key_event(KeyCode::Char('y')));
+        assert!(matches!(
+            action,
+            ViewAction::EmitAndClose(ViewEvent::ApprovalDecision {
+                decision: ReviewDecision::Approved,
+                ..
+            })
+        ));
+
+        // Test 'n' -> Denied
+        let mut view = ApprovalView::new(request.clone());
+        let action = view.handle_key(create_key_event(KeyCode::Char('n')));
+        assert!(matches!(
+            action,
+            ViewAction::EmitAndClose(ViewEvent::ApprovalDecision {
+                decision: ReviewDecision::Denied,
+                ..
+            })
+        ));
+
+        // Test 'a' -> ApprovedForSession
+        let mut view = ApprovalView::new(request.clone());
+        let action = view.handle_key(create_key_event(KeyCode::Char('a')));
+        assert!(matches!(
+            action,
+            ViewAction::EmitAndClose(ViewEvent::ApprovalDecision {
+                decision: ReviewDecision::ApprovedForSession,
+                ..
+            })
+        ));
+
+        // Test Esc -> Abort
+        let mut view = ApprovalView::new(request);
+        let action = view.handle_key(create_key_event(KeyCode::Esc));
+        assert!(matches!(
+            action,
+            ViewAction::EmitAndClose(ViewEvent::ApprovalDecision {
+                decision: ReviewDecision::Abort,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn test_approval_view_enter_uses_selected_option() {
+        let params = json!({"path": "src/main.rs"});
+        let request = ApprovalRequest::new("test-id", "read_file", &params);
+        let mut view = ApprovalView::new(request);
+
+        // Navigate to index 2 (Denied)
+        view.select_next();
+        view.select_next();
+        assert_eq!(view.selected, 2);
+
+        // Press Enter - should use current selection
+        let action = view.handle_key(create_key_event(KeyCode::Enter));
+        assert!(matches!(
+            action,
+            ViewAction::EmitAndClose(ViewEvent::ApprovalDecision {
+                decision: ReviewDecision::Denied,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn test_approval_view_navigation_keys() {
+        let params = json!({"path": "src/main.rs"});
+        let request = ApprovalRequest::new("test-id", "read_file", &params);
+        let mut view = ApprovalView::new(request);
+
+        // Test Up arrow
+        view.handle_key(create_key_event(KeyCode::Up));
+        assert_eq!(view.selected, 0); // Should clamp at 0
+
+        // Test Down arrow
+        view.handle_key(create_key_event(KeyCode::Down));
+        assert_eq!(view.selected, 1);
+
+        // Test 'j' for down
+        view.handle_key(create_key_event(KeyCode::Char('j')));
+        assert_eq!(view.selected, 2);
+
+        // Test 'k' for up
+        view.handle_key(create_key_event(KeyCode::Char('k')));
+        assert_eq!(view.selected, 1);
+    }
+
+    #[test]
+    fn test_approval_view_view_params() {
+        let params = json!({"path": "src/main.rs", "content": "test"});
+        let request = ApprovalRequest::new("test-id", "read_file", &params);
+        let mut view = ApprovalView::new(request.clone());
+
+        // Test 'v' to view params
+        let action = view.handle_key(create_key_event(KeyCode::Char('v')));
+        assert!(matches!(
+            action,
+            ViewAction::Emit(ViewEvent::OpenTextPager { .. })
+        ));
+
+        // Test 'V' (uppercase) also works
+        let mut view = ApprovalView::new(request.clone());
+        let action = view.handle_key(create_key_event(KeyCode::Char('V')));
+        assert!(matches!(
+            action,
+            ViewAction::Emit(ViewEvent::OpenTextPager { .. })
+        ));
+    }
+
+    #[test]
+    fn test_approval_view_current_decision_mapping() {
+        let params = json!({"path": "src/main.rs"});
+        let request = ApprovalRequest::new("test-id", "read_file", &params);
+        let mut view = ApprovalView::new(request);
+
+        // Index 0 -> Approved
+        view.selected = 0;
+        assert_eq!(view.current_decision(), ReviewDecision::Approved);
+
+        // Index 1 -> ApprovedForSession
+        view.selected = 1;
+        assert_eq!(view.current_decision(), ReviewDecision::ApprovedForSession);
+
+        // Index 2 -> Denied
+        view.selected = 2;
+        assert_eq!(view.current_decision(), ReviewDecision::Denied);
+
+        // Index 3 -> Abort
+        view.selected = 3;
+        assert_eq!(view.current_decision(), ReviewDecision::Abort);
+    }
+
+    // ========================================================================
+    // ElevationView Tests
+    // ========================================================================
+
+    #[test]
+    fn test_elevation_view_initial_state() {
+        let request =
+            ElevationRequest::for_shell("test-id", "cargo build", "network blocked", true, false);
+        let view = ElevationView::new(request);
+
+        assert_eq!(view.selected, 0);
+    }
+
+    #[test]
+    fn test_elevation_view_keybindings() {
+        let request =
+            ElevationRequest::for_shell("test-id", "cargo test", "write blocked", false, true);
+        let mut view = ElevationView::new(request);
+
+        // Test 'n' -> WithNetwork
+        let action = view.handle_key(create_key_event(KeyCode::Char('n')));
+        assert!(matches!(
+            action,
+            ViewAction::EmitAndClose(ViewEvent::ElevationDecision {
+                option: ElevationOption::WithNetwork,
+                ..
+            })
+        ));
+
+        // Test 'w' -> WithWriteAccess
+        let request =
+            ElevationRequest::for_shell("test-id", "cargo build", "write blocked", false, true);
+        let mut view = ElevationView::new(request);
+        let action = view.handle_key(create_key_event(KeyCode::Char('w')));
+        assert!(matches!(
+            action,
+            ViewAction::EmitAndClose(ViewEvent::ElevationDecision {
+                option: ElevationOption::WithWriteAccess(_),
+                ..
+            })
+        ));
+
+        // Test 'f' -> FullAccess
+        let request =
+            ElevationRequest::for_shell("test-id", "cargo build", "blocked", false, false);
+        let mut view = ElevationView::new(request);
+        let action = view.handle_key(create_key_event(KeyCode::Char('f')));
+        assert!(matches!(
+            action,
+            ViewAction::EmitAndClose(ViewEvent::ElevationDecision {
+                option: ElevationOption::FullAccess,
+                ..
+            })
+        ));
+
+        // Test Esc -> Abort
+        let request =
+            ElevationRequest::for_shell("test-id", "cargo build", "blocked", false, false);
+        let mut view = ElevationView::new(request);
+        let action = view.handle_key(create_key_event(KeyCode::Esc));
+        assert!(matches!(
+            action,
+            ViewAction::EmitAndClose(ViewEvent::ElevationDecision {
+                option: ElevationOption::Abort,
+                ..
+            })
+        ));
+
+        // Test 'a' -> Abort (alternative)
+        let request =
+            ElevationRequest::for_shell("test-id", "cargo build", "blocked", false, false);
+        let mut view = ElevationView::new(request);
+        let action = view.handle_key(create_key_event(KeyCode::Char('a')));
+        assert!(matches!(
+            action,
+            ViewAction::EmitAndClose(ViewEvent::ElevationDecision {
+                option: ElevationOption::Abort,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn test_elevation_view_navigation() {
+        let request = ElevationRequest::for_shell("test-id", "cargo build", "blocked", true, false);
+        let mut view = ElevationView::new(request);
+
+        // Initially at 0
+        assert_eq!(view.selected, 0);
+
+        // Navigate down
+        view.handle_key(create_key_event(KeyCode::Down));
+        assert_eq!(view.selected, 1);
+
+        // Navigate up
+        view.handle_key(create_key_event(KeyCode::Up));
+        assert_eq!(view.selected, 0);
+
+        // Test 'j' and 'k'
+        view.handle_key(create_key_event(KeyCode::Char('j')));
+        assert_eq!(view.selected, 1);
+
+        view.handle_key(create_key_event(KeyCode::Char('k')));
+        assert_eq!(view.selected, 0);
+    }
+
+    #[test]
+    fn test_elevation_view_enter_uses_selected_option() {
+        let request = ElevationRequest::for_shell("test-id", "cargo build", "blocked", true, false);
+        let mut view = ElevationView::new(request);
+
+        // Navigate to index 1
+        view.handle_key(create_key_event(KeyCode::Down));
+        assert_eq!(view.selected, 1);
+
+        // Press Enter
+        let action = view.handle_key(create_key_event(KeyCode::Enter));
+        assert!(matches!(
+            action,
+            ViewAction::EmitAndClose(ViewEvent::ElevationDecision {
+                option: ElevationOption::FullAccess,
+                ..
+            })
+        ));
+    }
+
+    // ========================================================================
+    // ElevationOption Tests
+    // ========================================================================
+
+    #[test]
+    fn test_elevation_option_labels() {
+        assert_eq!(ElevationOption::WithNetwork.label(), "Allow network access");
+        assert_eq!(
+            ElevationOption::FullAccess.label(),
+            "Full access (no sandbox)"
+        );
+        assert!(
+            ElevationOption::WithWriteAccess(vec![])
+                .label()
+                .contains("write")
+        );
+        assert_eq!(ElevationOption::Abort.label(), "Abort");
+    }
+
+    #[test]
+    fn test_elevation_option_descriptions() {
+        assert!(
+            ElevationOption::WithNetwork
+                .description()
+                .contains("network")
+        );
+        assert!(
+            ElevationOption::FullAccess
+                .description()
+                .contains("dangerous")
+        );
+        assert!(ElevationOption::Abort.description().contains("Cancel"));
+    }
+
+    #[test]
+    fn test_elevation_option_to_policy() {
+        let cwd = PathBuf::from("/tmp/test");
+
+        let policy = ElevationOption::WithNetwork.to_policy(&cwd);
+        assert!(matches!(
+            policy,
+            SandboxPolicy::WorkspaceWrite {
+                network_access: true,
+                ..
+            }
+        ));
+
+        let policy = ElevationOption::FullAccess.to_policy(&cwd);
+        assert!(matches!(policy, SandboxPolicy::DangerFullAccess));
+
+        let paths = vec![PathBuf::from("/tmp/test/src")];
+        let policy = ElevationOption::WithWriteAccess(paths).to_policy(&cwd);
+        assert!(matches!(policy, SandboxPolicy::WorkspaceWrite { .. }));
+    }
+
+    // ========================================================================
+    // ElevationRequest Tests
+    // ========================================================================
+
+    #[test]
+    fn test_elevation_request_for_shell_with_network_block() {
+        let request = ElevationRequest::for_shell(
+            "test-id",
+            "curl example.com",
+            "network blocked",
+            true,
+            false,
+        );
+
+        assert_eq!(request.tool_id, "test-id");
+        assert_eq!(request.tool_name, "exec_shell");
+        assert!(request.command.is_some());
+        assert!(request.denial_reason.contains("network"));
+        assert!(
+            request
+                .options
+                .iter()
+                .any(|o| matches!(o, ElevationOption::WithNetwork))
+        );
+    }
+
+    #[test]
+    fn test_elevation_request_for_shell_with_write_block() {
+        let request =
+            ElevationRequest::for_shell("test-id", "rm -rf /tmp", "write blocked", false, true);
+
+        assert_eq!(request.tool_id, "test-id");
+        assert!(
+            request
+                .options
+                .iter()
+                .any(|o| matches!(o, ElevationOption::WithWriteAccess(_)))
+        );
+    }
+
+    #[test]
+    fn test_elevation_request_generic() {
+        let request = ElevationRequest::generic("test-id", "some_tool", "permission denied");
+
+        assert_eq!(request.tool_id, "test-id");
+        assert_eq!(request.tool_name, "some_tool");
+        assert!(request.command.is_none());
+        assert!(
+            request
+                .options
+                .iter()
+                .any(|o| matches!(o, ElevationOption::WithNetwork))
+        );
+        assert!(
+            request
+                .options
+                .iter()
+                .any(|o| matches!(o, ElevationOption::FullAccess))
+        );
+        assert!(
+            request
+                .options
+                .iter()
+                .any(|o| matches!(o, ElevationOption::Abort))
+        );
+    }
+
+    // ========================================================================
+    // ApprovalMode Tests
+    // ========================================================================
+
+    #[test]
+    fn test_approval_mode_labels() {
+        assert_eq!(ApprovalMode::Auto.label(), "AUTO");
+        assert_eq!(ApprovalMode::Suggest.label(), "SUGGEST");
+        assert_eq!(ApprovalMode::Never.label(), "NEVER");
     }
 }

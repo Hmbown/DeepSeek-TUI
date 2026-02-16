@@ -319,7 +319,13 @@ impl HookContext {
         if let Some(ref result) = self.tool_result {
             // Truncate result to 10KB to avoid environment variable size limits
             let truncated = if result.len() > 10000 {
-                format!("{}...[truncated]", &result[..10000])
+                let safe_end = result
+                    .char_indices()
+                    .take_while(|(i, _)| *i < 10000)
+                    .last()
+                    .map(|(i, c)| i + c.len_utf8())
+                    .unwrap_or(0);
+                format!("{}...[truncated]", &result[..safe_end])
             } else {
                 result.clone()
             };
@@ -343,7 +349,13 @@ impl HookContext {
         if let Some(ref message) = self.message {
             // Truncate message to prevent env var issues
             let truncated = if message.len() > 5000 {
-                format!("{}...[truncated]", &message[..5000])
+                let safe_end = message
+                    .char_indices()
+                    .take_while(|(i, _)| *i < 5000)
+                    .last()
+                    .map(|(i, c)| i + c.len_utf8())
+                    .unwrap_or(0);
+                format!("{}...[truncated]", &message[..safe_end])
             } else {
                 message.clone()
             };

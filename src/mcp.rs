@@ -82,6 +82,18 @@ pub struct McpServerConfig {
     pub read_timeout: Option<u64>,
     #[serde(default)]
     pub disabled: bool,
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub enabled_tools: Vec<String>,
+    #[serde(default)]
+    pub disabled_tools: Vec<String>,
+}
+
+fn default_enabled() -> bool {
+    true
 }
 
 impl McpServerConfig {
@@ -95,6 +107,22 @@ impl McpServerConfig {
 
     pub fn effective_read_timeout(&self, global: &McpTimeouts) -> u64 {
         self.read_timeout.unwrap_or(global.read_timeout)
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.enabled && !self.disabled
+    }
+
+    pub fn is_tool_enabled(&self, tool_name: &str) -> bool {
+        let allowed = if self.enabled_tools.is_empty() {
+            true
+        } else {
+            self.enabled_tools.iter().any(|t| t == tool_name)
+        };
+        if !allowed {
+            return false;
+        }
+        !self.disabled_tools.iter().any(|t| t == tool_name)
     }
 }
 
@@ -217,19 +245,46 @@ pub struct SseTransport {
 }
 
 impl SseTransport {
-    pub async fn connect(client: reqwest::Client, url: String) -> Result<Self> {
+    pub async fn connect(
+        client: reqwest::Client,
+        url: String,
+        cancel_token: tokio_util::sync::CancellationToken,
+    ) -> Result<Self> {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let client_clone = client.clone();
         let url_clone = url.clone();
 
-        // Start SSE background task
         tokio::spawn(async move {
-            if let Err(e) = Self::run_sse_loop(client_clone, url_clone, tx).await {
-                tracing::error!("SSE loop error: {}", e);
+            if cancel_token.is_cancelled() {
+                return;
+            }
+            use futures_util::FutureExt;
+            let result = std::panic::AssertUnwindSafe(Self::run_sse_loop(
+                client_clone,
+                url_clone,
+                tx,
+                cancel_token,
+            ))
+            .catch_unwind()
+            .await;
+            match result {
+                Ok(res) => {
+                    if let Err(e) = res {
+                        tracing::error!("SSE loop error: {}", e);
+                    }
+                }
+                Err(panic_err) => {
+                    if let Some(msg) = panic_err.downcast_ref::<&str>() {
+                        tracing::error!("SSE loop panicked: {}", msg);
+                    } else if let Some(msg) = panic_err.downcast_ref::<String>() {
+                        tracing::error!("SSE loop panicked: {}", msg);
+                    } else {
+                        tracing::error!("SSE loop panicked with unknown error");
+                    }
+                }
             }
         });
 
-        // The endpoint URL will be discovered from the first "endpoint" event
         Ok(Self {
             client,
             base_url: url,
@@ -242,6 +297,7 @@ impl SseTransport {
         client: reqwest::Client,
         url: String,
         tx: tokio::sync::mpsc::UnboundedSender<serde_json::Value>,
+        cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<()> {
         let response = client.get(&url).send().await?;
         if !response.status().is_success() {
@@ -252,7 +308,23 @@ impl SseTransport {
         use futures_util::StreamExt;
         let mut buffer = String::new();
 
-        while let Some(item) = stream.next().await {
+        loop {
+            if cancel_token.is_cancelled() {
+                tracing::debug!("SSE loop cancelled");
+                break;
+            }
+            let item = tokio::select! {
+                _ = cancel_token.cancelled() => {
+                    tracing::debug!("SSE loop shutting down");
+                    break;
+                }
+                item = stream.next() => {
+                    match item {
+                        Some(i) => i,
+                        None => break,
+                    }
+                }
+            };
             let chunk = item?;
             let s = String::from_utf8_lossy(&chunk);
             buffer.push_str(&s);
@@ -339,6 +411,7 @@ pub struct McpConnection {
     request_id: AtomicU64,
     state: ConnectionState,
     config: McpServerConfig,
+    cancel_token: tokio_util::sync::CancellationToken,
 }
 
 impl McpConnection {
@@ -349,12 +422,13 @@ impl McpConnection {
         global_timeouts: &McpTimeouts,
     ) -> Result<Self> {
         let connect_timeout_secs = config.effective_connect_timeout(global_timeouts);
+        let cancel_token = tokio_util::sync::CancellationToken::new();
 
         let transport: Box<dyn McpTransport> = if let Some(url) = &config.url {
             let client = reqwest::Client::builder()
                 .timeout(Duration::from_secs(connect_timeout_secs))
                 .build()?;
-            Box::new(SseTransport::connect(client, url.clone()).await?)
+            Box::new(SseTransport::connect(client, url.clone(), cancel_token.clone()).await?)
         } else if let Some(command) = &config.command {
             let mut cmd = tokio::process::Command::new(command);
             cmd.args(&config.args)
@@ -396,6 +470,7 @@ impl McpConnection {
             request_id: AtomicU64::new(1),
             state: ConnectionState::Connecting,
             config,
+            cancel_token,
         };
 
         // Initialize with timeout
@@ -716,13 +791,14 @@ impl McpConnection {
 
     /// Gracefully close the connection
     pub fn close(&mut self) {
+        self.cancel_token.cancel();
         self.state = ConnectionState::Disconnected;
     }
 }
 
 impl Drop for McpConnection {
     fn drop(&mut self) {
-        // StdioTransport will be dropped and child killed
+        self.cancel_token.cancel();
     }
 }
 
@@ -779,7 +855,7 @@ impl McpPool {
             .ok_or_else(|| anyhow::anyhow!("Failed to find MCP server: {server_name}"))?
             .clone();
 
-        if server_config.disabled {
+        if !server_config.is_enabled() {
             anyhow::bail!("Failed to connect MCP server '{server_name}': server is disabled");
         }
 
@@ -803,13 +879,28 @@ impl McpPool {
             .config
             .servers
             .keys()
-            .filter(|n| !self.config.servers[*n].disabled)
+            .filter(|n| self.config.servers[*n].is_enabled())
             .cloned()
             .collect();
 
         for name in names {
             if let Err(e) = self.get_or_connect(&name).await {
                 errors.push((name, e));
+            }
+        }
+
+        for (name, server_cfg) in &self.config.servers {
+            if server_cfg.required
+                && server_cfg.is_enabled()
+                && !self
+                    .connections
+                    .get(name)
+                    .is_some_and(McpConnection::is_ready)
+            {
+                errors.push((
+                    name.clone(),
+                    anyhow::anyhow!("required MCP server failed to initialize"),
+                ));
             }
         }
 
@@ -821,6 +912,9 @@ impl McpPool {
         let mut tools = Vec::new();
         for (server, conn) in &self.connections {
             for tool in conn.tools() {
+                if !conn.config().is_tool_enabled(&tool.name) {
+                    continue;
+                }
                 // Format: mcp_{server}_{tool}
                 tools.push((format!("mcp_{}_{}", server, tool.name), tool));
             }
@@ -1140,6 +1234,9 @@ impl McpPool {
         // Copy the global timeouts to avoid borrow conflict
         let global_timeouts = self.config.timeouts;
         let conn = self.get_or_connect(server_name).await?;
+        if !conn.config().is_tool_enabled(tool_name) {
+            anyhow::bail!("MCP tool '{tool_name}' is disabled for server '{server_name}'");
+        }
         let timeout = conn.config().effective_execute_timeout(&global_timeouts);
         conn.call_tool(tool_name, arguments, timeout).await
     }
@@ -1564,6 +1661,10 @@ mod tests {
             execute_timeout: None,
             read_timeout: Some(180),
             disabled: false,
+            enabled: true,
+            required: false,
+            enabled_tools: Vec::new(),
+            disabled_tools: Vec::new(),
         };
 
         assert_eq!(server_with_override.effective_connect_timeout(&global), 20);

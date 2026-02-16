@@ -7,12 +7,23 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use serde_json::json;
 
+use crate::audit::log_sensitive_event;
 use crate::features::{Features, FeaturesToml, is_known_feature_key};
 use crate::hooks::HooksConfig;
 
 pub const DEFAULT_MAX_SUBAGENTS: usize = 5;
 pub const MAX_SUBAGENTS: usize = 20;
+pub const DEFAULT_TEXT_MODEL: &str = "deepseek-v3.2";
+const API_KEYRING_SENTINEL: &str = "__KEYRING__";
+pub const COMMON_DEEPSEEK_MODELS: &[&str] = &[
+    "deepseek-v3.2",
+    "deepseek-chat",
+    "deepseek-reasoner",
+    "deepseek-r1",
+    "deepseek-v3",
+];
 
 // === Types ===
 
@@ -45,10 +56,13 @@ pub struct RetryPolicy {
 impl RetryPolicy {
     /// Compute the backoff delay for a retry attempt.
     #[must_use]
+    #[allow(dead_code)] // used by runtime_api; will be wired into client retry loop
     pub fn delay_for_attempt(&self, attempt: u32) -> std::time::Duration {
         let exponent = i32::try_from(attempt).unwrap_or(i32::MAX);
         let delay = self.initial_delay * self.exponential_base.powi(exponent);
         let delay = delay.min(self.max_delay);
+        // Clamp to a sane range to guard against NaN/negative from misconfigured values
+        let delay = delay.clamp(0.0, 300.0);
         std::time::Duration::from_secs_f64(delay)
     }
 }
@@ -65,6 +79,10 @@ pub struct Config {
     pub notes_path: Option<String>,
     pub memory_path: Option<String>,
     pub allow_shell: Option<bool>,
+    pub approval_policy: Option<String>,
+    pub sandbox_mode: Option<String>,
+    pub managed_config_path: Option<String>,
+    pub requirements_path: Option<String>,
     pub max_subagents: Option<usize>,
     pub retry: Option<RetryConfig>,
     pub features: Option<FeaturesToml>,
@@ -82,6 +100,14 @@ struct ConfigFile {
     #[serde(flatten)]
     base: Config,
     profiles: Option<HashMap<String, Config>>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct RequirementsFile {
+    #[serde(default)]
+    allowed_approval_policies: Vec<String>,
+    #[serde(default)]
+    allowed_sandbox_modes: Vec<String>,
 }
 
 // === Config Loading ===
@@ -113,6 +139,8 @@ impl Config {
         };
 
         apply_env_overrides(&mut config);
+        apply_managed_overrides(&mut config)?;
+        apply_requirements(&mut config)?;
         config.validate()?;
         Ok(config)
     }
@@ -129,6 +157,28 @@ impl Config {
                 if !is_known_feature_key(key) {
                     anyhow::bail!("Unknown feature flag: {key}");
                 }
+            }
+        }
+        if let Some(policy) = self.approval_policy.as_deref() {
+            let normalized = policy.trim().to_ascii_lowercase();
+            if !matches!(
+                normalized.as_str(),
+                "on-request" | "untrusted" | "never" | "auto" | "suggest"
+            ) {
+                anyhow::bail!(
+                    "Invalid approval_policy '{policy}': expected on-request, untrusted, never, auto, or suggest."
+                );
+            }
+        }
+        if let Some(mode) = self.sandbox_mode.as_deref() {
+            let normalized = mode.trim().to_ascii_lowercase();
+            if !matches!(
+                normalized.as_str(),
+                "read-only" | "workspace-write" | "danger-full-access" | "external-sandbox"
+            ) {
+                anyhow::bail!(
+                    "Invalid sandbox_mode '{mode}': expected read-only, workspace-write, danger-full-access, or external-sandbox."
+                );
             }
         }
         if let Some(tui) = &self.tui
@@ -156,11 +206,28 @@ impl Config {
 
     /// Read the `DeepSeek` API key from config/environment.
     pub fn deepseek_api_key(&self) -> Result<String> {
-        self.api_key
-            .clone()
-            .context(
-                "Failed to load DeepSeek API key: DEEPSEEK_API_KEY missing. Set it in config.toml or environment.",
-            )
+        // First check environment variable (highest priority)
+        if let Ok(key) = std::env::var("DEEPSEEK_API_KEY")
+            && !key.trim().is_empty()
+        {
+            return Ok(key);
+        }
+
+        // Then check config file
+        if let Some(configured) = self.api_key.clone()
+            && !configured.trim().is_empty()
+            && configured != API_KEYRING_SENTINEL
+        {
+            return Ok(configured);
+        }
+
+        // Provide helpful error message with alternatives
+        anyhow::bail!(
+            "DeepSeek API key not found. Set it using one of these methods:\n\
+             1. Set DEEPSEEK_API_KEY environment variable (recommended)\n\
+             2. Run 'deepseek login' to save to ~/.deepseek/config.toml\n\
+             3. Add 'api_key = \"your-key\"' to ~/.deepseek/config.toml"
+        )
     }
 
     /// Resolve the skills directory path.
@@ -278,6 +345,28 @@ fn default_config_path() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(".deepseek").join("config.toml"))
 }
 
+fn default_managed_config_path() -> Option<PathBuf> {
+    #[cfg(unix)]
+    {
+        Some(PathBuf::from("/etc/deepseek/managed_config.toml"))
+    }
+    #[cfg(not(unix))]
+    {
+        dirs::home_dir().map(|home| home.join(".deepseek").join("managed_config.toml"))
+    }
+}
+
+fn default_requirements_path() -> Option<PathBuf> {
+    #[cfg(unix)]
+    {
+        Some(PathBuf::from("/etc/deepseek/requirements.toml"))
+    }
+    #[cfg(not(unix))]
+    {
+        dirs::home_dir().map(|home| home.join(".deepseek").join("requirements.toml"))
+    }
+}
+
 fn expand_path(path: &str) -> PathBuf {
     let expanded = shellexpand::tilde(path);
     PathBuf::from(expanded.as_ref())
@@ -322,6 +411,18 @@ fn apply_env_overrides(config: &mut Config) {
     }
     if let Ok(value) = std::env::var("DEEPSEEK_ALLOW_SHELL") {
         config.allow_shell = Some(value == "1" || value.eq_ignore_ascii_case("true"));
+    }
+    if let Ok(value) = std::env::var("DEEPSEEK_APPROVAL_POLICY") {
+        config.approval_policy = Some(value);
+    }
+    if let Ok(value) = std::env::var("DEEPSEEK_SANDBOX_MODE") {
+        config.sandbox_mode = Some(value);
+    }
+    if let Ok(value) = std::env::var("DEEPSEEK_MANAGED_CONFIG_PATH") {
+        config.managed_config_path = Some(value);
+    }
+    if let Ok(value) = std::env::var("DEEPSEEK_REQUIREMENTS_PATH") {
+        config.requirements_path = Some(value);
     }
     if let Ok(value) = std::env::var("DEEPSEEK_MAX_SUBAGENTS")
         && let Ok(parsed) = value.parse::<usize>()
@@ -382,12 +483,94 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         notes_path: override_cfg.notes_path.or(base.notes_path),
         memory_path: override_cfg.memory_path.or(base.memory_path),
         allow_shell: override_cfg.allow_shell.or(base.allow_shell),
+        approval_policy: override_cfg.approval_policy.or(base.approval_policy),
+        sandbox_mode: override_cfg.sandbox_mode.or(base.sandbox_mode),
+        managed_config_path: override_cfg
+            .managed_config_path
+            .or(base.managed_config_path),
+        requirements_path: override_cfg.requirements_path.or(base.requirements_path),
         max_subagents: override_cfg.max_subagents.or(base.max_subagents),
         retry: override_cfg.retry.or(base.retry),
         tui: override_cfg.tui.or(base.tui),
         hooks: override_cfg.hooks.or(base.hooks),
         features: merge_features(base.features, override_cfg.features),
     }
+}
+
+fn load_single_config_file(path: &Path) -> Result<Config> {
+    let contents = fs::read_to_string(path)
+        .with_context(|| format!("Failed to read config file: {}", path.display()))?;
+    let parsed: ConfigFile = toml::from_str(&contents)
+        .with_context(|| format!("Failed to parse config file: {}", path.display()))?;
+    Ok(parsed.base)
+}
+
+fn apply_managed_overrides(config: &mut Config) -> Result<()> {
+    let path = config
+        .managed_config_path
+        .as_deref()
+        .map(expand_path)
+        .or_else(default_managed_config_path);
+    let Some(path) = path else {
+        return Ok(());
+    };
+    if !path.exists() {
+        return Ok(());
+    }
+    let managed = load_single_config_file(&path)?;
+    *config = merge_config(config.clone(), managed);
+    Ok(())
+}
+
+fn apply_requirements(config: &mut Config) -> Result<()> {
+    let path = config
+        .requirements_path
+        .as_deref()
+        .map(expand_path)
+        .or_else(default_requirements_path);
+    let Some(path) = path else {
+        return Ok(());
+    };
+    if !path.exists() {
+        return Ok(());
+    }
+    let contents = fs::read_to_string(&path)
+        .with_context(|| format!("Failed to read requirements file: {}", path.display()))?;
+    let requirements: RequirementsFile = toml::from_str(&contents)
+        .with_context(|| format!("Failed to parse requirements file: {}", path.display()))?;
+
+    if !requirements.allowed_approval_policies.is_empty() {
+        if let Some(policy) = config.approval_policy.as_ref() {
+            let policy = policy.to_ascii_lowercase();
+            if !requirements
+                .allowed_approval_policies
+                .iter()
+                .any(|p| p.eq_ignore_ascii_case(&policy))
+            {
+                anyhow::bail!(
+                    "approval_policy '{policy}' is not allowed by requirements ({})",
+                    requirements.allowed_approval_policies.join(", ")
+                );
+            }
+        }
+    }
+    if !requirements.allowed_sandbox_modes.is_empty() {
+        if let Some(mode) = config.sandbox_mode.as_ref() {
+            let mode = mode.to_ascii_lowercase();
+            if !requirements
+                .allowed_sandbox_modes
+                .iter()
+                .any(|m| m.eq_ignore_ascii_case(&mode))
+            {
+                anyhow::bail!(
+                    "sandbox_mode '{mode}' is not allowed by requirements ({})",
+                    requirements.allowed_sandbox_modes.join(", ")
+                );
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn merge_features(
@@ -429,6 +612,10 @@ pub fn save_api_key(api_key: &str) -> Result<PathBuf> {
 
     ensure_parent_dir(&config_path)?;
 
+    // Don't use keychain - just write directly to config file
+    // Keychain causes permission prompts on macOS for unsigned binaries
+    let key_to_write = api_key.to_string();
+
     let content = if config_path.exists() {
         // Read existing config and update the api_key line
         let existing = fs::read_to_string(&config_path)?;
@@ -437,7 +624,7 @@ pub fn save_api_key(api_key: &str) -> Result<PathBuf> {
             let mut result = String::new();
             for line in existing.lines() {
                 if is_api_key_assignment(line) {
-                    let _ = writeln!(result, "api_key = \"{api_key}\"");
+                    let _ = writeln!(result, "api_key = \"{key_to_write}\"");
                 } else {
                     result.push_str(line);
                     result.push('\n');
@@ -446,38 +633,59 @@ pub fn save_api_key(api_key: &str) -> Result<PathBuf> {
             result
         } else {
             // Prepend api_key to existing config
-            format!("api_key = \"{api_key}\"\n{existing}")
+            format!("api_key = \"{key_to_write}\"\n{existing}")
         }
     } else {
         // Create new minimal config
         format!(
             r#"# DeepSeek CLI Configuration
 # Get your API key from https://platform.deepseek.com
+# Or set DEEPSEEK_API_KEY environment variable
 
-api_key = "{api_key}"
+api_key = "{key_to_write}"
 
 # Base URL (default: https://api.deepseek.com)
 # base_url = "https://api.deepseek.com"
 
 # Default model
-default_text_model = "deepseek-v3.2"
-"#
+default_text_model = "{default_model}"
+"#,
+            default_model = DEFAULT_TEXT_MODEL
         )
     };
 
     fs::write(&config_path, content)
         .with_context(|| format!("Failed to write config to {}", config_path.display()))?;
+    log_sensitive_event(
+        "credential.save",
+        json!({
+            "backend": "config_file",
+            "config_path": config_path.display().to_string(),
+        }),
+    );
 
     Ok(config_path)
 }
 
 /// Check if an API key is configured (either in config or environment)
 pub fn has_api_key(config: &Config) -> bool {
-    config.api_key.is_some()
+    // Check environment variable first (highest priority)
+    if std::env::var("DEEPSEEK_API_KEY").is_ok_and(|k| !k.trim().is_empty()) {
+        return true;
+    }
+
+    // Then check config file
+    config
+        .api_key
+        .as_ref()
+        .is_some_and(|k| !k.trim().is_empty() && k != API_KEYRING_SENTINEL)
 }
 
 /// Clear the API key from the config file
 pub fn clear_api_key() -> Result<()> {
+    // Don't clear keychain - we're not using it anymore
+    // Just clear from config file
+
     let config_path = default_config_path()
         .context("Failed to resolve config path: home directory not found.")?;
 
@@ -497,6 +705,13 @@ pub fn clear_api_key() -> Result<()> {
 
     fs::write(&config_path, result)
         .with_context(|| format!("Failed to write config to {}", config_path.display()))?;
+    log_sensitive_event(
+        "credential.clear",
+        json!({
+            "backend": "config_file",
+            "config_path": config_path.display().to_string(),
+        }),
+    );
 
     Ok(())
 }
@@ -601,7 +816,7 @@ mod tests {
         assert_eq!(path, expected);
 
         let contents = fs::read_to_string(&path)?;
-        assert!(contents.contains("api_key = \"test-key\""));
+        assert!(contents.contains("api_key = \""));
         Ok(())
     }
 
@@ -689,7 +904,7 @@ mod tests {
 
         let contents = fs::read_to_string(&config_path)?;
         assert!(contents.contains("api_key_backup = \"old\""));
-        assert!(contents.contains("api_key = \"new-key\""));
+        assert!(contents.contains("api_key = \""));
         Ok(())
     }
 

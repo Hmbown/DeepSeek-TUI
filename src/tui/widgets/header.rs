@@ -31,12 +31,14 @@ pub struct HeaderData<'a> {
     pub mode: AppMode,
     pub is_streaming: bool,
     pub background: ratatui::style::Color,
-    /// Total tokens used in this session.
+    /// Total tokens used in this session (cumulative, for display).
     pub total_tokens: u32,
     /// Context window size for the model (if known).
     pub context_window: Option<u32>,
     /// Accumulated session cost in USD.
     pub session_cost: f64,
+    /// Input tokens from the most recent API call (current context utilization).
+    pub last_prompt_tokens: Option<u32>,
 }
 
 impl<'a> HeaderData<'a> {
@@ -56,6 +58,7 @@ impl<'a> HeaderData<'a> {
             total_tokens: 0,
             context_window: None,
             session_cost: 0.0,
+            last_prompt_tokens: None,
         }
     }
 
@@ -66,10 +69,12 @@ impl<'a> HeaderData<'a> {
         total_tokens: u32,
         context_window: Option<u32>,
         session_cost: f64,
+        last_prompt_tokens: Option<u32>,
     ) -> Self {
         self.total_tokens = total_tokens;
         self.context_window = context_window;
         self.session_cost = session_cost;
+        self.last_prompt_tokens = last_prompt_tokens;
         self
     }
 }
@@ -109,9 +114,10 @@ impl<'a> HeaderWidget<'a> {
 
     /// Build the model name span.
     fn model_span(&self) -> Span<'static> {
-        // Truncate long model names
-        let display_name = if self.data.model.len() > 25 {
-            format!("{}...", &self.data.model[..22])
+        // Truncate long model names (char-safe to avoid panics on multi-byte UTF-8)
+        let display_name = if self.data.model.chars().count() > 25 {
+            let truncated: String = self.data.model.chars().take(22).collect();
+            format!("{truncated}...")
         } else {
             self.data.model.to_string()
         };
@@ -144,10 +150,15 @@ impl<'a> HeaderWidget<'a> {
         // Token count with context window percentage
         if self.data.total_tokens > 0 {
             let token_str = format_token_count(self.data.total_tokens);
+            // Use last_prompt_tokens for % (current context utilization)
             if let Some(ctx_window) = self.data.context_window {
-                let pct = (self.data.total_tokens as f64 / ctx_window as f64 * 100.0) as u32;
-                let pct_str = format!("{token_str} ({pct}%)");
-                parts.push(pct_str);
+                if let Some(prompt_tokens) = self.data.last_prompt_tokens {
+                    let pct = (prompt_tokens as f64 / ctx_window as f64 * 100.0) as u32;
+                    let pct_str = format!("{token_str} ({pct}%)");
+                    parts.push(pct_str);
+                } else {
+                    parts.push(token_str);
+                }
             } else {
                 parts.push(token_str);
             }
@@ -233,8 +244,9 @@ impl Renderable for HeaderWidget<'_> {
             spans.push(Span::raw(" "));
             // Truncate model if needed
             let model_str = self.data.model;
-            let display_model = if model_str.len() > 10 {
-                format!("{}...", &model_str[..7])
+            let display_model = if model_str.chars().count() > 10 {
+                let truncated: String = model_str.chars().take(7).collect();
+                format!("{truncated}...")
             } else {
                 model_str.to_string()
             };

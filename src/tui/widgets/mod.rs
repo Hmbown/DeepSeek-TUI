@@ -8,6 +8,7 @@ use crate::palette;
 use crate::tui::app::App;
 use crate::tui::approval::{ApprovalRequest, ElevationOption, ElevationRequest, ToolCategory};
 use crate::tui::scrolling::TranscriptScroll;
+use crate::{commands, config::COMMON_DEEPSEEK_MODELS};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -21,16 +22,12 @@ use unicode_width::UnicodeWidthStr;
 
 pub struct ChatWidget {
     content_area: Rect,
-    scrollbar_area: Option<Rect>,
     lines: Vec<Line<'static>>,
-    total_lines: usize,
-    visible_lines: usize,
-    top: usize,
 }
 
 impl ChatWidget {
     pub fn new(app: &mut App, area: Rect) -> Self {
-        let mut content_area = area;
+        let content_area = area;
         let visible_lines = content_area.height as usize;
         let render_options = app.transcript_render_options();
 
@@ -41,25 +38,7 @@ impl ChatWidget {
             render_options,
         );
 
-        let mut total_lines = app.transcript_cache.total_lines();
-        let mut scrollbar_area = None;
-
-        if total_lines > visible_lines && content_area.width > 1 {
-            scrollbar_area = Some(Rect {
-                x: content_area.x + content_area.width.saturating_sub(1),
-                y: content_area.y,
-                width: 1,
-                height: content_area.height,
-            });
-            content_area.width = content_area.width.saturating_sub(1).max(1);
-            app.transcript_cache.ensure(
-                &app.history,
-                content_area.width.max(1),
-                app.history_version,
-                render_options,
-            );
-            total_lines = app.transcript_cache.total_lines();
-        }
+        let total_lines = app.transcript_cache.total_lines();
 
         let line_meta = app.transcript_cache.line_meta();
 
@@ -98,11 +77,7 @@ impl ChatWidget {
 
         Self {
             content_area,
-            scrollbar_area,
             lines,
-            total_lines,
-            visible_lines,
-            top,
         }
     }
 }
@@ -111,61 +86,10 @@ impl Renderable for ChatWidget {
     fn render(&self, _area: Rect, buf: &mut Buffer) {
         let paragraph = Paragraph::new(self.lines.clone());
         paragraph.render(self.content_area, buf);
-
-        if let Some(area) = self.scrollbar_area {
-            render_scrollbar(buf, area, self.total_lines, self.visible_lines, self.top);
-        }
     }
 
     fn desired_height(&self, _width: u16) -> u16 {
         1
-    }
-}
-
-fn render_scrollbar(
-    buf: &mut Buffer,
-    area: Rect,
-    total_lines: usize,
-    visible_lines: usize,
-    top: usize,
-) {
-    if area.width == 0 || area.height == 0 || total_lines == 0 {
-        return;
-    }
-
-    let height = area.height as usize;
-    let track_style = Style::default().fg(palette::TEXT_DIM);
-    let thumb_style = Style::default().fg(palette::DEEPSEEK_SKY);
-
-    for row in 0..height {
-        if let Some(cell) = buf.cell_mut((area.x, area.y + row as u16)) {
-            cell.set_symbol("│").set_style(track_style);
-        }
-    }
-
-    if total_lines <= visible_lines {
-        return;
-    }
-
-    let thumb_height = ((visible_lines as f32 / total_lines as f32) * height as f32)
-        .ceil()
-        .clamp(1.0, height as f32) as usize;
-    let max_top = total_lines.saturating_sub(visible_lines);
-    let thumb_top = if max_top == 0 {
-        0
-    } else {
-        let available = height.saturating_sub(thumb_height);
-        let ratio = top as f32 / max_top as f32;
-        (ratio * available as f32).round() as usize
-    };
-
-    for row in thumb_top..thumb_top.saturating_add(thumb_height) {
-        if row >= height {
-            break;
-        }
-        if let Some(cell) = buf.cell_mut((area.x, area.y + row as u16)) {
-            cell.set_symbol("█").set_style(thumb_style);
-        }
     }
 }
 
@@ -187,10 +111,12 @@ impl<'a> ComposerWidget<'a> {
 
 impl Renderable for ComposerWidget<'_> {
     fn render(&self, area: Rect, buf: &mut Buffer) {
+        let command_hints = slash_completion_hints(&self.app.input, 5);
         let prompt_width = self.prompt.width();
         let prompt_width_u16 = u16::try_from(prompt_width).unwrap_or(u16::MAX);
         let content_width = usize::from(area.width.saturating_sub(prompt_width_u16).max(1));
-        let max_height = usize::from(area.height);
+        let hint_lines = usize::from(!command_hints.is_empty());
+        let max_height = usize::from(area.height).saturating_sub(hint_lines).max(1);
         let continuation = " ".repeat(prompt_width);
 
         let (visible_lines, _cursor_row, _cursor_col) = layout_input(
@@ -231,19 +157,41 @@ impl Renderable for ComposerWidget<'_> {
             }
         }
 
+        if !command_hints.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled(" ", Style::default().fg(palette::TEXT_MUTED)),
+                Span::styled(
+                    "Tab complete: ",
+                    Style::default().fg(palette::TEXT_MUTED).italic(),
+                ),
+                Span::styled(
+                    command_hints.join("  "),
+                    Style::default().fg(palette::DEEPSEEK_SKY),
+                ),
+            ]));
+        }
+
         let paragraph = Paragraph::new(lines).style(background);
         paragraph.render(area, buf);
     }
 
     fn desired_height(&self, width: u16) -> u16 {
-        composer_height(&self.app.input, width, self.max_height, self.prompt)
+        let hint_lines = usize::from(!slash_completion_hints(&self.app.input, 5).is_empty());
+        composer_height(
+            &self.app.input,
+            width,
+            self.max_height,
+            self.prompt,
+            hint_lines,
+        )
     }
 
     fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
+        let hint_lines = usize::from(!slash_completion_hints(&self.app.input, 5).is_empty());
         let prompt_width = self.prompt.width();
         let prompt_width_u16 = u16::try_from(prompt_width).unwrap_or(u16::MAX);
         let content_width = usize::from(area.width.saturating_sub(prompt_width_u16).max(1));
-        let max_height = usize::from(area.height);
+        let max_height = usize::from(area.height).saturating_sub(hint_lines).max(1);
 
         let (_visible_lines, cursor_row, cursor_col) = layout_input(
             &self.app.input,
@@ -356,6 +304,7 @@ impl Renderable for ApprovalWidget<'_> {
             ("y", "Approve (this time)"),
             ("a", "Approve for session"),
             ("n", "Deny"),
+            ("v", "View full params"),
             ("Esc", "Abort turn"),
         ];
 
@@ -623,7 +572,13 @@ fn apply_selection_to_line(
     result
 }
 
-fn composer_height(input: &str, width: u16, available_height: u16, prompt: &str) -> u16 {
+fn composer_height(
+    input: &str,
+    width: u16,
+    available_height: u16,
+    prompt: &str,
+    extra_lines: usize,
+) -> u16 {
     let prompt_width = prompt.width();
     let prompt_width_u16 = u16::try_from(prompt_width).unwrap_or(u16::MAX);
     let content_width = usize::from(width.saturating_sub(prompt_width_u16).max(1));
@@ -631,8 +586,32 @@ fn composer_height(input: &str, width: u16, available_height: u16, prompt: &str)
     if line_count == 0 {
         line_count = 1;
     }
+    line_count = line_count.saturating_add(extra_lines);
     let max_height = usize::from(available_height.clamp(1, 8));
     line_count.clamp(1, max_height).try_into().unwrap_or(1)
+}
+
+fn slash_completion_hints(input: &str, limit: usize) -> Vec<String> {
+    if !input.starts_with('/') || input.contains(char::is_whitespace) {
+        return Vec::new();
+    }
+
+    let prefix = input.trim_start_matches('/');
+    let mut hints = commands::commands_matching(prefix)
+        .into_iter()
+        .map(|info| format!("/{}", info.name))
+        .collect::<Vec<_>>();
+
+    if hints.is_empty() && prefix.eq_ignore_ascii_case("model") {
+        hints = COMMON_DEEPSEEK_MODELS
+            .iter()
+            .map(|name| format!("/model {name}"))
+            .collect();
+    }
+
+    hints.sort();
+    hints.dedup();
+    hints.into_iter().take(limit).collect()
 }
 
 fn layout_input(

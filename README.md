@@ -22,8 +22,8 @@ cargo install deepseek-tui --locked
 # Or build from source
 git clone https://github.com/Hmbown/DeepSeek-TUI.git
 cd DeepSeek-TUI
-cargo build --release
-# binary is at ./target/release/deepseek
+cargo install --path . --locked
+# installs `deepseek` to ~/.cargo/bin (ensure it is on your PATH)
 ```
 
 Prebuilt binaries are also available on [GitHub Releases](https://github.com/Hmbown/DeepSeek-TUI/releases).
@@ -68,14 +68,16 @@ deepseek doctor
 |-----|--------|
 | `Enter` | Send message |
 | `Alt+Enter` / `Ctrl+J` | Insert newline |
-| `Tab` | Cycle modes (Plan / Agent / YOLO) |
+| `Tab` | Autocomplete slash command (or cycle modes) |
 | `Esc` | Cancel request / clear input |
 | `Ctrl+C` | Cancel request or exit |
+| `Ctrl+K` | Open command palette |
 | `Ctrl+R` | Search past sessions |
 | `F1` or `Ctrl+/` | Toggle help overlay |
 | `PageUp` / `PageDown` | Scroll transcript |
 | `Alt+Up` / `Alt+Down` | Scroll transcript (small) |
 | `l` (empty input) | Open last message in pager |
+| `v` (empty input) | Open selected/latest tool details |
 
 ## Modes
 
@@ -112,6 +114,7 @@ The model has access to 25+ tools across these categories:
 - `todo_write` — create and track task lists with status
 - `update_plan` — structured implementation plans
 - `note` — persistent cross-session notes
+- `/task add|list|show|cancel` — persistent background task queue with timeline visibility
 
 ### Sub-Agents
 - `agent_spawn` / `agent_swarm` — launch background agents or dependency-aware swarms
@@ -124,7 +127,7 @@ The model has access to 25+ tools across these categories:
 - `request_user_input` — ask the user structured or multiple-choice questions
 - `multi_tool_use.parallel` — execute multiple read-only tools in parallel
 
-All file tools respect the `--workspace` boundary unless `/trust` is enabled (YOLO enables trust automatically). MCP tools execute without TUI approval prompts, so only enable servers you trust.
+All file tools respect the `--workspace` boundary unless `/trust` is enabled (YOLO enables trust automatically). MCP tools now use the same approval pipeline as built-in tools; only trusted MCP servers should be configured.
 
 ## Configuration
 
@@ -132,10 +135,12 @@ The TUI stores its config at `~/.deepseek/config.toml`:
 
 ```toml
 api_key = "sk-..."
-default_text_model = "deepseek-reasoner"  # optional
+default_text_model = "deepseek-v3.2"      # optional
 allow_shell = false                       # optional
 max_subagents = 3                         # optional (1-20)
 ```
+
+Any valid DeepSeek model ID is accepted for `default_text_model` (for example, future IDs such as `deepseek-v4-mini` once available).
 
 ### Environment Variables
 
@@ -146,7 +151,9 @@ max_subagents = 3                         # optional (1-20)
 | `DEEPSEEK_PROFILE` | Select a `[profiles.<name>]` section from config |
 | `DEEPSEEK_CONFIG_PATH` | Override config file location |
 
-Additional overrides: `DEEPSEEK_MCP_CONFIG`, `DEEPSEEK_SKILLS_DIR`, `DEEPSEEK_NOTES_PATH`, `DEEPSEEK_MEMORY_PATH`, `DEEPSEEK_ALLOW_SHELL`, `DEEPSEEK_MAX_SUBAGENTS`.
+Additional overrides: `DEEPSEEK_MCP_CONFIG`, `DEEPSEEK_SKILLS_DIR`, `DEEPSEEK_NOTES_PATH`, `DEEPSEEK_MEMORY_PATH`, `DEEPSEEK_ALLOW_SHELL`, `DEEPSEEK_APPROVAL_POLICY`, `DEEPSEEK_SANDBOX_MODE`, `DEEPSEEK_MAX_SUBAGENTS`, `DEEPSEEK_ALLOW_INSECURE_HTTP`.
+
+Optional local audit log (off by default): set `DEEPSEEK_TOOL_AUDIT_LOG=/path/to/audit.jsonl` to record tool approval decisions and tool outcomes as JSONL events.
 
 See `config.example.toml` and `docs/CONFIGURATION.md` for the full reference.
 
@@ -158,6 +165,9 @@ deepseek
 
 # One-shot prompt (non-interactive, prints and exits)
 deepseek -p "Explain the borrow checker in two sentences"
+
+# List models from the configured API endpoint
+deepseek models
 
 # Agentic execution with auto-approve
 deepseek exec --auto "Fix all clippy warnings in this project"
@@ -178,7 +188,58 @@ deepseek sessions --limit 50
 deepseek completions zsh > _deepseek
 deepseek completions bash > deepseek.bash
 deepseek completions fish > deepseek.fish
+
+# Runtime API server (localhost by default)
+deepseek serve --http --host 127.0.0.1 --port 7878
+
+# MCP stdio server mode
+deepseek serve --mcp
 ```
+
+## Runtime API (HTTP/SSE)
+
+`deepseek serve --http` starts a local runtime API for external clients.
+
+Default bind: `127.0.0.1:7878`
+
+Core endpoints:
+- `GET /health`
+- `GET /v1/sessions`
+- `POST /v1/stream` (backward-compatible single-turn SSE wrapper)
+- `POST /v1/threads`
+- `GET /v1/threads`
+- `GET /v1/threads/{id}`
+- `POST /v1/threads/{id}/resume`
+- `POST /v1/threads/{id}/fork`
+- `POST /v1/threads/{id}/turns`
+- `POST /v1/threads/{id}/turns/{turn_id}/steer`
+- `POST /v1/threads/{id}/turns/{turn_id}/interrupt`
+- `POST /v1/threads/{id}/compact`
+- `GET /v1/threads/{id}/events` (SSE replay/live, optional `since_seq`)
+- `GET /v1/tasks`
+- `POST /v1/tasks`
+- `GET /v1/tasks/{id}`
+- `POST /v1/tasks/{id}/cancel`
+
+Runtime semantics:
+- explicit durable Thread/Turn/Item lifecycle with IDs and statuses
+- multi-turn continuity on the same thread
+- one active turn per thread (overlap rejected with `409`)
+- interrupt transitions to terminal `interrupted` only after cleanup
+- steer support for active turns
+- compaction surfaced as first-class lifecycle items (`auto` + `manual`)
+- replayable per-thread event timeline for API/TUI clients
+
+Task queue semantics:
+- durable task storage under `~/.deepseek/tasks` (override with `DEEPSEEK_TASKS_DIR`)
+- restart-safe recovery (in-progress tasks are re-queued on startup)
+- bounded worker pool via `deepseek serve --http --workers <1-8>`
+- task execution linked to runtime thread/turn timelines
+
+Security caveat:
+- this server is local-first and assumes trusted local access
+- no built-in auth/TLS/multi-user isolation
+- do not expose it directly to untrusted networks without your own auth/proxy controls
 
 ## Troubleshooting
 
@@ -198,6 +259,8 @@ deepseek completions fish > deepseek.fish
 - [Architecture](docs/ARCHITECTURE.md)
 - [Mode Comparison](docs/MODES.md)
 - [MCP Integration](docs/MCP.md)
+- [Runtime API](docs/RUNTIME_API.md)
+- [Operations Runbook](docs/OPERATIONS_RUNBOOK.md)
 - [Contributing](CONTRIBUTING.md)
 
 ## Development

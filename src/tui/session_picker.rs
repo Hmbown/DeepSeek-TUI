@@ -149,7 +149,10 @@ impl SessionPickerView {
         self.sessions.retain(|s| s.id != session.id);
         self.apply_sort_and_filter();
         self.refresh_preview();
-        self.status = Some(format!("Deleted session {}", &session.id[..8]));
+        self.status = Some(format!(
+            "Deleted session {}",
+            &session.id[..8.min(session.id.len())]
+        ));
         Some(ViewEvent::SessionDeleted {
             session_id: session.id,
             title: session.title,
@@ -405,7 +408,7 @@ fn format_session_line(session: &SessionMetadata) -> String {
         .to_ascii_lowercase();
     format!(
         "{} | {} | {} msgs | {} | {}",
-        &session.id[..8],
+        &session.id[..8.min(session.id.len())],
         title,
         session.message_count,
         mode,

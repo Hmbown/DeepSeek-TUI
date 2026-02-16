@@ -10,6 +10,14 @@ use crate::tools::spec::{ToolError, ToolResult};
 use crate::tools::subagent::SubAgentResult;
 use crate::tools::user_input::UserInputRequest;
 
+/// Final status for a turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnOutcomeStatus {
+    Completed,
+    Interrupted,
+    Failed,
+}
+
 /// Events emitted by the engine to update the UI.
 #[derive(Debug, Clone)]
 pub enum Event {
@@ -52,10 +60,35 @@ pub enum Event {
 
     // === Turn Lifecycle ===
     /// A new turn has started (user sent a message)
-    TurnStarted,
+    TurnStarted { turn_id: String },
 
     /// The turn is complete (no more tool calls)
-    TurnComplete { usage: Usage },
+    TurnComplete {
+        usage: Usage,
+        status: TurnOutcomeStatus,
+        error: Option<String>,
+    },
+
+    /// Context compaction started.
+    CompactionStarted {
+        id: String,
+        auto: bool,
+        message: String,
+    },
+
+    /// Context compaction completed.
+    CompactionCompleted {
+        id: String,
+        auto: bool,
+        message: String,
+    },
+
+    /// Context compaction failed.
+    CompactionFailed {
+        id: String,
+        auto: bool,
+        message: String,
+    },
 
     // === Sub-Agent Events ===
     /// A sub-agent has been spawned

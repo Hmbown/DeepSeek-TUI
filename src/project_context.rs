@@ -141,17 +141,8 @@ pub fn load_project_context_with_parents(workspace: &Path) -> ProjectContext {
         let mut current = workspace.parent();
 
         while let Some(parent) = current {
-            // Stop at git root or filesystem root
-            if parent.join(".git").exists() {
-                let parent_ctx = load_project_context(parent);
-                if parent_ctx.has_instructions() {
-                    ctx.instructions = parent_ctx.instructions;
-                    ctx.source_path = parent_ctx.source_path;
-                }
-                break;
-            }
-
             let parent_ctx = load_project_context(parent);
+            ctx.warnings.extend(parent_ctx.warnings.iter().cloned());
             if parent_ctx.has_instructions() {
                 ctx.instructions = parent_ctx.instructions;
                 ctx.source_path = parent_ctx.source_path;
@@ -452,5 +443,30 @@ mod tests {
 
         assert!(merged.contains("Instructions A"));
         assert!(merged.contains("Instructions B"));
+    }
+
+    #[test]
+    fn test_load_with_parents_searches_above_git_root_when_needed() {
+        let tmp = tempdir().expect("tempdir");
+
+        // AGENTS.md exists above repository root.
+        fs::write(tmp.path().join("AGENTS.md"), "Organization instructions").expect("write");
+
+        // Mark repository root one level below.
+        let repo_root = tmp.path().join("repo");
+        fs::create_dir(&repo_root).expect("mkdir repo");
+        fs::create_dir(repo_root.join(".git")).expect("mkdir .git");
+
+        let workspace = repo_root.join("apps").join("client");
+        fs::create_dir_all(&workspace).expect("mkdir workspace");
+
+        let ctx = load_project_context_with_parents(&workspace);
+        assert!(ctx.has_instructions());
+        assert!(
+            ctx.instructions
+                .as_ref()
+                .unwrap()
+                .contains("Organization instructions")
+        );
     }
 }

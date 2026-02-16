@@ -1,6 +1,6 @@
 [package]
 name = "deepseek-tui"
-version = "0.3.15"
+version = "0.3.16"
 edition = "2024"
 description = "Unofficial DeepSeek CLI - Just run 'deepseek' to start chatting"
 license = "MIT"
@@ -19,6 +19,7 @@ async-stream = "0.3.6"
 async-trait = "0.1"
 bytes = "1.11.0"
 base64 = "0.22.1"
+axum = { version = "0.8.4", features = ["json"] }
 clap = { version = "4.5.54", features = ["derive"] }
 clap_complete = "4.5"
 colored = "3.0.0"
@@ -54,7 +55,6 @@ portable-pty = "0.8"
 zeroize = "1.8.2"
 ignore = "0.4"
 pdf-extract = "0.7"
-meval = "0.2"
 
 [dev-dependencies]
 wiremock = "0.6"

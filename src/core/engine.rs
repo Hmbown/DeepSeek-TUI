@@ -10,7 +10,8 @@
 use std::path::PathBuf;
 use std::pin::pin;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+use std::{fs::OpenOptions, io::Write};
 
 use anyhow::Result;
 use futures_util::StreamExt;
@@ -23,8 +24,7 @@ use crate::client::DeepSeekClient;
 use crate::compaction::{
     CompactionConfig, compact_messages_safe, merge_system_prompts, should_compact,
 };
-use crate::config::Config;
-use crate::config::DEFAULT_MAX_SUBAGENTS;
+use crate::config::{Config, DEFAULT_MAX_SUBAGENTS, DEFAULT_TEXT_MODEL};
 use crate::features::{Feature, Features};
 use crate::llm_client::LlmClient;
 use crate::mcp::McpPool;
@@ -43,7 +43,7 @@ use crate::tools::user_input::{UserInputRequest, UserInputResponse};
 use crate::tools::{ToolContext, ToolRegistryBuilder};
 use crate::tui::app::AppMode;
 
-use super::events::Event;
+use super::events::{Event, TurnOutcomeStatus};
 use super::ops::Op;
 use super::session::Session;
 use super::tool_parser;
@@ -83,7 +83,7 @@ pub struct EngineConfig {
 impl Default for EngineConfig {
     fn default() -> Self {
         Self {
-            model: "deepseek-v3.2".to_string(),
+            model: DEFAULT_TEXT_MODEL.to_string(),
             workspace: PathBuf::from("."),
             allow_shell: false,
             trust_mode: false,
@@ -112,6 +112,8 @@ pub struct EngineHandle {
     tx_approval: mpsc::Sender<ApprovalDecision>,
     /// Send user input responses to the engine
     tx_user_input: mpsc::Sender<UserInputDecision>,
+    /// Send steer input for an in-flight turn.
+    tx_steer: mpsc::Sender<String>,
 }
 
 impl EngineHandle {
@@ -185,6 +187,12 @@ impl EngineHandle {
             .await?;
         Ok(())
     }
+
+    /// Steer an in-flight turn with additional user input.
+    pub async fn steer(&self, content: impl Into<String>) -> Result<()> {
+        self.tx_steer.send(content.into()).await?;
+        Ok(())
+    }
 }
 
 // === Engine ===
@@ -201,6 +209,7 @@ pub struct Engine {
     rx_op: mpsc::Receiver<Op>,
     rx_approval: mpsc::Receiver<ApprovalDecision>,
     rx_user_input: mpsc::Receiver<UserInputDecision>,
+    rx_steer: mpsc::Receiver<String>,
     tx_event: mpsc::Sender<Event>,
     cancel_token: CancellationToken,
     tool_exec_lock: Arc<RwLock<()>>,
@@ -301,6 +310,13 @@ enum ToolExecGuard<'a> {
     Read(tokio::sync::RwLockReadGuard<'a, ()>),
     Write(tokio::sync::RwLockWriteGuard<'a, ()>),
 }
+
+/// Maximum time to wait for a single stream chunk before assuming a stall.
+const STREAM_CHUNK_TIMEOUT_SECS: u64 = 90;
+/// Maximum total bytes of text/thinking content before aborting the stream.
+const STREAM_MAX_CONTENT_BYTES: usize = 10 * 1024 * 1024; // 10 MB
+/// Maximum wall-clock duration for a single streaming response.
+const STREAM_MAX_DURATION_SECS: u64 = 300; // 5 minutes
 
 const TOOL_CALL_START_MARKERS: [&str; 5] = [
     "[TOOL_CALL]",
@@ -484,6 +500,25 @@ fn mcp_tool_is_parallel_safe(name: &str) -> bool {
     )
 }
 
+fn mcp_tool_is_read_only(name: &str) -> bool {
+    matches!(
+        name,
+        "list_mcp_resources"
+            | "list_mcp_resource_templates"
+            | "mcp_read_resource"
+            | "read_mcp_resource"
+            | "mcp_get_prompt"
+    )
+}
+
+fn mcp_tool_approval_description(name: &str) -> String {
+    if mcp_tool_is_read_only(name) {
+        format!("Read-only MCP tool '{name}'")
+    } else {
+        format!("MCP tool '{name}' may have side effects")
+    }
+}
+
 fn format_tool_error(err: &ToolError, tool_name: &str) -> String {
     match err {
         ToolError::InvalidInput { message } => {
@@ -509,6 +544,33 @@ fn format_tool_error(err: &ToolError, tool_name: &str) -> String {
     }
 }
 
+fn summarize_text(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_string();
+    }
+    let take = limit.saturating_sub(3);
+    let mut out: String = text.chars().take(take).collect();
+    out.push_str("...");
+    out
+}
+
+fn emit_tool_audit(event: serde_json::Value) {
+    let Some(path) = std::env::var_os("DEEPSEEK_TOOL_AUDIT_LOG") else {
+        return;
+    };
+    let line = match serde_json::to_string(&event) {
+        Ok(line) => line,
+        Err(_) => return,
+    };
+    let path = PathBuf::from(path);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "{line}");
+    }
+}
+
 impl Engine {
     /// Create a new engine with the given configuration
     pub fn new(config: EngineConfig, api_config: &Config) -> (Self, EngineHandle) {
@@ -516,6 +578,7 @@ impl Engine {
         let (tx_event, rx_event) = mpsc::channel(256);
         let (tx_approval, rx_approval) = mpsc::channel(64);
         let (tx_user_input, rx_user_input) = mpsc::channel(32);
+        let (tx_steer, rx_steer) = mpsc::channel(64);
         let cancel_token = CancellationToken::new();
         let tool_exec_lock = Arc::new(RwLock::new(()));
 
@@ -558,6 +621,7 @@ impl Engine {
             rx_op,
             rx_approval,
             rx_user_input,
+            rx_steer,
             tx_event,
             cancel_token: cancel_token.clone(),
             tool_exec_lock,
@@ -569,6 +633,7 @@ impl Engine {
             cancel_token,
             tx_approval,
             tx_user_input,
+            tx_steer,
         };
 
         (engine, handle)
@@ -720,6 +785,9 @@ impl Engine {
                         .send(Event::status("Session context synced".to_string()))
                         .await;
                 }
+                Op::CompactContext => {
+                    self.handle_manual_compaction().await;
+                }
                 Op::Shutdown => {
                     break;
                 }
@@ -739,8 +807,19 @@ impl Engine {
         // Reset cancel token for fresh turn (in case previous was cancelled)
         self.cancel_token = CancellationToken::new();
 
+        // Drain stale steer messages from previous turns.
+        while self.rx_steer.try_recv().is_ok() {}
+
+        // Create turn context first so start event includes a stable turn id.
+        let mut turn = TurnContext::new(self.config.max_steps);
+
         // Emit turn started event
-        let _ = self.tx_event.send(Event::TurnStarted).await;
+        let _ = self
+            .tx_event
+            .send(Event::TurnStarted {
+                turn_id: turn.id.clone(),
+            })
+            .await;
 
         // Check if we have the appropriate client
         if self.deepseek_client.is_none() {
@@ -749,7 +828,18 @@ impl Engine {
                 .as_deref()
                 .map(|err| format!("Failed to send message: {err}"))
                 .unwrap_or_else(|| "Failed to send message: API client not configured".to_string());
-            let _ = self.tx_event.send(Event::error(message, false)).await;
+            let _ = self
+                .tx_event
+                .send(Event::error(message.clone(), false))
+                .await;
+            let _ = self
+                .tx_event
+                .send(Event::TurnComplete {
+                    usage: turn.usage.clone(),
+                    status: TurnOutcomeStatus::Failed,
+                    error: Some(message),
+                })
+                .await;
             return;
         }
 
@@ -766,9 +856,6 @@ impl Engine {
             }],
         };
         self.session.add_message(user_msg);
-
-        // Create turn context
-        let mut turn = TurnContext::new(self.config.max_steps);
 
         self.session.model = model;
         self.config.model.clone_from(&self.session.model);
@@ -868,7 +955,8 @@ impl Engine {
         });
 
         // Main turn loop
-        self.handle_deepseek_turn(&mut turn, tool_registry.as_ref(), tools, mode)
+        let (status, error) = self
+            .handle_deepseek_turn(&mut turn, tool_registry.as_ref(), tools, mode)
             .await;
 
         // Update session usage
@@ -877,8 +965,104 @@ impl Engine {
         // Emit turn complete event
         let _ = self
             .tx_event
-            .send(Event::TurnComplete { usage: turn.usage })
+            .send(Event::TurnComplete {
+                usage: turn.usage,
+                status,
+                error,
+            })
             .await;
+    }
+
+    async fn handle_manual_compaction(&mut self) {
+        let id = format!("compact_{}", &uuid::Uuid::new_v4().to_string()[..8]);
+        let Some(client) = self.deepseek_client.clone() else {
+            let message = "Manual compaction unavailable: API client not configured".to_string();
+            let _ = self
+                .tx_event
+                .send(Event::CompactionFailed {
+                    id,
+                    auto: false,
+                    message: message.clone(),
+                })
+                .await;
+            let _ = self.tx_event.send(Event::error(message, false)).await;
+            return;
+        };
+
+        let start_message = "Manual context compaction started".to_string();
+        let _ = self
+            .tx_event
+            .send(Event::CompactionStarted {
+                id: id.clone(),
+                auto: false,
+                message: start_message,
+            })
+            .await;
+
+        let compaction_pins = self
+            .session
+            .working_set
+            .pinned_message_indices(&self.session.messages, &self.session.workspace);
+        let compaction_paths = self.session.working_set.top_paths(24);
+
+        match compact_messages_safe(
+            &client,
+            &self.session.messages,
+            &self.config.compaction,
+            Some(&self.session.workspace),
+            Some(&compaction_pins),
+            Some(&compaction_paths),
+        )
+        .await
+        {
+            Ok(result) => {
+                if !result.messages.is_empty() || self.session.messages.is_empty() {
+                    self.session.messages = result.messages;
+                    self.session.system_prompt = merge_system_prompts(
+                        self.session.system_prompt.as_ref(),
+                        result.summary_prompt,
+                    );
+                    let message = if result.retries_used > 0 {
+                        format!(
+                            "Manual context compaction completed (after {} retries)",
+                            result.retries_used
+                        )
+                    } else {
+                        "Manual context compaction completed".to_string()
+                    };
+                    let _ = self
+                        .tx_event
+                        .send(Event::CompactionCompleted {
+                            id,
+                            auto: false,
+                            message,
+                        })
+                        .await;
+                } else {
+                    let message = "Manual context compaction skipped: empty result".to_string();
+                    let _ = self
+                        .tx_event
+                        .send(Event::CompactionFailed {
+                            id,
+                            auto: false,
+                            message: message.clone(),
+                        })
+                        .await;
+                }
+            }
+            Err(err) => {
+                let message = format!("Manual context compaction failed: {err}");
+                let _ = self
+                    .tx_event
+                    .send(Event::CompactionFailed {
+                        id,
+                        auto: false,
+                        message: message.clone(),
+                    })
+                    .await;
+                let _ = self.tx_event.send(Event::status(message)).await;
+            }
+        }
     }
 
     fn build_tool_context(&self, mode: AppMode) -> ToolContext {
@@ -1185,18 +1369,43 @@ impl Engine {
         tool_registry: Option<&crate::tools::ToolRegistry>,
         tools: Option<Vec<Tool>>,
         _mode: AppMode,
-    ) {
+    ) -> (TurnOutcomeStatus, Option<String>) {
         let client = self
             .deepseek_client
             .clone()
             .expect("DeepSeek client should be configured");
 
         let mut consecutive_tool_error_steps = 0u32;
+        let mut turn_error: Option<String> = None;
 
         loop {
             if self.cancel_token.is_cancelled() {
                 let _ = self.tx_event.send(Event::status("Request cancelled")).await;
-                break;
+                return (TurnOutcomeStatus::Interrupted, None);
+            }
+
+            while let Ok(steer) = self.rx_steer.try_recv() {
+                let steer = steer.trim().to_string();
+                if steer.is_empty() {
+                    continue;
+                }
+                self.session
+                    .working_set
+                    .observe_user_message(&steer, &self.session.workspace);
+                self.session.add_message(Message {
+                    role: "user".to_string(),
+                    content: vec![ContentBlock::Text {
+                        text: steer.clone(),
+                        cache_control: None,
+                    }],
+                });
+                let _ = self
+                    .tx_event
+                    .send(Event::status(format!(
+                        "Steer input accepted: {}",
+                        summarize_text(&steer, 120)
+                    )))
+                    .await;
             }
 
             // Ensure system prompt is up to date with latest session states
@@ -1225,6 +1434,15 @@ impl Engine {
                     Some(&compaction_paths),
                 )
             {
+                let compaction_id = format!("compact_{}", &uuid::Uuid::new_v4().to_string()[..8]);
+                let _ = self
+                    .tx_event
+                    .send(Event::CompactionStarted {
+                        id: compaction_id.clone(),
+                        auto: true,
+                        message: "Auto context compaction started".to_string(),
+                    })
+                    .await;
                 let _ = self
                     .tx_event
                     .send(Event::status("Auto-compacting context...".to_string()))
@@ -1255,22 +1473,40 @@ impl Engine {
                             } else {
                                 "Auto-compaction complete".to_string()
                             };
-                            let _ = self.tx_event.send(Event::status(status)).await;
-                        } else {
                             let _ = self
                                 .tx_event
-                                .send(Event::status(
-                                    "Auto-compaction skipped: empty result".to_string(),
-                                ))
+                                .send(Event::CompactionCompleted {
+                                    id: compaction_id.clone(),
+                                    auto: true,
+                                    message: status.clone(),
+                                })
                                 .await;
+                            let _ = self.tx_event.send(Event::status(status)).await;
+                        } else {
+                            let message = "Auto-compaction skipped: empty result".to_string();
+                            let _ = self
+                                .tx_event
+                                .send(Event::CompactionFailed {
+                                    id: compaction_id.clone(),
+                                    auto: true,
+                                    message: message.clone(),
+                                })
+                                .await;
+                            let _ = self.tx_event.send(Event::status(message)).await;
                         }
                     }
                     Err(err) => {
                         // Log error but continue with original messages (never corrupt)
+                        let message = format!("Auto-compaction failed: {err}");
                         let _ = self
                             .tx_event
-                            .send(Event::status(format!("Auto-compaction failed: {err}")))
+                            .send(Event::CompactionFailed {
+                                id: compaction_id,
+                                auto: true,
+                                message: message.clone(),
+                            })
                             .await;
+                        let _ = self.tx_event.send(Event::status(message)).await;
                     }
                 }
             }
@@ -1299,8 +1535,10 @@ impl Engine {
             let stream = match stream_result {
                 Ok(s) => s,
                 Err(e) => {
-                    let _ = self.tx_event.send(Event::error(e.to_string(), true)).await;
-                    break;
+                    let message = e.to_string();
+                    turn_error = Some(message.clone());
+                    let _ = self.tx_event.send(Event::error(message, true)).await;
+                    return (TurnOutcomeStatus::Failed, turn_error);
                 }
             };
             let mut stream = pin!(stream);
@@ -1321,10 +1559,75 @@ impl Engine {
             let mut pending_message_complete = false;
             let mut last_text_index: Option<usize> = None;
             let mut stream_errors = 0u32;
+            let mut pending_steers: Vec<String> = Vec::new();
+            let stream_start = Instant::now();
+            let mut stream_content_bytes: usize = 0;
+            let chunk_timeout = Duration::from_secs(STREAM_CHUNK_TIMEOUT_SECS);
+            let max_duration = Duration::from_secs(STREAM_MAX_DURATION_SECS);
 
             // Process stream events
-            while let Some(event_result) = stream.next().await {
+            loop {
+                let poll_outcome = tokio::select! {
+                    _ = self.cancel_token.cancelled() => None,
+                    result = tokio::time::timeout(chunk_timeout, stream.next()) => {
+                        match result {
+                            Ok(Some(event_result)) => Some(event_result),
+                            Ok(None) => None, // stream ended normally
+                            Err(_) => {
+                                let msg = format!(
+                                    "Stream stalled: no data received for {}s, closing stream",
+                                    STREAM_CHUNK_TIMEOUT_SECS,
+                                );
+                                crate::logging::warn(&msg);
+                                let _ = self.tx_event.send(Event::error(msg, true)).await;
+                                None
+                            }
+                        }
+                    }
+                };
+                let Some(event_result) = poll_outcome else {
+                    break;
+                };
+                while let Ok(steer) = self.rx_steer.try_recv() {
+                    let steer = steer.trim().to_string();
+                    if steer.is_empty() {
+                        continue;
+                    }
+                    pending_steers.push(steer.clone());
+                    let _ = self
+                        .tx_event
+                        .send(Event::status(format!(
+                            "Steer input queued: {}",
+                            summarize_text(&steer, 120)
+                        )))
+                        .await;
+                }
+
                 if self.cancel_token.is_cancelled() {
+                    break;
+                }
+
+                // Guard: max wall-clock duration
+                if stream_start.elapsed() > max_duration {
+                    let msg = format!(
+                        "Stream exceeded maximum duration of {}s, closing",
+                        STREAM_MAX_DURATION_SECS,
+                    );
+                    crate::logging::warn(&msg);
+                    turn_error.get_or_insert(msg.clone());
+                    let _ = self.tx_event.send(Event::error(msg, true)).await;
+                    break;
+                }
+
+                // Guard: max accumulated content bytes
+                if stream_content_bytes > STREAM_MAX_CONTENT_BYTES {
+                    let msg = format!(
+                        "Stream exceeded maximum content size of {} bytes, closing",
+                        STREAM_MAX_CONTENT_BYTES,
+                    );
+                    crate::logging::warn(&msg);
+                    turn_error.get_or_insert(msg.clone());
+                    let _ = self.tx_event.send(Event::error(msg, true)).await;
                     break;
                 }
 
@@ -1332,7 +1635,9 @@ impl Engine {
                     Ok(e) => e,
                     Err(e) => {
                         stream_errors = stream_errors.saturating_add(1);
-                        let _ = self.tx_event.send(Event::error(e.to_string(), true)).await;
+                        let message = e.to_string();
+                        turn_error.get_or_insert(message.clone());
+                        let _ = self.tx_event.send(Event::error(message, true)).await;
                         if stream_errors >= 3 {
                             break;
                         }
@@ -1399,6 +1704,7 @@ impl Engine {
                     },
                     StreamEvent::ContentBlockDelta { index, delta } => match delta {
                         Delta::TextDelta { text } => {
+                            stream_content_bytes = stream_content_bytes.saturating_add(text.len());
                             current_text_raw.push_str(&text);
                             let filtered = filter_tool_call_delta(&text, &mut in_tool_call_block);
                             if !filtered.is_empty() {
@@ -1413,6 +1719,8 @@ impl Engine {
                             }
                         }
                         Delta::ThinkingDelta { thinking } => {
+                            stream_content_bytes =
+                                stream_content_bytes.saturating_add(thinking.len());
                             current_thinking.push_str(&thinking);
                             if !thinking.is_empty() {
                                 let _ = self
@@ -1559,8 +1867,19 @@ impl Engine {
                 let _ = self.tx_event.send(Event::MessageComplete { index }).await;
             }
 
+            // DeepSeek chat API rejects assistant messages that contain only
+            // reasoning/thinking content without visible text or tool calls.
+            // Keep thinking for UI stream events, but persist only sendable
+            // assistant turns in the conversation state.
+            let has_sendable_assistant_content = content_blocks.iter().any(|block| {
+                matches!(
+                    block,
+                    ContentBlock::Text { .. } | ContentBlock::ToolUse { .. }
+                )
+            });
+
             // Add assistant message to session
-            if !content_blocks.is_empty() {
+            if has_sendable_assistant_content {
                 self.session.add_message(Message {
                     role: "assistant".to_string(),
                     content: content_blocks,
@@ -1569,6 +1888,22 @@ impl Engine {
 
             // If no tool uses, we're done
             if tool_uses.is_empty() {
+                if !pending_steers.is_empty() {
+                    for steer in pending_steers.drain(..) {
+                        self.session
+                            .working_set
+                            .observe_user_message(&steer, &self.session.workspace);
+                        self.session.add_message(Message {
+                            role: "user".to_string(),
+                            content: vec![ContentBlock::Text {
+                                text: steer,
+                                cache_control: None,
+                            }],
+                        });
+                    }
+                    turn.next_step();
+                    continue;
+                }
                 break;
             }
 
@@ -1611,16 +1946,18 @@ impl Engine {
                 let mut supports_parallel = false;
                 let mut read_only = false;
 
-                if !McpPool::is_mcp_tool(&tool_name) {
-                    if let Some(registry) = tool_registry
-                        && let Some(spec) = registry.get(&tool_name)
-                    {
-                        approval_required =
-                            spec.approval_requirement() != ApprovalRequirement::Auto;
-                        approval_description = spec.description().to_string();
-                        supports_parallel = spec.supports_parallel();
-                        read_only = spec.is_read_only();
-                    }
+                if McpPool::is_mcp_tool(&tool_name) {
+                    read_only = mcp_tool_is_read_only(&tool_name);
+                    supports_parallel = mcp_tool_is_parallel_safe(&tool_name);
+                    approval_required = !read_only;
+                    approval_description = mcp_tool_approval_description(&tool_name);
+                } else if let Some(registry) = tool_registry
+                    && let Some(spec) = registry.get(&tool_name)
+                {
+                    approval_required = spec.approval_requirement() != ApprovalRequirement::Auto;
+                    approval_description = spec.description().to_string();
+                    supports_parallel = spec.supports_parallel();
+                    read_only = spec.is_read_only();
                 }
 
                 plans.push(ToolExecutionPlan {
@@ -1776,6 +2113,11 @@ impl Engine {
                         Option<Result<ToolResult, ToolError>>,
                         Option<crate::tools::ToolContext>,
                     ) = if plan.approval_required {
+                        emit_tool_audit(json!({
+                            "event": "tool.approval_required",
+                            "tool_id": tool_id.clone(),
+                            "tool_name": tool_name.clone(),
+                        }));
                         let _ = self
                             .tx_event
                             .send(Event::ApprovalRequired {
@@ -1786,14 +2128,37 @@ impl Engine {
                             .await;
 
                         match self.await_tool_approval(&tool_id).await {
-                            Ok(ApprovalResult::Approved) => (None, None),
-                            Ok(ApprovalResult::Denied) => (
-                                Some(Err(ToolError::permission_denied(format!(
-                                    "Tool '{tool_name}' denied by user"
-                                )))),
-                                None,
-                            ),
+                            Ok(ApprovalResult::Approved) => {
+                                emit_tool_audit(json!({
+                                    "event": "tool.approval_decision",
+                                    "tool_id": tool_id.clone(),
+                                    "tool_name": tool_name.clone(),
+                                    "decision": "approved",
+                                }));
+                                (None, None)
+                            }
+                            Ok(ApprovalResult::Denied) => {
+                                emit_tool_audit(json!({
+                                    "event": "tool.approval_decision",
+                                    "tool_id": tool_id.clone(),
+                                    "tool_name": tool_name.clone(),
+                                    "decision": "denied",
+                                }));
+                                (
+                                    Some(Err(ToolError::permission_denied(format!(
+                                        "Tool '{tool_name}' denied by user"
+                                    )))),
+                                    None,
+                                )
+                            }
                             Ok(ApprovalResult::RetryWithPolicy(policy)) => {
+                                emit_tool_audit(json!({
+                                    "event": "tool.approval_decision",
+                                    "tool_id": tool_id.clone(),
+                                    "tool_name": tool_name.clone(),
+                                    "decision": "retry_with_policy",
+                                    "policy": format!("{policy:?}"),
+                                }));
                                 let elevated_context = tool_registry.map(|r| {
                                     r.context().clone().with_elevated_sandbox_policy(policy)
                                 });
@@ -1854,6 +2219,12 @@ impl Engine {
 
                 match outcome.result {
                     Ok(output) => {
+                        emit_tool_audit(json!({
+                            "event": "tool.result",
+                            "tool_id": outcome.id.clone(),
+                            "tool_name": outcome.name.clone(),
+                            "success": output.success,
+                        }));
                         let output_content = output.content;
 
                         tool_call.set_result(output_content.clone(), duration);
@@ -1872,6 +2243,13 @@ impl Engine {
                         });
                     }
                     Err(e) => {
+                        emit_tool_audit(json!({
+                            "event": "tool.result",
+                            "tool_id": outcome.id.clone(),
+                            "tool_name": outcome.name.clone(),
+                            "success": false,
+                            "error": e.to_string(),
+                        }));
                         step_error_count += 1;
                         let error = format_tool_error(&e, &outcome.name);
                         tool_call.set_error(error.clone(), duration);
@@ -1894,6 +2272,21 @@ impl Engine {
                 turn.record_tool_call(tool_call);
             }
 
+            if !pending_steers.is_empty() {
+                for steer in pending_steers.drain(..) {
+                    self.session
+                        .working_set
+                        .observe_user_message(&steer, &self.session.workspace);
+                    self.session.add_message(Message {
+                        role: "user".to_string(),
+                        content: vec![ContentBlock::Text {
+                            text: steer,
+                            cache_control: None,
+                        }],
+                    });
+                }
+            }
+
             if step_error_count > 0 {
                 consecutive_tool_error_steps = consecutive_tool_error_steps.saturating_add(1);
             } else {
@@ -1912,6 +2305,14 @@ impl Engine {
 
             turn.next_step();
         }
+
+        if self.cancel_token.is_cancelled() {
+            return (TurnOutcomeStatus::Interrupted, None);
+        }
+        if let Some(err) = turn_error {
+            return (TurnOutcomeStatus::Failed, Some(err));
+        }
+        (TurnOutcomeStatus::Completed, None)
     }
 
     /// Get a reference to the session
@@ -1951,81 +2352,39 @@ pub fn spawn_engine(config: EngineConfig, api_config: &Config) -> EngineHandle {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-    use std::path::PathBuf;
-    use std::time::Instant;
+pub(crate) struct MockEngineHandle {
+    pub handle: EngineHandle,
+    pub rx_op: mpsc::Receiver<Op>,
+    pub rx_steer: mpsc::Receiver<String>,
+    pub tx_event: mpsc::Sender<Event>,
+    pub cancel_token: CancellationToken,
+}
 
-    fn make_plan(
-        read_only: bool,
-        supports_parallel: bool,
-        approval_required: bool,
-        interactive: bool,
-    ) -> ToolExecutionPlan {
-        ToolExecutionPlan {
-            index: 0,
-            id: "tool-1".to_string(),
-            name: "grep_files".to_string(),
-            input: json!({"pattern": "test"}),
-            interactive,
-            approval_required,
-            approval_description: "desc".to_string(),
-            supports_parallel,
-            read_only,
-        }
-    }
+#[cfg(test)]
+pub(crate) fn mock_engine_handle() -> MockEngineHandle {
+    let (tx_op, rx_op) = mpsc::channel(32);
+    let (tx_event, rx_event) = mpsc::channel(256);
+    let (tx_approval, _rx_approval) = mpsc::channel(64);
+    let (tx_user_input, _rx_user_input) = mpsc::channel(32);
+    let (tx_steer, rx_steer) = mpsc::channel(64);
+    let cancel_token = CancellationToken::new();
+    let handle = EngineHandle {
+        tx_op,
+        rx_event: Arc::new(RwLock::new(rx_event)),
+        cancel_token: cancel_token.clone(),
+        tx_approval,
+        tx_user_input,
+        tx_steer,
+    };
 
-    #[test]
-    fn parallel_batch_requires_read_only_parallel_tools() {
-        let plans = vec![make_plan(true, true, false, false)];
-        assert!(should_parallelize_tool_batch(&plans));
-
-        let plans = vec![
-            make_plan(true, true, false, false),
-            make_plan(true, true, false, false),
-        ];
-        assert!(should_parallelize_tool_batch(&plans));
-
-        let plans = vec![make_plan(false, true, false, false)];
-        assert!(!should_parallelize_tool_batch(&plans));
-
-        let plans = vec![make_plan(true, false, false, false)];
-        assert!(!should_parallelize_tool_batch(&plans));
-
-        let plans = vec![make_plan(true, true, true, false)];
-        assert!(!should_parallelize_tool_batch(&plans));
-
-        let plans = vec![make_plan(true, true, false, true)];
-        assert!(!should_parallelize_tool_batch(&plans));
-    }
-
-    #[test]
-    fn tool_error_messages_include_actionable_hints() {
-        let path_error = ToolError::path_escape(PathBuf::from("../escape.txt"));
-        let formatted = format_tool_error(&path_error, "read_file");
-        assert!(formatted.contains("escapes workspace"));
-
-        let missing_field = ToolError::missing_field("path");
-        let formatted = format_tool_error(&missing_field, "read_file");
-        assert!(formatted.contains("missing required field"));
-
-        let timeout = ToolError::Timeout { seconds: 5 };
-        let formatted = format_tool_error(&timeout, "exec_shell");
-        assert!(formatted.contains("timed out"));
-    }
-
-    #[test]
-    fn tool_exec_outcome_tracks_duration() {
-        let outcome = ToolExecOutcome {
-            index: 0,
-            id: "tool-1".to_string(),
-            name: "grep_files".to_string(),
-            input: json!({"pattern": "test"}),
-            started_at: Instant::now(),
-            result: Ok(ToolResult::success("ok")),
-        };
-
-        assert!(outcome.started_at.elapsed().as_nanos() > 0);
+    MockEngineHandle {
+        handle,
+        rx_op,
+        rx_steer,
+        tx_event,
+        cancel_token,
     }
 }
+
+#[cfg(test)]
+mod tests;

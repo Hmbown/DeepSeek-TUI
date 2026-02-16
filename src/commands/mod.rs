@@ -12,6 +12,7 @@ mod queue;
 mod review;
 mod session;
 mod skills;
+mod task;
 
 use crate::tui::app::{App, AppAction};
 
@@ -104,6 +105,12 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "/model [name]",
     },
     CommandInfo {
+        name: "models",
+        aliases: &[],
+        description: "List available models from API",
+        usage: "/models",
+    },
+    CommandInfo {
         name: "queue",
         aliases: &["queued"],
         description: "View or edit queued messages",
@@ -132,6 +139,12 @@ pub const COMMANDS: &[CommandInfo] = &[
         aliases: &[],
         description: "Append note to persistent notes file (.deepseek/notes.md)",
         usage: "/note <text>",
+    },
+    CommandInfo {
+        name: "task",
+        aliases: &["tasks"],
+        description: "Manage background tasks",
+        usage: "/task [add <prompt>|list|show <id>|cancel <id>]",
     },
     // Session commands
     CommandInfo {
@@ -280,11 +293,13 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "clear" => core::clear(app),
         "exit" | "quit" | "q" => core::exit(),
         "model" => core::model(app, arg),
+        "models" => core::models(app),
         "queue" | "queued" => queue::queue(app, arg),
         "subagents" | "agents" => core::subagents(app),
         "deepseek" | "dashboard" | "api" => core::deepseek_links(),
         "home" | "stats" | "overview" => core::home_dashboard(app),
         "note" => note::note(app, arg),
+        "task" | "tasks" => task::task(app, arg),
 
         // Session commands
         "save" => session::save(app, arg),

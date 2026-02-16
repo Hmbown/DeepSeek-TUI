@@ -2,6 +2,13 @@
 
 use serde::{Deserialize, Serialize};
 
+pub const DEFAULT_CONTEXT_WINDOW_TOKENS: u32 = 128_000;
+pub const DEFAULT_COMPACTION_TOKEN_THRESHOLD: usize = 50_000;
+pub const DEFAULT_COMPACTION_MESSAGE_THRESHOLD: usize = 50;
+const COMPACTION_THRESHOLD_PERCENT: u32 = 80;
+const COMPACTION_MESSAGE_DIVISOR: u32 = 1200;
+const MAX_COMPACTION_MESSAGE_THRESHOLD: usize = 150;
+
 // === Core Message Types ===
 
 /// Request payload for sending a message to the API.
@@ -29,7 +36,7 @@ pub struct MessageRequest {
 }
 
 /// System prompt representation (plain text or structured blocks).
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(untagged)]
 pub enum SystemPrompt {
     Text(String),
@@ -37,7 +44,7 @@ pub enum SystemPrompt {
 }
 
 /// A structured system prompt block.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct SystemBlock {
     #[serde(rename = "type")]
     pub block_type: String,
@@ -47,14 +54,14 @@ pub struct SystemBlock {
 }
 
 /// A chat message with role and content blocks.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct Message {
     pub role: String,
     pub content: Vec<ContentBlock>,
 }
 
 /// A single content block inside a message.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(tag = "type")]
 pub enum ContentBlock {
     #[serde(rename = "text")]
@@ -79,7 +86,7 @@ pub enum ContentBlock {
 }
 
 /// Cache control metadata for tool definitions and blocks.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct CacheControl {
     #[serde(rename = "type")]
     pub cache_type: String,
@@ -120,21 +127,50 @@ pub struct Usage {
 pub fn context_window_for_model(model: &str) -> Option<u32> {
     let lower = model.to_lowercase();
     if lower.contains("deepseek-v3.2") {
-        return Some(128_000);
+        return Some(DEFAULT_CONTEXT_WINDOW_TOKENS);
     }
     if lower.contains("deepseek-chat")
         || lower.contains("deepseek-reasoner")
         || lower.contains("deepseek-r1")
     {
-        return Some(128_000);
+        return Some(DEFAULT_CONTEXT_WINDOW_TOKENS);
     }
     if lower.contains("deepseek") {
-        return Some(128_000);
+        return Some(DEFAULT_CONTEXT_WINDOW_TOKENS);
     }
     if lower.contains("claude") {
         return Some(200_000);
     }
     None
+}
+
+/// Derive a compaction token threshold from model context window.
+///
+/// Keeps headroom for tool outputs and assistant completion by defaulting to 80%
+/// of known context windows.
+#[must_use]
+pub fn compaction_threshold_for_model(model: &str) -> usize {
+    let Some(window) = context_window_for_model(model) else {
+        return DEFAULT_COMPACTION_TOKEN_THRESHOLD;
+    };
+
+    let threshold = (u64::from(window) * u64::from(COMPACTION_THRESHOLD_PERCENT)) / 100;
+    usize::try_from(threshold).unwrap_or(DEFAULT_COMPACTION_TOKEN_THRESHOLD)
+}
+
+/// Derive a compaction message-count threshold from model context window.
+#[must_use]
+pub fn compaction_message_threshold_for_model(model: &str) -> usize {
+    let Some(window) = context_window_for_model(model) else {
+        return DEFAULT_COMPACTION_MESSAGE_THRESHOLD;
+    };
+
+    let scaled = usize::try_from(window / COMPACTION_MESSAGE_DIVISOR)
+        .unwrap_or(DEFAULT_COMPACTION_MESSAGE_THRESHOLD);
+    scaled.clamp(
+        DEFAULT_COMPACTION_MESSAGE_THRESHOLD,
+        MAX_COMPACTION_MESSAGE_THRESHOLD,
+    )
 }
 
 // === Streaming Structures ===
@@ -203,4 +239,41 @@ pub enum Delta {
 pub struct MessageDelta {
     pub stop_reason: Option<String>,
     pub stop_sequence: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deepseek_models_map_to_128k_context_window() {
+        assert_eq!(
+            context_window_for_model("deepseek-reasoner"),
+            Some(DEFAULT_CONTEXT_WINDOW_TOKENS)
+        );
+        assert_eq!(
+            context_window_for_model("deepseek-v3.2"),
+            Some(DEFAULT_CONTEXT_WINDOW_TOKENS)
+        );
+        assert_eq!(
+            context_window_for_model("deepseek-v3.2-0324"),
+            Some(DEFAULT_CONTEXT_WINDOW_TOKENS)
+        );
+    }
+
+    #[test]
+    fn compaction_threshold_scales_with_context_window() {
+        assert_eq!(compaction_threshold_for_model("deepseek-reasoner"), 102_400);
+        assert_eq!(compaction_threshold_for_model("unknown-model"), 50_000);
+    }
+
+    #[test]
+    fn compaction_message_threshold_scales_with_context_window() {
+        assert_eq!(
+            compaction_message_threshold_for_model("deepseek-reasoner"),
+            106
+        );
+        assert_eq!(compaction_message_threshold_for_model("unknown-model"), 50);
+        assert_eq!(compaction_message_threshold_for_model("claude-3"), 150);
+    }
 }
