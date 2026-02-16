@@ -1,7 +1,7 @@
 //! Config commands: config, set, settings, yolo, trust, logout
 
 use super::CommandResult;
-use crate::config::clear_api_key;
+use crate::config::{COMMON_DEEPSEEK_MODELS, canonical_model_name, clear_api_key};
 use crate::palette;
 use crate::settings::Settings;
 use crate::tui::app::{App, AppAction, AppMode, OnboardingState};
@@ -84,12 +84,18 @@ pub fn set_config(app: &mut App, args: Option<&str>) -> CommandResult {
     // Handle session-only settings first
     match key.as_str() {
         "model" => {
-            app.model = value.to_string();
+            let Some(model) = canonical_model_name(value) else {
+                return CommandResult::error(format!(
+                    "Invalid model '{value}'. Supported models: {}",
+                    COMMON_DEEPSEEK_MODELS.join(", ")
+                ));
+            };
+            app.model = model.to_string();
             app.update_model_compaction_budget();
             app.last_prompt_tokens = None;
             app.last_completion_tokens = None;
             return CommandResult::with_message_and_action(
-                format!("model = {value}"),
+                format!("model = {model}"),
                 AppAction::UpdateCompaction(app.compaction_config()),
             );
         }
@@ -216,6 +222,7 @@ pub fn logout(app: &mut App) -> CommandResult {
 mod tests {
     use super::*;
     use crate::config::Config;
+    use crate::test_support::lock_test_env;
     use crate::tui::app::{App, TuiOptions};
     use crate::tui::approval::ApprovalMode;
     use std::env;
@@ -223,7 +230,6 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use std::path::PathBuf;
-    use std::sync::{Mutex, OnceLock};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     struct EnvGuard {
@@ -296,11 +302,6 @@ mod tests {
         }
     }
 
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
-
     fn create_test_app() -> App {
         let options = TuiOptions {
             model: "test-model".to_string(),
@@ -355,6 +356,7 @@ mod tests {
 
     #[test]
     fn test_show_settings_loads_from_file() {
+        let _lock = lock_test_env();
         let mut app = create_test_app();
         let result = show_settings(&mut app);
         // Settings should load (may use defaults if file doesn't exist)
@@ -425,6 +427,7 @@ mod tests {
 
     #[test]
     fn test_set_without_save_flag() {
+        let _lock = lock_test_env();
         let mut app = create_test_app();
         let result = set_config(&mut app, Some("auto_compact true"));
         assert!(result.message.is_some());
@@ -445,7 +448,7 @@ mod tests {
 
     #[test]
     fn test_logout_clears_api_key_state() {
-        let _lock = env_lock().lock().unwrap();
+        let _lock = lock_test_env();
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -476,6 +479,7 @@ mod tests {
 
     #[test]
     fn test_set_invalid_setting() {
+        let _lock = lock_test_env();
         let mut app = create_test_app();
         let _result = set_config(&mut app, Some("nonexistent value"));
         // Should either error or handle as session setting

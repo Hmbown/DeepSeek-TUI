@@ -56,6 +56,8 @@ mod session_manager;
 mod settings;
 mod skills;
 mod task_manager;
+#[cfg(test)]
+mod test_support;
 mod tools;
 mod tui;
 mod ui;

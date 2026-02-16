@@ -12,6 +12,9 @@ pub const DEEPSEEK_INK_RGB: (u8, u8, u8) = (11, 21, 38);
 pub const DEEPSEEK_SLATE_RGB: (u8, u8, u8) = (18, 28, 46);
 pub const DEEPSEEK_RED_RGB: (u8, u8, u8) = (226, 80, 96);
 
+// New semantic colors
+pub const BORDER_COLOR_RGB: (u8, u8, u8) = (42, 74, 127); // #2A4A7F
+
 pub const DEEPSEEK_BLUE: Color = Color::Rgb(
     DEEPSEEK_BLUE_RGB.0,
     DEEPSEEK_BLUE_RGB.1,
@@ -42,9 +45,24 @@ pub const DEEPSEEK_RED: Color =
     Color::Rgb(DEEPSEEK_RED_RGB.0, DEEPSEEK_RED_RGB.1, DEEPSEEK_RED_RGB.2);
 
 pub const TEXT_PRIMARY: Color = Color::White;
-pub const TEXT_MUTED: Color = Color::DarkGray;
-pub const TEXT_DIM: Color = Color::Gray;
+pub const TEXT_MUTED: Color = Color::Rgb(192, 192, 192); // #C0C0C0
+pub const TEXT_DIM: Color = Color::Rgb(160, 160, 160); // #A0A0A0
 
+// New semantic colors for UI theming
+pub const BORDER_COLOR: Color =
+    Color::Rgb(BORDER_COLOR_RGB.0, BORDER_COLOR_RGB.1, BORDER_COLOR_RGB.2);
+#[allow(dead_code)]
+pub const ACCENT_PRIMARY: Color = DEEPSEEK_BLUE; // #3578E5
+#[allow(dead_code)]
+pub const ACCENT_SECONDARY: Color = DEEPSEEK_SKY; // #6AAEF2
+#[allow(dead_code)]
+pub const BACKGROUND_LIGHT: Color = Color::Rgb(30, 47, 71); // #1E2F47
+#[allow(dead_code)]
+pub const BACKGROUND_DARK: Color = Color::Rgb(13, 26, 48); // #0D1A30
+#[allow(dead_code)]
+pub const STATUS_NEUTRAL: Color = Color::Rgb(160, 160, 160); // #A0A0A0
+
+// Legacy status colors - keep for backward compatibility
 pub const STATUS_SUCCESS: Color = DEEPSEEK_SKY;
 pub const STATUS_WARNING: Color = Color::Rgb(255, 170, 60); // Amber
 pub const STATUS_ERROR: Color = DEEPSEEK_RED;
@@ -52,7 +70,7 @@ pub const STATUS_ERROR: Color = DEEPSEEK_RED;
 pub const STATUS_INFO: Color = DEEPSEEK_BLUE;
 
 // Mode-specific accent colors for mode badges
-pub const MODE_NORMAL: Color = Color::Gray;
+pub const MODE_NORMAL: Color = Color::Rgb(192, 192, 192); // #C0C0C0
 pub const MODE_AGENT: Color = Color::Rgb(80, 150, 255); // Bright blue
 pub const MODE_YOLO: Color = Color::Rgb(255, 100, 100); // Warning red
 pub const MODE_PLAN: Color = Color::Rgb(255, 170, 60); // Orange

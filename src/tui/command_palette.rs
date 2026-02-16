@@ -7,7 +7,7 @@ use ratatui::{
     buffer::Buffer,
     layout::Rect,
     prelude::Stylize,
-    style::{Modifier, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap},
 };
@@ -204,7 +204,7 @@ impl ModalView for CommandPaletteView {
                 let style = if is_selected {
                     Style::default()
                         .fg(palette::DEEPSEEK_SKY)
-                        .add_modifier(Modifier::REVERSED)
+                        .bg(palette::SELECTION_BG)
                 } else {
                     Style::default().fg(palette::TEXT_PRIMARY)
                 };
@@ -235,7 +235,7 @@ impl ModalView for CommandPaletteView {
                 Span::styled("Esc close", Style::default().fg(palette::TEXT_MUTED)),
             ]))
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(palette::DEEPSEEK_SKY));
+            .border_style(Style::default().fg(palette::BORDER_COLOR));
 
         Paragraph::new(lines)
             .block(block)

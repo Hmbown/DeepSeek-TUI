@@ -178,6 +178,11 @@ impl<'a> HeaderWidget<'a> {
             Style::default().fg(palette::TEXT_MUTED),
         ))
     }
+
+    /// Build a subtle separator span.
+    fn separator_span(&self) -> Span<'static> {
+        Span::styled(" │ ", Style::default().fg(palette::BORDER_COLOR))
+    }
 }
 
 impl Renderable for HeaderWidget<'_> {
@@ -194,6 +199,10 @@ impl Renderable for HeaderWidget<'_> {
         let streaming_span = self.streaming_indicator();
         let usage_span = self.usage_span();
 
+        // Subtle separator (vertical bar)
+        let separator_span = self.separator_span();
+        let separator_width = separator_span.content.width();
+
         // Calculate widths
         let mode_width = mode_span.content.width();
         let model_width = model_span.content.width();
@@ -207,26 +216,36 @@ impl Renderable for HeaderWidget<'_> {
                 0
             };
 
-        let left_width = mode_width + 1 + model_width; // mode + space + model
+        let left_width = mode_width + 1 + model_width; // mode + space + model (without separator)
+
+        // Determine if separator should be shown (when there's right‑side content)
+        let show_separator = usage_span.is_some() || streaming_span.is_some();
+        let separator_visible_width = if show_separator { separator_width } else { 0 };
 
         let available = area.width as usize;
 
         // Build final line based on available space
         let mut spans = Vec::new();
 
-        if available >= left_width + right_width + 2 {
-            // Full layout: [MODE] model | (spacer) | usage streaming
+        if available >= left_width + separator_visible_width + right_width + 2 {
+            // Full layout: [MODE] model | separator (optional) | (spacer) | usage streaming
             spans.push(mode_span);
             spans.push(Span::raw(" "));
             spans.push(model_span);
 
+            // Add separator if there is right‑side content
+            if show_separator {
+                spans.push(separator_span);
+            }
+
             // Spacer to push right elements to the end
-            let padding_needed = available.saturating_sub(left_width + right_width);
+            let padding_needed =
+                available.saturating_sub(left_width + separator_visible_width + right_width);
             if padding_needed > 0 {
                 spans.push(Span::raw(" ".repeat(padding_needed)));
             }
 
-            // Add usage info
+            // Add usage info (right side)
             if let Some(usage) = usage_span {
                 spans.push(usage);
                 if streaming_span.is_some() {

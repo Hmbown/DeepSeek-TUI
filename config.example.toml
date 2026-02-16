@@ -20,7 +20,7 @@ base_url = "https://api.deepseek.com"
 # ─────────────────────────────────────────────────────────────────────────────────
 # Default Models
 # ─────────────────────────────────────────────────────────────────────────────────
-default_text_model = "deepseek-v3.2"  # any valid model ID works (e.g. deepseek-chat, deepseek-reasoner, deepseek-r1, deepseek-v3, future deepseek-v4-mini)
+default_text_model = "deepseek-reasoner" # supported: deepseek-reasoner, deepseek-chat
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Paths

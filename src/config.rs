@@ -15,15 +15,19 @@ use crate::hooks::HooksConfig;
 
 pub const DEFAULT_MAX_SUBAGENTS: usize = 5;
 pub const MAX_SUBAGENTS: usize = 20;
-pub const DEFAULT_TEXT_MODEL: &str = "deepseek-v3.2";
+pub const DEFAULT_TEXT_MODEL: &str = "deepseek-reasoner";
 const API_KEYRING_SENTINEL: &str = "__KEYRING__";
-pub const COMMON_DEEPSEEK_MODELS: &[&str] = &[
-    "deepseek-v3.2",
-    "deepseek-chat",
-    "deepseek-reasoner",
-    "deepseek-r1",
-    "deepseek-v3",
-];
+pub const COMMON_DEEPSEEK_MODELS: &[&str] = &["deepseek-chat", "deepseek-reasoner"];
+
+/// Canonicalize supported model aliases to one of the two supported IDs.
+#[must_use]
+pub fn canonical_model_name(model: &str) -> Option<&'static str> {
+    match model.trim().to_ascii_lowercase().as_str() {
+        "deepseek-chat" | "deepseek-v3" | "deepseek-v3.2" => Some("deepseek-chat"),
+        "deepseek-reasoner" | "deepseek-r1" => Some("deepseek-reasoner"),
+        _ => None,
+    }
+}
 
 // === Types ===
 
@@ -141,6 +145,7 @@ impl Config {
         apply_env_overrides(&mut config);
         apply_managed_overrides(&mut config)?;
         apply_requirements(&mut config)?;
+        normalize_model_config(&mut config);
         config.validate()?;
         Ok(config)
     }
@@ -158,6 +163,13 @@ impl Config {
                     anyhow::bail!("Unknown feature flag: {key}");
                 }
             }
+        }
+        if let Some(model) = self.default_text_model.as_deref()
+            && canonical_model_name(model).is_none()
+        {
+            anyhow::bail!(
+                "Invalid default_text_model '{model}': expected deepseek-chat or deepseek-reasoner."
+            );
         }
         if let Some(policy) = self.approval_policy.as_deref() {
             let normalized = policy.trim().to_ascii_lowercase();
@@ -469,6 +481,14 @@ fn apply_env_overrides(config: &mut Config) {
     }
 }
 
+fn normalize_model_config(config: &mut Config) {
+    if let Some(model) = config.default_text_model.as_deref()
+        && let Some(canonical) = canonical_model_name(model)
+    {
+        config.default_text_model = Some(canonical.to_string());
+    }
+}
+
 fn normalize_base_url(base: &str) -> String {
     let trimmed = base.trim_end_matches('/');
     let deepseek_domains = ["api.deepseek.com", "api.deepseeki.com"];
@@ -757,10 +777,10 @@ pub fn clear_api_key() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::lock_test_env;
     use std::collections::HashMap;
     use std::env;
     use std::ffi::OsString;
-    use std::sync::{Mutex, OnceLock};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     struct EnvGuard {
@@ -829,14 +849,9 @@ mod tests {
         }
     }
 
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
-
     #[test]
     fn save_api_key_writes_config() -> Result<()> {
-        let _lock = env_lock().lock().unwrap();
+        let _lock = lock_test_env();
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -860,7 +875,7 @@ mod tests {
 
     #[test]
     fn test_tilde_expansion_in_paths() -> Result<()> {
-        let _lock = env_lock().lock().unwrap();
+        let _lock = lock_test_env();
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -890,7 +905,7 @@ mod tests {
 
     #[test]
     fn test_load_uses_tilde_expanded_deepseek_config_path() -> Result<()> {
-        let _lock = env_lock().lock().unwrap();
+        let _lock = lock_test_env();
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -919,7 +934,7 @@ mod tests {
 
     #[test]
     fn test_load_falls_back_to_home_config_when_env_path_missing() -> Result<()> {
-        let _lock = env_lock().lock().unwrap();
+        let _lock = lock_test_env();
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -978,7 +993,7 @@ mod tests {
 
     #[test]
     fn test_save_api_key_doesnt_match_similar_keys() -> Result<()> {
-        let _lock = env_lock().lock().unwrap();
+        let _lock = lock_test_env();
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()

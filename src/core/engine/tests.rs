@@ -75,3 +75,20 @@ fn tool_exec_outcome_tracks_duration() {
 
     assert!(outcome.started_at.elapsed().as_nanos() > 0);
 }
+
+#[test]
+fn detects_context_length_errors_from_provider_payloads() {
+    let msg = r#"SSE stream request failed: HTTP 400 Bad Request: {"error":{"message":"This model's maximum context length is 131072 tokens. However, you requested 153056 tokens (148960 in the messages, 4096 in the completion).","type":"invalid_request_error"}}"#;
+    assert!(is_context_length_error_message(msg));
+    assert!(!is_context_length_error_message(
+        "SSE stream request failed: HTTP 400 Bad Request: model not found"
+    ));
+}
+
+#[test]
+fn context_budget_reserves_output_and_headroom() {
+    let budget = context_input_budget("deepseek-reasoner", TURN_MAX_OUTPUT_TOKENS)
+        .expect("deepseek models should have known context window");
+    let expected = 128_000usize - 4_096usize - 1_024usize;
+    assert_eq!(budget, expected);
+}

@@ -54,7 +54,7 @@ Request body:
 ```json
 {
   "prompt": "Summarize recent commits",
-  "model": "deepseek-v3.2",
+  "model": "deepseek-reasoner",
   "mode": "agent",
   "workspace": ".",
   "allow_shell": false,
@@ -88,7 +88,7 @@ Create thread request example:
 
 ```json
 {
-  "model": "deepseek-v3.2",
+  "model": "deepseek-reasoner",
   "workspace": ".",
   "mode": "agent",
   "allow_shell": false,

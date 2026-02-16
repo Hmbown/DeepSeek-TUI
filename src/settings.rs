@@ -7,6 +7,8 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::config::canonical_model_name;
+
 /// User settings with defaults
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -65,6 +67,11 @@ impl Settings {
         let mut settings: Settings = toml::from_str(&content)
             .with_context(|| format!("Failed to parse settings from {}", path.display()))?;
         settings.default_mode = normalize_mode(&settings.default_mode).to_string();
+        settings.default_model = settings
+            .default_model
+            .as_deref()
+            .and_then(canonical_model_name)
+            .map(ToString::to_string);
         Ok(settings)
     }
 
@@ -138,7 +145,12 @@ impl Settings {
                 self.max_input_history = max;
             }
             "default_model" | "model" => {
-                self.default_model = Some(value.to_string());
+                let Some(model) = canonical_model_name(value) else {
+                    anyhow::bail!(
+                        "Failed to update setting: invalid model '{value}'. Expected: deepseek-chat or deepseek-reasoner."
+                    );
+                };
+                self.default_model = Some(model.to_string());
             }
             _ => {
                 anyhow::bail!("Failed to update setting: unknown setting '{key}'.");
@@ -184,7 +196,10 @@ impl Settings {
             ("default_mode", "Default mode: agent, plan, yolo"),
             ("sidebar_width", "Sidebar width percentage: 10-50"),
             ("max_history", "Max input history entries"),
-            ("default_model", "Default model name"),
+            (
+                "default_model",
+                "Default model: deepseek-chat or deepseek-reasoner",
+            ),
         ]
     }
 }

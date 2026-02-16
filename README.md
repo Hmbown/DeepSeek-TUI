@@ -102,7 +102,7 @@ Config lives at `~/.deepseek/config.toml`:
 
 ```toml
 api_key = "sk-..."
-default_text_model = "deepseek-v3.2"   # optional
+default_text_model = "deepseek-reasoner" # optional (or "deepseek-chat")
 allow_shell = false                    # optional
 max_subagents = 3                      # optional (1-20)
 ```

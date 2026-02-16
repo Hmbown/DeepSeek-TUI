@@ -2,7 +2,7 @@
 
 use std::fmt::Write;
 
-use crate::config::COMMON_DEEPSEEK_MODELS;
+use crate::config::{COMMON_DEEPSEEK_MODELS, canonical_model_name};
 use crate::tui::app::{App, AppAction, AppMode};
 use crate::tui::views::{HelpView, ModalKind, SubAgentsView};
 
@@ -64,20 +64,26 @@ pub fn exit() -> CommandResult {
 /// Switch or view current model
 pub fn model(app: &mut App, model_name: Option<&str>) -> CommandResult {
     if let Some(name) = model_name {
+        let Some(canonical) = canonical_model_name(name) else {
+            return CommandResult::error(format!(
+                "Invalid model '{name}'. Supported models: {}",
+                COMMON_DEEPSEEK_MODELS.join(", ")
+            ));
+        };
         let old_model = app.model.clone();
-        app.model = name.to_string();
+        app.model = canonical.to_string();
         app.update_model_compaction_budget();
         app.last_prompt_tokens = None;
         app.last_completion_tokens = None;
         CommandResult::with_message_and_action(
-            format!("Model changed: {old_model} → {name}"),
+            format!("Model changed: {old_model} → {canonical}"),
             AppAction::UpdateCompaction(app.compaction_config()),
         )
     } else {
-        let common = COMMON_DEEPSEEK_MODELS.join(", ");
+        let supported = COMMON_DEEPSEEK_MODELS.join(", ");
         CommandResult::message(format!(
-            "Current model: {}\nCommon models: {}\nAny valid DeepSeek model ID is accepted (for example: deepseek-v4-mini once released).",
-            app.model, common
+            "Current model: {}\nSupported models: {}",
+            app.model, supported
         ))
     }
 }
@@ -189,7 +195,7 @@ mod tests {
 
     fn create_test_app() -> App {
         let options = TuiOptions {
-            model: "deepseek-v3.2".to_string(),
+            model: "deepseek-reasoner".to_string(),
             workspace: PathBuf::from("/tmp/test-workspace"),
             allow_shell: false,
             use_alt_screen: true,
@@ -296,13 +302,25 @@ mod tests {
     }
 
     #[test]
+    fn test_model_change_rejects_invalid_model() {
+        let mut app = create_test_app();
+        let result = model(&mut app, Some("gpt-4"));
+        assert!(result.message.is_some());
+        let msg = result.message.unwrap();
+        assert!(msg.contains("Invalid model"));
+        assert!(msg.contains("deepseek-chat"));
+        assert!(msg.contains("deepseek-reasoner"));
+        assert!(result.action.is_none());
+    }
+
+    #[test]
     fn test_model_without_args_shows_info() {
         let mut app = create_test_app();
         let result = model(&mut app, None);
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
         assert!(msg.contains("Current model:"));
-        assert!(msg.contains("Common models:"));
+        assert!(msg.contains("Supported models:"));
         assert!(result.action.is_none());
     }
 

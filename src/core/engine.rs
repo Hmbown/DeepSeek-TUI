@@ -22,14 +22,15 @@ use tokio_util::sync::CancellationToken;
 
 use crate::client::DeepSeekClient;
 use crate::compaction::{
-    CompactionConfig, compact_messages_safe, merge_system_prompts, should_compact,
+    CompactionConfig, compact_messages_safe, estimate_tokens, merge_system_prompts, should_compact,
 };
 use crate::config::{Config, DEFAULT_MAX_SUBAGENTS, DEFAULT_TEXT_MODEL};
 use crate::features::{Feature, Features};
 use crate::llm_client::LlmClient;
 use crate::mcp::McpPool;
 use crate::models::{
-    ContentBlock, ContentBlockStart, Delta, Message, MessageRequest, StreamEvent, Tool, Usage,
+    ContentBlock, ContentBlockStart, Delta, Message, MessageRequest, StreamEvent, SystemPrompt,
+    Tool, Usage, context_window_for_model,
 };
 use crate::prompts;
 use crate::tools::plan::{SharedPlanState, new_shared_plan_state};
@@ -317,6 +318,14 @@ const STREAM_CHUNK_TIMEOUT_SECS: u64 = 90;
 const STREAM_MAX_CONTENT_BYTES: usize = 10 * 1024 * 1024; // 10 MB
 /// Maximum wall-clock duration for a single streaming response.
 const STREAM_MAX_DURATION_SECS: u64 = 300; // 5 minutes
+/// Max output tokens requested for normal agent turns.
+const TURN_MAX_OUTPUT_TOKENS: u32 = 4096;
+/// Keep this many most recent messages when emergency trimming is required.
+const MIN_RECENT_MESSAGES_TO_KEEP: usize = 4;
+/// Allow a few emergency recovery attempts before failing the turn.
+const MAX_CONTEXT_RECOVERY_ATTEMPTS: u8 = 2;
+/// Reserve additional headroom to avoid hitting provider hard limits.
+const CONTEXT_HEADROOM_TOKENS: usize = 1024;
 
 const TOOL_CALL_START_MARKERS: [&str; 5] = [
     "[TOOL_CALL]",
@@ -552,6 +561,51 @@ fn summarize_text(text: &str, limit: usize) -> String {
     let mut out: String = text.chars().take(take).collect();
     out.push_str("...");
     out
+}
+
+fn estimate_text_tokens_conservative(text: &str) -> usize {
+    text.chars().count().div_ceil(3)
+}
+
+fn estimate_system_tokens_conservative(system: Option<&SystemPrompt>) -> usize {
+    match system {
+        Some(SystemPrompt::Text(text)) => estimate_text_tokens_conservative(text),
+        Some(SystemPrompt::Blocks(blocks)) => blocks
+            .iter()
+            .map(|block| estimate_text_tokens_conservative(&block.text))
+            .sum(),
+        None => 0,
+    }
+}
+
+fn estimate_input_tokens_conservative(
+    messages: &[Message],
+    system: Option<&SystemPrompt>,
+) -> usize {
+    let message_tokens = estimate_tokens(messages).saturating_mul(3).div_ceil(2);
+    let system_tokens = estimate_system_tokens_conservative(system);
+    let framing_overhead = messages.len().saturating_mul(12).saturating_add(48);
+    message_tokens
+        .saturating_add(system_tokens)
+        .saturating_add(framing_overhead)
+}
+
+fn context_input_budget(model: &str, requested_output_tokens: u32) -> Option<usize> {
+    let window = usize::try_from(context_window_for_model(model)?).ok()?;
+    let output = usize::try_from(requested_output_tokens).ok()?;
+    window
+        .checked_sub(output)
+        .and_then(|v| v.checked_sub(CONTEXT_HEADROOM_TOKENS))
+}
+
+fn is_context_length_error_message(message: &str) -> bool {
+    let lower = message.to_lowercase();
+    lower.contains("maximum context length")
+        || lower.contains("context length")
+        || lower.contains("context_length")
+        || lower.contains("prompt is too long")
+        || (lower.contains("requested") && lower.contains("tokens") && lower.contains("maximum"))
+        || lower.contains("context window")
 }
 
 fn emit_tool_audit(event: serde_json::Value) {
@@ -1065,6 +1119,139 @@ impl Engine {
         }
     }
 
+    fn estimated_input_tokens(&self) -> usize {
+        estimate_input_tokens_conservative(
+            &self.session.messages,
+            self.session.system_prompt.as_ref(),
+        )
+    }
+
+    fn trim_oldest_messages_to_budget(&mut self, target_input_budget: usize) -> usize {
+        let mut removed = 0usize;
+        while self.session.messages.len() > MIN_RECENT_MESSAGES_TO_KEEP
+            && self.estimated_input_tokens() > target_input_budget
+        {
+            self.session.messages.remove(0);
+            removed = removed.saturating_add(1);
+        }
+        removed
+    }
+
+    async fn recover_context_overflow(
+        &mut self,
+        client: &DeepSeekClient,
+        reason: &str,
+        requested_output_tokens: u32,
+    ) -> bool {
+        let Some(target_budget) =
+            context_input_budget(&self.session.model, requested_output_tokens)
+        else {
+            return false;
+        };
+
+        let id = format!("compact_{}", &uuid::Uuid::new_v4().to_string()[..8]);
+        let start_message = format!("Emergency context compaction started ({reason})");
+        let _ = self
+            .tx_event
+            .send(Event::CompactionStarted {
+                id: id.clone(),
+                auto: true,
+                message: start_message,
+            })
+            .await;
+
+        let before_tokens = self.estimated_input_tokens();
+        let before_count = self.session.messages.len();
+
+        let mut retries_used = 0u32;
+        let mut summary_prompt = None;
+        let mut compacted_messages = self.session.messages.clone();
+
+        let mut forced_config = self.config.compaction.clone();
+        forced_config.enabled = true;
+        forced_config.token_threshold = forced_config
+            .token_threshold
+            .min(target_budget.saturating_sub(1))
+            .max(1);
+        forced_config.message_threshold = forced_config.message_threshold.max(1);
+
+        match compact_messages_safe(
+            client,
+            &self.session.messages,
+            &forced_config,
+            Some(&self.session.workspace),
+            None,
+            None,
+        )
+        .await
+        {
+            Ok(result) => {
+                retries_used = result.retries_used;
+                compacted_messages = result.messages;
+                summary_prompt = result.summary_prompt;
+            }
+            Err(err) => {
+                let _ = self
+                    .tx_event
+                    .send(Event::status(format!(
+                        "Emergency compaction API pass failed: {err}. Falling back to local trim."
+                    )))
+                    .await;
+            }
+        }
+
+        if !compacted_messages.is_empty() || self.session.messages.is_empty() {
+            self.session.messages = compacted_messages;
+        }
+        self.session.system_prompt =
+            merge_system_prompts(self.session.system_prompt.as_ref(), summary_prompt);
+
+        let trimmed = self.trim_oldest_messages_to_budget(target_budget);
+        let after_tokens = self.estimated_input_tokens();
+        let after_count = self.session.messages.len();
+        let recovered = after_tokens <= target_budget
+            && (after_tokens < before_tokens || after_count < before_count || trimmed > 0);
+
+        if recovered {
+            let mut details = format!(
+                "Emergency context compaction complete: ~{} -> ~{} tokens",
+                before_tokens, after_tokens
+            );
+            if retries_used > 0 {
+                details.push_str(&format!(" ({} retries)", retries_used));
+            }
+            if trimmed > 0 {
+                details.push_str(&format!(", trimmed {trimmed} oldest messages"));
+            }
+            let _ = self
+                .tx_event
+                .send(Event::CompactionCompleted {
+                    id,
+                    auto: true,
+                    message: details.clone(),
+                })
+                .await;
+            let _ = self.tx_event.send(Event::status(details)).await;
+            return true;
+        }
+
+        let message = format!(
+            "Emergency context compaction failed to reduce request below model limit \
+             (estimate ~{} tokens, budget ~{}).",
+            after_tokens, target_budget
+        );
+        let _ = self
+            .tx_event
+            .send(Event::CompactionFailed {
+                id,
+                auto: true,
+                message: message.clone(),
+            })
+            .await;
+        let _ = self.tx_event.send(Event::status(message)).await;
+        false
+    }
+
     fn build_tool_context(&self, mode: AppMode) -> ToolContext {
         ToolContext::with_auto_approve(
             self.session.workspace.clone(),
@@ -1377,6 +1564,7 @@ impl Engine {
 
         let mut consecutive_tool_error_steps = 0u32;
         let mut turn_error: Option<String> = None;
+        let mut context_recovery_attempts = 0u8;
 
         loop {
             if self.cancel_token.is_cancelled() {
@@ -1511,11 +1699,41 @@ impl Engine {
                 }
             }
 
+            if let Some(input_budget) =
+                context_input_budget(&self.session.model, TURN_MAX_OUTPUT_TOKENS)
+            {
+                let estimated_input = self.estimated_input_tokens();
+                if estimated_input > input_budget {
+                    if context_recovery_attempts >= MAX_CONTEXT_RECOVERY_ATTEMPTS {
+                        let message = format!(
+                            "Context remains above model limit after {} recovery attempts \
+                             (~{} token estimate, ~{} budget). Please run /compact or /clear.",
+                            MAX_CONTEXT_RECOVERY_ATTEMPTS, estimated_input, input_budget
+                        );
+                        turn_error = Some(message.clone());
+                        let _ = self.tx_event.send(Event::error(message, true)).await;
+                        return (TurnOutcomeStatus::Failed, turn_error);
+                    }
+
+                    if self
+                        .recover_context_overflow(
+                            &client,
+                            "preflight token budget",
+                            TURN_MAX_OUTPUT_TOKENS,
+                        )
+                        .await
+                    {
+                        context_recovery_attempts = context_recovery_attempts.saturating_add(1);
+                        continue;
+                    }
+                }
+            }
+
             // Build the request
             let request = MessageRequest {
                 model: self.session.model.clone(),
                 messages: self.session.messages.clone(),
-                max_tokens: 4096,
+                max_tokens: TURN_MAX_OUTPUT_TOKENS,
                 system: self.session.system_prompt.clone(),
                 tools: tools.clone(),
                 tool_choice: if tools.is_some() {
@@ -1533,9 +1751,25 @@ impl Engine {
             // Stream the response
             let stream_result = client.create_message_stream(request).await;
             let stream = match stream_result {
-                Ok(s) => s,
+                Ok(s) => {
+                    context_recovery_attempts = 0;
+                    s
+                }
                 Err(e) => {
                     let message = e.to_string();
+                    if is_context_length_error_message(&message)
+                        && context_recovery_attempts < MAX_CONTEXT_RECOVERY_ATTEMPTS
+                        && self
+                            .recover_context_overflow(
+                                &client,
+                                "provider context-length rejection",
+                                TURN_MAX_OUTPUT_TOKENS,
+                            )
+                            .await
+                    {
+                        context_recovery_attempts = context_recovery_attempts.saturating_add(1);
+                        continue;
+                    }
                     turn_error = Some(message.clone());
                     let _ = self.tx_event.send(Event::error(message, true)).await;
                     return (TurnOutcomeStatus::Failed, turn_error);

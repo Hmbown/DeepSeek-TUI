@@ -24,7 +24,7 @@ You can define multiple profiles in the same file:
 
 ```toml
 api_key = "PERSONAL_KEY"
-default_text_model = "deepseek-v3.2"
+default_text_model = "deepseek-reasoner"
 
 [profiles.work]
 api_key = "WORK_KEY"
@@ -83,7 +83,7 @@ Common settings keys:
 
 - `api_key` (string, required): must be non-empty (or set `DEEPSEEK_API_KEY`).
 - `base_url` (string, optional): defaults to `https://api.deepseek.com` (OpenAI-compatible Responses API).
-- `default_text_model` (string, optional): defaults to `deepseek-v3.2`. Any valid DeepSeek model ID is accepted; common IDs include `deepseek-chat`, `deepseek-reasoner`, `deepseek-r1`, `deepseek-v3`, and `deepseek-v3.2`. Check the DeepSeek API for the latest model list.
+- `default_text_model` (string, optional): defaults to `deepseek-reasoner`. Supported IDs are `deepseek-reasoner` and `deepseek-chat`.
 - `allow_shell` (bool, optional): defaults to `false`.
 - `approval_policy` (string, optional): `on-request`, `untrusted`, or `never`. Runtime `/set approval_mode` also accepts `on-request` and `untrusted` aliases.
 - `sandbox_mode` (string, optional): `read-only`, `workspace-write`, `danger-full-access`, `external-sandbox`.

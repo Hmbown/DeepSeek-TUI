@@ -282,6 +282,8 @@ pub struct App {
     pub last_completion_tokens: Option<u32>,
     /// Cached background tasks for sidebar rendering.
     pub task_panel: Vec<TaskPanelEntry>,
+    /// Whether the UI needs to be redrawn.
+    pub needs_redraw: bool,
 }
 
 /// Message queued while the engine is busy.
@@ -510,6 +512,7 @@ impl App {
             last_prompt_tokens: None,
             last_completion_tokens: None,
             task_panel: Vec::new(),
+            needs_redraw: true,
         }
     }
 
@@ -564,6 +567,7 @@ impl App {
             .with_workspace(self.workspace.clone())
             .with_model(&self.model);
         let _ = self.hooks.execute(HookEvent::ModeChange, &context);
+        self.needs_redraw = true;
     }
 
     /// Cycle through modes: Plan -> Agent -> YOLO -> Plan
@@ -603,6 +607,7 @@ impl App {
 
     pub fn mark_history_updated(&mut self) {
         self.history_version = self.history_version.wrapping_add(1);
+        self.needs_redraw = true;
     }
 
     pub fn transcript_render_options(&self) -> TranscriptRenderOptions {
@@ -653,6 +658,7 @@ impl App {
         let byte_index = byte_index_at_char(&self.input, cursor);
         self.input.insert_str(byte_index, text);
         self.cursor_position = cursor + char_count(text);
+        self.needs_redraw = true;
     }
 
     pub fn insert_paste_text(&mut self, text: &str) {
@@ -735,16 +741,19 @@ impl App {
     pub fn scroll_up(&mut self, amount: usize) {
         let delta = i32::try_from(amount).unwrap_or(i32::MAX);
         self.pending_scroll_delta = self.pending_scroll_delta.saturating_sub(delta);
+        self.needs_redraw = true;
     }
 
     pub fn scroll_down(&mut self, amount: usize) {
         let delta = i32::try_from(amount).unwrap_or(i32::MAX);
         self.pending_scroll_delta = self.pending_scroll_delta.saturating_add(delta);
+        self.needs_redraw = true;
     }
 
     pub fn scroll_to_bottom(&mut self) {
         self.transcript_scroll = TranscriptScroll::ToBottom;
         self.pending_scroll_delta = 0;
+        self.needs_redraw = true;
     }
 
     pub fn insert_char(&mut self, c: char) {
@@ -752,6 +761,7 @@ impl App {
         let byte_index = byte_index_at_char(&self.input, cursor);
         self.input.insert(byte_index, c);
         self.cursor_position = cursor + 1;
+        self.needs_redraw = true;
     }
 
     pub fn delete_char(&mut self) {
@@ -762,6 +772,7 @@ impl App {
         let removed = remove_char_at(&mut self.input, target);
         if removed {
             self.cursor_position = target;
+            self.needs_redraw = true;
         }
     }
 
@@ -774,30 +785,36 @@ impl App {
         if !removed {
             self.cursor_position = char_count(&self.input);
         }
+        self.needs_redraw = true;
     }
 
     pub fn move_cursor_left(&mut self) {
         self.cursor_position = self.cursor_position.saturating_sub(1);
+        self.needs_redraw = true;
     }
 
     pub fn move_cursor_right(&mut self) {
         if self.cursor_position < char_count(&self.input) {
             self.cursor_position += 1;
+            self.needs_redraw = true;
         }
     }
 
     pub fn move_cursor_start(&mut self) {
         self.cursor_position = 0;
+        self.needs_redraw = true;
     }
 
     pub fn move_cursor_end(&mut self) {
         self.cursor_position = char_count(&self.input);
+        self.needs_redraw = true;
     }
 
     pub fn clear_input(&mut self) {
         self.input.clear();
         self.cursor_position = 0;
         self.paste_burst.clear_after_explicit_paste();
+        self.needs_redraw = true;
     }
 
     pub fn submit_input(&mut self) -> Option<String> {
