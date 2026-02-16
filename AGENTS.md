@@ -48,6 +48,10 @@ For complex, multi-step tasks, you should delegate work:
 
 <!-- Add project-specific notes here -->
 
+- **Finance tool currently unavailable**: The finance tool relies on Stooq which frequently returns no data. As a workaround, use `web.run` to fetch financial data from web sources.
+- **Token/cost tracking inaccuracies**: Token counting and cost estimation may be inflated due to thinking token accounting bugs. Use `/compact` to manage context, and treat cost estimates as approximate.
+- **Web.run tool name**: Note that the tool is named `web.run` (single dot), not `web..run`. Some earlier versions of the CLI may have had this typo.
+
 ### DeepSeek-Specific Capabilities
 
 This project is built specifically for DeepSeek models, leveraging their unique features:

@@ -51,6 +51,9 @@ todo*.md
 CLAUDE.md
 NEXT_SESSION.md
 AI_HANDOFF.md
+result.json
+count_deps.py
+project_overhaul_prompt.md
 
 .codex/
 docs/rlm-paper.txt

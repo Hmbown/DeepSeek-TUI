@@ -1,6 +1,6 @@
 [package]
 name = "deepseek-tui"
-version = "0.3.17"
+version = "0.3.18"
 edition = "2024"
 description = "Unofficial DeepSeek CLI - Just run 'deepseek' to start chatting"
 license = "MIT"

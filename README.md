@@ -95,39 +95,57 @@ Override approval behavior at runtime: `/set approval_mode auto|suggest|never`.
 
 ## Tools
 
-The model has access to 25+ tools across these categories:
+The model has access to 30+ tools across these categories:
 
 ### File Operations
 - `list_dir` / `read_file` / `write_file` / `edit_file` — basic file I/O within the workspace
 - `apply_patch` — apply unified diffs with fuzzy matching
 - `grep_files` / `file_search` — search files by regex or name
+- `git_status` / `git_diff` — inspect repository status and changes
 
 ### Shell Execution
 - `exec_shell` — run commands with timeout support and background execution
-- `exec_shell_wait` / `exec_shell_interact` — wait on or send input to running commands
+- `exec_shell_wait` / `exec_wait`, `exec_shell_interact` / `exec_interact` — wait on or send input to running commands
 
-### Web
-- `web.run` — multi-command browser (search / open / click / find / screenshot / image_query) with citation support
+### Web & Browsing
+- `web.run` — multi-command browser (search / open / click / find / screenshot / image_query) with citation support. Note: the tool name is `web.run` (single dot), not `web..run`.
 - `web_search` — quick DuckDuckGo search when citations are not needed
 
-### Task Management
+### Task & Project Management
 - `todo_write` — create and track task lists with status
 - `update_plan` — structured implementation plans
 - `note` — persistent cross-session notes
 - `/task add|list|show|cancel` — persistent background task queue with timeline visibility
+- `project_map` — high-level project structure visualization
 
-### Sub-Agents
-- `agent_spawn` / `agent_swarm` — launch background agents or dependency-aware swarms
-- `agent_result` / `agent_list` / `agent_cancel` — manage running agents
+### Code Analysis & Review
+- `review` — structured code review for files, git diffs, or GitHub PRs
+- `run_tests` — run `cargo test` with optional arguments
+- `diagnostics` — report workspace, git, sandbox, and toolchain info
+
+### Sub-Agent Orchestration
+- `agent_spawn` / `delegate_to_agent` — launch background agents for focused tasks
+- `agent_swarm` — orchestrate multiple sub-agents with dependencies
+- `agent_result` / `agent_list` / `agent_cancel` / `agent_wait` / `wait` / `send_input` — manage running agents
+- `multi_tool_use.parallel` — execute multiple read-only tools in parallel
 
 ### Structured Data
-- `weather` / `finance` / `sports` / `time` / `calculator`
+- `weather` — daily weather forecast for a location
+- `finance` — latest price for stocks, funds, indices, or cryptocurrency
+- `sports` — schedules or standings for a league
+- `time` — current time for a UTC offset
+- `calculator` — evaluate basic arithmetic expressions
 
 ### Interaction
 - `request_user_input` — ask the user structured or multiple-choice questions
-- `multi_tool_use.parallel` — execute multiple read-only tools in parallel
 
-All file tools respect the `--workspace` boundary unless `/trust` is enabled (YOLO enables trust automatically). MCP tools now use the same approval pipeline as built-in tools; only trusted MCP servers should be configured.
+### MCP Integration (when configured)
+- `mcp_read_resource`, `mcp_get_prompt` — read context from external MCP servers
+- `list_mcp_resources`, `list_mcp_resource_templates` — explore available MCP resources
+
+All file tools respect the `--workspace` boundary unless `/trust` is enabled (YOLO enables trust automatically). MCP tools use the same approval pipeline as built-in tools; only trusted MCP servers should be configured.
+
+**Note on token tracking**: DeepSeek models have a 128k context window. If token counts appear inflated (e.g., >128k), this is likely a tracking bug; use `/compact` to summarize earlier context and free up space.
 
 ## Configuration
 
@@ -252,6 +270,8 @@ Security caveat:
 | Skills missing | Run `deepseek setup --skills` (add `--local` for workspace-local) |
 | MCP tools missing | Run `deepseek mcp init`, then restart |
 | Sandbox errors (macOS) | Run `deepseek doctor` to confirm sandbox availability |
+| Finance tool returns no data | Currently, the finance tool relies on Stooq which may be unavailable; use `web.run` for financial data |
+| Token/cost tracking inaccurate | This is a known bug; metrics are approximate. Use `/compact` to manage context |
 
 ## Documentation
 
