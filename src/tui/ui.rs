@@ -214,23 +214,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         }
     }
 
-    let compaction = app.compaction_config();
-
-    // Create the Engine with configuration from TuiOptions
-    let engine_config = EngineConfig {
-        model: app.model.clone(),
-        workspace: app.workspace.clone(),
-        allow_shell: app.allow_shell,
-        trust_mode: options.yolo,
-        notes_path: config.notes_path(),
-        mcp_config_path: config.mcp_config_path(),
-        max_steps: 100,
-        max_subagents: app.max_subagents,
-        features: config.features(),
-        compaction,
-        todos: app.todos.clone(),
-        plan_state: app.plan_state.clone(),
-    };
+    let engine_config = build_engine_config(&app, config);
 
     // Spawn the Engine - it will handle all API communication
     let engine_handle = spawn_engine(engine_config, config);
@@ -302,12 +286,29 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     result
 }
 
+fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
+    EngineConfig {
+        model: app.model.clone(),
+        workspace: app.workspace.clone(),
+        allow_shell: app.allow_shell,
+        trust_mode: app.trust_mode,
+        notes_path: config.notes_path(),
+        mcp_config_path: config.mcp_config_path(),
+        max_steps: 100,
+        max_subagents: app.max_subagents,
+        features: config.features(),
+        compaction: app.compaction_config(),
+        todos: app.todos.clone(),
+        plan_state: app.plan_state.clone(),
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 async fn run_event_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     app: &mut App,
     config: &Config,
-    engine_handle: EngineHandle,
+    mut engine_handle: EngineHandle,
     task_manager: SharedTaskManager,
     event_broker: &EventBroker,
 ) -> Result<()> {
@@ -829,14 +830,36 @@ async fn run_event_loop(
                         OnboardingState::Welcome => {
                             advance_onboarding(app);
                         }
-                        OnboardingState::ApiKey => match app.submit_api_key() {
-                            Ok(_) => {
-                                advance_onboarding(app);
+                        OnboardingState::ApiKey => {
+                            let key = app.api_key_input.trim().to_string();
+                            match app.submit_api_key() {
+                                Ok(_) => {
+                                    // Recreate the engine so it picks up the newly saved key
+                                    // without requiring a full process restart.
+                                    let _ = engine_handle.send(Op::Shutdown).await;
+                                    let mut refreshed_config = config.clone();
+                                    refreshed_config.api_key = Some(key);
+                                    let engine_config = build_engine_config(app, &refreshed_config);
+                                    engine_handle = spawn_engine(engine_config, &refreshed_config);
+
+                                    if !app.api_messages.is_empty() {
+                                        let _ = engine_handle
+                                            .send(Op::SyncSession {
+                                                messages: app.api_messages.clone(),
+                                                system_prompt: app.system_prompt.clone(),
+                                                model: app.model.clone(),
+                                                workspace: app.workspace.clone(),
+                                            })
+                                            .await;
+                                    }
+
+                                    advance_onboarding(app);
+                                }
+                                Err(e) => {
+                                    app.status_message = Some(e.to_string());
+                                }
                             }
-                            Err(e) => {
-                                app.status_message = Some(e.to_string());
-                            }
-                        },
+                        }
                         OnboardingState::TrustDirectory => {}
                         OnboardingState::Tips => {
                             app.finish_onboarding();
