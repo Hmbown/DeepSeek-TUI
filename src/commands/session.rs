@@ -326,10 +326,7 @@ mod tests {
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
         assert!(msg.contains("compaction") || msg.contains("Compact"));
-        assert!(matches!(
-            result.action,
-            Some(AppAction::CompactContext)
-        ));
+        assert!(matches!(result.action, Some(AppAction::CompactContext)));
     }
 
     #[test]

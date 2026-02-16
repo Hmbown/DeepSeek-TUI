@@ -770,13 +770,13 @@ fn extract_workflow_context(messages: &[Message], workspace: Option<&Path>) -> S
     let mut files_touched: Vec<String> = Vec::new();
     let mut tools_used: Vec<String> = Vec::new();
     let mut tasks_identified: Vec<String> = Vec::new();
-    
+
     for msg in messages {
         for block in &msg.content {
             match block {
                 ContentBlock::ToolUse { name, input, .. } => {
                     tools_used.push(name.clone());
-                    
+
                     // Extract file paths from tool inputs
                     if let Some(path) = extract_path_from_input(input) {
                         if !files_touched.contains(&path) {
@@ -797,9 +797,9 @@ fn extract_workflow_context(messages: &[Message], workspace: Option<&Path>) -> S
             }
         }
     }
-    
+
     let mut context = String::new();
-    
+
     if !files_touched.is_empty() {
         context.push_str("**Files Modified/Read:**\n");
         for file in &files_touched {
@@ -815,13 +815,13 @@ fn extract_workflow_context(messages: &[Message], workspace: Option<&Path>) -> S
         }
         context.push('\n');
     }
-    
+
     if !tools_used.is_empty() {
         context.push_str("**Tools Used:** ");
         context.push_str(&tools_used.join(", "));
         context.push_str("\n\n");
     }
-    
+
     if !tasks_identified.is_empty() {
         context.push_str("**Tasks/TODOs Identified:**\n");
         for task in &tasks_identified {
@@ -829,11 +829,11 @@ fn extract_workflow_context(messages: &[Message], workspace: Option<&Path>) -> S
         }
         context.push('\n');
     }
-    
+
     if context.is_empty() {
         context.push_str("No specific workflow context detected. Continue assisting the user with their current task.\n");
     }
-    
+
     context
 }
 
@@ -845,7 +845,7 @@ fn extract_path_from_input(input: &serde_json::Value) -> Option<String> {
             return Some(path.to_string());
         }
     }
-    
+
     // Try to find path in nested objects
     if let Some(obj) = input.as_object() {
         for (_, value) in obj {
@@ -856,7 +856,7 @@ fn extract_path_from_input(input: &serde_json::Value) -> Option<String> {
             }
         }
     }
-    
+
     None
 }
 

@@ -46,17 +46,6 @@ fn format_welcome_banner(model: &str, workspace: &PathBuf, yolo: bool) -> String
     )
 }
 
-/// Get the agent-facing instruction about context compaction.
-/// This encourages the agent to request compaction when context gets long.
-fn get_compaction_instruction() -> &'static str {
-    "## Context Management\n\n\
-     When the conversation gets long (you'll see a context usage indicator), you can:\n\
-     1. Use `/compact` to summarize earlier context and free up space\n\
-     2. The system will preserve important information (files you're working on, recent messages, tool results)\n\
-     3. After compaction, you'll see a summary of what was discussed and can continue seamlessly\n\n\
-     If you notice context is getting long (>80%), proactively suggest using `/compact` to the user."
-}
-
 // === Types ===
 
 /// State machine for onboarding new users.

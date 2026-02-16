@@ -1126,7 +1126,8 @@ async fn run_event_loop(
                                             .await;
                                     }
                                     AppAction::CompactContext => {
-                                        app.status_message = Some("Compacting context...".to_string());
+                                        app.status_message =
+                                            Some("Compacting context...".to_string());
                                         let _ = engine_handle.send(Op::CompactContext).await;
                                     }
                                     AppAction::TaskAdd { prompt } => {
