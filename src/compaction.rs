@@ -11,6 +11,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use crate::client::DeepSeekClient;
+use crate::config::DEFAULT_TEXT_MODEL;
 use crate::llm_client::LlmClient;
 use crate::logging;
 use crate::models::{
@@ -18,7 +19,7 @@ use crate::models::{
 };
 
 /// Configuration for conversation compaction behavior.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CompactionConfig {
     pub enabled: bool,
     pub token_threshold: usize,
@@ -33,7 +34,7 @@ impl Default for CompactionConfig {
             enabled: false,
             token_threshold: 50000,
             message_threshold: 50,
-            model: "deepseek-v3.2".to_string(),
+            model: DEFAULT_TEXT_MODEL.to_string(),
             cache_summary: true,
         }
     }
@@ -500,6 +501,11 @@ pub fn should_compact(
     // Pinned messages consume part of the budget, so compact earlier when needed.
     let effective_token_threshold = config.token_threshold.saturating_sub(pinned_tokens);
     let effective_message_threshold = config.message_threshold.saturating_sub(pinned_count);
+
+    // Always compact if we exceed the token threshold, even with few unpinned messages.
+    if token_estimate > effective_token_threshold && effective_token_threshold > 0 {
+        return true;
+    }
 
     let enough_unpinned = message_count >= MIN_SUMMARIZE_MESSAGES
         || effective_token_threshold == 0
@@ -1282,5 +1288,361 @@ mod tests {
 
         // All pairs should remain intact (no orphans)
         assert_eq!(pinned.len(), messages.len());
+    }
+
+    // ========================================================================
+    // Additional Compaction Trigger Tests
+    // ========================================================================
+
+    #[test]
+    fn test_should_compact_token_threshold_triggers() {
+        let config = CompactionConfig {
+            enabled: true,
+            token_threshold: 100,    // Low threshold for testing
+            message_threshold: 1000, // High message threshold
+            ..Default::default()
+        };
+
+        // Create messages that exceed token threshold
+        let messages: Vec<Message> = (0..10)
+            .map(|_| msg("user", &"x".repeat(50))) // 50 chars = ~12 tokens each
+            .collect();
+
+        // Total tokens: ~120, which exceeds 100
+        assert!(should_compact(&messages, &config, None, None, None));
+    }
+
+    #[test]
+    fn test_should_compact_below_token_threshold() {
+        let config = CompactionConfig {
+            enabled: true,
+            token_threshold: 1000,
+            message_threshold: 1000,
+            ..Default::default()
+        };
+
+        // Create short messages
+        let messages: Vec<Message> = (0..5).map(|_| msg("user", "short")).collect();
+
+        assert!(!should_compact(&messages, &config, None, None, None));
+    }
+
+    #[test]
+    fn test_plan_compaction_pins_error_messages() {
+        let messages = vec![
+            msg("user", "normal message"),
+            msg("assistant", "error: compilation failed"),
+            msg("user", "another message"),
+            msg("assistant", "panic at src/main.rs:42"),
+            msg("user", "more chat"),
+            msg("assistant", "Traceback (most recent call last):"),
+            msg("user", "recent 1"),
+            msg("assistant", "recent 2"),
+        ];
+
+        let plan = plan_compaction(&messages, None, KEEP_RECENT_MESSAGES, None, None);
+
+        // Error messages should be pinned
+        assert!(plan.pinned_indices.contains(&1)); // error:
+        assert!(plan.pinned_indices.contains(&3)); // panic
+        assert!(plan.pinned_indices.contains(&5)); // traceback
+    }
+
+    #[test]
+    fn test_plan_compaction_pins_patch_messages() {
+        let messages = vec![
+            msg("user", "normal chat"),
+            msg("assistant", "diff --git a/src/main.rs b/src/main.rs"),
+            msg("user", "more chat"),
+            msg("assistant", "+++ b/src/core.rs"),
+            msg("user", "chat"),
+            msg("assistant", "```diff\n-some code\n+new code\n```"),
+            msg("user", "recent 1"),
+            msg("assistant", "recent 2"),
+        ];
+
+        let plan = plan_compaction(&messages, None, KEEP_RECENT_MESSAGES, None, None);
+
+        // Patch/diff messages should be pinned
+        assert!(plan.pinned_indices.contains(&1)); // diff --git
+        assert!(plan.pinned_indices.contains(&3)); // +++ b/
+        assert!(plan.pinned_indices.contains(&5)); // ```diff
+    }
+
+    #[test]
+    fn test_plan_compaction_pins_apply_patch_tool_calls() {
+        let messages = vec![
+            msg("user", "normal chat"),
+            Message {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::ToolUse {
+                    id: "patch-1".to_string(),
+                    name: "apply_patch".to_string(),
+                    input: json!({"patch": "diff content"}),
+                }],
+            },
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "patch-1".to_string(),
+                    content: "Patch applied successfully".to_string(),
+                }],
+            },
+            msg("assistant", "more chat"),
+            msg("user", "even more"),
+            msg("assistant", "recent 1"),
+            msg("user", "recent 2"),
+            msg("assistant", "recent 3"),
+        ];
+
+        let plan = plan_compaction(&messages, None, KEEP_RECENT_MESSAGES, None, None);
+
+        // Message 1 contains apply_patch tool call with matching result (message 2)
+        // Both should be pinned due to tool call pairing
+        // Messages 5, 6, 7, 8 are recent (last 4 messages)
+        eprintln!("Pinned indices: {:?}", plan.pinned_indices);
+
+        // apply_patch tool call and its result should be pinned
+        assert!(
+            plan.pinned_indices.contains(&1),
+            "apply_patch tool call should be pinned"
+        );
+        assert!(
+            plan.pinned_indices.contains(&2),
+            "apply_patch tool result should be pinned"
+        );
+    }
+
+    #[test]
+    fn test_extract_paths_from_text_finds_various_formats() {
+        let text = r#"
+            I'm working on src/main.rs
+            Also check Cargo.toml
+            The error is in src/core/engine.rs:42
+            See docs/API.md for details
+            Config at config.example.toml
+        "#;
+
+        let paths = extract_paths_from_text(text, None);
+
+        assert!(paths.iter().any(|p| p == "src/main.rs"));
+        assert!(paths.iter().any(|p| p == "Cargo.toml"));
+        assert!(paths.iter().any(|p| p == "src/core/engine.rs"));
+        assert!(paths.iter().any(|p| p == "docs/API.md"));
+        assert!(paths.iter().any(|p| p == "config.example.toml"));
+    }
+
+    #[test]
+    fn test_extract_paths_from_tool_input_finds_path_field() {
+        let input = json!({
+            "path": "src/main.rs",
+            "content": "test"
+        });
+
+        let paths = extract_paths_from_tool_input(&input, None);
+        assert!(paths.iter().any(|p| p == "src/main.rs"));
+    }
+
+    #[test]
+    fn test_extract_paths_from_tool_input_finds_paths_array() {
+        let input = json!({
+            "paths": ["src/main.rs", "src/core.rs", "tests/test.rs"]
+        });
+
+        let paths = extract_paths_from_tool_input(&input, None);
+        assert_eq!(paths.len(), 3);
+        assert!(paths.iter().any(|p| p == "src/main.rs"));
+        assert!(paths.iter().any(|p| p == "src/core.rs"));
+        assert!(paths.iter().any(|p| p == "tests/test.rs"));
+    }
+
+    #[test]
+    fn test_extract_paths_from_tool_input_finds_cwd() {
+        let input = json!({
+            "cwd": "src/core",
+            "command": "cargo build"
+        });
+
+        let paths = extract_paths_from_tool_input(&input, None);
+        assert!(paths.iter().any(|p| p == "src/core"));
+    }
+
+    #[test]
+    fn test_normalize_path_candidate_handles_absolute_paths() {
+        use std::env;
+        let current_dir = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+
+        // Create an absolute path
+        let absolute_path = current_dir.join("src/main.rs");
+        let absolute_path_str = absolute_path.to_string_lossy();
+
+        let normalized = normalize_path_candidate(&absolute_path_str, Some(&current_dir));
+
+        assert_eq!(normalized, Some("src/main.rs".to_string()));
+    }
+
+    #[test]
+    fn test_normalize_path_candidate_rejects_parent_refs() {
+        let normalized = normalize_path_candidate("../outside/file.rs", Some(&PathBuf::from(".")));
+        assert_eq!(normalized, None);
+    }
+
+    #[test]
+    fn test_normalize_path_candidate_cleans_backslashes() {
+        let normalized = normalize_path_candidate("src\\main.rs", Some(&PathBuf::from(".")));
+        assert_eq!(normalized, Some("src/main.rs".to_string()));
+    }
+
+    #[test]
+    fn test_merge_system_prompts_none_none() {
+        let result = merge_system_prompts(None, None);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_merge_system_prompts_some_text_none() {
+        let original = Some(SystemPrompt::Text("original".to_string()));
+        let result = merge_system_prompts(original.as_ref(), None);
+        assert!(matches!(result, Some(SystemPrompt::Text(s)) if s == "original"));
+    }
+
+    #[test]
+    fn test_merge_system_prompts_none_some_blocks() {
+        let summary = Some(SystemPrompt::Blocks(vec![SystemBlock {
+            block_type: "text".to_string(),
+            text: "summary".to_string(),
+            cache_control: None,
+        }]));
+        let result = merge_system_prompts(None, summary);
+        assert!(matches!(result, Some(SystemPrompt::Blocks(b)) if b.len() == 1));
+    }
+
+    #[test]
+    fn test_merge_system_prompts_text_plus_blocks() {
+        let original = Some(SystemPrompt::Text("original".to_string()));
+        let summary = Some(SystemPrompt::Blocks(vec![SystemBlock {
+            block_type: "text".to_string(),
+            text: "summary".to_string(),
+            cache_control: None,
+        }]));
+
+        let result = merge_system_prompts(original.as_ref(), summary);
+
+        match result {
+            Some(SystemPrompt::Blocks(blocks)) => {
+                assert_eq!(blocks.len(), 2);
+                assert!(matches!(&blocks[0], SystemBlock { text, .. } if text == "original"));
+                assert!(matches!(&blocks[1], SystemBlock { text, .. } if text == "summary"));
+            }
+            _ => panic!("Expected Blocks"),
+        }
+    }
+
+    #[test]
+    fn test_merge_system_prompts_blocks_plus_blocks() {
+        let original = Some(SystemPrompt::Blocks(vec![
+            SystemBlock {
+                block_type: "text".to_string(),
+                text: "orig1".to_string(),
+                cache_control: None,
+            },
+            SystemBlock {
+                block_type: "text".to_string(),
+                text: "orig2".to_string(),
+                cache_control: None,
+            },
+        ]));
+
+        let summary = Some(SystemPrompt::Blocks(vec![SystemBlock {
+            block_type: "text".to_string(),
+            text: "summary".to_string(),
+            cache_control: None,
+        }]));
+
+        let result = merge_system_prompts(original.as_ref(), summary);
+
+        match result {
+            Some(SystemPrompt::Blocks(blocks)) => {
+                assert_eq!(blocks.len(), 3);
+                assert!(matches!(&blocks[0], SystemBlock { text, .. } if text == "orig1"));
+                assert!(matches!(&blocks[1], SystemBlock { text, .. } if text == "orig2"));
+                assert!(matches!(&blocks[2], SystemBlock { text, .. } if text == "summary"));
+            }
+            _ => panic!("Expected Blocks"),
+        }
+    }
+
+    #[test]
+    fn test_merge_system_prompts_blocks_plus_text() {
+        let original = Some(SystemPrompt::Blocks(vec![SystemBlock {
+            block_type: "text".to_string(),
+            text: "original".to_string(),
+            cache_control: None,
+        }]));
+
+        let summary = Some(SystemPrompt::Text("summary".to_string()));
+
+        let result = merge_system_prompts(original.as_ref(), summary);
+
+        match result {
+            Some(SystemPrompt::Blocks(blocks)) => {
+                assert_eq!(blocks.len(), 2);
+                assert!(matches!(&blocks[0], SystemBlock { text, .. } if text == "original"));
+                assert!(matches!(&blocks[1], SystemBlock { text, .. } if text == "summary"));
+            }
+            _ => panic!("Expected Blocks"),
+        }
+    }
+
+    #[test]
+    fn test_compaction_result_retries_used() {
+        // This test verifies the CompactionResult structure
+        let result = CompactionResult {
+            messages: vec![],
+            summary_prompt: None,
+            removed_messages: vec![],
+            retries_used: 2,
+        };
+
+        assert_eq!(result.retries_used, 2);
+        assert!(result.messages.is_empty());
+        assert!(result.removed_messages.is_empty());
+    }
+
+    #[test]
+    fn test_should_compact_with_workspace_path_detection() {
+        use std::env;
+        let workspace = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+
+        let _config = CompactionConfig {
+            enabled: true,
+            token_threshold: 1000,
+            message_threshold: 5,
+            ..Default::default()
+        };
+
+        // Create messages mentioning workspace paths
+        let messages = vec![
+            msg("user", "working on src/main.rs"),
+            msg("assistant", "noise 1"),
+            msg("user", "noise 2"),
+            msg("assistant", "noise 3"),
+            msg("user", "noise 4"),
+            msg("assistant", "noise 5"),
+            msg("user", "recent 1"),
+            msg("assistant", "recent 2"),
+        ];
+
+        // Should compact because:
+        // - More than message_threshold (5) unpinned messages
+        // - src/main.rs mention pins message 0
+        let plan = plan_compaction(
+            &messages,
+            Some(&workspace),
+            KEEP_RECENT_MESSAGES,
+            None,
+            None,
+        );
+        assert!(plan.pinned_indices.contains(&0)); // src/main.rs mention
     }
 }

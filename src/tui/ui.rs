@@ -3,7 +3,7 @@
 use std::fmt::Write;
 use std::io::{self, Stdout};
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::{
@@ -21,12 +21,13 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph, Wrap},
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+use crate::audit::log_sensitive_event;
 use crate::commands;
-use crate::compaction::CompactionConfig;
+use crate::compaction::estimate_tokens;
 use crate::config::Config;
 use crate::core::engine::{EngineConfig, EngineHandle, spawn_engine};
 use crate::core::events::Event as EngineEvent;
@@ -36,11 +37,21 @@ use crate::models::{ContentBlock, Message, SystemPrompt, context_window_for_mode
 use crate::palette;
 use crate::prompts;
 use crate::session_manager::{
-    SavedSession, SessionManager, create_saved_session_with_mode, update_session,
+    OfflineQueueState, QueuedSessionMessage, SavedSession, SessionManager,
+    create_saved_session_with_mode, update_session,
+};
+use crate::task_manager::{
+    NewTaskRequest, SharedTaskManager, TaskManager, TaskManagerConfig, TaskRecord, TaskStatus,
+    TaskSummary,
 };
 use crate::tools::ReviewOutput;
+use crate::tools::plan::StepStatus;
 use crate::tools::spec::{ToolError, ToolResult};
-use crate::tools::subagent::{SubAgentResult, SubAgentStatus};
+use crate::tools::subagent::{SubAgentResult, SubAgentStatus, SubAgentType};
+use crate::tools::todo::TodoStatus;
+use crate::tui::command_palette::{
+    CommandPaletteView, build_entries as build_command_palette_entries,
+};
 use crate::tui::event_broker::EventBroker;
 use crate::tui::onboarding;
 use crate::tui::pager::PagerView;
@@ -48,10 +59,13 @@ use crate::tui::paste_burst::CharDecision;
 use crate::tui::scrolling::{ScrollDirection, TranscriptScroll};
 use crate::tui::selection::TranscriptSelectionPoint;
 use crate::tui::session_picker::SessionPickerView;
+use crate::tui::ui_text::{history_cell_to_text, line_to_plain, slice_text};
 use crate::tui::user_input::UserInputView;
-use crate::utils::estimate_message_chars;
 
-use super::app::{App, AppAction, AppMode, OnboardingState, QueuedMessage, TuiOptions};
+use super::app::{
+    App, AppAction, AppMode, OnboardingState, QueuedMessage, TaskPanelEntry, ToolDetailRecord,
+    TuiOptions,
+};
 use super::approval::{
     ApprovalMode, ApprovalRequest, ApprovalView, ElevationRequest, ElevationView, ReviewDecision,
 };
@@ -67,6 +81,8 @@ use super::widgets::{ChatWidget, ComposerWidget, HeaderData, HeaderWidget, Rende
 // === Constants ===
 
 const MAX_QUEUED_PREVIEW: usize = 3;
+const CONTEXT_WARNING_THRESHOLD_PERCENT: f64 = 85.0;
+const CONTEXT_CRITICAL_THRESHOLD_PERCENT: f64 = 85.0;
 
 /// Run the interactive TUI event loop.
 ///
@@ -93,7 +109,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
 
     let mut app = App::new(options.clone(), config);
 
-    // Load existing session if resuming
+    // Load existing session if resuming.
     if let Some(ref session_id) = options.resume_session_id
         && let Ok(manager) = SessionManager::default_location()
     {
@@ -114,10 +130,13 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
             Ok(Some(saved)) => {
                 app.api_messages.clone_from(&saved.messages);
                 app.model.clone_from(&saved.metadata.model);
+                app.update_model_compaction_budget();
                 app.workspace.clone_from(&saved.metadata.workspace);
                 app.current_session_id = Some(saved.metadata.id.clone());
                 app.total_tokens = u32::try_from(saved.metadata.total_tokens).unwrap_or(u32::MAX);
                 app.total_conversation_tokens = app.total_tokens;
+                app.last_prompt_tokens = None;
+                app.last_completion_tokens = None;
                 if let Some(prompt) = saved.system_prompt {
                     app.system_prompt = Some(SystemPrompt::Text(prompt));
                 }
@@ -127,7 +146,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
                     content: format!(
                         "Resumed session: {} ({})",
                         saved.metadata.title,
-                        &saved.metadata.id[..8]
+                        &saved.metadata.id[..8.min(saved.metadata.id.len())]
                     ),
                 });
 
@@ -135,7 +154,10 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
                     app.history.extend(history_cells_from_message(msg));
                 }
                 app.mark_history_updated();
-                app.status_message = Some(format!("Resumed session: {}", &saved.metadata.id[..8]));
+                app.status_message = Some(format!(
+                    "Resumed session: {}",
+                    &saved.metadata.id[..8.min(saved.metadata.id.len())]
+                ));
             }
             Ok(None) => {
                 app.status_message = Some("No sessions found to resume".to_string());
@@ -144,12 +166,55 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
                 app.status_message = Some(format!("Failed to load session: {e}"));
             }
         }
+    } else if let Ok(manager) = SessionManager::default_location() {
+        // Crash recovery: restore in-flight checkpoint when no explicit session was requested.
+        match manager.load_checkpoint() {
+            Ok(Some(checkpoint)) => {
+                apply_loaded_session(&mut app, &checkpoint);
+                app.history.insert(
+                    0,
+                    HistoryCell::System {
+                        content:
+                            "Recovered from crash checkpoint; resume by sending your next message."
+                                .to_string(),
+                    },
+                );
+                app.mark_history_updated();
+                app.status_message = Some("Recovered checkpoint session".to_string());
+            }
+            Ok(None) => {}
+            Err(err) => {
+                app.status_message = Some(format!("Failed to restore checkpoint: {err}"));
+            }
+        }
     }
 
-    let mut compaction = CompactionConfig::default();
-    compaction.enabled = app.auto_compact;
-    compaction.token_threshold = app.compact_threshold;
-    compaction.model = app.model.clone();
+    if let Ok(manager) = SessionManager::default_location() {
+        match manager.load_offline_queue_state() {
+            Ok(Some(state)) => {
+                app.queued_messages = state
+                    .messages
+                    .into_iter()
+                    .map(queued_session_to_ui)
+                    .collect();
+                app.queued_draft = state.draft.map(queued_session_to_ui);
+                if app.status_message.is_none() && app.queued_message_count() > 0 {
+                    app.status_message = Some(format!(
+                        "Recovered {} queued message(s)",
+                        app.queued_message_count()
+                    ));
+                }
+            }
+            Ok(None) => {}
+            Err(err) => {
+                if app.status_message.is_none() {
+                    app.status_message = Some(format!("Failed to restore offline queue: {err}"));
+                }
+            }
+        }
+    }
+
+    let compaction = app.compaction_config();
 
     // Create the Engine with configuration from TuiOptions
     let engine_config = EngineConfig {
@@ -187,11 +252,29 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         let _ = app.execute_hooks(HookEvent::SessionStart, &context);
     }
 
+    let task_manager = TaskManager::start(
+        TaskManagerConfig::from_runtime(
+            config,
+            app.workspace.clone(),
+            Some(app.model.clone()),
+            Some(app.max_subagents.clamp(1, 4)),
+        ),
+        config.clone(),
+    )
+    .await?;
+    app.task_panel = task_manager
+        .list_tasks(Some(10))
+        .await
+        .into_iter()
+        .map(task_summary_to_panel_entry)
+        .collect();
+
     let result = run_event_loop(
         &mut terminal,
         &mut app,
         config,
         engine_handle,
+        task_manager,
         &event_broker,
     )
     .await;
@@ -201,6 +284,9 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         let context = app.base_hook_context();
         let _ = app.execute_hooks(HookEvent::SessionEnd, &context);
     }
+
+    // Clear crash-recovery checkpoint on normal exit so the next launch starts fresh.
+    clear_checkpoint();
 
     disable_raw_mode()?;
     if use_alt_screen {
@@ -220,14 +306,25 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
 async fn run_event_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     app: &mut App,
-    _config: &Config,
+    config: &Config,
     engine_handle: EngineHandle,
+    task_manager: SharedTaskManager,
     event_broker: &EventBroker,
 ) -> Result<()> {
     // Track streaming state
     let mut current_streaming_text = String::new();
+    let mut last_queue_state = (app.queued_messages.clone(), app.queued_draft.clone());
+    let mut last_task_refresh = Instant::now()
+        .checked_sub(Duration::from_secs(2))
+        .unwrap_or_else(Instant::now);
 
     loop {
+        if last_task_refresh.elapsed() >= Duration::from_millis(2500) {
+            let tasks = task_manager.list_tasks(Some(10)).await;
+            app.task_panel = tasks.into_iter().map(task_summary_to_panel_entry).collect();
+            last_task_refresh = Instant::now();
+        }
+
         // First, poll for engine events (non-blocking)
         let mut queued_to_send: Option<QueuedMessage> = None;
         {
@@ -239,7 +336,11 @@ async fn run_event_loop(
                         app.streaming_message_index = None;
                     }
                     EngineEvent::MessageDelta { content, .. } => {
-                        current_streaming_text.push_str(&content);
+                        let sanitized = sanitize_stream_chunk(&content);
+                        if sanitized.is_empty() {
+                            continue;
+                        }
+                        current_streaming_text.push_str(&sanitized);
                         let index = if let Some(index) = app.streaming_message_index {
                             index
                         } else {
@@ -268,29 +369,35 @@ async fn run_event_loop(
                             app.mark_history_updated();
                         }
 
-                        if !current_streaming_text.is_empty()
-                            || app.last_reasoning.is_some()
-                            || !app.pending_tool_uses.is_empty()
-                        {
-                            let mut blocks = Vec::new();
-                            if let Some(thinking) = app.last_reasoning.take() {
-                                blocks.push(ContentBlock::Thinking { thinking });
-                            }
-                            if !current_streaming_text.is_empty() {
-                                blocks.push(ContentBlock::Text {
-                                    text: current_streaming_text.clone(),
-                                    cache_control: None,
-                                });
-                            }
-                            for (id, name, input) in app.pending_tool_uses.drain(..) {
-                                blocks.push(ContentBlock::ToolUse { id, name, input });
-                            }
-                            if !blocks.is_empty() {
-                                app.api_messages.push(Message {
-                                    role: "assistant".to_string(),
-                                    content: blocks,
-                                });
-                            }
+                        let mut blocks = Vec::new();
+                        let thinking = app.last_reasoning.take();
+                        if let Some(thinking) = thinking {
+                            blocks.push(ContentBlock::Thinking { thinking });
+                        }
+                        if !current_streaming_text.is_empty() {
+                            blocks.push(ContentBlock::Text {
+                                text: current_streaming_text.clone(),
+                                cache_control: None,
+                            });
+                        }
+                        for (id, name, input) in app.pending_tool_uses.drain(..) {
+                            blocks.push(ContentBlock::ToolUse { id, name, input });
+                        }
+
+                        // DeepSeek rejects assistant messages that contain only reasoning blocks.
+                        // Keep reasoning in transcript cells, but only persist assistant turns that
+                        // include visible text and/or tool calls.
+                        let has_sendable_content = blocks.iter().any(|block| {
+                            matches!(
+                                block,
+                                ContentBlock::Text { .. } | ContentBlock::ToolUse { .. }
+                            )
+                        });
+                        if has_sendable_content {
+                            app.api_messages.push(Message {
+                                role: "assistant".to_string(),
+                                content: blocks,
+                            });
                         }
                     }
                     EngineEvent::ThinkingStarted { .. } => {
@@ -304,7 +411,11 @@ async fn run_event_loop(
                         app.streaming_message_index = Some(app.history.len().saturating_sub(1));
                     }
                     EngineEvent::ThinkingDelta { content, .. } => {
-                        app.reasoning_buffer.push_str(&content);
+                        let sanitized = sanitize_stream_chunk(&content);
+                        if sanitized.is_empty() {
+                            continue;
+                        }
+                        app.reasoning_buffer.push_str(&sanitized);
                         if app.reasoning_header.is_none() {
                             app.reasoning_header = extract_reasoning_header(&app.reasoning_buffer);
                         }
@@ -313,7 +424,7 @@ async fn run_event_loop(
                             if let Some(HistoryCell::Thinking { content: c, .. }) =
                                 app.history.get_mut(index)
                             {
-                                c.push_str(&content);
+                                c.push_str(&sanitized);
                             }
                         }
                     }
@@ -341,8 +452,8 @@ async fn run_event_loop(
                             app.plan_tool_used_in_turn = true;
                         }
                         let tool_content = match &result {
-                            Ok(output) => output.content.clone(),
-                            Err(err) => format!("Error: {err}"),
+                            Ok(output) => sanitize_stream_chunk(&output.content),
+                            Err(err) => sanitize_stream_chunk(&format!("Error: {err}")),
                         };
                         app.api_messages.push(Message {
                             role: "user".to_string(),
@@ -353,25 +464,46 @@ async fn run_event_loop(
                         });
                         handle_tool_call_complete(app, &id, &name, &result);
                     }
-                    EngineEvent::TurnStarted => {
+                    EngineEvent::TurnStarted { turn_id } => {
                         app.is_loading = true;
+                        app.offline_mode = false;
                         current_streaming_text.clear();
                         app.turn_started_at = Some(Instant::now());
+                        app.runtime_turn_id = Some(turn_id);
+                        app.runtime_turn_status = Some("in_progress".to_string());
                         app.reasoning_buffer.clear();
                         app.reasoning_header = None;
                         app.last_reasoning = None;
                         app.pending_tool_uses.clear();
                         app.plan_tool_used_in_turn = false;
+                        persist_checkpoint(app);
                     }
-                    EngineEvent::TurnComplete { usage } => {
+                    EngineEvent::TurnComplete {
+                        usage,
+                        status,
+                        error,
+                    } => {
                         app.is_loading = false;
+                        app.offline_mode = false;
                         app.turn_started_at = None;
+                        app.runtime_turn_status = Some(match status {
+                            crate::core::events::TurnOutcomeStatus::Completed => {
+                                "completed".to_string()
+                            }
+                            crate::core::events::TurnOutcomeStatus::Interrupted => {
+                                "interrupted".to_string()
+                            }
+                            crate::core::events::TurnOutcomeStatus::Failed => "failed".to_string(),
+                        });
                         let turn_tokens = usage.input_tokens + usage.output_tokens;
                         app.total_tokens = app.total_tokens.saturating_add(turn_tokens);
                         app.total_conversation_tokens =
                             app.total_conversation_tokens.saturating_add(turn_tokens);
                         app.last_prompt_tokens = Some(usage.input_tokens);
                         app.last_completion_tokens = Some(usage.output_tokens);
+                        if let Some(error) = error {
+                            app.status_message = Some(format!("Turn failed: {error}"));
+                        }
 
                         // Update session cost
                         if let Some(turn_cost) = crate::pricing::calculate_turn_cost(
@@ -382,48 +514,9 @@ async fn run_event_loop(
                             app.session_cost += turn_cost;
                         }
 
-                        // Auto-save session after each turn
-                        if let Ok(manager) = SessionManager::default_location() {
-                            let session = if let Some(ref existing_id) = app.current_session_id {
-                                // Update existing session
-                                if let Ok(existing) = manager.load_session(existing_id) {
-                                    let mut updated = update_session(
-                                        existing,
-                                        &app.api_messages,
-                                        u64::from(app.total_tokens),
-                                        app.system_prompt.as_ref(),
-                                    );
-                                    updated.metadata.mode = Some(app.mode.label().to_string());
-                                    updated
-                                } else {
-                                    // Session was deleted, create new
-                                    create_saved_session_with_mode(
-                                        &app.api_messages,
-                                        &app.model,
-                                        &app.workspace,
-                                        u64::from(app.total_tokens),
-                                        app.system_prompt.as_ref(),
-                                        Some(app.mode.label()),
-                                    )
-                                }
-                            } else {
-                                // Create new session
-                                create_saved_session_with_mode(
-                                    &app.api_messages,
-                                    &app.model,
-                                    &app.workspace,
-                                    u64::from(app.total_tokens),
-                                    app.system_prompt.as_ref(),
-                                    Some(app.mode.label()),
-                                )
-                            };
-
-                            if let Err(e) = manager.save_session(&session) {
-                                eprintln!("Failed to save session: {e}");
-                            } else {
-                                app.current_session_id = Some(session.metadata.id.clone());
-                            }
-                        }
+                        // Auto-save completed turn and clear crash checkpoint.
+                        persist_session_snapshot(app);
+                        clear_checkpoint();
 
                         if app.mode == AppMode::Plan
                             && app.plan_tool_used_in_turn
@@ -446,9 +539,22 @@ async fn run_event_loop(
                         app.add_message(HistoryCell::System {
                             content: format!("Error: {message}"),
                         });
+                        app.offline_mode = true;
                         app.is_loading = false;
+                        app.status_message = Some(format!(
+                            "Engine error; queued messages stay pending: {message}"
+                        ));
                     }
                     EngineEvent::Status { message } => {
+                        app.status_message = Some(message);
+                    }
+                    EngineEvent::CompactionStarted { message, .. } => {
+                        app.status_message = Some(message);
+                    }
+                    EngineEvent::CompactionCompleted { message, .. } => {
+                        app.status_message = Some(message);
+                    }
+                    EngineEvent::CompactionFailed { message, .. } => {
                         app.status_message = Some(message);
                     }
                     EngineEvent::PauseEvents => {
@@ -506,8 +612,24 @@ async fn run_event_loop(
                     } => {
                         let session_approved = app.approval_session_approved.contains(&tool_name);
                         if session_approved || app.approval_mode == ApprovalMode::Auto {
+                            log_sensitive_event(
+                                "tool.approval.auto_approve",
+                                serde_json::json!({
+                                    "tool_name": tool_name,
+                                    "session_id": app.current_session_id,
+                                    "mode": app.mode.label(),
+                                }),
+                            );
                             let _ = engine_handle.approve_tool_call(id.clone()).await;
                         } else if app.approval_mode == ApprovalMode::Never {
+                            log_sensitive_event(
+                                "tool.approval.auto_deny",
+                                serde_json::json!({
+                                    "tool_name": tool_name,
+                                    "session_id": app.current_session_id,
+                                    "mode": app.mode.label(),
+                                }),
+                            );
                             let _ = engine_handle.deny_tool_call(id.clone()).await;
                             app.add_message(HistoryCell::System {
                                 content: format!(
@@ -528,6 +650,15 @@ async fn run_event_loop(
 
                             // Create approval request and show overlay
                             let request = ApprovalRequest::new(&id, &tool_name, &tool_input);
+                            log_sensitive_event(
+                                "tool.approval.prompted",
+                                serde_json::json!({
+                                    "tool_name": tool_name,
+                                    "description": description,
+                                    "session_id": app.current_session_id,
+                                    "mode": app.mode.label(),
+                                }),
+                            );
                             app.view_stack.push(ApprovalView::new(request));
                             app.add_message(HistoryCell::System {
                                 content: format!(
@@ -556,6 +687,15 @@ async fn run_event_loop(
                     } => {
                         // In YOLO mode, auto-elevate to full access
                         if app.approval_mode == ApprovalMode::Auto {
+                            log_sensitive_event(
+                                "tool.sandbox.auto_elevate",
+                                serde_json::json!({
+                                    "tool_name": tool_name,
+                                    "tool_id": tool_id,
+                                    "reason": denial_reason,
+                                    "session_id": app.current_session_id,
+                                }),
+                            );
                             app.add_message(HistoryCell::System {
                                 content: format!(
                                     "Sandbox denied {tool_name}: {denial_reason} - auto-elevating to full access"
@@ -565,6 +705,15 @@ async fn run_event_loop(
                             let policy = crate::sandbox::SandboxPolicy::DangerFullAccess;
                             let _ = engine_handle.retry_tool_with_policy(tool_id, policy).await;
                         } else {
+                            log_sensitive_event(
+                                "tool.sandbox.prompt_elevation",
+                                serde_json::json!({
+                                    "tool_name": tool_name,
+                                    "tool_id": tool_id,
+                                    "reason": denial_reason,
+                                    "session_id": app.current_session_id,
+                                }),
+                            );
                             // Show elevation dialog
                             let request = ElevationRequest::for_shell(
                                 &tool_id,
@@ -584,7 +733,19 @@ async fn run_event_loop(
         }
 
         if let Some(next) = queued_to_send {
-            dispatch_user_message(app, &engine_handle, next).await?;
+            if let Err(err) = dispatch_user_message(app, &engine_handle, next.clone()).await {
+                app.queue_message(next);
+                app.status_message = Some(format!(
+                    "Dispatch failed ({err}); kept {} queued message(s)",
+                    app.queued_message_count()
+                ));
+            }
+        }
+
+        let queue_state = (app.queued_messages.clone(), app.queued_draft.clone());
+        if queue_state != last_queue_state {
+            persist_offline_queue_state(app);
+            last_queue_state = queue_state;
         }
 
         if !app.view_stack.is_empty() {
@@ -601,7 +762,7 @@ async fn run_event_loop(
 
         terminal.draw(|f| render(f, app))?; // app is &mut
 
-        if event::poll(std::time::Duration::from_millis(50))? {
+        if event::poll(std::time::Duration::from_millis(120))? {
             let evt = event::read()?;
 
             // Handle bracketed paste events
@@ -738,6 +899,14 @@ async fn run_event_loop(
                 continue;
             }
 
+            if key.code == KeyCode::Char('k') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                app.view_stack
+                    .push(CommandPaletteView::new(build_command_palette_entries(
+                        &app.skills_dir,
+                    )));
+                continue;
+            }
+
             if !app.view_stack.is_empty() {
                 let events = app.view_stack.handle_key(key);
                 handle_view_events(app, &engine_handle, events).await;
@@ -773,6 +942,11 @@ async fn run_event_loop(
                 }
                 KeyCode::Char('l') if key.modifiers.is_empty() && app.input.is_empty() => {
                     if open_pager_for_last_message(app) {
+                        continue;
+                    }
+                }
+                KeyCode::Char('v') if key.modifiers.is_empty() && app.input.is_empty() => {
+                    if open_tool_details_pager(app) {
                         continue;
                     }
                 }
@@ -832,6 +1006,9 @@ async fn run_event_loop(
                     app.scroll_down(page);
                 }
                 KeyCode::Tab => {
+                    if try_autocomplete_slash_command(app) {
+                        continue;
+                    }
                     app.cycle_mode();
                 }
                 // Input handling
@@ -883,18 +1060,126 @@ async fn run_event_loop(
                                                 workspace,
                                             })
                                             .await;
+                                        let _ = engine_handle
+                                            .send(Op::SetCompaction {
+                                                config: app.compaction_config(),
+                                            })
+                                            .await;
                                     }
                                     AppAction::SendMessage(content) => {
                                         let queued = build_queued_message(app, content);
-                                        dispatch_user_message(app, &engine_handle, queued).await?;
+                                        submit_or_steer_message(app, &engine_handle, queued)
+                                            .await?;
                                     }
                                     AppAction::ListSubAgents => {
                                         let _ = engine_handle.send(Op::ListSubAgents).await;
+                                    }
+                                    AppAction::FetchModels => {
+                                        app.status_message = Some("Fetching models...".to_string());
+                                        match fetch_available_models(config).await {
+                                            Ok(models) => {
+                                                app.add_message(HistoryCell::System {
+                                                    content: format_available_models_message(
+                                                        &app.model, &models,
+                                                    ),
+                                                });
+                                                app.status_message = Some(format!(
+                                                    "Found {} model(s)",
+                                                    models.len()
+                                                ));
+                                            }
+                                            Err(error) => {
+                                                app.add_message(HistoryCell::System {
+                                                    content: format!(
+                                                        "Failed to fetch models: {error}"
+                                                    ),
+                                                });
+                                            }
+                                        }
                                     }
                                     AppAction::UpdateCompaction(compaction) => {
                                         let _ = engine_handle
                                             .send(Op::SetCompaction { config: compaction })
                                             .await;
+                                    }
+                                    AppAction::TaskAdd { prompt } => {
+                                        let request = NewTaskRequest {
+                                            prompt: prompt.clone(),
+                                            model: Some(app.model.clone()),
+                                            workspace: Some(app.workspace.clone()),
+                                            mode: Some(task_mode_label(app.mode).to_string()),
+                                            allow_shell: Some(app.allow_shell),
+                                            trust_mode: Some(app.trust_mode),
+                                            auto_approve: Some(true),
+                                        };
+                                        match task_manager.add_task(request).await {
+                                            Ok(task) => {
+                                                app.add_message(HistoryCell::System {
+                                                    content: format!(
+                                                        "Task queued: {} ({})",
+                                                        task.id,
+                                                        summarize_tool_output(&task.prompt)
+                                                    ),
+                                                });
+                                                app.status_message =
+                                                    Some(format!("Queued {}", task.id));
+                                            }
+                                            Err(err) => {
+                                                app.add_message(HistoryCell::System {
+                                                    content: format!("Failed to queue task: {err}"),
+                                                });
+                                            }
+                                        }
+                                        app.task_panel = task_manager
+                                            .list_tasks(Some(10))
+                                            .await
+                                            .into_iter()
+                                            .map(task_summary_to_panel_entry)
+                                            .collect();
+                                    }
+                                    AppAction::TaskList => {
+                                        let tasks = task_manager.list_tasks(Some(30)).await;
+                                        app.task_panel = tasks
+                                            .iter()
+                                            .cloned()
+                                            .map(task_summary_to_panel_entry)
+                                            .collect();
+                                        app.add_message(HistoryCell::System {
+                                            content: format_task_list(&tasks),
+                                        });
+                                    }
+                                    AppAction::TaskShow { id } => {
+                                        match task_manager.get_task(&id).await {
+                                            Ok(task) => open_task_pager(app, &task),
+                                            Err(err) => {
+                                                app.add_message(HistoryCell::System {
+                                                    content: format!("Task lookup failed: {err}"),
+                                                });
+                                            }
+                                        }
+                                    }
+                                    AppAction::TaskCancel { id } => {
+                                        match task_manager.cancel_task(&id).await {
+                                            Ok(task) => {
+                                                app.add_message(HistoryCell::System {
+                                                    content: format!(
+                                                        "Task {} status: {:?}",
+                                                        task.id, task.status
+                                                    ),
+                                                });
+                                            }
+                                            Err(err) => {
+                                                app.add_message(HistoryCell::System {
+                                                    content: format!("Task cancel failed: {err}"),
+                                                });
+                                            }
+                                        }
+                                        app.task_panel = task_manager
+                                            .list_tasks(Some(10))
+                                            .await
+                                            .into_iter()
+                                            .map(task_summary_to_panel_entry)
+                                            .collect();
                                     }
                                 }
                             }
@@ -915,15 +1200,7 @@ async fn run_event_loop(
                             } else {
                                 build_queued_message(app, input)
                             };
-                            if app.is_loading {
-                                app.queue_message(queued);
-                                app.status_message = Some(format!(
-                                    "Queued {} message(s) - /queue to view/edit",
-                                    app.queued_message_count()
-                                ));
-                            } else {
-                                dispatch_user_message(app, &engine_handle, queued).await?;
-                            }
+                            submit_or_steer_message(app, &engine_handle, queued).await?;
                         }
                     }
                 }
@@ -1094,6 +1371,177 @@ fn in_command_context(app: &App) -> bool {
     app.input.starts_with('/')
 }
 
+fn try_autocomplete_slash_command(app: &mut App) -> bool {
+    if !app.input.starts_with('/') || app.input.contains(char::is_whitespace) {
+        return false;
+    }
+
+    let prefix = app.input.trim_start_matches('/');
+    let matches = commands::commands_matching(prefix);
+    if matches.is_empty() {
+        return false;
+    }
+
+    let names = matches.iter().map(|info| info.name).collect::<Vec<_>>();
+    let shared = longest_common_prefix(&names);
+
+    if !shared.is_empty() && shared.len() > prefix.len() {
+        app.input = format!("/{shared}");
+        app.cursor_position = app.input.chars().count();
+        app.status_message = Some(format!("Autocomplete: /{shared}"));
+        return true;
+    }
+
+    if matches.len() == 1 {
+        let completed = format!("/{} ", matches[0].name);
+        app.input = completed.clone();
+        app.cursor_position = completed.chars().count();
+        app.status_message = Some(format!("Command completed: {}", completed.trim_end()));
+        return true;
+    }
+
+    let preview = matches
+        .iter()
+        .take(5)
+        .map(|info| format!("/{}", info.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    app.status_message = Some(format!("Suggestions: {preview}"));
+    true
+}
+
+fn longest_common_prefix<'a>(values: &[&'a str]) -> &'a str {
+    let Some(first) = values.first().copied() else {
+        return "";
+    };
+    let mut end = first.len();
+
+    for value in values.iter().skip(1) {
+        while end > 0 && !value.starts_with(&first[..end]) {
+            end -= 1;
+        }
+        if end == 0 {
+            return "";
+        }
+    }
+
+    &first[..end]
+}
+
+async fn fetch_available_models(config: &Config) -> Result<Vec<String>> {
+    use crate::client::DeepSeekClient;
+
+    let client = DeepSeekClient::new(config)?;
+    let models = tokio::time::timeout(Duration::from_secs(20), client.list_models()).await??;
+    let mut ids = models.into_iter().map(|model| model.id).collect::<Vec<_>>();
+    ids.sort();
+    ids.dedup();
+    Ok(ids)
+}
+
+fn format_available_models_message(current_model: &str, models: &[String]) -> String {
+    let mut lines = vec![format!("Available models ({})", models.len())];
+    for model in models {
+        if model == current_model {
+            lines.push(format!("* {model} (current)"));
+        } else {
+            lines.push(format!("  {model}"));
+        }
+    }
+    lines.join("\n")
+}
+
+fn build_session_snapshot(app: &App, manager: &SessionManager) -> SavedSession {
+    if let Some(ref existing_id) = app.current_session_id
+        && let Ok(existing) = manager.load_session(existing_id)
+    {
+        let mut updated = update_session(
+            existing,
+            &app.api_messages,
+            u64::from(app.total_tokens),
+            app.system_prompt.as_ref(),
+        );
+        updated.metadata.mode = Some(app.mode.label().to_string());
+        updated
+    } else {
+        create_saved_session_with_mode(
+            &app.api_messages,
+            &app.model,
+            &app.workspace,
+            u64::from(app.total_tokens),
+            app.system_prompt.as_ref(),
+            Some(app.mode.label()),
+        )
+    }
+}
+
+fn persist_session_snapshot(app: &mut App) {
+    if let Ok(manager) = SessionManager::default_location() {
+        let session = build_session_snapshot(app, &manager);
+        if let Err(err) = manager.save_session(&session) {
+            eprintln!("Failed to save session: {err}");
+        } else {
+            app.current_session_id = Some(session.metadata.id.clone());
+        }
+    }
+}
+
+fn persist_checkpoint(app: &mut App) {
+    if let Ok(manager) = SessionManager::default_location() {
+        let session = build_session_snapshot(app, &manager);
+        if let Err(err) = manager.save_checkpoint(&session) {
+            eprintln!("Failed to save checkpoint: {err}");
+        }
+    }
+}
+
+fn clear_checkpoint() {
+    if let Ok(manager) = SessionManager::default_location() {
+        let _ = manager.clear_checkpoint();
+    }
+}
+
+fn queued_ui_to_session(msg: &QueuedMessage) -> QueuedSessionMessage {
+    QueuedSessionMessage {
+        display: msg.display.clone(),
+        skill_instruction: msg.skill_instruction.clone(),
+    }
+}
+
+fn queued_session_to_ui(msg: QueuedSessionMessage) -> QueuedMessage {
+    QueuedMessage {
+        display: msg.display,
+        skill_instruction: msg.skill_instruction,
+    }
+}
+
+fn persist_offline_queue_state(app: &App) {
+    if let Ok(manager) = SessionManager::default_location() {
+        if app.queued_messages.is_empty() && app.queued_draft.is_none() {
+            let _ = manager.clear_offline_queue_state();
+            return;
+        }
+        let state = OfflineQueueState {
+            messages: app
+                .queued_messages
+                .iter()
+                .map(queued_ui_to_session)
+                .collect(),
+            draft: app.queued_draft.as_ref().map(queued_ui_to_session),
+            ..OfflineQueueState::default()
+        };
+        let _ = manager.save_offline_queue_state(&state);
+    }
+}
+
+fn sanitize_stream_chunk(chunk: &str) -> String {
+    // Keep printable characters and common whitespace; drop control bytes.
+    chunk
+        .chars()
+        .filter(|c| *c == '\n' || *c == '\t' || !c.is_control())
+        .collect()
+}
+
 fn build_queued_message(app: &mut App, input: String) -> QueuedMessage {
     let skill_instruction = app.active_skill.take();
     QueuedMessage::new(input, skill_instruction)
@@ -1123,6 +1571,15 @@ async fn dispatch_user_message(
             cache_control: None,
         }],
     });
+    maybe_warn_context_pressure(app);
+    if should_auto_compact_before_send(app) {
+        app.status_message = Some("Context critical; compacting before send...".to_string());
+        let _ = engine_handle.send(Op::CompactContext).await;
+    }
+    app.last_prompt_tokens = None;
+    app.last_completion_tokens = None;
+    // Persist immediately so abrupt termination can recover this in-flight turn.
+    persist_checkpoint(app);
 
     engine_handle
         .send(Op::SendMessage {
@@ -1135,6 +1592,57 @@ async fn dispatch_user_message(
         .await?;
 
     Ok(())
+}
+
+async fn steer_user_message(
+    app: &mut App,
+    engine_handle: &EngineHandle,
+    message: QueuedMessage,
+) -> Result<()> {
+    let content = message.content();
+
+    // Mirror steer input in local transcript/session state.
+    app.add_message(HistoryCell::User {
+        content: format!("+ {}", message.display),
+    });
+    app.api_messages.push(Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: content.clone(),
+            cache_control: None,
+        }],
+    });
+
+    engine_handle.steer(content).await?;
+    app.status_message = Some("Steering current turn...".to_string());
+    Ok(())
+}
+
+async fn submit_or_steer_message(
+    app: &mut App,
+    engine_handle: &EngineHandle,
+    message: QueuedMessage,
+) -> Result<()> {
+    if app.offline_mode && !app.is_loading {
+        app.queue_message(message);
+        app.status_message = Some(format!(
+            "Offline mode: queued {} message(s) - /queue to review",
+            app.queued_message_count()
+        ));
+        return Ok(());
+    }
+    if app.is_loading {
+        if let Err(err) = steer_user_message(app, engine_handle, message.clone()).await {
+            app.queue_message(message);
+            app.status_message = Some(format!(
+                "Steer failed ({err}); queued {} message(s) - /queue to view/edit",
+                app.queued_message_count()
+            ));
+        }
+        Ok(())
+    } else {
+        dispatch_user_message(app, engine_handle, message).await
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1294,17 +1802,42 @@ fn render(f: &mut Frame, app: &mut App) {
                     app.total_conversation_tokens,
                     context_window,
                     app.session_cost,
+                    app.last_prompt_tokens,
                 );
         let header_widget = HeaderWidget::new(header_data);
         let buf = f.buffer_mut();
         header_widget.render(chunks[0], buf);
     }
 
-    // Render chat
+    // Render chat + sidebar
     {
-        let chat_widget = ChatWidget::new(app, chunks[1]);
+        let mut chat_area = chunks[1];
+        let mut sidebar_area = None;
+
+        if chunks[1].width >= 90 {
+            let preferred_sidebar = (u32::from(chunks[1].width)
+                * u32::from(app.sidebar_width_percent.clamp(10, 50))
+                / 100) as u16;
+            let sidebar_width = preferred_sidebar
+                .max(24)
+                .min(chunks[1].width.saturating_sub(40));
+            if sidebar_width >= 20 {
+                let split = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Min(1), Constraint::Length(sidebar_width)])
+                    .split(chunks[1]);
+                chat_area = split[0];
+                sidebar_area = Some(split[1]);
+            }
+        }
+
+        let chat_widget = ChatWidget::new(app, chat_area);
         let buf = f.buffer_mut();
-        chat_widget.render(chunks[1], buf);
+        chat_widget.render(chat_area, buf);
+
+        if let Some(sidebar_area) = sidebar_area {
+            render_sidebar(f, sidebar_area, app);
+        }
     }
 
     // Render status
@@ -1332,9 +1865,363 @@ fn render(f: &mut Frame, app: &mut App) {
     }
 }
 
+fn render_sidebar(f: &mut Frame, area: Rect, app: &App) {
+    if area.width < 24 || area.height < 8 {
+        return;
+    }
+
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Min(6),
+        ])
+        .split(area);
+
+    render_sidebar_plan(f, sections[0], app);
+    render_sidebar_todos(f, sections[1], app);
+    render_sidebar_tasks(f, sections[2], app);
+    render_sidebar_subagents(f, sections[3], app);
+}
+
+fn render_sidebar_plan(f: &mut Frame, area: Rect, app: &App) {
+    if area.height < 3 {
+        return;
+    }
+
+    let content_width = area.width.saturating_sub(4) as usize;
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    match app.plan_state.try_lock() {
+        Ok(plan) => {
+            if plan.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    "No active plan",
+                    Style::default().fg(palette::TEXT_MUTED),
+                )));
+            } else {
+                let (pending, in_progress, completed) = plan.counts();
+                let total = pending + in_progress + completed;
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("{}%", plan.progress_percent()),
+                        Style::default().fg(palette::STATUS_SUCCESS).bold(),
+                    ),
+                    Span::styled(
+                        format!(" complete ({completed}/{total})"),
+                        Style::default().fg(palette::TEXT_MUTED),
+                    ),
+                ]));
+
+                if let Some(explanation) = plan.explanation() {
+                    lines.push(Line::from(Span::styled(
+                        truncate_line_to_width(explanation, content_width.max(1)),
+                        Style::default().fg(palette::TEXT_DIM),
+                    )));
+                }
+
+                let usable_rows = area.height.saturating_sub(3) as usize;
+                let max_steps = usable_rows.saturating_sub(lines.len());
+                for step in plan.steps().iter().take(max_steps) {
+                    let (prefix, color) = match &step.status {
+                        StepStatus::Pending => ("[ ]", palette::TEXT_MUTED),
+                        StepStatus::InProgress => ("[~]", palette::STATUS_WARNING),
+                        StepStatus::Completed => ("[x]", palette::STATUS_SUCCESS),
+                    };
+                    let mut text = format!("{prefix} {}", step.text);
+                    let elapsed = step.elapsed_str();
+                    if !elapsed.is_empty() {
+                        let _ = write!(text, " ({elapsed})");
+                    }
+                    lines.push(Line::from(Span::styled(
+                        truncate_line_to_width(&text, content_width.max(1)),
+                        Style::default().fg(color),
+                    )));
+                }
+
+                let remaining = plan.steps().len().saturating_sub(max_steps);
+                if remaining > 0 {
+                    lines.push(Line::from(Span::styled(
+                        format!("+{remaining} more steps"),
+                        Style::default().fg(palette::TEXT_MUTED),
+                    )));
+                }
+            }
+        }
+        Err(_) => {
+            lines.push(Line::from(Span::styled(
+                "Plan state updating...",
+                Style::default().fg(palette::TEXT_MUTED),
+            )));
+        }
+    }
+
+    render_sidebar_section(f, area, "Plan", lines);
+}
+
+fn render_sidebar_todos(f: &mut Frame, area: Rect, app: &App) {
+    if area.height < 3 {
+        return;
+    }
+
+    let content_width = area.width.saturating_sub(4) as usize;
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    match app.todos.try_lock() {
+        Ok(todos) => {
+            let snapshot = todos.snapshot();
+            if snapshot.items.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    "No todos",
+                    Style::default().fg(palette::TEXT_MUTED),
+                )));
+            } else {
+                let total = snapshot.items.len();
+                let completed = snapshot
+                    .items
+                    .iter()
+                    .filter(|item| item.status == TodoStatus::Completed)
+                    .count();
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("{}%", snapshot.completion_pct),
+                        Style::default().fg(palette::STATUS_SUCCESS).bold(),
+                    ),
+                    Span::styled(
+                        format!(" complete ({completed}/{total})"),
+                        Style::default().fg(palette::TEXT_MUTED),
+                    ),
+                ]));
+
+                let usable_rows = area.height.saturating_sub(3) as usize;
+                let max_items = usable_rows.saturating_sub(lines.len());
+                for item in snapshot.items.iter().take(max_items) {
+                    let (prefix, color) = match item.status {
+                        TodoStatus::Pending => ("[ ]", palette::TEXT_MUTED),
+                        TodoStatus::InProgress => ("[~]", palette::STATUS_WARNING),
+                        TodoStatus::Completed => ("[x]", palette::STATUS_SUCCESS),
+                    };
+                    let text = format!("{prefix} #{} {}", item.id, item.content);
+                    lines.push(Line::from(Span::styled(
+                        truncate_line_to_width(&text, content_width.max(1)),
+                        Style::default().fg(color),
+                    )));
+                }
+
+                let remaining = snapshot.items.len().saturating_sub(max_items);
+                if remaining > 0 {
+                    lines.push(Line::from(Span::styled(
+                        format!("+{remaining} more todos"),
+                        Style::default().fg(palette::TEXT_MUTED),
+                    )));
+                }
+            }
+        }
+        Err(_) => {
+            lines.push(Line::from(Span::styled(
+                "Todo list updating...",
+                Style::default().fg(palette::TEXT_MUTED),
+            )));
+        }
+    }
+
+    render_sidebar_section(f, area, "Todos", lines);
+}
+
+fn render_sidebar_tasks(f: &mut Frame, area: Rect, app: &App) {
+    if area.height < 3 {
+        return;
+    }
+
+    let content_width = area.width.saturating_sub(4) as usize;
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    if let Some(turn_id) = app.runtime_turn_id.as_ref() {
+        let status = app
+            .runtime_turn_status
+            .as_deref()
+            .unwrap_or("unknown")
+            .to_string();
+        lines.push(Line::from(Span::styled(
+            truncate_line_to_width(
+                &format!("turn {} ({status})", truncate_line_to_width(turn_id, 12)),
+                content_width.max(1),
+            ),
+            Style::default().fg(palette::DEEPSEEK_SKY),
+        )));
+    }
+
+    if app.task_panel.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "No tasks",
+            Style::default().fg(palette::TEXT_MUTED),
+        )));
+    } else {
+        let running = app
+            .task_panel
+            .iter()
+            .filter(|task| task.status == "running")
+            .count();
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{running} running"),
+                Style::default().fg(palette::DEEPSEEK_SKY).bold(),
+            ),
+            Span::styled(
+                format!(" / {}", app.task_panel.len()),
+                Style::default().fg(palette::TEXT_MUTED),
+            ),
+        ]));
+
+        let usable_rows = area.height.saturating_sub(3) as usize;
+        let max_items = usable_rows.saturating_sub(lines.len());
+        for task in app.task_panel.iter().take(max_items) {
+            let color = match task.status.as_str() {
+                "queued" => palette::TEXT_MUTED,
+                "running" => palette::STATUS_WARNING,
+                "completed" => palette::STATUS_SUCCESS,
+                "failed" => palette::STATUS_ERROR,
+                "canceled" => palette::TEXT_DIM,
+                _ => palette::TEXT_MUTED,
+            };
+            let duration = task
+                .duration_ms
+                .map(|ms| format!("{:.1}s", ms as f64 / 1000.0))
+                .unwrap_or_else(|| "-".to_string());
+            let label = format!(
+                "{} {} {}",
+                truncate_line_to_width(&task.id, 10),
+                task.status,
+                duration
+            );
+            lines.push(Line::from(Span::styled(
+                truncate_line_to_width(&label, content_width.max(1)),
+                Style::default().fg(color),
+            )));
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "  {}",
+                    truncate_line_to_width(
+                        &task.prompt_summary,
+                        content_width.saturating_sub(2).max(1)
+                    )
+                ),
+                Style::default().fg(palette::TEXT_DIM),
+            )));
+        }
+    }
+
+    render_sidebar_section(f, area, "Tasks", lines);
+}
+
+fn render_sidebar_subagents(f: &mut Frame, area: Rect, app: &App) {
+    if area.height < 3 {
+        return;
+    }
+
+    let content_width = area.width.saturating_sub(4) as usize;
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    if app.subagent_cache.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "No sub-agents",
+            Style::default().fg(palette::TEXT_MUTED),
+        )));
+    } else {
+        let running = app
+            .subagent_cache
+            .iter()
+            .filter(|agent| matches!(agent.status, SubAgentStatus::Running))
+            .count();
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{running} running"),
+                Style::default().fg(palette::DEEPSEEK_SKY).bold(),
+            ),
+            Span::styled(
+                format!(" / {}", app.subagent_cache.len()),
+                Style::default().fg(palette::TEXT_MUTED),
+            ),
+        ]));
+
+        let usable_rows = area.height.saturating_sub(3) as usize;
+        let max_agents = usable_rows.saturating_sub(lines.len());
+        for agent in app.subagent_cache.iter().take(max_agents) {
+            let (status_label, status_color) = match &agent.status {
+                SubAgentStatus::Running => ("running", palette::STATUS_WARNING),
+                SubAgentStatus::Completed => ("done", palette::STATUS_SUCCESS),
+                SubAgentStatus::Failed(_) => ("failed", palette::STATUS_ERROR),
+                SubAgentStatus::Cancelled => ("cancelled", palette::TEXT_MUTED),
+            };
+            let agent_type = match agent.agent_type {
+                SubAgentType::General => "general",
+                SubAgentType::Explore => "explore",
+                SubAgentType::Plan => "plan",
+                SubAgentType::Review => "review",
+                SubAgentType::Custom => "custom",
+            };
+            let summary = format!(
+                "{} {agent_type} {status_label} ({} steps)",
+                truncate_line_to_width(&agent.agent_id, 10),
+                agent.steps_taken
+            );
+            lines.push(Line::from(Span::styled(
+                truncate_line_to_width(&summary, content_width.max(1)),
+                Style::default().fg(status_color),
+            )));
+        }
+
+        let remaining = app.subagent_cache.len().saturating_sub(max_agents);
+        if remaining > 0 {
+            lines.push(Line::from(Span::styled(
+                format!("+{remaining} more agents"),
+                Style::default().fg(palette::TEXT_MUTED),
+            )));
+        }
+    }
+
+    render_sidebar_section(f, area, "Sub-Agents", lines);
+}
+
+fn render_sidebar_section(f: &mut Frame, area: Rect, title: &str, lines: Vec<Line<'static>>) {
+    if area.width < 4 || area.height < 3 {
+        return;
+    }
+
+    let section = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+        Block::default()
+            .title(Line::from(vec![Span::styled(
+                format!(" {title} "),
+                Style::default().fg(palette::DEEPSEEK_BLUE).bold(),
+            )]))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(palette::DEEPSEEK_SKY)),
+    );
+
+    f.render_widget(section, area);
+}
+
 async fn handle_view_events(app: &mut App, engine_handle: &EngineHandle, events: Vec<ViewEvent>) {
     for event in events {
         match event {
+            ViewEvent::CommandPaletteSelected { command } => {
+                app.input = command;
+                app.cursor_position = app.input.chars().count();
+                app.status_message = Some("Command inserted. Press Enter to run.".to_string());
+            }
+            ViewEvent::OpenTextPager { title, content } => {
+                let width = app
+                    .last_transcript_area
+                    .map(|area| area.width)
+                    .unwrap_or(80);
+                app.view_stack.push(PagerView::from_text(
+                    title,
+                    &content,
+                    width.saturating_sub(2),
+                ));
+            }
             ViewEvent::ApprovalDecision {
                 tool_id,
                 tool_name,
@@ -1426,8 +2313,15 @@ async fn handle_view_events(app: &mut App, engine_handle: &EngineHandle, events:
                                 workspace: app.workspace.clone(),
                             })
                             .await;
-                        app.status_message =
-                            Some(format!("Session loaded (ID: {})", &session_id[..8]));
+                        let _ = engine_handle
+                            .send(Op::SetCompaction {
+                                config: app.compaction_config(),
+                            })
+                            .await;
+                        app.status_message = Some(format!(
+                            "Session loaded (ID: {})",
+                            &session_id[..8.min(session_id.len())]
+                        ));
                     }
                     Err(err) => {
                         app.status_message =
@@ -1436,8 +2330,11 @@ async fn handle_view_events(app: &mut App, engine_handle: &EngineHandle, events:
                 }
             }
             ViewEvent::SessionDeleted { session_id, title } => {
-                app.status_message =
-                    Some(format!("Deleted session {} ({})", &session_id[..8], title));
+                app.status_message = Some(format!(
+                    "Deleted session {} ({})",
+                    &session_id[..8.min(session_id.len())],
+                    title
+                ));
             }
             ViewEvent::SubAgentsRefresh => {
                 app.status_message = Some("Refreshing sub-agents...".to_string());
@@ -1450,6 +2347,12 @@ async fn handle_view_events(app: &mut App, engine_handle: &EngineHandle, events:
 fn apply_loaded_session(app: &mut App, session: &SavedSession) {
     app.api_messages.clone_from(&session.messages);
     app.history.clear();
+    app.tool_cells.clear();
+    app.tool_details_by_cell.clear();
+    app.exploring_entries.clear();
+    app.ignored_tool_calls.clear();
+    app.pending_tool_uses.clear();
+    app.last_exec_wait_command = None;
 
     for msg in &app.api_messages {
         app.history.extend(history_cells_from_message(msg));
@@ -1457,9 +2360,12 @@ fn apply_loaded_session(app: &mut App, session: &SavedSession) {
     app.mark_history_updated();
     app.transcript_selection.clear();
     app.model.clone_from(&session.metadata.model);
+    app.update_model_compaction_budget();
     app.workspace.clone_from(&session.metadata.workspace);
     app.total_tokens = u32::try_from(session.metadata.total_tokens).unwrap_or(u32::MAX);
     app.total_conversation_tokens = app.total_tokens;
+    app.last_prompt_tokens = None;
+    app.last_completion_tokens = None;
     app.current_session_id = Some(session.metadata.id.clone());
     if let Some(sp) = session.system_prompt.as_ref() {
         app.system_prompt = Some(SystemPrompt::Text(sp.clone()));
@@ -1519,17 +2425,19 @@ fn render_status_indicator(f: &mut Frame, area: Rect, app: &App, queued: &[Strin
         } else {
             deepseek_squiggle(app.turn_started_at)
         };
-        let label = if app.show_thinking {
-            deepseek_thinking_label(app.turn_started_at)
+        let (label, label_color) = if has_streaming_content {
+            ("ANSWER", palette::DEEPSEEK_SKY)
+        } else if app.show_thinking {
+            ("THINKING", palette::STATUS_WARNING)
         } else {
-            "Working"
+            ("WORKING", palette::STATUS_WARNING)
         };
         let mut spans = vec![
             Span::styled(spinner, Style::default().fg(palette::DEEPSEEK_SKY).bold()),
             Span::raw(" "),
-            Span::styled(label, Style::default().fg(palette::STATUS_WARNING).bold()),
+            Span::styled(label, Style::default().fg(label_color).bold()),
         ];
-        if let Some(header) = header {
+        if !has_streaming_content && let Some(header) = header {
             spans.push(Span::raw(": "));
             spans.push(Span::styled(
                 header,
@@ -1600,33 +2508,47 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
     let available_width = width as usize;
 
     // 1. Context Progress Bar (Right)
-    let percent = get_context_percent_decimal(app);
+    let context_snapshot = context_usage_snapshot(app);
+    let percent = context_snapshot
+        .map(|(_, _, pct)| pct as f32)
+        .unwrap_or(0.0);
     let bar_width = 10; // Width of the progress bar
     let filled = ((percent / 100.0) * bar_width as f32).round() as usize;
     let filled = filled.min(bar_width);
     let empty = bar_width - filled;
 
-    let bar_color = if percent > 90.0 {
-        palette::STATUS_ERROR
-    } else if percent > 75.0 {
-        palette::STATUS_WARNING
-    } else {
-        palette::DEEPSEEK_SKY
-    };
+    let bar_color = context_color_for_percent(f64::from(percent));
 
     let bar_filled = "█".repeat(filled);
     let bar_empty = "░".repeat(empty);
     let context_text = format!("[{}{}] {:.0}%", bar_filled, bar_empty, percent);
     let context_span = Span::styled(context_text, Style::default().fg(bar_color));
+    let budget_span = context_snapshot.map(|(used, max, _)| {
+        let used_u64 = u64::try_from(used.max(0)).unwrap_or(0);
+        let max_u64 = u64::from(max);
+        Span::styled(
+            format!(
+                "{}/{}",
+                format_token_count_compact(used_u64),
+                format_token_count_compact(max_u64)
+            ),
+            Style::default().fg(bar_color),
+        )
+    });
 
     // 2. Right side extras (Scroll, Selection) - Minimalist
     let mut right_extras = Vec::new();
 
     // Scroll %
-    let can_scroll = app.last_transcript_total > app.last_transcript_visible;
-    if can_scroll && !matches!(app.transcript_scroll, TranscriptScroll::ToBottom) {
+    if !matches!(app.transcript_scroll, TranscriptScroll::ToBottom)
+        && let Some(scroll_pct) = transcript_scroll_percent(
+            app.last_transcript_top,
+            app.last_transcript_visible,
+            app.last_transcript_total,
+        )
+    {
         right_extras.push(Span::styled(
-            format!(" {}% ", app.last_transcript_top + 1),
+            format!(" {scroll_pct}% "),
             Style::default().fg(palette::TEXT_DIM),
         ));
     }
@@ -1643,6 +2565,10 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
     // context_span is always last
     let mut right_spans = right_extras;
     right_spans.push(Span::raw("   ")); // Space before context
+    if let Some(budget) = budget_span {
+        right_spans.push(budget);
+        right_spans.push(Span::raw(" "));
+    }
     right_spans.push(context_span);
 
     let right_width: usize = right_spans.iter().map(|s| s.content.width()).sum();
@@ -1712,10 +2638,21 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
         };
         let bar_filled_narrow = "█".repeat(filled.min(5));
         let bar_empty_narrow = "░".repeat(5 - filled.min(5));
+        let budget_prefix = context_snapshot
+            .map(|(used, max, _)| {
+                let used_u64 = u64::try_from(used.max(0)).unwrap_or(0);
+                let max_u64 = u64::from(max);
+                format!(
+                    "{} / {} ",
+                    format_token_count_compact(used_u64),
+                    format_token_count_compact(max_u64)
+                )
+            })
+            .unwrap_or_default();
         let simple_right = vec![Span::styled(
             format!(
-                "[{}{}] {:.0}%",
-                bar_filled_narrow, bar_empty_narrow, percent
+                "{}[{}{}] {:.0}%",
+                budget_prefix, bar_filled_narrow, bar_empty_narrow, percent
             ),
             Style::default().fg(bar_color),
         )];
@@ -1733,25 +2670,39 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(footer, area);
 }
 
-fn get_context_percent_decimal(app: &App) -> f32 {
-    let used = if app.total_conversation_tokens > 0 {
-        Some(i64::from(app.total_conversation_tokens))
+fn format_token_count_compact(tokens: u64) -> String {
+    if tokens >= 1_000_000 {
+        format!("{:.1}M", tokens as f64 / 1_000_000.0)
+    } else if tokens >= 1_000 {
+        format!("{:.1}k", tokens as f64 / 1_000.0)
     } else {
-        estimated_context_tokens(app)
-    };
-
-    if let Some(max) = context_window_for_model(&app.model) {
-        if let Some(used) = used {
-            let max_f64 = max as f64;
-            let used_f64 = used as f64;
-            let percent = (used_f64 / max_f64) * 100.0;
-            percent.clamp(0.0, 100.0) as f32
-        } else {
-            0.0
-        }
-    } else {
-        0.0
+        tokens.to_string()
     }
+}
+
+fn context_color_for_percent(percent: f64) -> ratatui::style::Color {
+    if percent >= CONTEXT_CRITICAL_THRESHOLD_PERCENT {
+        palette::STATUS_ERROR
+    } else if percent >= CONTEXT_WARNING_THRESHOLD_PERCENT {
+        palette::STATUS_WARNING
+    } else {
+        palette::DEEPSEEK_SKY
+    }
+}
+
+fn transcript_scroll_percent(top: usize, visible: usize, total: usize) -> Option<u16> {
+    if total <= visible {
+        return None;
+    }
+
+    let max_top = total.saturating_sub(visible);
+    if max_top == 0 {
+        return None;
+    }
+
+    let clamped_top = top.min(max_top);
+    let percent = ((clamped_top as f64 / max_top as f64) * 100.0).round() as u16;
+    Some(percent.min(100))
 }
 
 fn prompt_for_mode(mode: AppMode) -> &'static str {
@@ -1764,20 +2715,77 @@ fn prompt_for_mode(mode: AppMode) -> &'static str {
 }
 
 fn estimated_context_tokens(app: &App) -> Option<i64> {
-    let mut total_chars = estimate_message_chars(&app.api_messages);
+    let mut total = estimate_tokens(&app.api_messages);
 
     match &app.system_prompt {
-        Some(SystemPrompt::Text(text)) => total_chars = total_chars.saturating_add(text.len()),
+        Some(SystemPrompt::Text(text)) => total = total.saturating_add(estimate_text_tokens(text)),
         Some(SystemPrompt::Blocks(blocks)) => {
             for block in blocks {
-                total_chars = total_chars.saturating_add(block.text.len());
+                total = total.saturating_add(estimate_text_tokens(&block.text));
             }
         }
         None => {}
     }
 
-    let estimated_tokens = total_chars / 4;
-    i64::try_from(estimated_tokens).ok()
+    i64::try_from(total).ok()
+}
+
+fn estimate_text_tokens(text: &str) -> usize {
+    text.chars().count().div_ceil(4)
+}
+
+fn context_usage_snapshot(app: &App) -> Option<(i64, u32, f64)> {
+    let used = if let Some(prompt_tokens) = app.last_prompt_tokens {
+        Some(i64::from(prompt_tokens))
+    } else {
+        estimated_context_tokens(app)
+    }?;
+
+    let max = context_window_for_model(&app.model)?;
+    let max_f64 = f64::from(max);
+    let used_f64 = used as f64;
+    let percent = ((used_f64 / max_f64) * 100.0).clamp(0.0, 100.0);
+    Some((used, max, percent))
+}
+
+fn maybe_warn_context_pressure(app: &mut App) {
+    let Some((used, max, percent)) = context_usage_snapshot(app) else {
+        return;
+    };
+
+    if percent < CONTEXT_WARNING_THRESHOLD_PERCENT {
+        return;
+    }
+
+    let recommendation = if app.auto_compact {
+        "Auto-compaction is enabled."
+    } else {
+        "Consider /compact or /clear."
+    };
+
+    if percent >= CONTEXT_CRITICAL_THRESHOLD_PERCENT {
+        app.status_message = Some(format!(
+            "Context critical: {:.0}% ({used}/{max} tokens). {recommendation}",
+            percent
+        ));
+        return;
+    }
+
+    if app.status_message.is_none() {
+        app.status_message = Some(format!(
+            "Context high: {:.0}% ({used}/{max} tokens). {recommendation}",
+            percent
+        ));
+    }
+}
+
+fn should_auto_compact_before_send(app: &App) -> bool {
+    if !app.auto_compact {
+        return false;
+    }
+    context_usage_snapshot(app)
+        .map(|(_, _, pct)| pct >= CONTEXT_CRITICAL_THRESHOLD_PERCENT)
+        .unwrap_or(false)
 }
 
 fn format_elapsed(start: Instant) -> String {
@@ -1794,7 +2802,7 @@ fn deepseek_squiggle(start: Option<Instant>) -> &'static str {
         "🐳", "🐳.", "🐳..", "🐳...", "🐳..", "🐳.", "🐋", "🐋.", "🐋..", "🐋...", "🐋..", "🐋.",
     ];
     let elapsed_ms = start.map_or(0, |t| t.elapsed().as_millis());
-    let idx = ((elapsed_ms / 180) as usize) % FRAMES.len();
+    let idx = ((elapsed_ms / 420) as usize) % FRAMES.len();
     FRAMES[idx]
 }
 
@@ -1804,19 +2812,8 @@ const TYPING_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦"
 /// Returns the typing indicator frame based on elapsed time.
 fn typing_indicator(start: Option<Instant>) -> &'static str {
     let elapsed_ms = start.map_or(0, |t| t.elapsed().as_millis());
-    let idx = ((elapsed_ms / 80) as usize) % TYPING_FRAMES.len();
+    let idx = ((elapsed_ms / 220) as usize) % TYPING_FRAMES.len();
     TYPING_FRAMES[idx]
-}
-
-fn deepseek_thinking_label(start: Option<Instant>) -> &'static str {
-    const TAGLINES: [&str; 4] = ["Thinking", "Reasoning", "Drafting", "Working"];
-    const INITIAL_MS: u128 = 2400;
-    let elapsed_ms = start.map_or(0, |t| t.elapsed().as_millis());
-    if elapsed_ms < INITIAL_MS {
-        return "Working";
-    }
-    let idx = (((elapsed_ms - INITIAL_MS) / 2400) as usize) % TAGLINES.len();
-    TAGLINES[idx]
 }
 
 fn truncate_line_to_width(text: &str, max_width: usize) -> String {
@@ -2018,19 +3015,50 @@ fn open_pager_for_last_message(app: &mut App) -> bool {
     true
 }
 
-fn history_cell_to_text(cell: &HistoryCell, width: u16) -> String {
-    cell.lines(width)
-        .into_iter()
-        .map(line_to_string)
-        .collect::<Vec<_>>()
-        .join("\n")
-}
+fn open_tool_details_pager(app: &mut App) -> bool {
+    let target_cell = if let Some((start, _)) = app.transcript_selection.ordered_endpoints() {
+        app.transcript_cache
+            .line_meta()
+            .get(start.line_index)
+            .and_then(|meta| meta.cell_line())
+            .map(|(cell_index, _)| cell_index)
+    } else {
+        app.history
+            .len()
+            .checked_sub(1)
+            .filter(|idx| app.tool_details_by_cell.contains_key(idx))
+            .or_else(|| app.tool_details_by_cell.keys().copied().max())
+    };
 
-fn line_to_string(line: Line<'static>) -> String {
-    line.spans
-        .into_iter()
-        .map(|span| span.content.to_string())
-        .collect::<String>()
+    let Some(cell_index) = target_cell else {
+        return false;
+    };
+    let Some(detail) = app.tool_details_by_cell.get(&cell_index) else {
+        app.status_message = Some("No tool details for selected line".to_string());
+        return false;
+    };
+
+    let input =
+        serde_json::to_string_pretty(&detail.input).unwrap_or_else(|_| detail.input.to_string());
+    let output = detail.output.as_deref().map_or(
+        "(not available)".to_string(),
+        std::string::ToString::to_string,
+    );
+    let content = format!(
+        "Tool ID: {}\nTool: {}\n\nInput:\n{}\n\nOutput:\n{}",
+        detail.tool_id, detail.tool_name, input, output
+    );
+
+    let width = app
+        .last_transcript_area
+        .map(|area| area.width)
+        .unwrap_or(80);
+    app.view_stack.push(PagerView::from_text(
+        format!("Tool: {}", detail.tool_name),
+        &content,
+        width.saturating_sub(2),
+    ));
+    true
 }
 
 fn is_copy_shortcut(key: &KeyEvent) -> bool {
@@ -2063,28 +3091,6 @@ fn is_paste_shortcut(key: &KeyEvent) -> bool {
 
 fn should_scroll_with_arrows(_app: &App) -> bool {
     false
-}
-
-fn line_to_plain(line: &Line<'static>) -> String {
-    line.spans
-        .iter()
-        .map(|span| span.content.as_ref())
-        .collect::<String>()
-}
-
-fn slice_text(text: &str, start: usize, end: usize) -> String {
-    let mut out = String::new();
-    let mut idx = 0usize;
-    for ch in text.chars() {
-        if idx >= start && idx < end {
-            out.push(ch);
-        }
-        idx += 1;
-        if idx >= end {
-            break;
-        }
-    }
-    out
 }
 
 fn extract_reasoning_header(text: &str) -> Option<String> {
@@ -2125,6 +3131,166 @@ fn format_subagent_list(agents: &[SubAgentResult]) -> String {
     lines.join("\n")
 }
 
+fn task_mode_label(mode: AppMode) -> &'static str {
+    match mode {
+        AppMode::Normal => "normal",
+        AppMode::Agent => "agent",
+        AppMode::Yolo => "yolo",
+        AppMode::Plan => "plan",
+    }
+}
+
+fn task_summary_to_panel_entry(summary: TaskSummary) -> TaskPanelEntry {
+    TaskPanelEntry {
+        id: summary.id,
+        status: task_status_label(summary.status).to_string(),
+        prompt_summary: summary.prompt_summary,
+        duration_ms: summary.duration_ms,
+    }
+}
+
+fn task_status_label(status: TaskStatus) -> &'static str {
+    match status {
+        TaskStatus::Queued => "queued",
+        TaskStatus::Running => "running",
+        TaskStatus::Completed => "completed",
+        TaskStatus::Failed => "failed",
+        TaskStatus::Canceled => "canceled",
+    }
+}
+
+fn format_task_list(tasks: &[TaskSummary]) -> String {
+    if tasks.is_empty() {
+        return "No tasks found.".to_string();
+    }
+
+    let mut lines = vec![
+        format!("Tasks ({})", tasks.len()),
+        "----------------------------------------".to_string(),
+    ];
+    for task in tasks {
+        let duration = task
+            .duration_ms
+            .map(|ms| format!("{:.2}s", ms as f64 / 1000.0))
+            .unwrap_or_else(|| "-".to_string());
+        lines.push(format!(
+            "{}  {:9}  {}  {}",
+            task.id,
+            task_status_label(task.status),
+            duration,
+            task.prompt_summary
+        ));
+    }
+    lines.push("Use /task show <id> for timeline details.".to_string());
+    lines.join("\n")
+}
+
+fn open_task_pager(app: &mut App, task: &TaskRecord) {
+    let width = app
+        .last_transcript_area
+        .map(|area| area.width)
+        .unwrap_or(100)
+        .saturating_sub(4);
+    app.view_stack.push(PagerView::from_text(
+        format!("Task {}", task.id),
+        &format_task_detail(task),
+        width.max(60),
+    ));
+}
+
+fn format_task_detail(task: &TaskRecord) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!("Task: {}", task.id));
+    lines.push(format!("Status: {}", task_status_label(task.status)));
+    lines.push(format!("Mode: {}", task.mode));
+    lines.push(format!("Model: {}", task.model));
+    lines.push(format!("Workspace: {}", task.workspace.display()));
+    if let Some(thread_id) = task.thread_id.as_ref() {
+        lines.push(format!("Runtime Thread: {thread_id}"));
+    }
+    if let Some(turn_id) = task.turn_id.as_ref() {
+        lines.push(format!("Runtime Turn: {turn_id}"));
+    }
+    if task.runtime_event_count > 0 {
+        lines.push(format!("Runtime Events: {}", task.runtime_event_count));
+    }
+    lines.push(format!("Created: {}", task.created_at));
+    if let Some(started_at) = task.started_at {
+        lines.push(format!("Started: {}", started_at));
+    }
+    if let Some(ended_at) = task.ended_at {
+        lines.push(format!("Ended: {}", ended_at));
+    }
+    if let Some(duration) = task.duration_ms {
+        lines.push(format!("Duration: {:.2}s", duration as f64 / 1000.0));
+    }
+    lines.push(String::new());
+    lines.push("Prompt:".to_string());
+    lines.push(task.prompt.clone());
+
+    if let Some(summary) = task.result_summary.as_ref() {
+        lines.push(String::new());
+        lines.push("Result Summary:".to_string());
+        lines.push(summary.clone());
+    }
+    if let Some(path) = task.result_detail_path.as_ref() {
+        lines.push(format!("Result Artifact: {}", path.display()));
+    }
+    if let Some(error) = task.error.as_ref() {
+        lines.push(String::new());
+        lines.push(format!("Error: {error}"));
+    }
+
+    lines.push(String::new());
+    lines.push("Tool Calls:".to_string());
+    if task.tool_calls.is_empty() {
+        lines.push("- (none)".to_string());
+    } else {
+        for tool in &task.tool_calls {
+            let status = match tool.status {
+                crate::task_manager::TaskToolStatus::Running => "running",
+                crate::task_manager::TaskToolStatus::Success => "success",
+                crate::task_manager::TaskToolStatus::Failed => "failed",
+                crate::task_manager::TaskToolStatus::Canceled => "canceled",
+            };
+            let mut line = format!(
+                "- {} [{}] {}",
+                tool.name,
+                status,
+                tool.output_summary.as_deref().unwrap_or("(no summary)")
+            );
+            if let Some(duration) = tool.duration_ms {
+                line.push_str(&format!(" ({:.2}s)", duration as f64 / 1000.0));
+            }
+            lines.push(line);
+            if let Some(path) = tool.detail_path.as_ref() {
+                lines.push(format!("  detail: {}", path.display()));
+            }
+            if let Some(path) = tool.patch_ref.as_ref() {
+                lines.push(format!("  patch: {}", path.display()));
+            }
+        }
+    }
+
+    lines.push(String::new());
+    lines.push("Timeline:".to_string());
+    if task.timeline.is_empty() {
+        lines.push("- (none)".to_string());
+    } else {
+        for entry in &task.timeline {
+            lines.push(format!(
+                "- [{}] {}: {}",
+                entry.timestamp, entry.kind, entry.summary
+            ));
+            if let Some(path) = entry.detail_path.as_ref() {
+                lines.push(format!("  detail: {}", path.display()));
+            }
+        }
+    }
+
+    lines.join("\n")
+}
+
 fn format_subagent_status(status: &SubAgentStatus) -> String {
     match status {
         SubAgentStatus::Running => "running".to_string(),
@@ -2160,7 +3326,7 @@ fn handle_tool_call_started(app: &mut App, id: &str, name: &str, input: &serde_j
             app.exploring_entries
                 .insert(id.clone(), (cell_index, entry_index));
         }
-        app.tool_cells.insert(id, cell_index);
+        register_tool_cell(app, &id, name, input, cell_index);
         return;
     }
 
@@ -2196,8 +3362,8 @@ fn handle_tool_call_started(app: &mut App, id: &str, name: &str, input: &serde_j
                 source,
                 interaction: Some(summary.clone()),
             })));
-            app.tool_cells
-                .insert(id, app.history.len().saturating_sub(1));
+            let cell_index = app.history.len().saturating_sub(1);
+            register_tool_cell(app, &id, name, input, cell_index);
             return;
         }
 
@@ -2223,8 +3389,8 @@ fn handle_tool_call_started(app: &mut App, id: &str, name: &str, input: &serde_j
             source,
             interaction: None,
         })));
-        app.tool_cells
-            .insert(id, app.history.len().saturating_sub(1));
+        let cell_index = app.history.len().saturating_sub(1);
+        register_tool_cell(app, &id, name, input, cell_index);
         return;
     }
 
@@ -2235,8 +3401,8 @@ fn handle_tool_call_started(app: &mut App, id: &str, name: &str, input: &serde_j
             steps,
             status: ToolStatus::Running,
         })));
-        app.tool_cells
-            .insert(id, app.history.len().saturating_sub(1));
+        let cell_index = app.history.len().saturating_sub(1);
+        register_tool_cell(app, &id, name, input, cell_index);
         return;
     }
 
@@ -2250,8 +3416,8 @@ fn handle_tool_call_started(app: &mut App, id: &str, name: &str, input: &serde_j
                 error: None,
             },
         )));
-        app.tool_cells
-            .insert(id, app.history.len().saturating_sub(1));
+        let cell_index = app.history.len().saturating_sub(1);
+        register_tool_cell(app, &id, name, input, cell_index);
         return;
     }
 
@@ -2263,8 +3429,8 @@ fn handle_tool_call_started(app: &mut App, id: &str, name: &str, input: &serde_j
             output: None,
             error: None,
         })));
-        app.tool_cells
-            .insert(id, app.history.len().saturating_sub(1));
+        let cell_index = app.history.len().saturating_sub(1);
+        register_tool_cell(app, &id, name, input, cell_index);
         return;
     }
 
@@ -2275,8 +3441,8 @@ fn handle_tool_call_started(app: &mut App, id: &str, name: &str, input: &serde_j
             content: None,
             is_image: false,
         })));
-        app.tool_cells
-            .insert(id, app.history.len().saturating_sub(1));
+        let cell_index = app.history.len().saturating_sub(1);
+        register_tool_cell(app, &id, name, input, cell_index);
         return;
     }
 
@@ -2290,8 +3456,8 @@ fn handle_tool_call_started(app: &mut App, id: &str, name: &str, input: &serde_j
             app.add_message(HistoryCell::Tool(ToolCell::ViewImage(ViewImageCell {
                 path: display_path,
             })));
-            app.tool_cells
-                .insert(id, app.history.len().saturating_sub(1));
+            let cell_index = app.history.len().saturating_sub(1);
+            register_tool_cell(app, &id, name, input, cell_index);
         }
         return;
     }
@@ -2303,8 +3469,8 @@ fn handle_tool_call_started(app: &mut App, id: &str, name: &str, input: &serde_j
             status: ToolStatus::Running,
             summary: None,
         })));
-        app.tool_cells
-            .insert(id, app.history.len().saturating_sub(1));
+        let cell_index = app.history.len().saturating_sub(1);
+        register_tool_cell(app, &id, name, input, cell_index);
         return;
     }
 
@@ -2315,8 +3481,40 @@ fn handle_tool_call_started(app: &mut App, id: &str, name: &str, input: &serde_j
         input_summary,
         output: None,
     })));
-    app.tool_cells
-        .insert(id, app.history.len().saturating_sub(1));
+    let cell_index = app.history.len().saturating_sub(1);
+    register_tool_cell(app, &id, name, input, cell_index);
+}
+
+fn register_tool_cell(
+    app: &mut App,
+    tool_id: &str,
+    tool_name: &str,
+    input: &serde_json::Value,
+    cell_index: usize,
+) {
+    app.tool_cells.insert(tool_id.to_string(), cell_index);
+    app.tool_details_by_cell.insert(
+        cell_index,
+        ToolDetailRecord {
+            tool_id: tool_id.to_string(),
+            tool_name: tool_name.to_string(),
+            input: input.clone(),
+            output: None,
+        },
+    );
+}
+
+fn store_tool_detail_output(
+    app: &mut App,
+    cell_index: usize,
+    result: &Result<ToolResult, ToolError>,
+) {
+    if let Some(detail) = app.tool_details_by_cell.get_mut(&cell_index) {
+        detail.output = Some(match result {
+            Ok(tool_result) => tool_result.content.clone(),
+            Err(err) => err.to_string(),
+        });
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -2331,6 +3529,9 @@ fn handle_tool_call_complete(
     }
 
     if let Some((cell_index, entry_index)) = app.exploring_entries.remove(id) {
+        app.tool_cells.remove(id);
+        store_tool_detail_output(app, cell_index, result);
+
         if let Some(HistoryCell::Tool(ToolCell::Exploring(cell))) = app.history.get_mut(cell_index)
             && let Some(entry) = cell.entries.get_mut(entry_index)
         {
@@ -2346,6 +3547,8 @@ fn handle_tool_call_complete(
     let Some(cell_index) = app.tool_cells.remove(id) else {
         return;
     };
+
+    store_tool_detail_output(app, cell_index, result);
 
     let status = match result.as_ref() {
         Ok(tool_result) => match tool_result.metadata.as_ref() {
@@ -2805,77 +4008,4 @@ fn exec_is_background(input: &serde_json::Value) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn selection_point_from_position_ignores_top_padding() {
-        let area = Rect {
-            x: 10,
-            y: 20,
-            width: 30,
-            height: 5,
-        };
-
-        // Content is bottom-aligned: 2 transcript lines in a 5-row viewport.
-        let padding_top = 3;
-        let transcript_top = 0;
-        let transcript_total = 2;
-
-        // Click in padding area -> no selection
-        assert!(
-            selection_point_from_position(
-                area,
-                area.x + 1,
-                area.y,
-                transcript_top,
-                transcript_total,
-                padding_top,
-            )
-            .is_none()
-        );
-
-        // First transcript line is at row `padding_top`
-        let p0 = selection_point_from_position(
-            area,
-            area.x + 2,
-            area.y + u16::try_from(padding_top).unwrap(),
-            transcript_top,
-            transcript_total,
-            padding_top,
-        )
-        .expect("point");
-        assert_eq!(p0.line_index, 0);
-        assert_eq!(p0.column, 2);
-
-        // Second transcript line is one row below
-        let p1 = selection_point_from_position(
-            area,
-            area.x,
-            area.y + u16::try_from(padding_top + 1).unwrap(),
-            transcript_top,
-            transcript_total,
-            padding_top,
-        )
-        .expect("point");
-        assert_eq!(p1.line_index, 1);
-        assert_eq!(p1.column, 0);
-    }
-
-    #[test]
-    fn parse_plan_choice_accepts_numbers() {
-        assert_eq!(parse_plan_choice("1"), Some(PlanChoice::ImplementAgent));
-        assert_eq!(parse_plan_choice("2"), Some(PlanChoice::ImplementYolo));
-        assert_eq!(parse_plan_choice("3"), Some(PlanChoice::RevisePlan));
-        assert_eq!(parse_plan_choice("4"), Some(PlanChoice::ExitPlan));
-    }
-
-    #[test]
-    fn parse_plan_choice_accepts_aliases() {
-        assert_eq!(parse_plan_choice("agent"), Some(PlanChoice::ImplementAgent));
-        assert_eq!(parse_plan_choice("yolo"), Some(PlanChoice::ImplementYolo));
-        assert_eq!(parse_plan_choice("revise"), Some(PlanChoice::RevisePlan));
-        assert_eq!(parse_plan_choice("exit"), Some(PlanChoice::ExitPlan));
-        assert_eq!(parse_plan_choice("unknown"), None);
-    }
-}
+mod tests;

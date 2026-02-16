@@ -26,12 +26,14 @@ use dotenvy::dotenv;
 use tempfile::NamedTempFile;
 use wait_timeout::ChildExt;
 
+mod audit;
 mod client;
 mod command_safety;
 mod commands;
 mod compaction;
 mod config;
 mod core;
+mod error_taxonomy;
 mod eval;
 mod execpolicy;
 mod features;
@@ -47,17 +49,20 @@ mod project_context;
 mod project_doc;
 mod prompts;
 mod responses_api_proxy;
+mod runtime_api;
+mod runtime_threads;
 mod sandbox;
 mod session_manager;
 mod settings;
 mod skills;
+mod task_manager;
 mod tools;
 mod tui;
 mod ui;
 mod utils;
 mod working_set;
 
-use crate::config::{Config, MAX_SUBAGENTS};
+use crate::config::{Config, DEFAULT_TEXT_MODEL, MAX_SUBAGENTS};
 use crate::eval::{EvalHarness, EvalHarnessConfig, ScenarioStepKind};
 use crate::features::Feature;
 use crate::llm_client::LlmClient;
@@ -159,6 +164,8 @@ enum Commands {
     },
     /// Remove the saved API key
     Logout,
+    /// List available models from the configured API endpoint
+    Models(ModelsArgs),
     /// Run a non-interactive prompt
     Exec(ExecArgs),
     /// Run a code review over a git diff
@@ -213,6 +220,9 @@ struct ExecArgs {
     /// Enable agentic mode with tool access and auto-approvals
     #[arg(long, default_value_t = false)]
     auto: bool,
+    /// Emit machine-readable JSON output
+    #[arg(long, default_value_t = false)]
+    json: bool,
 }
 
 #[derive(Args, Debug, Clone, Default)]
@@ -249,6 +259,13 @@ struct EvalArgs {
     #[arg(long, default_value_t = 240)]
     max_output_chars: usize,
     /// Emit machine-readable JSON output
+    #[arg(long, default_value_t = false)]
+    json: bool,
+}
+
+#[derive(Args, Debug, Clone, Default)]
+struct ModelsArgs {
+    /// Print models as pretty JSON
     #[arg(long, default_value_t = false)]
     json: bool,
 }
@@ -293,6 +310,9 @@ struct ReviewArgs {
     /// Maximum diff characters to include
     #[arg(long, default_value_t = 200_000)]
     max_chars: usize,
+    /// Emit machine-readable JSON output
+    #[arg(long, default_value_t = false)]
+    json: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -307,6 +327,18 @@ struct ServeArgs {
     /// Start MCP server over stdio
     #[arg(long)]
     mcp: bool,
+    /// Start runtime HTTP/SSE API server
+    #[arg(long)]
+    http: bool,
+    /// Bind host for HTTP server (default localhost)
+    #[arg(long, default_value = "127.0.0.1")]
+    host: String,
+    /// Bind port for HTTP server
+    #[arg(long, default_value_t = 7878)]
+    port: u16,
+    /// Background task worker count (1-8)
+    #[arg(long, default_value_t = 2)]
+    workers: usize,
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -331,6 +363,37 @@ enum McpCommand {
         #[arg(value_name = "SERVER")]
         server: Option<String>,
     },
+    /// Add an MCP server entry
+    Add {
+        /// Server name
+        name: String,
+        /// Command to launch stdio server
+        #[arg(long, conflicts_with = "url")]
+        command: Option<String>,
+        /// URL for streamable HTTP/SSE server
+        #[arg(long, conflicts_with = "command")]
+        url: Option<String>,
+        /// Arguments for command-based servers
+        #[arg(long = "arg")]
+        args: Vec<String>,
+    },
+    /// Remove an MCP server entry
+    Remove {
+        /// Server name
+        name: String,
+    },
+    /// Enable an MCP server
+    Enable {
+        /// Server name
+        name: String,
+    },
+    /// Disable an MCP server
+    Disable {
+        /// Server name
+        name: String,
+    },
+    /// Validate MCP config and required servers
+    Validate,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -422,12 +485,16 @@ async fn main() -> Result<()> {
             Commands::Init => init_project(),
             Commands::Login { api_key } => run_login(api_key),
             Commands::Logout => run_logout(),
+            Commands::Models(args) => {
+                let config = load_config_from_cli(&cli)?;
+                run_models(&config, args).await
+            }
             Commands::Exec(args) => {
                 let config = load_config_from_cli(&cli)?;
                 let model = args
                     .model
                     .or_else(|| config.default_text_model.clone())
-                    .unwrap_or_else(|| "deepseek-v3.2".to_string());
+                    .unwrap_or_else(|| DEFAULT_TEXT_MODEL.to_string());
                 if args.auto || cli.yolo {
                     let workspace = cli.workspace.clone().unwrap_or_else(|| {
                         std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
@@ -445,8 +512,11 @@ async fn main() -> Result<()> {
                         max_subagents,
                         true,
                         auto_mode,
+                        args.json,
                     )
                     .await
+                } else if args.json {
+                    run_one_shot_json(&config, &model, &args.prompt).await
                 } else {
                     run_one_shot(&config, &model, &args.prompt).await
                 }
@@ -471,10 +541,25 @@ async fn main() -> Result<()> {
                 let workspace = cli.workspace.clone().unwrap_or_else(|| {
                     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
                 });
+                if args.mcp && args.http {
+                    bail!("Choose exactly one server mode: --mcp or --http");
+                }
                 if args.mcp {
                     mcp_server::run_mcp_server(workspace)
+                } else if args.http {
+                    let config = load_config_from_cli(&cli)?;
+                    runtime_api::run_http_server(
+                        config,
+                        workspace,
+                        runtime_api::RuntimeApiOptions {
+                            host: args.host,
+                            port: args.port,
+                            workers: args.workers.clamp(1, 8),
+                        },
+                    )
+                    .await
                 } else {
-                    bail!("No server mode specified. Use --mcp.")
+                    bail!("No server mode specified. Use --mcp or --http.")
                 }
             }
             Commands::Resume { session_id, last } => {
@@ -500,7 +585,7 @@ async fn main() -> Result<()> {
         let model = config
             .default_text_model
             .clone()
-            .unwrap_or_else(|| "deepseek-v3.2".to_string());
+            .unwrap_or_else(|| DEFAULT_TEXT_MODEL.to_string());
         return run_one_shot(&config, &model, &prompt).await;
     }
 
@@ -644,6 +729,10 @@ fn mcp_template_json() -> Result<String> {
             execute_timeout: None,
             read_timeout: None,
             disabled: true,
+            enabled: true,
+            required: false,
+            enabled_tools: Vec::new(),
+            disabled_tools: Vec::new(),
         },
     );
     serde_json::to_string_pretty(&cfg)
@@ -819,7 +908,11 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     // Check API keys
     println!();
     println!("{}", "API Keys:".bold());
-    let has_api_key = if std::env::var("DEEPSEEK_API_KEY").is_ok() {
+    let has_api_key = if std::env::var("DEEPSEEK_API_KEY")
+        .ok()
+        .filter(|k| !k.trim().is_empty())
+        .is_some()
+    {
         println!(
             "  {} DEEPSEEK_API_KEY is set",
             "✓".truecolor(aqua_r, aqua_g, aqua_b)
@@ -1069,6 +1162,41 @@ fn run_features_list(config: &Config) -> Result<()> {
         let enabled = features.enabled(spec.id);
         println!("{}\t{}\t{enabled}", spec.key, stage_str(spec.stage));
     }
+    Ok(())
+}
+
+async fn run_models(config: &Config, args: ModelsArgs) -> Result<()> {
+    use crate::client::DeepSeekClient;
+
+    let client = DeepSeekClient::new(config)?;
+    let mut models = client.list_models().await?;
+    models.sort_by(|a, b| a.id.cmp(&b.id));
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&models)?);
+        return Ok(());
+    }
+
+    if models.is_empty() {
+        println!("No models returned by the API.");
+        return Ok(());
+    }
+
+    let default_model = config
+        .default_text_model
+        .clone()
+        .unwrap_or_else(|| DEFAULT_TEXT_MODEL.to_string());
+
+    println!("Available models (default: {default_model})");
+    for model in models {
+        let marker = if model.id == default_model { "*" } else { " " };
+        if let Some(owner) = model.owned_by {
+            println!("{marker} {} ({owner})", model.id);
+        } else {
+            println!("{marker} {}", model.id);
+        }
+    }
+
     Ok(())
 }
 
@@ -1355,7 +1483,7 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
     let model = args
         .model
         .or_else(|| config.default_text_model.clone())
-        .unwrap_or_else(|| "deepseek-v3.2".to_string());
+        .unwrap_or_else(|| DEFAULT_TEXT_MODEL.to_string());
 
     let system = SystemPrompt::Text(
         "You are a senior code reviewer. Focus on bugs, risks, behavioral regressions, and missing tests. \
@@ -1367,7 +1495,7 @@ Provide findings ordered by severity with file references, then open questions, 
 
     let client = DeepSeekClient::new(config)?;
     let request = MessageRequest {
-        model,
+        model: model.clone(),
         messages: vec![Message {
             role: "user".to_string(),
             content: vec![ContentBlock::Text {
@@ -1387,10 +1515,24 @@ Provide findings ordered by severity with file references, then open questions, 
     };
 
     let response = client.create_message(request).await?;
+    let mut output = String::new();
     for block in response.content {
         if let ContentBlock::Text { text, .. } = block {
-            println!("{text}");
+            output.push_str(&text);
         }
+    }
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "mode": "review",
+                "model": model,
+                "success": true,
+                "content": output
+            }))?
+        );
+    } else {
+        println!("{output}");
     }
     Ok(())
 }
@@ -1492,10 +1634,10 @@ async fn run_mcp_command(config: &Config, command: McpCommand) -> Result<()> {
             }
             println!("MCP servers ({}):", cfg.servers.len());
             for (name, server) in cfg.servers {
-                let status = if server.disabled {
-                    "disabled"
-                } else {
+                let status = if server.enabled && !server.disabled {
                     "enabled"
+                } else {
+                    "disabled"
                 };
                 let args = if server.args.is_empty() {
                     "".to_string()
@@ -1509,7 +1651,8 @@ async fn run_mcp_command(config: &Config, command: McpCommand) -> Result<()> {
                 } else {
                     "unknown".to_string()
                 };
-                println!("  - {name} [{status}] {cmd_str}");
+                let required = if server.required { " required" } else { "" };
+                println!("  - {name} [{status}{required}] {cmd_str}");
             }
             Ok(())
         }
@@ -1568,6 +1711,83 @@ async fn run_mcp_command(config: &Config, command: McpCommand) -> Result<()> {
             }
             Ok(())
         }
+        McpCommand::Add {
+            name,
+            command,
+            url,
+            args,
+        } => {
+            if command.is_none() && url.is_none() {
+                bail!("Provide either --command or --url for `mcp add`.");
+            }
+            let mut cfg = load_mcp_config(&config_path)?;
+            cfg.servers.insert(
+                name.clone(),
+                McpServerConfig {
+                    command,
+                    args,
+                    env: std::collections::HashMap::new(),
+                    url,
+                    connect_timeout: None,
+                    execute_timeout: None,
+                    read_timeout: None,
+                    disabled: false,
+                    enabled: true,
+                    required: false,
+                    enabled_tools: Vec::new(),
+                    disabled_tools: Vec::new(),
+                },
+            );
+            save_mcp_config(&config_path, &cfg)?;
+            println!("Added MCP server '{name}' in {}", config_path.display());
+            Ok(())
+        }
+        McpCommand::Remove { name } => {
+            let mut cfg = load_mcp_config(&config_path)?;
+            if cfg.servers.remove(&name).is_none() {
+                bail!("MCP server '{name}' not found");
+            }
+            save_mcp_config(&config_path, &cfg)?;
+            println!("Removed MCP server '{name}'");
+            Ok(())
+        }
+        McpCommand::Enable { name } => {
+            let mut cfg = load_mcp_config(&config_path)?;
+            let server = cfg
+                .servers
+                .get_mut(&name)
+                .ok_or_else(|| anyhow!("MCP server '{name}' not found"))?;
+            server.enabled = true;
+            server.disabled = false;
+            save_mcp_config(&config_path, &cfg)?;
+            println!("Enabled MCP server '{name}'");
+            Ok(())
+        }
+        McpCommand::Disable { name } => {
+            let mut cfg = load_mcp_config(&config_path)?;
+            let server = cfg
+                .servers
+                .get_mut(&name)
+                .ok_or_else(|| anyhow!("MCP server '{name}' not found"))?;
+            server.enabled = false;
+            server.disabled = true;
+            save_mcp_config(&config_path, &cfg)?;
+            println!("Disabled MCP server '{name}'");
+            Ok(())
+        }
+        McpCommand::Validate => {
+            let mut pool = McpPool::from_config_path(&config_path)?;
+            let errors = pool.connect_all().await;
+            if errors.is_empty() {
+                println!("MCP config is valid. All enabled servers connected.");
+                return Ok(());
+            }
+            eprintln!("MCP validation failed:");
+            for (name, err) in errors {
+                eprintln!("  - {name}: {err}");
+            }
+            bail!("one or more MCP servers failed validation");
+        }
     }
 }
 
@@ -1580,6 +1800,19 @@ fn load_mcp_config(path: &Path) -> Result<McpConfig> {
     let cfg: McpConfig = serde_json::from_str(&contents)
         .map_err(|e| anyhow::anyhow!("Failed to parse MCP config: {e}"))?;
     Ok(cfg)
+}
+
+fn save_mcp_config(path: &Path, cfg: &McpConfig) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!("Failed to create MCP config directory {}", parent.display())
+        })?;
+    }
+    let rendered = serde_json::to_string_pretty(cfg)
+        .map_err(|e| anyhow!("Failed to serialize MCP config: {e}"))?;
+    std::fs::write(path, rendered)
+        .map_err(|e| anyhow!("Failed to write MCP config {}: {}", path.display(), e))?;
+    Ok(())
 }
 
 fn run_sandbox_command(args: SandboxArgs) -> Result<()> {
@@ -1746,7 +1979,7 @@ async fn run_interactive(
     let model = config
         .default_text_model
         .clone()
-        .unwrap_or_else(|| "deepseek-v3.2".to_string());
+        .unwrap_or_else(|| DEFAULT_TEXT_MODEL.to_string());
     let max_subagents = cli.max_subagents.map_or_else(
         || config.max_subagents(),
         |value| value.clamp(1, MAX_SUBAGENTS),
@@ -1812,6 +2045,53 @@ async fn run_one_shot(config: &Config, model: &str, prompt: &str) -> Result<()> 
     Ok(())
 }
 
+async fn run_one_shot_json(config: &Config, model: &str, prompt: &str) -> Result<()> {
+    use crate::client::DeepSeekClient;
+    use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt};
+
+    let client = DeepSeekClient::new(config)?;
+    let request = MessageRequest {
+        model: model.to_string(),
+        messages: vec![Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: prompt.to_string(),
+                cache_control: None,
+            }],
+        }],
+        max_tokens: 4096,
+        system: Some(SystemPrompt::Text(
+            "You are a coding assistant. Give concise, actionable responses.".to_string(),
+        )),
+        tools: None,
+        tool_choice: None,
+        metadata: None,
+        thinking: None,
+        stream: Some(false),
+        temperature: Some(0.2),
+        top_p: Some(0.9),
+    };
+
+    let response = client.create_message(request).await?;
+    let mut output = String::new();
+    for block in response.content {
+        if let ContentBlock::Text { text, .. } = block {
+            output.push_str(&text);
+        }
+    }
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "mode": "one-shot",
+            "model": model,
+            "success": true,
+            "output": output
+        }))?
+    );
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn run_exec_agent(
     config: &Config,
     model: &str,
@@ -1820,6 +2100,7 @@ async fn run_exec_agent(
     max_subagents: usize,
     auto_approve: bool,
     trust_mode: bool,
+    json_output: bool,
 ) -> Result<()> {
     use crate::compaction::CompactionConfig;
     use crate::core::engine::{EngineConfig, spawn_engine};
@@ -1861,6 +2142,29 @@ async fn run_exec_agent(
         ))
         .await?;
 
+    #[derive(serde::Serialize)]
+    struct ExecToolEntry {
+        name: String,
+        success: bool,
+        output: String,
+    }
+    #[derive(serde::Serialize, Default)]
+    struct ExecSummary {
+        mode: String,
+        model: String,
+        prompt: String,
+        output: String,
+        tools: Vec<ExecToolEntry>,
+        status: Option<String>,
+        error: Option<String>,
+    }
+    let mut summary = ExecSummary {
+        mode: "agent".to_string(),
+        model: model.to_string(),
+        prompt: prompt.to_string(),
+        ..ExecSummary::default()
+    };
+
     let mut stdout = io::stdout();
     let mut ends_with_newline = false;
     loop {
@@ -1875,35 +2179,49 @@ async fn run_exec_agent(
 
         match event {
             Event::MessageDelta { content, .. } => {
-                print!("{content}");
-                stdout.flush()?;
+                summary.output.push_str(&content);
+                if !json_output {
+                    print!("{content}");
+                    stdout.flush()?;
+                }
                 ends_with_newline = content.ends_with('\n');
             }
             Event::MessageComplete { .. } => {
-                if !ends_with_newline {
+                if !json_output && !ends_with_newline {
                     println!();
                 }
             }
             Event::ToolCallStarted { name, input, .. } => {
-                let summary = summarize_tool_args(&input);
-                if let Some(summary) = summary {
-                    eprintln!("tool: {name} ({summary})");
-                } else {
-                    eprintln!("tool: {name}");
+                if !json_output {
+                    let summary = summarize_tool_args(&input);
+                    if let Some(summary) = summary {
+                        eprintln!("tool: {name} ({summary})");
+                    } else {
+                        eprintln!("tool: {name}");
+                    }
                 }
             }
             Event::ToolCallProgress { id, output } => {
-                eprintln!("tool {id}: {}", summarize_tool_output(&output));
+                if !json_output {
+                    eprintln!("tool {id}: {}", summarize_tool_output(&output));
+                }
             }
             Event::ToolCallComplete { name, result, .. } => match result {
                 Ok(output) => {
+                    summary.tools.push(ExecToolEntry {
+                        name: name.clone(),
+                        success: output.success,
+                        output: output.content.clone(),
+                    });
                     if name == "exec_shell" && !output.content.trim().is_empty() {
-                        eprintln!("tool {name} completed");
-                        eprintln!(
-                            "--- stdout/stderr ---\n{}\n---------------------",
-                            output.content
-                        );
-                    } else {
+                        if !json_output {
+                            eprintln!("tool {name} completed");
+                            eprintln!(
+                                "--- stdout/stderr ---\n{}\n---------------------",
+                                output.content
+                            );
+                        }
+                    } else if !json_output {
                         eprintln!(
                             "tool {name} completed: {}",
                             summarize_tool_output(&output.content)
@@ -1911,7 +2229,14 @@ async fn run_exec_agent(
                     }
                 }
                 Err(err) => {
-                    eprintln!("tool {name} failed: {err}");
+                    summary.tools.push(ExecToolEntry {
+                        name: name.clone(),
+                        success: false,
+                        output: err.to_string(),
+                    });
+                    if !json_output {
+                        eprintln!("tool {name} failed: {err}");
+                    }
                 }
             },
             Event::AgentSpawned { id, prompt } => {
@@ -1952,14 +2277,23 @@ async fn run_exec_agent(
                 message,
                 recoverable: _,
             } => {
-                eprintln!("error: {message}");
+                summary.error = Some(message.clone());
+                if !json_output {
+                    eprintln!("error: {message}");
+                }
             }
-            Event::TurnComplete { .. } => {
+            Event::TurnComplete { status, error, .. } => {
+                summary.status = Some(format!("{status:?}").to_lowercase());
+                summary.error = error;
                 let _ = engine_handle.send(Op::Shutdown).await;
                 break;
             }
             _ => {}
         }
+    }
+
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&summary)?);
     }
 
     Ok(())
