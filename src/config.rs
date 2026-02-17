@@ -1083,8 +1083,7 @@ mod tests {
             skills_dir: Some("~/.deepseek/skills".to_string()),
             ..Default::default()
         };
-        let expected_home = dirs::home_dir().expect("home dir not found");
-        let expected_skills = expected_home.join(".deepseek").join("skills");
+        let expected_skills = temp_root.join(".deepseek").join("skills");
         let actual_skills = config.skills_dir();
         assert_eq!(
             actual_skills.components().collect::<Vec<_>>(),
