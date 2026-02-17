@@ -147,19 +147,26 @@ impl<'a> HeaderWidget<'a> {
 
         let mut parts = Vec::new();
 
-        // Token count with context window percentage
+        // Session token count (cumulative for this chat).
         if self.data.total_tokens > 0 {
             let token_str = format_token_count(self.data.total_tokens);
-            // Use last_prompt_tokens for % (current context utilization)
-            if let Some(ctx_window) = self.data.context_window {
-                if let Some(prompt_tokens) = self.data.last_prompt_tokens {
-                    let pct = (prompt_tokens as f64 / ctx_window as f64 * 100.0) as u32;
-                    let pct_str = format!("{token_str} ({pct}%)");
-                    parts.push(pct_str);
-                } else {
-                    parts.push(token_str);
-                }
-            } else {
+            parts.push(format!("session {token_str}"));
+        }
+
+        // Context utilization from the latest prompt usage.
+        if let (Some(ctx_window), Some(prompt_tokens)) =
+            (self.data.context_window, self.data.last_prompt_tokens)
+            && ctx_window > 0
+        {
+            let pct = ((prompt_tokens as f64 / ctx_window as f64) * 100.0)
+                .round()
+                .clamp(0.0, 100.0) as u32;
+            parts.push(format!("ctx {pct}%"));
+        }
+
+        if parts.is_empty() {
+            if self.data.total_tokens > 0 {
+                let token_str = format_token_count(self.data.total_tokens);
                 parts.push(token_str);
             }
         }

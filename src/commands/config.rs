@@ -122,6 +122,12 @@ pub fn set_config(app: &mut App, args: Option<&str>) -> CommandResult {
     // Load and update persistent settings
     let mut settings = match Settings::load() {
         Ok(s) => s,
+        Err(e) if !should_save => {
+            app.status_message = Some(format!(
+                "Settings unavailable; applying session-only override ({e})"
+            ));
+            Settings::default()
+        }
         Err(e) => return CommandResult::error(format!("Failed to load settings: {e}")),
     };
 

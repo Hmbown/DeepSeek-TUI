@@ -401,8 +401,39 @@ fn default_config_path() -> Option<PathBuf> {
     env_config_path().or_else(home_config_path)
 }
 
+fn effective_home_dir() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("HOME") {
+        let path = PathBuf::from(path);
+        if !path.as_os_str().is_empty() {
+            return Some(path);
+        }
+    }
+
+    if let Some(path) = std::env::var_os("USERPROFILE") {
+        let path = PathBuf::from(path);
+        if !path.as_os_str().is_empty() {
+            return Some(path);
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        if let (Some(drive), Some(homepath)) =
+            (std::env::var_os("HOMEDRIVE"), std::env::var_os("HOMEPATH"))
+        {
+            let mut path = PathBuf::from(drive);
+            path.push(homepath);
+            if !path.as_os_str().is_empty() {
+                return Some(path);
+            }
+        }
+    }
+
+    dirs::home_dir()
+}
+
 fn home_config_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|home| home.join(".deepseek").join("config.toml"))
+    effective_home_dir().map(|home| home.join(".deepseek").join("config.toml"))
 }
 
 fn env_config_path() -> Option<PathBuf> {
@@ -451,7 +482,7 @@ fn default_managed_config_path() -> Option<PathBuf> {
     }
     #[cfg(not(unix))]
     {
-        dirs::home_dir().map(|home| home.join(".deepseek").join("managed_config.toml"))
+        effective_home_dir().map(|home| home.join(".deepseek").join("managed_config.toml"))
     }
 }
 
@@ -462,29 +493,40 @@ fn default_requirements_path() -> Option<PathBuf> {
     }
     #[cfg(not(unix))]
     {
-        dirs::home_dir().map(|home| home.join(".deepseek").join("requirements.toml"))
+        effective_home_dir().map(|home| home.join(".deepseek").join("requirements.toml"))
     }
 }
 
 fn expand_path(path: &str) -> PathBuf {
+    if let Some(stripped) = path.strip_prefix('~')
+        && (stripped.is_empty() || stripped.starts_with('/') || stripped.starts_with('\\'))
+        && let Some(mut home) = effective_home_dir()
+    {
+        let suffix = stripped.trim_start_matches(|ch| ch == '/' || ch == '\\');
+        if !suffix.is_empty() {
+            home.push(suffix);
+        }
+        return home;
+    }
+
     let expanded = shellexpand::tilde(path);
     PathBuf::from(expanded.as_ref())
 }
 
 fn default_skills_dir() -> Option<PathBuf> {
-    dirs::home_dir().map(|home| home.join(".deepseek").join("skills"))
+    effective_home_dir().map(|home| home.join(".deepseek").join("skills"))
 }
 
 fn default_mcp_config_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|home| home.join(".deepseek").join("mcp.json"))
+    effective_home_dir().map(|home| home.join(".deepseek").join("mcp.json"))
 }
 
 fn default_notes_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|home| home.join(".deepseek").join("notes.txt"))
+    effective_home_dir().map(|home| home.join(".deepseek").join("notes.txt"))
 }
 
 fn default_memory_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|home| home.join(".deepseek").join("memory.md"))
+    effective_home_dir().map(|home| home.join(".deepseek").join("memory.md"))
 }
 
 // === Environment Overrides ===

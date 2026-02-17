@@ -109,6 +109,32 @@ fn format_token_count_compact_formats_units() {
 }
 
 #[test]
+fn format_context_budget_caps_overflow_display() {
+    assert_eq!(format_context_budget(5_000, 128_000), "5.0k/128.0k");
+    assert_eq!(format_context_budget(250_000, 128_000), ">128.0k/128.0k");
+}
+
+#[test]
+fn context_usage_snapshot_prefers_estimate_when_reported_exceeds_window() {
+    let mut app = create_test_app();
+    app.last_prompt_tokens = Some(320_000);
+    app.api_messages = vec![Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "hello".to_string(),
+            cache_control: None,
+        }],
+    }];
+
+    let (used, max, percent) =
+        context_usage_snapshot(&app).expect("context usage should be available");
+    assert_eq!(max, 128_000);
+    assert!(used > 0);
+    assert!(used <= i64::from(max));
+    assert!(percent < 100.0);
+}
+
+#[test]
 fn should_auto_compact_before_send_respects_threshold_and_setting() {
     let mut app = create_test_app();
     app.last_prompt_tokens = Some(123_000);

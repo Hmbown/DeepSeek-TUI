@@ -2610,14 +2610,8 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
     let context_text = format!("[{}{}] {:.0}%", bar_filled, bar_empty, percent);
     let context_span = Span::styled(context_text, Style::default().fg(bar_color));
     let budget_span = context_snapshot.map(|(used, max, _)| {
-        let used_u64 = u64::try_from(used.max(0)).unwrap_or(0);
-        let max_u64 = u64::from(max);
         Span::styled(
-            format!(
-                "{}/{}",
-                format_token_count_compact(used_u64),
-                format_token_count_compact(max_u64)
-            ),
+            format_context_budget(used, max),
             Style::default().fg(bar_color),
         )
     });
@@ -2725,15 +2719,7 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
         let bar_filled_narrow = "█".repeat(filled.min(5));
         let bar_empty_narrow = "░".repeat(5 - filled.min(5));
         let budget_prefix = context_snapshot
-            .map(|(used, max, _)| {
-                let used_u64 = u64::try_from(used.max(0)).unwrap_or(0);
-                let max_u64 = u64::from(max);
-                format!(
-                    "{} / {} ",
-                    format_token_count_compact(used_u64),
-                    format_token_count_compact(max_u64)
-                )
-            })
+            .map(|(used, max, _)| format!("{} ", format_context_budget(used, max)))
             .unwrap_or_default();
         let simple_right = vec![Span::styled(
             format!(
@@ -2764,6 +2750,26 @@ fn format_token_count_compact(tokens: u64) -> String {
     } else {
         tokens.to_string()
     }
+}
+
+fn format_context_budget(used: i64, max: u32) -> String {
+    let max_u64 = u64::from(max);
+    let max_i64 = i64::from(max);
+
+    if used > max_i64 {
+        return format!(
+            ">{}/{}",
+            format_token_count_compact(max_u64),
+            format_token_count_compact(max_u64)
+        );
+    }
+
+    let used_u64 = u64::try_from(used.max(0)).unwrap_or(0);
+    format!(
+        "{}/{}",
+        format_token_count_compact(used_u64),
+        format_token_count_compact(max_u64)
+    )
 }
 
 fn context_color_for_percent(percent: f64) -> ratatui::style::Color {
@@ -2809,13 +2815,25 @@ fn estimated_context_tokens(app: &App) -> Option<i64> {
 }
 
 fn context_usage_snapshot(app: &App) -> Option<(i64, u32, f64)> {
-    let used = if let Some(prompt_tokens) = app.last_prompt_tokens {
-        Some(i64::from(prompt_tokens))
-    } else {
-        estimated_context_tokens(app)
-    }?;
-
     let max = context_window_for_model(&app.model)?;
+    let max_i64 = i64::from(max);
+    let reported = app
+        .last_prompt_tokens
+        .map(i64::from)
+        .map(|tokens| tokens.max(0));
+    let estimated = estimated_context_tokens(app).map(|tokens| tokens.max(0));
+
+    let used = match (reported, estimated) {
+        (Some(reported), Some(estimated))
+            if reported > max_i64 && estimated > 0 && estimated <= max_i64 =>
+        {
+            estimated
+        }
+        (Some(reported), _) => reported,
+        (None, Some(estimated)) => estimated,
+        (None, None) => return None,
+    };
+
     let max_f64 = f64::from(max);
     let used_f64 = used as f64;
     let percent = ((used_f64 / max_f64) * 100.0).clamp(0.0, 100.0);
