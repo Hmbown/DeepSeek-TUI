@@ -56,6 +56,7 @@ use crate::tui::event_broker::EventBroker;
 use crate::tui::onboarding;
 use crate::tui::pager::PagerView;
 use crate::tui::paste_burst::CharDecision;
+use crate::tui::plan_prompt::PlanPromptView;
 use crate::tui::scrolling::{ScrollDirection, TranscriptScroll};
 use crate::tui::selection::TranscriptSelectionPoint;
 use crate::tui::session_picker::SessionPickerView;
@@ -447,7 +448,11 @@ async fn run_event_loop(
                             app.plan_tool_used_in_turn = true;
                         }
                         let tool_content = match &result {
-                            Ok(output) => sanitize_stream_chunk(&output.content),
+                            Ok(output) => sanitize_stream_chunk(
+                                &crate::core::engine::compact_tool_result_for_context(
+                                    &name, output,
+                                ),
+                            ),
                             Err(err) => sanitize_stream_chunk(&format!("Error: {err}")),
                         };
                         app.api_messages.push(Message {
@@ -524,6 +529,9 @@ async fn run_event_loop(
                             app.add_message(HistoryCell::System {
                                 content: plan_next_step_prompt(),
                             });
+                            if app.view_stack.top_kind() != Some(ModalKind::PlanPrompt) {
+                                app.view_stack.push(PlanPromptView::new());
+                            }
                         }
                         app.plan_tool_used_in_turn = false;
 
@@ -1733,86 +1741,85 @@ async fn submit_or_steer_message(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PlanChoice {
-    ImplementAgent,
-    ImplementYolo,
+    AcceptAgent,
+    AcceptYolo,
     RevisePlan,
     ExitPlan,
 }
 
 fn plan_next_step_prompt() -> String {
     [
-        "Plan ready. Choose next step:",
-        "  1) Implement in Agent mode (approvals on)",
-        "  2) Implement in YOLO mode (auto-approve)",
+        "Plan ready. Review and choose:",
+        "  1) Accept + implement in Agent mode",
+        "  2) Accept + implement in YOLO mode",
         "  3) Revise the plan / ask follow-ups",
         "  4) Exit Plan mode",
         "",
-        "Type 1-4 and press Enter.",
+        "Use the plan confirmation popup or type 1-4 and press Enter.",
     ]
     .join("\n")
+}
+
+fn plan_choice_from_option(option: usize) -> Option<PlanChoice> {
+    match option {
+        1 => Some(PlanChoice::AcceptAgent),
+        2 => Some(PlanChoice::AcceptYolo),
+        3 => Some(PlanChoice::RevisePlan),
+        4 => Some(PlanChoice::ExitPlan),
+        _ => None,
+    }
 }
 
 fn parse_plan_choice(input: &str) -> Option<PlanChoice> {
     let trimmed = input.trim().to_lowercase();
     let first = trimmed.chars().next()?;
-    match first {
-        '1' => return Some(PlanChoice::ImplementAgent),
-        '2' => return Some(PlanChoice::ImplementYolo),
-        '3' => return Some(PlanChoice::RevisePlan),
-        '4' => return Some(PlanChoice::ExitPlan),
-        _ => {}
+    if let Some(digit) = first.to_digit(10)
+        && let Some(choice) = plan_choice_from_option(usize::try_from(digit).unwrap_or(0))
+    {
+        return Some(choice);
     }
 
     match trimmed.as_str() {
-        "agent" | "a" => Some(PlanChoice::ImplementAgent),
-        "yolo" | "y" => Some(PlanChoice::ImplementYolo),
+        "accept" | "approve" | "agent" | "a" => Some(PlanChoice::AcceptAgent),
+        "accept-yolo" | "yolo" | "y" => Some(PlanChoice::AcceptYolo),
         "revise" | "edit" | "plan" | "stay" => Some(PlanChoice::RevisePlan),
         "normal" | "exit" | "cancel" | "back" => Some(PlanChoice::ExitPlan),
         _ => None,
     }
 }
 
-async fn handle_plan_choice(
+async fn apply_plan_choice(
     app: &mut App,
     engine_handle: &EngineHandle,
-    input: &str,
-) -> Result<bool> {
-    if !app.plan_prompt_pending {
-        return Ok(false);
-    }
-
-    let choice = parse_plan_choice(input);
-    app.plan_prompt_pending = false;
-
-    let Some(choice) = choice else {
-        return Ok(false);
-    };
-
+    choice: PlanChoice,
+) -> Result<()> {
     match choice {
-        PlanChoice::ImplementAgent => {
+        PlanChoice::AcceptAgent => {
             app.set_mode(AppMode::Agent);
             app.add_message(HistoryCell::System {
-                content: "Plan approved. Switching to Agent mode and starting implementation."
+                content: "Plan accepted. Switching to Agent mode and starting implementation."
                     .to_string(),
             });
-            let followup = QueuedMessage::new("Proceed with the plan.".to_string(), None);
+            let followup = QueuedMessage::new("Proceed with the accepted plan.".to_string(), None);
             if app.is_loading {
                 app.queue_message(followup);
-                app.status_message = Some("Queued plan execution (agent mode).".to_string());
+                app.status_message =
+                    Some("Queued accepted plan execution (agent mode).".to_string());
             } else {
                 dispatch_user_message(app, engine_handle, followup).await?;
             }
         }
-        PlanChoice::ImplementYolo => {
+        PlanChoice::AcceptYolo => {
             app.set_mode(AppMode::Yolo);
             app.add_message(HistoryCell::System {
-                content: "Plan approved. Switching to YOLO mode and starting implementation."
+                content: "Plan accepted. Switching to YOLO mode and starting implementation."
                     .to_string(),
             });
-            let followup = QueuedMessage::new("Proceed with the plan.".to_string(), None);
+            let followup = QueuedMessage::new("Proceed with the accepted plan.".to_string(), None);
             if app.is_loading {
                 app.queue_message(followup);
-                app.status_message = Some("Queued plan execution (YOLO mode).".to_string());
+                app.status_message =
+                    Some("Queued accepted plan execution (YOLO mode).".to_string());
             } else {
                 dispatch_user_message(app, engine_handle, followup).await?;
             }
@@ -1831,6 +1838,26 @@ async fn handle_plan_choice(
         }
     }
 
+    Ok(())
+}
+
+async fn handle_plan_choice(
+    app: &mut App,
+    engine_handle: &EngineHandle,
+    input: &str,
+) -> Result<bool> {
+    if !app.plan_prompt_pending {
+        return Ok(false);
+    }
+
+    let choice = parse_plan_choice(input);
+    app.plan_prompt_pending = false;
+
+    let Some(choice) = choice else {
+        return Ok(false);
+    };
+
+    apply_plan_choice(app, engine_handle, choice).await?;
     Ok(true)
 }
 
@@ -2377,6 +2404,16 @@ async fn handle_view_events(app: &mut App, engine_handle: &EngineHandle, events:
                 app.add_message(HistoryCell::System {
                     content: "User input cancelled".to_string(),
                 });
+            }
+            ViewEvent::PlanPromptSelected { option } => {
+                if app.plan_prompt_pending {
+                    app.plan_prompt_pending = false;
+                    if let Some(choice) = plan_choice_from_option(option)
+                        && let Err(err) = apply_plan_choice(app, engine_handle, choice).await
+                    {
+                        app.status_message = Some(format!("Failed to apply plan selection: {err}"));
+                    }
+                }
             }
             ViewEvent::SessionSelected { session_id } => {
                 let manager = match SessionManager::default_location() {

@@ -620,7 +620,7 @@ fn tool_result_metadata_summary(metadata: Option<&serde_json::Value>) -> Option<
     None
 }
 
-fn compact_tool_result_for_context(tool_name: &str, output: &ToolResult) -> String {
+pub(crate) fn compact_tool_result_for_context(tool_name: &str, output: &ToolResult) -> String {
     let raw = output.content.trim();
     if raw.is_empty() {
         return String::new();

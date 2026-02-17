@@ -12,6 +12,7 @@ pub enum ModalKind {
     Approval,
     Elevation,
     UserInput,
+    PlanPrompt,
     CommandPalette,
     Help,
     SubAgents,
@@ -45,6 +46,9 @@ pub enum ViewEvent {
     },
     UserInputCancelled {
         tool_id: String,
+    },
+    PlanPromptSelected {
+        option: usize,
     },
     SubAgentsRefresh,
     SessionSelected {

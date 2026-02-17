@@ -58,19 +58,33 @@ fn selection_point_from_position_ignores_top_padding() {
 
 #[test]
 fn parse_plan_choice_accepts_numbers() {
-    assert_eq!(parse_plan_choice("1"), Some(PlanChoice::ImplementAgent));
-    assert_eq!(parse_plan_choice("2"), Some(PlanChoice::ImplementYolo));
+    assert_eq!(parse_plan_choice("1"), Some(PlanChoice::AcceptAgent));
+    assert_eq!(parse_plan_choice("2"), Some(PlanChoice::AcceptYolo));
     assert_eq!(parse_plan_choice("3"), Some(PlanChoice::RevisePlan));
     assert_eq!(parse_plan_choice("4"), Some(PlanChoice::ExitPlan));
 }
 
 #[test]
 fn parse_plan_choice_accepts_aliases() {
-    assert_eq!(parse_plan_choice("agent"), Some(PlanChoice::ImplementAgent));
-    assert_eq!(parse_plan_choice("yolo"), Some(PlanChoice::ImplementYolo));
+    assert_eq!(parse_plan_choice("accept"), Some(PlanChoice::AcceptAgent));
+    assert_eq!(parse_plan_choice("agent"), Some(PlanChoice::AcceptAgent));
+    assert_eq!(
+        parse_plan_choice("accept-yolo"),
+        Some(PlanChoice::AcceptYolo)
+    );
+    assert_eq!(parse_plan_choice("yolo"), Some(PlanChoice::AcceptYolo));
     assert_eq!(parse_plan_choice("revise"), Some(PlanChoice::RevisePlan));
     assert_eq!(parse_plan_choice("exit"), Some(PlanChoice::ExitPlan));
     assert_eq!(parse_plan_choice("unknown"), None);
+}
+
+#[test]
+fn plan_choice_from_option_maps_expected_values() {
+    assert_eq!(plan_choice_from_option(1), Some(PlanChoice::AcceptAgent));
+    assert_eq!(plan_choice_from_option(2), Some(PlanChoice::AcceptYolo));
+    assert_eq!(plan_choice_from_option(3), Some(PlanChoice::RevisePlan));
+    assert_eq!(plan_choice_from_option(4), Some(PlanChoice::ExitPlan));
+    assert_eq!(plan_choice_from_option(5), None);
 }
 
 #[test]

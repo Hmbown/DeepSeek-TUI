@@ -8,6 +8,12 @@ In this mode, focus on:
 3. Identifying potential issues, regressions, and edge cases upfront.
 4. Creating a detailed plan using update_plan before implementation.
 
+Interaction workflow:
+1. Before publishing a plan, ask clarifying questions with request_user_input when requirements are ambiguous.
+2. Use concise multiple-choice questions with numbered options and clear tradeoffs.
+3. Keep it to 1-3 questions total, then synthesize the answers into update_plan output.
+4. After emitting update_plan, stop and wait for explicit user approval before implementation.
+
 Available tools:
 
 PLANNING:

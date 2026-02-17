@@ -13,6 +13,7 @@ pub mod markdown_render;
 pub mod onboarding;
 pub mod pager;
 pub mod paste_burst;
+pub mod plan_prompt;
 pub mod scrolling;
 pub mod selection;
 pub mod session_picker;

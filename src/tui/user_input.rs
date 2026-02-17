@@ -81,6 +81,33 @@ impl UserInputView {
                 self.selected = (self.selected + 1).min(self.option_count().saturating_sub(1));
                 ViewAction::None
             }
+            KeyCode::Char(ch) if ch.is_ascii_digit() => {
+                let Some(number) = ch.to_digit(10) else {
+                    return ViewAction::None;
+                };
+                if number == 0 {
+                    return ViewAction::None;
+                }
+                let index = usize::try_from(number - 1).unwrap_or(usize::MAX);
+                if index >= self.option_count() {
+                    return ViewAction::None;
+                }
+                self.selected = index;
+                if self.is_other_selected() {
+                    self.mode = InputMode::OtherInput;
+                    self.other_input.clear();
+                    ViewAction::None
+                } else {
+                    let question = self.current_question();
+                    let option = &question.options[self.selected];
+                    let answer = UserInputAnswer {
+                        id: question.id.clone(),
+                        label: option.label.clone(),
+                        value: option.label.clone(),
+                    };
+                    self.advance_question(answer)
+                }
+            }
             KeyCode::Enter => {
                 if self.is_other_selected() {
                     self.mode = InputMode::OtherInput;
@@ -167,13 +194,14 @@ impl ModalView for UserInputView {
         for (idx, option) in question.options.iter().enumerate() {
             let selected = self.selected == idx;
             let prefix = if selected { ">" } else { " " };
+            let number = idx + 1;
             let style = if selected {
                 Style::default().fg(palette::DEEPSEEK_SKY).bold()
             } else {
                 Style::default().fg(palette::TEXT_PRIMARY)
             };
             lines.push(Line::from(vec![
-                Span::raw(format!("{prefix} ")),
+                Span::raw(format!("{prefix} {number}) ")),
                 Span::styled(option.label.clone(), style),
                 Span::raw(" - "),
                 Span::styled(
@@ -190,8 +218,13 @@ impl ModalView for UserInputView {
         } else {
             Style::default().fg(palette::TEXT_PRIMARY)
         };
+        let other_number = other_index + 1;
         lines.push(Line::from(vec![
-            Span::raw(if other_selected { "> " } else { "  " }),
+            Span::raw(if other_selected {
+                format!("> {other_number}) ")
+            } else {
+                format!("  {other_number}) ")
+            }),
             Span::styled("Other", other_style),
             Span::raw(" - "),
             Span::styled(
@@ -220,7 +253,7 @@ impl ModalView for UserInputView {
         let hint = if self.mode == InputMode::OtherInput {
             "Enter=submit, Esc=back"
         } else {
-            "Up/Down=select, Enter=confirm, Esc=cancel"
+            "Number keys=quick pick, Up/Down=select, Enter=confirm, Esc=cancel"
         };
         lines.push(Line::from(Span::styled(
             hint,
