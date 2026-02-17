@@ -9,7 +9,7 @@
 
 use std::path::PathBuf;
 use std::pin::pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 use std::{fs::OpenOptions, io::Write};
 
@@ -29,8 +29,8 @@ use crate::features::{Feature, Features};
 use crate::llm_client::LlmClient;
 use crate::mcp::McpPool;
 use crate::models::{
-    ContentBlock, ContentBlockStart, Delta, Message, MessageRequest, StreamEvent, SystemPrompt,
-    Tool, Usage, context_window_for_model,
+    ContentBlock, ContentBlockStart, DEFAULT_CONTEXT_WINDOW_TOKENS, Delta, Message, MessageRequest,
+    StreamEvent, SystemPrompt, Tool, Usage, context_window_for_model,
 };
 use crate::prompts;
 use crate::tools::plan::{SharedPlanState, new_shared_plan_state};
@@ -44,6 +44,14 @@ use crate::tools::user_input::{UserInputRequest, UserInputResponse};
 use crate::tools::{ToolContext, ToolRegistryBuilder};
 use crate::tui::app::AppMode;
 
+use super::capacity::{
+    CapacityController, CapacityControllerConfig, CapacityDecision, CapacityObservationInput,
+    CapacitySnapshot, GuardrailAction, RiskBand,
+};
+use super::capacity_memory::{
+    CanonicalState, CapacityMemoryRecord, ReplayInfo, append_capacity_record,
+    load_last_k_capacity_records, new_record_id, now_rfc3339,
+};
 use super::events::{Event, TurnOutcomeStatus};
 use super::ops::Op;
 use super::session::Session;
@@ -75,6 +83,8 @@ pub struct EngineConfig {
     pub features: Features,
     /// Auto-compaction settings for long conversations.
     pub compaction: CompactionConfig,
+    /// Capacity-controller settings.
+    pub capacity: CapacityControllerConfig,
     /// Shared Todo list state.
     pub todos: SharedTodoList,
     /// Shared Plan state.
@@ -86,7 +96,7 @@ impl Default for EngineConfig {
         Self {
             model: DEFAULT_TEXT_MODEL.to_string(),
             workspace: PathBuf::from("."),
-            allow_shell: false,
+            allow_shell: true,
             trust_mode: false,
             notes_path: PathBuf::from("notes.txt"),
             mcp_config_path: PathBuf::from("mcp.json"),
@@ -94,6 +104,7 @@ impl Default for EngineConfig {
             max_subagents: DEFAULT_MAX_SUBAGENTS,
             features: Features::with_defaults(),
             compaction: CompactionConfig::default(),
+            capacity: CapacityControllerConfig::default(),
             todos: new_shared_todo_list(),
             plan_state: new_shared_plan_state(),
         }
@@ -107,8 +118,8 @@ pub struct EngineHandle {
     pub tx_op: mpsc::Sender<Op>,
     /// Receive events from the engine
     pub rx_event: Arc<RwLock<mpsc::Receiver<Event>>>,
-    /// Cancellation token for the current request
-    cancel_token: CancellationToken,
+    /// Shared pointer to the cancellation token for the current request.
+    cancel_token: Arc<StdMutex<CancellationToken>>,
     /// Send approval decisions to the engine
     tx_approval: mpsc::Sender<ApprovalDecision>,
     /// Send user input responses to the engine
@@ -126,13 +137,19 @@ impl EngineHandle {
 
     /// Cancel the current request
     pub fn cancel(&self) {
-        self.cancel_token.cancel();
+        match self.cancel_token.lock() {
+            Ok(token) => token.cancel(),
+            Err(poisoned) => poisoned.into_inner().cancel(),
+        }
     }
 
     /// Check if a request is currently cancelled
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
-        self.cancel_token.is_cancelled()
+        match self.cancel_token.lock() {
+            Ok(token) => token.is_cancelled(),
+            Err(poisoned) => poisoned.into_inner().is_cancelled(),
+        }
     }
 
     /// Approve a pending tool call
@@ -213,7 +230,10 @@ pub struct Engine {
     rx_steer: mpsc::Receiver<String>,
     tx_event: mpsc::Sender<Event>,
     cancel_token: CancellationToken,
+    shared_cancel_token: Arc<StdMutex<CancellationToken>>,
     tool_exec_lock: Arc<RwLock<()>>,
+    capacity_controller: CapacityController,
+    turn_counter: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -326,6 +346,15 @@ const MIN_RECENT_MESSAGES_TO_KEEP: usize = 4;
 const MAX_CONTEXT_RECOVERY_ATTEMPTS: u8 = 2;
 /// Reserve additional headroom to avoid hitting provider hard limits.
 const CONTEXT_HEADROOM_TOKENS: usize = 1024;
+/// Hard cap for any tool output inserted into model context.
+const TOOL_RESULT_CONTEXT_HARD_LIMIT_CHARS: usize = 12_000;
+/// Soft cap for known noisy tools inserted into model context.
+const TOOL_RESULT_CONTEXT_SOFT_LIMIT_CHARS: usize = 2_000;
+/// Snippet length kept when compacting tool output for model context.
+const TOOL_RESULT_CONTEXT_SNIPPET_CHARS: usize = 900;
+/// Max chars to keep from metadata-provided output summaries.
+const TOOL_RESULT_METADATA_SUMMARY_CHARS: usize = 320;
+const COMPACTION_SUMMARY_MARKER: &str = "Conversation Summary (Auto-Generated)";
 
 const TOOL_CALL_START_MARKERS: [&str; 5] = [
     "[TOOL_CALL]",
@@ -563,6 +592,86 @@ fn summarize_text(text: &str, limit: usize) -> String {
     out
 }
 
+fn tool_result_is_noisy(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        "exec_shell"
+            | "exec_shell_wait"
+            | "exec_shell_interact"
+            | "multi_tool_use.parallel"
+            | "web_search"
+            | "weather"
+            | "finance"
+            | "sports"
+            | "time"
+    )
+}
+
+fn tool_result_metadata_summary(metadata: Option<&serde_json::Value>) -> Option<String> {
+    let obj = metadata?.as_object()?;
+    for key in ["summary", "stdout_summary", "stderr_summary", "message"] {
+        if let Some(text) = obj.get(key).and_then(serde_json::Value::as_str) {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                return Some(summarize_text(trimmed, TOOL_RESULT_METADATA_SUMMARY_CHARS));
+            }
+        }
+    }
+    None
+}
+
+fn compact_tool_result_for_context(tool_name: &str, output: &ToolResult) -> String {
+    let raw = output.content.trim();
+    if raw.is_empty() {
+        return String::new();
+    }
+
+    let raw_chars = raw.chars().count();
+    let should_compact = raw_chars > TOOL_RESULT_CONTEXT_HARD_LIMIT_CHARS
+        || (tool_result_is_noisy(tool_name) && raw_chars > TOOL_RESULT_CONTEXT_SOFT_LIMIT_CHARS);
+    if !should_compact {
+        return raw.to_string();
+    }
+
+    let snippet = summarize_text(raw, TOOL_RESULT_CONTEXT_SNIPPET_CHARS);
+    let omitted = raw_chars.saturating_sub(snippet.chars().count());
+    let summary = tool_result_metadata_summary(output.metadata.as_ref());
+
+    if let Some(summary) = summary {
+        format!(
+            "[{tool_name} output compacted to protect context]\nSummary: {summary}\nSnippet: {snippet}\n(Original: {raw_chars} chars, omitted: {omitted} chars.)"
+        )
+    } else {
+        format!(
+            "[{tool_name} output compacted to protect context]\nSnippet: {snippet}\n(Original: {raw_chars} chars, omitted: {omitted} chars.)"
+        )
+    }
+}
+
+fn extract_compaction_summary_prompt(prompt: Option<SystemPrompt>) -> Option<SystemPrompt> {
+    match prompt {
+        Some(SystemPrompt::Blocks(blocks)) => {
+            let summary_blocks: Vec<_> = blocks
+                .into_iter()
+                .filter(|block| block.text.contains(COMPACTION_SUMMARY_MARKER))
+                .collect();
+            if summary_blocks.is_empty() {
+                None
+            } else {
+                Some(SystemPrompt::Blocks(summary_blocks))
+            }
+        }
+        Some(SystemPrompt::Text(text)) => {
+            if text.contains(COMPACTION_SUMMARY_MARKER) {
+                Some(SystemPrompt::Text(text))
+            } else {
+                None
+            }
+        }
+        None => None,
+    }
+}
+
 fn estimate_text_tokens_conservative(text: &str) -> usize {
     text.chars().count().div_ceil(3)
 }
@@ -626,6 +735,19 @@ fn emit_tool_audit(event: serde_json::Value) {
 }
 
 impl Engine {
+    fn reset_cancel_token(&mut self) {
+        let token = CancellationToken::new();
+        self.cancel_token = token.clone();
+        match self.shared_cancel_token.lock() {
+            Ok(mut shared) => {
+                *shared = token;
+            }
+            Err(poisoned) => {
+                *poisoned.into_inner() = token;
+            }
+        }
+    }
+
     /// Create a new engine with the given configuration
     pub fn new(config: EngineConfig, api_config: &Config) -> (Self, EngineHandle) {
         let (tx_op, rx_op) = mpsc::channel(32);
@@ -634,6 +756,7 @@ impl Engine {
         let (tx_user_input, rx_user_input) = mpsc::channel(32);
         let (tx_steer, rx_steer) = mpsc::channel(64);
         let cancel_token = CancellationToken::new();
+        let shared_cancel_token = Arc::new(StdMutex::new(cancel_token.clone()));
         let tool_exec_lock = Arc::new(RwLock::new(()));
 
         // Create clients for both providers
@@ -663,8 +786,9 @@ impl Engine {
         let subagent_manager =
             new_shared_subagent_manager(config.workspace.clone(), config.max_subagents);
         let shell_manager = new_shared_shell_manager(config.workspace.clone());
+        let capacity_controller = CapacityController::new(config.capacity.clone());
 
-        let engine = Engine {
+        let mut engine = Engine {
             config,
             deepseek_client,
             deepseek_client_error,
@@ -678,13 +802,17 @@ impl Engine {
             rx_steer,
             tx_event,
             cancel_token: cancel_token.clone(),
+            shared_cancel_token: shared_cancel_token.clone(),
             tool_exec_lock,
+            capacity_controller,
+            turn_counter: 0,
         };
+        engine.rehydrate_latest_canonical_state();
 
         let handle = EngineHandle {
             tx_op,
             rx_event: Arc::new(RwLock::new(rx_event)),
-            cancel_token,
+            cancel_token: shared_cancel_token,
             tx_approval,
             tx_user_input,
             tx_steer,
@@ -710,8 +838,7 @@ impl Engine {
                 }
                 Op::CancelRequest => {
                     self.cancel_token.cancel();
-                    // Create a new token for the next request
-                    self.cancel_token = CancellationToken::new();
+                    self.reset_cancel_token();
                 }
                 Op::ApproveToolCall { id } => {
                     // Tool approval handling will be implemented in tools module
@@ -822,6 +949,8 @@ impl Engine {
                     workspace,
                 } => {
                     self.session.messages = messages;
+                    self.session.compaction_summary_prompt =
+                        extract_compaction_summary_prompt(system_prompt.clone());
                     self.session.system_prompt = system_prompt;
                     self.session.model = model;
                     self.session.workspace = workspace.clone();
@@ -834,6 +963,7 @@ impl Engine {
                         None
                     };
                     self.session.rebuild_working_set();
+                    self.rehydrate_latest_canonical_state();
                     let _ = self
                         .tx_event
                         .send(Event::status("Session context synced".to_string()))
@@ -859,13 +989,15 @@ impl Engine {
         trust_mode: bool,
     ) {
         // Reset cancel token for fresh turn (in case previous was cancelled)
-        self.cancel_token = CancellationToken::new();
+        self.reset_cancel_token();
 
         // Drain stale steer messages from previous turns.
         while self.rx_steer.try_recv().is_ok() {}
 
         // Create turn context first so start event includes a stable turn id.
         let mut turn = TurnContext::new(self.config.max_steps);
+        self.turn_counter = self.turn_counter.saturating_add(1);
+        self.capacity_controller.mark_turn_start(self.turn_counter);
 
         // Emit turn started event
         let _ = self
@@ -918,16 +1050,8 @@ impl Engine {
         self.session.trust_mode = trust_mode;
         self.config.trust_mode = trust_mode;
 
-        // Update system prompt to match the current mode
-        let working_set_summary = self
-            .session
-            .working_set
-            .summary_block(&self.config.workspace);
-        self.session.system_prompt = Some(prompts::system_prompt_for_mode_with_context(
-            mode,
-            &self.config.workspace,
-            working_set_summary.as_deref(),
-        ));
+        // Update system prompt to match current mode and include persisted compaction context.
+        self.refresh_system_prompt(mode);
 
         // Build tool registry and tool list for the current mode
         let todo_list = self.config.todos.clone();
@@ -1072,10 +1196,7 @@ impl Engine {
             Ok(result) => {
                 if !result.messages.is_empty() || self.session.messages.is_empty() {
                     self.session.messages = result.messages;
-                    self.session.system_prompt = merge_system_prompts(
-                        self.session.system_prompt.as_ref(),
-                        result.summary_prompt,
-                    );
+                    self.merge_compaction_summary(result.summary_prompt);
                     let message = if result.retries_used > 0 {
                         format!(
                             "Manual context compaction completed (after {} retries)",
@@ -1203,8 +1324,7 @@ impl Engine {
         if !compacted_messages.is_empty() || self.session.messages.is_empty() {
             self.session.messages = compacted_messages;
         }
-        self.session.system_prompt =
-            merge_system_prompts(self.session.system_prompt.as_ref(), summary_prompt);
+        self.merge_compaction_summary(summary_prompt);
 
         let trimmed = self.trim_oldest_messages_to_budget(target_budget);
         let after_tokens = self.estimated_input_tokens();
@@ -1649,10 +1769,7 @@ impl Engine {
                         // Only update if we got valid messages (never corrupt state)
                         if !result.messages.is_empty() || self.session.messages.is_empty() {
                             self.session.messages = result.messages;
-                            self.session.system_prompt = merge_system_prompts(
-                                self.session.system_prompt.as_ref(),
-                                result.summary_prompt,
-                            );
+                            self.merge_compaction_summary(result.summary_prompt);
                             let status = if result.retries_used > 0 {
                                 format!(
                                     "Auto-compaction complete (after {} retries)",
@@ -1697,6 +1814,13 @@ impl Engine {
                         let _ = self.tx_event.send(Event::status(message)).await;
                     }
                 }
+            }
+
+            if self
+                .run_capacity_pre_request_checkpoint(turn, Some(&client), _mode)
+                .await
+            {
+                continue;
             }
 
             if let Some(input_budget) =
@@ -2459,20 +2583,22 @@ impl Engine {
                             "tool_name": outcome.name.clone(),
                             "success": output.success,
                         }));
+                        let output_for_context =
+                            compact_tool_result_for_context(&outcome.name, &output);
                         let output_content = output.content;
 
                         tool_call.set_result(output_content.clone(), duration);
                         self.session.working_set.observe_tool_call(
                             &tool_name_for_ws,
                             &tool_input,
-                            Some(&output_content),
+                            Some(&output_for_context),
                             &self.session.workspace,
                         );
                         self.session.add_message(Message {
                             role: "user".to_string(),
                             content: vec![ContentBlock::ToolResult {
                                 tool_use_id: outcome.id,
-                                content: output_content,
+                                content: output_for_context,
                             }],
                         });
                     }
@@ -2506,6 +2632,22 @@ impl Engine {
                 turn.record_tool_call(tool_call);
             }
 
+            if self
+                .run_capacity_post_tool_checkpoint(
+                    turn,
+                    _mode,
+                    tool_registry,
+                    tool_exec_lock.clone(),
+                    mcp_pool.clone(),
+                    step_error_count,
+                    consecutive_tool_error_steps,
+                )
+                .await
+            {
+                turn.next_step();
+                continue;
+            }
+
             if !pending_steers.is_empty() {
                 for steer in pending_steers.drain(..) {
                     self.session
@@ -2525,6 +2667,19 @@ impl Engine {
                 consecutive_tool_error_steps = consecutive_tool_error_steps.saturating_add(1);
             } else {
                 consecutive_tool_error_steps = 0;
+            }
+
+            if self
+                .run_capacity_error_escalation_checkpoint(
+                    turn,
+                    _mode,
+                    step_error_count,
+                    consecutive_tool_error_steps,
+                )
+                .await
+            {
+                turn.next_step();
+                continue;
             }
 
             if consecutive_tool_error_steps >= 3 {
@@ -2549,6 +2704,828 @@ impl Engine {
         (TurnOutcomeStatus::Completed, None)
     }
 
+    async fn run_capacity_pre_request_checkpoint(
+        &mut self,
+        turn: &TurnContext,
+        client: Option<&DeepSeekClient>,
+        mode: AppMode,
+    ) -> bool {
+        let snapshot = self
+            .capacity_controller
+            .observe_pre_turn(self.capacity_observation(turn));
+        let decision = self
+            .capacity_controller
+            .decide(self.turn_counter, snapshot.as_ref());
+        self.emit_capacity_decision(turn, snapshot.as_ref(), &decision)
+            .await;
+
+        if decision.action != GuardrailAction::TargetedContextRefresh {
+            return false;
+        }
+
+        self.apply_targeted_context_refresh(turn, client, mode, snapshot.as_ref())
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn run_capacity_post_tool_checkpoint(
+        &mut self,
+        turn: &TurnContext,
+        mode: AppMode,
+        tool_registry: Option<&crate::tools::ToolRegistry>,
+        tool_exec_lock: Arc<RwLock<()>>,
+        mcp_pool: Option<Arc<AsyncMutex<McpPool>>>,
+        _step_error_count: usize,
+        _consecutive_tool_error_steps: u32,
+    ) -> bool {
+        let snapshot = self
+            .capacity_controller
+            .observe_post_tool(self.capacity_observation(turn));
+        let decision = self
+            .capacity_controller
+            .decide(self.turn_counter, snapshot.as_ref());
+        self.emit_capacity_decision(turn, snapshot.as_ref(), &decision)
+            .await;
+
+        match decision.action {
+            GuardrailAction::VerifyWithToolReplay => {
+                let _ = self
+                    .apply_verify_with_tool_replay(
+                        turn,
+                        mode,
+                        snapshot.as_ref(),
+                        tool_registry,
+                        tool_exec_lock,
+                        mcp_pool,
+                    )
+                    .await;
+                false
+            }
+            GuardrailAction::VerifyAndReplan => {
+                self.apply_verify_and_replan(turn, mode, snapshot.as_ref(), "high_risk_post_tool")
+                    .await
+            }
+            GuardrailAction::NoIntervention | GuardrailAction::TargetedContextRefresh => false,
+        }
+    }
+
+    async fn run_capacity_error_escalation_checkpoint(
+        &mut self,
+        turn: &TurnContext,
+        mode: AppMode,
+        step_error_count: usize,
+        consecutive_tool_error_steps: u32,
+    ) -> bool {
+        if step_error_count == 0 && consecutive_tool_error_steps < 2 {
+            return false;
+        }
+
+        let snapshot = self
+            .capacity_controller
+            .last_snapshot()
+            .cloned()
+            .or_else(|| {
+                self.capacity_controller
+                    .observe_pre_turn(self.capacity_observation(turn))
+            });
+        let Some(snapshot) = snapshot else {
+            return false;
+        };
+
+        let repeated_failures = step_error_count >= 2 || consecutive_tool_error_steps >= 2;
+        let mut forced = snapshot.clone();
+        if repeated_failures && !(snapshot.risk_band == RiskBand::High && snapshot.severe) {
+            forced.risk_band = RiskBand::High;
+            forced.severe = true;
+        }
+
+        let decision = self
+            .capacity_controller
+            .decide(self.turn_counter, Some(&forced));
+        self.emit_capacity_decision(turn, Some(&forced), &decision)
+            .await;
+
+        if decision.action != GuardrailAction::VerifyAndReplan {
+            return false;
+        }
+
+        self.apply_verify_and_replan(
+            turn,
+            mode,
+            Some(&forced),
+            &format!(
+                "error_escalation: step_errors={step_error_count}, consecutive_steps={consecutive_tool_error_steps}"
+            ),
+        )
+        .await
+    }
+
+    fn capacity_observation(&self, turn: &TurnContext) -> CapacityObservationInput {
+        let message_window = self.config.capacity.profile_window.max(8) * 3;
+        let action_count_this_turn = usize::try_from(turn.step)
+            .unwrap_or(usize::MAX)
+            .saturating_add(turn.tool_calls.len())
+            .saturating_add(1);
+        let tool_calls_recent_window = self.recent_tool_call_count(message_window);
+        let unique_reference_ids_recent_window =
+            self.recent_unique_reference_count(message_window, turn);
+        let context_window = usize::try_from(
+            context_window_for_model(&self.session.model).unwrap_or(DEFAULT_CONTEXT_WINDOW_TOKENS),
+        )
+        .unwrap_or(usize::try_from(DEFAULT_CONTEXT_WINDOW_TOKENS).unwrap_or(128_000))
+        .max(1);
+        let context_used_ratio = (self.estimated_input_tokens() as f64) / (context_window as f64);
+
+        CapacityObservationInput {
+            turn_index: self.turn_counter,
+            model: self.session.model.clone(),
+            action_count_this_turn,
+            tool_calls_recent_window,
+            unique_reference_ids_recent_window,
+            context_used_ratio,
+        }
+    }
+
+    fn recent_tool_call_count(&self, message_window: usize) -> usize {
+        self.session
+            .messages
+            .iter()
+            .rev()
+            .take(message_window)
+            .map(|msg| {
+                msg.content
+                    .iter()
+                    .filter(|block| {
+                        matches!(
+                            block,
+                            ContentBlock::ToolUse { .. } | ContentBlock::ToolResult { .. }
+                        )
+                    })
+                    .count()
+            })
+            .sum()
+    }
+
+    fn recent_unique_reference_count(&self, message_window: usize, turn: &TurnContext) -> usize {
+        let mut refs = std::collections::HashSet::new();
+        for msg in self.session.messages.iter().rev().take(message_window) {
+            for block in &msg.content {
+                match block {
+                    ContentBlock::ToolUse { id, .. } => {
+                        refs.insert(id.clone());
+                    }
+                    ContentBlock::ToolResult { tool_use_id, .. } => {
+                        refs.insert(tool_use_id.clone());
+                    }
+                    ContentBlock::Text { text, .. } => {
+                        for token in text.split_whitespace() {
+                            if token.contains('/') || token.contains('.') {
+                                refs.insert(
+                                    token
+                                        .trim_matches(|c: char| ",.;:()[]{}".contains(c))
+                                        .to_string(),
+                                );
+                            }
+                        }
+                    }
+                    ContentBlock::Thinking { .. } => {}
+                }
+            }
+        }
+        for tool_call in turn.tool_calls.iter().rev().take(8) {
+            refs.insert(tool_call.id.clone());
+        }
+        for path in self.session.working_set.top_paths(8) {
+            refs.insert(path);
+        }
+        refs.retain(|item| !item.is_empty());
+        refs.len()
+    }
+
+    async fn emit_capacity_decision(
+        &self,
+        turn: &TurnContext,
+        snapshot: Option<&CapacitySnapshot>,
+        decision: &CapacityDecision,
+    ) {
+        let Some(snapshot) = snapshot else {
+            return;
+        };
+        let _ = self
+            .tx_event
+            .send(Event::CapacityDecision {
+                session_id: self.session.id.clone(),
+                turn_id: turn.id.clone(),
+                h_hat: snapshot.h_hat,
+                c_hat: snapshot.c_hat,
+                slack: snapshot.slack,
+                min_slack: snapshot.profile.min_slack,
+                violation_ratio: snapshot.profile.violation_ratio,
+                p_fail: snapshot.p_fail,
+                risk_band: snapshot.risk_band.as_str().to_string(),
+                action: decision.action.as_str().to_string(),
+                cooldown_blocked: decision.cooldown_blocked,
+                reason: decision.reason.clone(),
+            })
+            .await;
+    }
+
+    async fn emit_capacity_intervention(
+        &self,
+        turn: &TurnContext,
+        action: GuardrailAction,
+        before_prompt_tokens: usize,
+        after_prompt_tokens: usize,
+        replay_outcome: Option<String>,
+        replan_performed: bool,
+    ) {
+        let _ = self
+            .tx_event
+            .send(Event::CapacityIntervention {
+                session_id: self.session.id.clone(),
+                turn_id: turn.id.clone(),
+                action: action.as_str().to_string(),
+                before_prompt_tokens,
+                after_prompt_tokens,
+                compaction_size_reduction: before_prompt_tokens.saturating_sub(after_prompt_tokens),
+                replay_outcome,
+                replan_performed,
+            })
+            .await;
+    }
+
+    async fn apply_targeted_context_refresh(
+        &mut self,
+        turn: &TurnContext,
+        client: Option<&DeepSeekClient>,
+        mode: AppMode,
+        snapshot: Option<&CapacitySnapshot>,
+    ) -> bool {
+        let before_tokens = self.estimated_input_tokens();
+        let compaction_pins = self
+            .session
+            .working_set
+            .pinned_message_indices(&self.session.messages, &self.session.workspace);
+        let compaction_paths = self.session.working_set.top_paths(24);
+
+        let mut refreshed = false;
+        if let Some(client) = client {
+            match compact_messages_safe(
+                client,
+                &self.session.messages,
+                &self.config.compaction,
+                Some(&self.session.workspace),
+                Some(&compaction_pins),
+                Some(&compaction_paths),
+            )
+            .await
+            {
+                Ok(result) => {
+                    if !result.messages.is_empty() || self.session.messages.is_empty() {
+                        self.session.messages = result.messages;
+                        self.merge_compaction_summary(result.summary_prompt);
+                        refreshed = true;
+                    }
+                }
+                Err(err) => {
+                    let _ = self
+                        .tx_event
+                        .send(Event::status(format!(
+                            "Capacity refresh compaction failed: {err}. Falling back to local trim."
+                        )))
+                        .await;
+                }
+            }
+        }
+
+        if !refreshed {
+            let target_budget = context_input_budget(&self.session.model, TURN_MAX_OUTPUT_TOKENS)
+                .unwrap_or(self.config.compaction.token_threshold.max(1));
+            let trimmed = self.trim_oldest_messages_to_budget(target_budget);
+            refreshed = trimmed > 0;
+        }
+
+        if !refreshed {
+            return false;
+        }
+
+        let canonical = self.build_canonical_state(turn, None);
+        let source_message_ids = self.capacity_source_message_ids(turn);
+        let record = self.build_capacity_record(
+            turn,
+            GuardrailAction::TargetedContextRefresh,
+            snapshot,
+            canonical.clone(),
+            source_message_ids,
+            None,
+        );
+        let pointer = self
+            .persist_capacity_record(turn, GuardrailAction::TargetedContextRefresh, &record)
+            .await;
+        self.merge_compaction_summary(Some(self.canonical_prompt(
+            &canonical,
+            &pointer,
+            GuardrailAction::TargetedContextRefresh,
+            None,
+        )));
+        self.refresh_system_prompt(mode);
+
+        let after_tokens = self.estimated_input_tokens();
+        self.emit_capacity_intervention(
+            turn,
+            GuardrailAction::TargetedContextRefresh,
+            before_tokens,
+            after_tokens,
+            None,
+            false,
+        )
+        .await;
+        self.capacity_controller
+            .mark_intervention_applied(self.turn_counter, GuardrailAction::TargetedContextRefresh);
+        true
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn apply_verify_with_tool_replay(
+        &mut self,
+        turn: &TurnContext,
+        mode: AppMode,
+        snapshot: Option<&CapacitySnapshot>,
+        tool_registry: Option<&crate::tools::ToolRegistry>,
+        tool_exec_lock: Arc<RwLock<()>>,
+        mut mcp_pool: Option<Arc<AsyncMutex<McpPool>>>,
+    ) -> bool {
+        let before_tokens = self.estimated_input_tokens();
+        let Some(candidate) = self.select_replay_candidate(turn, tool_registry) else {
+            return false;
+        };
+
+        if McpPool::is_mcp_tool(&candidate.name) && mcp_pool.is_none() {
+            mcp_pool = self.ensure_mcp_pool().await.ok();
+        }
+
+        let supports_parallel = if McpPool::is_mcp_tool(&candidate.name) {
+            mcp_tool_is_parallel_safe(&candidate.name)
+        } else {
+            tool_registry
+                .and_then(|registry| registry.get(&candidate.name))
+                .is_some_and(|spec| spec.supports_parallel())
+        };
+        let interactive = (candidate.name == "exec_shell"
+            && candidate
+                .input
+                .get("interactive")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true))
+            || candidate.name == REQUEST_USER_INPUT_NAME;
+
+        let replay_result = Self::execute_tool_with_lock(
+            tool_exec_lock,
+            supports_parallel,
+            interactive,
+            self.tx_event.clone(),
+            candidate.name.clone(),
+            candidate.input.clone(),
+            tool_registry,
+            mcp_pool.clone(),
+            None,
+        )
+        .await;
+
+        let (pass, replay_outcome, diff_summary) = match replay_result {
+            Ok(output) => {
+                let original = candidate.result.as_deref().unwrap_or_default();
+                let replay = output.content.as_str();
+                let equal = original.trim() == replay.trim();
+                let diff = if equal {
+                    "output_match".to_string()
+                } else {
+                    format!(
+                        "output_mismatch: original='{}' replay='{}'",
+                        summarize_text(original, 140),
+                        summarize_text(replay, 140)
+                    )
+                };
+                (
+                    equal,
+                    if equal {
+                        "pass".to_string()
+                    } else {
+                        "conflict".to_string()
+                    },
+                    diff,
+                )
+            }
+            Err(err) => {
+                self.capacity_controller
+                    .mark_replay_failed(self.turn_counter);
+                (
+                    false,
+                    "error".to_string(),
+                    format!("replay_error: {}", summarize_text(&err.to_string(), 180)),
+                )
+            }
+        };
+
+        let verification_note = format!(
+            "[verification replay] tool={} pass={} details={}",
+            candidate.name, pass, diff_summary
+        );
+        self.session.add_message(Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: candidate.id.clone(),
+                content: verification_note.clone(),
+            }],
+        });
+
+        if !pass {
+            self.capacity_controller
+                .mark_replay_failed(self.turn_counter);
+        }
+
+        let canonical = self.build_canonical_state(
+            turn,
+            Some(if pass {
+                "replay verification passed"
+            } else {
+                "replay verification failed or conflicted"
+            }),
+        );
+        let replay_info = Some(ReplayInfo {
+            tool_id: candidate.id.clone(),
+            tool_name: candidate.name.clone(),
+            pass,
+            diff_summary: diff_summary.clone(),
+        });
+        let source_message_ids = self.capacity_source_message_ids(turn);
+        let record = self.build_capacity_record(
+            turn,
+            GuardrailAction::VerifyWithToolReplay,
+            snapshot,
+            canonical.clone(),
+            source_message_ids,
+            replay_info,
+        );
+        let pointer = self
+            .persist_capacity_record(turn, GuardrailAction::VerifyWithToolReplay, &record)
+            .await;
+        self.merge_compaction_summary(Some(self.canonical_prompt(
+            &canonical,
+            &pointer,
+            GuardrailAction::VerifyWithToolReplay,
+            Some(&verification_note),
+        )));
+        self.refresh_system_prompt(mode);
+
+        let after_tokens = self.estimated_input_tokens();
+        self.emit_capacity_intervention(
+            turn,
+            GuardrailAction::VerifyWithToolReplay,
+            before_tokens,
+            after_tokens,
+            Some(replay_outcome),
+            false,
+        )
+        .await;
+        self.capacity_controller
+            .mark_intervention_applied(self.turn_counter, GuardrailAction::VerifyWithToolReplay);
+        true
+    }
+
+    async fn apply_verify_and_replan(
+        &mut self,
+        turn: &TurnContext,
+        mode: AppMode,
+        snapshot: Option<&CapacitySnapshot>,
+        reason: &str,
+    ) -> bool {
+        let before_tokens = self.estimated_input_tokens();
+        let canonical = self.build_canonical_state(turn, Some(reason));
+        let source_message_ids = self.capacity_source_message_ids(turn);
+        let record = self.build_capacity_record(
+            turn,
+            GuardrailAction::VerifyAndReplan,
+            snapshot,
+            canonical.clone(),
+            source_message_ids,
+            None,
+        );
+        let pointer = self
+            .persist_capacity_record(turn, GuardrailAction::VerifyAndReplan, &record)
+            .await;
+
+        let latest_user = self
+            .session
+            .messages
+            .iter()
+            .rev()
+            .find(|msg| {
+                msg.role == "user"
+                    && msg
+                        .content
+                        .iter()
+                        .any(|block| matches!(block, ContentBlock::Text { .. }))
+            })
+            .cloned();
+        let latest_verified = self
+            .session
+            .messages
+            .iter()
+            .rev()
+            .find(|msg| {
+                msg.role == "user"
+                    && msg.content.iter().any(|block| match block {
+                        ContentBlock::ToolResult { content, .. } => {
+                            content.contains("[verification replay]")
+                        }
+                        _ => false,
+                    })
+            })
+            .cloned();
+
+        self.session.messages.clear();
+        if let Some(msg) = latest_user {
+            self.session.messages.push(msg);
+        }
+        if let Some(msg) = latest_verified {
+            self.session.messages.push(msg);
+        }
+
+        self.merge_compaction_summary(Some(self.canonical_prompt(
+            &canonical,
+            &pointer,
+            GuardrailAction::VerifyAndReplan,
+            Some("Replan now from canonical state. Keep steps minimal and verifiable."),
+        )));
+        self.refresh_system_prompt(mode);
+
+        let _ = self
+            .tx_event
+            .send(Event::status(
+                "Capacity guardrail: context reset to canonical state; replanning step."
+                    .to_string(),
+            ))
+            .await;
+
+        let after_tokens = self.estimated_input_tokens();
+        self.emit_capacity_intervention(
+            turn,
+            GuardrailAction::VerifyAndReplan,
+            before_tokens,
+            after_tokens,
+            None,
+            true,
+        )
+        .await;
+        self.capacity_controller
+            .mark_intervention_applied(self.turn_counter, GuardrailAction::VerifyAndReplan);
+        true
+    }
+
+    fn select_replay_candidate(
+        &self,
+        turn: &TurnContext,
+        tool_registry: Option<&crate::tools::ToolRegistry>,
+    ) -> Option<TurnToolCall> {
+        turn.tool_calls
+            .iter()
+            .rev()
+            .find(|call| {
+                call.error.is_none()
+                    && call.result.is_some()
+                    && self.tool_is_replayable_read_only(&call.name, tool_registry)
+            })
+            .cloned()
+    }
+
+    fn tool_is_replayable_read_only(
+        &self,
+        tool_name: &str,
+        tool_registry: Option<&crate::tools::ToolRegistry>,
+    ) -> bool {
+        if tool_name == MULTI_TOOL_PARALLEL_NAME || tool_name == REQUEST_USER_INPUT_NAME {
+            return false;
+        }
+        if McpPool::is_mcp_tool(tool_name) {
+            return mcp_tool_is_read_only(tool_name);
+        }
+        tool_registry
+            .and_then(|registry| registry.get(tool_name))
+            .is_some_and(|spec| spec.is_read_only())
+    }
+
+    fn build_canonical_state(&self, turn: &TurnContext, note: Option<&str>) -> CanonicalState {
+        let goal = self
+            .session
+            .messages
+            .iter()
+            .rev()
+            .find_map(|msg| {
+                if msg.role != "user" {
+                    return None;
+                }
+                msg.content.iter().find_map(|block| match block {
+                    ContentBlock::Text { text, .. } => Some(summarize_text(text, 220)),
+                    _ => None,
+                })
+            })
+            .unwrap_or_else(|| "Continue current task from compact state".to_string());
+
+        let mut constraints = vec![
+            format!("model={}", self.session.model),
+            format!("workspace={}", self.session.workspace.display()),
+        ];
+        if let Some(note) = note {
+            constraints.push(summarize_text(note, 180));
+        }
+
+        let mut confirmed_facts = Vec::new();
+        for msg in self.session.messages.iter().rev() {
+            for block in &msg.content {
+                if let ContentBlock::ToolResult { content, .. } = block {
+                    if content.starts_with("Error:") {
+                        continue;
+                    }
+                    confirmed_facts.push(summarize_text(content, 180));
+                    if confirmed_facts.len() >= 4 {
+                        break;
+                    }
+                }
+            }
+            if confirmed_facts.len() >= 4 {
+                break;
+            }
+        }
+
+        let open_loops: Vec<String> = turn
+            .tool_calls
+            .iter()
+            .rev()
+            .filter_map(|call| {
+                call.error
+                    .as_ref()
+                    .map(|error| format!("{}: {}", call.name, summarize_text(error, 180)))
+            })
+            .take(4)
+            .collect();
+
+        let pending_actions: Vec<String> = if open_loops.is_empty() {
+            vec!["Continue with next smallest verifiable step".to_string()]
+        } else {
+            vec![
+                "Re-evaluate failed tool steps with narrower scope".to_string(),
+                "Re-derive plan from canonical facts before further edits".to_string(),
+            ]
+        };
+
+        let mut critical_refs = self.session.working_set.top_paths(8);
+        for tool_call in turn.tool_calls.iter().rev().take(4) {
+            critical_refs.push(format!("tool:{}", tool_call.id));
+        }
+        critical_refs.dedup();
+
+        CanonicalState {
+            goal,
+            constraints,
+            confirmed_facts,
+            open_loops,
+            pending_actions,
+            critical_refs,
+        }
+    }
+
+    fn canonical_prompt(
+        &self,
+        canonical: &CanonicalState,
+        pointer: &str,
+        action: GuardrailAction,
+        extra: Option<&str>,
+    ) -> SystemPrompt {
+        let mut lines = vec![
+            COMPACTION_SUMMARY_MARKER.to_string(),
+            format!("Capacity Canonical State [{}]", action.as_str()),
+            format!("Goal: {}", canonical.goal),
+            "Constraints:".to_string(),
+        ];
+        for item in &canonical.constraints {
+            lines.push(format!("- {}", summarize_text(item, 200)));
+        }
+        lines.push("Confirmed Facts:".to_string());
+        for item in &canonical.confirmed_facts {
+            lines.push(format!("- {}", summarize_text(item, 200)));
+        }
+        lines.push("Open Loops:".to_string());
+        if canonical.open_loops.is_empty() {
+            lines.push("- none".to_string());
+        } else {
+            for item in &canonical.open_loops {
+                lines.push(format!("- {}", summarize_text(item, 200)));
+            }
+        }
+        lines.push("Pending Actions:".to_string());
+        for item in &canonical.pending_actions {
+            lines.push(format!("- {}", summarize_text(item, 200)));
+        }
+        lines.push("Critical Refs:".to_string());
+        for item in &canonical.critical_refs {
+            lines.push(format!("- {}", summarize_text(item, 200)));
+        }
+        if let Some(extra) = extra {
+            lines.push(format!("Instruction: {}", summarize_text(extra, 240)));
+        }
+        lines.push(format!("Memory Pointer: {pointer}"));
+
+        SystemPrompt::Blocks(vec![crate::models::SystemBlock {
+            block_type: "text".to_string(),
+            text: lines.join("\n"),
+            cache_control: None,
+        }])
+    }
+
+    fn capacity_source_message_ids(&self, turn: &TurnContext) -> Vec<String> {
+        let mut ids: Vec<String> = turn
+            .tool_calls
+            .iter()
+            .rev()
+            .take(8)
+            .map(|call| call.id.clone())
+            .collect();
+        ids.reverse();
+        ids
+    }
+
+    fn build_capacity_record(
+        &self,
+        turn: &TurnContext,
+        action: GuardrailAction,
+        snapshot: Option<&CapacitySnapshot>,
+        canonical: CanonicalState,
+        source_message_ids: Vec<String>,
+        replay_info: Option<ReplayInfo>,
+    ) -> CapacityMemoryRecord {
+        let (h_hat, c_hat, slack, risk_band) = snapshot
+            .map(|s| (s.h_hat, s.c_hat, s.slack, s.risk_band.as_str().to_string()))
+            .unwrap_or_else(|| (0.0, 0.0, 0.0, "unknown".to_string()));
+
+        CapacityMemoryRecord {
+            id: new_record_id(),
+            ts: now_rfc3339(),
+            turn_index: self.turn_counter,
+            action_trigger: action.as_str().to_string(),
+            h_hat,
+            c_hat,
+            slack,
+            risk_band,
+            canonical_state: canonical,
+            source_message_ids: if source_message_ids.is_empty() {
+                vec![turn.id.clone()]
+            } else {
+                source_message_ids
+            },
+            replay_info,
+        }
+    }
+
+    async fn persist_capacity_record(
+        &mut self,
+        turn: &TurnContext,
+        action: GuardrailAction,
+        record: &CapacityMemoryRecord,
+    ) -> String {
+        let pointer = format!("memory://{}/{}", self.session.id, record.id);
+        if let Err(err) = append_capacity_record(&self.session.id, record) {
+            let _ = self
+                .tx_event
+                .send(Event::CapacityMemoryPersistFailed {
+                    session_id: self.session.id.clone(),
+                    turn_id: turn.id.clone(),
+                    action: action.as_str().to_string(),
+                    error: summarize_text(&err.to_string(), 280),
+                })
+                .await;
+            return format!("{pointer}?persist=failed");
+        }
+        pointer
+    }
+
+    fn rehydrate_latest_canonical_state(&mut self) {
+        let Ok(records) = load_last_k_capacity_records(&self.session.id, 1) else {
+            return;
+        };
+        let Some(last) = records.last() else {
+            return;
+        };
+        let pointer = format!("memory://{}/{}", self.session.id, last.id);
+        let prompt = self.canonical_prompt(
+            &last.canonical_state,
+            &pointer,
+            GuardrailAction::NoIntervention,
+            Some("Rehydrated canonical state from memory."),
+        );
+        self.merge_compaction_summary(Some(prompt));
+    }
+
     /// Get a reference to the session
     pub fn session(&self) -> &Session {
         &self.session
@@ -2565,12 +3542,25 @@ impl Engine {
             .session
             .working_set
             .summary_block(&self.config.workspace);
-
-        self.session.system_prompt = Some(prompts::system_prompt_for_mode_with_context(
+        let base = prompts::system_prompt_for_mode_with_context(
             mode,
             &self.config.workspace,
             working_set_summary.as_deref(),
-        ));
+        );
+        self.session.system_prompt =
+            merge_system_prompts(Some(&base), self.session.compaction_summary_prompt.clone());
+    }
+
+    fn merge_compaction_summary(&mut self, summary_prompt: Option<SystemPrompt>) {
+        if summary_prompt.is_none() {
+            return;
+        }
+        self.session.compaction_summary_prompt = merge_system_prompts(
+            self.session.compaction_summary_prompt.as_ref(),
+            summary_prompt.clone(),
+        );
+        self.session.system_prompt =
+            merge_system_prompts(self.session.system_prompt.as_ref(), summary_prompt);
     }
 }
 
@@ -2602,10 +3592,11 @@ pub(crate) fn mock_engine_handle() -> MockEngineHandle {
     let (tx_user_input, _rx_user_input) = mpsc::channel(32);
     let (tx_steer, rx_steer) = mpsc::channel(64);
     let cancel_token = CancellationToken::new();
+    let shared_cancel_token = Arc::new(StdMutex::new(cancel_token.clone()));
     let handle = EngineHandle {
         tx_op,
         rx_event: Arc::new(RwLock::new(rx_event)),
-        cancel_token: cancel_token.clone(),
+        cancel_token: shared_cancel_token,
         tx_approval,
         tx_user_input,
         tx_steer,

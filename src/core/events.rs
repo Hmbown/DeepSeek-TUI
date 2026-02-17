@@ -90,6 +90,42 @@ pub enum Event {
         message: String,
     },
 
+    /// Capacity decision telemetry.
+    CapacityDecision {
+        session_id: String,
+        turn_id: String,
+        h_hat: f64,
+        c_hat: f64,
+        slack: f64,
+        min_slack: f64,
+        violation_ratio: f64,
+        p_fail: f64,
+        risk_band: String,
+        action: String,
+        cooldown_blocked: bool,
+        reason: String,
+    },
+
+    /// Capacity intervention telemetry.
+    CapacityIntervention {
+        session_id: String,
+        turn_id: String,
+        action: String,
+        before_prompt_tokens: usize,
+        after_prompt_tokens: usize,
+        compaction_size_reduction: usize,
+        replay_outcome: Option<String>,
+        replan_performed: bool,
+    },
+
+    /// Capacity memory persistence failure telemetry.
+    CapacityMemoryPersistFailed {
+        session_id: String,
+        turn_id: String,
+        action: String,
+        error: String,
+    },
+
     // === Sub-Agent Events ===
     /// A sub-agent has been spawned
     AgentSpawned { id: String, prompt: String },

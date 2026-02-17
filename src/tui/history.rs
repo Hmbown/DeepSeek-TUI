@@ -19,6 +19,8 @@ use crate::tui::markdown_render;
 const TOOL_COMMAND_LINE_LIMIT: usize = 5;
 const TOOL_OUTPUT_LINE_LIMIT: usize = 12;
 const TOOL_TEXT_LIMIT: usize = 240;
+const TOOL_RUNNING_SYMBOLS: [&str; 3] = ["◌", "◍", "◉"];
+const TOOL_STATUS_SYMBOL_MS: u64 = 900;
 
 // === History Cells ===
 
@@ -52,33 +54,14 @@ impl HistoryCell {
     pub fn lines(&self, width: u16) -> Vec<Line<'static>> {
         match self {
             HistoryCell::User { content } => render_message("You", content, user_style(), width),
-            HistoryCell::Assistant { content, streaming } => {
-                let mut lines = render_message("Answer", content, assistant_style(), width);
-                if *streaming {
-                    // Add blinking cursor to last line
-                    if let Some(last) = lines.last_mut() {
-                        last.spans.push(Span::styled(
-                            "▋",
-                            Style::default().fg(palette::DEEPSEEK_SKY),
-                        ));
-                    }
-                }
-                lines
+            HistoryCell::Assistant { content, .. } => {
+                render_message("Answer", content, assistant_style(), width)
             }
             HistoryCell::System { content } => {
                 render_message("System", content, system_style(), width)
             }
             HistoryCell::Thinking { content, streaming } => {
-                let mut lines = render_thinking(content, width, *streaming);
-                if *streaming {
-                    if let Some(last) = lines.last_mut() {
-                        last.spans.push(Span::styled(
-                            "▋",
-                            Style::default().fg(palette::DEEPSEEK_SKY),
-                        ));
-                    }
-                }
-                lines
+                render_thinking(content, width, *streaming)
             }
             HistoryCell::Tool(cell) => cell.lines(width),
         }
@@ -1277,11 +1260,13 @@ fn status_symbol(started_at: Option<Instant>, status: ToolStatus) -> String {
     match status {
         ToolStatus::Running => {
             let elapsed_ms = started_at.map_or(0, |t| t.elapsed().as_millis());
-            if (elapsed_ms / 900).is_multiple_of(2) {
-                "*".to_string()
+            let cycle = u128::from(TOOL_STATUS_SYMBOL_MS);
+            let idx = if cycle == 0 {
+                0
             } else {
-                ".".to_string()
-            }
+                (elapsed_ms / cycle) % (TOOL_RUNNING_SYMBOLS.len() as u128)
+            };
+            TOOL_RUNNING_SYMBOLS[usize::try_from(idx).unwrap_or_default()].to_string()
         }
         ToolStatus::Success => "o".to_string(),
         ToolStatus::Failed => "x".to_string(),

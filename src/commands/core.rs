@@ -37,7 +37,10 @@ pub fn clear(app: &mut App) -> CommandResult {
     app.history.clear();
     app.mark_history_updated();
     app.api_messages.clear();
+    app.system_prompt = None;
     app.transcript_selection.clear();
+    app.queued_messages.clear();
+    app.queued_draft = None;
     app.total_conversation_tokens = 0;
     let todos_cleared = app.clear_todos();
     app.tool_log.clear();
@@ -49,11 +52,21 @@ pub fn clear(app: &mut App) -> CommandResult {
     app.last_exec_wait_command = None;
     app.last_prompt_tokens = None;
     app.last_completion_tokens = None;
-    if todos_cleared {
-        CommandResult::message("Conversation cleared")
+    app.current_session_id = None;
+    let message = if todos_cleared {
+        "Conversation cleared".to_string()
     } else {
-        CommandResult::message("Conversation cleared (plan state busy; run /clear again if needed)")
-    }
+        "Conversation cleared (plan state busy; run /clear again if needed)".to_string()
+    };
+    CommandResult::with_message_and_action(
+        message,
+        AppAction::SyncSession {
+            messages: Vec::new(),
+            system_prompt: None,
+            model: app.model.clone(),
+            workspace: app.workspace.clone(),
+        },
+    )
 }
 
 /// Exit the application
@@ -265,6 +278,7 @@ mod tests {
         });
         app.total_conversation_tokens = 100;
         app.tool_log.push("test".to_string());
+        app.current_session_id = Some("existing-session".to_string());
 
         let result = clear(&mut app);
         assert!(result.message.is_some());
@@ -274,6 +288,8 @@ mod tests {
         assert!(app.tool_log.is_empty());
         assert!(app.tool_cells.is_empty());
         assert!(app.tool_details_by_cell.is_empty());
+        assert!(app.current_session_id.is_none());
+        assert!(matches!(result.action, Some(AppAction::SyncSession { .. })));
     }
 
     #[test]

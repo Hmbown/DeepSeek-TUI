@@ -130,6 +130,20 @@ impl PasteBurst {
         }
     }
 
+    /// Return the remaining delay before a pending char/paste buffer must flush.
+    ///
+    /// This lets the UI event loop avoid sleeping past the flush deadline.
+    #[must_use]
+    pub fn next_flush_delay(&self, now: Instant) -> Option<Duration> {
+        let last = self.last_plain_char_time?;
+        let timeout = if self.is_active_internal() {
+            PASTE_BURST_ACTIVE_IDLE_TIMEOUT
+        } else {
+            PASTE_BURST_CHAR_INTERVAL
+        };
+        Some(timeout.saturating_sub(now.duration_since(last)))
+    }
+
     pub fn append_newline_if_active(&mut self, now: Instant) -> bool {
         if self.is_active() {
             self.buffer.push('\n');
@@ -294,5 +308,21 @@ mod tests {
 
         assert_eq!(burst.flush_before_modified_input(), Some("a".to_string()));
         assert!(!burst.is_active());
+    }
+
+    #[test]
+    fn next_flush_delay_counts_down_to_zero() {
+        let mut burst = PasteBurst::default();
+        let t0 = Instant::now();
+        let _ = burst.on_plain_char('a', t0);
+
+        let almost_due = t0 + Duration::from_millis(7);
+        let remaining = burst
+            .next_flush_delay(almost_due)
+            .expect("delay should exist");
+        assert!(remaining <= Duration::from_millis(1));
+
+        let due = t0 + Duration::from_millis(20);
+        assert_eq!(burst.next_flush_delay(due), Some(Duration::ZERO));
     }
 }

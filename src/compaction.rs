@@ -44,6 +44,11 @@ const KEEP_RECENT_MESSAGES: usize = 4;
 const RECENT_WORKING_SET_WINDOW: usize = 12;
 const MAX_WORKING_SET_PATHS: usize = 24;
 const MIN_SUMMARIZE_MESSAGES: usize = 6;
+const SUMMARY_TEXT_SNIPPET_CHARS: usize = 800;
+const SUMMARY_TOOL_RESULT_SNIPPET_CHARS: usize = 240;
+const SUMMARY_INPUT_MAX_CHARS: usize = 24_000;
+const SUMMARY_INPUT_HEAD_CHARS: usize = 14_000;
+const SUMMARY_INPUT_TAIL_CHARS: usize = 6_000;
 
 #[derive(Debug, Clone, Default)]
 struct CompactionPlan {
@@ -466,6 +471,35 @@ pub fn estimate_tokens(messages: &[Message]) -> usize {
     messages.iter().map(estimate_tokens_for_message).sum()
 }
 
+fn estimate_text_tokens_conservative(text: &str) -> usize {
+    text.chars().count().div_ceil(3)
+}
+
+fn estimate_system_tokens_conservative(system: Option<&SystemPrompt>) -> usize {
+    match system {
+        Some(SystemPrompt::Text(text)) => estimate_text_tokens_conservative(text),
+        Some(SystemPrompt::Blocks(blocks)) => blocks
+            .iter()
+            .map(|block| estimate_text_tokens_conservative(&block.text))
+            .sum(),
+        None => 0,
+    }
+}
+
+/// Conservative estimate for full request input tokens (messages + system + framing).
+#[must_use]
+pub fn estimate_input_tokens_conservative(
+    messages: &[Message],
+    system: Option<&SystemPrompt>,
+) -> usize {
+    let message_tokens = estimate_tokens(messages).saturating_mul(3).div_ceil(2);
+    let system_tokens = estimate_system_tokens_conservative(system);
+    let framing_overhead = messages.len().saturating_mul(12).saturating_add(48);
+    message_tokens
+        .saturating_add(system_tokens)
+        .saturating_add(framing_overhead)
+}
+
 pub fn should_compact(
     messages: &[Message],
     config: &CompactionConfig,
@@ -525,6 +559,22 @@ fn truncate_chars(text: &str, max_chars: usize) -> &str {
         Some((idx, _)) => &text[..idx],
         None => text,
     }
+}
+
+fn tail_chars(text: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    let total_chars = text.chars().count();
+    if total_chars <= max_chars {
+        return text.to_string();
+    }
+    let start_char = total_chars.saturating_sub(max_chars);
+    let start_idx = text
+        .char_indices()
+        .nth(start_char)
+        .map_or(0, |(idx, _)| idx);
+    text[start_idx..].to_string()
 }
 
 /// Result of a compaction operation with metadata.
@@ -707,13 +757,14 @@ async fn create_summary(
         for block in &msg.content {
             match block {
                 ContentBlock::Text { text, .. } => {
-                    let _ = write!(conversation_text, "{role}: {text}\n\n");
+                    let snippet = truncate_chars(text, SUMMARY_TEXT_SNIPPET_CHARS);
+                    let _ = write!(conversation_text, "{role}: {snippet}\n\n");
                 }
                 ContentBlock::ToolUse { name, .. } => {
                     let _ = write!(conversation_text, "{role}: [Used tool: {name}]\n\n");
                 }
                 ContentBlock::ToolResult { content, .. } => {
-                    let snippet = truncate_chars(content, 500);
+                    let snippet = truncate_chars(content, SUMMARY_TOOL_RESULT_SNIPPET_CHARS);
                     let _ = write!(conversation_text, "Tool result: {}\n\n", snippet);
                 }
                 ContentBlock::Thinking { .. } => {
@@ -721,6 +772,17 @@ async fn create_summary(
                 }
             }
         }
+    }
+
+    let conversation_chars = conversation_text.chars().count();
+    if conversation_chars > SUMMARY_INPUT_MAX_CHARS {
+        let head = truncate_chars(&conversation_text, SUMMARY_INPUT_HEAD_CHARS).to_string();
+        let tail = tail_chars(&conversation_text, SUMMARY_INPUT_TAIL_CHARS);
+        let omitted = conversation_chars
+            .saturating_sub(head.chars().count())
+            .saturating_sub(tail.chars().count());
+        conversation_text =
+            format!("{head}\n\n[... {omitted} characters omitted before summary ...]\n\n{tail}");
     }
 
     let request = MessageRequest {
@@ -731,6 +793,7 @@ async fn create_summary(
                 text: format!(
                     "Summarize the following conversation in a concise but comprehensive way. \
                      Preserve key information, decisions made, and any important context. \
+                     Tool outputs may be abbreviated. \
                      Keep it under 500 words.\n\n---\n\n{conversation_text}"
                 ),
                 cache_control: None,

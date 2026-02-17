@@ -154,7 +154,7 @@ Responses API (with automatic fallback if needed).
 ### Crash Recovery + Offline Queue
 
 1. Before sending user input, the TUI writes a checkpoint snapshot to `~/.deepseek/sessions/checkpoints/latest.json`
-2. If the process crashes mid-turn, startup restores that checkpoint automatically (unless explicit `--resume` is used)
+2. Startup remains fresh by default; prior sessions are resumed explicitly via `--resume`/`--continue` (or `Ctrl+R` in TUI)
 3. While degraded/offline, new prompts are queued in-memory and mirrored to `~/.deepseek/sessions/checkpoints/offline_queue.json`
 4. Queue edits (`/queue ...`) are persisted continuously so drafts and queued prompts survive restarts
 5. Successful turn completion clears the active checkpoint and writes a durable session snapshot

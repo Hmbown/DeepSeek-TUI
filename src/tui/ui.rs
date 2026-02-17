@@ -27,7 +27,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::audit::log_sensitive_event;
 use crate::commands;
-use crate::compaction::estimate_tokens;
+use crate::compaction::estimate_input_tokens_conservative;
 use crate::config::Config;
 use crate::core::engine::{EngineConfig, EngineHandle, spawn_engine};
 use crate::core::events::Event as EngineEvent;
@@ -83,6 +83,11 @@ use super::widgets::{ChatWidget, ComposerWidget, HeaderData, HeaderWidget, Rende
 const MAX_QUEUED_PREVIEW: usize = 3;
 const CONTEXT_WARNING_THRESHOLD_PERCENT: f64 = 85.0;
 const CONTEXT_CRITICAL_THRESHOLD_PERCENT: f64 = 85.0;
+const UI_IDLE_POLL_MS: u64 = 33;
+const UI_ACTIVE_POLL_MS: u64 = 16;
+const UI_DEEPSEEK_SQUIGGLE_MS: u64 = 120;
+const UI_TYPING_INDICATOR_MS: u64 = 120;
+const UI_STATUS_ANIMATION_MS: u64 = UI_DEEPSEEK_SQUIGGLE_MS;
 
 /// Run the interactive TUI event loop.
 ///
@@ -164,27 +169,6 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
             }
             Err(e) => {
                 app.status_message = Some(format!("Failed to load session: {e}"));
-            }
-        }
-    } else if let Ok(manager) = SessionManager::default_location() {
-        // Crash recovery: restore in-flight checkpoint when no explicit session was requested.
-        match manager.load_checkpoint() {
-            Ok(Some(checkpoint)) => {
-                apply_loaded_session(&mut app, &checkpoint);
-                app.history.insert(
-                    0,
-                    HistoryCell::System {
-                        content:
-                            "Recovered from crash checkpoint; resume by sending your next message."
-                                .to_string(),
-                    },
-                );
-                app.mark_history_updated();
-                app.status_message = Some("Recovered checkpoint session".to_string());
-            }
-            Ok(None) => {}
-            Err(err) => {
-                app.status_message = Some(format!("Failed to restore checkpoint: {err}"));
             }
         }
     }
@@ -298,6 +282,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         max_subagents: app.max_subagents,
         features: config.features(),
         compaction: app.compaction_config(),
+        capacity: crate::core::capacity::CapacityControllerConfig::from_app_config(config),
         todos: app.todos.clone(),
         plan_state: app.plan_state.clone(),
     }
@@ -318,19 +303,26 @@ async fn run_event_loop(
     let mut last_task_refresh = Instant::now()
         .checked_sub(Duration::from_secs(2))
         .unwrap_or_else(Instant::now);
+    let mut last_status_frame = Instant::now()
+        .checked_sub(Duration::from_millis(UI_STATUS_ANIMATION_MS))
+        .unwrap_or_else(Instant::now);
 
     loop {
         if last_task_refresh.elapsed() >= Duration::from_millis(2500) {
             let tasks = task_manager.list_tasks(Some(10)).await;
             app.task_panel = tasks.into_iter().map(task_summary_to_panel_entry).collect();
             last_task_refresh = Instant::now();
+            app.needs_redraw = true;
         }
 
         // First, poll for engine events (non-blocking)
+        let mut received_engine_event = false;
+        let mut transcript_batch_updated = false;
         let mut queued_to_send: Option<QueuedMessage> = None;
         {
             let mut rx = engine_handle.rx_event.write().await;
             while let Ok(event) = rx.try_recv() {
+                received_engine_event = true;
                 match event {
                     EngineEvent::MessageStarted { .. } => {
                         current_streaming_text.clear();
@@ -356,9 +348,9 @@ async fn run_event_loop(
 
                         if let Some(cell) = app.history.get_mut(index) {
                             if let HistoryCell::Assistant { content, .. } = cell {
-                                content.clone_from(&current_streaming_text);
+                                content.push_str(&sanitized);
                             }
-                            app.mark_history_updated();
+                            transcript_batch_updated = true;
                         }
                     }
                     EngineEvent::MessageComplete { .. } => {
@@ -367,7 +359,7 @@ async fn run_event_loop(
                                 app.history.get_mut(index)
                         {
                             *streaming = false;
-                            app.mark_history_updated();
+                            transcript_batch_updated = true;
                         }
 
                         let mut blocks = Vec::new();
@@ -426,6 +418,7 @@ async fn run_event_loop(
                                 app.history.get_mut(index)
                             {
                                 c.push_str(&sanitized);
+                                transcript_batch_updated = true;
                             }
                         }
                     }
@@ -435,6 +428,7 @@ async fn run_event_loop(
                                 app.history.get_mut(index)
                             {
                                 *streaming = false;
+                                transcript_batch_updated = true;
                             }
                         }
 
@@ -478,6 +472,7 @@ async fn run_event_loop(
                         app.pending_tool_uses.clear();
                         app.plan_tool_used_in_turn = false;
                         persist_checkpoint(app);
+                        last_status_frame = Instant::now();
                     }
                     EngineEvent::TurnComplete {
                         usage,
@@ -557,6 +552,31 @@ async fn run_event_loop(
                     }
                     EngineEvent::CompactionFailed { message, .. } => {
                         app.status_message = Some(message);
+                    }
+                    EngineEvent::CapacityDecision {
+                        risk_band,
+                        action,
+                        reason,
+                        ..
+                    } => {
+                        app.status_message = Some(format!(
+                            "Capacity decision: risk={risk_band} action={action} ({reason})"
+                        ));
+                    }
+                    EngineEvent::CapacityIntervention {
+                        action,
+                        before_prompt_tokens,
+                        after_prompt_tokens,
+                        ..
+                    } => {
+                        app.status_message = Some(format!(
+                            "Capacity intervention: {action} (~{before_prompt_tokens} -> ~{after_prompt_tokens} tokens)"
+                        ));
+                    }
+                    EngineEvent::CapacityMemoryPersistFailed { action, error, .. } => {
+                        app.status_message = Some(format!(
+                            "Capacity memory persist failed ({action}): {error}"
+                        ));
                     }
                     EngineEvent::PauseEvents => {
                         if !event_broker.is_paused() {
@@ -732,6 +752,12 @@ async fn run_event_loop(
                 }
             }
         }
+        if transcript_batch_updated {
+            app.mark_history_updated();
+        }
+        if received_engine_event {
+            app.needs_redraw = true;
+        }
 
         if let Some(next) = queued_to_send {
             if let Err(err) = dispatch_user_message(app, &engine_handle, next.clone()).await {
@@ -741,17 +767,30 @@ async fn run_event_loop(
                     app.queued_message_count()
                 ));
             }
+
+            app.needs_redraw = true;
         }
 
         let queue_state = (app.queued_messages.clone(), app.queued_draft.clone());
         if queue_state != last_queue_state {
             persist_offline_queue_state(app);
             last_queue_state = queue_state;
+            app.needs_redraw = true;
         }
 
         if !app.view_stack.is_empty() {
             let events = app.view_stack.tick();
+            if !events.is_empty() {
+                app.needs_redraw = true;
+            }
             handle_view_events(app, &engine_handle, events).await;
+        }
+
+        if app.is_loading
+            && last_status_frame.elapsed() >= Duration::from_millis(UI_STATUS_ANIMATION_MS)
+        {
+            app.needs_redraw = true;
+            last_status_frame = Instant::now();
         }
 
         if event_broker.is_paused() {
@@ -759,12 +798,25 @@ async fn run_event_loop(
             continue;
         }
 
-        app.flush_paste_burst_if_due(Instant::now());
+        let now = Instant::now();
+        app.flush_paste_burst_if_due(now);
 
-        terminal.draw(|f| render(f, app))?; // app is &mut
+        if app.needs_redraw {
+            terminal.draw(|f| render(f, app))?; // app is &mut
+            app.needs_redraw = false;
+        }
 
-        if event::poll(std::time::Duration::from_millis(120))? {
+        let mut poll_timeout = if app.is_loading {
+            Duration::from_millis(UI_ACTIVE_POLL_MS)
+        } else {
+            Duration::from_millis(UI_IDLE_POLL_MS)
+        };
+        if let Some(until_flush) = app.paste_burst.next_flush_delay(now) {
+            poll_timeout = poll_timeout.min(until_flush);
+        }
+        if event::poll(poll_timeout)? {
             let evt = event::read()?;
+            app.needs_redraw = true;
 
             // Handle bracketed paste events
             if let Event::Paste(text) = &evt {
@@ -1075,6 +1127,8 @@ async fn run_event_loop(
                                         model,
                                         workspace,
                                     } => {
+                                        let is_full_reset =
+                                            messages.is_empty() && system_prompt.is_none();
                                         let _ = engine_handle
                                             .send(Op::SyncSession {
                                                 messages,
@@ -1088,6 +1142,10 @@ async fn run_event_loop(
                                                 config: app.compaction_config(),
                                             })
                                             .await;
+                                        if is_full_reset {
+                                            persist_session_snapshot(app);
+                                            clear_checkpoint();
+                                        }
                                     }
                                     AppAction::SendMessage(content) => {
                                         let queued = build_queued_message(app, content);
@@ -2446,7 +2504,7 @@ fn render_status_indicator(f: &mut Frame, area: Rect, app: &App, queued: &[Strin
             None
         };
         let elapsed = app.turn_started_at.map(format_elapsed);
-        // Use typing indicator when streaming content, otherwise use whale spinner
+        // Use typing indicator when streaming content, otherwise use a subtle status glyph.
         let has_streaming_content = app.streaming_message_index.is_some();
         let spinner = if has_streaming_content {
             typing_indicator(app.turn_started_at)
@@ -2743,23 +2801,11 @@ fn prompt_for_mode(mode: AppMode) -> &'static str {
 }
 
 fn estimated_context_tokens(app: &App) -> Option<i64> {
-    let mut total = estimate_tokens(&app.api_messages);
-
-    match &app.system_prompt {
-        Some(SystemPrompt::Text(text)) => total = total.saturating_add(estimate_text_tokens(text)),
-        Some(SystemPrompt::Blocks(blocks)) => {
-            for block in blocks {
-                total = total.saturating_add(estimate_text_tokens(&block.text));
-            }
-        }
-        None => {}
-    }
-
-    i64::try_from(total).ok()
-}
-
-fn estimate_text_tokens(text: &str) -> usize {
-    text.chars().count().div_ceil(4)
+    i64::try_from(estimate_input_tokens_conservative(
+        &app.api_messages,
+        app.system_prompt.as_ref(),
+    ))
+    .ok()
 }
 
 fn context_usage_snapshot(app: &App) -> Option<(i64, u32, f64)> {
@@ -2826,21 +2872,19 @@ fn format_elapsed(start: Instant) -> String {
 }
 
 fn deepseek_squiggle(start: Option<Instant>) -> &'static str {
-    const FRAMES: [&str; 12] = [
-        "🐳", "🐳.", "🐳..", "🐳...", "🐳..", "🐳.", "🐋", "🐋.", "🐋..", "🐋...", "🐋..", "🐋.",
-    ];
+    const FRAMES: [&str; 6] = ["◍", "◉", "◌", "◌", "◉", "◍"];
     let elapsed_ms = start.map_or(0, |t| t.elapsed().as_millis());
-    let idx = ((elapsed_ms / 420) as usize) % FRAMES.len();
+    let idx = ((elapsed_ms / u128::from(UI_DEEPSEEK_SQUIGGLE_MS)) as usize) % FRAMES.len();
     FRAMES[idx]
 }
 
 /// Braille pattern frames for typing/thinking indicator animation.
-const TYPING_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const TYPING_FRAMES: &[&str] = &["⠁", "⠂", "⠄", "⠂"];
 
 /// Returns the typing indicator frame based on elapsed time.
 fn typing_indicator(start: Option<Instant>) -> &'static str {
     let elapsed_ms = start.map_or(0, |t| t.elapsed().as_millis());
-    let idx = ((elapsed_ms / 220) as usize) % TYPING_FRAMES.len();
+    let idx = ((elapsed_ms / u128::from(UI_TYPING_INDICATOR_MS)) as usize) % TYPING_FRAMES.len();
     TYPING_FRAMES[idx]
 }
 

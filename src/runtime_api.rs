@@ -802,11 +802,13 @@ mod tests {
         }
     }
 
-    async fn spawn_test_server() -> Result<(
-        SocketAddr,
-        SharedRuntimeThreadManager,
-        tokio::task::JoinHandle<()>,
-    )> {
+    async fn spawn_test_server() -> Result<
+        Option<(
+            SocketAddr,
+            SharedRuntimeThreadManager,
+            tokio::task::JoinHandle<()>,
+        )>,
+    > {
         let root = std::env::temp_dir().join(format!("deepseek-runtime-api-{}", Uuid::new_v4()));
         let sessions_dir = root.join("sessions");
         fs::create_dir_all(&sessions_dir)?;
@@ -824,8 +826,24 @@ mod tests {
             Arc::new(MockExecutor),
         )
         .await?;
+        let mut config = Config::default();
+        config.capacity = Some(crate::config::CapacityConfig {
+            enabled: Some(false),
+            low_risk_max: None,
+            medium_risk_max: None,
+            severe_min_slack: None,
+            severe_violation_ratio: None,
+            refresh_cooldown_turns: None,
+            replan_cooldown_turns: None,
+            max_replay_per_turn: None,
+            min_turns_before_guardrail: None,
+            profile_window: None,
+            deepseek_v3_2_chat_prior: None,
+            deepseek_v3_2_reasoner_prior: None,
+            fallback_default_prior: None,
+        });
         let runtime_threads: SharedRuntimeThreadManager = Arc::new(RuntimeThreadManager::open(
-            Config::default(),
+            config,
             PathBuf::from("."),
             RuntimeThreadManagerConfig::from_task_data_dir(root.join("runtime")),
         )?);
@@ -838,12 +856,16 @@ mod tests {
             sessions_dir,
         };
         let app = build_router(state);
-        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let listener = match TcpListener::bind("127.0.0.1:0").await {
+            Ok(listener) => listener,
+            Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => return Ok(None),
+            Err(err) => return Err(err.into()),
+        };
         let addr = listener.local_addr()?;
         let handle = tokio::spawn(async move {
             let _ = axum::serve(listener, app).await;
         });
-        Ok((addr, runtime_threads, handle))
+        Ok(Some((addr, runtime_threads, handle)))
     }
 
     async fn read_first_sse_frame(resp: reqwest::Response) -> Result<String> {
@@ -925,7 +947,9 @@ mod tests {
 
     #[tokio::test]
     async fn health_and_tasks_endpoints_work() -> Result<()> {
-        let (addr, _runtime_threads, handle) = spawn_test_server().await?;
+        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+            return Ok(());
+        };
         let client = reqwest::Client::new();
 
         let health: serde_json::Value = client
@@ -983,7 +1007,9 @@ mod tests {
 
     #[tokio::test]
     async fn stream_requires_prompt() -> Result<()> {
-        let (addr, _runtime_threads, handle) = spawn_test_server().await?;
+        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+            return Ok(());
+        };
         let client = reqwest::Client::new();
 
         let resp = client
@@ -998,7 +1024,9 @@ mod tests {
 
     #[tokio::test]
     async fn thread_endpoints_expose_lifecycle_contract() -> Result<()> {
-        let (addr, _runtime_threads, handle) = spawn_test_server().await?;
+        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+            return Ok(());
+        };
         let client = reqwest::Client::new();
 
         let created: serde_json::Value = client
@@ -1130,7 +1158,9 @@ mod tests {
 
     #[tokio::test]
     async fn events_endpoint_respects_since_seq_cursor() -> Result<()> {
-        let (addr, _runtime_threads, handle) = spawn_test_server().await?;
+        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+            return Ok(());
+        };
         let client = reqwest::Client::new();
 
         let created: serde_json::Value = client
@@ -1207,7 +1237,9 @@ mod tests {
 
     #[tokio::test]
     async fn steer_and_interrupt_endpoints_work_on_active_turn() -> Result<()> {
-        let (addr, runtime_threads, handle) = spawn_test_server().await?;
+        let Some((addr, runtime_threads, handle)) = spawn_test_server().await? else {
+            return Ok(());
+        };
         let client = reqwest::Client::new();
 
         let created: serde_json::Value = client
@@ -1425,7 +1457,9 @@ mod tests {
 
     #[tokio::test]
     async fn stream_endpoint_remains_backward_compatible() -> Result<()> {
-        let (addr, _runtime_threads, handle) = spawn_test_server().await?;
+        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+            return Ok(());
+        };
         let client = reqwest::Client::new();
 
         let resp = client

@@ -37,7 +37,7 @@ memory_path = "~/.deepseek/memory.md"
 # ─────────────────────────────────────────────────────────────────────────────────
 # Security
 # ─────────────────────────────────────────────────────────────────────────────────
-allow_shell = false
+allow_shell = true
 approval_policy = "on-request" # on-request | untrusted | never
 sandbox_mode = "workspace-write" # read-only | workspace-write | danger-full-access | external-sandbox
 max_subagents = 5 # optional (1-20)
@@ -82,6 +82,24 @@ exponential_base = 2.0
 # message_threshold = 50           # Or above this message count
 # model = "deepseek-chat"           # Model to use for summarization
 # cache_summary = true             # Cache the summary block
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Capacity Controller (runtime pressure guardrails)
+# ─────────────────────────────────────────────────────────────────────────────────
+[capacity]
+enabled = true
+low_risk_max = 0.34
+medium_risk_max = 0.62
+severe_min_slack = -0.25
+severe_violation_ratio = 0.40
+refresh_cooldown_turns = 2
+replan_cooldown_turns = 5
+max_replay_per_turn = 1
+min_turns_before_guardrail = 2
+profile_window = 8
+deepseek_v3_2_chat_prior = 3.9
+deepseek_v3_2_reasoner_prior = 4.1
+fallback_default_prior = 3.8
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Profile Example (for multiple environments)

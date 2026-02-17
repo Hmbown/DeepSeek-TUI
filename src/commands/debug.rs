@@ -3,7 +3,7 @@
 //! Debug commands: tokens, cost, system, context, undo, retry
 
 use super::CommandResult;
-use crate::compaction::estimate_tokens;
+use crate::compaction::estimate_input_tokens_conservative;
 use crate::models::{DEFAULT_CONTEXT_WINDOW_TOKENS, SystemPrompt, context_window_for_model};
 use crate::tui::app::{App, AppAction};
 use crate::tui::history::HistoryCell;
@@ -78,16 +78,15 @@ pub fn system_prompt(app: &mut App) -> CommandResult {
 /// Show context window usage
 pub fn context(app: &mut App) -> CommandResult {
     let mut total_chars = estimate_message_chars(&app.api_messages);
-    let mut estimated_tokens = estimate_tokens(&app.api_messages);
+    let estimated_tokens =
+        estimate_input_tokens_conservative(&app.api_messages, app.system_prompt.as_ref());
 
     // System prompt
     if let Some(SystemPrompt::Text(text)) = &app.system_prompt {
         total_chars += text.len();
-        estimated_tokens = estimated_tokens.saturating_add(estimate_text_tokens(text));
     } else if let Some(SystemPrompt::Blocks(blocks)) = &app.system_prompt {
         for block in blocks {
             total_chars += block.text.len();
-            estimated_tokens = estimated_tokens.saturating_add(estimate_text_tokens(&block.text));
         }
     }
 
@@ -112,10 +111,6 @@ pub fn context(app: &mut App) -> CommandResult {
         app.history.len(),
         app.api_messages.len(),
     ))
-}
-
-fn estimate_text_tokens(text: &str) -> usize {
-    text.chars().count().div_ceil(4)
 }
 
 #[cfg(test)]

@@ -56,6 +56,19 @@ These override config values:
 - `DEEPSEEK_MAX_SUBAGENTS` (clamped to `1..=20`)
 - `DEEPSEEK_TASKS_DIR` (runtime task queue/artifact storage, default `~/.deepseek/tasks`)
 - `DEEPSEEK_ALLOW_INSECURE_HTTP` (`1`/`true` allows non-local `http://` base URLs; default is reject)
+- `DEEPSEEK_CAPACITY_ENABLED`
+- `DEEPSEEK_CAPACITY_LOW_RISK_MAX`
+- `DEEPSEEK_CAPACITY_MEDIUM_RISK_MAX`
+- `DEEPSEEK_CAPACITY_SEVERE_MIN_SLACK`
+- `DEEPSEEK_CAPACITY_SEVERE_VIOLATION_RATIO`
+- `DEEPSEEK_CAPACITY_REFRESH_COOLDOWN_TURNS`
+- `DEEPSEEK_CAPACITY_REPLAN_COOLDOWN_TURNS`
+- `DEEPSEEK_CAPACITY_MAX_REPLAY_PER_TURN`
+- `DEEPSEEK_CAPACITY_MIN_TURNS_BEFORE_GUARDRAIL`
+- `DEEPSEEK_CAPACITY_PROFILE_WINDOW`
+- `DEEPSEEK_CAPACITY_PRIOR_CHAT`
+- `DEEPSEEK_CAPACITY_PRIOR_REASONER`
+- `DEEPSEEK_CAPACITY_PRIOR_FALLBACK`
 
 ## Settings File (Persistent UI Preferences)
 
@@ -84,7 +97,7 @@ Common settings keys:
 - `api_key` (string, required): must be non-empty (or set `DEEPSEEK_API_KEY`).
 - `base_url` (string, optional): defaults to `https://api.deepseek.com` (OpenAI-compatible Responses API).
 - `default_text_model` (string, optional): defaults to `deepseek-reasoner`. Supported IDs are `deepseek-reasoner` and `deepseek-chat`.
-- `allow_shell` (bool, optional): defaults to `false`.
+- `allow_shell` (bool, optional): defaults to `true` (sandboxed).
 - `approval_policy` (string, optional): `on-request`, `untrusted`, or `never`. Runtime `/set approval_mode` also accepts `on-request` and `untrusted` aliases.
 - `sandbox_mode` (string, optional): `read-only`, `workspace-write`, `danger-full-access`, `external-sandbox`.
 - `managed_config_path` (string, optional): managed config file loaded after user/env config.
@@ -100,6 +113,20 @@ Common settings keys:
   - `[retry].initial_delay` (float seconds, default `1.0`)
   - `[retry].max_delay` (float seconds, default `60.0`)
   - `[retry].exponential_base` (float, default `2.0`)
+- `capacity.*` (optional): runtime context-capacity controller:
+  - `[capacity].enabled` (bool, default `true`)
+  - `[capacity].low_risk_max` (float, default `0.34`)
+  - `[capacity].medium_risk_max` (float, default `0.62`)
+  - `[capacity].severe_min_slack` (float, default `-0.25`)
+  - `[capacity].severe_violation_ratio` (float, default `0.40`)
+  - `[capacity].refresh_cooldown_turns` (int, default `2`)
+  - `[capacity].replan_cooldown_turns` (int, default `5`)
+  - `[capacity].max_replay_per_turn` (int, default `1`)
+  - `[capacity].min_turns_before_guardrail` (int, default `2`)
+  - `[capacity].profile_window` (int, default `8`)
+  - `[capacity].deepseek_v3_2_chat_prior` (float, default `3.9`)
+  - `[capacity].deepseek_v3_2_reasoner_prior` (float, default `4.1`)
+  - `[capacity].fallback_default_prior` (float, default `3.8`)
 - `tui.alternate_screen` (string, optional): `auto`, `always`, or `never`. `auto` disables the alternate screen in Zellij; `--no-alt-screen` forces inline mode.
 - `hooks` (optional): lifecycle hooks configuration (see `config.example.toml`).
 - `features.*` (optional): feature flag overrides (see below).
@@ -153,6 +180,8 @@ allowed_sandbox_modes = ["read-only", "workspace-write"]
 ```
 
 If configured values violate requirements, startup fails with a descriptive error.
+
+See `docs/capacity_controller.md` for formulas, intervention behavior, and telemetry.
 
 ## Notes On `deepseek doctor`
 

@@ -11,6 +11,8 @@
 
 #![allow(dead_code)]
 
+pub mod capacity;
+pub mod capacity_memory;
 pub mod engine;
 pub mod events;
 pub mod ops;

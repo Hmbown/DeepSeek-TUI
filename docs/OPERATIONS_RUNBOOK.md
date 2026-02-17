@@ -51,11 +51,11 @@ Actions:
 
 Expected behavior:
 - Checkpoint stored at `~/.deepseek/sessions/checkpoints/latest.json`
-- Startup auto-restores checkpoint when no explicit `--resume` target is supplied
+- Startup begins a fresh session unless `--resume`/`--continue` is supplied
 
 Actions:
-1. Start TUI normally and verify "Recovered checkpoint session" status
-2. If automatic recovery fails, inspect checkpoint JSON for schema mismatch
+1. Resume prior work explicitly via `deepseek --resume <id>` or `Ctrl+R` in TUI
+2. If checkpoint inspection is needed, inspect `latest.json` for schema mismatch/details
 3. If schema is newer than binary supports, upgrade binary or remove stale checkpoint
 
 ## Incident: Persistent State Schema Errors

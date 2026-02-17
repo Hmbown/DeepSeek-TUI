@@ -22,7 +22,10 @@ use crate::config::{Config, DEFAULT_TEXT_MODEL, MAX_SUBAGENTS};
 use crate::core::engine::{EngineConfig, EngineHandle, spawn_engine};
 use crate::core::events::{Event as EngineEvent, TurnOutcomeStatus};
 use crate::core::ops::Op;
-use crate::models::{ContentBlock, Message, Usage};
+use crate::models::{
+    ContentBlock, Message, Usage, compaction_message_threshold_for_model,
+    compaction_threshold_for_model,
+};
 use crate::tools::plan::new_shared_plan_state;
 use crate::tools::todo::new_shared_todo_list;
 use crate::tui::app::AppMode;
@@ -1150,7 +1153,11 @@ impl RuntimeThreadManager {
             }
         }
 
-        let compaction = CompactionConfig::default();
+        let mut compaction = CompactionConfig::default();
+        compaction.enabled = true;
+        compaction.model = thread.model.clone();
+        compaction.token_threshold = compaction_threshold_for_model(&thread.model);
+        compaction.message_threshold = compaction_message_threshold_for_model(&thread.model);
         let engine_cfg = EngineConfig {
             model: thread.model.clone(),
             workspace: thread.workspace.clone(),
@@ -1162,6 +1169,9 @@ impl RuntimeThreadManager {
             max_subagents: self.config.max_subagents().clamp(1, MAX_SUBAGENTS),
             features: self.config.features(),
             compaction,
+            capacity: crate::core::capacity::CapacityControllerConfig::from_app_config(
+                &self.config,
+            ),
             todos: new_shared_todo_list(),
             plan_state: new_shared_plan_state(),
         };
@@ -1470,6 +1480,99 @@ impl RuntimeThreadManager {
                         )
                         .await?;
                     }
+                }
+                EngineEvent::CapacityDecision {
+                    risk_band,
+                    action,
+                    reason,
+                    ..
+                } => {
+                    let message = format!(
+                        "Capacity decision: risk={risk_band} action={action} reason={reason}"
+                    );
+                    let item = TurnItemRecord {
+                        schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
+                        id: format!("item_{}", &Uuid::new_v4().to_string()[..8]),
+                        turn_id: turn_id.clone(),
+                        kind: TurnItemKind::Status,
+                        status: TurnItemLifecycleStatus::Completed,
+                        summary: summarize_text(&message, SUMMARY_LIMIT),
+                        detail: Some(message),
+                        artifact_refs: Vec::new(),
+                        started_at: Some(Utc::now()),
+                        ended_at: Some(Utc::now()),
+                    };
+                    self.store.save_item(&item)?;
+                    self.attach_item_to_turn(&turn_id, &item.id)?;
+                    self.emit_event(
+                        &thread_id,
+                        Some(&turn_id),
+                        Some(&item.id),
+                        "item.completed",
+                        json!({ "item": item }),
+                    )
+                    .await?;
+                }
+                EngineEvent::CapacityIntervention {
+                    action,
+                    before_prompt_tokens,
+                    after_prompt_tokens,
+                    replay_outcome,
+                    replan_performed,
+                    ..
+                } => {
+                    let message = format!(
+                        "Capacity intervention: {action} (~{before_prompt_tokens} -> ~{after_prompt_tokens}) replay={:?} replan={replan_performed}",
+                        replay_outcome
+                    );
+                    let item = TurnItemRecord {
+                        schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
+                        id: format!("item_{}", &Uuid::new_v4().to_string()[..8]),
+                        turn_id: turn_id.clone(),
+                        kind: TurnItemKind::Status,
+                        status: TurnItemLifecycleStatus::Completed,
+                        summary: summarize_text(&message, SUMMARY_LIMIT),
+                        detail: Some(message),
+                        artifact_refs: Vec::new(),
+                        started_at: Some(Utc::now()),
+                        ended_at: Some(Utc::now()),
+                    };
+                    self.store.save_item(&item)?;
+                    self.attach_item_to_turn(&turn_id, &item.id)?;
+                    self.emit_event(
+                        &thread_id,
+                        Some(&turn_id),
+                        Some(&item.id),
+                        "item.completed",
+                        json!({ "item": item }),
+                    )
+                    .await?;
+                }
+                EngineEvent::CapacityMemoryPersistFailed { action, error, .. } => {
+                    let message =
+                        format!("Capacity memory persist failed: action={action} error={error}");
+                    let item = TurnItemRecord {
+                        schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
+                        id: format!("item_{}", &Uuid::new_v4().to_string()[..8]),
+                        turn_id: turn_id.clone(),
+                        kind: TurnItemKind::Status,
+                        status: TurnItemLifecycleStatus::Failed,
+                        summary: summarize_text(&message, SUMMARY_LIMIT),
+                        detail: Some(message),
+                        artifact_refs: Vec::new(),
+                        started_at: Some(Utc::now()),
+                        ended_at: Some(Utc::now()),
+                    };
+                    self.store.save_item(&item)?;
+                    self.attach_item_to_turn(&turn_id, &item.id)?;
+                    self.emit_event(
+                        &thread_id,
+                        Some(&turn_id),
+                        Some(&item.id),
+                        "item.failed",
+                        json!({ "item": item }),
+                    )
+                    .await?;
                 }
                 EngineEvent::ApprovalRequired {
                     id,
