@@ -502,7 +502,7 @@ fn expand_path(path: &str) -> PathBuf {
         && (stripped.is_empty() || stripped.starts_with('/') || stripped.starts_with('\\'))
         && let Some(mut home) = effective_home_dir()
     {
-        let suffix = stripped.trim_start_matches(|ch| ch == '/' || ch == '\\');
+        let suffix = stripped.trim_start_matches(['/', '\\']);
         if !suffix.is_empty() {
             home.push(suffix);
         }
