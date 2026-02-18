@@ -1507,15 +1507,16 @@ mod tests {
         }
     }
 
-    async fn spawn_test_server() -> Result<
+    async fn spawn_test_server_with_root(
+        root: PathBuf,
+        sessions_dir: PathBuf,
+    ) -> Result<
         Option<(
             SocketAddr,
             SharedRuntimeThreadManager,
             tokio::task::JoinHandle<()>,
         )>,
     > {
-        let root = std::env::temp_dir().join(format!("deepseek-runtime-api-{}", Uuid::new_v4()));
-        let sessions_dir = root.join("sessions");
         fs::create_dir_all(&sessions_dir)?;
         let manager = TaskManager::start_with_executor(
             TaskManagerConfig {
@@ -1575,6 +1576,18 @@ mod tests {
             let _ = axum::serve(listener, app).await;
         });
         Ok(Some((addr, runtime_threads, handle)))
+    }
+
+    async fn spawn_test_server() -> Result<
+        Option<(
+            SocketAddr,
+            SharedRuntimeThreadManager,
+            tokio::task::JoinHandle<()>,
+        )>,
+    > {
+        let root = std::env::temp_dir().join(format!("deepseek-runtime-api-{}", Uuid::new_v4()));
+        let sessions_dir = root.join("sessions");
+        spawn_test_server_with_root(root, sessions_dir).await
     }
 
     async fn read_first_sse_frame(resp: reqwest::Response) -> Result<String> {
@@ -2620,12 +2633,6 @@ mod tests {
 
     #[tokio::test]
     async fn session_resume_thread_creates_thread_from_saved_session() -> Result<()> {
-        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
-            return Ok(());
-        };
-        let client = reqwest::Client::new();
-
-        // Write a minimal saved session file into the sessions dir used by the test server.
         let root = std::env::temp_dir().join(format!("deepseek-session-resume-{}", Uuid::new_v4()));
         let sessions_dir = root.join("sessions");
         fs::create_dir_all(&sessions_dir)?;
@@ -2660,10 +2667,13 @@ mod tests {
             serde_json::to_string_pretty(&session)?,
         )?;
 
-        // This test validates the shape of the error (session dir mismatch with
-        // the test-server sessions dir), since the test server creates its own
-        // temp sessions directory. The important contract is the 404 response
-        // for a session not present in the server's sessions dir.
+        let Some((addr, _runtime_threads, handle)) =
+            spawn_test_server_with_root(root.clone(), sessions_dir.clone()).await?
+        else {
+            return Ok(());
+        };
+        let client = reqwest::Client::new();
+
         let resp = client
             .post(format!(
                 "http://{addr}/v1/sessions/{session_id}/resume-thread"
@@ -2671,7 +2681,24 @@ mod tests {
             .json(&json!({ "model": "deepseek-chat" }))
             .send()
             .await?;
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let resumed: serde_json::Value = resp.json().await?;
+        assert_eq!(resumed["session_id"], session_id);
+        assert_eq!(resumed["message_count"], 2);
+
+        let thread_id = resumed["thread_id"]
+            .as_str()
+            .context("missing resumed thread id")?;
+        let detail: serde_json::Value = client
+            .get(format!("http://{addr}/v1/threads/{thread_id}"))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert_eq!(detail["thread"]["id"], thread_id);
+        assert_eq!(detail["turns"].as_array().map_or(0, Vec::len), 1);
+        assert_eq!(detail["items"].as_array().map_or(0, Vec::len), 2);
 
         handle.abort();
         Ok(())
