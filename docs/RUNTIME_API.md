@@ -42,6 +42,10 @@ The event log is append-only with global monotonic `seq` for replay/resume.
 
 - `GET /health`
 - `GET /v1/sessions?limit=50&search=<substring>`
+- `GET /v1/workspace/status`
+- `GET /v1/skills`
+- `GET /v1/apps/mcp/servers`
+- `GET /v1/apps/mcp/tools?server=<optional>`
 
 ### Compatibility Stream (Single Turn)
 
@@ -80,7 +84,9 @@ Typical SSE events:
 
 - `POST /v1/threads`
 - `GET /v1/threads?limit=50&include_archived=false`
+- `GET /v1/threads/summary?limit=50&search=<optional>&include_archived=false`
 - `GET /v1/threads/{id}`
+- `PATCH /v1/threads/{id}` (currently supports `{ "archived": true|false }`)
 - `POST /v1/threads/{id}/resume`
 - `POST /v1/threads/{id}/fork`
 
@@ -110,6 +116,7 @@ Notes:
 - `interrupt` returns quickly and marks `turn.interrupt_requested`.
 - Terminal turn status becomes `interrupted` only after cleanup completes.
 - Manual compaction is exposed as a turn with `context_compaction` item lifecycle events.
+- Archiving/unarchiving threads updates persisted thread state and emits `thread.updated`.
 
 ### Replayable Events
 
@@ -165,6 +172,25 @@ Tasks execute through the same runtime thread/turn pipeline and include:
 - linked `thread_id` / `turn_id`
 - runtime event count
 - timeline + tool summaries + artifact references
+
+### Automations
+
+- `GET /v1/automations`
+- `POST /v1/automations`
+- `GET /v1/automations/{id}`
+- `PATCH /v1/automations/{id}`
+- `DELETE /v1/automations/{id}`
+- `POST /v1/automations/{id}/run`
+- `POST /v1/automations/{id}/pause`
+- `POST /v1/automations/{id}/resume`
+- `GET /v1/automations/{id}/runs?limit=20`
+
+RRULE support is intentionally constrained to:
+- hourly: `FREQ=HOURLY;INTERVAL=<hours>[;BYDAY=MO,TU,...]`
+- weekly: `FREQ=WEEKLY;BYDAY=...;BYHOUR=<0-23>;BYMINUTE=<0-59>`
+
+Automations are persisted under `~/.deepseek/automations` (override with `DEEPSEEK_AUTOMATIONS_DIR`).
+Each run is executed as a normal background task and links to task/thread/turn ids.
 
 ## Persistence
 

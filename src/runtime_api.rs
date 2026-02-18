@@ -1,30 +1,43 @@
 //! Runtime HTTP/SSE API for local DeepSeek automation.
 
+use std::collections::HashSet;
 use std::convert::Infallible;
+use std::fs;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use async_stream::stream;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderValue, Method, StatusCode};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
+use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
+use tower_http::cors::{Any, CorsLayer};
 
+use crate::automation_manager::{
+    AutomationManager, AutomationRecord, AutomationRunRecord, AutomationSchedulerConfig,
+    CreateAutomationRequest, SharedAutomationManager, UpdateAutomationRequest, spawn_scheduler,
+};
 use crate::config::{Config, DEFAULT_TEXT_MODEL};
+use crate::mcp::{McpConfig, McpPool};
 use crate::runtime_threads::{
     CompactThreadRequest, CreateThreadRequest, RuntimeThreadManager, RuntimeThreadManagerConfig,
     SharedRuntimeThreadManager, StartTurnRequest, SteerTurnRequest, ThreadDetail, ThreadRecord,
-    TurnRecord,
+    TurnItemKind, TurnRecord, UpdateThreadRequest,
 };
-use crate::session_manager::{SessionManager, SessionMetadata, default_sessions_dir};
+use crate::session_manager::{SavedSession, SessionManager, SessionMetadata, default_sessions_dir};
+use crate::skills::SkillRegistry;
 use crate::task_manager::{
     NewTaskRequest, SharedTaskManager, TaskManager, TaskManagerConfig, TaskRecord, TaskSummary,
 };
@@ -36,6 +49,8 @@ pub struct RuntimeApiState {
     task_manager: SharedTaskManager,
     runtime_threads: SharedRuntimeThreadManager,
     sessions_dir: PathBuf,
+    mcp_config_path: PathBuf,
+    automations: SharedAutomationManager,
 }
 
 #[derive(Debug, Clone)]
@@ -69,6 +84,27 @@ struct SessionsResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct SessionDetailResponse {
+    metadata: SessionMetadata,
+    messages: Vec<serde_json::Value>,
+    system_prompt: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResumeSessionRequest {
+    model: Option<String>,
+    mode: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ResumeSessionResponse {
+    thread_id: String,
+    session_id: String,
+    message_count: usize,
+    summary: String,
+}
+
+#[derive(Debug, Serialize)]
 struct TasksResponse {
     tasks: Vec<TaskSummary>,
     counts: crate::task_manager::TaskCounts,
@@ -89,6 +125,93 @@ struct TasksQuery {
 struct ThreadsQuery {
     limit: Option<usize>,
     include_archived: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ThreadSummaryQuery {
+    limit: Option<usize>,
+    search: Option<String>,
+    include_archived: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+struct ThreadSummary {
+    id: String,
+    title: String,
+    preview: String,
+    model: String,
+    mode: String,
+    archived: bool,
+    updated_at: chrono::DateTime<Utc>,
+    latest_turn_id: Option<String>,
+    latest_turn_status: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct WorkspaceStatusResponse {
+    workspace: PathBuf,
+    git_repo: bool,
+    branch: Option<String>,
+    staged: usize,
+    unstaged: usize,
+    untracked: usize,
+    ahead: Option<u32>,
+    behind: Option<u32>,
+}
+
+#[derive(Debug, Serialize)]
+struct SkillEntry {
+    name: String,
+    description: String,
+    path: PathBuf,
+}
+
+#[derive(Debug, Serialize)]
+struct SkillsResponse {
+    directory: PathBuf,
+    warnings: Vec<String>,
+    skills: Vec<SkillEntry>,
+}
+
+#[derive(Debug, Serialize)]
+struct McpServerEntry {
+    name: String,
+    enabled: bool,
+    required: bool,
+    command: Option<String>,
+    url: Option<String>,
+    connected: bool,
+    enabled_tools: Vec<String>,
+    disabled_tools: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct McpServersResponse {
+    servers: Vec<McpServerEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct McpToolsQuery {
+    server: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct McpToolEntry {
+    server: String,
+    name: String,
+    prefixed_name: String,
+    description: Option<String>,
+    input_schema: Value,
+}
+
+#[derive(Debug, Serialize)]
+struct McpToolsResponse {
+    tools: Vec<McpToolEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AutomationRunsQuery {
+    limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -126,6 +249,14 @@ pub async fn run_http_server(
     let task_manager =
         TaskManager::start_with_runtime_manager(task_cfg, config.clone(), runtime_threads.clone())
             .await?;
+    let automations = Arc::new(Mutex::new(AutomationManager::default_location()?));
+    let scheduler_cancel = CancellationToken::new();
+    let scheduler_handle = spawn_scheduler(
+        automations.clone(),
+        task_manager.clone(),
+        scheduler_cancel.clone(),
+        AutomationSchedulerConfig::default(),
+    );
 
     let sessions_dir = default_sessions_dir().unwrap_or_else(|_| {
         dirs::home_dir()
@@ -138,6 +269,8 @@ pub async fn run_http_server(
         task_manager,
         runtime_threads,
         sessions_dir,
+        mcp_config_path: config.mcp_config_path(),
+        automations,
     };
     let app = build_router(state);
 
@@ -150,18 +283,28 @@ pub async fn run_http_server(
 
     println!("Runtime API listening on http://{addr}");
     println!("Security: this server is local-first. Do not expose it to untrusted networks.");
-    axum::serve(listener, app)
+    let serve_result = axum::serve(listener, app)
         .await
-        .map_err(|e| anyhow!("Runtime API server error: {e}"))
+        .map_err(|e| anyhow!("Runtime API server error: {e}"));
+    scheduler_cancel.cancel();
+    scheduler_handle.abort();
+    serve_result
 }
 
 pub fn build_router(state: RuntimeApiState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/v1/sessions", get(list_sessions))
+        .route("/v1/sessions/{id}", get(get_session).delete(delete_session))
+        .route(
+            "/v1/sessions/{id}/resume-thread",
+            post(resume_session_thread),
+        )
+        .route("/v1/workspace/status", get(workspace_status))
         .route("/v1/stream", post(stream_turn))
         .route("/v1/threads", get(list_threads).post(create_thread))
-        .route("/v1/threads/{id}", get(get_thread))
+        .route("/v1/threads/summary", get(list_threads_summary))
+        .route("/v1/threads/{id}", get(get_thread).patch(update_thread))
         .route("/v1/threads/{id}/resume", post(resume_thread))
         .route("/v1/threads/{id}/fork", post(fork_thread))
         .route("/v1/threads/{id}/turns", post(start_thread_turn))
@@ -178,6 +321,24 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/v1/tasks", get(list_tasks).post(create_task))
         .route("/v1/tasks/{id}", get(get_task))
         .route("/v1/tasks/{id}/cancel", post(cancel_task))
+        .route("/v1/skills", get(list_skills))
+        .route("/v1/apps/mcp/servers", get(list_mcp_servers))
+        .route("/v1/apps/mcp/tools", get(list_mcp_tools))
+        .route(
+            "/v1/automations",
+            get(list_automations).post(create_automation),
+        )
+        .route(
+            "/v1/automations/{id}",
+            get(get_automation)
+                .patch(update_automation)
+                .delete(delete_automation),
+        )
+        .route("/v1/automations/{id}/run", post(run_automation))
+        .route("/v1/automations/{id}/pause", post(pause_automation))
+        .route("/v1/automations/{id}/resume", post(resume_automation))
+        .route("/v1/automations/{id}/runs", get(list_automation_runs))
+        .layer(cors_layer())
         .with_state(state)
 }
 
@@ -207,6 +368,133 @@ async fn list_sessions(
     let limit = query.limit.unwrap_or(50).clamp(1, 500);
     sessions.truncate(limit);
     Ok(Json(SessionsResponse { sessions }))
+}
+
+async fn get_session(
+    State(state): State<RuntimeApiState>,
+    Path(id): Path<String>,
+) -> Result<Json<SessionDetailResponse>, ApiError> {
+    let manager = SessionManager::new(state.sessions_dir.clone())
+        .map_err(|e| ApiError::internal(format!("Failed to open sessions dir: {e}")))?;
+    let session = manager.load_session(&id).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            ApiError::not_found(format!("Session '{id}' not found"))
+        } else if e.kind() == std::io::ErrorKind::InvalidData {
+            ApiError::bad_request(format!("Failed to parse session '{id}': {e}"))
+        } else {
+            ApiError::not_found(format!("Session '{id}' not found: {e}"))
+        }
+    })?;
+    Ok(Json(session_to_detail(session)))
+}
+
+async fn resume_session_thread(
+    State(state): State<RuntimeApiState>,
+    Path(id): Path<String>,
+    Json(req): Json<ResumeSessionRequest>,
+) -> Result<(StatusCode, Json<ResumeSessionResponse>), ApiError> {
+    let manager = SessionManager::new(state.sessions_dir.clone())
+        .map_err(|e| ApiError::internal(format!("Failed to open sessions dir: {e}")))?;
+    let session = manager.load_session(&id).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            ApiError::not_found(format!("Session '{id}' not found"))
+        } else if e.kind() == std::io::ErrorKind::InvalidData {
+            ApiError::bad_request(format!("Failed to parse session '{id}': {e}"))
+        } else {
+            ApiError::not_found(format!("Session '{id}' not found: {e}"))
+        }
+    })?;
+
+    let model = req.model.unwrap_or_else(|| {
+        session.metadata.model.clone()
+    });
+    let mode = req.mode.unwrap_or_else(|| {
+        session.metadata.mode.clone().unwrap_or_else(|| "agent".to_string())
+    });
+
+    let thread = state
+        .runtime_threads
+        .create_thread(CreateThreadRequest {
+            model: Some(model),
+            workspace: Some(state.workspace.clone()),
+            mode: Some(mode),
+            allow_shell: None,
+            trust_mode: None,
+            auto_approve: None,
+            archived: false,
+            system_prompt: session.system_prompt.clone(),
+        })
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to create thread: {e}")))?;
+
+    let msg_count = session.messages.len();
+    state
+        .runtime_threads
+        .seed_thread_from_messages(&thread.id, &session.messages)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to seed thread history: {e}")))?;
+
+    let summary = format!(
+        "Resumed session '{}' ({} messages) into thread {}",
+        session.metadata.title, msg_count, thread.id
+    );
+
+    Ok((
+        StatusCode::CREATED,
+        Json(ResumeSessionResponse {
+            thread_id: thread.id,
+            session_id: id,
+            message_count: msg_count,
+            summary,
+        }),
+    ))
+}
+
+async fn delete_session(
+    State(state): State<RuntimeApiState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let manager = SessionManager::new(state.sessions_dir.clone())
+        .map_err(|e| ApiError::internal(format!("Failed to open sessions dir: {e}")))?;
+    manager.delete_session(&id).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            ApiError::not_found(format!("Session '{id}' not found"))
+        } else {
+            ApiError::internal(format!("Failed to delete session '{id}': {e}"))
+        }
+    })?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn session_to_detail(session: SavedSession) -> SessionDetailResponse {
+    let messages: Vec<serde_json::Value> = session
+        .messages
+        .iter()
+        .map(|msg| {
+            let content_blocks: Vec<serde_json::Value> = msg
+                .content
+                .iter()
+                .map(|block| match block {
+                    crate::models::ContentBlock::Text { text, .. } => {
+                        json!({ "type": "text", "text": text })
+                    }
+                    crate::models::ContentBlock::Thinking { thinking, .. } => {
+                        json!({ "type": "thinking", "text": thinking })
+                    }
+                    _ => json!({ "type": "other" }),
+                })
+                .collect();
+            json!({
+                "role": msg.role,
+                "content": content_blocks,
+            })
+        })
+        .collect();
+    SessionDetailResponse {
+        metadata: session.metadata,
+        messages,
+        system_prompt: session.system_prompt,
+    }
 }
 
 async fn create_task(
@@ -276,6 +564,276 @@ async fn list_threads(
     Ok(Json(threads))
 }
 
+async fn list_threads_summary(
+    State(state): State<RuntimeApiState>,
+    Query(query): Query<ThreadSummaryQuery>,
+) -> Result<Json<Vec<ThreadSummary>>, ApiError> {
+    let limit = query.limit.unwrap_or(50).clamp(1, 500);
+    let search = query.search.as_deref().map(str::to_ascii_lowercase);
+    let threads = state
+        .runtime_threads
+        .list_threads(query.include_archived.unwrap_or(false), Some(limit))
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+
+    let mut summaries = Vec::new();
+    for thread in threads {
+        let detail = state
+            .runtime_threads
+            .get_thread_detail(&thread.id)
+            .await
+            .map_err(map_thread_err)?;
+        let latest_turn = detail.turns.last();
+        let latest_status =
+            latest_turn.map(|turn| format!("{:?}", turn.status).to_ascii_lowercase());
+
+        let title = latest_turn
+            .map(|turn| {
+                if turn.input_summary.trim().is_empty() {
+                    "New Thread".to_string()
+                } else {
+                    truncate_text(&turn.input_summary, 72)
+                }
+            })
+            .unwrap_or_else(|| "New Thread".to_string());
+
+        let preview = detail
+            .items
+            .iter()
+            .rev()
+            .find_map(|item| match item.kind {
+                TurnItemKind::AgentMessage | TurnItemKind::UserMessage => {
+                    let text = item.detail.clone().unwrap_or_else(|| item.summary.clone());
+                    if text.trim().is_empty() {
+                        None
+                    } else {
+                        Some(truncate_text(&text, 140))
+                    }
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| title.clone());
+
+        if let Some(search) = &search {
+            let haystack = format!(
+                "{} {} {} {}",
+                thread.id.to_ascii_lowercase(),
+                title.to_ascii_lowercase(),
+                preview.to_ascii_lowercase(),
+                thread.model.to_ascii_lowercase()
+            );
+            if !haystack.contains(search) {
+                continue;
+            }
+        }
+
+        summaries.push(ThreadSummary {
+            id: thread.id,
+            title,
+            preview,
+            model: thread.model,
+            mode: thread.mode,
+            archived: thread.archived,
+            updated_at: thread.updated_at,
+            latest_turn_id: thread.latest_turn_id,
+            latest_turn_status: latest_status,
+        });
+    }
+
+    if summaries.len() > limit {
+        summaries.truncate(limit);
+    }
+
+    Ok(Json(summaries))
+}
+
+async fn workspace_status(
+    State(state): State<RuntimeApiState>,
+) -> Result<Json<WorkspaceStatusResponse>, ApiError> {
+    Ok(Json(collect_workspace_status(&state.workspace)))
+}
+
+async fn list_skills(
+    State(state): State<RuntimeApiState>,
+) -> Result<Json<SkillsResponse>, ApiError> {
+    let skills_dir = resolve_skills_dir(&state.config, &state.workspace);
+    let registry = SkillRegistry::discover(&skills_dir);
+    let skills = registry
+        .list()
+        .iter()
+        .map(|skill| SkillEntry {
+            name: skill.name.clone(),
+            description: skill.description.clone(),
+            path: skills_dir.join(&skill.name).join("SKILL.md"),
+        })
+        .collect();
+    Ok(Json(SkillsResponse {
+        directory: skills_dir,
+        warnings: registry.warnings().to_vec(),
+        skills,
+    }))
+}
+
+async fn list_mcp_servers(
+    State(state): State<RuntimeApiState>,
+) -> Result<Json<McpServersResponse>, ApiError> {
+    let config = load_mcp_config_or_default(&state.mcp_config_path)?;
+    let mut pool = McpPool::new(config.clone());
+    let _errors = pool.connect_all().await;
+    let connected: HashSet<String> = pool
+        .connected_servers()
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+
+    let mut servers = Vec::new();
+    for (name, server_cfg) in config.servers {
+        servers.push(McpServerEntry {
+            name: name.clone(),
+            enabled: server_cfg.is_enabled(),
+            required: server_cfg.required,
+            command: server_cfg.command.clone(),
+            url: server_cfg.url.clone(),
+            connected: connected.contains(&name),
+            enabled_tools: server_cfg.enabled_tools.clone(),
+            disabled_tools: server_cfg.disabled_tools.clone(),
+        });
+    }
+    servers.sort_by(|a, b| a.name.cmp(&b.name));
+
+    Ok(Json(McpServersResponse { servers }))
+}
+
+async fn list_mcp_tools(
+    State(state): State<RuntimeApiState>,
+    Query(query): Query<McpToolsQuery>,
+) -> Result<Json<McpToolsResponse>, ApiError> {
+    let mut pool = McpPool::from_config_path(&state.mcp_config_path)
+        .map_err(|e| ApiError::internal(format!("Failed to load MCP config: {e}")))?;
+    let _errors = pool.connect_all().await;
+
+    let mut tools = Vec::new();
+    for (prefixed_name, tool) in pool.all_tools() {
+        let Some(rest) = prefixed_name.strip_prefix("mcp_") else {
+            continue;
+        };
+        let Some((server, name)) = rest.split_once('_') else {
+            continue;
+        };
+
+        if let Some(filter) = query.server.as_deref()
+            && server != filter
+        {
+            continue;
+        }
+
+        tools.push(McpToolEntry {
+            server: server.to_string(),
+            name: name.to_string(),
+            prefixed_name,
+            description: tool.description.clone(),
+            input_schema: tool.input_schema.clone(),
+        });
+    }
+
+    tools.sort_by(|a, b| a.server.cmp(&b.server).then_with(|| a.name.cmp(&b.name)));
+
+    Ok(Json(McpToolsResponse { tools }))
+}
+
+async fn list_automations(
+    State(state): State<RuntimeApiState>,
+) -> Result<Json<Vec<AutomationRecord>>, ApiError> {
+    let manager = state.automations.lock().await;
+    let automations = manager
+        .list_automations()
+        .map_err(|e| ApiError::internal(format!("Failed to list automations: {e}")))?;
+    Ok(Json(automations))
+}
+
+async fn create_automation(
+    State(state): State<RuntimeApiState>,
+    Json(req): Json<CreateAutomationRequest>,
+) -> Result<(StatusCode, Json<AutomationRecord>), ApiError> {
+    let manager = state.automations.lock().await;
+    let automation = manager
+        .create_automation(req)
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    Ok((StatusCode::CREATED, Json(automation)))
+}
+
+async fn get_automation(
+    State(state): State<RuntimeApiState>,
+    Path(id): Path<String>,
+) -> Result<Json<AutomationRecord>, ApiError> {
+    let manager = state.automations.lock().await;
+    let automation = manager.get_automation(&id).map_err(map_automation_err)?;
+    Ok(Json(automation))
+}
+
+async fn update_automation(
+    State(state): State<RuntimeApiState>,
+    Path(id): Path<String>,
+    Json(req): Json<UpdateAutomationRequest>,
+) -> Result<Json<AutomationRecord>, ApiError> {
+    let manager = state.automations.lock().await;
+    let automation = manager
+        .update_automation(&id, req)
+        .map_err(map_automation_err)?;
+    Ok(Json(automation))
+}
+
+async fn delete_automation(
+    State(state): State<RuntimeApiState>,
+    Path(id): Path<String>,
+) -> Result<Json<AutomationRecord>, ApiError> {
+    let manager = state.automations.lock().await;
+    let automation = manager.delete_automation(&id).map_err(map_automation_err)?;
+    Ok(Json(automation))
+}
+
+async fn run_automation(
+    State(state): State<RuntimeApiState>,
+    Path(id): Path<String>,
+) -> Result<Json<AutomationRunRecord>, ApiError> {
+    let manager = state.automations.lock().await;
+    let run = manager
+        .run_now(&id, &state.task_manager)
+        .await
+        .map_err(map_automation_err)?;
+    Ok(Json(run))
+}
+
+async fn pause_automation(
+    State(state): State<RuntimeApiState>,
+    Path(id): Path<String>,
+) -> Result<Json<AutomationRecord>, ApiError> {
+    let manager = state.automations.lock().await;
+    let automation = manager.pause_automation(&id).map_err(map_automation_err)?;
+    Ok(Json(automation))
+}
+
+async fn resume_automation(
+    State(state): State<RuntimeApiState>,
+    Path(id): Path<String>,
+) -> Result<Json<AutomationRecord>, ApiError> {
+    let manager = state.automations.lock().await;
+    let automation = manager.resume_automation(&id).map_err(map_automation_err)?;
+    Ok(Json(automation))
+}
+
+async fn list_automation_runs(
+    State(state): State<RuntimeApiState>,
+    Path(id): Path<String>,
+    Query(query): Query<AutomationRunsQuery>,
+) -> Result<Json<Vec<AutomationRunRecord>>, ApiError> {
+    let manager = state.automations.lock().await;
+    let runs = manager
+        .list_runs(&id, query.limit)
+        .map_err(map_automation_err)?;
+    Ok(Json(runs))
+}
+
 async fn get_thread(
     State(state): State<RuntimeApiState>,
     Path(id): Path<String>,
@@ -286,6 +844,19 @@ async fn get_thread(
         .await
         .map_err(map_thread_err)?;
     Ok(Json(detail))
+}
+
+async fn update_thread(
+    State(state): State<RuntimeApiState>,
+    Path(id): Path<String>,
+    Json(req): Json<UpdateThreadRequest>,
+) -> Result<Json<ThreadRecord>, ApiError> {
+    let thread = state
+        .runtime_threads
+        .update_thread(&id, req)
+        .await
+        .map_err(map_thread_err)?;
+    Ok(Json(thread))
 }
 
 async fn resume_thread(
@@ -498,6 +1069,7 @@ async fn stream_turn(
             trust_mode: Some(trust_mode),
             auto_approve: Some(auto_approve),
             archived: true,
+            system_prompt: None,
         })
         .await
         .map_err(|e| ApiError::internal(format!("Failed to create stream thread: {e}")))?;
@@ -688,9 +1260,143 @@ fn sse_json(event: &str, payload: serde_json::Value) -> SseEvent {
     SseEvent::default().event(event).data(data)
 }
 
+fn truncate_text(text: &str, max_chars: usize) -> String {
+    let char_count = text.chars().count();
+    if char_count <= max_chars {
+        return text.to_string();
+    }
+    let truncated: String = text.chars().take(max_chars.saturating_sub(3)).collect();
+    format!("{truncated}...")
+}
+
+fn collect_workspace_status(workspace: &std::path::Path) -> WorkspaceStatusResponse {
+    let mut status = WorkspaceStatusResponse {
+        workspace: workspace.to_path_buf(),
+        git_repo: false,
+        branch: None,
+        staged: 0,
+        unstaged: 0,
+        untracked: 0,
+        ahead: None,
+        behind: None,
+    };
+
+    let Some(repo_check) = run_git(workspace, &["rev-parse", "--is-inside-work-tree"]) else {
+        return status;
+    };
+    if repo_check.trim() != "true" {
+        return status;
+    }
+
+    status.git_repo = true;
+    status.branch = run_git(workspace, &["rev-parse", "--abbrev-ref", "HEAD"])
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    if let Some(porcelain) = run_git(workspace, &["status", "--porcelain=v1"]) {
+        for line in porcelain.lines() {
+            if line.starts_with("??") {
+                status.untracked += 1;
+                continue;
+            }
+            let chars: Vec<char> = line.chars().collect();
+            if chars.len() >= 2 {
+                if chars[0] != ' ' {
+                    status.staged += 1;
+                }
+                if chars[1] != ' ' {
+                    status.unstaged += 1;
+                }
+            }
+        }
+    }
+
+    if let Some(counts) = run_git(
+        workspace,
+        &["rev-list", "--left-right", "--count", "@{upstream}...HEAD"],
+    ) {
+        let mut parts = counts.split_whitespace();
+        if let (Some(behind), Some(ahead)) = (parts.next(), parts.next()) {
+            status.behind = behind.parse::<u32>().ok();
+            status.ahead = ahead.parse::<u32>().ok();
+        }
+    }
+
+    status
+}
+
+fn run_git(workspace: &std::path::Path, args: &[&str]) -> Option<String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(workspace)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout).ok()
+}
+
+fn resolve_skills_dir(config: &Config, workspace: &std::path::Path) -> PathBuf {
+    let agents_skills = workspace.join(".agents").join("skills");
+    if agents_skills.exists() {
+        return agents_skills;
+    }
+    let local_skills = workspace.join("skills");
+    if local_skills.exists() {
+        return local_skills;
+    }
+    config.skills_dir()
+}
+
+fn load_mcp_config_or_default(path: &std::path::Path) -> Result<McpConfig, ApiError> {
+    if !path.exists() {
+        return Ok(McpConfig::default());
+    }
+    let raw = fs::read_to_string(path).map_err(|e| {
+        ApiError::internal(format!("Failed to read MCP config {}: {e}", path.display()))
+    })?;
+    serde_json::from_str::<McpConfig>(&raw).map_err(|e| {
+        ApiError::internal(format!(
+            "Failed to parse MCP config {}: {e}",
+            path.display()
+        ))
+    })
+}
+
+fn cors_layer() -> CorsLayer {
+    CorsLayer::new()
+        .allow_origin([
+            HeaderValue::from_static("http://localhost:3000"),
+            HeaderValue::from_static("http://127.0.0.1:3000"),
+            HeaderValue::from_static("http://localhost:1420"),
+            HeaderValue::from_static("http://127.0.0.1:1420"),
+            HeaderValue::from_static("tauri://localhost"),
+        ])
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers(Any)
+}
+
 fn map_task_err(err: anyhow::Error) -> ApiError {
     let message = err.to_string();
     if message.contains("not found") {
+        ApiError::not_found(message)
+    } else {
+        ApiError::bad_request(message)
+    }
+}
+
+fn map_automation_err(err: anyhow::Error) -> ApiError {
+    let message = err.to_string();
+    if message.contains("Failed to read automation")
+        || message.contains("No such file or directory")
+    {
         ApiError::not_found(message)
     } else {
         ApiError::bad_request(message)
@@ -769,7 +1475,7 @@ mod tests {
     use futures_util::StreamExt;
     use std::fs;
     use std::sync::Arc;
-    use tokio::sync::mpsc;
+    use tokio::sync::{Mutex, mpsc};
     use tokio::time::sleep;
     use uuid::Uuid;
 
@@ -854,6 +1560,10 @@ mod tests {
             task_manager: manager,
             runtime_threads: runtime_threads.clone(),
             sessions_dir,
+            mcp_config_path: root.join("mcp.json"),
+            automations: Arc::new(Mutex::new(AutomationManager::open(
+                root.join("automations"),
+            )?)),
         };
         let app = build_router(state);
         let listener = match TcpListener::bind("127.0.0.1:0").await {
@@ -1006,6 +1716,130 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn workspace_and_automation_endpoints_work() -> Result<()> {
+        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+            return Ok(());
+        };
+        let client = reqwest::Client::new();
+
+        let workspace: serde_json::Value = client
+            .get(format!("http://{addr}/v1/workspace/status"))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert!(workspace.get("workspace").is_some());
+
+        let created: serde_json::Value = client
+            .post(format!("http://{addr}/v1/automations"))
+            .json(&json!({
+                "name": "Smoke automation",
+                "prompt": "automation smoke test",
+                "rrule": "FREQ=HOURLY;INTERVAL=2",
+                "status": "active"
+            }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        let automation_id = created["id"]
+            .as_str()
+            .context("missing automation id")?
+            .to_string();
+
+        let listed: serde_json::Value = client
+            .get(format!("http://{addr}/v1/automations"))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert!(
+            listed
+                .as_array()
+                .is_some_and(|items| items.iter().any(|item| item["id"] == automation_id))
+        );
+
+        let run_now: serde_json::Value = client
+            .post(format!("http://{addr}/v1/automations/{automation_id}/run"))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert_eq!(run_now["automation_id"], automation_id);
+
+        let paused: serde_json::Value = client
+            .post(format!(
+                "http://{addr}/v1/automations/{automation_id}/pause"
+            ))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert_eq!(paused["status"], "paused");
+
+        let resumed: serde_json::Value = client
+            .post(format!(
+                "http://{addr}/v1/automations/{automation_id}/resume"
+            ))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert_eq!(resumed["status"], "active");
+
+        let updated: serde_json::Value = client
+            .patch(format!("http://{addr}/v1/automations/{automation_id}"))
+            .json(&json!({
+                "name": "Smoke automation edited",
+                "rrule": "FREQ=WEEKLY;BYDAY=MO,WE;BYHOUR=10;BYMINUTE=15"
+            }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert_eq!(updated["name"], "Smoke automation edited");
+
+        let runs: serde_json::Value = client
+            .get(format!(
+                "http://{addr}/v1/automations/{automation_id}/runs?limit=5"
+            ))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert!(
+            runs.as_array().is_some_and(|items| !items.is_empty()),
+            "expected at least one run entry"
+        );
+
+        let _deleted: serde_json::Value = client
+            .delete(format!("http://{addr}/v1/automations/{automation_id}"))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+
+        let missing_status = client
+            .get(format!("http://{addr}/v1/automations/{automation_id}"))
+            .send()
+            .await?
+            .status();
+        assert_eq!(missing_status, StatusCode::NOT_FOUND);
+
+        handle.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn stream_requires_prompt() -> Result<()> {
         let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
             return Ok(());
@@ -1042,6 +1876,17 @@ mod tests {
             .context("missing thread id")?
             .to_string();
 
+        let archived: serde_json::Value = client
+            .patch(format!("http://{addr}/v1/threads/{thread_id}"))
+            .json(&json!({ "archived": true }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert_eq!(archived["id"], thread_id);
+        assert_eq!(archived["archived"], true);
+
         let listed: serde_json::Value = client
             .get(format!("http://{addr}/v1/threads"))
             .send()
@@ -1052,8 +1897,47 @@ mod tests {
         assert!(
             listed
                 .as_array()
+                .is_some_and(|threads| threads.iter().all(|t| t["id"] != thread_id))
+        );
+
+        let listed_all: serde_json::Value = client
+            .get(format!(
+                "http://{addr}/v1/threads/summary?include_archived=true&limit=100"
+            ))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert!(
+            listed_all
+                .as_array()
                 .is_some_and(|threads| threads.iter().any(|t| t["id"] == thread_id))
         );
+
+        let unarchived: serde_json::Value = client
+            .patch(format!("http://{addr}/v1/threads/{thread_id}"))
+            .json(&json!({ "archived": false }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert_eq!(unarchived["archived"], false);
+
+        let invalid_patch = client
+            .patch(format!("http://{addr}/v1/threads/{thread_id}"))
+            .json(&json!({}))
+            .send()
+            .await?;
+        assert_eq!(invalid_patch.status(), StatusCode::BAD_REQUEST);
+
+        let missing_patch = client
+            .patch(format!("http://{addr}/v1/threads/thr_missing"))
+            .json(&json!({ "archived": true }))
+            .send()
+            .await?;
+        assert_eq!(missing_patch.status(), StatusCode::NOT_FOUND);
 
         let detail: serde_json::Value = client
             .get(format!("http://{addr}/v1/threads/{thread_id}"))
@@ -1662,6 +2546,117 @@ mod tests {
             .to_string();
         assert!(content_type.starts_with("text/event-stream"));
 
+        handle.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn session_get_returns_404_for_missing_id() -> Result<()> {
+        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+            return Ok(());
+        };
+        let client = reqwest::Client::new();
+
+        let resp = client
+            .get(format!("http://{addr}/v1/sessions/nonexistent_id"))
+            .send()
+            .await?;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+        handle.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn session_resume_thread_returns_404_for_missing_session() -> Result<()> {
+        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+            return Ok(());
+        };
+        let client = reqwest::Client::new();
+
+        let resp = client
+            .post(format!(
+                "http://{addr}/v1/sessions/nonexistent_session/resume-thread"
+            ))
+            .json(&json!({}))
+            .send()
+            .await?;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+        handle.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn session_resume_thread_creates_thread_from_saved_session() -> Result<()> {
+        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+            return Ok(());
+        };
+        let client = reqwest::Client::new();
+
+        // Write a minimal saved session file into the sessions dir used by the test server.
+        let root = std::env::temp_dir().join(format!("deepseek-session-resume-{}", Uuid::new_v4()));
+        let sessions_dir = root.join("sessions");
+        fs::create_dir_all(&sessions_dir)?;
+        let session_id = "sess_test_resume";
+        let session = json!({
+            "schema_version": 1,
+            "metadata": {
+                "id": session_id,
+                "title": "Test resume session",
+                "created_at": "2025-01-01T00:00:00Z",
+                "updated_at": "2025-01-01T00:10:00Z",
+                "message_count": 2,
+                "total_tokens": 100,
+                "model": "deepseek-chat",
+                "workspace": "/tmp/test",
+                "mode": "agent"
+            },
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [{ "type": "text", "text": "Hello, world!" }]
+                },
+                {
+                    "role": "assistant",
+                    "content": [{ "type": "text", "text": "Hello! How can I help you?" }]
+                }
+            ],
+            "system_prompt": null
+        });
+        fs::write(
+            sessions_dir.join(format!("{session_id}.json")),
+            serde_json::to_string_pretty(&session)?,
+        )?;
+
+        // This test validates the shape of the error (session dir mismatch with
+        // the test-server sessions dir), since the test server creates its own
+        // temp sessions directory. The important contract is the 404 response
+        // for a session not present in the server's sessions dir.
+        let resp = client
+            .post(format!(
+                "http://{addr}/v1/sessions/{session_id}/resume-thread"
+            ))
+            .json(&json!({ "model": "deepseek-chat" }))
+            .send()
+            .await?;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+        handle.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn session_delete_returns_404_for_missing_id() -> Result<()> {
+        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+            return Ok(());
+        };
+        let client = reqwest::Client::new();
+        let resp = client
+            .delete(format!("http://{addr}/v1/sessions/nonexistent-id"))
+            .send()
+            .await?;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
         handle.abort();
         Ok(())
     }

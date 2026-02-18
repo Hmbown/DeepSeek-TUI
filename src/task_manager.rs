@@ -348,6 +348,7 @@ impl TaskExecutor for EngineTaskExecutor {
                 trust_mode: Some(task.trust_mode),
                 auto_approve: Some(task.auto_approve),
                 archived: false,
+                system_prompt: None,
             })
             .await
         {
