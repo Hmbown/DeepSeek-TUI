@@ -86,3 +86,5 @@ jobs:
         run: pnpm deepseek-app:typecheck
       - name: Test
         run: pnpm deepseek-app:test
+      - name: Build web app
+        run: pnpm deepseek-app:web:build

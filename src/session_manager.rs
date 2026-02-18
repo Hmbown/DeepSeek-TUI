@@ -102,6 +102,26 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
+    fn validated_session_path(&self, id: &str) -> std::io::Result<PathBuf> {
+        let trimmed = id.trim();
+        if trimmed.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Session id cannot be empty",
+            ));
+        }
+        if !trimmed
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Invalid session id '{id}'"),
+            ));
+        }
+        Ok(self.sessions_dir.join(format!("{trimmed}.json")))
+    }
+
     /// Create a new `SessionManager` with the specified sessions directory
     pub fn new(sessions_dir: PathBuf) -> std::io::Result<Self> {
         // Ensure the sessions directory exists
@@ -116,14 +136,13 @@ impl SessionManager {
 
     /// Save a session to disk using atomic write (temp file + rename).
     pub fn save_session(&self, session: &SavedSession) -> std::io::Result<PathBuf> {
-        let filename = format!("{}.json", session.metadata.id);
-        let path = self.sessions_dir.join(&filename);
+        let path = self.validated_session_path(&session.metadata.id)?;
 
         let content = serde_json::to_string_pretty(session)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
         // Atomic write: write to temp file then rename to avoid corruption
-        let tmp_filename = format!(".{}.tmp", session.metadata.id);
+        let tmp_filename = format!(".{}.tmp", session.metadata.id.trim());
         let tmp_path = self.sessions_dir.join(&tmp_filename);
         fs::write(&tmp_path, &content)?;
         fs::rename(&tmp_path, &path)?;
@@ -228,8 +247,7 @@ impl SessionManager {
 
     /// Load a session by ID
     pub fn load_session(&self, id: &str) -> std::io::Result<SavedSession> {
-        let filename = format!("{id}.json");
-        let path = self.sessions_dir.join(&filename);
+        let path = self.validated_session_path(id)?;
 
         let content = fs::read_to_string(&path)?;
         let session: SavedSession = serde_json::from_str(&content)
@@ -309,8 +327,7 @@ impl SessionManager {
 
     /// Delete a session by ID
     pub fn delete_session(&self, id: &str) -> std::io::Result<()> {
-        let filename = format!("{id}.json");
-        let path = self.sessions_dir.join(&filename);
+        let path = self.validated_session_path(id)?;
         fs::remove_file(path)
     }
 
@@ -581,6 +598,22 @@ mod tests {
 
         manager.delete_session(&session_id).expect("delete");
         assert!(manager.load_session(&session_id).is_err());
+    }
+
+    #[test]
+    fn test_session_id_rejects_invalid_characters() {
+        let tmp = tempdir().expect("tempdir");
+        let manager = SessionManager::new(tmp.path().join("sessions")).expect("new");
+
+        let err = manager
+            .load_session("../outside")
+            .expect_err("invalid id should fail");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+
+        let err = manager
+            .delete_session("sess bad")
+            .expect_err("invalid id should fail");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
     }
 
     #[test]
