@@ -1077,15 +1077,21 @@ impl McpPool {
         // Add regular tools
         for (name, tool) in self.all_tools() {
             api_tools.push(crate::models::Tool {
+                tool_type: None,
                 name,
                 description: tool.description.clone().unwrap_or_default(),
                 input_schema: tool.input_schema.clone(),
+                allowed_callers: Some(vec!["direct".to_string()]),
+                defer_loading: Some(false),
+                input_examples: None,
+                strict: None,
                 cache_control: None,
             });
         }
 
         if !self.config.servers.is_empty() {
             api_tools.push(crate::models::Tool {
+                tool_type: None,
                 name: "list_mcp_resources".to_string(),
                 description: "List available MCP resources across servers (optionally filtered by server).".to_string(),
                 input_schema: serde_json::json!({
@@ -1094,9 +1100,14 @@ impl McpPool {
                         "server": { "type": "string", "description": "Optional MCP server name to filter by" }
                     }
                 }),
+                allowed_callers: Some(vec!["direct".to_string()]),
+                defer_loading: Some(false),
+                input_examples: None,
+                strict: None,
                 cache_control: None,
             });
             api_tools.push(crate::models::Tool {
+                tool_type: None,
                 name: "list_mcp_resource_templates".to_string(),
                 description: "List available MCP resource templates across servers (optionally filtered by server).".to_string(),
                 input_schema: serde_json::json!({
@@ -1105,6 +1116,10 @@ impl McpPool {
                         "server": { "type": "string", "description": "Optional MCP server name to filter by" }
                     }
                 }),
+                allowed_callers: Some(vec!["direct".to_string()]),
+                defer_loading: Some(false),
+                input_examples: None,
+                strict: None,
                 cache_control: None,
             });
         }
@@ -1113,6 +1128,7 @@ impl McpPool {
         let resources = self.all_resources();
         if !resources.is_empty() {
             api_tools.push(crate::models::Tool {
+                tool_type: None,
                 name: "mcp_read_resource".to_string(),
                 description: "Read a resource from an MCP server using its URI".to_string(),
                 input_schema: serde_json::json!({
@@ -1123,9 +1139,14 @@ impl McpPool {
                     },
                     "required": ["server", "uri"]
                 }),
-                            cache_control: None,
-                        });
+                allowed_callers: Some(vec!["direct".to_string()]),
+                defer_loading: Some(false),
+                input_examples: None,
+                strict: None,
+                cache_control: None,
+            });
             api_tools.push(crate::models::Tool {
+                tool_type: None,
                 name: "read_mcp_resource".to_string(),
                 description: "Alias for mcp_read_resource.".to_string(),
                 input_schema: serde_json::json!({
@@ -1136,6 +1157,10 @@ impl McpPool {
                     },
                     "required": ["server", "uri"]
                 }),
+                allowed_callers: Some(vec!["direct".to_string()]),
+                defer_loading: Some(false),
+                input_examples: None,
+                strict: None,
                 cache_control: None,
             });
         }
@@ -1144,6 +1169,7 @@ impl McpPool {
         let prompts = self.all_prompts();
         if !prompts.is_empty() {
             api_tools.push(crate::models::Tool {
+                tool_type: None,
                 name: "mcp_get_prompt".to_string(),
                 description: "Get a prompt from an MCP server".to_string(),
                 input_schema: serde_json::json!({
@@ -1159,6 +1185,10 @@ impl McpPool {
                     },
                     "required": ["server", "name"]
                 }),
+                allowed_callers: Some(vec!["direct".to_string()]),
+                defer_loading: Some(false),
+                input_examples: None,
+                strict: None,
                 cache_control: None,
             });
         }

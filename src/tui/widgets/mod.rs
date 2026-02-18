@@ -111,12 +111,16 @@ impl<'a> ComposerWidget<'a> {
 
 impl Renderable for ComposerWidget<'_> {
     fn render(&self, area: Rect, buf: &mut Buffer) {
-        let command_hints = slash_completion_hints(&self.app.input, 5);
+        let slash_menu_entries = if self.app.slash_menu_hidden {
+            Vec::new()
+        } else {
+            slash_completion_hints(&self.app.input, 6)
+        };
         let prompt_width = self.prompt.width();
         let prompt_width_u16 = u16::try_from(prompt_width).unwrap_or(u16::MAX);
         let content_width = usize::from(area.width.saturating_sub(prompt_width_u16).max(1));
-        let hint_lines = usize::from(!command_hints.is_empty());
-        let max_height = usize::from(area.height).saturating_sub(hint_lines).max(1);
+        let menu_lines = slash_menu_entries.len();
+        let max_height = usize::from(area.height).saturating_sub(menu_lines).max(1);
         let continuation = " ".repeat(prompt_width);
 
         let (visible_lines, _cursor_row, _cursor_col) = layout_input(
@@ -157,18 +161,28 @@ impl Renderable for ComposerWidget<'_> {
             }
         }
 
-        if !command_hints.is_empty() {
-            lines.push(Line::from(vec![
-                Span::styled(" ", Style::default().fg(palette::TEXT_MUTED)),
-                Span::styled(
-                    "Tab complete: ",
-                    Style::default().fg(palette::TEXT_MUTED).italic(),
-                ),
-                Span::styled(
-                    command_hints.join("  "),
-                    Style::default().fg(palette::DEEPSEEK_SKY),
-                ),
-            ]));
+        if !slash_menu_entries.is_empty() {
+            let selected = self
+                .app
+                .slash_menu_selected
+                .min(slash_menu_entries.len().saturating_sub(1));
+            for (idx, entry) in slash_menu_entries.iter().enumerate() {
+                let is_selected = idx == selected;
+                let style = if is_selected {
+                    Style::default()
+                        .fg(palette::DEEPSEEK_SKY)
+                        .bg(palette::SELECTION_BG)
+                } else {
+                    Style::default().fg(palette::TEXT_MUTED)
+                };
+                let marker = if is_selected { "▸" } else { " " };
+                lines.push(Line::from(vec![
+                    Span::styled(" ", Style::default()),
+                    Span::styled(marker, style),
+                    Span::styled(" ", style),
+                    Span::styled(entry.clone(), style),
+                ]));
+            }
         }
 
         let paragraph = Paragraph::new(lines).style(background);
@@ -176,22 +190,30 @@ impl Renderable for ComposerWidget<'_> {
     }
 
     fn desired_height(&self, width: u16) -> u16 {
-        let hint_lines = usize::from(!slash_completion_hints(&self.app.input, 5).is_empty());
+        let menu_lines = if self.app.slash_menu_hidden {
+            0
+        } else {
+            slash_completion_hints(&self.app.input, 6).len()
+        };
         composer_height(
             &self.app.input,
             width,
             self.max_height,
             self.prompt,
-            hint_lines,
+            menu_lines,
         )
     }
 
     fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
-        let hint_lines = usize::from(!slash_completion_hints(&self.app.input, 5).is_empty());
+        let menu_lines = if self.app.slash_menu_hidden {
+            0
+        } else {
+            slash_completion_hints(&self.app.input, 6).len()
+        };
         let prompt_width = self.prompt.width();
         let prompt_width_u16 = u16::try_from(prompt_width).unwrap_or(u16::MAX);
         let content_width = usize::from(area.width.saturating_sub(prompt_width_u16).max(1));
-        let max_height = usize::from(area.height).saturating_sub(hint_lines).max(1);
+        let max_height = usize::from(area.height).saturating_sub(menu_lines).max(1);
 
         let (_visible_lines, cursor_row, cursor_col) = layout_input(
             &self.app.input,
@@ -591,7 +613,7 @@ fn composer_height(
     line_count.clamp(1, max_height).try_into().unwrap_or(1)
 }
 
-fn slash_completion_hints(input: &str, limit: usize) -> Vec<String> {
+pub(crate) fn slash_completion_hints(input: &str, limit: usize) -> Vec<String> {
     if !input.starts_with('/') || input.contains(char::is_whitespace) {
         return Vec::new();
     }

@@ -24,11 +24,13 @@ fn make_plan(
         id: "tool-1".to_string(),
         name: "grep_files".to_string(),
         input: json!({"pattern": "test"}),
+        caller: None,
         interactive,
         approval_required,
         approval_description: "desc".to_string(),
         supports_parallel,
         read_only,
+        blocked_error: None,
     }
 }
 
@@ -310,4 +312,80 @@ async fn controller_disabled_keeps_behavior_unchanged() {
     assert!(!applied);
     assert_eq!(before, after);
     assert_eq!(before_len, after_len);
+}
+
+#[test]
+fn caller_policy_defaults_to_direct() {
+    let tool = Tool {
+        tool_type: None,
+        name: "read_file".to_string(),
+        description: "Read".to_string(),
+        input_schema: json!({"type":"object"}),
+        allowed_callers: Some(vec!["direct".to_string()]),
+        defer_loading: Some(false),
+        input_examples: None,
+        strict: None,
+        cache_control: None,
+    };
+    let direct = ToolCaller {
+        caller_type: "direct".to_string(),
+        tool_id: None,
+    };
+    let code = ToolCaller {
+        caller_type: "code_execution_20250825".to_string(),
+        tool_id: Some("srvtoolu_1".to_string()),
+    };
+    assert!(caller_allowed_for_tool(Some(&direct), Some(&tool)));
+    assert!(!caller_allowed_for_tool(Some(&code), Some(&tool)));
+    assert!(caller_allowed_for_tool(None, Some(&tool)));
+}
+
+#[test]
+fn tool_search_activates_discovered_deferred_tools() {
+    let mut catalog = vec![
+        Tool {
+            tool_type: None,
+            name: "read_file".to_string(),
+            description: "Read files".to_string(),
+            input_schema: json!({"type":"object","properties":{"path":{"type":"string"}}}),
+            allowed_callers: Some(vec!["direct".to_string()]),
+            defer_loading: Some(true),
+            input_examples: None,
+            strict: None,
+            cache_control: None,
+        },
+        Tool {
+            tool_type: None,
+            name: "grep_files".to_string(),
+            description: "Search files".to_string(),
+            input_schema: json!({"type":"object","properties":{"pattern":{"type":"string"}}}),
+            allowed_callers: Some(vec!["direct".to_string()]),
+            defer_loading: Some(true),
+            input_examples: None,
+            strict: None,
+            cache_control: None,
+        },
+    ];
+    ensure_advanced_tooling(&mut catalog);
+    let mut active = initial_active_tools(&catalog);
+    let result = execute_tool_search(
+        TOOL_SEARCH_BM25_NAME,
+        &json!({"query":"read file"}),
+        &catalog,
+        &mut active,
+    )
+    .expect("search succeeds");
+    assert!(result.success);
+    assert!(active.contains("read_file"));
+}
+
+#[tokio::test]
+async fn code_execution_runs_python_and_returns_result_payload() {
+    let tmp = tempdir().expect("tempdir");
+    let result =
+        execute_code_execution_tool(&json!({"code":"print('hello from code exec')"}), tmp.path())
+            .await
+            .expect("code execution should run");
+    assert!(result.content.contains("hello from code exec"));
+    assert!(result.content.contains("return_code"));
 }

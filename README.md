@@ -54,7 +54,7 @@ Press `Tab` to cycle modes. Normal mode (manual approval for everything) is also
 
 ## What It Can Do
 
-The assistant has access to 30+ tools:
+The assistant has access to 35+ tools:
 
 - **File operations** — read, write, edit, patch, search, and grep across your workspace
 - **Shell execution** — run commands with timeout, background execution, and interactive I/O
@@ -64,6 +64,13 @@ The assistant has access to 30+ tools:
 - **Sub-agents** — spawn background agents or coordinate agent swarms for parallel work
 - **Task management** — to-do lists, implementation plans, persistent notes, and a background task queue
 - **Structured data** — weather, finance, sports scores, time zones, and a calculator
+- **Parallel execution** — run multiple tool calls simultaneously for efficiency
+- **Project mapping** — explore codebase structure and identify key files
+- **Code execution** — run Python code in a sandboxed environment
+- **Test runner** — execute `cargo test` and other test suites
+- **Diagnostics** — inspect workspace, git, and toolchain status
+- **Note-taking** — record persistent notes for future reference
+- **Tool discovery** — search for tools by name or natural language
 - **MCP integration** — connect external tool servers via the [Model Context Protocol](docs/MCP.md)
 
 All file tools respect the `--workspace` boundary unless `/trust` is enabled.
@@ -91,6 +98,9 @@ deepseek review --staged
 
 # Start the runtime API server
 deepseek serve --http
+
+# List available models
+deepseek models
 
 # Verify your environment
 deepseek doctor
@@ -143,6 +153,9 @@ See [`docs/RUNTIME_API.md`](docs/RUNTIME_API.md) for endpoints and usage.
 | No API key | Set `DEEPSEEK_API_KEY` or run `deepseek` to complete onboarding |
 | Config not found | Check `~/.deepseek/config.toml` (or set `DEEPSEEK_CONFIG_PATH`) |
 | Wrong region | Set `DEEPSEEK_BASE_URL` to `https://api.deepseeki.com` (China) |
+| Finance tool unavailable | Use `web.run` to fetch financial data instead |
+| Token/cost tracking inaccuracies | Use `/compact` to manage context; treat cost estimates as approximate |
+| `web.run` tool name | Tool is named `web.run` (single dot), not `web..run` |
 | Sandbox errors (macOS) | Run `deepseek doctor` |
 
 ## Documentation

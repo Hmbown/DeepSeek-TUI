@@ -2060,6 +2060,7 @@ mod tests {
                         usage: Usage {
                             input_tokens: 10,
                             output_tokens: 12,
+                            server_tool_use: None,
                         },
                         status: TurnOutcomeStatus::Completed,
                         error: None,
@@ -2148,6 +2149,7 @@ mod tests {
                         usage: Usage {
                             input_tokens: 5,
                             output_tokens: 5,
+                            server_tool_use: None,
                         },
                         status: TurnOutcomeStatus::Completed,
                         error: None,
@@ -2357,6 +2359,7 @@ mod tests {
                         usage: Usage {
                             input_tokens: 8,
                             output_tokens: 9,
+                            server_tool_use: None,
                         },
                         status: TurnOutcomeStatus::Completed,
                         error: None,
@@ -2462,6 +2465,7 @@ mod tests {
                                 usage: Usage {
                                     input_tokens: 3,
                                     output_tokens: 3,
+                                    server_tool_use: None,
                                 },
                                 status: TurnOutcomeStatus::Completed,
                                 error: None,
@@ -2489,6 +2493,7 @@ mod tests {
                                 usage: Usage {
                                     input_tokens: 1,
                                     output_tokens: 1,
+                                    server_tool_use: None,
                                 },
                                 status: TurnOutcomeStatus::Completed,
                                 error: None,

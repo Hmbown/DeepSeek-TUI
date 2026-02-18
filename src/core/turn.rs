@@ -55,6 +55,7 @@ impl TurnContext {
             usage: Usage {
                 input_tokens: 0,
                 output_tokens: 0,
+                server_tool_use: None,
             },
         }
     }

@@ -143,9 +143,14 @@ impl ToolRegistry {
         self.tools
             .values()
             .map(|tool| Tool {
+                tool_type: None,
                 name: tool.name().to_string(),
                 description: tool.description().to_string(),
                 input_schema: tool.input_schema(),
+                allowed_callers: Some(vec!["direct".to_string()]),
+                defer_loading: Some(false),
+                input_examples: None,
+                strict: None,
                 cache_control: None,
             })
             .collect()

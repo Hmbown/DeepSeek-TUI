@@ -232,6 +232,8 @@ impl ModalView for HelpView {
             Line::from("  Alt+Up / Alt+Down - Scroll transcript"),
             Line::from("  PageUp / PageDown - Scroll transcript by page"),
             Line::from("  Home / End        - Jump to top / bottom of transcript"),
+            Line::from("  g / G             - Jump to top / bottom (when input empty)"),
+            Line::from("  [ / ]             - Jump between tool output blocks"),
             Line::from(""),
             Line::from(vec![Span::styled(
                 "=== Input Editing ===",
@@ -267,6 +269,7 @@ impl ModalView for HelpView {
             )]),
             Line::from("  Tab               - Complete /command or cycle modes"),
             Line::from("  Ctrl+X            - Toggle between Agent and Normal modes"),
+            Line::from("  Alt+1..4 / Alt+0  - Focus sidebar section / auto layout"),
             Line::from(""),
             Line::from(vec![Span::styled(
                 "=== Sessions ===",

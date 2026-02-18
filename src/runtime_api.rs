@@ -1290,6 +1290,7 @@ mod tests {
                     usage: Usage {
                         input_tokens: 2,
                         output_tokens: 1,
+                        server_tool_use: None,
                     },
                     status: TurnOutcomeStatus::Completed,
                     error: None,

@@ -282,6 +282,7 @@ async fn process_deepseek_turn(
                 id,
                 name,
                 input: parsed,
+                caller: None,
             });
         }
 

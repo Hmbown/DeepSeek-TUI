@@ -23,6 +23,10 @@ pub fn lines(app: &App) -> Vec<Line<'static>> {
             "Get your key at https://platform.deepseek.com",
             Style::default().fg(palette::DEEPSEEK_SKY),
         )),
+        Line::from(Span::styled(
+            "Paste the full key exactly as issued (no spaces/newlines).",
+            Style::default().fg(palette::TEXT_MUTED),
+        )),
         Line::from(""),
     ];
 

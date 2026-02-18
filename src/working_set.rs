@@ -405,7 +405,10 @@ fn extract_paths_from_message(message: &Message) -> Vec<String> {
             ContentBlock::ToolResult { content, .. } => {
                 paths.extend(extract_paths_from_text(content));
             }
-            ContentBlock::Thinking { .. } => {}
+            ContentBlock::Thinking { .. }
+            | ContentBlock::ServerToolUse { .. }
+            | ContentBlock::ToolSearchToolResult { .. }
+            | ContentBlock::CodeExecutionToolResult { .. } => {}
         }
     }
     paths
@@ -567,7 +570,10 @@ fn message_mentions_any_path(message: &Message, needles: &[String], max_scan_cha
                     return true;
                 }
             }
-            ContentBlock::Thinking { .. } => {}
+            ContentBlock::Thinking { .. }
+            | ContentBlock::ServerToolUse { .. }
+            | ContentBlock::ToolSearchToolResult { .. }
+            | ContentBlock::CodeExecutionToolResult { .. } => {}
         }
     }
     false
@@ -747,6 +753,8 @@ mod tests {
             content: vec![ContentBlock::ToolResult {
                 tool_use_id: "tool_1".to_string(),
                 content: "Changed src/compaction.rs".to_string(),
+                is_error: None,
+                content_blocks: None,
             }],
         };
 

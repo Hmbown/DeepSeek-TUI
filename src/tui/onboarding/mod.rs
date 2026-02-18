@@ -9,7 +9,8 @@ use std::path::{Path, PathBuf};
 use ratatui::{
     Frame,
     layout::Rect,
-    style::Style,
+    style::{Modifier, Style},
+    text::{Line, Span},
     widgets::{Block, Paragraph, Wrap},
 };
 
@@ -38,9 +39,47 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     };
 
     if !lines.is_empty() {
-        let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+        let (step, total) = onboarding_step(app);
+        let mut decorated = vec![
+            Line::from(Span::styled(
+                format!("Step {step}/{total}"),
+                Style::default()
+                    .fg(palette::TEXT_MUTED)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+        ];
+        decorated.extend(lines);
+        let paragraph = Paragraph::new(decorated).wrap(Wrap { trim: false });
         f.render_widget(paragraph, content_area);
     }
+}
+
+fn onboarding_step(app: &App) -> (usize, usize) {
+    let needs_trust = !app.trust_mode && needs_trust(&app.workspace);
+    let mut total = 2; // Welcome + Tips
+    if app.onboarding_needs_api_key {
+        total += 1;
+    }
+    if needs_trust {
+        total += 1;
+    }
+
+    let step = match app.onboarding {
+        OnboardingState::Welcome => 1,
+        OnboardingState::ApiKey => 2,
+        OnboardingState::TrustDirectory => {
+            if app.onboarding_needs_api_key {
+                3
+            } else {
+                2
+            }
+        }
+        OnboardingState::Tips => total,
+        OnboardingState::None => total,
+    };
+
+    (step, total)
 }
 
 pub fn tips_lines() -> Vec<ratatui::text::Line<'static>> {
@@ -60,6 +99,9 @@ pub fn tips_lines() -> Vec<ratatui::text::Line<'static>> {
         Line::from(Span::raw("  - l opens the pager for the last message")),
         Line::from(Span::raw("  - Ctrl+C cancels or exits")),
         Line::from(Span::raw("  - /help lists all commands")),
+        Line::from(Span::raw(
+            "  - Start with /config or /model for a quick check",
+        )),
         Line::from(""),
         Line::from(vec![
             Span::styled("Press ", Style::default().fg(palette::TEXT_MUTED)),

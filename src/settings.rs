@@ -25,6 +25,8 @@ pub struct Settings {
     pub default_mode: String,
     /// Sidebar width as percentage of terminal width
     pub sidebar_width_percent: u16,
+    /// Sidebar focus mode: auto, plan, todos, tasks, agents
+    pub sidebar_focus: String,
     /// Maximum number of input history entries to save
     pub max_input_history: usize,
     /// Default model to use
@@ -40,6 +42,7 @@ impl Default for Settings {
             show_tool_details: true,
             default_mode: "agent".to_string(),
             sidebar_width_percent: 28,
+            sidebar_focus: "auto".to_string(),
             max_input_history: 100,
             default_model: None,
         }
@@ -67,6 +70,7 @@ impl Settings {
         let mut settings: Settings = toml::from_str(&content)
             .with_context(|| format!("Failed to parse settings from {}", path.display()))?;
         settings.default_mode = normalize_mode(&settings.default_mode).to_string();
+        settings.sidebar_focus = normalize_sidebar_focus(&settings.sidebar_focus).to_string();
         settings.default_model = settings
             .default_model
             .as_deref()
@@ -136,6 +140,21 @@ impl Settings {
                 }
                 self.sidebar_width_percent = width;
             }
+            "sidebar_focus" | "focus" => {
+                let normalized = match value.trim().to_ascii_lowercase().as_str() {
+                    "auto" => "auto",
+                    "plan" => "plan",
+                    "todos" => "todos",
+                    "tasks" => "tasks",
+                    "agents" | "subagents" | "sub-agents" => "agents",
+                    _ => {
+                        anyhow::bail!(
+                            "Failed to update setting: invalid sidebar focus '{value}'. Expected: auto, plan, todos, tasks, agents."
+                        )
+                    }
+                };
+                self.sidebar_focus = normalized.to_string();
+            }
             "max_history" | "history" => {
                 let max: usize = value.parse().map_err(|_| {
                     anyhow::anyhow!(
@@ -173,6 +192,7 @@ impl Settings {
             "  sidebar_width:      {}%",
             self.sidebar_width_percent
         ));
+        lines.push(format!("  sidebar_focus:      {}", self.sidebar_focus));
         lines.push(format!("  max_history:        {}", self.max_input_history));
         lines.push(format!(
             "  default_model:      {}",
@@ -195,6 +215,10 @@ impl Settings {
             ("show_tool_details", "Show detailed tool output: on/off"),
             ("default_mode", "Default mode: agent, plan, yolo"),
             ("sidebar_width", "Sidebar width percentage: 10-50"),
+            (
+                "sidebar_focus",
+                "Sidebar focus: auto, plan, todos, tasks, agents",
+            ),
             ("max_history", "Max input history entries"),
             (
                 "default_model",
@@ -219,5 +243,15 @@ fn normalize_mode(value: &str) -> &str {
     match value {
         "edit" | "normal" => "agent",
         _ => value,
+    }
+}
+
+fn normalize_sidebar_focus(value: &str) -> &str {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "plan" => "plan",
+        "todos" => "todos",
+        "tasks" => "tasks",
+        "agents" | "subagents" | "sub-agents" => "agents",
+        _ => "auto",
     }
 }

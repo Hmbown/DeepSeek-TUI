@@ -199,6 +199,9 @@ fn message_text(msg: &Message) -> String {
             ContentBlock::ToolResult { content, .. } => {
                 let _ = writeln!(text, "{content}");
             }
+            ContentBlock::ServerToolUse { .. }
+            | ContentBlock::ToolSearchToolResult { .. }
+            | ContentBlock::CodeExecutionToolResult { .. } => {}
         }
     }
     text
@@ -212,6 +215,9 @@ fn extract_paths_from_message(message: &Message, workspace: Option<&Path>) -> Ve
             ContentBlock::ToolResult { content, .. } => extract_paths_from_text(content, workspace),
             ContentBlock::ToolUse { input, .. } => extract_paths_from_tool_input(input, workspace),
             ContentBlock::Thinking { .. } => Vec::new(),
+            ContentBlock::ServerToolUse { .. }
+            | ContentBlock::ToolSearchToolResult { .. }
+            | ContentBlock::CodeExecutionToolResult { .. } => Vec::new(),
         };
         paths.extend(candidates);
     }
@@ -462,6 +468,9 @@ fn estimate_tokens_for_message(message: &Message) -> usize {
                 .map(|s| s.len() / 4)
                 .unwrap_or(100),
             ContentBlock::ToolResult { content, .. } => content.len() / 4,
+            ContentBlock::ServerToolUse { .. }
+            | ContentBlock::ToolSearchToolResult { .. }
+            | ContentBlock::CodeExecutionToolResult { .. } => 0,
         })
         .sum::<usize>()
 }
@@ -770,6 +779,9 @@ async fn create_summary(
                 ContentBlock::Thinking { .. } => {
                     // Skip thinking blocks in summary
                 }
+                ContentBlock::ServerToolUse { .. }
+                | ContentBlock::ToolSearchToolResult { .. }
+                | ContentBlock::CodeExecutionToolResult { .. } => {}
             }
         }
     }
@@ -1164,6 +1176,7 @@ mod tests {
                     id: "tool-1".to_string(),
                     name: "read_file".to_string(),
                     input: json!({"path": "src/main.rs"}),
+                    caller: None,
                 }],
             },
             Message {
@@ -1171,6 +1184,8 @@ mod tests {
                 content: vec![ContentBlock::ToolResult {
                     tool_use_id: "tool-1".to_string(),
                     content: "ok src/main.rs".to_string(),
+                    is_error: None,
+                    content_blocks: None,
                 }],
             },
         ];
@@ -1247,6 +1262,7 @@ mod tests {
                     id: "orphan-call".to_string(),
                     name: "read_file".to_string(),
                     input: json!({"path": "src/main.rs"}),
+                    caller: None,
                 }],
             },
             msg("assistant", "recent"),
@@ -1275,6 +1291,8 @@ mod tests {
                 content: vec![ContentBlock::ToolResult {
                     tool_use_id: "orphan-result".to_string(),
                     content: "ok".to_string(),
+                    is_error: None,
+                    content_blocks: None,
                 }],
             },
             msg("assistant", "recent"),
@@ -1302,6 +1320,7 @@ mod tests {
                     id: "tool-ok".to_string(),
                     name: "list_dir".to_string(),
                     input: json!({}),
+                    caller: None,
                 }],
             },
             Message {
@@ -1309,6 +1328,8 @@ mod tests {
                 content: vec![ContentBlock::ToolResult {
                     tool_use_id: "tool-ok".to_string(),
                     content: "files here".to_string(),
+                    is_error: None,
+                    content_blocks: None,
                 }],
             },
             msg("assistant", "done"),
@@ -1336,11 +1357,13 @@ mod tests {
                         id: "t1".to_string(),
                         name: "read_file".to_string(),
                         input: json!({"path": "a.rs"}),
+                        caller: None,
                     },
                     ContentBlock::ToolUse {
                         id: "t2".to_string(),
                         name: "read_file".to_string(),
                         input: json!({"path": "b.rs"}),
+                        caller: None,
                     },
                 ],
             },
@@ -1349,6 +1372,8 @@ mod tests {
                 content: vec![ContentBlock::ToolResult {
                     tool_use_id: "t1".to_string(),
                     content: "content of a.rs".to_string(),
+                    is_error: None,
+                    content_blocks: None,
                 }],
             },
             Message {
@@ -1356,6 +1381,8 @@ mod tests {
                 content: vec![ContentBlock::ToolResult {
                     tool_use_id: "t2".to_string(),
                     content: "content of b.rs".to_string(),
+                    is_error: None,
+                    content_blocks: None,
                 }],
             },
             msg("assistant", "done"),
@@ -1397,11 +1424,13 @@ mod tests {
                         id: "good".to_string(),
                         name: "read_file".to_string(),
                         input: json!({}),
+                        caller: None,
                     },
                     ContentBlock::ToolUse {
                         id: "orphan".to_string(),
                         name: "shell".to_string(),
                         input: json!({}),
+                        caller: None,
                     },
                 ],
             },
@@ -1410,6 +1439,8 @@ mod tests {
                 content: vec![ContentBlock::ToolResult {
                     tool_use_id: "good".to_string(),
                     content: "ok".to_string(),
+                    is_error: None,
+                    content_blocks: None,
                 }],
             },
             // Note: NO result for "orphan" exists anywhere
@@ -1443,6 +1474,7 @@ mod tests {
                     id: format!("t{i}"),
                     name: "read_file".to_string(),
                     input: json!({}),
+                    caller: None,
                 }],
             });
             messages.push(Message {
@@ -1450,6 +1482,8 @@ mod tests {
                 content: vec![ContentBlock::ToolResult {
                     tool_use_id: format!("t{i}"),
                     content: format!("result {i}"),
+                    is_error: None,
+                    content_blocks: None,
                 }],
             });
         }
@@ -1551,6 +1585,7 @@ mod tests {
                     id: "patch-1".to_string(),
                     name: "apply_patch".to_string(),
                     input: json!({"patch": "diff content"}),
+                    caller: None,
                 }],
             },
             Message {
@@ -1558,6 +1593,8 @@ mod tests {
                 content: vec![ContentBlock::ToolResult {
                     tool_use_id: "patch-1".to_string(),
                     content: "Patch applied successfully".to_string(),
+                    is_error: None,
+                    content_blocks: None,
                 }],
             },
             msg("assistant", "more chat"),

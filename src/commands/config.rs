@@ -4,7 +4,7 @@ use super::CommandResult;
 use crate::config::{COMMON_DEEPSEEK_MODELS, canonical_model_name, clear_api_key};
 use crate::palette;
 use crate::settings::Settings;
-use crate::tui::app::{App, AppAction, AppMode, OnboardingState};
+use crate::tui::app::{App, AppAction, AppMode, OnboardingState, SidebarFocus};
 use crate::tui::approval::ApprovalMode;
 
 /// Display current configuration
@@ -22,6 +22,7 @@ pub fn show_config(app: &mut App) -> CommandResult {
          Trust mode:     {}\n\
          Auto-compact:   {}\n\
          Sidebar width:  {}%\n\
+         Sidebar focus:  {}\n\
          Total tokens:   {}\n\
          Project doc:    {}",
         app.mode.label(),
@@ -33,6 +34,7 @@ pub fn show_config(app: &mut App) -> CommandResult {
         if app.trust_mode { "yes" } else { "no" },
         if app.auto_compact { "yes" } else { "no" },
         app.sidebar_width_percent,
+        app.sidebar_focus.as_setting(),
         app.total_tokens,
         if has_project_doc {
             "loaded"
@@ -178,6 +180,9 @@ pub fn set_config(app: &mut App, args: Option<&str>) -> CommandResult {
         "sidebar_width" | "sidebar" => {
             app.sidebar_width_percent = settings.sidebar_width_percent;
             app.mark_history_updated();
+        }
+        "sidebar_focus" | "focus" => {
+            app.set_sidebar_focus(SidebarFocus::from_setting(&settings.sidebar_focus));
         }
         _ => {}
     }

@@ -30,12 +30,12 @@ use crate::llm_client::LlmClient;
 use crate::mcp::McpPool;
 use crate::models::{
     ContentBlock, ContentBlockStart, DEFAULT_CONTEXT_WINDOW_TOKENS, Delta, Message, MessageRequest,
-    StreamEvent, SystemPrompt, Tool, Usage, context_window_for_model,
+    StreamEvent, SystemPrompt, Tool, ToolCaller, Usage, context_window_for_model,
 };
 use crate::prompts;
 use crate::tools::plan::{SharedPlanState, new_shared_plan_state};
 use crate::tools::shell::{SharedShellManager, new_shared_shell_manager};
-use crate::tools::spec::{ApprovalRequirement, ToolError, ToolResult};
+use crate::tools::spec::{ApprovalRequirement, ToolError, ToolResult, required_str};
 use crate::tools::subagent::{
     SharedSubAgentManager, SubAgentRuntime, SubAgentType, new_shared_subagent_manager,
 };
@@ -287,6 +287,7 @@ struct ToolUseState {
     id: String,
     name: String,
     input: serde_json::Value,
+    caller: Option<ToolCaller>,
     input_buffer: String,
 }
 
@@ -305,11 +306,13 @@ struct ToolExecutionPlan {
     id: String,
     name: String,
     input: serde_json::Value,
+    caller: Option<ToolCaller>,
     interactive: bool,
     approval_required: bool,
     approval_description: String,
     supports_parallel: bool,
     read_only: bool,
+    blocked_error: Option<ToolError>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -366,6 +369,12 @@ const TOOL_CALL_START_MARKERS: [&str; 5] = [
 
 const MULTI_TOOL_PARALLEL_NAME: &str = "multi_tool_use.parallel";
 const REQUEST_USER_INPUT_NAME: &str = "request_user_input";
+const CODE_EXECUTION_TOOL_NAME: &str = "code_execution";
+const CODE_EXECUTION_TOOL_TYPE: &str = "code_execution_20250825";
+const TOOL_SEARCH_REGEX_NAME: &str = "tool_search_tool_regex";
+const TOOL_SEARCH_REGEX_TYPE: &str = "tool_search_tool_regex_20251119";
+const TOOL_SEARCH_BM25_NAME: &str = "tool_search_tool_bm25";
+const TOOL_SEARCH_BM25_TYPE: &str = "tool_search_tool_bm25_20251119";
 const TOOL_CALL_END_MARKERS: [&str; 5] = [
     "[/TOOL_CALL]",
     "</deepseek:tool_call>",
@@ -518,6 +527,262 @@ fn parse_parallel_tool_calls(
     }
 
     Ok(calls)
+}
+
+fn is_tool_search_tool(name: &str) -> bool {
+    matches!(name, TOOL_SEARCH_REGEX_NAME | TOOL_SEARCH_BM25_NAME)
+}
+
+fn should_default_defer_tool(name: &str) -> bool {
+    !matches!(
+        name,
+        "read_file"
+            | "list_dir"
+            | "grep_files"
+            | "file_search"
+            | "diagnostics"
+            | MULTI_TOOL_PARALLEL_NAME
+            | "update_plan"
+            | "todo_write"
+            | REQUEST_USER_INPUT_NAME
+    )
+}
+
+fn ensure_advanced_tooling(catalog: &mut Vec<Tool>) {
+    if !catalog.iter().any(|t| t.name == CODE_EXECUTION_TOOL_NAME) {
+        catalog.push(Tool {
+            tool_type: Some(CODE_EXECUTION_TOOL_TYPE.to_string()),
+            name: CODE_EXECUTION_TOOL_NAME.to_string(),
+            description: "Execute Python code in a local sandboxed runtime and return stdout/stderr/return_code as JSON.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "code": { "type": "string", "description": "Python source code to execute." }
+                },
+                "required": ["code"]
+            }),
+            allowed_callers: Some(vec!["direct".to_string()]),
+            defer_loading: Some(false),
+            input_examples: None,
+            strict: None,
+            cache_control: None,
+        });
+    }
+
+    if !catalog.iter().any(|t| t.name == TOOL_SEARCH_REGEX_NAME) {
+        catalog.push(Tool {
+            tool_type: Some(TOOL_SEARCH_REGEX_TYPE.to_string()),
+            name: TOOL_SEARCH_REGEX_NAME.to_string(),
+            description: "Search deferred tool definitions using a regex query and return matching tool references.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Regex pattern to search tool names/descriptions/schema." }
+                },
+                "required": ["query"]
+            }),
+            allowed_callers: Some(vec!["direct".to_string()]),
+            defer_loading: Some(false),
+            input_examples: None,
+            strict: None,
+            cache_control: None,
+        });
+    }
+
+    if !catalog.iter().any(|t| t.name == TOOL_SEARCH_BM25_NAME) {
+        catalog.push(Tool {
+            tool_type: Some(TOOL_SEARCH_BM25_TYPE.to_string()),
+            name: TOOL_SEARCH_BM25_NAME.to_string(),
+            description: "Search deferred tool definitions using natural-language matching and return matching tool references.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Natural language query for tool discovery." }
+                },
+                "required": ["query"]
+            }),
+            allowed_callers: Some(vec!["direct".to_string()]),
+            defer_loading: Some(false),
+            input_examples: None,
+            strict: None,
+            cache_control: None,
+        });
+    }
+}
+
+fn initial_active_tools(catalog: &[Tool]) -> std::collections::HashSet<String> {
+    let mut active = std::collections::HashSet::new();
+    for tool in catalog {
+        if !tool.defer_loading.unwrap_or(false) || is_tool_search_tool(&tool.name) {
+            active.insert(tool.name.clone());
+        }
+    }
+    if active.is_empty() && !catalog.is_empty() {
+        if let Some(first) = catalog.first() {
+            active.insert(first.name.clone());
+        }
+    }
+    active
+}
+
+fn active_tool_list_from_catalog(
+    catalog: &[Tool],
+    active: &std::collections::HashSet<String>,
+) -> Vec<Tool> {
+    catalog
+        .iter()
+        .filter(|tool| active.contains(&tool.name))
+        .cloned()
+        .collect()
+}
+
+fn tool_search_haystack(tool: &Tool) -> String {
+    format!(
+        "{}\n{}\n{}",
+        tool.name.to_lowercase(),
+        tool.description.to_lowercase(),
+        tool.input_schema.to_string().to_lowercase()
+    )
+}
+
+fn discover_tools_with_regex(catalog: &[Tool], query: &str) -> Result<Vec<String>, ToolError> {
+    let regex = regex::Regex::new(query)
+        .map_err(|err| ToolError::invalid_input(format!("Invalid regex query: {err}")))?;
+
+    let mut matches = Vec::new();
+    for tool in catalog {
+        if is_tool_search_tool(&tool.name) {
+            continue;
+        }
+        let hay = tool_search_haystack(tool);
+        if regex.is_match(&hay) {
+            matches.push(tool.name.clone());
+        }
+        if matches.len() >= 5 {
+            break;
+        }
+    }
+    Ok(matches)
+}
+
+fn discover_tools_with_bm25_like(catalog: &[Tool], query: &str) -> Vec<String> {
+    let terms: Vec<String> = query
+        .split_whitespace()
+        .map(|term| term.trim().to_lowercase())
+        .filter(|term| !term.is_empty())
+        .collect();
+    if terms.is_empty() {
+        return Vec::new();
+    }
+
+    let mut scored: Vec<(i64, String)> = Vec::new();
+    for tool in catalog {
+        if is_tool_search_tool(&tool.name) {
+            continue;
+        }
+        let hay = tool_search_haystack(tool);
+        let mut score = 0i64;
+        for term in &terms {
+            if hay.contains(term) {
+                score += 1;
+            }
+            if tool.name.to_lowercase().contains(term) {
+                score += 2;
+            }
+        }
+        if score > 0 {
+            scored.push((score, tool.name.clone()));
+        }
+    }
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    scored.into_iter().take(5).map(|(_, name)| name).collect()
+}
+
+fn execute_tool_search(
+    tool_name: &str,
+    input: &serde_json::Value,
+    catalog: &[Tool],
+    active_tools: &mut std::collections::HashSet<String>,
+) -> Result<ToolResult, ToolError> {
+    let query = required_str(input, "query")?;
+    let discovered = if tool_name == TOOL_SEARCH_REGEX_NAME {
+        discover_tools_with_regex(catalog, query)?
+    } else {
+        discover_tools_with_bm25_like(catalog, query)
+    };
+
+    for name in &discovered {
+        active_tools.insert(name.clone());
+    }
+
+    let references = discovered
+        .iter()
+        .map(|name| json!({"type": "tool_reference", "tool_name": name}))
+        .collect::<Vec<_>>();
+
+    let payload = json!({
+        "type": "tool_search_tool_search_result",
+        "tool_references": references,
+    });
+
+    Ok(ToolResult {
+        content: serde_json::to_string(&payload).unwrap_or_else(|_| payload.to_string()),
+        success: true,
+        metadata: Some(json!({
+            "tool_references": discovered,
+        })),
+    })
+}
+
+async fn execute_code_execution_tool(
+    input: &serde_json::Value,
+    workspace: &std::path::Path,
+) -> Result<ToolResult, ToolError> {
+    let code = required_str(input, "code")?;
+    let mut cmd = tokio::process::Command::new("python3");
+    cmd.arg("-c");
+    cmd.arg(code);
+    cmd.current_dir(workspace);
+
+    let output = tokio::time::timeout(Duration::from_secs(120), cmd.output())
+        .await
+        .map_err(|_| ToolError::Timeout { seconds: 120 })
+        .and_then(|res| res.map_err(|e| ToolError::execution_failed(e.to_string())))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let return_code = output.status.code().unwrap_or(-1);
+    let success = output.status.success();
+    let payload = json!({
+        "type": "code_execution_result",
+        "stdout": stdout,
+        "stderr": stderr,
+        "return_code": return_code,
+        "content": [],
+    });
+
+    Ok(ToolResult {
+        content: serde_json::to_string(&payload).unwrap_or_else(|_| payload.to_string()),
+        success,
+        metadata: Some(payload),
+    })
+}
+
+fn caller_type_for_tool_use(caller: Option<&ToolCaller>) -> &str {
+    caller.map_or("direct", |c| c.caller_type.as_str())
+}
+
+fn caller_allowed_for_tool(caller: Option<&ToolCaller>, tool_def: Option<&Tool>) -> bool {
+    let requested = caller_type_for_tool_use(caller);
+    if let Some(def) = tool_def
+        && let Some(allowed) = &def.allowed_callers
+    {
+        if allowed.is_empty() {
+            return requested == "direct";
+        }
+        return allowed.iter().any(|item| item == requested);
+    }
+    requested == "direct"
 }
 
 fn should_parallelize_tool_batch(plans: &[ToolExecutionPlan]) -> bool {
@@ -1128,6 +1393,22 @@ impl Engine {
         };
         let tools = tool_registry.as_ref().map(|registry| {
             let mut tools = registry.to_api_tools();
+            for tool in &mut tools {
+                tool.defer_loading = Some(should_default_defer_tool(&tool.name));
+            }
+            let mut mcp_tools = mcp_tools;
+            for tool in &mut mcp_tools {
+                let name = tool.name.as_str();
+                let keep_loaded = matches!(
+                    name,
+                    "list_mcp_resources"
+                        | "list_mcp_resource_templates"
+                        | "mcp_read_resource"
+                        | "read_mcp_resource"
+                        | "mcp_get_prompt"
+                );
+                tool.defer_loading = Some(!keep_loaded);
+            }
             tools.extend(mcp_tools);
             tools
         });
@@ -1685,6 +1966,11 @@ impl Engine {
         let mut consecutive_tool_error_steps = 0u32;
         let mut turn_error: Option<String> = None;
         let mut context_recovery_attempts = 0u8;
+        let mut tool_catalog = tools.unwrap_or_default();
+        if !tool_catalog.is_empty() {
+            ensure_advanced_tooling(&mut tool_catalog);
+        }
+        let mut active_tool_names = initial_active_tools(&tool_catalog);
 
         loop {
             if self.cancel_token.is_cancelled() {
@@ -1854,13 +2140,21 @@ impl Engine {
             }
 
             // Build the request
+            let active_tools = if tool_catalog.is_empty() {
+                None
+            } else {
+                Some(active_tool_list_from_catalog(
+                    &tool_catalog,
+                    &active_tool_names,
+                ))
+            };
             let request = MessageRequest {
                 model: self.session.model.clone(),
                 messages: self.session.messages.clone(),
                 max_tokens: TURN_MAX_OUTPUT_TOKENS,
                 system: self.session.system_prompt.clone(),
-                tools: tools.clone(),
-                tool_choice: if tools.is_some() {
+                tools: active_tools.clone(),
+                tool_choice: if active_tools.is_some() {
                     Some(json!({ "type": "auto" }))
                 } else {
                     None
@@ -1910,6 +2204,7 @@ impl Engine {
             let mut usage = Usage {
                 input_tokens: 0,
                 output_tokens: 0,
+                server_tool_use: None,
             };
             let mut current_block_kind: Option<ContentBlockKind> = None;
             let mut current_tool_index: Option<usize> = None;
@@ -2037,7 +2332,12 @@ impl Engine {
                                 })
                                 .await;
                         }
-                        ContentBlockStart::ToolUse { id, name, input } => {
+                        ContentBlockStart::ToolUse {
+                            id,
+                            name,
+                            input,
+                            caller,
+                        } => {
                             crate::logging::info(format!(
                                 "Tool '{}' block start. Initial input: {:?}",
                                 name, input
@@ -2056,6 +2356,30 @@ impl Engine {
                                 id,
                                 name,
                                 input,
+                                caller,
+                                input_buffer: String::new(),
+                            });
+                        }
+                        ContentBlockStart::ServerToolUse { id, name, input } => {
+                            crate::logging::info(format!(
+                                "Server tool '{}' block start. Initial input: {:?}",
+                                name, input
+                            ));
+                            current_block_kind = Some(ContentBlockKind::ToolUse);
+                            current_tool_index = Some(tool_uses.len());
+                            let _ = self
+                                .tx_event
+                                .send(Event::ToolCallStarted {
+                                    id: id.clone(),
+                                    name: name.clone(),
+                                    input: json!({}),
+                                })
+                                .await;
+                            tool_uses.push(ToolUseState {
+                                id,
+                                name,
+                                input,
+                                caller: None,
                                 input_buffer: String::new(),
                             });
                         }
@@ -2201,6 +2525,7 @@ impl Engine {
                         id: call.id,
                         name: call.name,
                         input: call.args,
+                        caller: None,
                         input_buffer: String::new(),
                     });
                 }
@@ -2217,6 +2542,7 @@ impl Engine {
                     id: tool.id.clone(),
                     name: tool.name.clone(),
                     input: tool.input.clone(),
+                    caller: tool.caller.clone(),
                 });
             }
 
@@ -2287,6 +2613,7 @@ impl Engine {
                 let tool_id = tool.id.clone();
                 let tool_name = tool.name.clone();
                 let tool_input = tool.input.clone();
+                let tool_caller = tool.caller.clone();
                 crate::logging::info(format!(
                     "Planning tool '{}' with input: {:?}",
                     tool_name, tool_input
@@ -2303,6 +2630,24 @@ impl Engine {
                 let mut approval_description = "Tool execution requires approval".to_string();
                 let mut supports_parallel = false;
                 let mut read_only = false;
+                let mut blocked_error: Option<ToolError> = None;
+                let tool_def = tool_catalog.iter().find(|def| def.name == tool_name);
+
+                if let Some(def) = tool_def
+                    && def.defer_loading.unwrap_or(false)
+                    && !active_tool_names.contains(&tool_name)
+                {
+                    blocked_error = Some(ToolError::not_available(format!(
+                        "Tool '{tool_name}' is deferred and not yet loaded. Use {TOOL_SEARCH_BM25_NAME} or {TOOL_SEARCH_REGEX_NAME} first."
+                    )));
+                }
+
+                if !caller_allowed_for_tool(tool_caller.as_ref(), tool_def) {
+                    blocked_error = Some(ToolError::permission_denied(format!(
+                        "Tool '{tool_name}' does not allow caller '{}'",
+                        caller_type_for_tool_use(tool_caller.as_ref())
+                    )));
+                }
 
                 if McpPool::is_mcp_tool(&tool_name) {
                     read_only = mcp_tool_is_read_only(&tool_name);
@@ -2316,6 +2661,17 @@ impl Engine {
                     approval_description = spec.description().to_string();
                     supports_parallel = spec.supports_parallel();
                     read_only = spec.is_read_only();
+                } else if tool_name == CODE_EXECUTION_TOOL_NAME {
+                    approval_required = true;
+                    approval_description =
+                        "Run model-provided Python code in local execution sandbox".to_string();
+                    supports_parallel = false;
+                    read_only = false;
+                } else if is_tool_search_tool(&tool_name) {
+                    approval_required = false;
+                    approval_description = "Search tool catalog".to_string();
+                    supports_parallel = false;
+                    read_only = true;
                 }
 
                 plans.push(ToolExecutionPlan {
@@ -2323,11 +2679,13 @@ impl Engine {
                     id: tool_id,
                     name: tool_name,
                     input: tool_input,
+                    caller: tool_caller,
                     interactive,
                     approval_required,
                     approval_description,
                     supports_parallel,
                     read_only,
+                    blocked_error,
                 });
             }
 
@@ -2355,6 +2713,17 @@ impl Engine {
             if parallel_allowed {
                 let mut tool_tasks = FuturesUnordered::new();
                 for plan in plans {
+                    if let Some(err) = plan.blocked_error.clone() {
+                        outcomes[plan.index] = Some(ToolExecOutcome {
+                            index: plan.index,
+                            id: plan.id,
+                            name: plan.name,
+                            input: plan.input,
+                            started_at: Instant::now(),
+                            result: Err(err),
+                        });
+                        continue;
+                    }
                     let registry = tool_registry;
                     let lock = tool_exec_lock.clone();
                     let mcp_pool = mcp_pool.clone();
@@ -2403,6 +2772,28 @@ impl Engine {
                     let tool_id = plan.id.clone();
                     let tool_name = plan.name.clone();
                     let tool_input = plan.input.clone();
+                    let tool_caller = plan.caller.clone();
+
+                    if let Some(err) = plan.blocked_error.clone() {
+                        let result = Err(err);
+                        let _ = self
+                            .tx_event
+                            .send(Event::ToolCallComplete {
+                                id: tool_id.clone(),
+                                name: tool_name.clone(),
+                                result: result.clone(),
+                            })
+                            .await;
+                        outcomes[plan.index] = Some(ToolExecOutcome {
+                            index: plan.index,
+                            id: tool_id,
+                            name: tool_name,
+                            input: tool_input,
+                            started_at: Instant::now(),
+                            result,
+                        });
+                        continue;
+                    }
 
                     if tool_name == MULTI_TOOL_PARALLEL_NAME {
                         let started_at = Instant::now();
@@ -2413,6 +2804,60 @@ impl Engine {
                                 tool_exec_lock.clone(),
                             )
                             .await;
+
+                        let _ = self
+                            .tx_event
+                            .send(Event::ToolCallComplete {
+                                id: tool_id.clone(),
+                                name: tool_name.clone(),
+                                result: result.clone(),
+                            })
+                            .await;
+
+                        outcomes[plan.index] = Some(ToolExecOutcome {
+                            index: plan.index,
+                            id: tool_id,
+                            name: tool_name,
+                            input: tool_input,
+                            started_at,
+                            result,
+                        });
+                        continue;
+                    }
+
+                    if tool_name == CODE_EXECUTION_TOOL_NAME {
+                        let started_at = Instant::now();
+                        let result =
+                            execute_code_execution_tool(&tool_input, &self.session.workspace).await;
+
+                        let _ = self
+                            .tx_event
+                            .send(Event::ToolCallComplete {
+                                id: tool_id.clone(),
+                                name: tool_name.clone(),
+                                result: result.clone(),
+                            })
+                            .await;
+
+                        outcomes[plan.index] = Some(ToolExecOutcome {
+                            index: plan.index,
+                            id: tool_id,
+                            name: tool_name,
+                            input: tool_input,
+                            started_at,
+                            result,
+                        });
+                        continue;
+                    }
+
+                    if is_tool_search_tool(&tool_name) {
+                        let started_at = Instant::now();
+                        let result = execute_tool_search(
+                            &tool_name,
+                            &tool_input,
+                            &tool_catalog,
+                            &mut active_tool_names,
+                        );
 
                         let _ = self
                             .tx_event
@@ -2492,6 +2937,7 @@ impl Engine {
                                     "tool_id": tool_id.clone(),
                                     "tool_name": tool_name.clone(),
                                     "decision": "approved",
+                                    "caller": caller_type_for_tool_use(tool_caller.as_ref()),
                                 }));
                                 (None, None)
                             }
@@ -2501,6 +2947,7 @@ impl Engine {
                                     "tool_id": tool_id.clone(),
                                     "tool_name": tool_name.clone(),
                                     "decision": "denied",
+                                    "caller": caller_type_for_tool_use(tool_caller.as_ref()),
                                 }));
                                 (
                                     Some(Err(ToolError::permission_denied(format!(
@@ -2516,6 +2963,7 @@ impl Engine {
                                     "tool_name": tool_name.clone(),
                                     "decision": "retry_with_policy",
                                     "policy": format!("{policy:?}"),
+                                    "caller": caller_type_for_tool_use(tool_caller.as_ref()),
                                 }));
                                 let elevated_context = tool_registry.map(|r| {
                                     r.context().clone().with_elevated_sandbox_policy(policy)
@@ -2599,6 +3047,8 @@ impl Engine {
                             content: vec![ContentBlock::ToolResult {
                                 tool_use_id: outcome.id,
                                 content: output_for_context,
+                                is_error: None,
+                                content_blocks: None,
                             }],
                         });
                     }
@@ -2624,6 +3074,8 @@ impl Engine {
                             content: vec![ContentBlock::ToolResult {
                                 tool_use_id: outcome.id,
                                 content: format!("Error: {error}"),
+                                is_error: Some(true),
+                                content_blocks: None,
                             }],
                         });
                     }
@@ -2888,7 +3340,10 @@ impl Engine {
                             }
                         }
                     }
-                    ContentBlock::Thinking { .. } => {}
+                    ContentBlock::Thinking { .. }
+                    | ContentBlock::ServerToolUse { .. }
+                    | ContentBlock::ToolSearchToolResult { .. }
+                    | ContentBlock::CodeExecutionToolResult { .. } => {}
                 }
             }
         }
@@ -3136,6 +3591,8 @@ impl Engine {
             content: vec![ContentBlock::ToolResult {
                 tool_use_id: candidate.id.clone(),
                 content: verification_note.clone(),
+                is_error: None,
+                content_blocks: None,
             }],
         });
 

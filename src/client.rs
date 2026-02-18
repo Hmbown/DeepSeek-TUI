@@ -23,7 +23,7 @@ use crate::llm_client::{
 use crate::logging;
 use crate::models::{
     ContentBlock, ContentBlockStart, Delta, Message, MessageDelta, MessageRequest, MessageResponse,
-    StreamEvent, SystemPrompt, Tool, Usage,
+    ServerToolUsage, StreamEvent, SystemPrompt, Tool, ToolCaller, Usage,
 };
 
 fn to_api_tool_name(name: &str) -> String {
@@ -777,7 +777,12 @@ impl LlmClient for DeepSeekClient {
                     model: model.clone(),
                     stop_reason: None,
                     stop_sequence: None,
-                    usage: Usage { input_tokens: 0, output_tokens: 0 },
+                    container: None,
+                    usage: Usage {
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        server_tool_use: None,
+                    },
                 },
             });
 
@@ -959,26 +964,72 @@ fn build_responses_input(messages: &[Message]) -> Vec<Value> {
                         }]
                     }));
                 }
-                ContentBlock::ToolUse { id, name, input } => {
+                ContentBlock::ToolUse {
+                    id,
+                    name,
+                    input,
+                    caller,
+                } => {
                     let args = serde_json::to_string(input).unwrap_or_else(|_| input.to_string());
-                    items.push(json!({
+                    let mut item = json!({
                         "type": "function_call",
                         "call_id": id,
                         "name": to_api_tool_name(name),
                         "arguments": args,
-                    }));
+                    });
+                    if let Some(caller) = caller {
+                        item["caller"] = json!({
+                            "type": caller.caller_type,
+                            "tool_id": caller.tool_id,
+                        });
+                    }
+                    items.push(item);
                 }
                 ContentBlock::ToolResult {
                     tool_use_id,
                     content,
+                    is_error,
+                    ..
                 } => {
-                    items.push(json!({
+                    let mut item = json!({
                         "type": "function_call_output",
                         "call_id": tool_use_id,
                         "output": content,
-                    }));
+                    });
+                    if let Some(is_error) = is_error {
+                        item["is_error"] = json!(is_error);
+                    }
+                    items.push(item);
                 }
                 ContentBlock::Thinking { .. } => {}
+                ContentBlock::ServerToolUse { id, name, input } => {
+                    items.push(json!({
+                        "type": "server_tool_use",
+                        "id": id,
+                        "name": name,
+                        "input": input,
+                    }));
+                }
+                ContentBlock::ToolSearchToolResult {
+                    tool_use_id,
+                    content,
+                } => {
+                    items.push(json!({
+                        "type": "tool_search_tool_result",
+                        "tool_use_id": tool_use_id,
+                        "content": content,
+                    }));
+                }
+                ContentBlock::CodeExecutionToolResult {
+                    tool_use_id,
+                    content,
+                } => {
+                    items.push(json!({
+                        "type": "code_execution_tool_result",
+                        "tool_use_id": tool_use_id,
+                        "content": content,
+                    }));
+                }
             }
         }
     }
@@ -987,12 +1038,41 @@ fn build_responses_input(messages: &[Message]) -> Vec<Value> {
 }
 
 fn tool_to_responses(tool: &Tool) -> Value {
-    json!({
-        "type": "function",
-        "name": to_api_tool_name(&tool.name),
-        "description": tool.description,
-        "parameters": tool.input_schema,
-    })
+    let tool_type = tool.tool_type.as_deref().unwrap_or("function");
+    let mut value = if tool_type == "function" {
+        json!({
+            "type": "function",
+            "name": to_api_tool_name(&tool.name),
+            "description": tool.description,
+            "parameters": tool.input_schema,
+        })
+    } else if tool_type == "code_execution_20250825" {
+        json!({
+            "type": tool_type,
+            "name": to_api_tool_name(&tool.name),
+        })
+    } else {
+        json!({
+            "type": tool_type,
+            "name": to_api_tool_name(&tool.name),
+            "description": tool.description,
+            "input_schema": tool.input_schema,
+        })
+    };
+
+    if let Some(allowed_callers) = &tool.allowed_callers {
+        value["allowed_callers"] = json!(allowed_callers);
+    }
+    if let Some(defer_loading) = tool.defer_loading {
+        value["defer_loading"] = json!(defer_loading);
+    }
+    if let Some(input_examples) = &tool.input_examples {
+        value["input_examples"] = json!(input_examples);
+    }
+    if let Some(strict) = tool.strict {
+        value["strict"] = json!(strict);
+    }
+    value
 }
 
 fn parse_responses_message(payload: &Value) -> Result<MessageResponse> {
@@ -1059,10 +1139,86 @@ fn parse_responses_message(payload: &Value) -> Result<MessageResponse> {
                         Some(other) => other.clone(),
                         None => Value::Null,
                     };
+                    let caller = item.get("caller").and_then(|v| {
+                        v.get("type")
+                            .and_then(Value::as_str)
+                            .map(|caller_type| ToolCaller {
+                                caller_type: caller_type.to_string(),
+                                tool_id: v
+                                    .get("tool_id")
+                                    .and_then(Value::as_str)
+                                    .map(std::string::ToString::to_string),
+                            })
+                    });
                     content.push(ContentBlock::ToolUse {
                         id: call_id,
                         name: from_api_tool_name(&name),
                         input,
+                        caller,
+                    });
+                }
+                "function_call_output" => {
+                    let tool_use_id = item
+                        .get("call_id")
+                        .or_else(|| item.get("tool_use_id"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("tool_call")
+                        .to_string();
+                    let content_text = item
+                        .get("output")
+                        .or_else(|| item.get("content"))
+                        .map(|v| {
+                            if let Some(s) = v.as_str() {
+                                s.to_string()
+                            } else {
+                                v.to_string()
+                            }
+                        })
+                        .unwrap_or_default();
+                    let is_error = item.get("is_error").and_then(Value::as_bool);
+                    content.push(ContentBlock::ToolResult {
+                        tool_use_id,
+                        content: content_text,
+                        is_error,
+                        content_blocks: None,
+                    });
+                }
+                "server_tool_use" => {
+                    let id = item
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("server_tool")
+                        .to_string();
+                    let name = item
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("server_tool")
+                        .to_string();
+                    let input = item.get("input").cloned().unwrap_or(Value::Null);
+                    content.push(ContentBlock::ServerToolUse { id, name, input });
+                }
+                "tool_search_tool_result" => {
+                    let tool_use_id = item
+                        .get("tool_use_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("tool_search")
+                        .to_string();
+                    let content_value = item.get("content").cloned().unwrap_or(Value::Null);
+                    content.push(ContentBlock::ToolSearchToolResult {
+                        tool_use_id,
+                        content: content_value,
+                    });
+                }
+                "code_execution_tool_result" => {
+                    let tool_use_id = item
+                        .get("tool_use_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("code_execution")
+                        .to_string();
+                    let content_value = item.get("content").cloned().unwrap_or(Value::Null);
+                    content.push(ContentBlock::CodeExecutionToolResult {
+                        tool_use_id,
+                        content: content_value,
                     });
                 }
                 "reasoning" => {
@@ -1103,6 +1259,10 @@ fn parse_responses_message(payload: &Value) -> Result<MessageResponse> {
         model,
         stop_reason: None,
         stop_sequence: None,
+        container: payload
+            .get("container")
+            .cloned()
+            .and_then(|v| serde_json::from_value(v).ok()),
         usage,
     })
 }
@@ -1139,21 +1299,35 @@ fn build_chat_messages(
             match block {
                 ContentBlock::Text { text, .. } => text_parts.push(text.clone()),
                 ContentBlock::Thinking { thinking } => thinking_parts.push(thinking.clone()),
-                ContentBlock::ToolUse { id, name, input } => {
+                ContentBlock::ToolUse {
+                    id,
+                    name,
+                    input,
+                    caller,
+                    ..
+                } => {
                     let args = serde_json::to_string(input).unwrap_or_else(|_| input.to_string());
-                    tool_calls.push(json!({
+                    let mut call = json!({
                         "id": id,
                         "type": "function",
                         "function": {
                             "name": to_api_tool_name(name),
                             "arguments": args,
                         }
-                    }));
+                    });
+                    if let Some(caller) = caller {
+                        call["caller"] = json!({
+                            "type": caller.caller_type,
+                            "tool_id": caller.tool_id,
+                        });
+                    }
+                    tool_calls.push(call);
                     tool_call_ids.push(id.clone());
                 }
                 ContentBlock::ToolResult {
                     tool_use_id,
                     content,
+                    ..
                 } => {
                     tool_results.push((
                         tool_use_id.clone(),
@@ -1164,6 +1338,9 @@ fn build_chat_messages(
                         }),
                     ));
                 }
+                ContentBlock::ServerToolUse { .. }
+                | ContentBlock::ToolSearchToolResult { .. }
+                | ContentBlock::CodeExecutionToolResult { .. } => {}
             }
         }
 
@@ -1336,14 +1513,27 @@ fn build_chat_messages(
 }
 
 fn tool_to_chat(tool: &Tool) -> Value {
-    json!({
+    let mut value = json!({
         "type": "function",
         "function": {
             "name": to_api_tool_name(&tool.name),
             "description": tool.description,
             "parameters": tool.input_schema,
         }
-    })
+    });
+    if let Some(allowed_callers) = &tool.allowed_callers {
+        value["allowed_callers"] = json!(allowed_callers);
+    }
+    if let Some(defer_loading) = tool.defer_loading {
+        value["defer_loading"] = json!(defer_loading);
+    }
+    if let Some(input_examples) = &tool.input_examples {
+        value["input_examples"] = json!(input_examples);
+    }
+    if let Some(strict) = tool.strict {
+        value["strict"] = json!(strict);
+    }
+    value
 }
 
 fn map_tool_choice_for_chat(choice: &Value) -> Option<Value> {
@@ -1444,11 +1634,23 @@ fn parse_chat_message(payload: &Value) -> Result<MessageResponse> {
                 .and_then(Value::as_str)
                 .map(|raw| serde_json::from_str(raw).unwrap_or(Value::String(raw.to_string())))
                 .unwrap_or(Value::Null);
+            let caller = call.get("caller").and_then(|v| {
+                v.get("type")
+                    .and_then(Value::as_str)
+                    .map(|caller_type| ToolCaller {
+                        caller_type: caller_type.to_string(),
+                        tool_id: v
+                            .get("tool_id")
+                            .and_then(Value::as_str)
+                            .map(std::string::ToString::to_string),
+                    })
+            });
 
             content_blocks.push(ContentBlock::ToolUse {
                 id,
                 name: from_api_tool_name(&name),
                 input: arguments,
+                caller,
             });
         }
     }
@@ -1466,6 +1668,7 @@ fn parse_chat_message(payload: &Value) -> Result<MessageResponse> {
             .and_then(Value::as_str)
             .map(str::to_string),
         stop_sequence: None,
+        container: None,
         usage,
     })
 }
@@ -1483,9 +1686,25 @@ fn parse_usage(usage: Option<&Value>) -> Usage {
         .and_then(Value::as_u64)
         .unwrap_or(0);
 
+    let server_tool_use = usage.and_then(|u| u.get("server_tool_use")).map(|server| {
+        let code_execution_requests = server
+            .get("code_execution_requests")
+            .and_then(Value::as_u64)
+            .map(|v| v as u32);
+        let tool_search_requests = server
+            .get("tool_search_requests")
+            .and_then(Value::as_u64)
+            .map(|v| v as u32);
+        ServerToolUsage {
+            code_execution_requests,
+            tool_search_requests,
+        }
+    });
+
     Usage {
         input_tokens: input_tokens as u32,
         output_tokens: output_tokens as u32,
+        server_tool_use,
     }
 }
 
@@ -1535,10 +1754,25 @@ fn build_stream_events(response: &MessageResponse) -> Vec<StreamEvent> {
                 }
                 events.push(StreamEvent::ContentBlockStop { index });
             }
-            ContentBlock::ToolUse { id, name, input } => {
+            ContentBlock::ToolUse {
+                id, name, input, ..
+            } => {
                 events.push(StreamEvent::ContentBlockStart {
                     index,
                     content_block: ContentBlockStart::ToolUse {
+                        id: id.clone(),
+                        name: name.clone(),
+                        input: input.clone(),
+                        caller: None,
+                    },
+                });
+                events.push(StreamEvent::ContentBlockStop { index });
+            }
+            ContentBlock::ToolResult { .. } => {}
+            ContentBlock::ServerToolUse { id, name, input } => {
+                events.push(StreamEvent::ContentBlockStart {
+                    index,
+                    content_block: ContentBlockStart::ServerToolUse {
                         id: id.clone(),
                         name: name.clone(),
                         input: input.clone(),
@@ -1546,7 +1780,8 @@ fn build_stream_events(response: &MessageResponse) -> Vec<StreamEvent> {
                 });
                 events.push(StreamEvent::ContentBlockStop { index });
             }
-            ContentBlock::ToolResult { .. } => {}
+            ContentBlock::ToolSearchToolResult { .. }
+            | ContentBlock::CodeExecutionToolResult { .. } => {}
         }
         index = index.saturating_add(1);
     }
@@ -1687,6 +1922,17 @@ fn parse_sse_chunk(
                             .and_then(Value::as_str)
                             .unwrap_or("")
                             .to_string();
+                        let caller = tc.get("caller").and_then(|v| {
+                            v.get("type")
+                                .and_then(Value::as_str)
+                                .map(|caller_type| ToolCaller {
+                                    caller_type: caller_type.to_string(),
+                                    tool_id: v
+                                        .get("tool_id")
+                                        .and_then(Value::as_str)
+                                        .map(std::string::ToString::to_string),
+                                })
+                        });
 
                         entry.insert(true);
                         events.push(StreamEvent::ContentBlockStart {
@@ -1695,6 +1941,7 @@ fn parse_sse_chunk(
                                 id,
                                 name: from_api_tool_name(&name),
                                 input: json!({}),
+                                caller,
                             },
                         });
                     }
@@ -1886,6 +2133,8 @@ mod tests {
             content: vec![ContentBlock::ToolResult {
                 tool_use_id: "tool-1".to_string(),
                 content: "ok".to_string(),
+                is_error: None,
+                content_blocks: None,
             }],
         }];
 
@@ -1905,6 +2154,7 @@ mod tests {
                     id: "tool-1".to_string(),
                     name: "list_dir".to_string(),
                     input: json!({}),
+                    caller: None,
                 }],
             },
             Message {
@@ -1912,6 +2162,8 @@ mod tests {
                 content: vec![ContentBlock::ToolResult {
                     tool_use_id: "tool-1".to_string(),
                     content: "ok".to_string(),
+                    is_error: None,
+                    content_blocks: None,
                 }],
             },
         ];
@@ -1937,6 +2189,7 @@ mod tests {
                     id: "tool-1".to_string(),
                     name: "web.run".to_string(),
                     input: json!({}),
+                    caller: None,
                 }],
             },
             Message {
@@ -1944,6 +2197,8 @@ mod tests {
                 content: vec![ContentBlock::ToolResult {
                     tool_use_id: "tool-1".to_string(),
                     content: "ok".to_string(),
+                    is_error: None,
+                    content_blocks: None,
                 }],
             },
         ];
@@ -1978,6 +2233,7 @@ mod tests {
                     id: "tool-orphan".to_string(),
                     name: "read_file".to_string(),
                     input: json!({"path": "src/main.rs"}),
+                    caller: None,
                 }],
             },
             // No tool result follows — it was removed by compaction.
@@ -2017,6 +2273,7 @@ mod tests {
                     id: "tool-ok".to_string(),
                     name: "list_dir".to_string(),
                     input: json!({}),
+                    caller: None,
                 }],
             },
             Message {
@@ -2024,6 +2281,8 @@ mod tests {
                 content: vec![ContentBlock::ToolResult {
                     tool_use_id: "tool-ok".to_string(),
                     content: "files".to_string(),
+                    is_error: None,
+                    content_blocks: None,
                 }],
             },
         ];
@@ -2054,16 +2313,19 @@ mod tests {
                         id: "t1".to_string(),
                         name: "read_file".to_string(),
                         input: json!({"path": "a.rs"}),
+                        caller: None,
                     },
                     ContentBlock::ToolUse {
                         id: "t2".to_string(),
                         name: "read_file".to_string(),
                         input: json!({"path": "b.rs"}),
+                        caller: None,
                     },
                     ContentBlock::ToolUse {
                         id: "t3".to_string(),
                         name: "shell".to_string(),
                         input: json!({"cmd": "ls"}),
+                        caller: None,
                     },
                 ],
             },
@@ -2072,6 +2334,8 @@ mod tests {
                 content: vec![ContentBlock::ToolResult {
                     tool_use_id: "t1".to_string(),
                     content: "content a".to_string(),
+                    is_error: None,
+                    content_blocks: None,
                 }],
             },
             Message {
@@ -2079,6 +2343,8 @@ mod tests {
                 content: vec![ContentBlock::ToolResult {
                     tool_use_id: "t2".to_string(),
                     content: "content b".to_string(),
+                    is_error: None,
+                    content_blocks: None,
                 }],
             },
             // No result for t3

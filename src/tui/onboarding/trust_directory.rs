@@ -25,7 +25,11 @@ pub fn lines(app: &App) -> Vec<Line<'static>> {
     )));
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "This enables broader file access for tools and agents.",
+        "Y = allow tools/agents to read outside this workspace when needed.",
+        Style::default().fg(palette::TEXT_MUTED),
+    )));
+    lines.push(Line::from(Span::styled(
+        "N = keep access scoped to this workspace only (safer default).",
         Style::default().fg(palette::TEXT_MUTED),
     )));
     if let Some(message) = app.status_message.as_deref() {

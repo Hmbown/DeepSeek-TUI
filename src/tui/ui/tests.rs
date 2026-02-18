@@ -1,5 +1,6 @@
 use super::*;
 use crate::config::Config;
+use crate::tui::history::{GenericToolCell, ToolCell, ToolStatus};
 use std::path::PathBuf;
 
 #[test]
@@ -278,4 +279,76 @@ fn test_esc_priority_order_loading_then_input_then_mode() {
     assert!(app.input.is_empty());
     assert_eq!(app.mode, AppMode::Yolo);
     // Should change to Normal mode
+}
+
+#[test]
+fn visible_slash_menu_entries_respects_hide_flag() {
+    let mut app = create_test_app();
+    app.input = "/mo".to_string();
+    app.slash_menu_hidden = false;
+
+    let entries = visible_slash_menu_entries(&app, 6);
+    assert!(!entries.is_empty());
+
+    app.slash_menu_hidden = true;
+    let hidden_entries = visible_slash_menu_entries(&app, 6);
+    assert!(hidden_entries.is_empty());
+}
+
+#[test]
+fn apply_slash_menu_selection_appends_space_for_arg_commands() {
+    let mut app = create_test_app();
+    let entries = vec!["/set".to_string(), "/settings".to_string()];
+    app.slash_menu_selected = 0;
+    assert!(apply_slash_menu_selection(&mut app, &entries, true));
+    assert_eq!(app.input, "/set ");
+}
+
+#[test]
+fn jump_to_adjacent_tool_cell_finds_next_and_previous() {
+    let mut app = create_test_app();
+    app.history = vec![
+        HistoryCell::User {
+            content: "hello".to_string(),
+        },
+        HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            name: "file_search".to_string(),
+            status: ToolStatus::Success,
+            input_summary: Some("query: foo".to_string()),
+            output: Some("done".to_string()),
+        })),
+        HistoryCell::Assistant {
+            content: "ok".to_string(),
+            streaming: false,
+        },
+        HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            name: "run_command".to_string(),
+            status: ToolStatus::Success,
+            input_summary: Some("ls".to_string()),
+            output: Some("...".to_string()),
+        })),
+    ];
+    app.mark_history_updated();
+    app.transcript_cache.ensure(
+        &app.history,
+        100,
+        app.history_version,
+        app.transcript_render_options(),
+    );
+
+    app.last_transcript_top = 0;
+    assert!(jump_to_adjacent_tool_cell(
+        &mut app,
+        SearchDirection::Forward
+    ));
+    assert!(matches!(
+        app.transcript_scroll,
+        TranscriptScroll::Scrolled { .. }
+    ));
+
+    app.last_transcript_top = app.transcript_cache.total_lines().saturating_sub(1);
+    assert!(jump_to_adjacent_tool_cell(
+        &mut app,
+        SearchDirection::Backward
+    ));
 }

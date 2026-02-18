@@ -64,8 +64,8 @@ use crate::tui::ui_text::{history_cell_to_text, line_to_plain, slice_text};
 use crate::tui::user_input::UserInputView;
 
 use super::app::{
-    App, AppAction, AppMode, OnboardingState, QueuedMessage, TaskPanelEntry, ToolDetailRecord,
-    TuiOptions,
+    App, AppAction, AppMode, OnboardingState, QueuedMessage, SidebarFocus, StatusToastLevel,
+    TaskPanelEntry, ToolDetailRecord, TuiOptions,
 };
 use super::approval::{
     ApprovalMode, ApprovalRequest, ApprovalView, ElevationRequest, ElevationView, ReviewDecision,
@@ -77,7 +77,9 @@ use super::history::{
     summarize_tool_args, summarize_tool_output,
 };
 use super::views::{HelpView, ModalKind, ViewEvent};
-use super::widgets::{ChatWidget, ComposerWidget, HeaderData, HeaderWidget, Renderable};
+use super::widgets::{
+    ChatWidget, ComposerWidget, HeaderData, HeaderWidget, Renderable, slash_completion_hints,
+};
 
 // === Constants ===
 
@@ -375,7 +377,12 @@ async fn run_event_loop(
                             });
                         }
                         for (id, name, input) in app.pending_tool_uses.drain(..) {
-                            blocks.push(ContentBlock::ToolUse { id, name, input });
+                            blocks.push(ContentBlock::ToolUse {
+                                id,
+                                name,
+                                input,
+                                caller: None,
+                            });
                         }
 
                         // DeepSeek rejects assistant messages that contain only reasoning blocks.
@@ -460,6 +467,8 @@ async fn run_event_loop(
                             content: vec![ContentBlock::ToolResult {
                                 tool_use_id: id.clone(),
                                 content: tool_content,
+                                is_error: None,
+                                content_blocks: None,
                             }],
                         });
                         handle_tool_call_complete(app, &id, &name, &result);
@@ -808,6 +817,7 @@ async fn run_event_loop(
 
         let now = Instant::now();
         app.flush_paste_burst_if_due(now);
+        app.sync_status_message_to_toasts();
 
         if app.needs_redraw {
             terminal.draw(|f| render(f, app))?; // app is &mut
@@ -892,6 +902,10 @@ async fn run_event_loop(
                         }
                         OnboardingState::ApiKey => {
                             let key = app.api_key_input.trim().to_string();
+                            if let Some(warning) = validate_api_key_for_onboarding(&key) {
+                                app.status_message = Some(warning);
+                                continue;
+                            }
                             match app.submit_api_key() {
                                 Ok(_) => {
                                     // Recreate the engine so it picks up the newly saved key
@@ -1016,6 +1030,12 @@ async fn run_event_loop(
                 continue;
             }
 
+            let slash_menu_entries = visible_slash_menu_entries(app, 6);
+            let slash_menu_open = !slash_menu_entries.is_empty();
+            if slash_menu_open && app.slash_menu_selected >= slash_menu_entries.len() {
+                app.slash_menu_selected = slash_menu_entries.len().saturating_sub(1);
+            }
+
             // Global keybindings
             match key.code {
                 KeyCode::Enter if app.input.is_empty() && app.transcript_selection.is_active() => {
@@ -1032,6 +1052,31 @@ async fn run_event_loop(
                     if open_tool_details_pager(app) {
                         continue;
                     }
+                }
+                KeyCode::Char('1') if key.modifiers.contains(KeyModifiers::ALT) => {
+                    app.set_sidebar_focus(SidebarFocus::Plan);
+                    app.status_message = Some("Sidebar focus: plan".to_string());
+                    continue;
+                }
+                KeyCode::Char('2') if key.modifiers.contains(KeyModifiers::ALT) => {
+                    app.set_sidebar_focus(SidebarFocus::Todos);
+                    app.status_message = Some("Sidebar focus: todos".to_string());
+                    continue;
+                }
+                KeyCode::Char('3') if key.modifiers.contains(KeyModifiers::ALT) => {
+                    app.set_sidebar_focus(SidebarFocus::Tasks);
+                    app.status_message = Some("Sidebar focus: tasks".to_string());
+                    continue;
+                }
+                KeyCode::Char('4') if key.modifiers.contains(KeyModifiers::ALT) => {
+                    app.set_sidebar_focus(SidebarFocus::Agents);
+                    app.status_message = Some("Sidebar focus: agents".to_string());
+                    continue;
+                }
+                KeyCode::Char('0') if key.modifiers.contains(KeyModifiers::ALT) => {
+                    app.set_sidebar_focus(SidebarFocus::Auto);
+                    app.status_message = Some("Sidebar focus: auto".to_string());
+                    continue;
                 }
                 KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     app.view_stack.push(SessionPickerView::new());
@@ -1064,7 +1109,9 @@ async fn run_event_loop(
                     }
                 }
                 KeyCode::Esc => {
-                    if app.is_loading {
+                    if slash_menu_open {
+                        app.close_slash_menu();
+                    } else if app.is_loading {
                         engine_handle.cancel();
                         app.is_loading = false;
                         app.status_message = Some("Request cancelled".to_string());
@@ -1077,8 +1124,17 @@ async fn run_event_loop(
                 KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => {
                     app.scroll_up(3);
                 }
+                KeyCode::Up if key.modifiers.is_empty() && slash_menu_open => {
+                    if app.slash_menu_selected > 0 {
+                        app.slash_menu_selected = app.slash_menu_selected.saturating_sub(1);
+                    }
+                }
                 KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => {
                     app.scroll_down(3);
+                }
+                KeyCode::Down if key.modifiers.is_empty() && slash_menu_open => {
+                    app.slash_menu_selected = (app.slash_menu_selected + 1)
+                        .min(slash_menu_entries.len().saturating_sub(1));
                 }
                 KeyCode::PageUp => {
                     let page = app.last_transcript_visible.max(1);
@@ -1089,10 +1145,44 @@ async fn run_event_loop(
                     app.scroll_down(page);
                 }
                 KeyCode::Tab => {
+                    if slash_menu_open && apply_slash_menu_selection(app, &slash_menu_entries, true)
+                    {
+                        continue;
+                    }
                     if try_autocomplete_slash_command(app) {
                         continue;
                     }
                     app.cycle_mode();
+                }
+                KeyCode::Char('g')
+                    if key.modifiers.is_empty() && app.input.is_empty() && !slash_menu_open =>
+                {
+                    if let Some(anchor) =
+                        TranscriptScroll::anchor_for(app.transcript_cache.line_meta(), 0)
+                    {
+                        app.transcript_scroll = anchor;
+                    }
+                }
+                KeyCode::Char('G')
+                    if (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT)
+                        && app.input.is_empty()
+                        && !slash_menu_open =>
+                {
+                    app.scroll_to_bottom();
+                }
+                KeyCode::Char('[')
+                    if key.modifiers.is_empty() && app.input.is_empty() && !slash_menu_open =>
+                {
+                    if !jump_to_adjacent_tool_cell(app, SearchDirection::Backward) {
+                        app.status_message = Some("No previous tool output".to_string());
+                    }
+                }
+                KeyCode::Char(']')
+                    if key.modifiers.is_empty() && app.input.is_empty() && !slash_menu_open =>
+                {
+                    if !jump_to_adjacent_tool_cell(app, SearchDirection::Forward) {
+                        app.status_message = Some("No next tool output".to_string());
+                    }
                 }
                 // Input handling
                 KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -1465,6 +1555,36 @@ fn in_command_context(app: &App) -> bool {
     app.input.starts_with('/')
 }
 
+fn visible_slash_menu_entries(app: &App, limit: usize) -> Vec<String> {
+    if app.slash_menu_hidden {
+        return Vec::new();
+    }
+    slash_completion_hints(&app.input, limit)
+}
+
+fn apply_slash_menu_selection(app: &mut App, entries: &[String], append_space: bool) -> bool {
+    if entries.is_empty() {
+        return false;
+    }
+
+    let selected_idx = app.slash_menu_selected.min(entries.len().saturating_sub(1));
+    let mut command = entries[selected_idx].clone();
+
+    if append_space && !command.ends_with(' ') && !command.contains(char::is_whitespace) {
+        if let Some(info) = commands::get_command_info(command.trim_start_matches('/'))
+            && (info.usage.contains('<') || info.usage.contains('['))
+        {
+            command.push(' ');
+        }
+    }
+
+    app.input = command;
+    app.cursor_position = app.input.chars().count();
+    app.slash_menu_hidden = false;
+    app.status_message = Some(format!("Command selected: {}", app.input.trim_end()));
+    true
+}
+
 fn try_autocomplete_slash_command(app: &mut App) -> bool {
     if !app.input.starts_with('/') || app.input.contains(char::is_whitespace) {
         return false;
@@ -1482,6 +1602,7 @@ fn try_autocomplete_slash_command(app: &mut App) -> bool {
     if !shared.is_empty() && shared.len() > prefix.len() {
         app.input = format!("/{shared}");
         app.cursor_position = app.input.chars().count();
+        app.slash_menu_hidden = false;
         app.status_message = Some(format!("Autocomplete: /{shared}"));
         return true;
     }
@@ -1490,6 +1611,7 @@ fn try_autocomplete_slash_command(app: &mut App) -> bool {
         let completed = format!("/{} ", matches[0].name);
         app.input = completed.clone();
         app.cursor_position = completed.chars().count();
+        app.slash_menu_hidden = false;
         app.status_message = Some(format!("Command completed: {}", completed.trim_end()));
         return true;
     }
@@ -1634,6 +1756,25 @@ fn sanitize_stream_chunk(chunk: &str) -> String {
         .chars()
         .filter(|c| *c == '\n' || *c == '\t' || !c.is_control())
         .collect()
+}
+
+fn validate_api_key_for_onboarding(api_key: &str) -> Option<String> {
+    let trimmed = api_key.trim();
+    if trimmed.is_empty() {
+        return Some("API key cannot be empty.".to_string());
+    }
+    if trimmed.contains(char::is_whitespace) {
+        return Some("API key appears malformed (contains whitespace).".to_string());
+    }
+    if trimmed.len() < 16 {
+        return Some("API key appears too short. Please paste the full key.".to_string());
+    }
+    if !trimmed.contains('-') {
+        return Some(
+            "API key format looks unusual. Check that the full key was copied.".to_string(),
+        );
+    }
+    None
 }
 
 fn build_queued_message(app: &mut App, input: String) -> QueuedMessage {
@@ -1927,7 +2068,7 @@ fn render(f: &mut Frame, app: &mut App) {
         let mut chat_area = chunks[1];
         let mut sidebar_area = None;
 
-        if chunks[1].width >= 90 {
+        if chunks[1].width >= 100 {
             let preferred_sidebar = (u32::from(chunks[1].width)
                 * u32::from(app.sidebar_width_percent.clamp(10, 50))
                 / 100) as u16;
@@ -1983,20 +2124,28 @@ fn render_sidebar(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    let sections = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-            Constraint::Min(6),
-        ])
-        .split(area);
+    match app.sidebar_focus {
+        SidebarFocus::Auto => {
+            let sections = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Percentage(25),
+                    Constraint::Percentage(25),
+                    Constraint::Percentage(25),
+                    Constraint::Min(6),
+                ])
+                .split(area);
 
-    render_sidebar_plan(f, sections[0], app);
-    render_sidebar_todos(f, sections[1], app);
-    render_sidebar_tasks(f, sections[2], app);
-    render_sidebar_subagents(f, sections[3], app);
+            render_sidebar_plan(f, sections[0], app);
+            render_sidebar_todos(f, sections[1], app);
+            render_sidebar_tasks(f, sections[2], app);
+            render_sidebar_subagents(f, sections[3], app);
+        }
+        SidebarFocus::Plan => render_sidebar_plan(f, area, app),
+        SidebarFocus::Todos => render_sidebar_todos(f, area, app),
+        SidebarFocus::Tasks => render_sidebar_tasks(f, area, app),
+        SidebarFocus::Agents => render_sidebar_subagents(f, area, app),
+    }
 }
 
 fn render_sidebar_plan(f: &mut Frame, area: Rect, app: &App) {
@@ -2626,7 +2775,16 @@ fn render_status_indicator(f: &mut Frame, area: Rect, app: &App, queued: &[Strin
     f.render_widget(paragraph, area);
 }
 
-fn render_footer(f: &mut Frame, area: Rect, app: &App) {
+fn status_color(level: StatusToastLevel) -> ratatui::style::Color {
+    match level {
+        StatusToastLevel::Info => palette::DEEPSEEK_SKY,
+        StatusToastLevel::Success => palette::STATUS_SUCCESS,
+        StatusToastLevel::Warning => palette::STATUS_WARNING,
+        StatusToastLevel::Error => palette::STATUS_ERROR,
+    }
+}
+
+fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
     let width = area.width;
     let available_width = width as usize;
 
@@ -2690,16 +2848,17 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
 
     let right_width: usize = right_spans.iter().map(|s| s.content.width()).sum();
 
-    // 3. Left side content (Status toast or standard footer)
-    let left_spans = if let Some(msg) = app.status_message.as_ref() {
+    // 3. Left side content (status toast or standard footer)
+    let active_status = app.active_status_toast();
+    let left_spans = if let Some(toast) = active_status {
         let max_left = available_width
             .saturating_sub(right_width)
             .saturating_sub(1)
             .max(1);
-        let truncated = truncate_line_to_width(msg, max_left);
+        let truncated = truncate_line_to_width(&toast.text, max_left);
         vec![Span::styled(
             truncated,
-            Style::default().fg(palette::DEEPSEEK_SKY),
+            Style::default().fg(status_color(toast.level)),
         )]
     } else {
         // Compact footer: session + token cost + help hint
@@ -2740,12 +2899,12 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
         all_spans.extend(right_spans);
     } else {
         // Fallback for narrow screens
-        let simple_left = if let Some(msg) = app.status_message.as_ref() {
+        let simple_left = if let Some(toast) = app.active_status_toast() {
             let max_left = available_width.saturating_sub(10).saturating_sub(1).max(1);
-            let truncated = truncate_line_to_width(msg, max_left);
+            let truncated = truncate_line_to_width(&toast.text, max_left);
             vec![Span::styled(
                 truncated,
-                Style::default().fg(palette::DEEPSEEK_SKY),
+                Style::default().fg(status_color(toast.level)),
             )]
         } else {
             vec![Span::styled(
@@ -2832,6 +2991,57 @@ fn transcript_scroll_percent(top: usize, visible: usize, total: usize) -> Option
     let clamped_top = top.min(max_top);
     let percent = ((clamped_top as f64 / max_top as f64) * 100.0).round() as u16;
     Some(percent.min(100))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SearchDirection {
+    Forward,
+    Backward,
+}
+
+fn jump_to_adjacent_tool_cell(app: &mut App, direction: SearchDirection) -> bool {
+    let line_meta = app.transcript_cache.line_meta();
+    if line_meta.is_empty() {
+        return false;
+    }
+
+    let top = app
+        .last_transcript_top
+        .min(line_meta.len().saturating_sub(1));
+    let current_cell = line_meta
+        .get(top)
+        .and_then(crate::tui::scrolling::TranscriptLineMeta::cell_line)
+        .map(|(cell_index, _)| cell_index);
+
+    let mut scan_indices = Vec::new();
+    match direction {
+        SearchDirection::Forward => {
+            scan_indices.extend((top.saturating_add(1))..line_meta.len());
+        }
+        SearchDirection::Backward => {
+            scan_indices.extend((0..top).rev());
+        }
+    }
+
+    for idx in scan_indices {
+        let Some((cell_index, _)) = line_meta[idx].cell_line() else {
+            continue;
+        };
+        if current_cell.is_some_and(|current| current == cell_index) {
+            continue;
+        }
+        if !matches!(app.history.get(cell_index), Some(HistoryCell::Tool(_))) {
+            continue;
+        }
+        if let Some(anchor) = TranscriptScroll::anchor_for(line_meta, idx) {
+            app.transcript_scroll = anchor;
+            app.pending_scroll_delta = 0;
+            app.needs_redraw = true;
+            return true;
+        }
+    }
+
+    false
 }
 
 fn prompt_for_mode(mode: AppMode) -> &'static str {

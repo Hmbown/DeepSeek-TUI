@@ -1093,7 +1093,9 @@ async fn run_subagent(
                         final_result = Some(text.clone());
                     }
                 }
-                ContentBlock::ToolUse { id, name, input } => {
+                ContentBlock::ToolUse {
+                    id, name, input, ..
+                } => {
                     tool_uses.push((id.clone(), name.clone(), input.clone()));
                 }
                 _ => {}
@@ -1133,6 +1135,8 @@ async fn run_subagent(
             tool_results.push(ContentBlock::ToolResult {
                 tool_use_id: tool_id,
                 content: result,
+                is_error: None,
+                content_blocks: None,
             });
         }
 

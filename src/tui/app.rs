@@ -67,6 +67,74 @@ pub enum AppMode {
     Plan,
 }
 
+/// Sidebar content focus mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SidebarFocus {
+    Auto,
+    Plan,
+    Todos,
+    Tasks,
+    Agents,
+}
+
+impl SidebarFocus {
+    #[must_use]
+    pub fn from_setting(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "plan" => Self::Plan,
+            "todos" => Self::Todos,
+            "tasks" => Self::Tasks,
+            "agents" | "subagents" | "sub-agents" => Self::Agents,
+            _ => Self::Auto,
+        }
+    }
+
+    #[must_use]
+    pub fn as_setting(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Plan => "plan",
+            Self::Todos => "todos",
+            Self::Tasks => "tasks",
+            Self::Agents => "agents",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusToastLevel {
+    Info,
+    Success,
+    Warning,
+    Error,
+}
+
+#[derive(Debug, Clone)]
+pub struct StatusToast {
+    pub text: String,
+    pub level: StatusToastLevel,
+    pub created_at: Instant,
+    pub ttl_ms: Option<u64>,
+}
+
+impl StatusToast {
+    #[must_use]
+    pub fn new(text: impl Into<String>, level: StatusToastLevel, ttl_ms: Option<u64>) -> Self {
+        Self {
+            text: text.into(),
+            level,
+            created_at: Instant::now(),
+            ttl_ms,
+        }
+    }
+
+    #[must_use]
+    pub fn is_expired(&self, now: Instant) -> bool {
+        self.ttl_ms
+            .is_some_and(|ttl| now.duration_since(self.created_at).as_millis() >= u128::from(ttl))
+    }
+}
+
 fn char_count(text: &str) -> usize {
     text.chars().count()
 }
@@ -183,7 +251,14 @@ pub struct App {
     pub is_loading: bool,
     /// Degraded connectivity mode; new user inputs are queued for later retry.
     pub offline_mode: bool,
+    /// Legacy status text sink retained for compatibility with existing call sites.
     pub status_message: Option<String>,
+    /// Recent status toasts (ephemeral, newest at back).
+    pub status_toasts: VecDeque<StatusToast>,
+    /// Sticky status toast used for important warnings/errors.
+    pub sticky_status: Option<StatusToast>,
+    /// Last status text already promoted from `status_message` into toast state.
+    pub last_status_message_seen: Option<String>,
     pub model: String,
     pub workspace: PathBuf,
     pub skills_dir: PathBuf,
@@ -196,6 +271,11 @@ pub struct App {
     pub show_thinking: bool,
     pub show_tool_details: bool,
     pub sidebar_width_percent: u16,
+    pub sidebar_focus: SidebarFocus,
+    /// Slash menu selection index in composer.
+    pub slash_menu_selected: usize,
+    /// Temporary hide flag for slash menu until next input edit.
+    pub slash_menu_hidden: bool,
     #[allow(dead_code)]
     pub compact_threshold: usize,
     pub max_input_history: usize,
@@ -374,6 +454,7 @@ impl App {
         let show_thinking = settings.show_thinking;
         let show_tool_details = settings.show_tool_details;
         let sidebar_width_percent = settings.sidebar_width_percent;
+        let sidebar_focus = SidebarFocus::from_setting(&settings.sidebar_focus);
         let max_input_history = settings.max_input_history;
         let ui_theme = palette::ui_theme(&settings.theme);
         let model = settings.default_model.clone().unwrap_or_else(|| model);
@@ -442,6 +523,9 @@ impl App {
             is_loading: false,
             offline_mode: false,
             status_message: None,
+            status_toasts: VecDeque::new(),
+            sticky_status: None,
+            last_status_message_seen: None,
             model,
             workspace,
             skills_dir,
@@ -453,6 +537,9 @@ impl App {
             show_thinking,
             show_tool_details,
             sidebar_width_percent,
+            sidebar_focus,
+            slash_menu_selected: 0,
+            slash_menu_hidden: false,
             compact_threshold,
             max_input_history,
             total_tokens: 0,
@@ -610,6 +697,137 @@ impl App {
         self.needs_redraw = true;
     }
 
+    pub fn push_status_toast(
+        &mut self,
+        text: impl Into<String>,
+        level: StatusToastLevel,
+        ttl_ms: Option<u64>,
+    ) {
+        let toast = StatusToast::new(text, level, ttl_ms);
+        self.status_toasts.push_back(toast);
+        while self.status_toasts.len() > 24 {
+            self.status_toasts.pop_front();
+        }
+        self.needs_redraw = true;
+    }
+
+    pub fn set_sticky_status(
+        &mut self,
+        text: impl Into<String>,
+        level: StatusToastLevel,
+        ttl_ms: Option<u64>,
+    ) {
+        self.sticky_status = Some(StatusToast::new(text, level, ttl_ms));
+        self.needs_redraw = true;
+    }
+
+    pub fn clear_sticky_status(&mut self) {
+        self.sticky_status = None;
+    }
+
+    pub fn set_sidebar_focus(&mut self, focus: SidebarFocus) {
+        self.sidebar_focus = focus;
+        self.needs_redraw = true;
+    }
+
+    pub fn close_slash_menu(&mut self) {
+        self.slash_menu_hidden = true;
+        self.needs_redraw = true;
+    }
+
+    fn classify_status_text(text: &str) -> (StatusToastLevel, Option<u64>, bool) {
+        let lower = text.to_ascii_lowercase();
+        let has = |needle: &str| lower.contains(needle);
+
+        if has("offline mode") || has("context critical") {
+            return (StatusToastLevel::Warning, None, true);
+        }
+        if has("error")
+            || has("failed")
+            || has("denied")
+            || has("timeout")
+            || has("aborted")
+            || has("critical")
+        {
+            return (StatusToastLevel::Error, Some(15_000), true);
+        }
+        if has("saved")
+            || has("loaded")
+            || has("queued")
+            || has("found")
+            || has("enabled")
+            || has("completed")
+        {
+            return (StatusToastLevel::Success, Some(5_000), false);
+        }
+        if has("cancelled") || has("warning") {
+            return (StatusToastLevel::Warning, Some(5_000), false);
+        }
+        (StatusToastLevel::Info, Some(4_000), false)
+    }
+
+    pub fn sync_status_message_to_toasts(&mut self) {
+        let current = self.status_message.clone();
+        if self.last_status_message_seen == current {
+            return;
+        }
+        self.last_status_message_seen = current.clone();
+
+        let Some(message) = current else {
+            return;
+        };
+        if message.trim().is_empty() {
+            return;
+        }
+
+        let (level, ttl_ms, sticky) = Self::classify_status_text(&message);
+        if sticky {
+            self.set_sticky_status(message, level, ttl_ms);
+        } else {
+            if matches!(level, StatusToastLevel::Success)
+                && self
+                    .sticky_status
+                    .as_ref()
+                    .is_some_and(|toast| matches!(toast.level, StatusToastLevel::Error))
+            {
+                self.clear_sticky_status();
+            }
+            self.push_status_toast(message, level, ttl_ms);
+        }
+    }
+
+    pub fn active_status_toast(&mut self) -> Option<StatusToast> {
+        self.sync_status_message_to_toasts();
+        let now = Instant::now();
+        let mut removed = false;
+
+        while self
+            .status_toasts
+            .front()
+            .is_some_and(|toast| toast.is_expired(now))
+        {
+            self.status_toasts.pop_front();
+            removed = true;
+        }
+
+        if self
+            .sticky_status
+            .as_ref()
+            .is_some_and(|toast| toast.is_expired(now))
+        {
+            self.sticky_status = None;
+            removed = true;
+        }
+
+        if removed {
+            self.needs_redraw = true;
+        }
+
+        self.sticky_status
+            .clone()
+            .or_else(|| self.status_toasts.back().cloned())
+    }
+
     pub fn transcript_render_options(&self) -> TranscriptRenderOptions {
         TranscriptRenderOptions {
             show_thinking: self.show_thinking,
@@ -658,6 +876,7 @@ impl App {
         let byte_index = byte_index_at_char(&self.input, cursor);
         self.input.insert_str(byte_index, text);
         self.cursor_position = cursor + char_count(text);
+        self.slash_menu_hidden = false;
         self.needs_redraw = true;
     }
 
@@ -761,6 +980,7 @@ impl App {
         let byte_index = byte_index_at_char(&self.input, cursor);
         self.input.insert(byte_index, c);
         self.cursor_position = cursor + 1;
+        self.slash_menu_hidden = false;
         self.needs_redraw = true;
     }
 
@@ -772,6 +992,7 @@ impl App {
         let removed = remove_char_at(&mut self.input, target);
         if removed {
             self.cursor_position = target;
+            self.slash_menu_hidden = false;
             self.needs_redraw = true;
         }
     }
@@ -785,6 +1006,7 @@ impl App {
         if !removed {
             self.cursor_position = char_count(&self.input);
         }
+        self.slash_menu_hidden = false;
         self.needs_redraw = true;
     }
 
@@ -813,6 +1035,8 @@ impl App {
     pub fn clear_input(&mut self) {
         self.input.clear();
         self.cursor_position = 0;
+        self.slash_menu_selected = 0;
+        self.slash_menu_hidden = false;
         self.paste_burst.clear_after_explicit_paste();
         self.needs_redraw = true;
     }
@@ -889,6 +1113,7 @@ impl App {
         self.history_index = Some(new_index);
         self.input = self.input_history[new_index].clone();
         self.cursor_position = char_count(&self.input);
+        self.slash_menu_hidden = false;
         self.paste_burst.clear_after_explicit_paste();
     }
 
@@ -903,6 +1128,7 @@ impl App {
                     self.history_index = Some(i + 1);
                     self.input = self.input_history[i + 1].clone();
                     self.cursor_position = char_count(&self.input);
+                    self.slash_menu_hidden = false;
                     self.paste_burst.clear_after_explicit_paste();
                 } else {
                     self.history_index = None;

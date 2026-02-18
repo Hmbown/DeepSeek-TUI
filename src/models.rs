@@ -77,11 +77,33 @@ pub enum ContentBlock {
         id: String,
         name: String,
         input: serde_json::Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        caller: Option<ToolCaller>,
     },
     #[serde(rename = "tool_result")]
     ToolResult {
         tool_use_id: String,
         content: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        is_error: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        content_blocks: Option<Vec<serde_json::Value>>,
+    },
+    #[serde(rename = "server_tool_use")]
+    ServerToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    #[serde(rename = "tool_search_tool_result")]
+    ToolSearchToolResult {
+        tool_use_id: String,
+        content: serde_json::Value,
+    },
+    #[serde(rename = "code_execution_tool_result")]
+    CodeExecutionToolResult {
+        tool_use_id: String,
+        content: serde_json::Value,
     },
 }
 
@@ -92,14 +114,50 @@ pub struct CacheControl {
     pub cache_type: String,
 }
 
+/// Metadata describing who invoked a tool call.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct ToolCaller {
+    #[serde(rename = "type")]
+    pub caller_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_id: Option<String>,
+}
+
 /// Tool definition exposed to the model.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Tool {
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub tool_type: Option<String>,
     pub name: String,
     pub description: String,
     pub input_schema: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub allowed_callers: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub defer_loading: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_examples: Option<Vec<serde_json::Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strict: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_control: Option<CacheControl>,
+}
+
+/// Container metadata for code-execution style server tools.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ContainerInfo {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+}
+
+/// Server-side tool usage counters.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct ServerToolUsage {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code_execution_requests: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_search_requests: Option<u32>,
 }
 
 /// Response payload for a message request.
@@ -112,6 +170,8 @@ pub struct MessageResponse {
     pub model: String,
     pub stop_reason: Option<String>,
     pub stop_sequence: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub container: Option<ContainerInfo>,
     pub usage: Usage,
 }
 
@@ -120,6 +180,8 @@ pub struct MessageResponse {
 pub struct Usage {
     pub input_tokens: u32,
     pub output_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_tool_use: Option<ServerToolUsage>,
 }
 
 /// Map known models to their approximate context window sizes.
@@ -216,6 +278,14 @@ pub enum ContentBlockStart {
         id: String,
         name: String,
         input: serde_json::Value, // usually empty or partial
+        #[serde(skip_serializing_if = "Option::is_none")]
+        caller: Option<ToolCaller>,
+    },
+    #[serde(rename = "server_tool_use")]
+    ServerToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
     },
 }
 

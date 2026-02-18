@@ -209,6 +209,9 @@ pub fn estimate_message_chars(messages: &[Message]) -> usize {
                 ContentBlock::Thinking { thinking } => total += thinking.len(),
                 ContentBlock::ToolUse { input, .. } => total += input.to_string().len(),
                 ContentBlock::ToolResult { content, .. } => total += content.len(),
+                ContentBlock::ServerToolUse { .. }
+                | ContentBlock::ToolSearchToolResult { .. }
+                | ContentBlock::CodeExecutionToolResult { .. } => {}
             }
         }
     }
