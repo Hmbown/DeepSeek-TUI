@@ -978,6 +978,7 @@ mod tests {
         home: Option<OsString>,
         userprofile: Option<OsString>,
         deepseek_config_path: Option<OsString>,
+        deepseek_api_key: Option<OsString>,
     }
 
     impl EnvGuard {
@@ -988,54 +989,45 @@ mod tests {
             let home_prev = env::var_os("HOME");
             let userprofile_prev = env::var_os("USERPROFILE");
             let deepseek_config_prev = env::var_os("DEEPSEEK_CONFIG_PATH");
+            let api_key_prev = env::var_os("DEEPSEEK_API_KEY");
             // Safety: test-only environment mutation guarded by a global mutex.
             unsafe {
                 env::set_var("HOME", &home_str);
                 env::set_var("USERPROFILE", &home_str);
                 env::set_var("DEEPSEEK_CONFIG_PATH", &config_str);
+                env::remove_var("DEEPSEEK_API_KEY");
             }
             Self {
                 home: home_prev,
                 userprofile: userprofile_prev,
                 deepseek_config_path: deepseek_config_prev,
+                deepseek_api_key: api_key_prev,
             }
         }
     }
 
     impl Drop for EnvGuard {
         fn drop(&mut self) {
-            if let Some(value) = self.home.take() {
-                // Safety: test-only environment mutation guarded by a global mutex.
-                unsafe {
-                    env::set_var("HOME", value);
-                }
-            } else {
-                // Safety: test-only environment mutation guarded by a global mutex.
-                unsafe {
-                    env::remove_var("HOME");
-                }
+            // Safety: test-only environment mutation guarded by a global mutex.
+            unsafe {
+                Self::restore_var("HOME", self.home.take());
+                Self::restore_var("USERPROFILE", self.userprofile.take());
+                Self::restore_var("DEEPSEEK_CONFIG_PATH", self.deepseek_config_path.take());
+                Self::restore_var("DEEPSEEK_API_KEY", self.deepseek_api_key.take());
             }
-            if let Some(value) = self.userprofile.take() {
-                // Safety: test-only environment mutation guarded by a global mutex.
-                unsafe {
-                    env::set_var("USERPROFILE", value);
-                }
+        }
+    }
+
+    impl EnvGuard {
+        /// Restore an env var to its prior value (or remove it if it was unset).
+        ///
+        /// # Safety
+        /// Must only be called from test code guarded by a global mutex.
+        unsafe fn restore_var(key: &str, prev: Option<OsString>) {
+            if let Some(value) = prev {
+                unsafe { env::set_var(key, value) };
             } else {
-                // Safety: test-only environment mutation guarded by a global mutex.
-                unsafe {
-                    env::remove_var("USERPROFILE");
-                }
-            }
-            if let Some(value) = self.deepseek_config_path.take() {
-                // Safety: test-only environment mutation guarded by a global mutex.
-                unsafe {
-                    env::set_var("DEEPSEEK_CONFIG_PATH", value);
-                }
-            } else {
-                // Safety: test-only environment mutation guarded by a global mutex.
-                unsafe {
-                    env::remove_var("DEEPSEEK_CONFIG_PATH");
-                }
+                unsafe { env::remove_var(key) };
             }
         }
     }

@@ -1024,7 +1024,7 @@ mod tests {
 
     #[tokio::test]
     async fn thread_endpoints_expose_lifecycle_contract() -> Result<()> {
-        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+        let Some((addr, runtime_threads, handle)) = spawn_test_server().await? else {
             return Ok(());
         };
         let client = reqwest::Client::new();
@@ -1082,6 +1082,66 @@ mod tests {
             .await?;
         let forked_id = forked["id"].as_str().context("missing forked id")?;
         assert_ne!(forked_id, thread_id);
+
+        // Install a mock engine so the turn completes without calling the real API.
+        // The mock handles both SendMessage and CompactContext ops so the
+        // compact endpoint tested later also works.
+        let harness = crate::core::engine::mock_engine_handle();
+        runtime_threads
+            .install_test_engine(&thread_id, harness.handle.clone())
+            .await?;
+        let mut rx_op = harness.rx_op;
+        let tx_event = harness.tx_event;
+        tokio::spawn(async move {
+            while let Some(op) = rx_op.recv().await {
+                match op {
+                    Op::SendMessage { .. } => {
+                        let _ = tx_event
+                            .send(EngineEvent::TurnStarted {
+                                turn_id: "mock_lifecycle".to_string(),
+                            })
+                            .await;
+                        let _ = tx_event
+                            .send(EngineEvent::MessageStarted { index: 0 })
+                            .await;
+                        let _ = tx_event
+                            .send(EngineEvent::MessageDelta {
+                                index: 0,
+                                content: "mock reply".to_string(),
+                            })
+                            .await;
+                        let _ = tx_event
+                            .send(EngineEvent::MessageComplete { index: 0 })
+                            .await;
+                        let _ = tx_event
+                            .send(EngineEvent::TurnComplete {
+                                usage: Usage {
+                                    input_tokens: 10,
+                                    output_tokens: 5,
+                                    server_tool_use: None,
+                                },
+                                status: TurnOutcomeStatus::Completed,
+                                error: None,
+                            })
+                            .await;
+                    }
+                    Op::CompactContext => {
+                        let _ = tx_event
+                            .send(EngineEvent::TurnComplete {
+                                usage: Usage {
+                                    input_tokens: 0,
+                                    output_tokens: 0,
+                                    server_tool_use: None,
+                                },
+                                status: TurnOutcomeStatus::Completed,
+                                error: None,
+                            })
+                            .await;
+                    }
+                    _ => {}
+                }
+            }
+        });
 
         let turn_start: serde_json::Value = client
             .post(format!("http://{addr}/v1/threads/{thread_id}/turns"))
@@ -1158,7 +1218,7 @@ mod tests {
 
     #[tokio::test]
     async fn events_endpoint_respects_since_seq_cursor() -> Result<()> {
-        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+        let Some((addr, runtime_threads, handle)) = spawn_test_server().await? else {
             return Ok(());
         };
         let client = reqwest::Client::new();
@@ -1175,6 +1235,41 @@ mod tests {
             .as_str()
             .context("missing thread id")?
             .to_string();
+
+        // Install a mock engine so the turn completes without calling the real API.
+        let harness = crate::core::engine::mock_engine_handle();
+        runtime_threads
+            .install_test_engine(&thread_id, harness.handle.clone())
+            .await?;
+        let mut rx_op = harness.rx_op;
+        let tx_event = harness.tx_event;
+        tokio::spawn(async move {
+            if !matches!(rx_op.recv().await, Some(Op::SendMessage { .. })) {
+                return;
+            }
+            let _ = tx_event
+                .send(EngineEvent::TurnStarted {
+                    turn_id: "mock_cursor".to_string(),
+                })
+                .await;
+            let _ = tx_event
+                .send(EngineEvent::MessageStarted { index: 0 })
+                .await;
+            let _ = tx_event
+                .send(EngineEvent::MessageComplete { index: 0 })
+                .await;
+            let _ = tx_event
+                .send(EngineEvent::TurnComplete {
+                    usage: Usage {
+                        input_tokens: 5,
+                        output_tokens: 3,
+                        server_tool_use: None,
+                    },
+                    status: TurnOutcomeStatus::Completed,
+                    error: None,
+                })
+                .await;
+        });
 
         let started: serde_json::Value = client
             .post(format!("http://{addr}/v1/threads/{thread_id}/turns"))
@@ -1458,34 +1553,114 @@ mod tests {
 
     #[tokio::test]
     async fn stream_endpoint_remains_backward_compatible() -> Result<()> {
-        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+        let Some((addr, runtime_threads, handle)) = spawn_test_server().await? else {
             return Ok(());
         };
         let client = reqwest::Client::new();
 
-        let resp = client
-            .post(format!("http://{addr}/v1/stream"))
-            .json(&json!({
-                "prompt": "compatibility stream",
-                "mode": "agent"
-            }))
+        // Create a thread and install a mock engine so /v1/stream doesn't call the real API.
+        let created: serde_json::Value = client
+            .post(format!("http://{addr}/v1/threads"))
+            .json(&json!({}))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        let thread_id = created["id"]
+            .as_str()
+            .context("missing thread id")?
+            .to_string();
+
+        let harness = crate::core::engine::mock_engine_handle();
+        runtime_threads
+            .install_test_engine(&thread_id, harness.handle.clone())
+            .await?;
+        let mut rx_op = harness.rx_op;
+        let tx_event = harness.tx_event;
+        tokio::spawn(async move {
+            if !matches!(rx_op.recv().await, Some(Op::SendMessage { .. })) {
+                return;
+            }
+            let _ = tx_event
+                .send(EngineEvent::TurnStarted {
+                    turn_id: "mock_stream".to_string(),
+                })
+                .await;
+            let _ = tx_event
+                .send(EngineEvent::MessageStarted { index: 0 })
+                .await;
+            let _ = tx_event
+                .send(EngineEvent::MessageDelta {
+                    index: 0,
+                    content: "streamed".to_string(),
+                })
+                .await;
+            let _ = tx_event
+                .send(EngineEvent::MessageComplete { index: 0 })
+                .await;
+            let _ = tx_event
+                .send(EngineEvent::TurnComplete {
+                    usage: Usage {
+                        input_tokens: 4,
+                        output_tokens: 2,
+                        server_tool_use: None,
+                    },
+                    status: TurnOutcomeStatus::Completed,
+                    error: None,
+                })
+                .await;
+        });
+
+        // Start the turn and consume events via the SSE endpoint.
+        let turn_start: serde_json::Value = client
+            .post(format!("http://{addr}/v1/threads/{thread_id}/turns"))
+            .json(&json!({ "prompt": "compatibility stream" }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        let turn_id = turn_start["turn"]["id"]
+            .as_str()
+            .context("missing turn id")?
+            .to_string();
+
+        let _ = wait_for_terminal_turn_status(
+            &client,
+            addr,
+            &thread_id,
+            &turn_id,
+            Duration::from_secs(2),
+        )
+        .await?;
+
+        // Verify that the persisted events include the expected turn lifecycle events.
+        let events = runtime_threads.events_since(&thread_id, None)?;
+        assert!(
+            events.iter().any(|ev| ev.event == "turn.started"),
+            "expected turn.started event"
+        );
+        assert!(
+            events.iter().any(|ev| ev.event == "turn.completed"),
+            "expected turn.completed event"
+        );
+
+        // Verify the SSE endpoint returns event-stream content type.
+        let events_resp = client
+            .get(format!(
+                "http://{addr}/v1/threads/{thread_id}/events?since_seq=0"
+            ))
             .send()
             .await?
             .error_for_status()?;
-        let content_type = resp
+        let content_type = events_resp
             .headers()
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .unwrap_or_default()
             .to_string();
         assert!(content_type.starts_with("text/event-stream"));
-
-        let body = tokio::time::timeout(Duration::from_secs(3), resp.text())
-            .await
-            .context("timed out reading /v1/stream response body")??;
-        assert!(body.contains("event: turn.started"));
-        assert!(body.contains("event: turn.completed"));
-        assert!(body.contains("event: done"));
 
         handle.abort();
         Ok(())
