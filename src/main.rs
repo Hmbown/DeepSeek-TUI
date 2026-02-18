@@ -27,6 +27,7 @@ use tempfile::NamedTempFile;
 use wait_timeout::ChildExt;
 
 mod audit;
+mod automation_manager;
 mod client;
 mod command_safety;
 mod commands;

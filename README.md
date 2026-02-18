@@ -179,6 +179,23 @@ cargo fmt
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
+## Standalone DeepSeek App (Web + Desktop)
+
+This repo now includes a separate Codex-style app at `apps/deepseek-app` built with Next.js + Tauri.
+
+```bash
+# Install frontend deps once
+pnpm install
+
+# Web app
+pnpm deepseek-app:web:dev
+
+# Desktop app (Tauri)
+pnpm deepseek-app:desktop:dev
+```
+
+The app talks to the runtime API (`deepseek serve --http`) and desktop mode auto-starts it when unavailable.
+
 ## License
 
 MIT

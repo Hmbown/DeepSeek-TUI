@@ -23,7 +23,7 @@ use crate::core::engine::{EngineConfig, EngineHandle, spawn_engine};
 use crate::core::events::{Event as EngineEvent, TurnOutcomeStatus};
 use crate::core::ops::Op;
 use crate::models::{
-    ContentBlock, Message, Usage, compaction_message_threshold_for_model,
+    ContentBlock, Message, SystemPrompt, Usage, compaction_message_threshold_for_model,
     compaction_threshold_for_model,
 };
 use crate::tools::plan::new_shared_plan_state;
@@ -93,6 +93,8 @@ pub struct ThreadRecord {
     pub latest_response_bookmark: Option<String>,
     #[serde(default)]
     pub archived: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -491,6 +493,13 @@ pub struct CreateThreadRequest {
     pub auto_approve: Option<bool>,
     #[serde(default)]
     pub archived: bool,
+    #[serde(default)]
+    pub system_prompt: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct UpdateThreadRequest {
+    pub archived: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -656,6 +665,7 @@ impl RuntimeThreadManager {
             latest_turn_id: None,
             latest_response_bookmark: None,
             archived: req.archived,
+            system_prompt: req.system_prompt,
         };
         self.store.save_thread(&thread)?;
         self.emit_event(
@@ -688,6 +698,42 @@ impl RuntimeThreadManager {
         self.store
             .load_thread(id)
             .with_context(|| format!("Thread not found: {id}"))
+    }
+
+    pub async fn update_thread(&self, id: &str, req: UpdateThreadRequest) -> Result<ThreadRecord> {
+        if req.archived.is_none() {
+            bail!("At least one thread field is required");
+        }
+
+        let mut thread = self.get_thread(id).await?;
+        let mut changed = false;
+
+        if let Some(archived) = req.archived
+            && thread.archived != archived
+        {
+            thread.archived = archived;
+            changed = true;
+        }
+
+        if changed {
+            thread.updated_at = Utc::now();
+            self.store.save_thread(&thread)?;
+            self.emit_event(
+                &thread.id,
+                None,
+                None,
+                "thread.updated",
+                json!({
+                    "thread": thread.clone(),
+                    "changes": {
+                        "archived": thread.archived
+                    }
+                }),
+            )
+            .await?;
+        }
+
+        Ok(thread)
     }
 
     pub async fn get_thread_detail(&self, id: &str) -> Result<ThreadDetail> {
@@ -757,6 +803,131 @@ impl RuntimeThreadManager {
         )
         .await?;
         Ok(forked)
+    }
+
+    /// Seed a thread with messages from a saved session so subsequent turns
+    /// continue with the prior conversation context.
+    pub async fn seed_thread_from_messages(
+        &self,
+        thread_id: &str,
+        messages: &[Message],
+    ) -> Result<()> {
+        let mut thread = self.get_thread(thread_id).await?;
+        let now = Utc::now();
+
+        let mut user_buf: Vec<String> = Vec::new();
+        let mut pending_pairs: Vec<(String, Option<String>)> = Vec::new();
+
+        for msg in messages {
+            let text = msg
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::Text { text, .. } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            if text.trim().is_empty() {
+                continue;
+            }
+            if msg.role == "user" {
+                user_buf.push(text);
+            } else if msg.role == "assistant" {
+                let user_text = if user_buf.is_empty() {
+                    String::new()
+                } else {
+                    user_buf.drain(..).collect::<Vec<_>>().join("\n")
+                };
+                pending_pairs.push((user_text, Some(text)));
+            }
+        }
+        if !user_buf.is_empty() {
+            let user_text = user_buf.drain(..).collect::<Vec<_>>().join("\n");
+            pending_pairs.push((user_text, None));
+        }
+
+        for (user_text, assistant_text) in pending_pairs {
+            let turn_id = format!("turn_{}", &Uuid::new_v4().to_string()[..8]);
+            let summary = if user_text.len() > SUMMARY_LIMIT {
+                format!("{}...", &user_text[..SUMMARY_LIMIT.saturating_sub(3)])
+            } else {
+                user_text.clone()
+            };
+            let mut item_ids = Vec::new();
+
+            if !user_text.is_empty() {
+                let item_id = format!("item_{}", &Uuid::new_v4().to_string()[..8]);
+                self.store.save_item(&TurnItemRecord {
+                    schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
+                    id: item_id.clone(),
+                    turn_id: turn_id.clone(),
+                    kind: TurnItemKind::UserMessage,
+                    status: TurnItemLifecycleStatus::Completed,
+                    summary: summary.clone(),
+                    detail: Some(user_text),
+                    artifact_refs: Vec::new(),
+                    started_at: Some(now),
+                    ended_at: Some(now),
+                })?;
+                item_ids.push(item_id);
+            }
+
+            if let Some(assistant_text) = assistant_text {
+                let asst_summary = if assistant_text.len() > SUMMARY_LIMIT {
+                    format!(
+                        "{}...",
+                        &assistant_text[..SUMMARY_LIMIT.saturating_sub(3)]
+                    )
+                } else {
+                    assistant_text.clone()
+                };
+                let item_id = format!("item_{}", &Uuid::new_v4().to_string()[..8]);
+                self.store.save_item(&TurnItemRecord {
+                    schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
+                    id: item_id.clone(),
+                    turn_id: turn_id.clone(),
+                    kind: TurnItemKind::AgentMessage,
+                    status: TurnItemLifecycleStatus::Completed,
+                    summary: asst_summary,
+                    detail: Some(assistant_text),
+                    artifact_refs: Vec::new(),
+                    started_at: Some(now),
+                    ended_at: Some(now),
+                })?;
+                item_ids.push(item_id);
+            }
+
+            self.store.save_turn(&TurnRecord {
+                schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
+                id: turn_id.clone(),
+                thread_id: thread_id.to_string(),
+                status: RuntimeTurnStatus::Completed,
+                input_summary: summary,
+                created_at: now,
+                started_at: Some(now),
+                ended_at: Some(now),
+                duration_ms: Some(0),
+                usage: None,
+                error: None,
+                item_ids,
+                steer_count: 0,
+            })?;
+
+            thread.latest_turn_id = Some(turn_id);
+            thread.updated_at = now;
+        }
+
+        self.store.save_thread(&thread)?;
+        self.emit_event(
+            thread_id,
+            None,
+            None,
+            "thread.updated",
+            json!({ "thread": thread, "reason": "session_resume" }),
+        )
+        .await?;
+        Ok(())
     }
 
     pub async fn start_turn(&self, thread_id: &str, req: StartTurnRequest) -> Result<TurnRecord> {
@@ -1180,11 +1351,15 @@ impl RuntimeThreadManager {
 
         let turns = self.store.list_turns_for_thread(&thread.id)?;
         let session_messages = self.reconstruct_messages_from_turns(&turns)?;
-        if !session_messages.is_empty() {
+        let sys_prompt = thread
+            .system_prompt
+            .as_ref()
+            .map(|s| SystemPrompt::Text(s.clone()));
+        if !session_messages.is_empty() || sys_prompt.is_some() {
             engine
                 .send(Op::SyncSession {
                     messages: session_messages,
-                    system_prompt: None,
+                    system_prompt: sys_prompt,
                     model: thread.model.clone(),
                     workspace: thread.workspace.clone(),
                 })
@@ -2030,6 +2205,7 @@ mod tests {
                 trust_mode: None,
                 auto_approve: None,
                 archived: false,
+                system_prompt: None,
             })
             .await?;
 
@@ -2114,6 +2290,7 @@ mod tests {
                 trust_mode: None,
                 auto_approve: None,
                 archived: false,
+                system_prompt: None,
             })
             .await?;
 
@@ -2234,6 +2411,7 @@ mod tests {
                 trust_mode: None,
                 auto_approve: None,
                 archived: false,
+                system_prompt: None,
             })
             .await?;
 
@@ -2324,6 +2502,7 @@ mod tests {
                 trust_mode: None,
                 auto_approve: None,
                 archived: false,
+                system_prompt: None,
             })
             .await?;
 
@@ -2429,6 +2608,7 @@ mod tests {
                 trust_mode: None,
                 auto_approve: None,
                 archived: false,
+                system_prompt: None,
             })
             .await?;
 

@@ -65,3 +65,24 @@ jobs:
         run: cargo doc --no-deps
         env:
           RUSTDOCFLAGS: -Dwarnings
+
+  frontend:
+    name: Frontend (deepseek-app)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.23.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Lint
+        run: pnpm deepseek-app:lint
+      - name: Typecheck
+        run: pnpm deepseek-app:typecheck
+      - name: Test
+        run: pnpm deepseek-app:test
