@@ -376,15 +376,9 @@ async fn get_session(
 ) -> Result<Json<SessionDetailResponse>, ApiError> {
     let manager = SessionManager::new(state.sessions_dir.clone())
         .map_err(|e| ApiError::internal(format!("Failed to open sessions dir: {e}")))?;
-    let session = manager.load_session(&id).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            ApiError::not_found(format!("Session '{id}' not found"))
-        } else if e.kind() == std::io::ErrorKind::InvalidData {
-            ApiError::bad_request(format!("Failed to parse session '{id}': {e}"))
-        } else {
-            ApiError::not_found(format!("Session '{id}' not found: {e}"))
-        }
-    })?;
+    let session = manager
+        .load_session(&id)
+        .map_err(|e| map_session_err(&id, e, "read"))?;
     Ok(Json(session_to_detail(session)))
 }
 
@@ -395,21 +389,17 @@ async fn resume_session_thread(
 ) -> Result<(StatusCode, Json<ResumeSessionResponse>), ApiError> {
     let manager = SessionManager::new(state.sessions_dir.clone())
         .map_err(|e| ApiError::internal(format!("Failed to open sessions dir: {e}")))?;
-    let session = manager.load_session(&id).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            ApiError::not_found(format!("Session '{id}' not found"))
-        } else if e.kind() == std::io::ErrorKind::InvalidData {
-            ApiError::bad_request(format!("Failed to parse session '{id}': {e}"))
-        } else {
-            ApiError::not_found(format!("Session '{id}' not found: {e}"))
-        }
-    })?;
+    let session = manager
+        .load_session(&id)
+        .map_err(|e| map_session_err(&id, e, "read"))?;
 
-    let model = req.model.unwrap_or_else(|| {
-        session.metadata.model.clone()
-    });
+    let model = req.model.unwrap_or_else(|| session.metadata.model.clone());
     let mode = req.mode.unwrap_or_else(|| {
-        session.metadata.mode.clone().unwrap_or_else(|| "agent".to_string())
+        session
+            .metadata
+            .mode
+            .clone()
+            .unwrap_or_else(|| "agent".to_string())
     });
 
     let thread = state
@@ -456,13 +446,9 @@ async fn delete_session(
 ) -> Result<StatusCode, ApiError> {
     let manager = SessionManager::new(state.sessions_dir.clone())
         .map_err(|e| ApiError::internal(format!("Failed to open sessions dir: {e}")))?;
-    manager.delete_session(&id).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            ApiError::not_found(format!("Session '{id}' not found"))
-        } else {
-            ApiError::internal(format!("Failed to delete session '{id}': {e}"))
-        }
-    })?;
+    manager
+        .delete_session(&id)
+        .map_err(|e| map_session_err(&id, e, "delete"))?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -494,6 +480,19 @@ fn session_to_detail(session: SavedSession) -> SessionDetailResponse {
         metadata: session.metadata,
         messages,
         system_prompt: session.system_prompt,
+    }
+}
+
+fn map_session_err(id: &str, err: std::io::Error, action: &str) -> ApiError {
+    match err.kind() {
+        std::io::ErrorKind::NotFound => ApiError::not_found(format!("Session '{id}' not found")),
+        std::io::ErrorKind::InvalidData => {
+            ApiError::bad_request(format!("Failed to parse session '{id}': {err}"))
+        }
+        std::io::ErrorKind::InvalidInput => {
+            ApiError::bad_request(format!("Invalid session id '{id}'"))
+        }
+        _ => ApiError::internal(format!("Failed to {action} session '{id}': {err}")),
     }
 }
 
@@ -2562,6 +2561,38 @@ mod tests {
             .send()
             .await?;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+        handle.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn session_endpoints_reject_invalid_id() -> Result<()> {
+        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+            return Ok(());
+        };
+        let client = reqwest::Client::new();
+
+        let get_resp = client
+            .get(format!("http://{addr}/v1/sessions/invalid%20id"))
+            .send()
+            .await?;
+        assert_eq!(get_resp.status(), StatusCode::BAD_REQUEST);
+
+        let resume_resp = client
+            .post(format!(
+                "http://{addr}/v1/sessions/invalid%20id/resume-thread"
+            ))
+            .json(&json!({}))
+            .send()
+            .await?;
+        assert_eq!(resume_resp.status(), StatusCode::BAD_REQUEST);
+
+        let delete_resp = client
+            .delete(format!("http://{addr}/v1/sessions/invalid%20id"))
+            .send()
+            .await?;
+        assert_eq!(delete_resp.status(), StatusCode::BAD_REQUEST);
 
         handle.abort();
         Ok(())

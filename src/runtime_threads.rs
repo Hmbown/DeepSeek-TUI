@@ -837,13 +837,13 @@ impl RuntimeThreadManager {
                 let user_text = if user_buf.is_empty() {
                     String::new()
                 } else {
-                    user_buf.drain(..).collect::<Vec<_>>().join("\n")
+                    std::mem::take(&mut user_buf).join("\n")
                 };
                 pending_pairs.push((user_text, Some(text)));
             }
         }
         if !user_buf.is_empty() {
-            let user_text = user_buf.drain(..).collect::<Vec<_>>().join("\n");
+            let user_text = std::mem::take(&mut user_buf).join("\n");
             pending_pairs.push((user_text, None));
         }
 
@@ -875,10 +875,7 @@ impl RuntimeThreadManager {
 
             if let Some(assistant_text) = assistant_text {
                 let asst_summary = if assistant_text.len() > SUMMARY_LIMIT {
-                    format!(
-                        "{}...",
-                        &assistant_text[..SUMMARY_LIMIT.saturating_sub(3)]
-                    )
+                    format!("{}...", &assistant_text[..SUMMARY_LIMIT.saturating_sub(3)])
                 } else {
                     assistant_text.clone()
                 };
@@ -2017,7 +2014,7 @@ fn enforce_lru_capacity(
     max_active_threads: usize,
 ) -> Vec<EngineHandle> {
     let mut evicted = Vec::new();
-    if active.engines.len() < max_active_threads {
+    if max_active_threads == 0 || active.engines.len() < max_active_threads {
         return evicted;
     }
     let protected = active
@@ -2032,7 +2029,8 @@ fn enforce_lru_capacity(
         })
         .collect::<HashSet<_>>();
 
-    while active.engines.len() >= max_active_threads {
+    let scan_limit = active.lru.len();
+    for _ in 0..scan_limit {
         let Some(candidate) = active.lru.pop_front() else {
             break;
         };
@@ -2190,6 +2188,45 @@ mod tests {
             }
             sleep(Duration::from_millis(20)).await;
         }
+    }
+
+    #[test]
+    fn enforce_lru_capacity_does_not_loop_when_all_threads_are_active() {
+        let mut active = ActiveThreads::default();
+        let harness_a = mock_engine_handle();
+        let harness_b = mock_engine_handle();
+
+        active.engines.insert(
+            "thr_a".to_string(),
+            ActiveThreadState {
+                engine: harness_a.handle,
+                active_turn: Some(ActiveTurnState {
+                    turn_id: "turn_a".to_string(),
+                    interrupt_requested: false,
+                    auto_approve: true,
+                    trust_mode: false,
+                }),
+            },
+        );
+        active.engines.insert(
+            "thr_b".to_string(),
+            ActiveThreadState {
+                engine: harness_b.handle,
+                active_turn: Some(ActiveTurnState {
+                    turn_id: "turn_b".to_string(),
+                    interrupt_requested: false,
+                    auto_approve: true,
+                    trust_mode: false,
+                }),
+            },
+        );
+        active.lru.push_back("thr_a".to_string());
+        active.lru.push_back("thr_b".to_string());
+
+        let evicted = enforce_lru_capacity(&mut active, 2);
+        assert!(evicted.is_empty(), "no idle threads should be evicted");
+        assert_eq!(active.engines.len(), 2);
+        assert_eq!(active.lru.len(), 2);
     }
 
     #[tokio::test]

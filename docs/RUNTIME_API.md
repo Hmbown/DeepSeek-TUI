@@ -24,6 +24,7 @@ The runtime uses a durable Thread/Turn/Item lifecycle.
 - `ThreadRecord`
   - `id`, `created_at`, `updated_at`
   - `model`, `workspace`, `mode`
+  - `system_prompt` (optional text)
   - `latest_turn_id`, `latest_response_bookmark`, `archived`
 - `TurnRecord`
   - `id`, `thread_id`
@@ -36,16 +37,42 @@ The runtime uses a durable Thread/Turn/Item lifecycle.
 
 The event log is append-only with global monotonic `seq` for replay/resume.
 
+Session resume note:
+- Saved session `system_prompt` currently round-trips as plain text. Structured `SystemPrompt::Blocks` metadata is not preserved when resuming into runtime threads.
+
 ## Endpoints
 
 ### Health and Session
 
 - `GET /health`
 - `GET /v1/sessions?limit=50&search=<substring>`
+- `GET /v1/sessions/{id}`
+- `DELETE /v1/sessions/{id}`
+- `POST /v1/sessions/{id}/resume-thread`
 - `GET /v1/workspace/status`
 - `GET /v1/skills`
 - `GET /v1/apps/mcp/servers`
 - `GET /v1/apps/mcp/tools?server=<optional>`
+
+Resume session request body (all fields optional):
+
+```json
+{
+  "model": "deepseek-chat",
+  "mode": "agent"
+}
+```
+
+Resume session response:
+
+```json
+{
+  "thread_id": "thr_1234abcd",
+  "session_id": "sess_5678efgh",
+  "message_count": 24,
+  "summary": "Resumed session 'Refactor plan' (24 messages) into thread thr_1234abcd"
+}
+```
 
 ### Compatibility Stream (Single Turn)
 

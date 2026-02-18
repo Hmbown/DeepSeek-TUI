@@ -352,7 +352,7 @@ export function listSessions(
 }
 
 export function getSession(baseUrl: string, sessionId: string): Promise<SessionDetail> {
-  return request(baseUrl, `/v1/sessions/${sessionId}`);
+  return request(baseUrl, `/v1/sessions/${encodeURIComponent(sessionId)}`);
 }
 
 export function resumeSessionThread(
@@ -360,20 +360,23 @@ export function resumeSessionThread(
   sessionId: string,
   payload: { model?: string; mode?: string } = {}
 ): Promise<ResumeSessionResponse> {
-  return request(baseUrl, `/v1/sessions/${sessionId}/resume-thread`, {
+  return request(baseUrl, `/v1/sessions/${encodeURIComponent(sessionId)}/resume-thread`, {
     method: "POST",
     body: JSON.stringify(payload),
   });
 }
 
 export async function deleteSession(baseUrl: string, sessionId: string): Promise<void> {
-  const url = `${normalizeBaseUrl(baseUrl)}/v1/sessions/${sessionId}`;
-  const resp = await fetch(url, { method: "DELETE" });
+  const url = `${normalizeBaseUrl(baseUrl)}/v1/sessions/${encodeURIComponent(sessionId)}`;
+  const resp = await fetch(url, { method: "DELETE", cache: "no-store" });
   if (!resp.ok) {
-    const body = await resp.json().catch(() => null);
-    throw new Error(
-      body?.error?.message ?? `DELETE session failed: ${resp.status}`
-    );
+    let payload: unknown = null;
+    try {
+      payload = await resp.json();
+    } catch {
+      payload = { error: { message: `HTTP ${resp.status}`, status: resp.status } };
+    }
+    throw parseApiError(payload, resp.status);
   }
 }
 

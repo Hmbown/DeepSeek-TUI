@@ -40,6 +40,9 @@ export function CommandPalette({
 
   const [activeIndex, setActiveIndex] = useState(0);
 
+  const clampedActiveIndex =
+    filtered.length === 0 ? 0 : Math.min(activeIndex, filtered.length - 1);
+
   useEffect(() => {
     if (!open) {
       return;
@@ -63,7 +66,7 @@ export function CommandPalette({
       }
       if (event.key === "Enter") {
         event.preventDefault();
-        const active = filtered[activeIndex];
+        const active = filtered[clampedActiveIndex];
         if (active) {
           active.action();
           onClose();
@@ -89,7 +92,7 @@ export function CommandPalette({
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activeIndex, filtered, onClose, open]);
+  }, [clampedActiveIndex, filtered, onClose, open]);
 
   const handleBackdropClick = useCallback(
     (e: React.MouseEvent) => {
@@ -121,7 +124,10 @@ export function CommandPalette({
         <input
           className="palette-search"
           value={query}
-          onChange={(event) => onQueryChange(event.target.value)}
+          onChange={(event) => {
+            setActiveIndex(0);
+            onQueryChange(event.target.value);
+          }}
           placeholder="Search commands or sessions"
           aria-label="Search commands or sessions"
           autoFocus
@@ -132,11 +138,11 @@ export function CommandPalette({
             <div className="empty-state compact">No results.</div>
           ) : (
             filtered.map((item, index) => (
-              <button
+              <div
                 key={item.id}
                 role="option"
-                aria-selected={index === activeIndex}
-                className={`palette-item ${index === activeIndex ? "is-active" : ""}`}
+                aria-selected={index === clampedActiveIndex}
+                className={`palette-item ${index === clampedActiveIndex ? "is-active" : ""}`}
                 onMouseEnter={() => setActiveIndex(index)}
                 onClick={() => {
                   item.action();
@@ -158,7 +164,7 @@ export function CommandPalette({
                   </button>
                 ) : null}
                 {item.shortcut ? <kbd>{item.shortcut}</kbd> : null}
-              </button>
+              </div>
             ))
           )}
         </div>

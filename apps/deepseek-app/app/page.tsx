@@ -361,12 +361,13 @@ export default function Home() {
     }
   }, [baseUrl]);
 
-  const refreshThreads = useCallback(async () => {
+  const refreshThreads = useCallback(async (filterOverride?: ThreadFilter) => {
     try {
-      const includeArchived = threadFilter !== "active";
+      const effectiveFilter = filterOverride ?? threadFilter;
+      const includeArchived = effectiveFilter !== "active";
       const list = await listThreadSummaries(baseUrl, { limit: 180, includeArchived });
       setThreads(list);
-      const filtered = applyThreadFilter(list, threadFilter);
+      const filtered = applyThreadFilter(list, effectiveFilter);
       if (!selectedThreadId && filtered.length > 0) {
         setSelectedThreadId(filtered[0].id);
       }
@@ -452,10 +453,11 @@ export default function Home() {
   }, [baseUrl]);
 
   const openTaskDetail = useCallback(
-    async (taskId: string) => {
+    async (taskId: string, targetBaseUrl?: string) => {
+      const runtimeBaseUrl = targetBaseUrl ?? baseUrl;
       setTaskDetailLoading(true);
       try {
-        const detail = await getTask(baseUrl, taskId);
+        const detail = await getTask(runtimeBaseUrl, taskId);
         setSelectedTaskDetail(detail);
       } catch (error) {
         setErrorNotice(`Failed to load task: ${errorText(error)}`);
@@ -582,7 +584,7 @@ export default function Home() {
     const taskId = params.get("task");
     if (taskId) {
       setSection("settings");
-      void openTaskDetail(taskId);
+      void openTaskDetail(taskId, stored);
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -1213,7 +1215,7 @@ export default function Home() {
         onThreadSearchChange={setThreadSearch}
         onThreadFilterChange={(value) => {
           setThreadFilter(value);
-          void refreshThreads();
+          void refreshThreads(value);
         }}
         onThreadSelect={(id) => {
           setSection("chat");
