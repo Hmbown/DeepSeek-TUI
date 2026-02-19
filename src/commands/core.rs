@@ -164,9 +164,12 @@ pub fn home_dashboard(app: &mut App) -> CommandResult {
     // Quick actions section
     let _ = writeln!(stats, "\nQuick Actions");
     let _ = writeln!(stats, "--------------------------------------------");
-    let _ = writeln!(stats, "/deepseek    - Dashboard & API links");
+    let _ = writeln!(stats, "/links      - Dashboard & API links");
     let _ = writeln!(stats, "/skills      - List available skills");
-    let _ = writeln!(stats, "/config      - Show current configuration");
+    let _ = writeln!(
+        stats,
+        "/config      - Open interactive configuration editor"
+    );
     let _ = writeln!(stats, "/settings    - Show persistent settings");
     let _ = writeln!(stats, "/model       - Switch or view model");
     let _ = writeln!(stats, "/subagents   - List sub-agent status");
@@ -244,6 +247,27 @@ mod tests {
         assert!(msg.contains("clear"));
         assert!(msg.contains("Clear conversation history"));
         assert!(msg.contains("Usage: /clear"));
+    }
+
+    #[test]
+    fn test_help_config_topic_uses_interactive_editor_text() {
+        let mut app = create_test_app();
+        let result = help(&mut app, Some("config"));
+        let msg = result.message.expect("help topic should return message");
+        assert!(msg.contains("config"));
+        assert!(msg.contains("Open interactive configuration editor"));
+        assert!(msg.contains("Usage: /config"));
+    }
+
+    #[test]
+    fn test_help_links_topic_shows_aliases() {
+        let mut app = create_test_app();
+        let result = help(&mut app, Some("links"));
+        let msg = result.message.expect("help topic should return message");
+        assert!(msg.contains("links"));
+        assert!(msg.contains("Show DeepSeek dashboard and docs links"));
+        assert!(msg.contains("Usage: /links"));
+        assert!(msg.contains("Aliases: dashboard, api"));
     }
 
     #[test]
@@ -417,5 +441,21 @@ mod tests {
             let msg = result.message.unwrap();
             assert!(msg.contains("Mode Tips"), "Missing tips for mode {mode:?}");
         }
+    }
+
+    #[test]
+    fn test_home_dashboard_quick_actions_reflect_links_and_config_and_hide_removed_commands() {
+        let mut app = create_test_app();
+        let result = home_dashboard(&mut app);
+        let msg = result
+            .message
+            .expect("home dashboard should return message");
+        assert!(msg.contains("/links      - Dashboard & API links"));
+        assert!(msg.contains("/config      - Open interactive configuration editor"));
+        assert!(
+            !msg.lines()
+                .any(|line| line.trim_start().starts_with("/set "))
+        );
+        assert!(!msg.contains("/deepseek"));
     }
 }

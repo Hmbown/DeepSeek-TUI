@@ -1,4 +1,4 @@
-//! Config commands: config, set, settings, mode switches, trust, logout
+//! Config commands: config, settings, mode switches, trust, logout
 
 use super::CommandResult;
 use crate::config::{COMMON_DEEPSEEK_MODELS, canonical_model_name, clear_api_key};
@@ -7,42 +7,9 @@ use crate::settings::Settings;
 use crate::tui::app::{App, AppAction, AppMode, OnboardingState, SidebarFocus};
 use crate::tui::approval::ApprovalMode;
 
-/// Display current configuration
-pub fn show_config(app: &mut App) -> CommandResult {
-    let has_project_doc = app.project_doc.is_some();
-    let config_info = format!(
-        "Session Configuration:\n\
-         ─────────────────────────────\n\
-         Mode:           {}\n\
-         Model:          {}\n\
-         Workspace:      {}\n\
-         Shell enabled:  {}\n\
-         Approval mode:  {}\n\
-         Max sub-agents: {}\n\
-         Trust mode:     {}\n\
-         Auto-compact:   {}\n\
-         Sidebar width:  {}%\n\
-         Sidebar focus:  {}\n\
-         Total tokens:   {}\n\
-         Project doc:    {}",
-        app.mode.label(),
-        app.model,
-        app.workspace.display(),
-        if app.allow_shell { "yes" } else { "no" },
-        app.approval_mode.label(),
-        app.max_subagents,
-        if app.trust_mode { "yes" } else { "no" },
-        if app.auto_compact { "yes" } else { "no" },
-        app.sidebar_width_percent,
-        app.sidebar_focus.as_setting(),
-        app.total_tokens,
-        if has_project_doc {
-            "loaded"
-        } else {
-            "not found"
-        },
-    );
-    CommandResult::message(config_info)
+/// Open the interactive config editor modal.
+pub fn show_config(_app: &mut App) -> CommandResult {
+    CommandResult::action(AppAction::OpenConfigView)
 }
 
 /// Show persistent settings
@@ -54,36 +21,9 @@ pub fn show_settings(_app: &mut App) -> CommandResult {
 }
 
 /// Modify a setting at runtime
-pub fn set_config(app: &mut App, args: Option<&str>) -> CommandResult {
-    let Some(args) = args else {
-        let available = Settings::available_settings()
-            .iter()
-            .map(|(k, d)| format!("  {k}: {d}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        return CommandResult::message(format!(
-            "Usage: /set <key> <value>\n\n\
-             Available settings:\n{available}\n\n\
-             Session-only settings:\n  \
-             model: Current model\n  \
-             approval_mode: auto | suggest | never\n\n\
-             Add --save to persist to settings file."
-        ));
-    };
+pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) -> CommandResult {
+    let key = key.to_lowercase();
 
-    let parts: Vec<&str> = args.splitn(2, ' ').collect();
-    if parts.len() < 2 {
-        return CommandResult::error("Usage: /set <key> <value>");
-    }
-
-    let key = parts[0].to_lowercase();
-    let (value, should_save) = if parts[1].ends_with(" --save") {
-        (parts[1].trim_end_matches(" --save").trim(), true)
-    } else {
-        (parts[1].trim(), false)
-    };
-
-    // Handle session-only settings first
     match key.as_str() {
         "model" => {
             let Some(model) = canonical_model_name(value) else {
@@ -121,10 +61,9 @@ pub fn set_config(app: &mut App, args: Option<&str>) -> CommandResult {
         _ => {}
     }
 
-    // Load and update persistent settings
     let mut settings = match Settings::load() {
         Ok(s) => s,
-        Err(e) if !should_save => {
+        Err(e) if !persist => {
             app.status_message = Some(format!(
                 "Settings unavailable; applying session-only override ({e})"
             ));
@@ -137,7 +76,6 @@ pub fn set_config(app: &mut App, args: Option<&str>) -> CommandResult {
         return CommandResult::error(format!("{e}"));
     }
 
-    // Apply to current session
     let mut action = None;
     match key.as_str() {
         "auto_compact" | "compact" => {
@@ -187,8 +125,7 @@ pub fn set_config(app: &mut App, args: Option<&str>) -> CommandResult {
         _ => {}
     }
 
-    // Save if requested
-    let message = if should_save {
+    let message = if persist {
         if let Err(e) = settings.save() {
             return CommandResult::error(format!("Failed to save: {e}"));
         }
@@ -201,6 +138,40 @@ pub fn set_config(app: &mut App, args: Option<&str>) -> CommandResult {
         message: Some(message),
         action,
     }
+}
+
+/// Modify a setting at runtime
+#[allow(dead_code)]
+pub fn set_config(app: &mut App, args: Option<&str>) -> CommandResult {
+    let Some(args) = args else {
+        let available = Settings::available_settings()
+            .iter()
+            .map(|(k, d)| format!("  {k}: {d}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        return CommandResult::message(format!(
+            "Usage: /set <key> <value>\n\n\
+             Available settings:\n{available}\n\n\
+             Session-only settings:\n  \
+             model: Current model\n  \
+             approval_mode: auto | suggest | never\n\n\
+             Add --save to persist to settings file."
+        ));
+    };
+
+    let parts: Vec<&str> = args.splitn(2, ' ').collect();
+    if parts.len() < 2 {
+        return CommandResult::error("Usage: /set <key> <value>");
+    }
+
+    let key = parts[0].to_lowercase();
+    let (value, should_save) = if parts[1].ends_with(" --save") {
+        (parts[1].trim_end_matches(" --save").trim(), true)
+    } else {
+        (parts[1].trim(), false)
+    };
+
+    set_config_value(app, &key, value, should_save)
 }
 
 /// Enable YOLO mode (shell + trust + auto-approve)
@@ -376,24 +347,12 @@ mod tests {
     }
 
     #[test]
-    fn test_show_config_displays_all_fields() {
+    fn test_show_config_opens_config_editor() {
         let mut app = create_test_app();
         app.total_tokens = 1234;
         let result = show_config(&mut app);
-        assert!(result.message.is_some());
-        let msg = result.message.unwrap();
-        assert!(msg.contains("Session Configuration"));
-        assert!(msg.contains("Mode:"));
-        assert!(msg.contains("Model:"));
-        assert!(msg.contains("Workspace:"));
-        assert!(msg.contains("Shell enabled:"));
-        assert!(msg.contains("Approval mode:"));
-        assert!(msg.contains("Max sub-agents:"));
-        assert!(msg.contains("Trust mode:"));
-        assert!(msg.contains("Auto-compact:"));
-        assert!(msg.contains("Sidebar width:"));
-        assert!(msg.contains("Total tokens:"));
-        assert!(msg.contains("Project doc:"));
+        assert!(result.message.is_none());
+        assert!(matches!(result.action, Some(AppAction::OpenConfigView)));
     }
 
     #[test]

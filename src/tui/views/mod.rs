@@ -1,14 +1,17 @@
-use crossterm::event::KeyEvent;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{buffer::Buffer, layout::Rect};
+use std::cell::Cell;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
 use crate::palette;
+use crate::settings::Settings;
 use crate::tools::UserInputResponse;
 use crate::tools::spec::ApprovalRequirement;
 use crate::tools::spec::ToolCapability;
 use crate::tools::subagent::{SubAgentResult, SubAgentStatus, SubAgentType};
 use crate::tools::{ToolContext, ToolRegistryBuilder};
+use crate::tui::app::App;
 use crate::tui::approval::{ElevationOption, ReviewDecision};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,6 +25,7 @@ pub enum ModalKind {
     SubAgents,
     Pager,
     SessionPicker,
+    Config,
 }
 
 #[derive(Debug, Clone)]
@@ -50,6 +54,11 @@ pub enum ViewEvent {
     },
     UserInputCancelled {
         tool_id: String,
+    },
+    ConfigUpdated {
+        key: String,
+        value: String,
+        persist: bool,
     },
     PlanPromptSelected {
         option: usize,
@@ -181,10 +190,10 @@ const HELP_COMMAND_SECTION_ORDER: [&str; 7] = [
 
 fn help_command_section(name: &str) -> &'static str {
     match name {
-        "help" | "clear" | "exit" | "model" | "models" | "home" | "deepseek" => "Core",
+        "help" | "clear" | "exit" | "model" | "models" | "home" | "links" => "Core",
         "normal" | "agent" | "yolo" | "plan" | "trust" | "logout" => "Modes",
         "save" | "sessions" | "load" | "export" | "compact" | "queue" => "Session",
-        "config" | "set" | "settings" => "Configuration",
+        "config" | "settings" => "Configuration",
         "task" | "skills" | "skill" | "subagents" | "review" => "Workflows",
         "note" | "cost" | "context" | "system" | "undo" | "retry" => "Planning",
         "init" => "Debug",
@@ -216,6 +225,571 @@ fn grouped_commands(
         .into_iter()
         .filter(|(_, entries)| !entries.is_empty())
         .collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfigScope {
+    Session,
+    Saved,
+}
+
+impl ConfigScope {
+    fn label(self) -> &'static str {
+        match self {
+            ConfigScope::Session => "SESSION",
+            ConfigScope::Saved => "SAVED",
+        }
+    }
+
+    fn persist(self) -> bool {
+        matches!(self, ConfigScope::Saved)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ConfigRow {
+    key: String,
+    value: String,
+    editable: bool,
+    scope: ConfigScope,
+}
+
+#[derive(Debug, Clone)]
+struct ConfigEdit {
+    key: String,
+    original_value: String,
+    buffer: Vec<char>,
+    cursor: usize,
+    select_all: bool,
+    scope: ConfigScope,
+}
+
+pub struct ConfigView {
+    rows: Vec<ConfigRow>,
+    selected: usize,
+    scroll: usize,
+    editing: Option<ConfigEdit>,
+    status: Option<String>,
+    last_visible_rows: Cell<usize>,
+}
+
+impl ConfigView {
+    pub fn new_for_app(app: &App) -> Self {
+        let settings = Settings::load().unwrap_or_else(|_| Settings::default());
+        let rows = vec![
+            ConfigRow {
+                key: "model".to_string(),
+                value: app.model.clone(),
+                editable: true,
+                scope: ConfigScope::Session,
+            },
+            ConfigRow {
+                key: "approval_mode".to_string(),
+                value: app.approval_mode.label().to_string(),
+                editable: true,
+                scope: ConfigScope::Session,
+            },
+            ConfigRow {
+                key: "auto_compact".to_string(),
+                value: settings.auto_compact.to_string(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                key: "show_thinking".to_string(),
+                value: settings.show_thinking.to_string(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                key: "show_tool_details".to_string(),
+                value: settings.show_tool_details.to_string(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                key: "default_mode".to_string(),
+                value: settings.default_mode.clone(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                key: "theme".to_string(),
+                value: settings.theme.clone(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                key: "sidebar_width".to_string(),
+                value: settings.sidebar_width_percent.to_string(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                key: "sidebar_focus".to_string(),
+                value: settings.sidebar_focus.clone(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                key: "max_history".to_string(),
+                value: settings.max_input_history.to_string(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                key: "default_model".to_string(),
+                value: settings
+                    .default_model
+                    .as_deref()
+                    .unwrap_or("(default)")
+                    .to_string(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+        ];
+
+        Self {
+            rows,
+            selected: 0,
+            scroll: 0,
+            editing: None,
+            status: None,
+            last_visible_rows: Cell::new(0),
+        }
+    }
+
+    fn visible_rows_cached(&self) -> usize {
+        let cached = self.last_visible_rows.get();
+        if cached == 0 { 8 } else { cached }
+    }
+
+    fn adjust_scroll(&mut self, visible_rows: usize) {
+        if self.rows.is_empty() {
+            self.selected = 0;
+            self.scroll = 0;
+            return;
+        }
+
+        let max = self.rows.len().saturating_sub(1);
+        self.selected = self.selected.min(max);
+
+        if self.selected < self.scroll {
+            self.scroll = self.selected;
+        }
+
+        let visible_rows = visible_rows.max(1);
+        if self.selected >= self.scroll + visible_rows {
+            self.scroll = self.selected.saturating_sub(visible_rows.saturating_sub(1));
+        }
+    }
+
+    fn move_selection(&mut self, delta: isize) {
+        if self.rows.is_empty() {
+            return;
+        }
+
+        let max = self.rows.len().saturating_sub(1);
+        let next = if delta.is_negative() {
+            self.selected.saturating_sub(delta.unsigned_abs())
+        } else {
+            (self.selected + delta as usize).min(max)
+        };
+
+        self.selected = next;
+        let visible_rows = self.visible_rows_cached();
+        self.adjust_scroll(visible_rows);
+    }
+
+    fn handle_editing_key(&mut self, key: KeyEvent) -> ViewAction {
+        match key.code {
+            KeyCode::Esc => {
+                self.editing = None;
+                self.status = Some("Edit cancelled".to_string());
+                ViewAction::None
+            }
+            KeyCode::Enter => {
+                let Some(edit) = self.editing.take() else {
+                    return ViewAction::None;
+                };
+                let submitted = edit.buffer.iter().collect::<String>();
+                let value = submitted.trim().to_string();
+                ViewAction::Emit(ViewEvent::ConfigUpdated {
+                    key: edit.key,
+                    value,
+                    persist: edit.scope.persist(),
+                })
+            }
+            KeyCode::Backspace => {
+                if let Some(edit) = self.editing.as_mut() {
+                    if edit.select_all {
+                        edit.buffer.clear();
+                        edit.cursor = 0;
+                        edit.select_all = false;
+                    } else if edit.cursor > 0 {
+                        edit.cursor = edit.cursor.saturating_sub(1);
+                        edit.buffer.remove(edit.cursor);
+                    }
+                }
+                ViewAction::None
+            }
+            KeyCode::Delete => {
+                if let Some(edit) = self.editing.as_mut() {
+                    if edit.select_all {
+                        edit.buffer.clear();
+                        edit.cursor = 0;
+                        edit.select_all = false;
+                    } else if edit.cursor < edit.buffer.len() {
+                        edit.buffer.remove(edit.cursor);
+                    }
+                }
+                ViewAction::None
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(edit) = self.editing.as_mut() {
+                    edit.buffer.clear();
+                    edit.cursor = 0;
+                    edit.select_all = false;
+                }
+                ViewAction::None
+            }
+            KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(edit) = self.editing.as_mut() {
+                    edit.cursor = edit.buffer.len();
+                    edit.select_all = true;
+                }
+                ViewAction::None
+            }
+            KeyCode::Left => {
+                if let Some(edit) = self.editing.as_mut() {
+                    if edit.select_all {
+                        edit.cursor = 0;
+                        edit.select_all = false;
+                    } else {
+                        edit.cursor = edit.cursor.saturating_sub(1);
+                    }
+                }
+                ViewAction::None
+            }
+            KeyCode::Right => {
+                if let Some(edit) = self.editing.as_mut() {
+                    if edit.select_all {
+                        edit.cursor = edit.buffer.len();
+                        edit.select_all = false;
+                    } else {
+                        edit.cursor = (edit.cursor + 1).min(edit.buffer.len());
+                    }
+                }
+                ViewAction::None
+            }
+            KeyCode::Home => {
+                if let Some(edit) = self.editing.as_mut() {
+                    edit.cursor = 0;
+                    edit.select_all = false;
+                }
+                ViewAction::None
+            }
+            KeyCode::End => {
+                if let Some(edit) = self.editing.as_mut() {
+                    edit.cursor = edit.buffer.len();
+                    edit.select_all = false;
+                }
+                ViewAction::None
+            }
+            KeyCode::Char(ch)
+                if !key.modifiers.contains(KeyModifiers::CONTROL) && !ch.is_control() =>
+            {
+                if let Some(edit) = self.editing.as_mut() {
+                    if edit.select_all {
+                        edit.buffer.clear();
+                        edit.cursor = 0;
+                        edit.select_all = false;
+                    }
+                    edit.buffer.insert(edit.cursor, ch);
+                    edit.cursor += 1;
+                }
+                ViewAction::None
+            }
+            _ => ViewAction::None,
+        }
+    }
+
+    fn start_edit(&mut self) {
+        let Some(row) = self.rows.get(self.selected) else {
+            return;
+        };
+        let key = row.key.clone();
+        let original_value = row.value.clone();
+        let initial_value = if key == "default_model" && original_value == "(default)" {
+            String::new()
+        } else {
+            original_value.clone()
+        };
+
+        let buffer: Vec<char> = initial_value.chars().collect();
+        self.editing = Some(ConfigEdit {
+            key,
+            original_value,
+            cursor: buffer.len(),
+            buffer,
+            select_all: true,
+            scope: row.scope,
+        });
+        self.status = None;
+    }
+}
+
+fn config_hint_for_key(key: &str) -> &'static str {
+    match key {
+        "model" => {
+            "deepseek-chat | deepseek-reasoner (aliases: deepseek-v3, deepseek-v3.2, deepseek-r1)"
+        }
+        "approval_mode" => "auto | suggest | never",
+        "auto_compact" | "show_thinking" | "show_tool_details" => "on/off, true/false, yes/no, 1/0",
+        "default_mode" => "agent | plan | yolo",
+        "theme" => "default | dark | light | whale",
+        "sidebar_width" => "10..=50",
+        "sidebar_focus" => "auto | plan | todos | tasks | agents",
+        "max_history" => "integer (0 allowed)",
+        "default_model" => "deepseek-chat | deepseek-reasoner | none/default",
+        _ => "",
+    }
+}
+
+fn render_config_editor_value_line(edit: &ConfigEdit) -> ratatui::text::Line<'static> {
+    use ratatui::{
+        prelude::Stylize,
+        style::Style,
+        text::{Line, Span},
+    };
+
+    let mut spans = Vec::new();
+    spans.push(Span::styled(
+        "New: ",
+        Style::default().fg(palette::TEXT_MUTED),
+    ));
+
+    let cursor_style = Style::default()
+        .fg(palette::DEEPSEEK_INK)
+        .bg(palette::DEEPSEEK_SKY)
+        .bold();
+    let selected_style = Style::default()
+        .fg(palette::SELECTION_TEXT)
+        .bg(palette::SELECTION_BG);
+
+    if edit.select_all && !edit.buffer.is_empty() {
+        let text = edit.buffer.iter().collect::<String>();
+        spans.push(Span::styled(text, selected_style));
+        spans.push(Span::styled(" ", cursor_style));
+        return Line::from(spans);
+    }
+
+    let before = edit.buffer.iter().take(edit.cursor).collect::<String>();
+    spans.push(Span::raw(before));
+    if edit.cursor < edit.buffer.len() {
+        let ch = edit.buffer[edit.cursor];
+        spans.push(Span::styled(ch.to_string(), cursor_style));
+        let after = edit
+            .buffer
+            .iter()
+            .skip(edit.cursor.saturating_add(1))
+            .collect::<String>();
+        spans.push(Span::raw(after));
+    } else {
+        spans.push(Span::styled(" ", cursor_style));
+    }
+
+    Line::from(spans)
+}
+
+impl ModalView for ConfigView {
+    fn kind(&self) -> ModalKind {
+        ModalKind::Config
+    }
+
+    fn handle_key(&mut self, key: KeyEvent) -> ViewAction {
+        if self.editing.is_some() {
+            return self.handle_editing_key(key);
+        }
+
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => ViewAction::Close,
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.move_selection(-1);
+                ViewAction::None
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.move_selection(1);
+                ViewAction::None
+            }
+            KeyCode::PageUp => {
+                self.move_selection(-5);
+                ViewAction::None
+            }
+            KeyCode::PageDown => {
+                self.move_selection(5);
+                ViewAction::None
+            }
+            KeyCode::Char('e') | KeyCode::Char('E') | KeyCode::Enter => {
+                if self.rows.get(self.selected).is_some_and(|row| row.editable) {
+                    self.start_edit();
+                }
+                ViewAction::None
+            }
+            _ => ViewAction::None,
+        }
+    }
+
+    fn render(&self, area: Rect, buf: &mut Buffer) {
+        use ratatui::{
+            prelude::Stylize,
+            style::Style,
+            text::{Line, Span},
+            widgets::{Block, Borders, Clear, Padding, Paragraph, Widget},
+        };
+
+        let popup_width = 84.min(area.width.saturating_sub(4));
+        let popup_height = 22.min(area.height.saturating_sub(4));
+
+        let popup_area = Rect {
+            x: (area.width - popup_width) / 2,
+            y: (area.height - popup_height) / 2,
+            width: popup_width,
+            height: popup_height,
+        };
+
+        Clear.render(popup_area, buf);
+
+        let base_block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(palette::BORDER_COLOR))
+            .style(Style::default().bg(palette::DEEPSEEK_INK))
+            .padding(Padding::uniform(1));
+
+        let inner = base_block.inner(popup_area);
+        let (lines, footer) = if let Some(edit) = self.editing.as_ref() {
+            let mut lines: Vec<Line> = Vec::new();
+            lines.push(Line::from(vec![Span::styled(
+                format!("Edit {}", edit.key),
+                Style::default().fg(palette::DEEPSEEK_SKY).bold(),
+            )]));
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::styled("Scope: ", Style::default().fg(palette::TEXT_MUTED)),
+                Span::raw(edit.scope.label()),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Current: ", Style::default().fg(palette::TEXT_MUTED)),
+                Span::raw(truncate_view_text(&edit.original_value, 60)),
+            ]));
+            lines.push(Line::from(""));
+            lines.push(render_config_editor_value_line(edit));
+            lines.push(Line::from(""));
+            let hint = config_hint_for_key(&edit.key);
+            if !hint.is_empty() {
+                lines.push(Line::from(vec![
+                    Span::styled("Hint: ", Style::default().fg(palette::TEXT_MUTED)),
+                    Span::raw(hint),
+                ]));
+            }
+            (
+                lines,
+                " Enter=apply, Esc=cancel, Ctrl+U=clear, Ctrl+A=all, \u{2190}/\u{2192}=move "
+                    .to_string(),
+            )
+        } else {
+            let content_height = usize::from(inner.height);
+            let header_lines = 4usize;
+            let bottom_lines = 1usize;
+            let visible_rows = content_height
+                .saturating_sub(header_lines + bottom_lines)
+                .max(1);
+            self.last_visible_rows.set(visible_rows);
+
+            let start = self.scroll.min(self.rows.len());
+            let end = (start + visible_rows).min(self.rows.len());
+            let scrollable = self.rows.len() > visible_rows;
+
+            let mut lines: Vec<Line> = vec![
+                Line::from(vec![Span::styled(
+                    "Session Configuration",
+                    Style::default().fg(palette::DEEPSEEK_BLUE).bold(),
+                )]),
+                Line::from(""),
+                Line::from("  Key               Value                                    Scope"),
+                Line::from("  ─────────────────────────────────────────────────────────────────"),
+            ];
+
+            for (idx, row) in self.rows.iter().enumerate().skip(start).take(visible_rows) {
+                let selected = idx == self.selected;
+                let style = if selected {
+                    Style::default()
+                        .fg(palette::SELECTION_TEXT)
+                        .bg(palette::SELECTION_BG)
+                } else {
+                    Style::default().fg(palette::TEXT_PRIMARY)
+                };
+                let value = truncate_view_text(&row.value, 44);
+                let mut line = Line::from(format!(
+                    "  {:<17} {:<44} {}",
+                    row.key,
+                    value,
+                    row.scope.label()
+                ));
+                line.style = style;
+                lines.push(line);
+            }
+
+            if self.rows.is_empty() {
+                lines.push(Line::from("  No settings available."));
+            }
+
+            let bottom_text = if let Some(status) = self.status.as_ref() {
+                status.clone()
+            } else if scrollable && !self.rows.is_empty() {
+                format!(
+                    "  Showing {}-{} / {}",
+                    self.scroll.saturating_add(1),
+                    end,
+                    self.rows.len()
+                )
+            } else {
+                String::new()
+            };
+            lines.push(Line::from(Span::styled(
+                bottom_text,
+                Style::default().fg(palette::TEXT_MUTED),
+            )));
+
+            let footer = if scrollable {
+                " ↑/↓=select, Enter=edit, PgUp/PgDn=scroll, Esc=close "
+            } else {
+                " ↑/↓=select, Enter=edit, Esc=close "
+            };
+            (lines, footer.to_string())
+        };
+
+        let block = Block::default()
+            .title(Line::from(vec![Span::styled(
+                " Config ",
+                Style::default().fg(palette::DEEPSEEK_BLUE).bold(),
+            )]))
+            .title_bottom(Line::from(Span::styled(
+                footer,
+                Style::default().fg(palette::TEXT_MUTED),
+            )))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(palette::BORDER_COLOR))
+            .style(Style::default().bg(palette::DEEPSEEK_INK))
+            .padding(Padding::uniform(1));
+
+        let inner = block.inner(popup_area);
+        block.render(popup_area, buf);
+        Paragraph::new(lines)
+            .style(Style::default().fg(palette::TEXT_PRIMARY))
+            .scroll((0, 0))
+            .render(inner, buf);
+    }
 }
 
 pub struct HelpView {
@@ -852,7 +1426,31 @@ fn truncate_view_text(text: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::truncate_view_text;
+    use super::{ConfigView, ModalView, ViewAction, ViewEvent, truncate_view_text};
+    use crate::config::Config;
+    use crate::tui::app::{App, TuiOptions};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use std::path::PathBuf;
+
+    fn create_test_app() -> App {
+        let options = TuiOptions {
+            model: "deepseek-reasoner".to_string(),
+            workspace: PathBuf::from("."),
+            allow_shell: false,
+            use_alt_screen: true,
+            max_subagents: 1,
+            skills_dir: PathBuf::from("."),
+            memory_path: PathBuf::from("memory.md"),
+            notes_path: PathBuf::from("notes.txt"),
+            mcp_config_path: PathBuf::from("mcp.json"),
+            use_memory: false,
+            start_in_agent_mode: false,
+            skip_onboarding: true,
+            yolo: false,
+            resume_session_id: None,
+        };
+        App::new(options, &Config::default())
+    }
 
     #[test]
     fn truncate_view_text_handles_unicode() {
@@ -862,5 +1460,85 @@ mod tests {
         assert_eq!(truncate_view_text(text, 3), "abc");
         assert_eq!(truncate_view_text(text, 4), "abc😀");
         assert_eq!(truncate_view_text(text, 5), "abc😀é");
+    }
+
+    #[test]
+    fn config_view_includes_expected_editable_rows() {
+        let app = create_test_app();
+        let view = ConfigView::new_for_app(&app);
+        let keys = view
+            .rows
+            .iter()
+            .map(|row| row.key.as_str())
+            .collect::<Vec<_>>();
+        assert!(keys.contains(&"model"));
+        assert!(keys.contains(&"approval_mode"));
+        assert!(keys.contains(&"auto_compact"));
+        assert!(view.rows.iter().all(|row| row.editable));
+    }
+
+    #[test]
+    fn config_view_enter_and_ctrl_u_emit_config_updated() {
+        let app = create_test_app();
+        let mut view = ConfigView::new_for_app(&app);
+
+        let start = view.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(start, ViewAction::None));
+        assert!(view.editing.is_some());
+
+        let clear = view.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        assert!(matches!(clear, ViewAction::None));
+        let cleared = view
+            .editing
+            .as_ref()
+            .expect("editing should remain active after Ctrl+U");
+        assert!(cleared.buffer.is_empty());
+
+        for ch in "deepseek-chat".chars() {
+            let action = view.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+            assert!(matches!(action, ViewAction::None));
+        }
+
+        let submit = view.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        match submit {
+            ViewAction::Emit(ViewEvent::ConfigUpdated {
+                key,
+                value,
+                persist,
+            }) => {
+                assert_eq!(key, "model");
+                assert_eq!(value, "deepseek-chat");
+                assert!(!persist);
+            }
+            other => panic!("expected config update emit, got {other:?}"),
+        }
+        assert!(view.editing.is_none());
+    }
+
+    #[test]
+    fn config_view_typing_replaces_on_first_char() {
+        let app = create_test_app();
+        let mut view = ConfigView::new_for_app(&app);
+
+        let _ = view.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let edit = view.editing.as_ref().expect("editing should be active");
+        assert!(edit.select_all, "editor should start with select-all");
+
+        let _ = view.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        let edit = view.editing.as_ref().expect("editing should remain active");
+        assert_eq!(edit.buffer.iter().collect::<String>(), "x");
+    }
+
+    #[test]
+    fn config_view_escape_cancels_editing() {
+        let app = create_test_app();
+        let mut view = ConfigView::new_for_app(&app);
+        let _ = view.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(view.editing.is_some());
+
+        let cancel = view.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(matches!(cancel, ViewAction::None));
+        assert!(view.editing.is_none());
+        assert_eq!(view.status.as_deref(), Some("Edit cancelled"));
     }
 }

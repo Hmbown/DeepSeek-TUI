@@ -296,12 +296,63 @@ fn visible_slash_menu_entries_respects_hide_flag() {
 }
 
 #[test]
+fn visible_slash_menu_entries_excludes_removed_commands() {
+    let mut app = create_test_app();
+    app.input = "/".to_string();
+
+    let entries = visible_slash_menu_entries(&app, 128);
+    assert!(entries.iter().any(|entry| entry == "/config"));
+    assert!(entries.iter().any(|entry| entry == "/links"));
+    assert!(!entries.iter().any(|entry| entry == "/set"));
+    assert!(!entries.iter().any(|entry| entry == "/deepseek"));
+}
+
+#[test]
 fn apply_slash_menu_selection_appends_space_for_arg_commands() {
     let mut app = create_test_app();
-    let entries = vec!["/set".to_string(), "/settings".to_string()];
+    let entries = vec!["/model".to_string(), "/settings".to_string()];
     app.slash_menu_selected = 0;
     assert!(apply_slash_menu_selection(&mut app, &entries, true));
-    assert_eq!(app.input, "/set ");
+    assert_eq!(app.input, "/model ");
+}
+
+#[test]
+fn status_layout_budget_preserves_chat_and_composer_on_tiny_heights() {
+    let mut app = create_test_app();
+    app.is_loading = true;
+    for idx in 0..5 {
+        app.queue_message(crate::tui::app::QueuedMessage::new(
+            format!("queued message {idx}"),
+            None,
+        ));
+    }
+
+    let layout = compute_status_layout(&app, 9, 3);
+    assert_eq!(layout.status_height, 1);
+    assert!(layout.queued_preview.is_empty());
+    assert!(layout.queued_compacted);
+}
+
+#[test]
+fn compact_queued_preview_summarizes_hidden_messages() {
+    let mut app = create_test_app();
+    for idx in 0..4 {
+        app.queue_message(crate::tui::app::QueuedMessage::new(
+            format!("queued message {idx}"),
+            None,
+        ));
+    }
+
+    let (one_row, compacted_one_row) = compact_queued_preview(&app, 1);
+    assert_eq!(one_row, vec!["+4 more".to_string()]);
+    assert!(compacted_one_row);
+
+    let (two_rows, compacted_two_rows) = compact_queued_preview(&app, 2);
+    assert_eq!(
+        two_rows,
+        vec!["queued message 0".to_string(), "+3 more".to_string()]
+    );
+    assert!(compacted_two_rows);
 }
 
 #[test]

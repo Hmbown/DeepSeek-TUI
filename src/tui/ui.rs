@@ -77,7 +77,7 @@ use super::history::{
     ToolStatus, ViewImageCell, WebSearchCell, history_cells_from_message, summarize_mcp_output,
     summarize_tool_args, summarize_tool_output,
 };
-use super::views::{HelpView, ModalKind, ViewEvent};
+use super::views::{ConfigView, HelpView, ModalKind, ViewEvent};
 use super::widgets::{
     ChatWidget, ComposerWidget, HeaderData, HeaderWidget, Renderable, slash_completion_hints,
 };
@@ -85,6 +85,9 @@ use super::widgets::{
 // === Constants ===
 
 const MAX_QUEUED_PREVIEW: usize = 3;
+const SLASH_MENU_LIMIT: usize = 6;
+const MIN_CHAT_HEIGHT: u16 = 3;
+const MIN_COMPOSER_HEIGHT: u16 = 1;
 const CONTEXT_WARNING_THRESHOLD_PERCENT: f64 = 85.0;
 const CONTEXT_CRITICAL_THRESHOLD_PERCENT: f64 = 85.0;
 const UI_IDLE_POLL_MS: u64 = 33;
@@ -93,6 +96,13 @@ const UI_DEEPSEEK_SQUIGGLE_MS: u64 = 120;
 const UI_TYPING_INDICATOR_MS: u64 = 120;
 const UI_STATUS_ANIMATION_MS: u64 = UI_DEEPSEEK_SQUIGGLE_MS;
 const WORKSPACE_CONTEXT_REFRESH_SECS: u64 = 15;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StatusLayoutPlan {
+    status_height: u16,
+    queued_preview: Vec<String>,
+    queued_compacted: bool,
+}
 
 /// Run the interactive TUI event loop.
 ///
@@ -1331,6 +1341,11 @@ async fn run_event_loop(
                                             .send(Op::SetCompaction { config: compaction })
                                             .await;
                                     }
+                                    AppAction::OpenConfigView => {
+                                        if app.view_stack.top_kind() != Some(ModalKind::Config) {
+                                            app.view_stack.push(ConfigView::new_for_app(app));
+                                        }
+                                    }
                                     AppAction::CompactContext => {
                                         app.status_message =
                                             Some("Compacting context...".to_string());
@@ -2084,6 +2099,87 @@ async fn handle_plan_choice(
     Ok(true)
 }
 
+fn chat_height_floor(body_height: u16) -> u16 {
+    body_height
+        .saturating_sub(MIN_COMPOSER_HEIGHT)
+        .clamp(1, MIN_CHAT_HEIGHT)
+}
+
+fn status_row_budget(
+    terminal_height: u16,
+    header_height: u16,
+    footer_height: u16,
+    composer_height: u16,
+) -> u16 {
+    let body_height = terminal_height.saturating_sub(header_height + footer_height);
+    let chat_floor = chat_height_floor(body_height);
+    body_height.saturating_sub(composer_height.max(MIN_COMPOSER_HEIGHT) + chat_floor)
+}
+
+fn compact_queued_preview(app: &App, preview_rows_budget: usize) -> (Vec<String>, bool) {
+    if app.queued_message_count() == 0 || preview_rows_budget == 0 {
+        return (Vec::new(), false);
+    }
+
+    let preview_rows_budget = preview_rows_budget.min(MAX_QUEUED_PREVIEW);
+    let queue_count = app.queued_message_count();
+    let mut previews = app.queued_message_previews(preview_rows_budget);
+    if previews.len() > preview_rows_budget {
+        previews.truncate(preview_rows_budget);
+        if let Some(last) = previews.last_mut() {
+            let shown_count = preview_rows_budget.saturating_sub(1);
+            let hidden_count = queue_count.saturating_sub(shown_count);
+            *last = format!("+{hidden_count} more");
+        }
+    }
+
+    let shown_count = previews
+        .iter()
+        .filter(|line| !line.starts_with('+'))
+        .count();
+    (previews, queue_count > shown_count)
+}
+
+fn compute_status_layout(
+    app: &App,
+    terminal_height: u16,
+    composer_height: u16,
+) -> StatusLayoutPlan {
+    let status_budget = status_row_budget(terminal_height, 1, 1, composer_height);
+    if status_budget == 0 {
+        return StatusLayoutPlan {
+            status_height: 0,
+            queued_preview: Vec::new(),
+            queued_compacted: app.queued_message_count() > 0,
+        };
+    }
+
+    let fixed_rows = usize::from(app.is_loading) + usize::from(app.queued_draft.is_some());
+    let queue_rows_budget = usize::from(status_budget).saturating_sub(fixed_rows);
+
+    let (queued_preview, preview_compacted) = if queue_rows_budget > 0 {
+        compact_queued_preview(app, queue_rows_budget.saturating_sub(1))
+    } else {
+        (Vec::new(), app.queued_message_count() > 0)
+    };
+
+    let queue_rows = if app.queued_message_count() > 0 && queue_rows_budget > 0 {
+        1 + queued_preview.len()
+    } else {
+        0
+    };
+    let requested_rows = fixed_rows + queue_rows;
+    let status_height =
+        u16::try_from(requested_rows.min(usize::from(status_budget))).unwrap_or(status_budget);
+    let queued_compacted = preview_compacted || (app.queued_message_count() > 0 && queue_rows == 0);
+
+    StatusLayoutPlan {
+        status_height,
+        queued_preview,
+        queued_compacted,
+    }
+}
+
 fn render(f: &mut Frame, app: &mut App) {
     let size = f.area();
 
@@ -2099,33 +2195,35 @@ fn render(f: &mut Frame, app: &mut App) {
 
     let header_height = 1;
     let footer_height = 1;
-    let queued_preview = app.queued_message_previews(MAX_QUEUED_PREVIEW);
-    let queued_lines = if queued_preview.is_empty() {
-        0
-    } else {
-        queued_preview.len() + 1
-    };
-    let editing_lines = usize::from(app.queued_draft.is_some());
-    let status_lines = usize::from(app.is_loading);
-    let status_height =
-        u16::try_from(status_lines + queued_lines + editing_lines).unwrap_or(u16::MAX);
+    let body_height = size.height.saturating_sub(header_height + footer_height);
     let prompt = prompt_for_mode(app.mode);
-    let available_height = size
-        .height
-        .saturating_sub(header_height + footer_height + status_height);
+    let slash_menu_entries = visible_slash_menu_entries(app, SLASH_MENU_LIMIT);
+    let composer_for_budget = {
+        let max_composer_height = body_height
+            .saturating_sub(chat_height_floor(body_height))
+            .max(MIN_COMPOSER_HEIGHT);
+        let composer_widget =
+            ComposerWidget::new(app, prompt, max_composer_height, &slash_menu_entries);
+        composer_widget.desired_height(size.width)
+    };
+    let status_layout = compute_status_layout(app, size.height, composer_for_budget);
+    let composer_max_height = body_height
+        .saturating_sub(status_layout.status_height + chat_height_floor(body_height))
+        .max(MIN_COMPOSER_HEIGHT);
     let composer_height = {
-        let composer_widget = ComposerWidget::new(app, prompt, available_height);
+        let composer_widget =
+            ComposerWidget::new(app, prompt, composer_max_height, &slash_menu_entries);
         composer_widget.desired_height(size.width)
     };
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(header_height),   // Header
-            Constraint::Min(1),                  // Chat area
-            Constraint::Length(status_height),   // Status indicator
-            Constraint::Length(composer_height), // Composer
-            Constraint::Length(footer_height),   // Footer
+            Constraint::Length(header_height),               // Header
+            Constraint::Min(1),                              // Chat area
+            Constraint::Length(status_layout.status_height), // Status indicator
+            Constraint::Length(composer_height),             // Composer
+            Constraint::Length(footer_height),               // Footer
         ])
         .split(size);
 
@@ -2177,13 +2275,21 @@ fn render(f: &mut Frame, app: &mut App) {
     }
 
     // Render status
-    if status_height > 0 {
-        render_status_indicator(f, chunks[2], app, &queued_preview);
+    if status_layout.status_height > 0 {
+        render_status_indicator(
+            f,
+            chunks[2],
+            app,
+            app.queued_message_count(),
+            &status_layout.queued_preview,
+            status_layout.queued_compacted,
+        );
     }
 
     // Render composer
     let cursor_pos = {
-        let composer_widget = ComposerWidget::new(app, prompt, available_height);
+        let composer_widget =
+            ComposerWidget::new(app, prompt, composer_max_height, &slash_menu_entries);
         let buf = f.buffer_mut();
         composer_widget.render(chunks[3], buf);
         composer_widget.cursor_pos(chunks[3])
@@ -2236,7 +2342,7 @@ fn render_sidebar_plan(f: &mut Frame, area: Rect, app: &App) {
     }
 
     let content_width = area.width.saturating_sub(4) as usize;
-    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(usize::from(area.height).max(4));
 
     match app.plan_state.try_lock() {
         Ok(plan) => {
@@ -2311,7 +2417,7 @@ fn render_sidebar_todos(f: &mut Frame, area: Rect, app: &App) {
     }
 
     let content_width = area.width.saturating_sub(4) as usize;
-    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(usize::from(area.height).max(4));
 
     match app.todos.try_lock() {
         Ok(todos) => {
@@ -2380,7 +2486,7 @@ fn render_sidebar_tasks(f: &mut Frame, area: Rect, app: &App) {
     }
 
     let content_width = area.width.saturating_sub(4) as usize;
-    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(usize::from(area.height).max(4));
 
     if let Some(turn_id) = app.runtime_turn_id.as_ref() {
         let status = app
@@ -2466,7 +2572,7 @@ fn render_sidebar_subagents(f: &mut Frame, area: Rect, app: &App) {
     }
 
     let content_width = area.width.saturating_sub(4) as usize;
-    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(usize::from(area.height).max(4));
 
     if app.subagent_cache.is_empty() {
         lines.push(Line::from(Span::styled(
@@ -2692,6 +2798,33 @@ async fn handle_view_events(app: &mut App, engine_handle: &EngineHandle, events:
                     title
                 ));
             }
+            ViewEvent::ConfigUpdated {
+                key,
+                value,
+                persist,
+            } => {
+                let result = commands::set_config_value(app, &key, &value, persist);
+                if let Some(msg) = result.message {
+                    app.add_message(HistoryCell::System { content: msg });
+                }
+
+                if let Some(action) = result.action {
+                    match action {
+                        AppAction::UpdateCompaction(compaction) => {
+                            let _ = engine_handle
+                                .send(Op::SetCompaction { config: compaction })
+                                .await;
+                        }
+                        AppAction::OpenConfigView => {}
+                        _ => {}
+                    }
+                }
+
+                if app.view_stack.top_kind() == Some(ModalKind::Config) {
+                    app.view_stack.pop();
+                    app.view_stack.push(ConfigView::new_for_app(app));
+                }
+            }
             ViewEvent::SubAgentsRefresh => {
                 app.status_message = Some("Refreshing sub-agents...".to_string());
                 let _ = engine_handle.send(Op::ListSubAgents).await;
@@ -2889,8 +3022,15 @@ fn resume_terminal(
     Ok(())
 }
 
-fn render_status_indicator(f: &mut Frame, area: Rect, app: &App, queued: &[String]) {
-    let mut lines = Vec::new();
+fn render_status_indicator(
+    f: &mut Frame,
+    area: Rect,
+    app: &App,
+    queued_count: usize,
+    queued: &[String],
+    queued_compacted: bool,
+) {
+    let mut lines = Vec::with_capacity(1 + queued.len() + usize::from(app.queued_draft.is_some()));
 
     if app.is_loading {
         let header = if app.show_thinking {
@@ -2956,10 +3096,13 @@ fn render_status_indicator(f: &mut Frame, area: Rect, app: &App, queued: &[Strin
         ]));
     }
 
-    if !queued.is_empty() {
+    if queued_count > 0 {
         let available = area.width as usize;
-        let queued_count = app.queued_message_count();
-        let header = format!("Queued ({queued_count}) - /queue edit <n>");
+        let header = if queued_compacted {
+            format!("Queued ({queued_count}) [compact] - /queue edit <n>")
+        } else {
+            format!("Queued ({queued_count}) - /queue edit <n>")
+        };
         let header = truncate_line_to_width(&header, available.max(1));
         lines.push(Line::from(vec![Span::styled(
             header,
@@ -3033,7 +3176,7 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
     {
         right_extras.push(Span::styled(
             format!(" {scroll_pct}% "),
-            Style::default().fg(palette::TEXT_DIM),
+            Style::default().fg(palette::FOOTER_HINT),
         ));
     }
 
@@ -3041,7 +3184,7 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
     if app.transcript_selection.is_active() {
         right_extras.push(Span::styled(
             " [SEL] ",
-            Style::default().fg(palette::TEXT_DIM),
+            Style::default().fg(palette::FOOTER_HINT),
         ));
     }
 
@@ -3059,7 +3202,7 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
 
     // 3. Left side content (status toast or standard footer)
     let active_status = app.active_status_toast();
-    let left_spans = if let Some(toast) = active_status {
+    let left_spans = if let Some(toast) = active_status.as_ref() {
         let max_left = available_width
             .saturating_sub(right_width)
             .saturating_sub(1)
@@ -3089,7 +3232,7 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
         if let Some(workspace_name) = app.workspace.file_name() {
             if let Some(name) = workspace_name.to_str() {
                 let ws = format!("{} ", name);
-                spans.push(Span::styled(ws, Style::default().fg(palette::TEXT_DIM)));
+                spans.push(Span::styled(ws, Style::default().fg(palette::FOOTER_HINT)));
             }
         }
 
@@ -3099,7 +3242,7 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
             if !context.is_empty() {
                 spans.push(Span::styled(
                     format!("{context} "),
-                    Style::default().fg(palette::TEXT_DIM),
+                    Style::default().fg(palette::FOOTER_HINT),
                 ));
             }
         }
@@ -3108,7 +3251,7 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
         if let Some(ref sid) = app.current_session_id {
             spans.push(Span::styled(
                 format!("session:{}  ", &sid[..8.min(sid.len())]),
-                Style::default().fg(palette::TEXT_DIM),
+                Style::default().fg(palette::FOOTER_HINT),
             ));
         }
 
@@ -3117,14 +3260,14 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
             let tokens_k = app.total_conversation_tokens as f64 / 1000.0;
             spans.push(Span::styled(
                 format!("{tokens_k:.1}k tokens  "),
-                Style::default().fg(palette::TEXT_DIM),
+                Style::default().fg(palette::FOOTER_HINT),
             ));
         }
 
         // Help hint
         spans.push(Span::styled(
             "F1 help",
-            Style::default().fg(palette::TEXT_DIM),
+            Style::default().fg(palette::FOOTER_HINT),
         ));
 
         spans
@@ -3142,7 +3285,7 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
         all_spans.extend(right_spans);
     } else {
         // Fallback for narrow screens
-        let simple_left = if let Some(toast) = app.active_status_toast() {
+        let simple_left = if let Some(toast) = active_status.as_ref() {
             let max_left = available_width.saturating_sub(10).saturating_sub(1).max(1);
             let truncated = truncate_line_to_width(&toast.text, max_left);
             vec![Span::styled(
@@ -3152,7 +3295,7 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
         } else {
             vec![Span::styled(
                 "F1 help",
-                Style::default().fg(palette::TEXT_DIM),
+                Style::default().fg(palette::FOOTER_HINT),
             )]
         };
         let bar_filled_narrow = "█".repeat(filled.min(5));

@@ -474,7 +474,7 @@ impl ModalView for CommandPaletteView {
 
                 let style = if is_selected {
                     Style::default()
-                        .fg(palette::DEEPSEEK_SKY)
+                        .fg(palette::SELECTION_TEXT)
                         .bg(palette::SELECTION_BG)
                 } else {
                     Style::default().fg(palette::TEXT_PRIMARY)
@@ -521,6 +521,7 @@ impl ModalView for CommandPaletteView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     fn palette_entry(
         section: PaletteSection,
@@ -633,5 +634,20 @@ mod tests {
         view.refilter();
         assert_eq!(view.filtered.len(), 1);
         assert_eq!(view.entries[view.filtered[0]].label, "skill:search");
+    }
+
+    #[test]
+    fn command_palette_command_entries_include_links_and_config_but_not_removed_commands() {
+        let entries = build_entries(Path::new("."), Path::new("."));
+        let command_labels = entries
+            .iter()
+            .filter(|entry| entry.section == PaletteSection::Command)
+            .map(|entry| entry.label.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(command_labels.contains(&"/config"));
+        assert!(command_labels.contains(&"/links"));
+        assert!(!command_labels.contains(&"/set"));
+        assert!(!command_labels.contains(&"/deepseek"));
     }
 }

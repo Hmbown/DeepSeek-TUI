@@ -97,29 +97,31 @@ pub struct ComposerWidget<'a> {
     app: &'a App,
     prompt: &'a str,
     max_height: u16,
+    slash_menu_entries: &'a [String],
 }
 
 impl<'a> ComposerWidget<'a> {
-    pub fn new(app: &'a App, prompt: &'a str, max_height: u16) -> Self {
+    pub fn new(
+        app: &'a App,
+        prompt: &'a str,
+        max_height: u16,
+        slash_menu_entries: &'a [String],
+    ) -> Self {
         Self {
             app,
             prompt,
             max_height,
+            slash_menu_entries,
         }
     }
 }
 
 impl Renderable for ComposerWidget<'_> {
     fn render(&self, area: Rect, buf: &mut Buffer) {
-        let slash_menu_entries = if self.app.slash_menu_hidden {
-            Vec::new()
-        } else {
-            slash_completion_hints(&self.app.input, 6)
-        };
         let prompt_width = self.prompt.width();
         let prompt_width_u16 = u16::try_from(prompt_width).unwrap_or(u16::MAX);
         let content_width = usize::from(area.width.saturating_sub(prompt_width_u16).max(1));
-        let menu_lines = slash_menu_entries.len();
+        let menu_lines = self.slash_menu_entries.len();
         let max_height = usize::from(area.height).saturating_sub(menu_lines).max(1);
         let continuation = " ".repeat(prompt_width);
 
@@ -161,16 +163,16 @@ impl Renderable for ComposerWidget<'_> {
             }
         }
 
-        if !slash_menu_entries.is_empty() {
+        if !self.slash_menu_entries.is_empty() {
             let selected = self
                 .app
                 .slash_menu_selected
-                .min(slash_menu_entries.len().saturating_sub(1));
-            for (idx, entry) in slash_menu_entries.iter().enumerate() {
+                .min(self.slash_menu_entries.len().saturating_sub(1));
+            for (idx, entry) in self.slash_menu_entries.iter().enumerate() {
                 let is_selected = idx == selected;
                 let style = if is_selected {
                     Style::default()
-                        .fg(palette::DEEPSEEK_SKY)
+                        .fg(palette::SELECTION_TEXT)
                         .bg(palette::SELECTION_BG)
                 } else {
                     Style::default().fg(palette::TEXT_MUTED)
@@ -190,30 +192,22 @@ impl Renderable for ComposerWidget<'_> {
     }
 
     fn desired_height(&self, width: u16) -> u16 {
-        let menu_lines = if self.app.slash_menu_hidden {
-            0
-        } else {
-            slash_completion_hints(&self.app.input, 6).len()
-        };
         composer_height(
             &self.app.input,
             width,
             self.max_height,
             self.prompt,
-            menu_lines,
+            self.slash_menu_entries.len(),
         )
     }
 
     fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
-        let menu_lines = if self.app.slash_menu_hidden {
-            0
-        } else {
-            slash_completion_hints(&self.app.input, 6).len()
-        };
         let prompt_width = self.prompt.width();
         let prompt_width_u16 = u16::try_from(prompt_width).unwrap_or(u16::MAX);
         let content_width = usize::from(area.width.saturating_sub(prompt_width_u16).max(1));
-        let max_height = usize::from(area.height).saturating_sub(menu_lines).max(1);
+        let max_height = usize::from(area.height)
+            .saturating_sub(self.slash_menu_entries.len())
+            .max(1);
 
         let (_visible_lines, cursor_row, cursor_col) = layout_input(
             &self.app.input,
@@ -334,7 +328,7 @@ impl Renderable for ApprovalWidget<'_> {
             let is_selected = i == self.selected;
             let style = if is_selected {
                 Style::default()
-                    .fg(palette::DEEPSEEK_SKY)
+                    .fg(palette::SELECTION_TEXT)
                     .bg(palette::SELECTION_BG)
             } else {
                 Style::default()
@@ -444,7 +438,7 @@ impl Renderable for ElevationWidget<'_> {
             let is_selected = i == self.selected;
             let style = if is_selected {
                 Style::default()
-                    .fg(palette::DEEPSEEK_SKY)
+                    .fg(palette::SELECTION_TEXT)
                     .bg(palette::SELECTION_BG)
             } else {
                 Style::default()
@@ -520,7 +514,9 @@ fn apply_selection(lines: &mut [Line<'static>], top: usize, app: &App) {
         return;
     };
 
-    let selection_style = Style::default().bg(app.ui_theme.selection_bg);
+    let selection_style = Style::default()
+        .bg(app.ui_theme.selection_bg)
+        .fg(palette::SELECTION_TEXT);
 
     for (idx, line) in lines.iter_mut().enumerate() {
         let line_index = top + idx;
@@ -538,8 +534,14 @@ fn apply_selection(lines: &mut [Line<'static>], top: usize, app: &App) {
             (0, usize::MAX)
         };
 
-        let new_spans = apply_selection_to_line(line, col_start, col_end, selection_style);
-        line.spans = new_spans;
+        if col_start == 0 && col_end == usize::MAX {
+            for span in &mut line.spans {
+                span.style = span.style.patch(selection_style);
+            }
+            continue;
+        }
+
+        line.spans = apply_selection_to_line(line, col_start, col_end, selection_style);
     }
 }
 
@@ -549,7 +551,7 @@ fn apply_selection_to_line(
     col_end: usize,
     selection_style: Style,
 ) -> Vec<Span<'static>> {
-    let mut result = Vec::new();
+    let mut result = Vec::with_capacity(line.spans.len().saturating_add(2));
     let mut current_col = 0usize;
 
     for span in &line.spans {
@@ -565,30 +567,25 @@ fn apply_selection_to_line(
                 span.style.patch(selection_style),
             ));
         } else {
-            let chars: Vec<char> = span_text.chars().collect();
-            let mut before = String::new();
-            let mut selected = String::new();
-            let mut after = String::new();
+            let span_sel_start = col_start.saturating_sub(current_col).min(span_len);
+            let span_sel_end = col_end.saturating_sub(current_col).min(span_len);
+            let byte_start = byte_index_at_char(span_text, span_sel_start);
+            let byte_end = byte_index_at_char(span_text, span_sel_end);
 
-            for (i, &ch) in chars.iter().enumerate() {
-                let char_col = current_col + i;
-                if char_col < col_start {
-                    before.push(ch);
-                } else if char_col < col_end {
-                    selected.push(ch);
-                } else {
-                    after.push(ch);
-                }
+            if byte_start > 0 {
+                result.push(Span::styled(
+                    span_text[..byte_start].to_string(),
+                    span.style,
+                ));
             }
-
-            if !before.is_empty() {
-                result.push(Span::styled(before, span.style));
+            if byte_end > byte_start {
+                result.push(Span::styled(
+                    span_text[byte_start..byte_end].to_string(),
+                    span.style.patch(selection_style),
+                ));
             }
-            if !selected.is_empty() {
-                result.push(Span::styled(selected, span.style.patch(selection_style)));
-            }
-            if !after.is_empty() {
-                result.push(Span::styled(after, span.style));
+            if byte_end < span_text.len() {
+                result.push(Span::styled(span_text[byte_end..].to_string(), span.style));
             }
         }
 
@@ -596,6 +593,16 @@ fn apply_selection_to_line(
     }
 
     result
+}
+
+fn byte_index_at_char(text: &str, char_index: usize) -> usize {
+    if char_index == 0 {
+        return 0;
+    }
+    text.char_indices()
+        .nth(char_index)
+        .map(|(idx, _)| idx)
+        .unwrap_or(text.len())
 }
 
 fn composer_height(
@@ -780,8 +787,15 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{cursor_row_col, pad_lines_to_bottom, wrap_input_lines, wrap_text};
-    use ratatui::text::Line;
+    use super::{
+        apply_selection_to_line, composer_height, cursor_row_col, layout_input,
+        pad_lines_to_bottom, slash_completion_hints, wrap_input_lines, wrap_text,
+    };
+    use crate::palette;
+    use ratatui::{
+        style::Style,
+        text::{Line, Span},
+    };
     use unicode_width::UnicodeWidthStr;
 
     #[test]
@@ -931,5 +945,62 @@ mod tests {
                 lines.len()
             );
         }
+    }
+
+    #[test]
+    fn slash_completion_hints_include_links_and_config() {
+        let hints = slash_completion_hints("/", 128);
+        assert!(hints.iter().any(|hint| hint == "/config"));
+        assert!(hints.iter().any(|hint| hint == "/links"));
+    }
+
+    #[test]
+    fn slash_completion_hints_exclude_set_and_deepseek_commands() {
+        let hints = slash_completion_hints("/", 128);
+        assert!(!hints.iter().any(|hint| hint == "/set"));
+        assert!(!hints.iter().any(|hint| hint == "/deepseek"));
+    }
+
+    #[test]
+    fn selection_style_uses_explicit_selection_text_role() {
+        let line = Line::from(Span::styled(
+            "hello world",
+            Style::default().fg(palette::TEXT_PRIMARY),
+        ));
+        let selection_style = Style::default()
+            .bg(palette::SELECTION_BG)
+            .fg(palette::SELECTION_TEXT);
+
+        let styled = apply_selection_to_line(&line, 0, 5, selection_style);
+        assert_eq!(styled.len(), 2);
+        assert_eq!(styled[0].content.as_ref(), "hello");
+        assert_eq!(styled[0].style.fg, Some(palette::SELECTION_TEXT));
+        assert_eq!(styled[0].style.bg, Some(palette::SELECTION_BG));
+        assert_eq!(styled[1].content.as_ref(), " world");
+    }
+
+    #[test]
+    fn composer_layout_helpers_stay_consistent() {
+        let input = "line one wraps nicely\nline two wraps as well";
+        let prompt = "> ";
+        let width = 16;
+        let available_height = 6;
+        let menu_lines = 2;
+
+        let height = composer_height(input, width, available_height, prompt, menu_lines);
+        let prompt_width = u16::try_from(prompt.width()).unwrap_or(u16::MAX);
+        let content_width = usize::from(width.saturating_sub(prompt_width).max(1));
+        let input_height_budget = usize::from(height).saturating_sub(menu_lines).max(1);
+        let (visible, cursor_row, cursor_col) = layout_input(
+            input,
+            input.chars().count(),
+            content_width,
+            input_height_budget,
+        );
+
+        assert!(visible.len().saturating_add(menu_lines) <= usize::from(height));
+        assert!(!visible.is_empty());
+        assert!(cursor_row < visible.len());
+        assert!(cursor_col < content_width.max(1));
     }
 }

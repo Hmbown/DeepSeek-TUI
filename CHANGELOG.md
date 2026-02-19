@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.3.22] - 2026-02-19
+
+### Added
+- Interactive `/config` editing modal for runtime settings updates.
+
+### Changed
+- Retired user-facing `/set` command path (no longer reachable/discoverable).
+- Replaced `/deepseek` command behavior with `/links` (aliases: `dashboard`, `api`).
+
+### Fixed
+- Legacy `/set` and `/deepseek` inputs now return migration guidance instead of generic unknown-command errors.
+
 ## [0.3.21] - 2026-02-19
 
 ### Added
@@ -298,7 +312,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hooks system and config profiles
 - Example skills and launch assets
 
-[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.21...HEAD
+[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.22...HEAD
+[0.3.22]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.21...v0.3.22
 [0.3.21]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.17...v0.3.21
 [0.3.17]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.16...v0.3.17
 [0.3.16]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.14...v0.3.16

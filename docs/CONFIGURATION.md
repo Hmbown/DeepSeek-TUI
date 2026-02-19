@@ -78,17 +78,33 @@ DeepSeek CLI also stores user preferences in:
 
 Notable settings include `auto_compact` (default `true`), which automatically summarizes
 earlier turns once the conversation grows large. You can inspect or update these from the
-TUI with `/settings` and `/set <key> <value>`.
+TUI with `/settings` and `/config` (interactive editor).
 
 Common settings keys:
 
-- `theme` (default, dark, light)
+- `theme` (default, dark, light, whale)
 - `auto_compact` (on/off)
 - `show_thinking` (on/off)
 - `show_tool_details` (on/off)
 - `default_mode` (normal, agent, plan, yolo)
 - `max_history` (number of input history entries)
 - `default_model` (model name override)
+
+Readability semantics:
+
+- Selection uses a unified style across transcript, composer menus, and modals.
+- Footer hints use a dedicated semantic role (`FOOTER_HINT`) so hint text stays readable across themes.
+
+### Command Migration Notes
+
+If you are upgrading from older releases:
+
+- Old: `/deepseek`
+  New: `/links` (aliases: `/dashboard`, `/api`)
+- Old: `/set model deepseek-reasoner`
+  New: `/config` and edit the `model` row to `deepseek-reasoner`
+- Old: discover `/set` in slash UX/help
+  New: use `/config` for editing and `/settings` for read-only inspection
 
 ## Key Reference
 
@@ -98,7 +114,7 @@ Common settings keys:
 - `base_url` (string, optional): defaults to `https://api.deepseek.com` (OpenAI-compatible Responses API).
 - `default_text_model` (string, optional): defaults to `deepseek-reasoner`. Supported IDs are `deepseek-reasoner` and `deepseek-chat`.
 - `allow_shell` (bool, optional): defaults to `true` (sandboxed).
-- `approval_policy` (string, optional): `on-request`, `untrusted`, or `never`. Runtime `/set approval_mode` also accepts `on-request` and `untrusted` aliases.
+- `approval_policy` (string, optional): `on-request`, `untrusted`, or `never`. Runtime `approval_mode` editing in `/config` also accepts `on-request` and `untrusted` aliases.
 - `sandbox_mode` (string, optional): `read-only`, `workspace-write`, `danger-full-access`, `external-sandbox`.
 - `managed_config_path` (string, optional): managed config file loaded after user/env config.
 - `requirements_path` (string, optional): requirements file used to enforce allowed approval/sandbox values.

@@ -216,7 +216,7 @@ impl ModalView for UserInputView {
                 lines.push(Line::from(Span::styled(
                     content,
                     Style::default()
-                        .fg(palette::DEEPSEEK_SKY)
+                        .fg(palette::SELECTION_TEXT)
                         .bg(palette::SELECTION_BG)
                         .bold(),
                 )));
@@ -245,7 +245,7 @@ impl ModalView for UserInputView {
             lines.push(Line::from(Span::styled(
                 content,
                 Style::default()
-                    .fg(palette::DEEPSEEK_SKY)
+                    .fg(palette::SELECTION_TEXT)
                     .bg(palette::SELECTION_BG)
                     .bold(),
             )));
