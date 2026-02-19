@@ -151,9 +151,7 @@ fn modal_block() -> Block<'static> {
 }
 
 fn parse_section_term(term: &str) -> Option<(PaletteSection, String)> {
-    let mut parts = term.splitn(2, ':');
-    let section = parts.next()?;
-    let query = parts.next()?;
+    let (section, query) = term.split_once(':')?;
 
     if section.is_empty() || query.is_empty() {
         return None;
