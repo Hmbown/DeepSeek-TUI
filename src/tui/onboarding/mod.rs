@@ -94,7 +94,15 @@ pub fn tips_lines() -> Vec<ratatui::text::Line<'static>> {
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        Line::from(Span::raw("  - Tab cycles modes (Plan → Agent → YOLO)")),
+        Line::from(Span::raw(
+            "  - Tab cycles modes (Normal → Agent → YOLO → Plan), Shift+Tab reverses",
+        )),
+        Line::from(Span::raw(
+            "  - Alt+1/2/3/4 switch modes (Normal/Agent/YOLO/Plan)",
+        )),
+        Line::from(Span::raw(
+            "  - Alt+!/@/#/$/) focus sidebar sections (Plan/Todos/Tasks/Agents/Auto)",
+        )),
         Line::from(Span::raw("  - Ctrl+R opens the session picker")),
         Line::from(Span::raw("  - l opens the pager for the last message")),
         Line::from(Span::raw("  - Ctrl+C cancels or exits")),

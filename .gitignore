@@ -63,3 +63,6 @@ docs/rlm-paper.txt
 # Local runtime state
 .deepseek/
 session_*.json
+
+# Companion app (tracked separately)
+apps/

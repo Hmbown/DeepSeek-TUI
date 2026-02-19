@@ -6,7 +6,7 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap},
+    widgets::{Block, Borders, Clear, Paragraph, Padding, Widget, Wrap},
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -260,7 +260,9 @@ impl ModalView for PagerView {
         let block = Block::default()
             .title(self.title.clone())
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(palette::DEEPSEEK_SKY));
+            .border_style(Style::default().fg(palette::BORDER_COLOR))
+            .style(Style::default().bg(palette::DEEPSEEK_INK))
+            .padding(Padding::uniform(1));
 
         let paragraph = Paragraph::new(visible_lines)
             .block(block)

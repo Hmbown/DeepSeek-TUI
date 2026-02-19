@@ -77,6 +77,28 @@ pub struct CommandInfo {
     pub usage: &'static str,
 }
 
+impl CommandInfo {
+    pub fn requires_argument(&self) -> bool {
+        self.usage.contains('<') || self.usage.contains('[')
+    }
+
+    pub fn palette_command(&self) -> String {
+        if self.requires_argument() {
+            format!("/{} ", self.name)
+        } else {
+            format!("/{}", self.name)
+        }
+    }
+
+    pub fn palette_description(&self) -> String {
+        if self.aliases.is_empty() {
+            self.description.to_string()
+        } else {
+            format!("{}  aliases: {}", self.description, self.aliases.join(", "))
+        }
+    }
+}
+
 /// All registered commands
 pub const COMMANDS: &[CommandInfo] = &[
     // Core commands
@@ -197,6 +219,24 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "/yolo",
     },
     CommandInfo {
+        name: "normal",
+        aliases: &[],
+        description: "Switch to normal mode (no autonomous tool flow)",
+        usage: "/normal",
+    },
+    CommandInfo {
+        name: "agent",
+        aliases: &[],
+        description: "Switch to agent mode",
+        usage: "/agent",
+    },
+    CommandInfo {
+        name: "plan",
+        aliases: &[],
+        description: "Switch to plan mode and review suggested implementation steps",
+        usage: "/plan",
+    },
+    CommandInfo {
         name: "trust",
         aliases: &[],
         description: "Enable trust mode (access files outside workspace)",
@@ -313,6 +353,9 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "settings" => config::show_settings(app),
         "set" => config::set_config(app, arg),
         "yolo" => config::yolo(app),
+        "normal" => config::normal_mode(app),
+        "agent" => config::agent_mode(app),
+        "plan" => config::plan_mode(app),
         "trust" => config::trust(app),
         "logout" => config::logout(app),
 
