@@ -5,20 +5,25 @@ import { Composer } from "@/components/chat/Composer";
 
 afterEach(cleanup);
 
+const baseProps = {
+  onValueChange: vi.fn(),
+  onRetrySend: vi.fn(),
+  sending: false as const,
+  selectedThreadId: "thr_123",
+  activeTurnId: null,
+  mode: "agent",
+  onModeChange: vi.fn(),
+};
+
 describe("Composer keyboard behavior", () => {
   it("sends on Enter and does not send on Shift+Enter", () => {
     const onSend = vi.fn();
-    const onValueChange = vi.fn();
 
     render(
       <Composer
+        {...baseProps}
         value="hello"
-        onValueChange={onValueChange}
         onSend={onSend}
-        onRetrySend={vi.fn()}
-        sending={false}
-        selectedThreadId={"thr_123"}
-        activeTurnId={null}
       />
     );
 
@@ -35,13 +40,10 @@ describe("Composer keyboard behavior", () => {
     const onRetrySend = vi.fn();
     render(
       <Composer
+        {...baseProps}
         value="hello"
-        onValueChange={vi.fn()}
         onSend={onSend}
         onRetrySend={onRetrySend}
-        sending={false}
-        selectedThreadId={"thr_123"}
-        activeTurnId={null}
         blockedSendReason="Send blocked: runtime offline."
         canRetryBlockedSend={true}
       />
@@ -61,13 +63,9 @@ describe("Composer keyboard behavior", () => {
   it("disables Send button when blockedSendReason is set", () => {
     render(
       <Composer
+        {...baseProps}
         value="hello"
-        onValueChange={vi.fn()}
         onSend={vi.fn()}
-        onRetrySend={vi.fn()}
-        sending={false}
-        selectedThreadId={"thr_123"}
-        activeTurnId={null}
         blockedSendReason="Offline"
       />
     );

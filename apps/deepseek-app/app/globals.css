@@ -1874,6 +1874,465 @@ kbd {
   line-height: 1.5;
 }
 
+/* ── Feature 1: Folder grouping ──────────────────── */
+
+.folder-group {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.folder-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  border: none;
+  background: transparent;
+  color: var(--text-2);
+  padding: var(--space-2) var(--space-1);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease-standard);
+  width: 100%;
+  text-align: left;
+}
+
+.folder-header:hover {
+  color: var(--text-0);
+}
+
+.folder-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folder-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: rgba(17, 39, 75, 0.64);
+  border: 1px solid var(--line-0);
+  font-size: 10px;
+  padding: 0 4px;
+}
+
+.folder-threads {
+  padding-left: var(--space-3);
+  display: grid;
+  gap: var(--space-2);
+}
+
+.folder-toggle {
+  flex-shrink: 0;
+}
+
+/* ── Feature 2: Thread status icons & layout ─────── */
+
+.thread-status-icon {
+  flex-shrink: 0;
+  color: var(--text-2);
+}
+
+.thread-status-icon.status-success {
+  color: var(--success);
+}
+
+.thread-status-icon.status-danger {
+  color: var(--danger);
+}
+
+.thread-status-icon.status-muted {
+  color: var(--text-3);
+}
+
+.thread-status-icon.spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.thread-row-layout {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.thread-title-truncate {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thread-timestamp {
+  font-size: 11px;
+  color: var(--text-3);
+  flex-shrink: 0;
+}
+
+.diff-stat-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--line-0);
+  border-radius: 999px;
+  padding: 1px 6px;
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.diff-add {
+  color: var(--success);
+}
+
+.diff-del {
+  color: var(--danger);
+}
+
+/* ── Feature 2: Branch badge ─────────────────────── */
+
+.branch-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  border: 1px solid var(--line-0);
+  border-radius: 999px;
+  padding: 1px 6px;
+  font-size: 10px;
+  color: var(--text-2);
+  background: rgba(15, 34, 63, 0.52);
+}
+
+/* ── Feature 3: Plan toggle ──────────────────────── */
+
+.plan-toggle {
+  border-radius: 999px;
+  padding: 5px 10px;
+}
+
+.plan-toggle.is-active {
+  border-color: color-mix(in srgb, var(--warning) 62%, transparent);
+  color: var(--warning);
+  background: rgba(86, 59, 14, 0.48);
+}
+
+/* ── Feature 5: Status bar ───────────────────────── */
+
+.status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  border-top: 1px solid var(--line-0);
+  background: rgba(8, 18, 38, 0.92);
+  font-size: 11px;
+}
+
+.status-bar-left,
+.status-bar-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.permission-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--line-0);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
+.permission-success {
+  color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 45%, transparent);
+}
+
+.permission-brand {
+  color: var(--brand-sky);
+  border-color: color-mix(in srgb, var(--brand-sky) 45%, transparent);
+}
+
+.permission-warning {
+  color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning) 45%, transparent);
+}
+
+.permission-neutral {
+  color: var(--text-2);
+  border-color: var(--line-0);
+}
+
+/* ── Feature 6: Thinking indicator ───────────────── */
+
+.thinking-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px dashed var(--line-0);
+  border-radius: var(--radius-md);
+  background: rgba(15, 34, 63, 0.52);
+  font-size: 12px;
+  color: var(--text-2);
+  animation: fade-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes fade-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.reasoning-block {
+  margin-bottom: var(--space-2);
+  border: 1px solid var(--line-0);
+  border-radius: var(--radius-sm);
+  background: rgba(12, 28, 57, 0.52);
+  overflow: hidden;
+}
+
+.reasoning-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: transparent;
+  color: var(--text-2);
+  padding: var(--space-2) var(--space-2);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+  transition: color var(--dur-fast) var(--ease-standard);
+}
+
+.reasoning-toggle:hover {
+  color: var(--text-0);
+}
+
+.reasoning-content {
+  padding: 0 var(--space-2) var(--space-2);
+  font-size: 12px;
+  color: var(--text-1);
+}
+
+/* ── Feature 7: File attachments ─────────────────── */
+
+.composer-input-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+
+.composer-input-row textarea {
+  flex: 1;
+}
+
+.composer-attach-btn {
+  flex-shrink: 0;
+  margin-top: 8px;
+}
+
+.attachment-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--line-0);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--text-1);
+  background: rgba(15, 34, 63, 0.52);
+}
+
+.attachment-chip-remove {
+  border: none;
+  background: transparent;
+  color: var(--text-2);
+  padding: 0;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+
+.attachment-chip-remove:hover {
+  color: var(--danger);
+}
+
+.composer-dropzone.is-dragging {
+  border: 2px dashed color-mix(in srgb, var(--brand-sky) 65%, transparent);
+  background: rgba(32, 74, 141, 0.18);
+}
+
+/* ── Feature 7: Composer selectors ───────────────── */
+
+.composer-selectors {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.composer-select {
+  width: auto;
+  min-width: 120px;
+  padding: 4px 8px;
+  font-size: 11px;
+  border-radius: var(--radius-sm);
+}
+
+/* ── Feature 8: Top bar actions ──────────────────── */
+
+.topbar-title-area {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.topbar-title-display {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: pointer;
+}
+
+.topbar-title-editable {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 40ch;
+}
+
+.topbar-edit-icon {
+  color: var(--text-3);
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-standard);
+}
+
+.topbar-title-display:hover .topbar-edit-icon {
+  opacity: 1;
+}
+
+.topbar-title-edit {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.topbar-title-input {
+  width: 300px;
+  padding: 4px 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.dropdown-wrap {
+  position: relative;
+}
+
+.dropdown-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  min-width: 160px;
+  border: 1px solid var(--line-0);
+  border-radius: var(--radius-md);
+  background: rgba(13, 31, 60, 0.98);
+  box-shadow: var(--shadow-strong);
+  padding: var(--space-1);
+  z-index: 20;
+  display: grid;
+  gap: 2px;
+  animation: fade-up var(--dur-fast) var(--ease-standard);
+}
+
+.dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  border: none;
+  background: transparent;
+  color: var(--text-1);
+  padding: var(--space-2) var(--space-2);
+  font-size: 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+  transition: background var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard);
+}
+
+.dropdown-item:hover {
+  background: rgba(27, 59, 110, 0.52);
+  color: var(--text-0);
+}
+
+.dropdown-item-danger {
+  color: var(--danger);
+}
+
+.dropdown-item-danger:hover {
+  background: rgba(95, 25, 42, 0.52);
+  color: #ffdbe1;
+}
+
+.overflow-menu {
+  min-width: 180px;
+}
+
+.commit-button {
+  border-color: color-mix(in srgb, var(--success) 42%, transparent);
+  color: var(--success);
+}
+
+/* ── Feature 9: Voice input ──────────────────────── */
+
+.mic-button.is-recording {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 55%, transparent);
+  animation: pulse-red 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse-red {
+  0%, 100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--danger) 42%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--danger) 18%, transparent);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

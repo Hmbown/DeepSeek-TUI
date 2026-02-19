@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState, type RefObject, type UIEvent } from "react";
 import clsx from "clsx";
-import { Check, ChevronDown, ChevronRight, Copy, Search } from "lucide-react";
+import { Brain, Check, ChevronDown, ChevronRight, Copy, Search } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -31,6 +31,7 @@ const FILTER_OPTIONS: { value: TranscriptCellRole | "all"; label: string }[] = [
 type TranscriptPaneProps = {
   transcript: TranscriptCell[];
   selectedThreadId: string | null;
+  activeTurnId?: string | null;
   scrollRef?: RefObject<HTMLDivElement | null>;
   onScrollPositionChange?: (scrollTop: number) => void;
 };
@@ -71,6 +72,29 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
+function ReasoningBlock({ content }: { content: string }) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className="reasoning-block">
+      <button
+        className="reasoning-toggle"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+      >
+        <Brain size={12} />
+        {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        <span>Reasoning</span>
+      </button>
+      {expanded ? (
+        <div className="reasoning-content markdown-body">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function TranscriptCard({ cell }: { cell: TranscriptCell }) {
   const canCollapse = COLLAPSIBLE_ROLES.has(cell.role) && isLongContent(cell.content);
   const [expanded, setExpanded] = useState(!canCollapse);
@@ -103,6 +127,7 @@ function TranscriptCard({ cell }: { cell: TranscriptCell }) {
           {cell.startedAt ? <span>{formatTime(cell.startedAt)}</span> : null}
         </div>
       </header>
+      {cell.reasoning_content ? <ReasoningBlock content={cell.reasoning_content} /> : null}
       <div className={clsx("markdown-body", { "is-collapsed": !expanded && canCollapse })}>
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
@@ -127,9 +152,19 @@ function TranscriptCard({ cell }: { cell: TranscriptCell }) {
   );
 }
 
+function ThinkingIndicator() {
+  return (
+    <div className="thinking-indicator" role="status" aria-label="Thinking">
+      <Brain size={14} />
+      <span>Thinking...</span>
+    </div>
+  );
+}
+
 export function TranscriptPane({
   transcript,
   selectedThreadId,
+  activeTurnId,
   scrollRef,
   onScrollPositionChange,
 }: TranscriptPaneProps) {
@@ -199,6 +234,8 @@ export function TranscriptPane({
       ) : (
         filtered.map((cell) => <TranscriptCard key={cell.id} cell={cell} />)
       )}
+
+      {activeTurnId ? <ThinkingIndicator /> : null}
     </div>
   );
 }

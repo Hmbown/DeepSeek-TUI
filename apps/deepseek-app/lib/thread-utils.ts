@@ -1,4 +1,4 @@
-import type { RuntimeItemKind, ThreadDetail, ThreadSummary } from "@/lib/runtime-api";
+import type { RuntimeItemKind, ThreadDetail, ThreadSummary, WorkspaceSummary } from "@/lib/runtime-api";
 
 export function filterThreadSummaries(items: ThreadSummary[], query: string): ThreadSummary[] {
   const normalized = query.trim().toLowerCase();
@@ -32,6 +32,7 @@ export type TranscriptCell = {
   kind?: RuntimeItemKind;
   startedAt?: string | null;
   endedAt?: string | null;
+  reasoning_content?: string | null;
 };
 
 function mapRole(kind: RuntimeItemKind): TranscriptCellRole {
@@ -105,6 +106,7 @@ export function buildTranscript(detail: ThreadDetail | null): TranscriptCell[] {
       kind: item.kind,
       startedAt: item.started_at,
       endedAt: item.ended_at,
+      reasoning_content: item.reasoning_content,
     };
   });
 
@@ -136,4 +138,112 @@ export function findActiveTurnId(detail: ThreadDetail | null): string | null {
     }
   }
   return null;
+}
+
+// -- Feature 1: Hierarchical thread grouping --
+
+export type ThreadGroup = {
+  workspace: WorkspaceSummary;
+  threads: ThreadSummary[];
+};
+
+const UNGROUPED_WORKSPACE: WorkspaceSummary = {
+  id: "__ungrouped__",
+  path: "",
+  name: "Ungrouped",
+  thread_count: 0,
+};
+
+export function groupThreadsByWorkspace(
+  threads: ThreadSummary[],
+  workspaces: WorkspaceSummary[]
+): ThreadGroup[] {
+  const workspaceMap = new Map<string, WorkspaceSummary>();
+  for (const ws of workspaces) {
+    workspaceMap.set(ws.path, ws);
+  }
+
+  const grouped = new Map<string, ThreadSummary[]>();
+  const ungrouped: ThreadSummary[] = [];
+
+  for (const thread of threads) {
+    if (thread.workspace && workspaceMap.has(thread.workspace)) {
+      const existing = grouped.get(thread.workspace) ?? [];
+      existing.push(thread);
+      grouped.set(thread.workspace, existing);
+    } else {
+      ungrouped.push(thread);
+    }
+  }
+
+  const result: ThreadGroup[] = [];
+
+  for (const ws of workspaces) {
+    const wsThreads = grouped.get(ws.path);
+    if (wsThreads && wsThreads.length > 0) {
+      result.push({
+        workspace: { ...ws, thread_count: wsThreads.length },
+        threads: wsThreads,
+      });
+    }
+  }
+
+  if (ungrouped.length > 0) {
+    result.push({
+      workspace: { ...UNGROUPED_WORKSPACE, thread_count: ungrouped.length },
+      threads: ungrouped,
+    });
+  }
+
+  return result;
+}
+
+// -- Feature 2: Thread status icons and relative time --
+
+export type ThreadStatusIconName = "loader" | "check" | "x" | "minus";
+
+export function threadStatusIcon(status?: string | null): ThreadStatusIconName {
+  if (!status) {
+    return "minus";
+  }
+  switch (status) {
+    case "in_progress":
+    case "queued":
+      return "loader";
+    case "completed":
+      return "check";
+    case "failed":
+      return "x";
+    case "interrupted":
+    case "canceled":
+      return "minus";
+    default:
+      return "minus";
+  }
+}
+
+export function formatRelativeTime(value?: string | null): string {
+  if (!value) {
+    return "-";
+  }
+  const then = new Date(value).getTime();
+  if (Number.isNaN(then)) {
+    return value;
+  }
+  const diffMs = Date.now() - then;
+  const abs = Math.abs(diffMs);
+  const secs = Math.floor(abs / 1000);
+  if (secs < 60) {
+    return "now";
+  }
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) {
+    return `${mins}m`;
+  }
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) {
+    return `${hours}h`;
+  }
+  const days = Math.floor(hours / 24);
+  return `${days}d`;
 }

@@ -19,6 +19,7 @@ import { ConnectionBanner } from "@/components/chat/ConnectionBanner";
 import { PendingApprovalPanel } from "@/components/chat/PendingApprovalPanel";
 import { Composer } from "@/components/chat/Composer";
 import { ObservabilityStrip } from "@/components/chat/ObservabilityStrip";
+import { StatusBar } from "@/components/chat/StatusBar";
 import { TranscriptPane } from "@/components/chat/TranscriptPane";
 import { LeftRail } from "@/components/layout/LeftRail";
 import { TopBar } from "@/components/topbar/TopBar";
@@ -29,6 +30,7 @@ import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { useRuntimeConnection } from "@/hooks/use-runtime-connection";
 import {
   DEFAULT_RUNTIME_BASE_URL,
+  commitWorkspace,
   compactThread,
   createAutomation,
   createThread,
@@ -38,6 +40,7 @@ import {
   getTask,
   getThreadDetail,
   getWorkspaceStatus,
+  initGitRepository,
   interruptTurn,
   listAutomationRuns,
   listAutomations,
@@ -45,6 +48,7 @@ import {
   listMcpTools,
   listSessions,
   listSkills,
+  listWorkspaces,
   resumeSessionThread,
   listTasks,
   listThreadSummaries,
@@ -74,6 +78,7 @@ import {
   type ThreadDetail,
   type ThreadSummary,
   type WorkspaceStatus,
+  type WorkspaceSummary,
 } from "@/lib/runtime-api";
 import { compactLiveEvents } from "@/lib/live-event-compaction";
 import { deriveApprovalCapability } from "@/lib/approval-capabilities";
@@ -84,13 +89,16 @@ import { KEYBOARD_SHORTCUTS } from "@/lib/keyboard-shortcuts";
 import { deriveDesktopRunState } from "@/lib/run-state";
 import { buildTranscript, filterThreadSummaries, findActiveTurnId } from "@/lib/thread-utils";
 import {
+  loadCollapsedFolders,
   loadPersistedUiState,
+  persistCollapsedFolders,
   persistLastPane,
   persistLastSection,
   persistLastThreadId,
   resolveRestoredThreadId,
   type CompactPane,
 } from "@/lib/ui-persistence";
+import { useSpeechRecognition } from "@/hooks/use-speech-recognition";
 
 const MODE_OPTIONS = ["agent", "plan", "normal", "yolo"];
 const MODEL_OPTIONS = ["deepseek-reasoner", "deepseek-chat"];
@@ -326,6 +334,11 @@ export default function Home() {
   const [showAllEventGroups, setShowAllEventGroups] = useState(false);
   const [eventFilter, setEventFilter] = useState<LiveEventFilter>("all");
   const [reconnectMeta, setReconnectMeta] = useState<{ attempt: number; delayMs: number } | null>(null);
+  const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
+  const [collapsedFolders, setCollapsedFolders] = useState<string[]>([]);
+  const [attachedFiles, setAttachedFiles] = useState<{ name: string; path: string }[]>([]);
+
+  const speech = useSpeechRecognition();
 
   const eventSourceRef = useRef<EventSource | null>(null);
   const detailRefreshTimer = useRef<number | null>(null);
@@ -522,6 +535,43 @@ export default function Home() {
       setWorkspace(null);
     }
   }, [baseUrl]);
+
+  const refreshWorkspaces = useCallback(async () => {
+    try {
+      const data = await listWorkspaces(baseUrl);
+      setWorkspaces(data);
+    } catch {
+      setWorkspaces([]);
+    }
+  }, [baseUrl]);
+
+  const handleToggleFolder = useCallback((folderId: string) => {
+    setCollapsedFolders((prev) => {
+      const next = prev.includes(folderId) ? prev.filter((id) => id !== folderId) : [...prev, folderId];
+      persistCollapsedFolders(next);
+      return next;
+    });
+  }, []);
+
+  const handleInitGit = useCallback(async () => {
+    try {
+      await initGitRepository(baseUrl);
+      setNotice("Git repository initialized");
+      await refreshWorkspace();
+    } catch (error) {
+      setErrorNotice(`Failed to initialize git: ${errorText(error)}`);
+    }
+  }, [baseUrl, refreshWorkspace]);
+
+  const handleCommit = useCallback(async (message: string) => {
+    try {
+      await commitWorkspace(baseUrl, message);
+      setNotice("Changes committed");
+      await refreshWorkspace();
+    } catch (error) {
+      setErrorNotice(`Failed to commit: ${errorText(error)}`);
+    }
+  }, [baseUrl, refreshWorkspace]);
 
   const refreshThreads = useCallback(async (filterOverride?: ThreadFilter) => {
     try {
@@ -796,6 +846,8 @@ export default function Home() {
       setCompactPane(persistedUi.pane);
     }
 
+    setCollapsedFolders(loadCollapsedFolders());
+
     setCompactLayout(evaluateCompactLayout(window.innerWidth, window.innerHeight));
     setIsShortHeight(isShortWindow(window.innerHeight));
 
@@ -872,6 +924,7 @@ export default function Home() {
   useEffect(() => {
     if (section === "chat") {
       void refreshThreads();
+      void refreshWorkspaces();
     }
     if (section === "automations") {
       void refreshAutomations();
@@ -882,7 +935,7 @@ export default function Home() {
     if (section === "settings") {
       void refreshTasks();
     }
-  }, [section, refreshThreads, refreshAutomations, refreshSkillsAndApps, refreshTasks]);
+  }, [section, refreshThreads, refreshWorkspaces, refreshAutomations, refreshSkillsAndApps, refreshTasks]);
 
   useEffect(() => {
     if (!selectedAutomationId || section !== "automations") {
@@ -1088,6 +1141,21 @@ export default function Home() {
     selectedThreadId,
   ]);
 
+  // Speech transcript effect: append recognized text to composer
+  useEffect(() => {
+    if (speech.transcript) {
+      setComposerText((composerText ? composerText + " " : "") + speech.transcript);
+    }
+  }, [speech.transcript]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const toggleSpeech = useCallback(() => {
+    if (speech.isListening) {
+      speech.stop();
+    } else {
+      speech.start();
+    }
+  }, [speech]);
+
   const applyRuntimeBaseUrl = useCallback(async () => {
     const normalized = baseUrlInput.trim() || DEFAULT_RUNTIME_BASE_URL;
     persistRuntimeBaseUrl(normalized);
@@ -1187,8 +1255,10 @@ export default function Home() {
         prompt,
         model,
         mode,
+        context_files: attachedFiles.length > 0 ? attachedFiles.map((f) => f.path) : undefined,
       });
 
+      setAttachedFiles([]);
       setComposerDrafts((current) => ({
         ...current,
         [threadId ?? composerDraftKey]: "",
@@ -1209,6 +1279,7 @@ export default function Home() {
       setSending(false);
     }
   }, [
+    attachedFiles,
     baseUrl,
     blockedSendReason,
     composerDraftKey,
@@ -1643,6 +1714,8 @@ export default function Home() {
         selectedThreadId={selectedThreadId}
         threadSearch={threadSearch}
         threadFilter={threadFilter}
+        workspaces={workspaces}
+        collapsedFolders={collapsedFolders}
         listRef={threadsListRef}
         onScrollPositionChange={(scrollTop) => {
           paneScrollPositions.current.threads = scrollTop;
@@ -1662,17 +1735,21 @@ export default function Home() {
         onThreadArchiveToggle={(thread) => {
           void handleThreadArchiveToggle(thread);
         }}
+        onToggleFolder={handleToggleFolder}
       />
 
       <main className="main-pane">
         <TopBar
           workspace={workspace}
-          model={model}
-          mode={mode}
-          modelOptions={MODEL_OPTIONS}
-          modeOptions={MODE_OPTIONS}
-          onModelChange={setModel}
-          onModeChange={setMode}
+          threadTitle={threadDetail?.thread?.id ? `Thread ${threadDetail.thread.id.slice(0, 8)}` : undefined}
+          workspaceName={workspace?.workspace?.split("/").pop()}
+          onFork={selectedThreadId ? () => { void handleForkThread(); } : undefined}
+          onCompact={selectedThreadId ? () => { void handleCompactThread(); } : undefined}
+          onArchive={selectedThreadId ? () => { void handleThreadArchiveToggle(threads.find((t) => t.id === selectedThreadId) as ThreadSummary); } : undefined}
+          onOpenInEditor={() => { if (workspace?.workspace) window.open(`vscode://file${workspace.workspace}`); }}
+          onOpenInTerminal={() => { /* Tauri shell command stub */ }}
+          onOpenInFinder={() => { /* Tauri shell command stub */ }}
+          onCommit={workspace?.git_repo && (workspace.staged ?? 0) > 0 ? (msg) => { void handleCommit(msg); } : undefined}
         />
 
         {errorNotice ? (
@@ -1770,6 +1847,7 @@ export default function Home() {
                 <TranscriptPane
                   transcript={transcript}
                   selectedThreadId={selectedThreadId}
+                  activeTurnId={activeTurnId}
                   scrollRef={transcriptScrollRef}
                   onScrollPositionChange={(scrollTop) => {
                     paneScrollPositions.current.transcript = scrollTop;
@@ -1787,6 +1865,22 @@ export default function Home() {
                   activeTurnId={activeTurnId}
                   blockedSendReason={blockedSendReason}
                   canRetryBlockedSend={canRetryBlockedSend}
+                  mode={mode}
+                  onModeChange={setMode}
+                  model={model}
+                  modelOptions={MODEL_OPTIONS}
+                  onModelChange={setModel}
+                  modeOptions={MODE_OPTIONS}
+                  attachedFiles={attachedFiles}
+                  onAttachedFilesChange={setAttachedFiles}
+                  speechAvailable={speech.isAvailable}
+                  isListening={speech.isListening}
+                  onSpeechToggle={toggleSpeech}
+                />
+                <StatusBar
+                  mode={mode}
+                  workspace={workspace}
+                  onInitGit={() => { void handleInitGit(); }}
                 />
               </>
             ) : null}

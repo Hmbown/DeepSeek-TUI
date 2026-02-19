@@ -8,6 +8,16 @@ export type ThreadSummary = {
   updated_at: string;
   latest_turn_id?: string | null;
   latest_turn_status?: string | null;
+  workspace?: string | null;
+  branch?: string | null;
+  diff_stat?: { additions: number; deletions: number } | null;
+};
+
+export type WorkspaceSummary = {
+  id: string;
+  path: string;
+  name: string;
+  thread_count: number;
 };
 
 export type RuntimeTurnStatus =
@@ -60,6 +70,7 @@ export type ThreadDetail = {
     status: RuntimeItemStatus;
     summary: string;
     detail?: string | null;
+    reasoning_content?: string | null;
     started_at?: string | null;
     ended_at?: string | null;
   }>;
@@ -647,7 +658,7 @@ export function getThreadDetail(baseUrl: string, threadId: string): Promise<Thre
 export function startTurn(
   baseUrl: string,
   threadId: string,
-  payload: { prompt: string; model?: string; mode?: string }
+  payload: { prompt: string; model?: string; mode?: string; context_files?: string[] }
 ): Promise<{ turn: { id: string } }> {
   return request(baseUrl, `/v1/threads/${threadId}/turns`, {
     method: "POST",
@@ -753,6 +764,33 @@ export function listAutomationRuns(
   limit = 20
 ): Promise<AutomationRunRecord[]> {
   return request(baseUrl, `/v1/automations/${id}/runs?limit=${limit}`);
+}
+
+export async function listWorkspaces(baseUrl: string): Promise<WorkspaceSummary[]> {
+  // TODO: wire to real runtime endpoint
+  try {
+    return await request<WorkspaceSummary[]>(baseUrl, "/v1/workspaces");
+  } catch {
+    return [{ id: "default", path: "/home/user/project", name: "project", thread_count: 0 }];
+  }
+}
+
+export async function initGitRepository(baseUrl: string): Promise<{ success: boolean }> {
+  // TODO: wire to real runtime endpoint
+  return request(baseUrl, "/v1/workspace/git/init", { method: "POST", body: JSON.stringify({}) });
+}
+
+export async function commitWorkspace(baseUrl: string, message: string): Promise<{ success: boolean }> {
+  // TODO: wire to real runtime endpoint
+  return request(baseUrl, "/v1/workspace/git/commit", {
+    method: "POST",
+    body: JSON.stringify({ message }),
+  });
+}
+
+export async function pushWorkspace(baseUrl: string): Promise<{ success: boolean }> {
+  // TODO: wire to real runtime endpoint
+  return request(baseUrl, "/v1/workspace/git/push", { method: "POST", body: JSON.stringify({}) });
 }
 
 export function buildThreadEventsUrl(baseUrl: string, threadId: string, sinceSeq: number): string {

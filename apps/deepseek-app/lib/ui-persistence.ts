@@ -63,6 +63,34 @@ export function persistLastPane(pane: CompactPane): void {
   window.localStorage.setItem(KEYS.pane, pane);
 }
 
+const COLLAPSED_FOLDERS_KEY = "deepseek.app.collapsedFolders";
+
+export function persistCollapsedFolders(folderIds: string[]): void {
+  if (!canUseStorage()) {
+    return;
+  }
+  window.localStorage.setItem(COLLAPSED_FOLDERS_KEY, JSON.stringify(folderIds));
+}
+
+export function loadCollapsedFolders(): string[] {
+  if (!canUseStorage()) {
+    return [];
+  }
+  const raw = window.localStorage.getItem(COLLAPSED_FOLDERS_KEY);
+  if (!raw) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed.filter((item): item is string => typeof item === "string");
+    }
+  } catch {
+    // ignore
+  }
+  return [];
+}
+
 export function resolveRestoredThreadId(
   preferredThreadId: string | null,
   threads: ThreadSummary[]
