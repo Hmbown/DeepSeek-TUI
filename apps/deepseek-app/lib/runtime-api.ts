@@ -254,6 +254,22 @@ export type EventPayload = {
   item_id?: string | null;
 };
 
+export type PendingApprovalStatus = "pending" | "denied";
+
+export type PendingApproval = {
+  id: string;
+  event: "approval.required" | "sandbox.denied";
+  status: PendingApprovalStatus;
+  requestType: string;
+  scope: string;
+  consequence: string;
+  createdAt: string;
+  rawSnippet: string;
+  seq?: number;
+  threadId?: string;
+  turnId?: string | null;
+};
+
 export type RuntimeApiError = {
   message: string;
   status: number;
@@ -296,6 +312,83 @@ export function parseApiError(payload: unknown, fallbackStatus = 500): RuntimeAp
   return {
     message: obj?.error?.message ?? "Request failed",
     status: obj?.error?.status ?? fallbackStatus,
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return null;
+}
+
+function pickString(payload: Record<string, unknown>, keys: string[]): string | null {
+  for (const key of keys) {
+    const value = payload[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
+function asSnippet(payload: unknown): string {
+  if (typeof payload === "string") {
+    return payload.slice(0, 240);
+  }
+  try {
+    return JSON.stringify(payload).slice(0, 240);
+  } catch {
+    return String(payload).slice(0, 240);
+  }
+}
+
+function extractApprovalField(payload: unknown, keys: string[], fallback: string): string {
+  const record = asRecord(payload);
+  if (!record) {
+    return fallback;
+  }
+  return pickString(record, keys) ?? fallback;
+}
+
+export function parsePendingApprovalEvent(event: EventPayload): PendingApproval | null {
+  if (event.event !== "approval.required" && event.event !== "sandbox.denied") {
+    return null;
+  }
+
+  const createdAt = event.timestamp ?? new Date().toISOString();
+  const status: PendingApprovalStatus = event.event === "approval.required" ? "pending" : "denied";
+  const requestType = extractApprovalField(
+    event.payload,
+    ["request_type", "type", "action", "kind"],
+    event.event === "approval.required" ? "Approval request" : "Sandbox denial"
+  );
+  const scope = extractApprovalField(
+    event.payload,
+    ["scope", "target", "tool", "path", "command"],
+    "Scope unavailable"
+  );
+  const consequence = extractApprovalField(
+    event.payload,
+    ["consequence", "reason", "summary", "message", "detail"],
+    event.event === "approval.required"
+      ? "Runtime paused and waiting for approval."
+      : "Action blocked by sandbox policy."
+  );
+  const seqPart = event.seq != null ? `seq-${event.seq}` : `ts-${createdAt}`;
+
+  return {
+    id: `${event.event}-${seqPart}`,
+    event: event.event,
+    status,
+    requestType,
+    scope,
+    consequence,
+    createdAt,
+    rawSnippet: asSnippet(event.payload),
+    seq: event.seq,
+    threadId: event.thread_id,
+    turnId: event.turn_id,
   };
 }
 

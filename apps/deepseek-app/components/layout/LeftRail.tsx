@@ -1,27 +1,32 @@
 import { Command, MessageSquare, Plus, Rocket, Settings2, Sparkles } from "lucide-react";
 
 import type { Section } from "@/components/types";
-import type { ConnectionState } from "@/hooks/use-runtime-connection";
+import type { DesktopRunStateDetail } from "@/lib/run-state";
 
 type LeftRailProps = {
   section: Section;
   onSectionChange: (section: Section) => void;
   onNewThread: () => void;
   onOpenPalette: () => void;
-  connectionState: ConnectionState;
-  connectionMessage: string;
+  runState: DesktopRunStateDetail;
 };
 
-function railHealthClass(state: ConnectionState): string {
+function railHealthClass(state: DesktopRunStateDetail["state"]): string {
   switch (state) {
     case "online":
+    case "completed":
       return "is-online";
+    case "waiting-approval":
+    case "running":
     case "reconnecting":
       return "is-reconnecting";
+    case "failed":
+      return "is-offline";
     case "checking":
+    case "idle":
       return "is-checking";
     default:
-      return "is-offline";
+      return "is-checking";
   }
 }
 
@@ -30,8 +35,7 @@ export function LeftRail({
   onSectionChange,
   onNewThread,
   onOpenPalette,
-  connectionState,
-  connectionMessage,
+  runState,
 }: LeftRailProps) {
   return (
     <aside className="rail">
@@ -88,8 +92,8 @@ export function LeftRail({
           <kbd>Ctrl/Cmd+K</kbd>
         </button>
         <div className="rail-health">
-          <span className={`health-dot ${railHealthClass(connectionState)}`} aria-hidden />
-          <span>{connectionMessage}</span>
+          <span className={`health-dot ${railHealthClass(runState.state)}`} aria-hidden />
+          <span>{runState.label}</span>
         </div>
       </div>
     </aside>

@@ -8,6 +8,7 @@ type ThreadsPaneProps = {
   selectedThreadId: string | null;
   threadSearch: string;
   threadFilter: ThreadFilter;
+  className?: string;
   onThreadSearchChange: (value: string) => void;
   onThreadFilterChange: (value: ThreadFilter) => void;
   onThreadSelect: (id: string) => void;
@@ -32,6 +33,7 @@ export function ThreadsPane({
   selectedThreadId,
   threadSearch,
   threadFilter,
+  className,
   onThreadSearchChange,
   onThreadFilterChange,
   onThreadSelect,
@@ -43,7 +45,7 @@ export function ThreadsPane({
   );
 
   return (
-    <section className="threads-pane">
+    <section className={`threads-pane ${className ?? ""}`} id="threads-panel">
       <div className="pane-title-row">
         <h2 className="pane-title">Threads</h2>
         <div className="inline-chip-row" role="tablist" aria-label="Thread filters">

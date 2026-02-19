@@ -1,7 +1,14 @@
-import { Activity, CirclePause, Compass, ForkKnife, Hand } from "lucide-react";
+import { Activity, CirclePause, Compass, ForkKnife, Hand, Pin } from "lucide-react";
+
+import type { DesktopRunStateDetail } from "@/lib/run-state";
+import type { CompactLiveEvent } from "@/lib/live-event-compaction";
 
 type LiveEventsPanelProps = {
-  events: string[];
+  events: CompactLiveEvent[];
+  pinnedCritical: CompactLiveEvent[];
+  overflowCount: number;
+  showAllEvents: boolean;
+  runState: DesktopRunStateDetail;
   canResume: boolean;
   canFork: boolean;
   canInterrupt: boolean;
@@ -13,10 +20,15 @@ type LiveEventsPanelProps = {
   onInterrupt: () => void;
   onCompact: () => void;
   onSteer: () => void;
+  onToggleEventOverflow: () => void;
 };
 
 export function LiveEventsPanel({
   events,
+  pinnedCritical,
+  overflowCount,
+  showAllEvents,
+  runState,
   canResume,
   canFork,
   canInterrupt,
@@ -28,49 +40,83 @@ export function LiveEventsPanel({
   onInterrupt,
   onCompact,
   onSteer,
+  onToggleEventOverflow,
 }: LiveEventsPanelProps) {
   return (
-    <section className="live-events">
+    <section className="live-events" id="live-events-panel" tabIndex={-1}>
       <header className="live-events-head">
         <div>
           <h3>Live events</h3>
           <p>Streamed thread lifecycle and tool activity.</p>
         </div>
-        <div className="inline-actions">
-          <button className="btn btn-ghost btn-sm" disabled={!canResume} onClick={onResume}>
-            <CirclePause size={14} />
-            <span>Resume</span>
-          </button>
-          <button className="btn btn-ghost btn-sm" disabled={!canFork} onClick={onFork}>
-            <ForkKnife size={14} />
-            <span>Fork</span>
-          </button>
-          <button className="btn btn-ghost btn-sm" disabled={!canCompact} onClick={onCompact}>
-            <Compass size={14} />
-            <span>Compact</span>
-          </button>
-          <button className="btn btn-danger btn-sm" disabled={!canInterrupt} onClick={onInterrupt}>
-            <Hand size={14} />
-            <span>Interrupt</span>
-          </button>
+        <div className="live-events-right">
+          <span className={`status-chip status-${runState.state}`}>{runState.label}</span>
+          <div className="inline-actions">
+            <button className="btn btn-ghost btn-sm" disabled={!canResume} onClick={onResume}>
+              <CirclePause size={14} />
+              <span>Resume</span>
+            </button>
+            <button className="btn btn-ghost btn-sm" disabled={!canFork} onClick={onFork}>
+              <ForkKnife size={14} />
+              <span>Fork</span>
+            </button>
+            <button className="btn btn-ghost btn-sm" disabled={!canCompact} onClick={onCompact}>
+              <Compass size={14} />
+              <span>Compact</span>
+            </button>
+            <button className="btn btn-danger btn-sm" disabled={!canInterrupt} onClick={onInterrupt}>
+              <Hand size={14} />
+              <span>Interrupt</span>
+            </button>
+          </div>
         </div>
       </header>
+
+      {pinnedCritical.length > 0 ? (
+        <div className="critical-notices">
+          {pinnedCritical.map((event) => (
+            <div key={`pin-${event.id}`} className="critical-notice-row" role="note">
+              <Pin size={12} />
+              <span>{event.summary}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
 
       <div className="event-list" aria-live="polite">
         {events.length === 0 ? (
           <div className="empty-state compact">Waiting for events…</div>
         ) : (
-          events.map((event, index) => (
-            <div key={`${event}-${index}`} className="event-row">
+          events.map((event) => (
+            <div
+              key={event.id}
+              className={`event-row ${event.critical ? "is-critical" : ""}`}
+              data-event={event.event}
+            >
               <Activity size={13} />
-              <span>{event}</span>
+              <span>{event.summary}</span>
+              {event.count > 1 ? (
+                <span className="status-chip status-checking" aria-label={`Compacted count ${event.count}`}>
+                  x{event.count}
+                </span>
+              ) : null}
             </div>
           ))
         )}
       </div>
 
+      {overflowCount > 0 ? (
+        <div className="event-overflow-row">
+          <span className="subtle">{overflowCount} more event groups hidden.</span>
+          <button className="btn btn-ghost btn-sm" onClick={onToggleEventOverflow}>
+            {showAllEvents ? "Show compact view" : "Show all events"}
+          </button>
+        </div>
+      ) : null}
+
       <div className="steer-row">
         <input
+          id="steer-input"
           value={steerText}
           onChange={(event) => onSteerTextChange(event.target.value)}
           placeholder="Steer active turn…"

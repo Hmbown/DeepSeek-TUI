@@ -7,6 +7,7 @@ import {
   listTasks,
   listThreadSummaries,
   normalizeBaseUrl,
+  parsePendingApprovalEvent,
   parseApiError,
   resumeSessionThread,
   type RuntimeApiError,
@@ -83,6 +84,26 @@ describe("runtime-api helpers", () => {
     const parsed = parseApiError({ something: true }, 502);
     expect(parsed.message).toBe("Request failed");
     expect(parsed.status).toBe(502);
+  });
+
+  it("parses approval.required into pending approval model", () => {
+    const parsed = parsePendingApprovalEvent({
+      event: "approval.required",
+      payload: {
+        request_type: "shell command",
+        scope: "workspace write",
+        reason: "Command wants to modify files",
+      },
+      seq: 88,
+      timestamp: "2026-01-01T00:00:00Z",
+      thread_id: "thr_1",
+      turn_id: "turn_1",
+    });
+
+    expect(parsed).not.toBeNull();
+    expect(parsed?.status).toBe("pending");
+    expect(parsed?.requestType).toBe("shell command");
+    expect(parsed?.scope).toBe("workspace write");
   });
 
   it("getSession calls correct endpoint", async () => {
