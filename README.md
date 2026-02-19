@@ -6,9 +6,13 @@ Current release: [v0.3.21](https://github.com/Hmbown/DeepSeek-TUI/releases/tag/v
 [![CI](https://github.com/Hmbown/DeepSeek-TUI/actions/workflows/ci.yml/badge.svg)](https://github.com/Hmbown/DeepSeek-TUI/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/deepseek-tui)](https://crates.io/crates/deepseek-tui)
 
+<p align="center">
+  <img src="assets/hero.png" alt="DeepSeek CLI" width="800">
+</p>
+
 Not affiliated with DeepSeek Inc.
 
-DeepSeek CLI lets you run and control DeepSeek models from your terminal with file editing, shell execution, web lookup, task orchestration, and sub-agent workflows.
+DeepSeek CLI lets you run and control DeepSeek models from your terminal with file editing, shell execution, web lookup, task orchestration, and sub-agent workflows. Works with DeepSeek v3.2 (chat + reasoner). Ready for v4.
 
 ## Getting started
 
