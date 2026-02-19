@@ -985,7 +985,8 @@ async fn run_event_loop(
                 if app.view_stack.top_kind() == Some(ModalKind::Help) {
                     app.view_stack.pop();
                 } else {
-                    app.view_stack.push(HelpView::new_for_workspace(app.workspace.clone()));
+                    app.view_stack
+                        .push(HelpView::new_for_workspace(app.workspace.clone()));
                 }
                 continue;
             }
@@ -994,7 +995,8 @@ async fn run_event_loop(
                 if app.view_stack.top_kind() == Some(ModalKind::Help) {
                     app.view_stack.pop();
                 } else {
-                    app.view_stack.push(HelpView::new_for_workspace(app.workspace.clone()));
+                    app.view_stack
+                        .push(HelpView::new_for_workspace(app.workspace.clone()));
                 }
                 continue;
             }
@@ -2735,8 +2737,7 @@ fn refresh_workspace_context_if_needed(app: &mut App, now: Instant) {
     if app
         .workspace_context_refreshed_at
         .is_some_and(|refreshed_at| {
-            now.duration_since(refreshed_at)
-                < Duration::from_secs(WORKSPACE_CONTEXT_REFRESH_SECS)
+            now.duration_since(refreshed_at) < Duration::from_secs(WORKSPACE_CONTEXT_REFRESH_SECS)
         })
     {
         return;
@@ -2756,10 +2757,7 @@ struct WorkspaceChangeSummary {
 
 impl WorkspaceChangeSummary {
     fn is_clean(&self) -> bool {
-        self.staged == 0
-            && self.modified == 0
-            && self.untracked == 0
-            && self.conflicts == 0
+        self.staged == 0 && self.modified == 0 && self.untracked == 0 && self.conflicts == 0
     }
 }
 
@@ -2805,11 +2803,10 @@ fn workspace_git_branch(workspace: &Path) -> Option<String> {
 }
 
 fn workspace_git_change_summary(workspace: &Path) -> Option<WorkspaceChangeSummary> {
-    let status = run_git_query(workspace, &[
-        "status",
-        "--short",
-        "--untracked-files=normal",
-    ])
+    let status = run_git_query(
+        workspace,
+        &["status", "--short", "--untracked-files=normal"],
+    )
     .ok()?;
 
     if status.trim().is_empty() {
@@ -2849,7 +2846,10 @@ fn workspace_git_change_summary(workspace: &Path) -> Option<WorkspaceChangeSumma
 }
 
 fn run_git_query(workspace: &Path, args: &[&str]) -> std::io::Result<String> {
-    let output = Command::new("git").args(args).current_dir(workspace).output()?;
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(workspace)
+        .output()?;
     if !output.status.success() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::Other,
@@ -3092,18 +3092,13 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
         if let Some(workspace_name) = app.workspace.file_name() {
             if let Some(name) = workspace_name.to_str() {
                 let ws = format!("{} ", name);
-                spans.push(Span::styled(
-                    ws,
-                    Style::default().fg(palette::TEXT_DIM),
-                ));
+                spans.push(Span::styled(ws, Style::default().fg(palette::TEXT_DIM)));
             }
         }
 
         if let Some(workspace_context) = app.workspace_context.as_deref() {
-            let context = truncate_line_to_width(
-                &format!("ctx: {workspace_context}"),
-                available_width / 2,
-            );
+            let context =
+                truncate_line_to_width(&format!("ctx: {workspace_context}"), available_width / 2);
             if !context.is_empty() {
                 spans.push(Span::styled(
                     format!("{context} "),

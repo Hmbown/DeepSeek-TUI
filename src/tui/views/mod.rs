@@ -7,8 +7,8 @@ use crate::palette;
 use crate::tools::UserInputResponse;
 use crate::tools::spec::ApprovalRequirement;
 use crate::tools::spec::ToolCapability;
-use crate::tools::{ToolContext, ToolRegistryBuilder};
 use crate::tools::subagent::{SubAgentResult, SubAgentStatus, SubAgentType};
+use crate::tools::{ToolContext, ToolRegistryBuilder};
 use crate::tui::approval::{ElevationOption, ReviewDecision};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -195,10 +195,11 @@ fn help_command_section(name: &str) -> &'static str {
 fn grouped_commands(
     commands: &'static [crate::commands::CommandInfo],
 ) -> Vec<(&'static str, Vec<&'static crate::commands::CommandInfo>)> {
-    let mut grouped: Vec<(&'static str, Vec<&crate::commands::CommandInfo>)> = HELP_COMMAND_SECTION_ORDER
-        .iter()
-        .map(|section| (*section, Vec::new()))
-        .collect();
+    let mut grouped: Vec<(&'static str, Vec<&crate::commands::CommandInfo>)> =
+        HELP_COMMAND_SECTION_ORDER
+            .iter()
+            .map(|section| (*section, Vec::new()))
+            .collect();
 
     for command in commands {
         let section = help_command_section(command.name);
@@ -346,7 +347,7 @@ impl ModalView for HelpView {
             prelude::Stylize,
             style::Style,
             text::{Line, Span},
-            widgets::{Block, Borders, Clear, Paragraph, Padding, Widget},
+            widgets::{Block, Borders, Clear, Padding, Paragraph, Widget},
         };
 
         let popup_width = 70.min(area.width.saturating_sub(4));
@@ -574,7 +575,7 @@ impl ModalView for SubAgentsView {
             prelude::Stylize,
             style::Style,
             text::{Line, Span},
-            widgets::{Block, Borders, Clear, Paragraph, Padding, Widget},
+            widgets::{Block, Borders, Clear, Padding, Paragraph, Widget},
         };
 
         let popup_width = 78.min(area.width.saturating_sub(4));
@@ -640,7 +641,10 @@ impl ModalView for SubAgentsView {
                 summary.extend(part.into_iter());
             }
             lines.push(Line::from(summary));
-            lines.push(Line::from(Span::styled("", Style::default().fg(palette::TEXT_DIM))));
+            lines.push(Line::from(Span::styled(
+                "",
+                Style::default().fg(palette::TEXT_DIM),
+            )));
 
             running.sort_by(|a, b| {
                 let order = agent_type_order(&a.agent_type).cmp(&agent_type_order(&b.agent_type));
@@ -730,7 +734,11 @@ fn append_subagent_group(
     agents: &[&SubAgentResult],
     content_width: usize,
 ) {
-    use ratatui::{prelude::Stylize, style::Style, text::{Line, Span}};
+    use ratatui::{
+        prelude::Stylize,
+        style::Style,
+        text::{Line, Span},
+    };
     if agents.is_empty() {
         return;
     }
@@ -747,8 +755,14 @@ fn append_subagent_group(
 
         lines.push(Line::from(vec![
             Span::raw("  "),
-            Span::styled(format!("{id:<12}"), Style::default().fg(palette::TEXT_PRIMARY)),
-            Span::styled(format!("{kind:<9}"), Style::default().fg(palette::TEXT_MUTED)),
+            Span::styled(
+                format!("{id:<12}"),
+                Style::default().fg(palette::TEXT_PRIMARY),
+            ),
+            Span::styled(
+                format!("{kind:<9}"),
+                Style::default().fg(palette::TEXT_MUTED),
+            ),
             Span::raw("  "),
             Span::styled(format!("{status:<10}"), status_style),
             Span::raw("  "),
@@ -767,7 +781,7 @@ fn append_subagent_group(
             let max_len = content_width.saturating_sub(10);
             let detail = truncate_view_text(detail, max_len);
             lines.push(Line::from(vec![
-                Span::styled("    reason: ", Style::default().fg(palette::TEXT_MUTED),),
+                Span::styled("    reason: ", Style::default().fg(palette::TEXT_MUTED)),
                 Span::styled(detail, Style::default().fg(palette::DEEPSEEK_RED)),
             ]));
         }
@@ -812,13 +826,17 @@ fn format_agent_status(
 
     match status {
         SubAgentStatus::Running => ("running", Style::default().fg(palette::DEEPSEEK_SKY), None),
-        SubAgentStatus::Completed => {
-            ("completed", Style::default().fg(palette::DEEPSEEK_BLUE), None)
-        }
+        SubAgentStatus::Completed => (
+            "completed",
+            Style::default().fg(palette::DEEPSEEK_BLUE),
+            None,
+        ),
         SubAgentStatus::Cancelled => ("cancelled", Style::default().fg(palette::TEXT_MUTED), None),
-        SubAgentStatus::Failed(reason) => {
-            ("failed", Style::default().fg(palette::DEEPSEEK_RED), Some(reason.as_str()))
-        }
+        SubAgentStatus::Failed(reason) => (
+            "failed",
+            Style::default().fg(palette::DEEPSEEK_RED),
+            Some(reason.as_str()),
+        ),
     }
 }
 

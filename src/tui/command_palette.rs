@@ -9,16 +9,16 @@ use ratatui::{
     prelude::Stylize,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Padding, Widget, Wrap},
+    widgets::{Block, Borders, Clear, Padding, Paragraph, Widget, Wrap},
 };
 use unicode_width::UnicodeWidthStr;
 
 use crate::commands;
 use crate::palette;
-use crate::tools::{ToolContext, ToolRegistryBuilder};
+use crate::skills::SkillRegistry;
 use crate::tools::spec::ApprovalRequirement;
 use crate::tools::spec::ToolCapability;
-use crate::skills::SkillRegistry;
+use crate::tools::{ToolContext, ToolRegistryBuilder};
 use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -296,7 +296,9 @@ impl CommandPaletteView {
         let hint = "scope: c:/cmd: , s:/skill: , t:/tool:";
         Line::from(Span::styled(
             hint,
-            Style::default().fg(palette::TEXT_DIM).add_modifier(Modifier::ITALIC),
+            Style::default()
+                .fg(palette::TEXT_DIM)
+                .add_modifier(Modifier::ITALIC),
         ))
     }
 
@@ -308,7 +310,9 @@ impl CommandPaletteView {
         };
         Line::from(vec![Span::styled(
             format!("  {title} ({count})  "),
-            Style::default().fg(palette::DEEPSEEK_SKY).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(palette::DEEPSEEK_SKY)
+                .add_modifier(Modifier::BOLD),
         )])
     }
 
@@ -538,9 +542,19 @@ mod tests {
     fn command_palette_filters_with_section_shortcuts() {
         let entries = vec![
             palette_entry(PaletteSection::Command, "/agent", "agent command", "/agent"),
-            palette_entry(PaletteSection::Skill, "skill:search", "search skill", "/skill search"),
+            palette_entry(
+                PaletteSection::Skill,
+                "skill:search",
+                "search skill",
+                "/skill search",
+            ),
             palette_entry(PaletteSection::Tool, "tool:git", "git tool", "git"),
-            palette_entry(PaletteSection::Tool, "tool:search", "search utility", "search"),
+            palette_entry(
+                PaletteSection::Tool,
+                "tool:search",
+                "search utility",
+                "search",
+            ),
         ];
         let mut view = CommandPaletteView::new(entries);
 
