@@ -2,13 +2,5 @@
   "name": "deepseek-tui-workspace",
   "private": true,
   "packageManager": "pnpm@10.23.0",
-  "scripts": {
-    "deepseek-app:web:dev": "pnpm --filter deepseek-app dev",
-    "deepseek-app:web:build": "pnpm --filter deepseek-app build",
-    "deepseek-app:desktop:dev": "pnpm --filter deepseek-app tauri:dev",
-    "deepseek-app:desktop:build": "pnpm --filter deepseek-app tauri:build",
-    "deepseek-app:lint": "pnpm --filter deepseek-app lint",
-    "deepseek-app:typecheck": "pnpm --filter deepseek-app typecheck",
-    "deepseek-app:test": "pnpm --filter deepseek-app test"
-  }
+  "scripts": {}
 }
