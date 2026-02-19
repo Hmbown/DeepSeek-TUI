@@ -98,18 +98,6 @@ See [config.example.toml](config.example.toml) and [docs/CONFIGURATION.md](docs/
 `deepseek serve --http` starts a local HTTP/SSE service on `127.0.0.1:7878` for multi-turn conversations, task queues, and event streaming.
 See [docs/RUNTIME_API.md](docs/RUNTIME_API.md).
 
-## Standalone app (web + desktop)
-
-The Next.js + Tauri app lives in `apps/deepseek-app`.
-
-```bash
-pnpm install
-pnpm deepseek-app:web:dev
-pnpm deepseek-app:desktop:dev
-```
-
-It uses the same runtime API endpoint (`deepseek serve --http`).
-
 ## Docs
 
 - [Configuration Reference](docs/CONFIGURATION.md)
