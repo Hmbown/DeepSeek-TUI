@@ -9,13 +9,27 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap},
+    widgets::{Block, Borders, Clear, Paragraph, Padding, Widget, Wrap},
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::palette;
 use crate::session_manager::{SavedSession, SessionManager, SessionMetadata};
 use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
+
+fn modal_block(title: &str) -> Block<'static> {
+    Block::default()
+        .title(Line::from(vec![Span::styled(
+            title.to_string(),
+            Style::default()
+                .fg(palette::DEEPSEEK_BLUE)
+                .add_modifier(Modifier::BOLD),
+        )]))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(palette::BORDER_COLOR))
+        .style(Style::default().bg(palette::DEEPSEEK_INK))
+        .padding(Padding::uniform(1))
+}
 
 #[derive(Debug, Clone, Copy)]
 enum SortMode {
@@ -311,12 +325,7 @@ impl ModalView for SessionPickerView {
             self.status.as_deref(),
         );
         let list = Paragraph::new(list_lines)
-            .block(
-                Block::default()
-                    .title(" Sessions ")
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(palette::DEEPSEEK_SKY)),
-            )
+            .block(modal_block(" Sessions "))
             .wrap(Wrap { trim: false });
         list.render(chunks[0], buf);
 
@@ -327,12 +336,7 @@ impl ModalView for SessionPickerView {
         );
 
         let preview = Paragraph::new(preview_lines)
-            .block(
-                Block::default()
-                    .title(" Preview ")
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(palette::DEEPSEEK_SKY)),
-            )
+            .block(modal_block(" Preview "))
             .wrap(Wrap { trim: false });
         preview.render(chunks[1], buf);
     }
@@ -388,7 +392,7 @@ fn build_list_lines(
         let style = if idx == selected {
             Style::default()
                 .fg(palette::DEEPSEEK_SKY)
-                .add_modifier(Modifier::REVERSED)
+                .bg(palette::SELECTION_BG)
         } else {
             Style::default().fg(palette::TEXT_PRIMARY)
         };

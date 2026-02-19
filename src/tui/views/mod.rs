@@ -1,9 +1,13 @@
 use crossterm::event::KeyEvent;
 use ratatui::{buffer::Buffer, layout::Rect};
 use std::fmt;
+use std::path::{Path, PathBuf};
 
 use crate::palette;
 use crate::tools::UserInputResponse;
+use crate::tools::spec::ApprovalRequirement;
+use crate::tools::spec::ToolCapability;
+use crate::tools::{ToolContext, ToolRegistryBuilder};
 use crate::tools::subagent::{SubAgentResult, SubAgentStatus, SubAgentType};
 use crate::tui::approval::{ElevationOption, ReviewDecision};
 
@@ -165,14 +169,154 @@ impl fmt::Debug for ViewStack {
     }
 }
 
+const HELP_COMMAND_SECTION_ORDER: [&str; 7] = [
+    "Core",
+    "Modes",
+    "Session",
+    "Configuration",
+    "Workflows",
+    "Planning",
+    "Debug",
+];
+
+fn help_command_section(name: &str) -> &'static str {
+    match name {
+        "help" | "clear" | "exit" | "model" | "models" | "home" | "deepseek" => "Core",
+        "normal" | "agent" | "yolo" | "plan" | "trust" | "logout" => "Modes",
+        "save" | "sessions" | "load" | "export" | "compact" | "queue" => "Session",
+        "config" | "set" | "settings" => "Configuration",
+        "task" | "skills" | "skill" | "subagents" | "review" => "Workflows",
+        "note" | "cost" | "context" | "system" | "undo" | "retry" => "Planning",
+        "init" => "Debug",
+        _ => "Debug",
+    }
+}
+
+fn grouped_commands(
+    commands: &'static [crate::commands::CommandInfo],
+) -> Vec<(&'static str, Vec<&'static crate::commands::CommandInfo>)> {
+    let mut grouped: Vec<(&'static str, Vec<&crate::commands::CommandInfo>)> = HELP_COMMAND_SECTION_ORDER
+        .iter()
+        .map(|section| (*section, Vec::new()))
+        .collect();
+
+    for command in commands {
+        let section = help_command_section(command.name);
+        let Some((_, entries)) = grouped
+            .iter_mut()
+            .find(|(entry_section, _)| *entry_section == section)
+        else {
+            continue;
+        };
+        entries.push(command);
+    }
+
+    grouped
+        .into_iter()
+        .filter(|(_, entries)| !entries.is_empty())
+        .collect()
+}
+
 pub struct HelpView {
     scroll: usize,
+    tool_sections: Vec<(String, Vec<String>)>,
 }
 
 impl HelpView {
     pub fn new() -> Self {
-        Self { scroll: 0 }
+        Self::new_for_workspace(PathBuf::from("."))
     }
+
+    pub fn new_for_workspace(workspace: PathBuf) -> Self {
+        Self {
+            scroll: 0,
+            tool_sections: build_help_tool_sections(&workspace),
+        }
+    }
+}
+
+fn build_help_tool_sections(workspace: &Path) -> Vec<(String, Vec<String>)> {
+    let context = ToolContext::new(workspace.to_path_buf());
+    let registry = ToolRegistryBuilder::new()
+        .with_file_tools()
+        .with_search_tools()
+        .with_shell_tools()
+        .with_web_tools()
+        .with_git_tools()
+        .with_structured_data_tools()
+        .with_user_input_tool()
+        .with_parallel_tool()
+        .with_patch_tools()
+        .with_note_tool()
+        .with_diagnostics_tool()
+        .with_project_tools()
+        .with_test_runner_tool()
+        .build(context);
+
+    let mut auto = Vec::new();
+    let mut suggest = Vec::new();
+    let mut required = Vec::new();
+
+    for tool in registry.all() {
+        let mut tags = Vec::new();
+        let capabilities = tool.capabilities();
+        if capabilities.contains(&ToolCapability::ReadOnly) {
+            tags.push("read-only");
+        }
+        if capabilities.contains(&ToolCapability::WritesFiles) {
+            tags.push("writes");
+        }
+        if capabilities.contains(&ToolCapability::ExecutesCode) {
+            tags.push("shell");
+        }
+        if capabilities.contains(&ToolCapability::Network) {
+            tags.push("network");
+        }
+        if tool.supports_parallel() {
+            tags.push("parallel");
+        }
+
+        let mut description = tool.description().to_string();
+        if !tags.is_empty() {
+            description.push_str(" [");
+            description.push_str(&tags.join(", "));
+            description.push(']');
+        }
+
+        let name = tool.name();
+        if name.trim().is_empty() {
+            continue;
+        }
+
+        let line = if description.is_empty() {
+            format!("  {}", name)
+        } else {
+            format!("  {:<15} - {}", name, description)
+        };
+
+        match tool.approval_requirement() {
+            ApprovalRequirement::Required => required.push(line),
+            ApprovalRequirement::Suggest => suggest.push(line),
+            ApprovalRequirement::Auto => auto.push(line),
+        }
+    }
+
+    auto.sort_unstable();
+    suggest.sort_unstable();
+    required.sort_unstable();
+
+    let mut sections = Vec::new();
+    if !auto.is_empty() {
+        sections.push(("Tools (auto/low risk)".to_string(), auto));
+    }
+    if !suggest.is_empty() {
+        sections.push(("Tools (suggest approval)".to_string(), suggest));
+    }
+    if !required.is_empty() {
+        sections.push(("Tools (requires approval)".to_string(), required));
+    }
+
+    sections
 }
 
 impl ModalView for HelpView {
@@ -202,7 +346,7 @@ impl ModalView for HelpView {
             prelude::Stylize,
             style::Style,
             text::{Line, Span},
-            widgets::{Block, Borders, Clear, Paragraph, Widget},
+            widgets::{Block, Borders, Clear, Paragraph, Padding, Widget},
         };
 
         let popup_width = 70.min(area.width.saturating_sub(4));
@@ -267,9 +411,12 @@ impl ModalView for HelpView {
                 "=== Modes ===",
                 Style::default().fg(palette::DEEPSEEK_SKY).bold(),
             )]),
-            Line::from("  Tab               - Complete /command or cycle modes"),
+            Line::from("  Tab / Shift+Tab  - Complete /command or cycle modes"),
+            Line::from("  Alt+1/2/3/4       - Directly jump to Normal/Agent/YOLO/Plan"),
+            Line::from("  Alt+N/A/Y/P       - Alternative jump to Normal/Agent/YOLO/Plan"),
+            Line::from("  Alt+!/@/#/$/+)     - Focus Plan/Todos/Tasks/Agents/Auto sidebar"),
+            Line::from("  /normal /agent /yolo /plan - Set mode directly"),
             Line::from("  Ctrl+X            - Toggle between Agent and Normal modes"),
-            Line::from("  Alt+1..4 / Alt+0  - Focus sidebar section / auto layout"),
             Line::from(""),
             Line::from(vec![Span::styled(
                 "=== Sessions ===",
@@ -298,10 +445,10 @@ impl ModalView for HelpView {
             Line::from("  Drag to select    - Select text (auto-copies on release)"),
             Line::from(""),
             Line::from(vec![Span::styled(
-                "Modes:",
+                "Mode Cycle:",
                 Style::default().fg(palette::DEEPSEEK_SKY).bold(),
             )]),
-            Line::from("  Tab cycles modes: Plan → Agent → YOLO"),
+            Line::from("  Normal → Agent → YOLO → Plan (Tab), reverse with Shift+Tab"),
             Line::from(""),
             Line::from(vec![Span::styled(
                 "Commands:",
@@ -309,44 +456,42 @@ impl ModalView for HelpView {
             )]),
         ];
 
-        for cmd in crate::commands::COMMANDS.iter() {
-            help_lines.push(Line::from(format!(
-                "  /{:<12} - {}",
-                cmd.name, cmd.description
-            )));
+        let grouped = grouped_commands(crate::commands::COMMANDS);
+        for (section, commands) in grouped {
+            if !commands.is_empty() {
+                help_lines.push(Line::from(Span::styled(
+                    format!("  [{}]", section),
+                    Style::default().fg(palette::DEEPSEEK_BLUE).bold(),
+                )));
+                for cmd in commands {
+                    help_lines.push(Line::from(format!(
+                        "    /{:<11} - {}",
+                        cmd.name, cmd.description
+                    )));
+                }
+                help_lines.push(Line::from(""));
+            }
         }
 
         help_lines.push(Line::from(""));
-        help_lines.push(Line::from(vec![Span::styled(
+        help_lines.push(Line::from(Span::styled(
             "Tools:",
             Style::default().fg(palette::DEEPSEEK_SKY).bold(),
-        )]));
-        help_lines.push(Line::from(
-            "  web.run      - Browse the web (search/open/click/find/screenshot)",
-        ));
-        help_lines.push(Line::from(
-            "  web_search   - Quick web search (DuckDuckGo; MCP optional)",
-        ));
-        help_lines.push(Line::from(
-            "  request_user_input - Ask the user to choose from short prompts",
-        ));
-        help_lines.push(Line::from(
-            "  multi_tool_use.parallel - Execute multiple tools in parallel",
-        ));
-        help_lines.push(Line::from("  weather     - Daily forecast for a location"));
-        help_lines.push(Line::from("  finance     - Stock/crypto price lookup"));
-        help_lines.push(Line::from("  sports      - League schedules/standings"));
-        help_lines.push(Line::from("  time        - Current time for UTC offsets"));
-        help_lines.push(Line::from(
-            "  calculator  - Evaluate arithmetic expressions",
-        ));
-        help_lines.push(Line::from(
-            "  list_mcp_resources - List MCP resources (optionally by server)",
-        ));
-        help_lines.push(Line::from(
-            "  list_mcp_resource_templates - List MCP resource templates",
-        ));
-        help_lines.push(Line::from("  mcp_*        - Tools exposed by MCP servers"));
+        )));
+        if self.tool_sections.is_empty() {
+            help_lines.push(Line::from("  Tool registry unavailable"));
+        } else {
+            for (section, tools) in &self.tool_sections {
+                help_lines.push(Line::from(Span::styled(
+                    format!("  {}", section),
+                    Style::default().fg(palette::DEEPSEEK_BLUE).bold(),
+                )));
+                for tool in tools {
+                    help_lines.push(Line::from(tool.as_str()));
+                }
+                help_lines.push(Line::from(""));
+            }
+        }
         help_lines.push(Line::from(""));
 
         let total_lines = help_lines.len();
@@ -372,7 +517,9 @@ impl ModalView for HelpView {
                         Span::styled(scroll_indicator, Style::default().fg(palette::DEEPSEEK_SKY)),
                     ]))
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(palette::DEEPSEEK_SKY)),
+                    .border_style(Style::default().fg(palette::BORDER_COLOR))
+                    .style(Style::default().bg(palette::DEEPSEEK_INK))
+                    .padding(Padding::uniform(1)),
             )
             .scroll((scroll as u16, 0));
 
@@ -427,7 +574,7 @@ impl ModalView for SubAgentsView {
             prelude::Stylize,
             style::Style,
             text::{Line, Span},
-            widgets::{Block, Borders, Clear, Paragraph, Widget},
+            widgets::{Block, Borders, Clear, Paragraph, Padding, Widget},
         };
 
         let popup_width = 78.min(area.width.saturating_sub(4));
@@ -443,21 +590,7 @@ impl ModalView for SubAgentsView {
         Clear.render(popup_area, buf);
 
         let mut lines: Vec<Line> = Vec::new();
-        lines.push(Line::from(vec![
-            Span::styled("ID", Style::default().fg(palette::DEEPSEEK_SKY).bold()),
-            Span::raw("  "),
-            Span::styled("TYPE", Style::default().fg(palette::DEEPSEEK_SKY).bold()),
-            Span::raw("  "),
-            Span::styled("STATUS", Style::default().fg(palette::DEEPSEEK_SKY).bold()),
-            Span::raw("  "),
-            Span::styled("STEPS", Style::default().fg(palette::DEEPSEEK_SKY).bold()),
-            Span::raw("  "),
-            Span::styled("TIME", Style::default().fg(palette::DEEPSEEK_SKY).bold()),
-        ]));
-        lines.push(Line::from(Span::styled(
-            "----------------------------------------",
-            Style::default().fg(palette::TEXT_MUTED),
-        )));
+        let content_width = popup_width.saturating_sub(4) as usize;
 
         if self.agents.is_empty() {
             lines.push(Line::from(Span::styled(
@@ -465,45 +598,95 @@ impl ModalView for SubAgentsView {
                 Style::default().fg(palette::TEXT_MUTED),
             )));
         } else {
-            let content_width = popup_width.saturating_sub(4) as usize;
-            for agent in &self.agents {
-                let id = truncate_view_text(&agent.agent_id, 8);
-                let kind = format_agent_type(&agent.agent_type);
-                let (status, status_style) = format_agent_status(&agent.status);
-                let line = Line::from(vec![
-                    Span::styled(
-                        format!("{id:<8}"),
-                        Style::default().fg(palette::TEXT_PRIMARY).bold(),
-                    ),
-                    Span::raw("  "),
-                    Span::styled(
-                        format!("{kind:<6}"),
-                        Style::default().fg(palette::TEXT_MUTED),
-                    ),
-                    Span::raw("  "),
-                    Span::styled(format!("{status:<10}"), status_style),
-                    Span::raw("  "),
-                    Span::styled(
-                        format!("{:>5}", agent.steps_taken),
-                        Style::default().fg(palette::TEXT_DIM),
-                    ),
-                    Span::raw("  "),
-                    Span::styled(
-                        format!("{:>5}ms", agent.duration_ms),
-                        Style::default().fg(palette::TEXT_DIM),
-                    ),
-                ]);
-                lines.push(line);
+            let mut running = Vec::new();
+            let mut completed = Vec::new();
+            let mut failed = Vec::new();
+            let mut cancelled = Vec::new();
 
-                if let Some(result) = agent.result.as_ref() {
-                    let max_len = content_width.saturating_sub(10);
-                    let preview = truncate_view_text(result, max_len);
-                    lines.push(Line::from(vec![
-                        Span::styled("  Result: ", Style::default().fg(palette::TEXT_MUTED)),
-                        Span::styled(preview, Style::default().fg(palette::TEXT_DIM)),
-                    ]));
+            for agent in &self.agents {
+                match agent.status {
+                    SubAgentStatus::Running => running.push(agent),
+                    SubAgentStatus::Completed => completed.push(agent),
+                    SubAgentStatus::Failed(_) => failed.push(agent),
+                    SubAgentStatus::Cancelled => cancelled.push(agent),
                 }
             }
+
+            let status_summary = [
+                ("Running", running.len(), palette::STATUS_WARNING),
+                ("Completed", completed.len(), palette::STATUS_SUCCESS),
+                ("Failed", failed.len(), palette::DEEPSEEK_RED),
+                ("Cancelled", cancelled.len(), palette::TEXT_MUTED),
+            ];
+
+            lines.push(Line::from(Span::styled(
+                "Sub-agent swarm",
+                Style::default().fg(palette::DEEPSEEK_SKY).bold(),
+            )));
+
+            let mut summary_parts = Vec::new();
+            for (label, count, color) in status_summary {
+                summary_parts.push(Line::from(Span::styled(
+                    format!("{}: {}", label, count),
+                    Style::default().fg(color),
+                )));
+            }
+
+            let mut summary = vec![Span::styled("  ", Style::default().fg(palette::TEXT_DIM))];
+            for (idx, part) in summary_parts.into_iter().enumerate() {
+                if idx > 0 {
+                    summary.push(Span::raw("  ·  "));
+                }
+                summary.extend(part.into_iter());
+            }
+            lines.push(Line::from(summary));
+            lines.push(Line::from(Span::styled("", Style::default().fg(palette::TEXT_DIM))));
+
+            running.sort_by(|a, b| {
+                let order = agent_type_order(&a.agent_type).cmp(&agent_type_order(&b.agent_type));
+                order.then_with(|| a.agent_id.cmp(&b.agent_id))
+            });
+            completed.sort_by(|a, b| {
+                let order = agent_type_order(&a.agent_type).cmp(&agent_type_order(&b.agent_type));
+                order.then_with(|| a.agent_id.cmp(&b.agent_id))
+            });
+            failed.sort_by(|a, b| {
+                let order = agent_type_order(&a.agent_type).cmp(&agent_type_order(&b.agent_type));
+                order.then_with(|| a.agent_id.cmp(&b.agent_id))
+            });
+            cancelled.sort_by(|a, b| {
+                let order = agent_type_order(&a.agent_type).cmp(&agent_type_order(&b.agent_type));
+                order.then_with(|| a.agent_id.cmp(&b.agent_id))
+            });
+
+            append_subagent_group(
+                &mut lines,
+                "Running",
+                palette::STATUS_WARNING.into(),
+                &running,
+                content_width,
+            );
+            append_subagent_group(
+                &mut lines,
+                "Completed",
+                palette::STATUS_SUCCESS.into(),
+                &completed,
+                content_width,
+            );
+            append_subagent_group(
+                &mut lines,
+                "Failed",
+                palette::DEEPSEEK_RED.into(),
+                &failed,
+                content_width,
+            );
+            append_subagent_group(
+                &mut lines,
+                "Cancelled",
+                palette::TEXT_MUTED.into(),
+                &cancelled,
+                content_width,
+            );
         }
 
         let total_lines = lines.len();
@@ -530,11 +713,85 @@ impl ModalView for SubAgentsView {
                         Span::styled(scroll_indicator, Style::default().fg(palette::DEEPSEEK_SKY)),
                     ]))
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(palette::DEEPSEEK_SKY)),
+                    .border_style(Style::default().fg(palette::BORDER_COLOR))
+                    .style(Style::default().bg(palette::DEEPSEEK_INK))
+                    .padding(Padding::uniform(1)),
             )
             .scroll((scroll as u16, 0));
 
         view.render(popup_area, buf);
+    }
+}
+
+fn append_subagent_group(
+    lines: &mut Vec<ratatui::text::Line<'static>>,
+    title: &str,
+    section_style: ratatui::style::Style,
+    agents: &[&SubAgentResult],
+    content_width: usize,
+) {
+    use ratatui::{prelude::Stylize, style::Style, text::{Line, Span}};
+    if agents.is_empty() {
+        return;
+    }
+
+    lines.push(Line::from(Span::styled(
+        format!("{title} ({})", agents.len()),
+        section_style.bold(),
+    )));
+
+    for agent in agents {
+        let id = truncate_view_text(&agent.agent_id, 11);
+        let kind = format_agent_type(&agent.agent_type);
+        let (status, status_style, status_detail) = format_agent_status(&agent.status);
+
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(format!("{id:<12}"), Style::default().fg(palette::TEXT_PRIMARY)),
+            Span::styled(format!("{kind:<9}"), Style::default().fg(palette::TEXT_MUTED)),
+            Span::raw("  "),
+            Span::styled(format!("{status:<10}"), status_style),
+            Span::raw("  "),
+            Span::styled(
+                format!("{:>4}✦", agent.steps_taken),
+                Style::default().fg(palette::TEXT_DIM),
+            ),
+            Span::raw("  "),
+            Span::styled(
+                format!("{:>6}ms", agent.duration_ms),
+                Style::default().fg(palette::TEXT_DIM),
+            ),
+        ]));
+
+        if let Some(detail) = status_detail {
+            let max_len = content_width.saturating_sub(10);
+            let detail = truncate_view_text(detail, max_len);
+            lines.push(Line::from(vec![
+                Span::styled("    reason: ", Style::default().fg(palette::TEXT_MUTED),),
+                Span::styled(detail, Style::default().fg(palette::DEEPSEEK_RED)),
+            ]));
+        }
+
+        if let Some(result) = agent.result.as_ref() {
+            let max_len = content_width.saturating_sub(16);
+            let preview = truncate_view_text(result, max_len);
+            lines.push(Line::from(vec![
+                Span::styled("    result: ", Style::default().fg(palette::TEXT_MUTED)),
+                Span::styled(preview, Style::default().fg(palette::TEXT_DIM)),
+            ]));
+        }
+    }
+
+    lines.push(Line::from(""));
+}
+
+fn agent_type_order(agent_type: &SubAgentType) -> u8 {
+    match agent_type {
+        SubAgentType::General => 0,
+        SubAgentType::Explore => 1,
+        SubAgentType::Plan => 2,
+        SubAgentType::Review => 3,
+        SubAgentType::Custom => 4,
     }
 }
 
@@ -548,14 +805,20 @@ fn format_agent_type(agent_type: &SubAgentType) -> &'static str {
     }
 }
 
-fn format_agent_status(status: &SubAgentStatus) -> (&'static str, ratatui::style::Style) {
+fn format_agent_status(
+    status: &SubAgentStatus,
+) -> (&'static str, ratatui::style::Style, Option<&str>) {
     use ratatui::style::Style;
 
     match status {
-        SubAgentStatus::Running => ("running", Style::default().fg(palette::DEEPSEEK_SKY)),
-        SubAgentStatus::Completed => ("completed", Style::default().fg(palette::DEEPSEEK_BLUE)),
-        SubAgentStatus::Cancelled => ("cancelled", Style::default().fg(palette::TEXT_MUTED)),
-        SubAgentStatus::Failed(_) => ("failed", Style::default().fg(palette::DEEPSEEK_RED)),
+        SubAgentStatus::Running => ("running", Style::default().fg(palette::DEEPSEEK_SKY), None),
+        SubAgentStatus::Completed => {
+            ("completed", Style::default().fg(palette::DEEPSEEK_BLUE), None)
+        }
+        SubAgentStatus::Cancelled => ("cancelled", Style::default().fg(palette::TEXT_MUTED), None),
+        SubAgentStatus::Failed(reason) => {
+            ("failed", Style::default().fg(palette::DEEPSEEK_RED), Some(reason.as_str()))
+        }
     }
 }
 

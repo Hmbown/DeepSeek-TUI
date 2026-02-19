@@ -15,7 +15,7 @@ use ratatui::{
     prelude::Stylize,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap},
+    widgets::{Block, Borders, Clear, Paragraph, Padding, Widget, Wrap},
 };
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -335,7 +335,7 @@ impl Renderable for ApprovalWidget<'_> {
             let style = if is_selected {
                 Style::default()
                     .fg(palette::DEEPSEEK_SKY)
-                    .add_modifier(Modifier::REVERSED)
+                    .bg(palette::SELECTION_BG)
             } else {
                 Style::default()
             };
@@ -354,7 +354,9 @@ impl Renderable for ApprovalWidget<'_> {
         let block = Block::default()
             .title(title)
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(palette::STATUS_WARNING));
+            .border_style(Style::default().fg(palette::BORDER_COLOR))
+            .style(Style::default().bg(palette::DEEPSEEK_INK))
+            .padding(Padding::uniform(1));
 
         let paragraph = Paragraph::new(lines)
             .block(block)
@@ -443,7 +445,7 @@ impl Renderable for ElevationWidget<'_> {
             let style = if is_selected {
                 Style::default()
                     .fg(palette::DEEPSEEK_SKY)
-                    .add_modifier(Modifier::REVERSED)
+                    .bg(palette::SELECTION_BG)
             } else {
                 Style::default()
             };
@@ -482,7 +484,9 @@ impl Renderable for ElevationWidget<'_> {
         let block = Block::default()
             .title(title)
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(palette::STATUS_ERROR));
+            .border_style(Style::default().fg(palette::BORDER_COLOR))
+            .style(Style::default().bg(palette::DEEPSEEK_INK))
+            .padding(Padding::uniform(1));
 
         let paragraph = Paragraph::new(lines)
             .block(block)

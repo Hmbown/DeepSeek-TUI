@@ -3,13 +3,25 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Alignment, Rect};
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Padding, Paragraph, Wrap};
 
 use crate::palette;
 use crate::tools::user_input::{
     UserInputAnswer, UserInputQuestion, UserInputRequest, UserInputResponse,
 };
 use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
+
+fn modal_block(title: &str) -> Block<'static> {
+    Block::default()
+        .title(Line::from(vec![Span::styled(
+            title.to_string(),
+            Style::default().fg(palette::DEEPSEEK_BLUE).bold(),
+        )]))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(palette::BORDER_COLOR))
+        .style(Style::default().bg(palette::DEEPSEEK_INK))
+        .padding(Padding::uniform(1))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InputMode {
@@ -195,43 +207,53 @@ impl ModalView for UserInputView {
             let selected = self.selected == idx;
             let prefix = if selected { ">" } else { " " };
             let number = idx + 1;
-            let style = if selected {
-                Style::default().fg(palette::DEEPSEEK_SKY).bold()
+            if selected {
+                // Single span with consistent foreground and background
+                let content = format!("{prefix} {number}) {} - {}", option.label, option.description);
+                lines.push(Line::from(Span::styled(
+                    content,
+                    Style::default()
+                        .fg(palette::DEEPSEEK_SKY)
+                        .bg(palette::SELECTION_BG)
+                        .bold(),
+                )));
             } else {
-                Style::default().fg(palette::TEXT_PRIMARY)
-            };
-            lines.push(Line::from(vec![
-                Span::raw(format!("{prefix} {number}) ")),
-                Span::styled(option.label.clone(), style),
-                Span::raw(" - "),
-                Span::styled(
-                    option.description.clone(),
-                    Style::default().fg(palette::TEXT_MUTED),
-                ),
-            ]));
+                // Keep original multi‑span formatting
+                lines.push(Line::from(vec![
+                    Span::raw(format!("{prefix} {number}) ")),
+                    Span::styled(option.label.clone(), Style::default().fg(palette::TEXT_PRIMARY)),
+                    Span::raw(" - "),
+                    Span::styled(
+                        option.description.clone(),
+                        Style::default().fg(palette::TEXT_MUTED),
+                    ),
+                ]));
+            }
         }
 
         let other_index = question.options.len();
         let other_selected = self.selected == other_index;
-        let other_style = if other_selected {
-            Style::default().fg(palette::DEEPSEEK_SKY).bold()
-        } else {
-            Style::default().fg(palette::TEXT_PRIMARY)
-        };
         let other_number = other_index + 1;
-        lines.push(Line::from(vec![
-            Span::raw(if other_selected {
-                format!("> {other_number}) ")
-            } else {
-                format!("  {other_number}) ")
-            }),
-            Span::styled("Other", other_style),
-            Span::raw(" - "),
-            Span::styled(
-                "Provide a custom response",
-                Style::default().fg(palette::TEXT_MUTED),
-            ),
-        ]));
+        if other_selected {
+            let content = format!("> {other_number}) Other - Provide a custom response");
+            lines.push(Line::from(Span::styled(
+                content,
+                Style::default()
+                    .fg(palette::DEEPSEEK_SKY)
+                    .bg(palette::SELECTION_BG)
+                    .bold(),
+            )));
+        } else {
+            lines.push(Line::from(vec![
+                Span::raw(format!("  {other_number}) ")),
+                Span::styled("Other", Style::default().fg(palette::TEXT_PRIMARY)),
+                Span::raw(" - "),
+                Span::styled(
+                    "Provide a custom response",
+                    Style::default().fg(palette::TEXT_MUTED),
+                ),
+            ]));
+        }
 
         if self.mode == InputMode::OtherInput {
             lines.push(Line::from(""));
@@ -263,15 +285,7 @@ impl ModalView for UserInputView {
         let paragraph = Paragraph::new(lines)
             .alignment(Alignment::Left)
             .wrap(Wrap { trim: true })
-            .block(
-                Block::default()
-                    .title(Line::from(vec![Span::styled(
-                        header,
-                        Style::default().fg(palette::DEEPSEEK_BLUE).bold(),
-                    )]))
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(palette::DEEPSEEK_SKY)),
-            );
+            .block(modal_block(&header));
 
         let popup_area = centered_rect(80, 60, area);
         paragraph.render(popup_area, buf);

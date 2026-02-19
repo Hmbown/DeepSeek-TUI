@@ -2,7 +2,8 @@
 
 use std::fmt::Write;
 use std::io::{self, Stdout};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -21,7 +22,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Padding, Paragraph, Wrap},
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -91,6 +92,7 @@ const UI_ACTIVE_POLL_MS: u64 = 16;
 const UI_DEEPSEEK_SQUIGGLE_MS: u64 = 120;
 const UI_TYPING_INDICATOR_MS: u64 = 120;
 const UI_STATUS_ANIMATION_MS: u64 = UI_DEEPSEEK_SQUIGGLE_MS;
+const WORKSPACE_CONTEXT_REFRESH_SECS: u64 = 15;
 
 /// Run the interactive TUI event loop.
 ///
@@ -818,6 +820,7 @@ async fn run_event_loop(
         let now = Instant::now();
         app.flush_paste_burst_if_due(now);
         app.sync_status_message_to_toasts();
+        refresh_workspace_context_if_needed(app, now);
 
         if app.needs_redraw {
             terminal.draw(|f| render(f, app))?; // app is &mut
@@ -982,7 +985,7 @@ async fn run_event_loop(
                 if app.view_stack.top_kind() == Some(ModalKind::Help) {
                     app.view_stack.pop();
                 } else {
-                    app.view_stack.push(HelpView::new());
+                    app.view_stack.push(HelpView::new_for_workspace(app.workspace.clone()));
                 }
                 continue;
             }
@@ -991,7 +994,7 @@ async fn run_event_loop(
                 if app.view_stack.top_kind() == Some(ModalKind::Help) {
                     app.view_stack.pop();
                 } else {
-                    app.view_stack.push(HelpView::new());
+                    app.view_stack.push(HelpView::new_for_workspace(app.workspace.clone()));
                 }
                 continue;
             }
@@ -1000,6 +1003,7 @@ async fn run_event_loop(
                 app.view_stack
                     .push(CommandPaletteView::new(build_command_palette_entries(
                         &app.skills_dir,
+                        &app.workspace,
                     )));
                 continue;
             }
@@ -1054,23 +1058,64 @@ async fn run_event_loop(
                     }
                 }
                 KeyCode::Char('1') if key.modifiers.contains(KeyModifiers::ALT) => {
+                    if key.modifiers.contains(KeyModifiers::CONTROL) {
+                        app.set_sidebar_focus(SidebarFocus::Plan);
+                        app.status_message = Some("Sidebar focus: plan".to_string());
+                    } else {
+                        app.set_mode(AppMode::Normal);
+                    }
+                    continue;
+                }
+                KeyCode::Char('2') if key.modifiers.contains(KeyModifiers::ALT) => {
+                    if key.modifiers.contains(KeyModifiers::CONTROL) {
+                        app.set_sidebar_focus(SidebarFocus::Todos);
+                        app.status_message = Some("Sidebar focus: todos".to_string());
+                    } else {
+                        app.set_mode(AppMode::Agent);
+                    }
+                    continue;
+                }
+                KeyCode::Char('3') if key.modifiers.contains(KeyModifiers::ALT) => {
+                    if key.modifiers.contains(KeyModifiers::CONTROL) {
+                        app.set_sidebar_focus(SidebarFocus::Tasks);
+                        app.status_message = Some("Sidebar focus: tasks".to_string());
+                    } else {
+                        app.set_mode(AppMode::Yolo);
+                    }
+                    continue;
+                }
+                KeyCode::Char('4') if key.modifiers.contains(KeyModifiers::ALT) => {
+                    if key.modifiers.contains(KeyModifiers::CONTROL) {
+                        app.set_sidebar_focus(SidebarFocus::Agents);
+                        app.status_message = Some("Sidebar focus: agents".to_string());
+                    } else {
+                        app.set_mode(AppMode::Plan);
+                    }
+                    continue;
+                }
+                KeyCode::Char('!') if key.modifiers.contains(KeyModifiers::ALT) => {
                     app.set_sidebar_focus(SidebarFocus::Plan);
                     app.status_message = Some("Sidebar focus: plan".to_string());
                     continue;
                 }
-                KeyCode::Char('2') if key.modifiers.contains(KeyModifiers::ALT) => {
+                KeyCode::Char('@') if key.modifiers.contains(KeyModifiers::ALT) => {
                     app.set_sidebar_focus(SidebarFocus::Todos);
                     app.status_message = Some("Sidebar focus: todos".to_string());
                     continue;
                 }
-                KeyCode::Char('3') if key.modifiers.contains(KeyModifiers::ALT) => {
+                KeyCode::Char('#') if key.modifiers.contains(KeyModifiers::ALT) => {
                     app.set_sidebar_focus(SidebarFocus::Tasks);
                     app.status_message = Some("Sidebar focus: tasks".to_string());
                     continue;
                 }
-                KeyCode::Char('4') if key.modifiers.contains(KeyModifiers::ALT) => {
+                KeyCode::Char('$') if key.modifiers.contains(KeyModifiers::ALT) => {
                     app.set_sidebar_focus(SidebarFocus::Agents);
                     app.status_message = Some("Sidebar focus: agents".to_string());
+                    continue;
+                }
+                KeyCode::Char(')') if key.modifiers.contains(KeyModifiers::ALT) => {
+                    app.set_sidebar_focus(SidebarFocus::Auto);
+                    app.status_message = Some("Sidebar focus: auto".to_string());
                     continue;
                 }
                 KeyCode::Char('0') if key.modifiers.contains(KeyModifiers::ALT) => {
@@ -1153,6 +1198,9 @@ async fn run_event_loop(
                         continue;
                     }
                     app.cycle_mode();
+                }
+                KeyCode::BackTab => {
+                    app.cycle_mode_reverse();
                 }
                 KeyCode::Char('g')
                     if key.modifiers.is_empty() && app.input.is_empty() && !slash_menu_open =>
@@ -1450,6 +1498,38 @@ async fn run_event_loop(
                 }
                 KeyCode::Char('v') if is_paste_shortcut(&key) => {
                     app.paste_from_clipboard();
+                }
+                KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::ALT) => {
+                    app.set_mode(AppMode::Normal);
+                    continue;
+                }
+                KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::ALT) => {
+                    app.set_mode(AppMode::Agent);
+                    continue;
+                }
+                KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::ALT) => {
+                    app.set_mode(AppMode::Yolo);
+                    continue;
+                }
+                KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::ALT) => {
+                    app.set_mode(AppMode::Plan);
+                    continue;
+                }
+                KeyCode::Char('N') if key.modifiers.contains(KeyModifiers::ALT) => {
+                    app.set_mode(AppMode::Normal);
+                    continue;
+                }
+                KeyCode::Char('A') if key.modifiers.contains(KeyModifiers::ALT) => {
+                    app.set_mode(AppMode::Agent);
+                    continue;
+                }
+                KeyCode::Char('Y') if key.modifiers.contains(KeyModifiers::ALT) => {
+                    app.set_mode(AppMode::Yolo);
+                    continue;
+                }
+                KeyCode::Char('P') if key.modifiers.contains(KeyModifiers::ALT) => {
+                    app.set_mode(AppMode::Plan);
+                    continue;
                 }
                 KeyCode::Char(c) => {
                     app.insert_char(c);
@@ -2459,7 +2539,9 @@ fn render_sidebar_section(f: &mut Frame, area: Rect, title: &str, lines: Vec<Lin
                 Style::default().fg(palette::DEEPSEEK_BLUE).bold(),
             )]))
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(palette::DEEPSEEK_SKY)),
+            .border_style(Style::default().fg(palette::BORDER_COLOR))
+            .style(Style::default().bg(palette::DEEPSEEK_INK))
+            .padding(Padding::uniform(1)),
     );
 
     f.render_widget(section, area);
@@ -2639,12 +2721,142 @@ fn apply_loaded_session(app: &mut App, session: &SavedSession) {
     app.last_prompt_tokens = None;
     app.last_completion_tokens = None;
     app.current_session_id = Some(session.metadata.id.clone());
+    app.workspace_context = None;
+    app.workspace_context_refreshed_at = None;
     if let Some(sp) = session.system_prompt.as_ref() {
         app.system_prompt = Some(SystemPrompt::Text(sp.clone()));
     } else {
         app.system_prompt = None;
     }
     app.scroll_to_bottom();
+}
+
+fn refresh_workspace_context_if_needed(app: &mut App, now: Instant) {
+    if app
+        .workspace_context_refreshed_at
+        .is_some_and(|refreshed_at| {
+            now.duration_since(refreshed_at)
+                < Duration::from_secs(WORKSPACE_CONTEXT_REFRESH_SECS)
+        })
+    {
+        return;
+    }
+
+    app.workspace_context = collect_workspace_context(&app.workspace);
+    app.workspace_context_refreshed_at = Some(now);
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct WorkspaceChangeSummary {
+    staged: usize,
+    modified: usize,
+    untracked: usize,
+    conflicts: usize,
+}
+
+impl WorkspaceChangeSummary {
+    fn is_clean(&self) -> bool {
+        self.staged == 0
+            && self.modified == 0
+            && self.untracked == 0
+            && self.conflicts == 0
+    }
+}
+
+fn collect_workspace_context(workspace: &Path) -> Option<String> {
+    let branch = workspace_git_branch(workspace)?;
+    let summary = workspace_git_change_summary(workspace)?;
+
+    let mut parts = Vec::new();
+    if summary.staged > 0 {
+        parts.push(format!("{} staged", summary.staged));
+    }
+    if summary.modified > 0 {
+        parts.push(format!("{} modified", summary.modified));
+    }
+    if summary.untracked > 0 {
+        parts.push(format!("{} untracked", summary.untracked));
+    }
+    if summary.conflicts > 0 {
+        parts.push(format!("{} conflicts", summary.conflicts));
+    }
+
+    let status = if summary.is_clean() {
+        "clean".to_string()
+    } else {
+        parts.join(", ")
+    };
+
+    Some(format!("{branch} | {status}"))
+}
+
+fn workspace_git_branch(workspace: &Path) -> Option<String> {
+    let branch = run_git_query(workspace, &["rev-parse", "--abbrev-ref", "HEAD"]).ok()?;
+    let branch = branch.trim().to_string();
+    if branch == "HEAD" || branch.is_empty() {
+        let short_hash = run_git_query(workspace, &["rev-parse", "--short", "HEAD"]).ok()?;
+        let short_hash = short_hash.trim();
+        if short_hash.is_empty() {
+            return None;
+        }
+        return Some(format!("detached:{short_hash}"));
+    }
+    Some(branch)
+}
+
+fn workspace_git_change_summary(workspace: &Path) -> Option<WorkspaceChangeSummary> {
+    let status = run_git_query(workspace, &[
+        "status",
+        "--short",
+        "--untracked-files=normal",
+    ])
+    .ok()?;
+
+    if status.trim().is_empty() {
+        return Some(WorkspaceChangeSummary::default());
+    }
+
+    let mut summary = WorkspaceChangeSummary::default();
+    for line in status.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        let mut chars = line.chars();
+        let staged = chars.next()?;
+        let modified = chars.next().unwrap_or(' ');
+
+        if staged == ' ' && modified == ' ' {
+            continue;
+        }
+        if staged == '?' && modified == '?' {
+            summary.untracked = summary.untracked.saturating_add(1);
+            continue;
+        }
+
+        if staged == 'U' || modified == 'U' {
+            summary.conflicts = summary.conflicts.saturating_add(1);
+        }
+        if staged != ' ' && staged != '?' {
+            summary.staged = summary.staged.saturating_add(1);
+        }
+        if modified != ' ' && modified != '?' {
+            summary.modified = summary.modified.saturating_add(1);
+        }
+    }
+
+    Some(summary)
+}
+
+fn run_git_query(workspace: &Path, args: &[&str]) -> std::io::Result<String> {
+    let output = Command::new("git").args(args).current_dir(workspace).output()?;
+    if !output.status.success() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "git command failed",
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 fn pause_terminal(
@@ -2861,9 +3073,46 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
             Style::default().fg(status_color(toast.level)),
         )]
     } else {
-        // Compact footer: session + token cost + help hint
+        // Compact footer: mode + workspace + session + token cost + help hint
         let mut spans = Vec::new();
 
+        // Mode indicator
+        let (mode_label, mode_color) = match app.mode {
+            crate::tui::app::AppMode::Normal => ("[Normal]", palette::MODE_NORMAL),
+            crate::tui::app::AppMode::Agent => ("[Agent]", palette::MODE_AGENT),
+            crate::tui::app::AppMode::Yolo => ("[YOLO]", palette::MODE_YOLO),
+            crate::tui::app::AppMode::Plan => ("[Plan]", palette::MODE_PLAN),
+        };
+        spans.push(Span::styled(
+            format!("{} ", mode_label),
+            Style::default().fg(mode_color),
+        ));
+
+        // Workspace (directory name)
+        if let Some(workspace_name) = app.workspace.file_name() {
+            if let Some(name) = workspace_name.to_str() {
+                let ws = format!("{} ", name);
+                spans.push(Span::styled(
+                    ws,
+                    Style::default().fg(palette::TEXT_DIM),
+                ));
+            }
+        }
+
+        if let Some(workspace_context) = app.workspace_context.as_deref() {
+            let context = truncate_line_to_width(
+                &format!("ctx: {workspace_context}"),
+                available_width / 2,
+            );
+            if !context.is_empty() {
+                spans.push(Span::styled(
+                    format!("{context} "),
+                    Style::default().fg(palette::TEXT_DIM),
+                ));
+            }
+        }
+
+        // Session ID
         if let Some(ref sid) = app.current_session_id {
             spans.push(Span::styled(
                 format!("session:{}  ", &sid[..8.min(sid.len())]),
@@ -2871,6 +3120,7 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
             ));
         }
 
+        // Token cost
         if app.total_conversation_tokens > 0 {
             let tokens_k = app.total_conversation_tokens as f64 / 1000.0;
             spans.push(Span::styled(
@@ -2879,6 +3129,7 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
             ));
         }
 
+        // Help hint
         spans.push(Span::styled(
             "F1 help",
             Style::default().fg(palette::TEXT_DIM),

@@ -3,7 +3,7 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Alignment, Rect};
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Paragraph, Padding, Wrap};
 
 use crate::palette;
 use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
@@ -70,6 +70,38 @@ impl ModalView for PlanPromptView {
                 self.selected = (self.selected + 1).min(self.max_index());
                 ViewAction::None
             }
+            KeyCode::Char('1') => {
+                self.selected = 0;
+                self.submit_selected()
+            }
+            KeyCode::Char('2') => {
+                self.selected = 1;
+                self.submit_selected()
+            }
+            KeyCode::Char('3') => {
+                self.selected = 2;
+                self.submit_selected()
+            }
+            KeyCode::Char('4') => {
+                self.selected = 3;
+                self.submit_selected()
+            }
+            KeyCode::Char('a') | KeyCode::Char('A') => {
+                self.selected = 0;
+                self.submit_selected()
+            }
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                self.selected = 1;
+                self.submit_selected()
+            }
+            KeyCode::Char('r') | KeyCode::Char('R') => {
+                self.selected = 2;
+                self.submit_selected()
+            }
+            KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Char('e') | KeyCode::Char('E') => {
+                self.selected = 3;
+                self.submit_selected()
+            }
             KeyCode::Char(ch) if ch.is_ascii_digit() => {
                 let number = ch.to_digit(10).unwrap_or(0);
                 Self::submit_number(number)
@@ -93,7 +125,10 @@ impl ModalView for PlanPromptView {
             let prefix = if selected { ">" } else { " " };
             let number = idx + 1;
             let style = if selected {
-                Style::default().fg(palette::DEEPSEEK_SKY).bold()
+                Style::default()
+                    .fg(palette::DEEPSEEK_SKY)
+                    .bg(palette::SELECTION_BG)
+                    .bold()
             } else {
                 Style::default().fg(palette::TEXT_PRIMARY)
             };
@@ -110,7 +145,7 @@ impl ModalView for PlanPromptView {
 
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "1-4=quick pick, Up/Down=select, Enter=confirm, Esc=close",
+            "1-4 / a / y / r / q = quick pick, Up/Down=select, Enter=confirm, Esc=close",
             Style::default().fg(palette::TEXT_MUTED),
         )));
 
@@ -124,7 +159,9 @@ impl ModalView for PlanPromptView {
                         Style::default().fg(palette::DEEPSEEK_BLUE).bold(),
                     )]))
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(palette::DEEPSEEK_SKY)),
+                    .border_style(Style::default().fg(palette::BORDER_COLOR))
+                    .style(Style::default().bg(palette::DEEPSEEK_INK))
+                    .padding(Padding::uniform(1)),
             );
 
         let popup_area = centered_rect(66, 42, area);

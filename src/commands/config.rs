@@ -1,4 +1,4 @@
-//! Config commands: config, set, settings, yolo, trust, logout
+//! Config commands: config, set, settings, mode switches, trust, logout
 
 use super::CommandResult;
 use crate::config::{COMMON_DEEPSEEK_MODELS, canonical_model_name, clear_api_key};
@@ -209,6 +209,26 @@ pub fn yolo(app: &mut App) -> CommandResult {
     CommandResult::message("YOLO mode enabled - shell + trust + auto-approve!")
 }
 
+/// Enable normal mode (read-only chat, suggestions before approvals)
+pub fn normal_mode(app: &mut App) -> CommandResult {
+    app.set_mode(AppMode::Normal);
+    CommandResult::message("Normal mode enabled.")
+}
+
+/// Enable agent mode (autonomous tool use with approvals)
+pub fn agent_mode(app: &mut App) -> CommandResult {
+    app.set_mode(AppMode::Agent);
+    CommandResult::message("Agent mode enabled.")
+}
+
+/// Enable plan mode (tool planning, then choose execution route)
+pub fn plan_mode(app: &mut App) -> CommandResult {
+    app.set_mode(AppMode::Plan);
+    CommandResult::message(
+        "Plan mode enabled. Describe your goal and I will create a plan before execution.",
+    )
+}
+
 /// Enable trust mode (file access outside workspace)
 pub fn trust(app: &mut App) -> CommandResult {
     app.trust_mode = true;
@@ -342,6 +362,17 @@ mod tests {
         assert!(app.yolo);
         assert_eq!(app.approval_mode, ApprovalMode::Auto);
         assert_eq!(app.mode, AppMode::Yolo);
+    }
+
+    #[test]
+    fn test_mode_switch_commands() {
+        let mut app = create_test_app();
+        let _ = normal_mode(&mut app);
+        assert_eq!(app.mode, AppMode::Normal);
+        let _ = agent_mode(&mut app);
+        assert_eq!(app.mode, AppMode::Agent);
+        let _ = plan_mode(&mut app);
+        assert_eq!(app.mode, AppMode::Plan);
     }
 
     #[test]

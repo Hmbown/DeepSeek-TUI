@@ -37,7 +37,9 @@ fn format_welcome_banner(model: &str, workspace: &PathBuf, yolo: bool) -> String
     };
 
     format!(
-        "Tips: Tab to switch modes, F1 or /help for commands, Esc to cancel\n\
+        "Tips: Tab cycles modes forward/reverse (Normal→Agent→YOLO→Plan),\n\
+         Alt+N/A/Y/P or Alt+1/2/3/4 for direct mode switch, F1 or /help, Esc to cancel\n\
+         Alt+!/@/#/$/) to focus sidebar sections (Plan/Todos/Tasks/Agents/Auto), F1 for help\n\
          {mode_line}\
          Directory: {}\n\
          Model: {}",
@@ -360,6 +362,10 @@ pub struct App {
     pub last_prompt_tokens: Option<u32>,
     /// Last completion token usage
     pub last_completion_tokens: Option<u32>,
+    /// Cached git context snapshot for the footer.
+    pub workspace_context: Option<String>,
+    /// Timestamp for cached workspace context.
+    pub workspace_context_refreshed_at: Option<Instant>,
     /// Cached background tasks for sidebar rendering.
     pub task_panel: Vec<TaskPanelEntry>,
     /// Whether the UI needs to be redrawn.
@@ -598,6 +604,8 @@ impl App {
             runtime_turn_status: None,
             last_prompt_tokens: None,
             last_completion_tokens: None,
+            workspace_context: None,
+            workspace_context_refreshed_at: None,
             task_panel: Vec::new(),
             needs_redraw: true,
         }
@@ -630,8 +638,12 @@ impl App {
         });
     }
 
-    pub fn set_mode(&mut self, mode: AppMode) {
+    pub fn set_mode(&mut self, mode: AppMode) -> bool {
         let previous_mode = self.mode;
+        if previous_mode == mode {
+            return false;
+        }
+
         self.mode = mode;
         self.status_message = Some(format!("Switched to {} mode", mode.label()));
         self.allow_shell = true;
@@ -655,16 +667,29 @@ impl App {
             .with_model(&self.model);
         let _ = self.hooks.execute(HookEvent::ModeChange, &context);
         self.needs_redraw = true;
+        true
     }
 
-    /// Cycle through modes: Plan -> Agent -> YOLO -> Plan
+    /// Cycle through modes: Normal -> Agent -> YOLO -> Plan
     pub fn cycle_mode(&mut self) {
         let next = match self.mode {
-            AppMode::Plan => AppMode::Agent,
+            AppMode::Normal => AppMode::Agent,
             AppMode::Agent => AppMode::Yolo,
-            AppMode::Yolo | AppMode::Normal => AppMode::Plan,
+            AppMode::Yolo => AppMode::Plan,
+            AppMode::Plan => AppMode::Normal,
         };
-        self.set_mode(next);
+        let _ = self.set_mode(next);
+    }
+
+    /// Cycle through modes in reverse: Plan -> YOLO -> Agent -> Normal
+    pub fn cycle_mode_reverse(&mut self) {
+        let next = match self.mode {
+            AppMode::Normal => AppMode::Plan,
+            AppMode::Agent => AppMode::Normal,
+            AppMode::Yolo => AppMode::Agent,
+            AppMode::Plan => AppMode::Yolo,
+        };
+        let _ = self.set_mode(next);
     }
 
     /// Execute hooks for a specific event with the given context
@@ -1275,6 +1300,19 @@ mod tests {
         app.cycle_mode();
         // Mode should have changed
         assert_ne!(app.mode, initial_mode);
+    }
+
+    #[test]
+    fn test_cycle_mode_reverse_transitions() {
+        let mut app = App::new(test_options(false), &Config::default());
+
+        app.mode = AppMode::Plan;
+        app.cycle_mode_reverse();
+        assert_eq!(app.mode, AppMode::Yolo);
+
+        app.mode = AppMode::Normal;
+        app.cycle_mode_reverse();
+        assert_eq!(app.mode, AppMode::Plan);
     }
 
     #[test]
