@@ -44,9 +44,17 @@ pub const DEEPSEEK_SLATE: Color = Color::Rgb(
 pub const DEEPSEEK_RED: Color =
     Color::Rgb(DEEPSEEK_RED_RGB.0, DEEPSEEK_RED_RGB.1, DEEPSEEK_RED_RGB.2);
 
-pub const TEXT_PRIMARY: Color = Color::White;
-pub const TEXT_MUTED: Color = Color::Rgb(192, 192, 192); // #C0C0C0
-pub const TEXT_DIM: Color = Color::Rgb(160, 160, 160); // #A0A0A0
+pub const TEXT_BODY: Color = Color::White;
+pub const TEXT_SECONDARY: Color = Color::Rgb(192, 192, 192); // #C0C0C0
+pub const TEXT_HINT: Color = Color::Rgb(160, 160, 160); // #A0A0A0
+pub const TEXT_ACCENT: Color = DEEPSEEK_SKY;
+pub const FOOTER_HINT: Color = Color::Rgb(180, 190, 208); // #B4BED0
+pub const SELECTION_TEXT: Color = Color::White;
+
+// Compatibility aliases for existing call sites.
+pub const TEXT_PRIMARY: Color = TEXT_BODY;
+pub const TEXT_MUTED: Color = TEXT_SECONDARY;
+pub const TEXT_DIM: Color = TEXT_HINT;
 
 // New semantic colors for UI theming
 pub const BORDER_COLOR: Color =
@@ -54,7 +62,7 @@ pub const BORDER_COLOR: Color =
 #[allow(dead_code)]
 pub const ACCENT_PRIMARY: Color = DEEPSEEK_BLUE; // #3578E5
 #[allow(dead_code)]
-pub const ACCENT_SECONDARY: Color = DEEPSEEK_SKY; // #6AAEF2
+pub const ACCENT_SECONDARY: Color = TEXT_ACCENT; // #6AAEF2
 #[allow(dead_code)]
 pub const BACKGROUND_LIGHT: Color = Color::Rgb(30, 47, 71); // #1E2F47
 #[allow(dead_code)]
@@ -91,19 +99,19 @@ pub fn ui_theme(name: &str) -> UiTheme {
         "dark" => UiTheme {
             name: "dark",
             composer_bg: DEEPSEEK_INK,
-            selection_bg: Color::Rgb(30, 52, 92),
+            selection_bg: SELECTION_BG,
             header_bg: DEEPSEEK_INK,
         },
         "light" => UiTheme {
             name: "light",
             composer_bg: Color::Rgb(26, 38, 58),
-            selection_bg: Color::Rgb(38, 64, 112),
+            selection_bg: SELECTION_BG,
             header_bg: DEEPSEEK_SLATE,
         },
         "whale" => UiTheme {
             name: "whale",
             composer_bg: DEEPSEEK_SLATE,
-            selection_bg: DEEPSEEK_NAVY,
+            selection_bg: SELECTION_BG,
             header_bg: DEEPSEEK_INK,
         },
         _ => UiTheme {

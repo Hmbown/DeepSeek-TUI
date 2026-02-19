@@ -164,9 +164,20 @@ impl Settings {
                 self.max_input_history = max;
             }
             "default_model" | "model" => {
-                let Some(model) = canonical_model_name(value) else {
+                let trimmed = value.trim();
+                if trimmed.is_empty()
+                    || matches!(
+                        trimmed.to_ascii_lowercase().as_str(),
+                        "none" | "default" | "(default)"
+                    )
+                {
+                    self.default_model = None;
+                    return Ok(());
+                }
+
+                let Some(model) = canonical_model_name(trimmed) else {
                     anyhow::bail!(
-                        "Failed to update setting: invalid model '{value}'. Expected: deepseek-chat or deepseek-reasoner."
+                        "Failed to update setting: invalid model '{value}'. Expected: deepseek-chat, deepseek-reasoner, or none/default."
                     );
                 };
                 self.default_model = Some(model.to_string());
@@ -207,6 +218,7 @@ impl Settings {
     }
 
     /// Get available setting keys and their descriptions
+    #[allow(dead_code)]
     pub fn available_settings() -> Vec<(&'static str, &'static str)> {
         vec![
             ("theme", "Color theme: default, dark, light"),

@@ -145,10 +145,10 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "/subagents",
     },
     CommandInfo {
-        name: "deepseek",
+        name: "links",
         aliases: &["dashboard", "api"],
         description: "Show DeepSeek dashboard and docs links",
-        usage: "/deepseek",
+        usage: "/links",
     },
     CommandInfo {
         name: "home",
@@ -203,14 +203,8 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "config",
         aliases: &[],
-        description: "Display current configuration",
+        description: "Open interactive configuration editor",
         usage: "/config",
-    },
-    CommandInfo {
-        name: "set",
-        aliases: &[],
-        description: "Modify a setting",
-        usage: "/set <key> <value>",
     },
     CommandInfo {
         name: "yolo",
@@ -336,7 +330,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "models" => core::models(app),
         "queue" | "queued" => queue::queue(app, arg),
         "subagents" | "agents" => core::subagents(app),
-        "deepseek" | "dashboard" | "api" => core::deepseek_links(),
+        "links" | "dashboard" | "api" => core::deepseek_links(),
         "home" | "stats" | "overview" => core::home_dashboard(app),
         "note" => note::note(app, arg),
         "task" | "tasks" => task::task(app, arg),
@@ -351,7 +345,6 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         // Config commands
         "config" => config::show_config(app),
         "settings" => config::show_settings(app),
-        "set" => config::set_config(app, arg),
         "yolo" => config::yolo(app),
         "normal" => config::normal_mode(app),
         "agent" => config::agent_mode(app),
@@ -375,10 +368,23 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "skill" => skills::run_skill(app, arg),
         "review" => review::review(app, arg),
 
+        // Legacy command migrations (kept out of registry/autocomplete intentionally).
+        "set" => CommandResult::error(
+            "The /set command was retired. Use /config to edit settings and /settings to inspect current values.",
+        ),
+        "deepseek" => CommandResult::error(
+            "The /deepseek command was renamed. Use /links (aliases: /dashboard, /api).",
+        ),
+
         _ => CommandResult::error(format!(
             "Unknown command: /{command}. Type /help for available commands."
         )),
     }
+}
+
+/// Update a configuration value programmatically (used by interactive UI views).
+pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) -> CommandResult {
+    config::set_config_value(app, key, value, persist)
 }
 
 /// Get command info by name or alias
@@ -403,5 +409,87 @@ pub fn commands_matching(prefix: &str) -> Vec<&'static CommandInfo> {
 
 #[cfg(test)]
 mod tests {
-    // No unit tests currently required for command routing.
+    use super::*;
+    use crate::config::Config;
+    use crate::tui::app::{App, AppAction, TuiOptions};
+    use std::path::PathBuf;
+
+    fn create_test_app() -> App {
+        let options = TuiOptions {
+            model: "deepseek-reasoner".to_string(),
+            workspace: PathBuf::from("."),
+            allow_shell: false,
+            use_alt_screen: true,
+            max_subagents: 1,
+            skills_dir: PathBuf::from("."),
+            memory_path: PathBuf::from("memory.md"),
+            notes_path: PathBuf::from("notes.txt"),
+            mcp_config_path: PathBuf::from("mcp.json"),
+            use_memory: false,
+            start_in_agent_mode: false,
+            skip_onboarding: true,
+            yolo: false,
+            resume_session_id: None,
+        };
+        App::new(options, &Config::default())
+    }
+
+    #[test]
+    fn command_registry_contains_config_and_links_but_not_set_or_deepseek() {
+        assert!(COMMANDS.iter().any(|cmd| cmd.name == "config"));
+        assert!(COMMANDS.iter().any(|cmd| cmd.name == "links"));
+        assert!(!COMMANDS.iter().any(|cmd| cmd.name == "set"));
+        assert!(!COMMANDS.iter().any(|cmd| cmd.name == "deepseek"));
+    }
+
+    #[test]
+    fn links_command_has_dashboard_and_api_aliases() {
+        let links = COMMANDS
+            .iter()
+            .find(|cmd| cmd.name == "links")
+            .expect("links command should exist");
+        assert_eq!(links.aliases, &["dashboard", "api"]);
+    }
+
+    #[test]
+    fn execute_config_opens_config_view_action() {
+        let mut app = create_test_app();
+        let result = execute("/config", &mut app);
+        assert!(result.message.is_none());
+        assert!(matches!(result.action, Some(AppAction::OpenConfigView)));
+    }
+
+    #[test]
+    fn execute_links_and_aliases_return_links_message() {
+        let mut app = create_test_app();
+        for cmd in ["/links", "/dashboard", "/api"] {
+            let result = execute(cmd, &mut app);
+            let msg = result.message.expect("links commands should return text");
+            assert!(msg.contains("https://platform.deepseek.com"));
+            assert!(result.action.is_none());
+        }
+    }
+
+    #[test]
+    fn removed_set_and_deepseek_commands_show_migration_hints() {
+        let mut app = create_test_app();
+        let set_result = execute("/set model deepseek-reasoner", &mut app);
+        let set_msg = set_result
+            .message
+            .expect("legacy command should return an error message");
+        assert!(set_msg.contains("The /set command was retired"));
+        assert!(set_msg.contains("/config"));
+        assert!(set_msg.contains("/settings"));
+        assert!(set_result.action.is_none());
+
+        let deepseek_result = execute("/deepseek", &mut app);
+        let deepseek_msg = deepseek_result
+            .message
+            .expect("legacy command should return an error message");
+        assert!(deepseek_msg.contains("The /deepseek command was renamed"));
+        assert!(deepseek_msg.contains("/links"));
+        assert!(deepseek_msg.contains("/dashboard"));
+        assert!(deepseek_msg.contains("/api"));
+        assert!(deepseek_result.action.is_none());
+    }
 }

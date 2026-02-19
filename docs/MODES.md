@@ -19,14 +19,23 @@ Press `Tab` to cycle: **Plan → Agent → YOLO → Plan**.
 You can override approval behavior at runtime:
 
 ```text
-/set approval_mode suggest
-/set approval_mode auto
-/set approval_mode never
+/config
+# edit the approval_mode row to: suggest | auto | never
 ```
+
+Legacy note: `/set approval_mode ...` was retired in favor of `/config`.
 
 - `suggest` (default): uses the per-mode rules above.
 - `auto`: auto-approves all tools (similar to YOLO approval behavior, but without forcing YOLO mode).
 - `never`: blocks any tool that isn’t considered safe/read-only.
+
+## Small-Screen Status Behavior
+
+When terminal height is constrained, the status area compacts first so header/chat/composer/footer remain visible:
+
+- Loading and queued status rows are budgeted by available height.
+- Queued previews collapse to compact summaries when full previews do not fit.
+- `/queue` workflows remain available; compact status only affects rendering density.
 
 ## Workspace Boundary and Trust Mode
 

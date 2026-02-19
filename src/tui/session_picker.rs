@@ -1,5 +1,6 @@
 //! Session resume picker view for the TUI.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 
 use chrono::{DateTime, Local};
@@ -42,6 +43,8 @@ pub struct SessionPickerView {
     sessions: Vec<SessionMetadata>,
     filtered: Vec<SessionMetadata>,
     selected: usize,
+    list_scroll: Cell<usize>,
+    list_visible_rows: Cell<usize>,
     search_input: String,
     search_mode: bool,
     sort_mode: SortMode,
@@ -61,6 +64,8 @@ impl SessionPickerView {
             sessions,
             filtered: Vec::new(),
             selected: 0,
+            list_scroll: Cell::new(0),
+            list_visible_rows: Cell::new(8),
             search_input: String::new(),
             search_mode: false,
             sort_mode: SortMode::Recent,
@@ -104,6 +109,7 @@ impl SessionPickerView {
         if self.selected >= self.filtered.len() {
             self.selected = 0;
         }
+        self.ensure_selected_visible();
 
         self.refresh_preview();
     }
@@ -116,7 +122,32 @@ impl SessionPickerView {
         let len = self.filtered.len() as isize;
         let next = (self.selected as isize + delta).clamp(0, len - 1) as usize;
         self.selected = next;
+        self.ensure_selected_visible();
         self.refresh_preview();
+    }
+
+    fn update_list_viewport(&self, visible_rows: usize) {
+        self.list_visible_rows.set(visible_rows.max(1));
+        self.ensure_selected_visible();
+    }
+
+    fn ensure_selected_visible(&self) {
+        if self.filtered.is_empty() {
+            self.list_scroll.set(0);
+            return;
+        }
+
+        let visible_rows = self.list_visible_rows.get().max(1);
+        let max_scroll = self.filtered.len().saturating_sub(visible_rows);
+        let mut scroll = self.list_scroll.get().min(max_scroll);
+
+        if self.selected < scroll {
+            scroll = self.selected;
+        } else if self.selected >= scroll.saturating_add(visible_rows) {
+            scroll = self.selected.saturating_add(1).saturating_sub(visible_rows);
+        }
+
+        self.list_scroll.set(scroll.min(max_scroll));
     }
 
     fn selected_session(&self) -> Option<&SessionMetadata> {
@@ -310,14 +341,29 @@ impl ModalView for SessionPickerView {
         Clear.render(popup_area, buf);
 
         let chunks = Layout::default()
-            .direction(Direction::Horizontal)
+            .direction(if popup_area.width < 95 {
+                Direction::Vertical
+            } else {
+                Direction::Horizontal
+            })
             .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
             .split(popup_area);
+
+        let list_inner = modal_block(" Sessions ").inner(chunks[0]);
+        let header_rows = 1 + usize::from(self.confirm_delete || self.status.is_some());
+        let footer_rows = usize::from(!self.filtered.is_empty());
+        let visible_rows = usize::from(list_inner.height)
+            .saturating_sub(header_rows + footer_rows)
+            .max(1);
+        self.update_list_viewport(visible_rows);
+        let list_scroll = self.list_scroll.get();
 
         let list_lines = build_list_lines(
             &self.filtered,
             self.selected,
-            popup_area.width,
+            list_inner.width,
+            list_scroll,
+            visible_rows,
             self.search_mode,
             &self.search_input,
             self.sort_label(),
@@ -329,10 +375,11 @@ impl ModalView for SessionPickerView {
             .wrap(Wrap { trim: false });
         list.render(chunks[0], buf);
 
+        let preview_inner = modal_block(" Preview ").inner(chunks[1]);
         let preview_lines = format_preview(
             &self.current_preview,
-            chunks[1].width.saturating_sub(2),
-            chunks[1].height as usize,
+            preview_inner.width,
+            preview_inner.height as usize,
         );
 
         let preview = Paragraph::new(preview_lines)
@@ -347,6 +394,8 @@ fn build_list_lines(
     sessions: &[SessionMetadata],
     selected: usize,
     width: u16,
+    scroll: usize,
+    visible_rows: usize,
     search_mode: bool,
     search_input: &str,
     sort_label: &str,
@@ -386,17 +435,29 @@ fn build_list_lines(
         return lines;
     }
 
-    for (idx, session) in sessions.iter().enumerate() {
+    for (idx, session) in sessions.iter().enumerate().skip(scroll).take(visible_rows) {
         let mut line = format_session_line(session);
         line = truncate(&line, width);
         let style = if idx == selected {
             Style::default()
-                .fg(palette::DEEPSEEK_SKY)
+                .fg(palette::SELECTION_TEXT)
                 .bg(palette::SELECTION_BG)
         } else {
             Style::default().fg(palette::TEXT_PRIMARY)
         };
         lines.push(Line::from(Span::styled(line, style)));
+    }
+
+    if sessions.len() > visible_rows {
+        let start = scroll.saturating_add(1);
+        let end = (scroll + visible_rows).min(sessions.len());
+        lines.push(Line::from(Span::styled(
+            truncate(
+                &format!("Showing {start}-{end} / {}", sessions.len()),
+                width,
+            ),
+            Style::default().fg(palette::TEXT_DIM),
+        )));
     }
 
     lines
@@ -529,4 +590,79 @@ fn is_subsequence(needle: &str, haystack: &str) -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use unicode_width::UnicodeWidthStr;
+
+    fn test_session(idx: usize, title: &str) -> SessionMetadata {
+        SessionMetadata {
+            id: format!("session-{idx:02}"),
+            title: title.to_string(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            message_count: idx + 1,
+            total_tokens: 100,
+            model: "deepseek-reasoner".to_string(),
+            workspace: std::path::PathBuf::from("/tmp"),
+            mode: Some("agent".to_string()),
+        }
+    }
+
+    #[test]
+    fn build_list_lines_truncates_to_list_pane_width() {
+        let sessions = vec![test_session(
+            1,
+            "A very long title that should be truncated by the list pane width",
+        )];
+        let width = 24;
+        let lines = build_list_lines(&sessions, 0, width, 0, 5, false, "", "recent", false, None);
+
+        for line in lines {
+            let rendered_width: usize = line.spans.iter().map(|span| span.content.width()).sum();
+            assert!(
+                rendered_width <= width as usize,
+                "line width {} exceeded pane width {}",
+                rendered_width,
+                width
+            );
+        }
+    }
+
+    #[test]
+    fn ensure_selected_visible_updates_scroll_window() {
+        let sessions = (0..10)
+            .map(|idx| test_session(idx, &format!("Session {idx}")))
+            .collect::<Vec<_>>();
+
+        let mut view = SessionPickerView {
+            sessions: sessions.clone(),
+            filtered: sessions,
+            selected: 0,
+            list_scroll: Cell::new(0),
+            list_visible_rows: Cell::new(3),
+            search_input: String::new(),
+            search_mode: false,
+            sort_mode: SortMode::Recent,
+            preview_cache: HashMap::new(),
+            current_preview: Vec::new(),
+            confirm_delete: false,
+            status: None,
+        };
+
+        view.selected = 6;
+        view.ensure_selected_visible();
+        assert_eq!(view.list_scroll.get(), 4);
+
+        view.selected = 1;
+        view.ensure_selected_visible();
+        assert_eq!(view.list_scroll.get(), 1);
+
+        view.selected = 9;
+        view.ensure_selected_visible();
+        assert_eq!(view.list_scroll.get(), 7);
+    }
 }

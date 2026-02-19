@@ -92,6 +92,7 @@ impl SidebarFocus {
     }
 
     #[must_use]
+    #[allow(dead_code)]
     pub fn as_setting(self) -> &'static str {
         match self {
             Self::Auto => "auto",
@@ -230,6 +231,13 @@ pub struct TuiOptions {
     pub resume_session_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct YoloRestoreState {
+    allow_shell: bool,
+    trust_mode: bool,
+    approval_mode: ApprovalMode,
+}
+
 /// Global UI state for the TUI.
 #[allow(clippy::struct_excessive_bools)]
 pub struct App {
@@ -298,6 +306,7 @@ pub struct App {
     pub hooks: HookExecutor,
     #[allow(dead_code)]
     pub yolo: bool,
+    yolo_restore: Option<YoloRestoreState>,
     // Clipboard handler
     pub clipboard: ClipboardHandler,
     // Tool approval session allowlist
@@ -310,6 +319,7 @@ pub struct App {
     /// Trust mode - allow access outside workspace
     pub trust_mode: bool,
     /// Project documentation (AGENTS.md or CLAUDE.md)
+    #[allow(dead_code)]
     pub project_doc: Option<String>,
     /// Plan state for tracking tasks
     pub plan_state: SharedPlanState,
@@ -438,7 +448,7 @@ impl App {
         let TuiOptions {
             model,
             workspace,
-            allow_shell: _allow_shell,
+            allow_shell,
             use_alt_screen,
             max_subagents,
             skills_dir: global_skills_dir,
@@ -480,6 +490,17 @@ impl App {
         } else {
             preferred_mode
         };
+
+        let yolo_restore = if initial_mode == AppMode::Yolo {
+            Some(YoloRestoreState {
+                allow_shell: config.allow_shell(),
+                trust_mode: false,
+                approval_mode: ApprovalMode::Suggest,
+            })
+        } else {
+            None
+        };
+        let allow_shell = allow_shell || initial_mode == AppMode::Yolo;
 
         let history = if needs_onboarding {
             Vec::new() // No welcome message during onboarding
@@ -550,7 +571,7 @@ impl App {
             max_input_history,
             total_tokens: 0,
             total_conversation_tokens: 0,
-            allow_shell: true,
+            allow_shell,
             max_subagents,
             subagent_cache: Vec::new(),
             ui_theme,
@@ -568,6 +589,7 @@ impl App {
             api_key_cursor: 0,
             hooks,
             yolo: initial_mode == AppMode::Yolo,
+            yolo_restore,
             clipboard: ClipboardHandler::new(),
             approval_session_approved: HashSet::new(),
             approval_mode: if matches!(initial_mode, AppMode::Yolo) {
@@ -644,16 +666,30 @@ impl App {
             return false;
         }
 
+        let entering_yolo = mode == AppMode::Yolo && previous_mode != AppMode::Yolo;
+        let leaving_yolo = previous_mode == AppMode::Yolo && mode != AppMode::Yolo;
+
         self.mode = mode;
         self.status_message = Some(format!("Switched to {} mode", mode.label()));
-        self.allow_shell = true;
-        self.trust_mode = matches!(mode, AppMode::Yolo);
-        self.yolo = matches!(mode, AppMode::Yolo);
-        self.approval_mode = if matches!(mode, AppMode::Yolo) {
-            ApprovalMode::Auto
-        } else {
-            ApprovalMode::Suggest
-        };
+
+        if entering_yolo {
+            self.yolo_restore = Some(YoloRestoreState {
+                allow_shell: self.allow_shell,
+                trust_mode: self.trust_mode,
+                approval_mode: self.approval_mode,
+            });
+            self.allow_shell = true;
+            self.trust_mode = true;
+            self.approval_mode = ApprovalMode::Auto;
+        } else if leaving_yolo {
+            if let Some(restore) = self.yolo_restore.take() {
+                self.allow_shell = restore.allow_shell;
+                self.trust_mode = restore.trust_mode;
+                self.approval_mode = restore.approval_mode;
+            }
+        }
+
+        self.yolo = mode == AppMode::Yolo;
         if mode != AppMode::Plan {
             self.plan_prompt_pending = false;
             self.plan_tool_used_in_turn = false;
@@ -1201,6 +1237,7 @@ pub enum AppAction {
         model: String,
         workspace: PathBuf,
     },
+    OpenConfigView,
     SendMessage(String),
     ListSubAgents,
     FetchModels,
@@ -1370,6 +1407,53 @@ mod tests {
         // Yolo mode should enable trust and shell
         assert!(app.trust_mode);
         assert!(app.allow_shell);
+    }
+
+    #[test]
+    fn app_new_respects_allow_shell_option_when_not_yolo() {
+        let mut options = test_options(false);
+        options.allow_shell = false;
+        options.start_in_agent_mode = true; // avoid coupling to settings.default_mode
+        let app = App::new(options, &Config::default());
+        assert!(!app.allow_shell);
+    }
+
+    #[test]
+    fn set_mode_yolo_restores_previous_policies_on_exit() {
+        let mut options = test_options(false);
+        options.allow_shell = false;
+        options.start_in_agent_mode = true; // avoid coupling to settings.default_mode
+        let mut app = App::new(options, &Config::default());
+        app.allow_shell = false;
+        app.trust_mode = false;
+        app.approval_mode = ApprovalMode::Never;
+
+        app.set_mode(AppMode::Yolo);
+        assert!(app.allow_shell);
+        assert!(app.trust_mode);
+        assert_eq!(app.approval_mode, ApprovalMode::Auto);
+
+        app.set_mode(AppMode::Agent);
+        assert!(!app.allow_shell);
+        assert!(!app.trust_mode);
+        assert_eq!(app.approval_mode, ApprovalMode::Never);
+    }
+
+    #[test]
+    fn leaving_yolo_after_startup_restores_baseline_policies() {
+        let mut config = Config::default();
+        config.allow_shell = Some(false);
+
+        let mut app = App::new(test_options(true), &config);
+        assert_eq!(app.mode, AppMode::Yolo);
+        assert!(app.allow_shell);
+        assert!(app.trust_mode);
+        assert_eq!(app.approval_mode, ApprovalMode::Auto);
+
+        app.set_mode(AppMode::Agent);
+        assert!(!app.allow_shell);
+        assert!(!app.trust_mode);
+        assert_eq!(app.approval_mode, ApprovalMode::Suggest);
     }
 
     #[test]
