@@ -1,7 +1,6 @@
 # DeepSeek CLI
 
-A terminal interface for the [DeepSeek platform](https://platform.deepseek.com).  
-Current release: [v0.3.21](https://github.com/Hmbown/DeepSeek-TUI/releases/tag/v0.3.21).
+An agentic coding harness for [DeepSeek](https://platform.deepseek.com) models, built in Rust.
 
 [![CI](https://github.com/Hmbown/DeepSeek-TUI/actions/workflows/ci.yml/badge.svg)](https://github.com/Hmbown/DeepSeek-TUI/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/deepseek-tui)](https://crates.io/crates/deepseek-tui)
@@ -10,25 +9,32 @@ Current release: [v0.3.21](https://github.com/Hmbown/DeepSeek-TUI/releases/tag/v
   <img src="assets/hero.png" alt="DeepSeek CLI" width="800">
 </p>
 
-Not affiliated with DeepSeek Inc.
+Works with DeepSeek v3.2 (chat + reasoner). Ready for v4. Not affiliated with DeepSeek Inc.
 
-DeepSeek CLI lets you run and control DeepSeek models from your terminal with file editing, shell execution, web lookup, task orchestration, and sub-agent workflows. Works with DeepSeek v3.2 (chat + reasoner). Ready for v4.
+## What is this
 
-## Getting started
+A terminal-native agent loop that gives DeepSeek the tools it needs to actually write code: file editing, shell execution, web search, git operations, task tracking, and MCP server integration. Coherence-aware memory compaction keeps long sessions on track without blowing up the context window.
 
-1. Install
+Three modes:
+
+- **Plan** — design-first, proposes before acting
+- **Agent** — multi-step autonomous tool use
+- **YOLO** — full auto-approve, no guardrails
+
+Sub-agent orchestration is in there too (background workers, parallel tool calls). Still shaking out the rough edges.
+
+## Install
 
 ```bash
 # From crates.io (requires Rust 1.85+)
 cargo install deepseek-tui --locked
 
-# Or build from source
+# Or from source
 git clone https://github.com/Hmbown/DeepSeek-TUI.git
-cd DeepSeek-TUI
-cargo install --path . --locked
+cd DeepSeek-TUI && cargo install --path . --locked
 ```
 
-2. Add API key
+## Setup
 
 Create `~/.deepseek/config.toml`:
 
@@ -36,93 +42,33 @@ Create `~/.deepseek/config.toml`:
 api_key = "YOUR_DEEPSEEK_API_KEY"
 ```
 
-3. Run
+Then run:
 
 ```bash
 deepseek
 ```
 
-Use **Tab** to switch modes, **F1** for help, and **Esc** to cancel a running request.
+**Tab** switches modes, **F1** opens help, **Esc** cancels a running request.
 
-## Modes
-
-| Mode | Behavior | Approval |
-|------|----------|----------|
-| `Plan` | Design-first, proposes a plan first | Manual for writes and shell |
-| `Agent` | Multi-step autonomous tool use | File writes auto-approved, shell is manual |
-| `YOLO` | Full auto-approve | All tools auto-approved |
-
-Use `/set mode normal` to return to manual mode for all actions.
-
-## What it can do
-
-- Workspace file operations: read, edit, search, and patch files
-- Shell execution with timeout and interactive support
-- Web search and content capture with citations
-- Git inspection, task lists, and PR/issue workflows
-- Sub-agent orchestration and background execution
-- MCP integration for external tool servers
-- Runtime API (`deepseek serve --http`) for external clients
-
-## Key commands
+## Usage
 
 ```bash
-deepseek                         # interactive mode
-deepseek -p "Explain ... in 2 sentences"  # one-shot prompt
-deepseek exec --auto "Fix all clippy warnings in this project"  # agentic execution
-deepseek serve --http            # start local runtime API
-deepseek models                  # list available models
-deepseek doctor                  # environment and config checks
+deepseek                                  # interactive TUI
+deepseek -p "explain this in 2 sentences" # one-shot prompt
+deepseek --yolo                           # agent mode, all tools auto-approved
+deepseek doctor                           # check your setup
 ```
 
 ## Configuration
 
-Defaults can be stored in `~/.deepseek/config.toml`:
+Everything lives in `~/.deepseek/config.toml`. See [config.example.toml](config.example.toml) for the full set of options.
 
-```toml
-api_key = "sk-..."
-default_text_model = "deepseek-reasoner" # optional (or "deepseek-chat")
-allow_shell = true                     # optional (sandboxed by default)
-max_subagents = 3                      # optional (1-20)
-```
-
-Overrides:
-
-- `DEEPSEEK_API_KEY` (API key; highest priority)
-- `DEEPSEEK_BASE_URL` (default: `https://api.deepseek.com`)
-
-See [config.example.toml](config.example.toml) and [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
-
-## API Runtime
-
-`deepseek serve --http` starts a local HTTP/SSE service on `127.0.0.1:7878` for multi-turn conversations, task queues, and event streaming.
-See [docs/RUNTIME_API.md](docs/RUNTIME_API.md).
+Environment overrides: `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`.
 
 ## Docs
 
-- [Configuration Reference](docs/CONFIGURATION.md)
-- [Architecture](docs/ARCHITECTURE.md)
-- [Mode Comparison](docs/MODES.md)
-- [MCP Integration](docs/MCP.md)
-- [Runtime API](docs/RUNTIME_API.md)
-- [Operations Runbook](docs/OPERATIONS_RUNBOOK.md)
-- [Contributing](CONTRIBUTING.md)
-
-## Development
-
-```bash
-cargo build
-cargo test
-cargo clippy
-cargo fmt
-```
-
-## Contributors
-
-- Hunter Bown (`@Hmbown`)
+Detailed docs are in the [docs/](docs/) folder — architecture, modes, MCP integration, runtime API, etc.
 
 ## License
 
 MIT
-
-DeepSeek is a trademark of DeepSeek Inc. This is an unofficial, community-run project.
