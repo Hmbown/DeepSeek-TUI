@@ -2851,10 +2851,7 @@ fn run_git_query(workspace: &Path, args: &[&str]) -> std::io::Result<String> {
         .current_dir(workspace)
         .output()?;
     if !output.status.success() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "git command failed",
-        ));
+        return Err(std::io::Error::other("git command failed"));
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
