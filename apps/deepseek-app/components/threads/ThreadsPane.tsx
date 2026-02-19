@@ -1,3 +1,4 @@
+import type { RefObject, UIEvent } from "react";
 import { Archive, ArchiveRestore, Search } from "lucide-react";
 
 import type { ThreadFilter } from "@/components/types";
@@ -9,6 +10,8 @@ type ThreadsPaneProps = {
   threadSearch: string;
   threadFilter: ThreadFilter;
   className?: string;
+  listRef?: RefObject<HTMLDivElement | null>;
+  onScrollPositionChange?: (scrollTop: number) => void;
   onThreadSearchChange: (value: string) => void;
   onThreadFilterChange: (value: ThreadFilter) => void;
   onThreadSelect: (id: string) => void;
@@ -34,6 +37,8 @@ export function ThreadsPane({
   threadSearch,
   threadFilter,
   className,
+  listRef,
+  onScrollPositionChange,
   onThreadSearchChange,
   onThreadFilterChange,
   onThreadSelect,
@@ -43,6 +48,13 @@ export function ThreadsPane({
     0,
     threads.findIndex((thread) => thread.id === selectedThreadId)
   );
+
+  const handleListScroll = (event: UIEvent<HTMLDivElement>) => {
+    if (!onScrollPositionChange) {
+      return;
+    }
+    onScrollPositionChange(event.currentTarget.scrollTop);
+  };
 
   return (
     <section className={`threads-pane ${className ?? ""}`} id="threads-panel">
@@ -75,6 +87,8 @@ export function ThreadsPane({
 
       <div
         className="threads-list"
+        ref={listRef}
+        onScroll={handleListScroll}
         onKeyDown={(event) => {
           if (threads.length === 0) {
             return;

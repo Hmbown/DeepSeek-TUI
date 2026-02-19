@@ -8,6 +8,7 @@ const runState = {
   tone: "warning" as const,
   label: "Running",
   reason: "Turn or task in progress",
+  reasonSource: "active-turn" as const,
 };
 
 afterEach(cleanup);
@@ -15,6 +16,7 @@ afterEach(cleanup);
 describe("LiveEventsPanel", () => {
   it("renders pinned critical notices and overflow controls", () => {
     const toggle = vi.fn();
+    const filterChange = vi.fn();
     render(
       <LiveEventsPanel
         events={[
@@ -37,12 +39,14 @@ describe("LiveEventsPanel", () => {
         ]}
         overflowCount={5}
         showAllEvents={false}
+        eventFilter={"all"}
         runState={runState}
         canResume={true}
         canFork={true}
         canInterrupt={true}
         canCompact={true}
         steerText={"keep it concise"}
+        onEventFilterChange={filterChange}
         onSteerTextChange={vi.fn()}
         onResume={vi.fn()}
         onFork={vi.fn()}
@@ -55,6 +59,8 @@ describe("LiveEventsPanel", () => {
 
     expect(screen.getByText("Approval required")).toBeInTheDocument();
     expect(screen.getByText("x3")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: /show tool events only/i }));
+    expect(filterChange).toHaveBeenCalledWith("tool");
     fireEvent.click(screen.getByRole("button", { name: /show all events/i }));
     expect(toggle).toHaveBeenCalledTimes(1);
   });
@@ -66,12 +72,14 @@ describe("LiveEventsPanel", () => {
         pinnedCritical={[]}
         overflowCount={0}
         showAllEvents={false}
+        eventFilter={"all"}
         runState={runState}
         canResume={false}
         canFork={false}
         canInterrupt={false}
         canCompact={false}
         steerText={"try again"}
+        onEventFilterChange={vi.fn()}
         onSteerTextChange={vi.fn()}
         onResume={vi.fn()}
         onFork={vi.fn()}

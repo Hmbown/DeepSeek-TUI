@@ -1,9 +1,14 @@
 import { AlertTriangle, CheckCircle2, Clock3, ShieldAlert, X } from "lucide-react";
 
+import type { ApprovalCapability } from "@/lib/approval-capabilities";
 import type { PendingApproval } from "@/lib/runtime-api";
 
 type PendingApprovalPanelProps = {
   approvals: PendingApproval[];
+  approvalCapability: ApprovalCapability;
+  approvalActionPendingId?: string | null;
+  onApprove: (approvalId: string) => void;
+  onDeny: (approvalId: string) => void;
   onDismiss: (id: string) => void;
   onDismissAll: () => void;
 };
@@ -18,6 +23,10 @@ function formatTimestamp(value: string): string {
 
 export function PendingApprovalPanel({
   approvals,
+  approvalCapability,
+  approvalActionPendingId,
+  onApprove,
+  onDeny,
   onDismiss,
   onDismissAll,
 }: PendingApprovalPanelProps) {
@@ -37,6 +46,9 @@ export function PendingApprovalPanel({
           Acknowledge all
         </button>
       </header>
+      {!approvalCapability.supported ? (
+        <div className="subtle">runtime does not expose approve/deny API yet</div>
+      ) : null}
 
       <div className="approval-list">
         {approvals.map((approval) => (
@@ -66,6 +78,26 @@ export function PendingApprovalPanel({
                 <summary>Raw payload</summary>
                 <code>{approval.rawSnippet}</code>
               </details>
+              {approvalCapability.supported ? (
+                <div className="inline-actions">
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    disabled={!approvalCapability.supportsApprove || approvalActionPendingId === approval.id}
+                    aria-label={`Approve ${approval.requestType}`}
+                    onClick={() => onApprove(approval.id)}
+                  >
+                    Approve
+                  </button>
+                  <button
+                    className="btn btn-danger btn-sm"
+                    disabled={!approvalCapability.supportsDeny || approvalActionPendingId === approval.id}
+                    aria-label={`Deny ${approval.requestType}`}
+                    onClick={() => onDeny(approval.id)}
+                  >
+                    Deny
+                  </button>
+                </div>
+              ) : null}
             </div>
             <button className="btn btn-ghost btn-sm" onClick={() => onDismiss(approval.id)} aria-label="Dismiss approval notice">
               <X size={14} />

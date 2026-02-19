@@ -13,11 +13,12 @@ import {
   X,
 } from "lucide-react";
 
-import { CommandPalette, type CommandPaletteItem } from "@/components/palette/CommandPalette";
+import { CommandPalette } from "@/components/palette/CommandPalette";
 import { LiveEventsPanel } from "@/components/chat/LiveEventsPanel";
 import { ConnectionBanner } from "@/components/chat/ConnectionBanner";
 import { PendingApprovalPanel } from "@/components/chat/PendingApprovalPanel";
 import { Composer } from "@/components/chat/Composer";
+import { ObservabilityStrip } from "@/components/chat/ObservabilityStrip";
 import { TranscriptPane } from "@/components/chat/TranscriptPane";
 import { LeftRail } from "@/components/layout/LeftRail";
 import { TopBar } from "@/components/topbar/TopBar";
@@ -75,6 +76,11 @@ import {
   type WorkspaceStatus,
 } from "@/lib/runtime-api";
 import { compactLiveEvents } from "@/lib/live-event-compaction";
+import { deriveApprovalCapability } from "@/lib/approval-capabilities";
+import { buildCommandPaletteItems, buildSessionPaletteItems } from "@/lib/command-registry";
+import { resolveEscapeAction, type PaletteMode } from "@/lib/escape-behavior";
+import { filterLiveEvents, type LiveEventFilter } from "@/lib/live-event-filters";
+import { KEYBOARD_SHORTCUTS } from "@/lib/keyboard-shortcuts";
 import { deriveDesktopRunState } from "@/lib/run-state";
 import { buildTranscript, filterThreadSummaries, findActiveTurnId } from "@/lib/thread-utils";
 import {
@@ -90,7 +96,7 @@ const MODE_OPTIONS = ["agent", "plan", "normal", "yolo"];
 const MODEL_OPTIONS = ["deepseek-reasoner", "deepseek-chat"];
 const DEFAULT_RRULE = "FREQ=WEEKLY;BYDAY=MO,WE,FR;BYHOUR=9;BYMINUTE=0";
 const WEEKDAY_OPTIONS = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"];
-type PaletteMode = "commands" | "sessions";
+const NEW_THREAD_DRAFT_KEY = "__new__";
 
 function normalizeDayList(days: string[]): string[] {
   const valid = new Set(WEEKDAY_OPTIONS);
@@ -266,11 +272,13 @@ export default function Home() {
   const [liveEvents, setLiveEvents] = useState<EventPayload[]>([]);
   const [pendingApprovals, setPendingApprovals] = useState<PendingApproval[]>([]);
 
-  const [composerText, setComposerText] = useState("");
+  const [composerDrafts, setComposerDrafts] = useState<Record<string, string>>({});
+  const [blockedSendDrafts, setBlockedSendDrafts] = useState<Record<string, string>>({});
   const [steerText, setSteerText] = useState("");
   const [model, setModel] = useState("deepseek-reasoner");
   const [mode, setMode] = useState("agent");
   const [sending, setSending] = useState(false);
+  const [approvalActionPendingId, setApprovalActionPendingId] = useState<string | null>(null);
 
   const [automations, setAutomations] = useState<AutomationRecord[]>([]);
   const [selectedAutomationId, setSelectedAutomationId] = useState<string | null>(null);
@@ -313,13 +321,24 @@ export default function Home() {
   const [paletteMode, setPaletteMode] = useState<PaletteMode>("commands");
   const [paletteQuery, setPaletteQuery] = useState("");
   const [compactLayout, setCompactLayout] = useState(false);
+  const [isShortHeight, setIsShortHeight] = useState(false);
   const [compactPane, setCompactPane] = useState<CompactPane>("transcript");
   const [showAllEventGroups, setShowAllEventGroups] = useState(false);
+  const [eventFilter, setEventFilter] = useState<LiveEventFilter>("all");
+  const [reconnectMeta, setReconnectMeta] = useState<{ attempt: number; delayMs: number } | null>(null);
 
   const eventSourceRef = useRef<EventSource | null>(null);
   const detailRefreshTimer = useRef<number | null>(null);
   const reconnectTimer = useRef<number | null>(null);
   const layoutTimer = useRef<number | null>(null);
+  const threadsListRef = useRef<HTMLDivElement | null>(null);
+  const transcriptScrollRef = useRef<HTMLDivElement | null>(null);
+  const eventsListRef = useRef<HTMLDivElement | null>(null);
+  const paneScrollPositions = useRef<Record<CompactPane, number>>({
+    threads: 0,
+    transcript: 0,
+    events: 0,
+  });
   const reconnectAttempt = useRef(0);
   const lastSeq = useRef(0);
 
@@ -330,6 +349,7 @@ export default function Home() {
     refreshHealth,
     markStreamDisconnected,
     markStreamConnected,
+    lastHealth,
   } = useRuntimeConnection(baseUrl);
 
   const isEditingAutomation = editingAutomationId != null;
@@ -339,11 +359,45 @@ export default function Home() {
     return applyThreadFilter(searched, threadFilter);
   }, [threadFilter, threadSearch, threads]);
 
+  const composerDraftKey = selectedThreadId ?? NEW_THREAD_DRAFT_KEY;
+  const composerText = composerDrafts[composerDraftKey] ?? "";
+  const setComposerText = useCallback(
+    (value: string) => {
+      setComposerDrafts((current) => ({
+        ...current,
+        [composerDraftKey]: value,
+      }));
+    },
+    [composerDraftKey]
+  );
+  const blockedSendReason = useMemo(() => {
+    if (connectionState === "offline") {
+      return "Send blocked: runtime offline.";
+    }
+    if (connectionState === "reconnecting") {
+      return "Send blocked: runtime reconnecting.";
+    }
+    return null;
+  }, [connectionState]);
+  const canRetryBlockedSend = useMemo(() => {
+    return connectionState === "online" && Boolean(blockedSendDrafts[composerDraftKey]);
+  }, [blockedSendDrafts, composerDraftKey, connectionState]);
+
   const transcript = useMemo(() => buildTranscript(threadDetail), [threadDetail]);
   const activeTurnId = useMemo(() => findActiveTurnId(threadDetail), [threadDetail]);
+  const activeTurnStatus = useMemo(() => {
+    if (!threadDetail || !activeTurnId) {
+      return null;
+    }
+    return threadDetail.turns.find((turn) => turn.id === activeTurnId)?.status ?? null;
+  }, [activeTurnId, threadDetail]);
   const latestThreadTurnStatus = useMemo(() => latestTurnStatus(threadDetail), [threadDetail]);
   const runningTaskCount = useMemo(
-    () => tasks.filter((task) => task.status === "running" || task.status === "queued").length,
+    () => tasks.filter((task) => task.status === "running").length,
+    [tasks]
+  );
+  const queuedTaskCount = useMemo(
+    () => tasks.filter((task) => task.status === "queued").length,
     [tasks]
   );
   const latestTaskStatus = useMemo(() => {
@@ -352,9 +406,21 @@ export default function Home() {
     }
     return tasks[0]?.status ?? null;
   }, [selectedTaskDetail, tasks]);
-  const compactedEventsDefault = useMemo(() => compactLiveEvents(liveEvents, 40), [liveEvents]);
+  const lastCompletedTaskAt = useMemo(() => {
+    const latestCompleted = tasks.find((task) => task.status === "completed");
+    return latestCompleted?.ended_at ?? latestCompleted?.created_at ?? null;
+  }, [tasks]);
+  const filteredLiveEvents = useMemo(
+    () => filterLiveEvents(liveEvents, eventFilter),
+    [eventFilter, liveEvents]
+  );
+  const compactedEventsDefault = useMemo(() => compactLiveEvents(filteredLiveEvents, 40), [filteredLiveEvents]);
   const expandedEvents = useMemo(
-    () => compactLiveEvents(liveEvents, Number.MAX_SAFE_INTEGER),
+    () => compactLiveEvents(filteredLiveEvents, Number.MAX_SAFE_INTEGER),
+    [filteredLiveEvents]
+  );
+  const globalPinnedCritical = useMemo(
+    () => compactLiveEvents(liveEvents, Number.MAX_SAFE_INTEGER).pinnedCritical,
     [liveEvents]
   );
   const compactedEvents = useMemo(
@@ -363,10 +429,21 @@ export default function Home() {
         ? {
             ...expandedEvents,
             overflowCount: compactedEventsDefault.overflowCount,
-            pinnedCritical: compactedEventsDefault.pinnedCritical,
+            pinnedCritical: globalPinnedCritical,
           }
-        : compactedEventsDefault,
-    [compactedEventsDefault, expandedEvents, showAllEventGroups]
+        : {
+            ...compactedEventsDefault,
+            pinnedCritical: globalPinnedCritical,
+          },
+    [compactedEventsDefault, expandedEvents, globalPinnedCritical, showAllEventGroups]
+  );
+  const approvalCapability = useMemo(
+    () =>
+      deriveApprovalCapability({
+        health: lastHealth,
+        approvals: pendingApprovals,
+      }),
+    [lastHealth, pendingApprovals]
   );
   const runState = useMemo(
     () =>
@@ -374,28 +451,27 @@ export default function Home() {
         connectionState,
         connectionMessage,
         pendingApprovalCount: pendingApprovals.length,
-        activeTurnStatus: activeTurnId ? "in_progress" : null,
+        activeTurnStatus,
         latestTurnStatus: latestThreadTurnStatus,
         runningTaskCount,
+        queuedTaskCount,
         latestTaskStatus,
+        reconnectAttempt: reconnectMeta?.attempt,
+        reconnectDelayMs: reconnectMeta?.delayMs,
       }),
     [
-      activeTurnId,
+      activeTurnStatus,
       connectionMessage,
       connectionState,
       latestTaskStatus,
       latestThreadTurnStatus,
       pendingApprovals.length,
+      queuedTaskCount,
+      reconnectMeta?.attempt,
+      reconnectMeta?.delayMs,
       runningTaskCount,
     ]
   );
-  const recentActivityLabel = useMemo(() => {
-    const latestEvent = liveEvents[0];
-    if (!latestEvent?.timestamp) {
-      return null;
-    }
-    return `Recent activity ${formatRelative(latestEvent.timestamp)} ago`;
-  }, [liveEvents]);
   const interruptionHint = useMemo(() => {
     if (latestThreadTurnStatus === "failed" || latestThreadTurnStatus === "interrupted" || latestThreadTurnStatus === "canceled") {
       return "Last turn ended unexpectedly. Resume to recover context and continue.";
@@ -659,6 +735,50 @@ export default function Home() {
   const evaluateCompactLayout = useCallback((width: number, height: number): boolean => {
     return width < 1120 || height < 820;
   }, []);
+  const isShortWindow = useCallback((height: number): boolean => height <= 760, []);
+
+  const getPaneElement = useCallback(
+    (pane: CompactPane): HTMLDivElement | null => {
+      if (pane === "threads") {
+        return threadsListRef.current;
+      }
+      if (pane === "events") {
+        return eventsListRef.current;
+      }
+      return transcriptScrollRef.current;
+    },
+    []
+  );
+
+  const rememberPaneScroll = useCallback(
+    (pane: CompactPane) => {
+      const target = getPaneElement(pane);
+      if (!target) {
+        return;
+      }
+      paneScrollPositions.current[pane] = target.scrollTop;
+    },
+    [getPaneElement]
+  );
+
+  const restorePaneScroll = useCallback(
+    (pane: CompactPane) => {
+      const target = getPaneElement(pane);
+      if (!target) {
+        return;
+      }
+      target.scrollTop = paneScrollPositions.current[pane] ?? 0;
+    },
+    [getPaneElement]
+  );
+
+  const switchCompactPane = useCallback(
+    (nextPane: CompactPane) => {
+      rememberPaneScroll(compactPane);
+      setCompactPane(nextPane);
+    },
+    [compactPane, rememberPaneScroll]
+  );
 
   useEffect(() => {
     const stored = loadRuntimeBaseUrl();
@@ -677,6 +797,7 @@ export default function Home() {
     }
 
     setCompactLayout(evaluateCompactLayout(window.innerWidth, window.innerHeight));
+    setIsShortHeight(isShortWindow(window.innerHeight));
 
     const params = new URLSearchParams(window.location.search);
     const taskId = params.get("task");
@@ -684,7 +805,7 @@ export default function Home() {
       setSection("settings");
       void openTaskDetail(taskId, stored);
     }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [evaluateCompactLayout, isShortWindow]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     persistLastSection(section);
@@ -702,6 +823,7 @@ export default function Home() {
     const applyLayout = () => {
       const nextCompact = evaluateCompactLayout(window.innerWidth, window.innerHeight);
       setCompactLayout(nextCompact);
+      setIsShortHeight(isShortWindow(window.innerHeight));
       if (!nextCompact) {
         setCompactPane("transcript");
       }
@@ -725,7 +847,7 @@ export default function Home() {
         layoutTimer.current = null;
       }
     };
-  }, [evaluateCompactLayout]);
+  }, [evaluateCompactLayout, isShortWindow]);
 
   useEffect(() => {
     if (!notice) return;
@@ -792,13 +914,23 @@ export default function Home() {
 
   useEffect(() => {
     if (section !== "chat") {
-      setCompactPane("transcript");
+      switchCompactPane("transcript");
     }
-  }, [section]);
+  }, [section, switchCompactPane]);
+
+  useEffect(() => {
+    if (!compactLayout || section !== "chat") {
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => {
+      restorePaneScroll(compactPane);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [compactLayout, compactPane, restorePaneScroll, section]);
 
   useEffect(() => {
     setShowAllEventGroups(false);
-  }, [selectedThreadId]);
+  }, [eventFilter, selectedThreadId]);
 
   useEffect(() => {
     lastSeq.current = 0;
@@ -808,6 +940,7 @@ export default function Home() {
     if (section !== "chat" || !selectedThreadId) {
       setThreadDetail(null);
       setPendingApprovals([]);
+      setReconnectMeta(null);
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
         eventSourceRef.current = null;
@@ -862,7 +995,11 @@ export default function Home() {
       reconnectAttempt.current += 1;
       const base = 500;
       const capped = Math.min(12_000, base * 2 ** (reconnectAttempt.current - 1));
-      const delay = capped + Math.floor(Math.random() * 250);
+      const delay = capped;
+      setReconnectMeta({
+        attempt: reconnectAttempt.current,
+        delayMs: delay,
+      });
 
       if (reconnectTimer.current) {
         window.clearTimeout(reconnectTimer.current);
@@ -909,6 +1046,7 @@ export default function Home() {
 
         eventSourceRef.current = source;
         reconnectAttempt.current = 0;
+        setReconnectMeta(null);
         markStreamConnected();
         appendLiveEvent({
           event: "stream.connected",
@@ -938,6 +1076,7 @@ export default function Home() {
         window.clearTimeout(reconnectTimer.current);
         reconnectTimer.current = null;
       }
+      setReconnectMeta(null);
     };
   }, [
     baseUrl,
@@ -963,7 +1102,6 @@ export default function Home() {
       const created = await createThread(baseUrl, { model, mode });
       setSection("chat");
       setSelectedThreadId(created.id);
-      setComposerText("");
       setLiveEvents([]);
       setPendingApprovals([]);
       setNotice("Thread created");
@@ -1019,9 +1157,17 @@ export default function Home() {
     }
   }, [baseUrl, refreshThreadDetail, selectedThreadId]);
 
-  const handleSend = useCallback(async () => {
-    const prompt = composerText.trim();
+  const handleSend = useCallback(async (overridePrompt?: string) => {
+    const prompt = (overridePrompt ?? composerText).trim();
     if (!prompt) {
+      return;
+    }
+    if (blockedSendReason) {
+      setBlockedSendDrafts((current) => ({
+        ...current,
+        [composerDraftKey]: prompt,
+      }));
+      setErrorNotice(blockedSendReason);
       return;
     }
 
@@ -1043,7 +1189,16 @@ export default function Home() {
         mode,
       });
 
-      setComposerText("");
+      setComposerDrafts((current) => ({
+        ...current,
+        [threadId ?? composerDraftKey]: "",
+      }));
+      setBlockedSendDrafts((current) => {
+        const next = { ...current };
+        delete next[threadId ?? composerDraftKey];
+        delete next[composerDraftKey];
+        return next;
+      });
       setLiveEvents([]);
       setPendingApprovals([]);
       await refreshThreads();
@@ -1053,7 +1208,25 @@ export default function Home() {
     } finally {
       setSending(false);
     }
-  }, [baseUrl, composerText, mode, model, refreshThreadDetail, refreshThreads, selectedThreadId]);
+  }, [
+    baseUrl,
+    blockedSendReason,
+    composerDraftKey,
+    composerText,
+    mode,
+    model,
+    refreshThreadDetail,
+    refreshThreads,
+    selectedThreadId,
+  ]);
+
+  const handleRetrySend = useCallback(() => {
+    const retryPrompt = blockedSendDrafts[composerDraftKey] ?? composerText;
+    if (!retryPrompt.trim()) {
+      return;
+    }
+    void handleSend(retryPrompt);
+  }, [blockedSendDrafts, composerDraftKey, composerText, handleSend]);
 
   const handleInterrupt = useCallback(async () => {
     if (!selectedThreadId || !activeTurnId) {
@@ -1081,6 +1254,30 @@ export default function Home() {
       setErrorNotice(`Failed to steer turn: ${errorText(error)}`);
     }
   }, [activeTurnId, baseUrl, selectedThreadId, steerText]);
+
+  const handleApprovePending = useCallback(
+    (approvalId: string) => {
+      if (!approvalCapability.supported) {
+        setErrorNotice("Approve/deny actions are not yet available for this runtime.");
+        return;
+      }
+      setApprovalActionPendingId(approvalId);
+      setNotice("Approve/deny actions are not yet available for this runtime.");
+    },
+    [approvalCapability.supported]
+  );
+
+  const handleDenyPending = useCallback(
+    (approvalId: string) => {
+      if (!approvalCapability.supported) {
+        setErrorNotice("Approve/deny actions are not yet available for this runtime.");
+        return;
+      }
+      setApprovalActionPendingId(approvalId);
+      setNotice("Approve/deny actions are not yet available for this runtime.");
+    },
+    [approvalCapability.supported]
+  );
 
   const handleThreadArchiveToggle = useCallback(
     async (thread: ThreadSummary) => {
@@ -1245,24 +1442,24 @@ export default function Home() {
 
   const focusThreadsPane = useCallback(() => {
     setSection("chat");
-    setCompactPane("threads");
+    switchCompactPane("threads");
     const panel = document.getElementById("threads-panel");
     const target = panel?.querySelector<HTMLInputElement>("input");
     target?.focus();
-  }, []);
+  }, [switchCompactPane]);
 
   const focusComposerPane = useCallback(() => {
     setSection("chat");
-    setCompactPane("transcript");
+    switchCompactPane("transcript");
     const textarea = document.getElementById("composer-input");
     if (textarea instanceof HTMLElement) {
       textarea.focus();
     }
-  }, []);
+  }, [switchCompactPane]);
 
   const focusEventsPane = useCallback(() => {
     setSection("chat");
-    setCompactPane("events");
+    switchCompactPane("events");
     const steerInput = document.getElementById("steer-input");
     if (steerInput instanceof HTMLElement) {
       steerInput.focus();
@@ -1270,49 +1467,75 @@ export default function Home() {
     }
     const panel = document.getElementById("live-events-panel");
     panel?.focus();
-  }, []);
+  }, [switchCompactPane]);
 
-  useKeyboardShortcuts({
-    onOpenPalette: openCommandPalette,
-    onOpenSessions: openSessionsPalette,
-    onNewThread: () => {
-      void handleCreateThread();
-    },
-    onFocusThreads: focusThreadsPane,
-    onFocusComposer: focusComposerPane,
-    onFocusEvents: focusEventsPane,
-    onEscape: () => {
-      if (paletteOpen) {
-        setPaletteOpen(false);
-        return;
-      }
-      if (paletteMode === "sessions") {
-        setPaletteMode("commands");
-        return;
-      }
-      if (selectedTaskDetail) {
-        setSelectedTaskDetail(null);
-        return;
-      }
-      const active = document.activeElement;
-      if (active instanceof HTMLElement && active !== document.body) {
-        active.blur();
-        return;
-      }
-      if (notice || errorNotice) {
-        setNotice(null);
-        setErrorNotice(null);
-      }
-    },
-  });
+  const keyboardHandlers = useMemo(
+    () => ({
+      onOpenPalette: openCommandPalette,
+      onOpenSessions: openSessionsPalette,
+      onNewThread: () => {
+        void handleCreateThread();
+      },
+      onFocusThreads: focusThreadsPane,
+      onFocusComposer: focusComposerPane,
+      onFocusEvents: focusEventsPane,
+      onEscape: () => {
+        const active = document.activeElement;
+        const action = resolveEscapeAction({
+          paletteOpen,
+          paletteMode,
+          hasTaskDetail: Boolean(selectedTaskDetail),
+          hasFocusedElement: active instanceof HTMLElement && active !== document.body,
+          hasNotice: Boolean(notice || errorNotice),
+        });
 
-  const commandItems = useMemo<CommandPaletteItem[]>(() => {
-    if (paletteMode === "sessions") {
-      return sessions.map((session) => ({
-        id: session.id,
-        label: session.title,
-        description: `${session.model} · ${formatRelative(session.updated_at)} · ${session.message_count} messages`,
-        action: () => {
+        if (action === "close-palette") {
+          setPaletteOpen(false);
+          return;
+        }
+        if (action === "switch-palette-mode") {
+          setPaletteMode("commands");
+          return;
+        }
+        if (action === "close-task-detail") {
+          setSelectedTaskDetail(null);
+          return;
+        }
+        if (action === "blur-focused-element") {
+          if (active instanceof HTMLElement) {
+            active.blur();
+          }
+          return;
+        }
+        if (action === "clear-notices") {
+          setNotice(null);
+          setErrorNotice(null);
+        }
+      },
+    }),
+    [
+      errorNotice,
+      focusComposerPane,
+      focusEventsPane,
+      focusThreadsPane,
+      handleCreateThread,
+      notice,
+      openCommandPalette,
+      openSessionsPalette,
+      paletteMode,
+      paletteOpen,
+      selectedTaskDetail,
+    ]
+  );
+
+  useKeyboardShortcuts(keyboardHandlers);
+
+  const sessionCommandItems = useMemo(
+    () =>
+      buildSessionPaletteItems({
+        sessions,
+        formatRelative,
+        onResumeSession: (session) => {
           void (async () => {
             try {
               const result = await resumeSessionThread(baseUrl, session.id, { model, mode });
@@ -1329,161 +1552,80 @@ export default function Home() {
             }
           })();
         },
-        secondaryAction: {
-          label: "Delete",
-          action: (e: React.MouseEvent) => {
-            e.stopPropagation();
-            void (async () => {
-              try {
-                await deleteSession(baseUrl, session.id);
-                setNotice(`Deleted session "${session.title}"`);
-                await refreshSessions();
-              } catch (error) {
-                setErrorNotice(`Failed to delete session: ${errorText(error)}`);
-              }
-            })();
-          },
+        onDeleteSession: (session) => {
+          void (async () => {
+            try {
+              await deleteSession(baseUrl, session.id);
+              setNotice(`Deleted session "${session.title}"`);
+              await refreshSessions();
+            } catch (error) {
+              setErrorNotice(`Failed to delete session: ${errorText(error)}`);
+            }
+          })();
         },
-      }));
-    }
+      }),
+    [baseUrl, mode, model, refreshSessions, refreshThreads, sessions]
+  );
 
-    const items: CommandPaletteItem[] = [
-      {
-        id: "new-thread",
-        label: "New thread",
-        description: "Start a fresh conversation thread",
-        shortcut: "Ctrl/Cmd+N",
-        action: () => {
+  const commandModeItems = useMemo(
+    () =>
+      buildCommandPaletteItems({
+        pendingApprovalCount: pendingApprovals.length,
+        selectedThreadId,
+        activeTurnId,
+        currentAutomation,
+        onNewThread: () => {
           void handleCreateThread();
         },
-      },
-      {
-        id: "focus-threads",
-        label: "Focus threads pane",
-        description: "Jump focus to thread list and search",
-        shortcut: "Ctrl/Cmd+1",
-        action: focusThreadsPane,
-      },
-      {
-        id: "focus-composer",
-        label: "Focus composer",
-        description: "Jump focus to chat composer",
-        shortcut: "Ctrl/Cmd+2",
-        action: focusComposerPane,
-      },
-      {
-        id: "focus-events",
-        label: "Focus live events",
-        description: "Jump focus to live events and steer input",
-        shortcut: "Ctrl/Cmd+3",
-        action: focusEventsPane,
-      },
-      {
-        id: "open-chat",
-        label: "Open chat",
-        action: () => setSection("chat"),
-      },
-      {
-        id: "open-automations",
-        label: "Open automations",
-        action: () => setSection("automations"),
-      },
-      {
-        id: "open-skills",
-        label: "Open skills & apps",
-        action: () => setSection("skills"),
-      },
-      {
-        id: "open-settings",
-        label: "Open settings",
-        action: () => setSection("settings"),
-      },
-      {
-        id: "open-sessions",
-        label: "Search sessions",
-        shortcut: "Ctrl/Cmd+R",
-        action: () => {
-          openSessionsPalette();
-        },
-      },
-    ];
-
-    if (pendingApprovals.length > 0) {
-      items.push({
-        id: "view-pending-approvals",
-        label: "Review pending approvals",
-        description: `${pendingApprovals.length} approval request${pendingApprovals.length === 1 ? "" : "s"} pending`,
-        action: () => {
+        onFocusThreads: focusThreadsPane,
+        onFocusComposer: focusComposerPane,
+        onFocusEvents: focusEventsPane,
+        onOpenSection: setSection,
+        onOpenSessions: openSessionsPalette,
+        onReviewApprovals: () => {
           setSection("chat");
-          setCompactPane("events");
+          switchCompactPane("events");
         },
-      });
-    }
+        onResumeThread: () => {
+          void handleResumeThread();
+        },
+        onForkThread: () => {
+          void handleForkThread();
+        },
+        onCompactThread: () => {
+          void handleCompactThread();
+        },
+        onInterruptTurn: () => {
+          void handleInterrupt();
+        },
+        onRunAutomation: (automationId) => {
+          void handleRunAutomation(automationId);
+        },
+      }),
+    [
+      activeTurnId,
+      currentAutomation,
+      focusComposerPane,
+      focusEventsPane,
+      focusThreadsPane,
+      handleCompactThread,
+      handleCreateThread,
+      handleForkThread,
+      handleInterrupt,
+      handleResumeThread,
+      handleRunAutomation,
+      openSessionsPalette,
+      pendingApprovals.length,
+      selectedThreadId,
+      switchCompactPane,
+    ]
+  );
 
-    if (selectedThreadId) {
-      items.push(
-        {
-          id: "resume-thread",
-          label: "Resume current thread",
-          action: () => {
-            void handleResumeThread();
-          },
-        },
-        {
-          id: "fork-thread",
-          label: "Fork current thread",
-          action: () => {
-            void handleForkThread();
-          },
-        },
-        {
-          id: "compact-thread",
-          label: "Compact current thread",
-          action: () => {
-            void handleCompactThread();
-          },
-        }
-      );
-    }
-
-    if (currentAutomation) {
-      items.push({
-        id: "run-selected-automation",
-        label: "Run selected automation",
-        description: currentAutomation.name,
-        action: () => {
-          void handleRunAutomation(currentAutomation.id);
-        },
-      });
-    }
-
-    return items;
-  }, [
-    baseUrl,
-    currentAutomation,
-    focusComposerPane,
-    focusEventsPane,
-    focusThreadsPane,
-    handleCompactThread,
-    handleCreateThread,
-    handleForkThread,
-    handleRunAutomation,
-    handleResumeThread,
-    mode,
-    model,
-    openSessionsPalette,
-    paletteMode,
-    pendingApprovals.length,
-    refreshSessions,
-    refreshThreads,
-    selectedThreadId,
-    sessions,
-    setCompactPane,
-  ]);
+  const commandItems = paletteMode === "sessions" ? sessionCommandItems : commandModeItems;
 
   return (
     <div
-      className={`app-shell ${compactLayout ? "is-compact-layout" : ""} ${compactLayout ? `compact-pane-${compactPane}` : ""}`}
+      className={`app-shell ${compactLayout ? "is-compact-layout" : ""} ${compactLayout ? `compact-pane-${compactPane}` : ""} ${isShortHeight ? "is-short-height" : ""}`}
     >
       <LeftRail
         section={section}
@@ -1501,6 +1643,10 @@ export default function Home() {
         selectedThreadId={selectedThreadId}
         threadSearch={threadSearch}
         threadFilter={threadFilter}
+        listRef={threadsListRef}
+        onScrollPositionChange={(scrollTop) => {
+          paneScrollPositions.current.threads = scrollTop;
+        }}
         onThreadSearchChange={setThreadSearch}
         onThreadFilterChange={(value) => {
           setThreadFilter(value);
@@ -1566,7 +1712,7 @@ export default function Home() {
               <div className="compact-pane-switcher" role="tablist" aria-label="Compact pane switcher">
                 <button
                   className={`chip-button ${compactPane === "threads" ? "is-selected" : ""}`}
-                  onClick={() => setCompactPane("threads")}
+                  onClick={() => switchCompactPane("threads")}
                   role="tab"
                   aria-selected={compactPane === "threads"}
                 >
@@ -1574,7 +1720,7 @@ export default function Home() {
                 </button>
                 <button
                   className={`chip-button ${compactPane === "transcript" ? "is-selected" : ""}`}
-                  onClick={() => setCompactPane("transcript")}
+                  onClick={() => switchCompactPane("transcript")}
                   role="tab"
                   aria-selected={compactPane === "transcript"}
                 >
@@ -1582,7 +1728,7 @@ export default function Home() {
                 </button>
                 <button
                   className={`chip-button ${compactPane === "events" ? "is-selected" : ""}`}
-                  onClick={() => setCompactPane("events")}
+                  onClick={() => switchCompactPane("events")}
                   role="tab"
                   aria-selected={compactPane === "events"}
                 >
@@ -1593,34 +1739,54 @@ export default function Home() {
 
             <PendingApprovalPanel
               approvals={pendingApprovals}
+              approvalCapability={approvalCapability}
+              approvalActionPendingId={approvalActionPendingId}
+              onApprove={handleApprovePending}
+              onDeny={handleDenyPending}
               onDismiss={(approvalId) => {
                 setPendingApprovals((previous) => previous.filter((approval) => approval.id !== approvalId));
               }}
               onDismissAll={() => setPendingApprovals([])}
             />
 
-            <div className="chat-status-strip">
-              <span className={`status-chip status-${runState.state}`}>{runState.label}</span>
-              {recentActivityLabel ? <span className="subtle">{recentActivityLabel}</span> : null}
-              {interruptionHint ? (
+            <ObservabilityStrip
+              runningTaskCount={runningTaskCount}
+              queuedTaskCount={queuedTaskCount}
+              lastCompletedAt={lastCompletedTaskAt}
+              reconnectAttempt={reconnectMeta?.attempt}
+              reconnectDelayMs={reconnectMeta?.delayMs}
+              isReconnecting={connectionState === "reconnecting"}
+            />
+            {interruptionHint ? (
+              <div className="chat-status-strip">
                 <button className="btn btn-ghost btn-sm" onClick={() => void handleResumeThread()}>
                   {interruptionHint}
                 </button>
-              ) : null}
-            </div>
+              </div>
+            ) : null}
 
             {!compactLayout || compactPane === "transcript" ? (
               <>
-                <TranscriptPane transcript={transcript} selectedThreadId={selectedThreadId} />
+                <TranscriptPane
+                  transcript={transcript}
+                  selectedThreadId={selectedThreadId}
+                  scrollRef={transcriptScrollRef}
+                  onScrollPositionChange={(scrollTop) => {
+                    paneScrollPositions.current.transcript = scrollTop;
+                  }}
+                />
                 <Composer
                   value={composerText}
                   onValueChange={setComposerText}
                   onSend={() => {
                     void handleSend();
                   }}
+                  onRetrySend={handleRetrySend}
                   sending={sending}
                   selectedThreadId={selectedThreadId}
                   activeTurnId={activeTurnId}
+                  blockedSendReason={blockedSendReason}
+                  canRetryBlockedSend={canRetryBlockedSend}
                 />
               </>
             ) : null}
@@ -1631,11 +1797,16 @@ export default function Home() {
                 pinnedCritical={compactedEvents.pinnedCritical}
                 overflowCount={compactedEvents.overflowCount}
                 showAllEvents={showAllEventGroups}
+                eventFilter={eventFilter}
                 runState={runState}
                 canResume={selectedThreadId != null}
                 canFork={selectedThreadId != null}
                 canInterrupt={selectedThreadId != null && activeTurnId != null}
                 canCompact={selectedThreadId != null}
+                eventListRef={eventsListRef}
+                onEventListScroll={(scrollTop) => {
+                  paneScrollPositions.current.events = scrollTop;
+                }}
                 steerText={steerText}
                 onSteerTextChange={setSteerText}
                 onResume={() => {
@@ -1653,6 +1824,7 @@ export default function Home() {
                 onSteer={() => {
                   void handleSteer();
                 }}
+                onEventFilterChange={setEventFilter}
                 onToggleEventOverflow={() => {
                   setShowAllEventGroups((value) => !value);
                 }}
@@ -2161,39 +2333,11 @@ export default function Home() {
                 <h3>Keyboard shortcuts</h3>
               </div>
               <div className="shortcut-list">
-                <div>
-                  <kbd>Ctrl/Cmd+K</kbd> Open command palette
-                </div>
-                <div>
-                  <kbd>Ctrl/Cmd+R</kbd> Search sessions
-                </div>
-                <div>
-                  <kbd>Ctrl/Cmd+N</kbd> New thread
-                </div>
-                <div>
-                  <kbd>Ctrl/Cmd+1</kbd> Focus threads pane
-                </div>
-                <div>
-                  <kbd>Ctrl/Cmd+2</kbd> Focus composer
-                </div>
-                <div>
-                  <kbd>Ctrl/Cmd+3</kbd> Focus live events
-                </div>
-                <div>
-                  <kbd>Enter</kbd> Send composer input
-                </div>
-                <div>
-                  <kbd>Shift+Enter</kbd> New line
-                </div>
-                <div>
-                  <kbd>Alt+Enter</kbd> New line
-                </div>
-                <div>
-                  <kbd>Ctrl/Cmd+J</kbd> New line
-                </div>
-                <div>
-                  <kbd>Esc</kbd> Close overlays / clear notices
-                </div>
+                {KEYBOARD_SHORTCUTS.map((shortcut) => (
+                  <div key={shortcut.id}>
+                    <kbd>{shortcut.keys}</kbd> {shortcut.description} <span className="subtle">[{shortcut.context}]</span>
+                  </div>
+                ))}
               </div>
             </section>
           </div>

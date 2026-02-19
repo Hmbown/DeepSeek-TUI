@@ -1,18 +1,23 @@
+import type { RefObject, UIEvent } from "react";
 import { Activity, CirclePause, Compass, ForkKnife, Hand, Pin } from "lucide-react";
 
 import type { DesktopRunStateDetail } from "@/lib/run-state";
 import type { CompactLiveEvent } from "@/lib/live-event-compaction";
+import type { LiveEventFilter } from "@/lib/live-event-filters";
 
 type LiveEventsPanelProps = {
   events: CompactLiveEvent[];
   pinnedCritical: CompactLiveEvent[];
   overflowCount: number;
   showAllEvents: boolean;
+  eventFilter: LiveEventFilter;
   runState: DesktopRunStateDetail;
   canResume: boolean;
   canFork: boolean;
   canInterrupt: boolean;
   canCompact: boolean;
+  eventListRef?: RefObject<HTMLDivElement | null>;
+  onEventListScroll?: (scrollTop: number) => void;
   steerText: string;
   onSteerTextChange: (value: string) => void;
   onResume: () => void;
@@ -20,6 +25,7 @@ type LiveEventsPanelProps = {
   onInterrupt: () => void;
   onCompact: () => void;
   onSteer: () => void;
+  onEventFilterChange: (value: LiveEventFilter) => void;
   onToggleEventOverflow: () => void;
 };
 
@@ -28,11 +34,14 @@ export function LiveEventsPanel({
   pinnedCritical,
   overflowCount,
   showAllEvents,
+  eventFilter,
   runState,
   canResume,
   canFork,
   canInterrupt,
   canCompact,
+  eventListRef,
+  onEventListScroll,
   steerText,
   onSteerTextChange,
   onResume,
@@ -40,8 +49,16 @@ export function LiveEventsPanel({
   onInterrupt,
   onCompact,
   onSteer,
+  onEventFilterChange,
   onToggleEventOverflow,
 }: LiveEventsPanelProps) {
+  const handleEventListScroll = (event: UIEvent<HTMLDivElement>) => {
+    if (!onEventListScroll) {
+      return;
+    }
+    onEventListScroll(event.currentTarget.scrollTop);
+  };
+
   return (
     <section className="live-events" id="live-events-panel" tabIndex={-1}>
       <header className="live-events-head">
@@ -72,6 +89,45 @@ export function LiveEventsPanel({
         </div>
       </header>
 
+      <div className="inline-chip-row" role="tablist" aria-label="Event timeline filters">
+        <button
+          className={`chip-button ${eventFilter === "all" ? "is-selected" : ""}`}
+          role="tab"
+          aria-selected={eventFilter === "all"}
+          aria-label="Show all live events"
+          onClick={() => onEventFilterChange("all")}
+        >
+          All
+        </button>
+        <button
+          className={`chip-button ${eventFilter === "critical" ? "is-selected" : ""}`}
+          role="tab"
+          aria-selected={eventFilter === "critical"}
+          aria-label="Show critical events only"
+          onClick={() => onEventFilterChange("critical")}
+        >
+          Critical
+        </button>
+        <button
+          className={`chip-button ${eventFilter === "tool" ? "is-selected" : ""}`}
+          role="tab"
+          aria-selected={eventFilter === "tool"}
+          aria-label="Show tool events only"
+          onClick={() => onEventFilterChange("tool")}
+        >
+          Tool
+        </button>
+        <button
+          className={`chip-button ${eventFilter === "turn" ? "is-selected" : ""}`}
+          role="tab"
+          aria-selected={eventFilter === "turn"}
+          aria-label="Show turn lifecycle events only"
+          onClick={() => onEventFilterChange("turn")}
+        >
+          Turn
+        </button>
+      </div>
+
       {pinnedCritical.length > 0 ? (
         <div className="critical-notices">
           {pinnedCritical.map((event) => (
@@ -83,7 +139,7 @@ export function LiveEventsPanel({
         </div>
       ) : null}
 
-      <div className="event-list" aria-live="polite">
+      <div className="event-list" aria-live="polite" ref={eventListRef} onScroll={handleEventListScroll}>
         {events.length === 0 ? (
           <div className="empty-state compact">Waiting for events…</div>
         ) : (

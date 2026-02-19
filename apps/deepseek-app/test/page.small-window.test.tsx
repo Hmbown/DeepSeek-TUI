@@ -105,10 +105,23 @@ describe("Small window layout", () => {
     await waitFor(() => {
       expect(screen.getByRole("tablist", { name: /compact pane switcher/i })).toBeInTheDocument();
     });
+    expect(document.querySelector(".app-shell")?.className).toContain("is-short-height");
 
     fireEvent.click(screen.getByRole("tab", { name: "Events" }));
     await waitFor(() => {
       expect(screen.getByRole("heading", { name: "Live events" })).toBeInTheDocument();
+    });
+
+    const eventList = document.querySelector(".event-list") as HTMLDivElement;
+    eventList.scrollTop = 42;
+    fireEvent.scroll(eventList, { target: { scrollTop: 42 } });
+
+    fireEvent.click(screen.getByRole("tab", { name: "Transcript" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Events" }));
+
+    await waitFor(() => {
+      const restored = document.querySelector(".event-list") as HTMLDivElement;
+      expect(restored.scrollTop).toBe(42);
     });
   });
 });

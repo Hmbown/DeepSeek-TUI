@@ -93,6 +93,7 @@ describe("runtime-api helpers", () => {
         request_type: "shell command",
         scope: "workspace write",
         reason: "Command wants to modify files",
+        actions: [{ type: "approve" }, { type: "deny" }],
       },
       seq: 88,
       timestamp: "2026-01-01T00:00:00Z",
@@ -104,6 +105,8 @@ describe("runtime-api helpers", () => {
     expect(parsed?.status).toBe("pending");
     expect(parsed?.requestType).toBe("shell command");
     expect(parsed?.scope).toBe("workspace write");
+    expect(parsed?.actionHints?.approve?.available).toBe(true);
+    expect(parsed?.actionHints?.deny?.available).toBe(true);
   });
 
   it("getSession calls correct endpoint", async () => {

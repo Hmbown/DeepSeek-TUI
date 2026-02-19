@@ -17,6 +17,7 @@ describe("ConnectionBanner", () => {
           tone: "warning",
           label: "Reconnecting stream",
           reason: "Live stream disconnected",
+          reasonSource: "connection",
         }}
         baseUrl="http://127.0.0.1:7878"
         onRetryNow={retry}
@@ -41,6 +42,7 @@ describe("ConnectionBanner", () => {
           tone: "success",
           label: "Runtime online",
           reason: "Runtime online",
+          reasonSource: "connection",
         }}
         baseUrl="http://127.0.0.1:7878"
         onRetryNow={vi.fn()}
@@ -60,6 +62,7 @@ describe("ConnectionBanner", () => {
           tone: "warning",
           label: "Waiting for approval",
           reason: "1 approval request pending",
+          reasonSource: "approvals",
         }}
         baseUrl="http://127.0.0.1:7878"
         onRetryNow={vi.fn()}
@@ -81,6 +84,7 @@ describe("ConnectionBanner", () => {
           tone: "danger",
           label: "Runtime offline",
           reason: "Runtime unavailable",
+          reasonSource: "connection",
         }}
         baseUrl="http://127.0.0.1:7878"
         onRetryNow={vi.fn()}

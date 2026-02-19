@@ -173,6 +173,13 @@ button:focus-visible {
   gap: 6px;
 }
 
+.app-shell.is-compact-layout .compact-pane-switcher {
+  position: sticky;
+  top: 0;
+  z-index: 12;
+  backdrop-filter: blur(2px);
+}
+
 .rail,
 .threads-pane,
 .main-pane {
@@ -694,6 +701,18 @@ button:focus-visible {
   gap: var(--space-2);
 }
 
+.observability-strip {
+  margin: 10px 14px 0;
+  border: 1px solid var(--line-0);
+  border-radius: var(--radius-md);
+  background: rgba(10, 24, 47, 0.52);
+  padding: 8px 10px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
 .transcript-pane {
   flex: 1;
   min-height: 0;
@@ -1035,6 +1054,8 @@ button:focus-visible {
 .status-chip {
   display: inline-flex;
   align-items: center;
+  gap: 4px;
+  white-space: nowrap;
   border-radius: 999px;
   border: 1px solid var(--line-0);
   padding: 2px 8px;
@@ -1223,6 +1244,13 @@ button:focus-visible {
   font-size: 13px;
 }
 
+.palette-item-group {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-3);
+}
+
 .palette-item-description {
   font-size: 11px;
   color: var(--text-2);
@@ -1237,6 +1265,26 @@ kbd {
   font-size: 10px;
   color: var(--text-2);
   background: rgba(9, 21, 44, 0.8);
+}
+
+.app-shell.is-short-height .live-events-head {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  background: rgba(11, 27, 52, 0.9);
+  padding-bottom: var(--space-2);
+}
+
+.app-shell.is-short-height .composer {
+  position: sticky;
+  bottom: 0;
+  z-index: 4;
+  border-top: 1px solid var(--line-0);
+}
+
+.app-shell.is-short-height .composer-actions {
+  position: sticky;
+  bottom: 0;
 }
 
 @keyframes slide-in {
@@ -1573,15 +1621,6 @@ kbd {
 .task-row-clickable:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--brand-sky) 55%, transparent);
-}
-
-/* ── Polish: status chip improvements ──────────── */
-
-.status-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  white-space: nowrap;
 }
 
 /* ── Polish: improved responsive ─────────────────── */

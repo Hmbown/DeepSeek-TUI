@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { getHealth, parseApiError } from "@/lib/runtime-api";
+import { getHealth, parseApiError, type HealthResponse } from "@/lib/runtime-api";
 
 export type ConnectionState = "checking" | "online" | "offline" | "reconnecting";
 
@@ -13,6 +13,7 @@ export function useRuntimeConnection(baseUrl: string, pollMs = 5000) {
   const [state, setState] = useState<ConnectionState>("checking");
   const [message, setMessage] = useState("Checking runtime API...");
   const [lastCheckedAt, setLastCheckedAt] = useState<number | null>(null);
+  const [lastHealth, setLastHealth] = useState<HealthResponse | null>(null);
 
   const refreshHealth = useCallback(async () => {
     try {
@@ -24,9 +25,11 @@ export function useRuntimeConnection(baseUrl: string, pollMs = 5000) {
         setState("offline");
         setMessage("Runtime unhealthy");
       }
+      setLastHealth(health);
     } catch (error) {
       setState((prev) => (prev === "reconnecting" ? "reconnecting" : "offline"));
       setMessage(`Runtime unavailable: ${healthErrorMessage(error)}`);
+      setLastHealth(null);
     } finally {
       setLastCheckedAt(Date.now());
     }
@@ -68,5 +71,6 @@ export function useRuntimeConnection(baseUrl: string, pollMs = 5000) {
     markStreamDisconnected,
     markStreamConnected,
     isHealthy: state === "online",
+    lastHealth,
   };
 }

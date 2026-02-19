@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useState, type RefObject, type UIEvent } from "react";
 import clsx from "clsx";
 import { Check, ChevronDown, ChevronRight, Copy, Search } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -31,6 +31,8 @@ const FILTER_OPTIONS: { value: TranscriptCellRole | "all"; label: string }[] = [
 type TranscriptPaneProps = {
   transcript: TranscriptCell[];
   selectedThreadId: string | null;
+  scrollRef?: RefObject<HTMLDivElement | null>;
+  onScrollPositionChange?: (scrollTop: number) => void;
 };
 
 function formatTime(value?: string | null): string {
@@ -125,7 +127,12 @@ function TranscriptCard({ cell }: { cell: TranscriptCell }) {
   );
 }
 
-export function TranscriptPane({ transcript, selectedThreadId }: TranscriptPaneProps) {
+export function TranscriptPane({
+  transcript,
+  selectedThreadId,
+  scrollRef,
+  onScrollPositionChange,
+}: TranscriptPaneProps) {
   const [activeFilter, setActiveFilter] = useState<TranscriptCellRole | "all">("all");
   const [searchQuery, setSearchQuery] = useState("");
 
@@ -140,12 +147,26 @@ export function TranscriptPane({ transcript, selectedThreadId }: TranscriptPaneP
     return result;
   }, [transcript, activeFilter, searchQuery]);
 
+  const handleScroll = (event: UIEvent<HTMLDivElement>) => {
+    if (!onScrollPositionChange) {
+      return;
+    }
+    onScrollPositionChange(event.currentTarget.scrollTop);
+  };
+
   if (!selectedThreadId) {
     return <div className="empty-state">Create or select a thread to begin.</div>;
   }
 
   return (
-    <div className="transcript-pane" role="log" aria-live="polite" aria-label="Thread transcript">
+    <div
+      className="transcript-pane"
+      role="log"
+      aria-live="polite"
+      aria-label="Thread transcript"
+      ref={scrollRef}
+      onScroll={handleScroll}
+    >
       <div className="transcript-search-bar">
         <Search size={14} className="transcript-search-icon" aria-hidden="true" />
         <input

@@ -4,18 +4,24 @@ type ComposerProps = {
   value: string;
   onValueChange: (value: string) => void;
   onSend: () => void;
+  onRetrySend: () => void;
   sending: boolean;
   selectedThreadId: string | null;
   activeTurnId: string | null;
+  blockedSendReason?: string | null;
+  canRetryBlockedSend?: boolean;
 };
 
 export function Composer({
   value,
   onValueChange,
   onSend,
+  onRetrySend,
   sending,
   selectedThreadId,
   activeTurnId,
+  blockedSendReason,
+  canRetryBlockedSend,
 }: ComposerProps) {
   return (
     <div className="composer">
@@ -31,7 +37,7 @@ export function Composer({
         onKeyDown={(event) => {
           if (event.key === "Enter" && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
             event.preventDefault();
-            if (!sending && value.trim()) {
+            if (!sending && value.trim() && !blockedSendReason) {
               onSend();
             }
           }
@@ -61,12 +67,28 @@ export function Composer({
             <CornerDownLeft size={13} />
             <span>Enter send · Shift+Enter newline · Ctrl/Cmd+J newline</span>
           </span>
+          {blockedSendReason ? (
+            <span className="inline-error" role="alert">
+              <span>{blockedSendReason}</span>
+            </span>
+          ) : null}
         </div>
 
-        <button className="btn btn-primary" disabled={sending || !value.trim()} onClick={onSend}>
-          <ArrowUp size={14} />
-          <span>{sending ? "Sending..." : "Send"}</span>
-        </button>
+        <div className="inline-actions composer-actions">
+          {canRetryBlockedSend ? (
+            <button className="btn btn-secondary" onClick={onRetrySend} aria-label="Retry send">
+              Retry send
+            </button>
+          ) : null}
+          <button
+            className="btn btn-primary"
+            disabled={sending || !value.trim() || !!blockedSendReason}
+            onClick={onSend}
+          >
+            <ArrowUp size={14} />
+            <span>{sending ? "Sending..." : "Send"}</span>
+          </button>
+        </div>
       </div>
     </div>
   );

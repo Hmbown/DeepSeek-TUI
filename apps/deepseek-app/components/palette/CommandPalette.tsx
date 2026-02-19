@@ -5,6 +5,8 @@ export type CommandPaletteItem = {
   label: string;
   description?: string;
   shortcut?: string;
+  keywords?: string[];
+  group?: string;
   action: () => void;
   secondaryAction?: { label: string; action: (e: React.MouseEvent) => void };
 };
@@ -34,7 +36,10 @@ export function CommandPalette({
       return items;
     }
     return items.filter((item) => {
-      return `${item.label} ${item.description ?? ""}`.toLowerCase().includes(q);
+      const keywords = item.keywords?.join(" ") ?? "";
+      return `${item.group ?? ""} ${item.label} ${item.description ?? ""} ${keywords}`
+        .toLowerCase()
+        .includes(q);
     });
   }, [items, query]);
 
@@ -150,6 +155,7 @@ export function CommandPalette({
                 }}
               >
                 <div className="palette-item-main">
+                  {item.group ? <div className="palette-item-group">{item.group}</div> : null}
                   <div className="palette-item-title">{item.label}</div>
                   {item.description ? <div className="palette-item-description">{item.description}</div> : null}
                 </div>

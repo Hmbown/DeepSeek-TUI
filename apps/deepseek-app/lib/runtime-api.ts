@@ -256,6 +256,16 @@ export type EventPayload = {
 
 export type PendingApprovalStatus = "pending" | "denied";
 
+export type PendingApprovalActionHint = {
+  available: boolean;
+  metadata?: Record<string, unknown>;
+};
+
+export type PendingApprovalActionHints = {
+  approve?: PendingApprovalActionHint;
+  deny?: PendingApprovalActionHint;
+};
+
 export type PendingApproval = {
   id: string;
   event: "approval.required" | "sandbox.denied";
@@ -268,11 +278,19 @@ export type PendingApproval = {
   seq?: number;
   threadId?: string;
   turnId?: string | null;
+  actionHints?: PendingApprovalActionHints;
 };
 
 export type RuntimeApiError = {
   message: string;
   status: number;
+};
+
+export type HealthResponse = {
+  status: string;
+  service?: string;
+  mode?: string;
+  [key: string]: unknown;
 };
 
 export const DEFAULT_RUNTIME_BASE_URL = "http://127.0.0.1:7878";
@@ -351,6 +369,76 @@ function extractApprovalField(payload: unknown, keys: string[], fallback: string
   return pickString(record, keys) ?? fallback;
 }
 
+function parseActionHint(value: unknown): PendingApprovalActionHint | null {
+  const record = asRecord(value);
+  if (!record) {
+    return null;
+  }
+
+  const availableCandidate = record.available;
+  const available =
+    typeof availableCandidate === "boolean"
+      ? availableCandidate
+      : true;
+
+  return {
+    available,
+    metadata: record,
+  };
+}
+
+function parseActionHints(payload: unknown): PendingApprovalActionHints | undefined {
+  const record = asRecord(payload);
+  if (!record) {
+    return undefined;
+  }
+
+  const hints: PendingApprovalActionHints = {};
+  const approveHint = parseActionHint(record.approve_action ?? record.approveAction);
+  const denyHint = parseActionHint(record.deny_action ?? record.denyAction);
+  if (approveHint) {
+    hints.approve = approveHint;
+  }
+  if (denyHint) {
+    hints.deny = denyHint;
+  }
+
+  const actionsValue = record.actions;
+  if (Array.isArray(actionsValue)) {
+    for (const entry of actionsValue) {
+      const action = asRecord(entry);
+      if (!action) {
+        continue;
+      }
+      const typeValue = pickString(action, ["type", "kind", "name", "action"]);
+      if (!typeValue) {
+        continue;
+      }
+      const type = typeValue.toLowerCase();
+      if (
+        (type === "approve" || type === "allow") &&
+        !hints.approve
+      ) {
+        hints.approve = {
+          available: true,
+          metadata: action,
+        };
+      }
+      if (
+        (type === "deny" || type === "reject" || type === "block") &&
+        !hints.deny
+      ) {
+        hints.deny = {
+          available: true,
+          metadata: action,
+        };
+      }
+    }
+  }
+
+  return hints.approve || hints.deny ? hints : undefined;
+}
+
 export function parsePendingApprovalEvent(event: EventPayload): PendingApproval | null {
   if (event.event !== "approval.required" && event.event !== "sandbox.denied") {
     return null;
@@ -389,6 +477,7 @@ export function parsePendingApprovalEvent(event: EventPayload): PendingApproval 
     seq: event.seq,
     threadId: event.thread_id,
     turnId: event.turn_id,
+    actionHints: parseActionHints(event.payload),
   };
 }
 
@@ -418,7 +507,7 @@ async function request<T>(baseUrl: string, path: string, init?: RequestInit): Pr
   return (await response.json()) as T;
 }
 
-export function getHealth(baseUrl: string): Promise<{ status: string; service?: string; mode?: string }> {
+export function getHealth(baseUrl: string): Promise<HealthResponse> {
   return request(baseUrl, "/health");
 }
 
