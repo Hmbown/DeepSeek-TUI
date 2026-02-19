@@ -209,7 +209,10 @@ impl ModalView for UserInputView {
             let number = idx + 1;
             if selected {
                 // Single span with consistent foreground and background
-                let content = format!("{prefix} {number}) {} - {}", option.label, option.description);
+                let content = format!(
+                    "{prefix} {number}) {} - {}",
+                    option.label, option.description
+                );
                 lines.push(Line::from(Span::styled(
                     content,
                     Style::default()
@@ -221,7 +224,10 @@ impl ModalView for UserInputView {
                 // Keep original multi‑span formatting
                 lines.push(Line::from(vec![
                     Span::raw(format!("{prefix} {number}) ")),
-                    Span::styled(option.label.clone(), Style::default().fg(palette::TEXT_PRIMARY)),
+                    Span::styled(
+                        option.label.clone(),
+                        Style::default().fg(palette::TEXT_PRIMARY),
+                    ),
                     Span::raw(" - "),
                     Span::styled(
                         option.description.clone(),

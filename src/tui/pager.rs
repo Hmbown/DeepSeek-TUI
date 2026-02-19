@@ -6,7 +6,7 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Padding, Widget, Wrap},
+    widgets::{Block, Borders, Clear, Padding, Paragraph, Widget, Wrap},
 };
 use unicode_width::UnicodeWidthStr;
 
