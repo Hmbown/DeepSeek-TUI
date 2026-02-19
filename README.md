@@ -1,17 +1,18 @@
 # DeepSeek CLI
 
-An unofficial terminal UI and CLI for the [DeepSeek platform](https://platform.deepseek.com).
+A terminal interface for the [DeepSeek platform](https://platform.deepseek.com).  
+Current release: [v0.3.21](https://github.com/Hmbown/DeepSeek-TUI/releases/tag/v0.3.21).
 
 [![CI](https://github.com/Hmbown/DeepSeek-TUI/actions/workflows/ci.yml/badge.svg)](https://github.com/Hmbown/DeepSeek-TUI/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/deepseek-tui)](https://crates.io/crates/deepseek-tui)
 
-Chat with DeepSeek models directly from your terminal. The assistant can read and write files, run shell commands, search the web, manage tasks, and coordinate sub-agents — all with configurable approval gating.
+Not affiliated with DeepSeek Inc.
 
-**Not affiliated with DeepSeek Inc.**
+DeepSeek CLI lets you run and control DeepSeek models from your terminal with file editing, shell execution, web lookup, task orchestration, and sub-agent workflows.
 
-## Getting Started
+## Getting started
 
-### 1. Install
+1. Install
 
 ```bash
 # From crates.io (requires Rust 1.85+)
@@ -23,92 +24,56 @@ cd DeepSeek-TUI
 cargo install --path . --locked
 ```
 
-Prebuilt binaries are also available on [GitHub Releases](https://github.com/Hmbown/DeepSeek-TUI/releases).
+2. Add API key
 
-### 2. Set your API key
-
-Get a key from [platform.deepseek.com](https://platform.deepseek.com). On first run the TUI will prompt you to enter and save it, or create the config manually:
+Create `~/.deepseek/config.toml`:
 
 ```toml
-# ~/.deepseek/config.toml
 api_key = "YOUR_DEEPSEEK_API_KEY"
 ```
 
-### 3. Run
+3. Run
 
 ```bash
 deepseek
 ```
 
-Press **Tab** to switch modes, **F1** for help, and **Esc** to cancel a running request.
+Use **Tab** to switch modes, **F1** for help, and **Esc** to cancel a running request.
 
 ## Modes
 
-| Mode | Description | Approvals |
-|------|-------------|-----------|
-| **Plan** | Design-first prompting; produces a plan before implementing | Manual for writes and shell |
-| **Agent** | Multi-step autonomous tool use | Auto-approve file writes, manual for shell |
-| **YOLO** | Full auto-approve (use with caution) | All tools auto-approved |
+| Mode | Behavior | Approval |
+|------|----------|----------|
+| `Plan` | Design-first, proposes a plan first | Manual for writes and shell |
+| `Agent` | Multi-step autonomous tool use | File writes auto-approved, shell is manual |
+| `YOLO` | Full auto-approve | All tools auto-approved |
 
-Press `Tab` to cycle modes. Normal mode (manual approval for everything) is also available via `/set mode normal`.
+Use `/set mode normal` to return to manual mode for all actions.
 
-## What It Can Do
+## What it can do
 
-The assistant has access to 35+ tools:
+- Workspace file operations: read, edit, search, and patch files
+- Shell execution with timeout and interactive support
+- Web search and content capture with citations
+- Git inspection, task lists, and PR/issue workflows
+- Sub-agent orchestration and background execution
+- MCP integration for external tool servers
+- Runtime API (`deepseek serve --http`) for external clients
 
-- **File operations** — read, write, edit, patch, search, and grep across your workspace
-- **Shell execution** — run commands with timeout, background execution, and interactive I/O
-- **Web browsing** — search the web, open pages, screenshot, and extract content with citations
-- **Git** — inspect repo status, diffs, and staged changes
-- **Code review** — structured review for files, diffs, or GitHub PRs
-- **Sub-agents** — spawn background agents or coordinate agent swarms for parallel work
-- **Task management** — to-do lists, implementation plans, persistent notes, and a background task queue
-- **Structured data** — weather, finance, sports scores, time zones, and a calculator
-- **Parallel execution** — run multiple tool calls simultaneously for efficiency
-- **Project mapping** — explore codebase structure and identify key files
-- **Code execution** — run Python code in a sandboxed environment
-- **Test runner** — execute `cargo test` and other test suites
-- **Diagnostics** — inspect workspace, git, and toolchain status
-- **Note-taking** — record persistent notes for future reference
-- **Tool discovery** — search for tools by name or natural language
-- **MCP integration** — connect external tool servers via the [Model Context Protocol](docs/MCP.md)
-
-All file tools respect the `--workspace` boundary unless `/trust` is enabled.
-
-## Examples
+## Key commands
 
 ```bash
-# Interactive chat
-deepseek
-
-# One-shot prompt
-deepseek -p "Explain the borrow checker in two sentences"
-
-# Agentic execution with auto-approve
-deepseek exec --auto "Fix all clippy warnings in this project"
-
-# Resume latest session
-deepseek --continue
-
-# Work on a specific project
-deepseek --workspace /path/to/project
-
-# Review staged git changes
-deepseek review --staged
-
-# Start the runtime API server
-deepseek serve --http
-
-# List available models
-deepseek models
-
-# Verify your environment
-deepseek doctor
+deepseek                         # interactive mode
+deepseek -p "Explain ... in 2 sentences"  # one-shot prompt
+deepseek exec --auto "Fix all clippy warnings in this project"  # agentic execution
+deepseek serve --http            # start local runtime API
+deepseek models                  # list available models
+deepseek doctor                  # environment and config checks
 ```
 
 ## Configuration
 
-Config lives at `~/.deepseek/config.toml`:
+Defaults can be stored in `~/.deepseek/config.toml`:
 
 ```toml
 api_key = "sk-..."
@@ -117,48 +82,31 @@ allow_shell = true                     # optional (sandboxed by default)
 max_subagents = 3                      # optional (1-20)
 ```
 
-Key environment variables:
+Overrides:
 
-| Variable | Purpose |
-|----------|---------|
-| `DEEPSEEK_API_KEY` | API key (overrides config file) |
-| `DEEPSEEK_BASE_URL` | API endpoint (default: `https://api.deepseek.com`) |
+- `DEEPSEEK_API_KEY` (API key; highest priority)
+- `DEEPSEEK_BASE_URL` (default: `https://api.deepseek.com`)
 
-See [`config.example.toml`](config.example.toml) and [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) for the full reference.
+See [config.example.toml](config.example.toml) and [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
-## Runtime API
+## API Runtime
 
-`deepseek serve --http` starts a local HTTP/SSE API on `127.0.0.1:7878` for external clients. Supports threads, multi-turn conversations, task queues, and live event streaming.
+`deepseek serve --http` starts a local HTTP/SSE service on `127.0.0.1:7878` for multi-turn conversations, task queues, and event streaming.
+See [docs/RUNTIME_API.md](docs/RUNTIME_API.md).
 
-See [`docs/RUNTIME_API.md`](docs/RUNTIME_API.md) for endpoints and usage.
+## Standalone app (web + desktop)
 
-## Keyboard Shortcuts
+The Next.js + Tauri app lives in `apps/deepseek-app`.
 
-| Key | Action |
-|-----|--------|
-| `Enter` | Send message |
-| `Alt+Enter` / `Ctrl+J` | Insert newline |
-| `Tab` | Autocomplete or cycle modes |
-| `Esc` | Cancel request / clear input |
-| `Ctrl+C` | Cancel or exit |
-| `Ctrl+K` | Command palette |
-| `Ctrl+R` | Search past sessions |
-| `F1` | Help overlay |
-| `PageUp` / `PageDown` | Scroll transcript |
+```bash
+pnpm install
+pnpm deepseek-app:web:dev
+pnpm deepseek-app:desktop:dev
+```
 
-## Troubleshooting
+It uses the same runtime API endpoint (`deepseek serve --http`).
 
-| Problem | Fix |
-|---------|-----|
-| No API key | Set `DEEPSEEK_API_KEY` or run `deepseek` to complete onboarding |
-| Config not found | Check `~/.deepseek/config.toml` (or set `DEEPSEEK_CONFIG_PATH`) |
-| Wrong region | Set `DEEPSEEK_BASE_URL` to `https://api.deepseeki.com` (China) |
-| Finance tool unavailable | Use `web.run` to fetch financial data instead |
-| Token/cost tracking inaccuracies | Use `/compact` to manage context; treat cost estimates as approximate |
-| `web.run` tool name | Tool is named `web.run` (single dot), not `web..run` |
-| Sandbox errors (macOS) | Run `deepseek doctor` |
-
-## Documentation
+## Docs
 
 - [Configuration Reference](docs/CONFIGURATION.md)
 - [Architecture](docs/ARCHITECTURE.md)
@@ -177,29 +125,12 @@ cargo clippy
 cargo fmt
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+## Contributors
 
-## Standalone DeepSeek App (Web + Desktop)
-
-This repo now includes a separate Codex-style app at `apps/deepseek-app` built with Next.js + Tauri.
-
-```bash
-# Install frontend deps once
-pnpm install
-
-# Web app
-pnpm deepseek-app:web:dev
-
-# Desktop app (Tauri)
-pnpm deepseek-app:desktop:dev
-```
-
-The app talks to the runtime API (`deepseek serve --http`) and desktop mode auto-starts it when unavailable.
+- Hunter Bown (`@Hmbown`)
 
 ## License
 
 MIT
 
----
-
-DeepSeek is a trademark of DeepSeek Inc. This is an unofficial, community-driven project.
+DeepSeek is a trademark of DeepSeek Inc. This is an unofficial, community-run project.

@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.21] - 2026-02-19
+
+### Added
+- Parallel tool execution in `multi_tool_use.parallel` for independent task workflows.
+- Session resume-thread coverage in tests.
+
+### Changed
+- Desktop and web parity polish across the TUI and runtime surfaces.
+- Onboarding and approval UX refinement from prior phase 3 iteration.
+
+### Fixed
+- Runtime pre-release startup issues and config-path edge cases.
+- Clippy lint regressions introduced by the last parity pass.
+
+### Security/Hardening
+- General pre-release hardening for runtime app behavior.
+
 ## [0.3.17] - 2026-02-16
 
 ### Fixed
@@ -281,7 +298,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hooks system and config profiles
 - Example skills and launch assets
 
-[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.14...HEAD
+[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.21...HEAD
+[0.3.21]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.17...v0.3.21
+[0.3.17]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.16...v0.3.17
+[0.3.16]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.14...v0.3.16
 [0.3.14]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.13...v0.3.14
 [0.3.13]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.12...v0.3.13
 [0.3.12]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.11...v0.3.12
