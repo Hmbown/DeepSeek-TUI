@@ -911,6 +911,7 @@ button:focus-visible {
   align-items: flex-start;
   justify-content: space-between;
   gap: var(--space-2);
+  flex-wrap: wrap;
 }
 
 .composer-hint-row {
@@ -918,6 +919,8 @@ button:focus-visible {
   gap: 4px;
   font-size: 11px;
   color: var(--text-2);
+  flex: 1 1 240px;
+  min-width: 0;
 }
 
 .composer-hint-row > span {
@@ -1929,10 +1932,6 @@ kbd {
   gap: var(--space-2);
 }
 
-.folder-toggle {
-  flex-shrink: 0;
-}
-
 /* ── Feature 2: Thread status icons & layout ─────── */
 
 .thread-status-icon {
@@ -2034,6 +2033,7 @@ kbd {
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
+  flex-wrap: wrap;
   padding: var(--space-2) var(--space-4);
   border-top: 1px solid var(--line-0);
   background: rgba(8, 18, 38, 0.92);
@@ -2045,6 +2045,12 @@ kbd {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.status-bar-right {
+  margin-left: auto;
 }
 
 .permission-indicator {
@@ -2191,10 +2197,15 @@ kbd {
 .composer-selectors {
   display: flex;
   gap: var(--space-2);
+  flex-wrap: wrap;
+  flex: 1 1 220px;
+  min-width: 0;
 }
 
 .composer-select {
-  width: auto;
+  width: min(200px, 100%);
+  max-width: 100%;
+  flex: 1 1 120px;
   min-width: 120px;
   padding: 4px 8px;
   font-size: 11px;
@@ -2214,6 +2225,8 @@ kbd {
   align-items: center;
   gap: var(--space-2);
   cursor: pointer;
+  border-radius: var(--radius-sm);
+  outline: none;
 }
 
 .topbar-title-editable {
@@ -2236,14 +2249,24 @@ kbd {
   opacity: 1;
 }
 
+.topbar-title-display:focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--brand-sky) 58%, transparent);
+}
+
+.topbar-title-display:focus-visible .topbar-edit-icon {
+  opacity: 1;
+}
+
 .topbar-title-edit {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  min-width: 0;
 }
 
 .topbar-title-input {
-  width: 300px;
+  width: min(300px, 100%);
+  max-width: 100%;
   padding: 4px 8px;
   font-size: 14px;
   font-weight: 600;

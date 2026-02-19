@@ -1747,8 +1747,6 @@ export default function Home() {
           onCompact={selectedThreadId ? () => { void handleCompactThread(); } : undefined}
           onArchive={selectedThreadId ? () => { void handleThreadArchiveToggle(threads.find((t) => t.id === selectedThreadId) as ThreadSummary); } : undefined}
           onOpenInEditor={() => { if (workspace?.workspace) window.open(`vscode://file${workspace.workspace}`); }}
-          onOpenInTerminal={() => { /* Tauri shell command stub */ }}
-          onOpenInFinder={() => { /* Tauri shell command stub */ }}
           onCommit={workspace?.git_repo && (workspace.staged ?? 0) > 0 ? (msg) => { void handleCommit(msg); } : undefined}
         />
 

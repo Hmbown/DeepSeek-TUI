@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { TopBar } from "@/components/topbar/TopBar";
@@ -43,9 +43,25 @@ describe("Git integration - TopBar", () => {
     expect(screen.getByText("Commit")).toBeInTheDocument();
   });
 
+  it("invokes onCommit with default message when clicking commit", () => {
+    const stagedWorkspace = { ...baseWorkspace, staged: 1 };
+    const onCommit = vi.fn();
+    render(<TopBar workspace={stagedWorkspace} onCommit={onCommit} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /commit staged changes/i }));
+    expect(onCommit).toHaveBeenCalledWith("Commit from DeepSeek App");
+  });
+
   it("hides commit button when staged is 0", () => {
     render(<TopBar workspace={baseWorkspace} onCommit={vi.fn()} />);
 
     expect(screen.queryByText("Commit")).toBeNull();
+  });
+
+  it("hides commit button when onCommit is not provided", () => {
+    const stagedWorkspace = { ...baseWorkspace, staged: 4 };
+    render(<TopBar workspace={stagedWorkspace} />);
+
+    expect(screen.queryByRole("button", { name: /commit staged changes/i })).toBeNull();
   });
 });

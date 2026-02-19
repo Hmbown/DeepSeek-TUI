@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useRef, useState, type KeyboardEvent } from "react";
 import {
   Check,
   Copy,
@@ -60,6 +60,13 @@ export function TopBar({
     setEditing(true);
   };
 
+  const handleTitleDisplayKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (!onTitleChange) return;
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    startEditing();
+  };
+
   const saveTitle = () => {
     if (onTitleChange && editValue.trim()) {
       onTitleChange(editValue.trim());
@@ -96,7 +103,14 @@ export function TopBar({
             </button>
           </div>
         ) : (
-          <div className="topbar-title-display" onClick={startEditing} role={onTitleChange ? "button" : undefined} tabIndex={onTitleChange ? 0 : undefined}>
+          <div
+            className="topbar-title-display"
+            onClick={startEditing}
+            onKeyDown={handleTitleDisplayKeyDown}
+            role={onTitleChange ? "button" : undefined}
+            tabIndex={onTitleChange ? 0 : undefined}
+            aria-label={onTitleChange ? "Edit thread title" : undefined}
+          >
             <h1 className="topbar-title-editable">{threadTitle ?? "New Thread"}</h1>
             {onTitleChange ? <Edit3 size={12} className="topbar-edit-icon" /> : null}
           </div>

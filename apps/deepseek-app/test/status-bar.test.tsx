@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { StatusBar } from "@/components/chat/StatusBar";
@@ -40,6 +40,15 @@ describe("StatusBar", () => {
     const noGitWorkspace = { ...baseWorkspace, git_repo: false };
     render(<StatusBar mode="agent" workspace={noGitWorkspace} onInitGit={vi.fn()} />);
     expect(screen.getByText("Create git repository")).toBeInTheDocument();
+  });
+
+  it("calls onInitGit when git init button is clicked", () => {
+    const noGitWorkspace = { ...baseWorkspace, git_repo: false };
+    const onInitGit = vi.fn();
+    render(<StatusBar mode="agent" workspace={noGitWorkspace} onInitGit={onInitGit} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /create git repository/i }));
+    expect(onInitGit).toHaveBeenCalledTimes(1);
   });
 
   it("hides git init button when git repo exists", () => {

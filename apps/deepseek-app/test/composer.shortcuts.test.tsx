@@ -72,4 +72,27 @@ describe("Composer keyboard behavior", () => {
 
     expect(screen.getByRole("button", { name: /^send$/i })).toBeDisabled();
   });
+
+  it("adds a newline on Ctrl/Cmd+J and Alt+Enter", () => {
+    const onValueChange = vi.fn();
+
+    render(
+      <Composer
+        {...baseProps}
+        value="hello"
+        onValueChange={onValueChange}
+        onSend={vi.fn()}
+      />
+    );
+
+    const textarea = screen.getByPlaceholderText("Type a prompt…");
+    fireEvent.keyDown(textarea, { key: "j", ctrlKey: true });
+    expect(onValueChange).toHaveBeenCalledWith("hello\n");
+
+    fireEvent.keyDown(textarea, { key: "j", metaKey: true });
+    expect(onValueChange).toHaveBeenCalledWith("hello\n");
+
+    fireEvent.keyDown(textarea, { key: "Enter", altKey: true });
+    expect(onValueChange).toHaveBeenCalledWith("hello\n");
+  });
 });

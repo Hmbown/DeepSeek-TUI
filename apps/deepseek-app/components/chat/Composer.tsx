@@ -69,8 +69,12 @@ export function Composer({
     for (let i = 0; i < fileList.length; i++) {
       const file = fileList[i];
       if (attachedFiles.length + newFiles.length >= MAX_ATTACHMENTS) break;
-      if (!attachedFiles.some((f) => f.name === file.name)) {
-        newFiles.push({ name: file.name, path: file.name });
+      const filePath = ((file as File & { path?: string }).path ?? file.webkitRelativePath ?? file.name).trim() || file.name;
+      const alreadyAttached =
+        attachedFiles.some((f) => f.path === filePath || f.name === file.name) ||
+        newFiles.some((f) => f.path === filePath || f.name === file.name);
+      if (!alreadyAttached) {
+        newFiles.push({ name: file.name, path: filePath });
       }
     }
     if (newFiles.length > 0) {

@@ -59,5 +59,33 @@ describe("Composer plan mode toggle", () => {
 
     const planBtn = screen.getByRole("button", { name: /plan/i });
     expect(planBtn.classList.contains("is-active")).toBe(true);
+    expect(planBtn).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("restores the most recent non-plan mode", () => {
+    const onModeChange = vi.fn();
+    const { rerender } = render(
+      <Composer
+        {...baseProps}
+        mode="normal"
+        onModeChange={onModeChange}
+      />
+    );
+
+    const planBtn = screen.getByRole("button", { name: /plan/i });
+    expect(planBtn).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(planBtn);
+    expect(onModeChange).toHaveBeenLastCalledWith("plan");
+
+    rerender(
+      <Composer
+        {...baseProps}
+        mode="plan"
+        onModeChange={onModeChange}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /plan/i }));
+    expect(onModeChange).toHaveBeenLastCalledWith("normal");
   });
 });

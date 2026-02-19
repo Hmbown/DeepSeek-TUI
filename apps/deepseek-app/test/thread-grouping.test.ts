@@ -33,8 +33,10 @@ describe("groupThreadsByWorkspace", () => {
     expect(groups).toHaveLength(2);
     expect(groups[0].workspace.name).toBe("project-a");
     expect(groups[0].threads).toHaveLength(2);
+    expect(groups[0].workspace.thread_count).toBe(2);
     expect(groups[1].workspace.name).toBe("project-b");
     expect(groups[1].threads).toHaveLength(1);
+    expect(groups[1].workspace.thread_count).toBe(1);
   });
 
   it("puts threads without workspace into Ungrouped", () => {
@@ -52,8 +54,10 @@ describe("groupThreadsByWorkspace", () => {
     expect(groups).toHaveLength(2);
     expect(groups[0].workspace.name).toBe("project-a");
     expect(groups[0].threads).toHaveLength(1);
+    expect(groups[0].workspace.thread_count).toBe(1);
     expect(groups[1].workspace.name).toBe("Ungrouped");
     expect(groups[1].threads).toHaveLength(2);
+    expect(groups[1].workspace.thread_count).toBe(2);
   });
 
   it("returns empty array for no threads", () => {

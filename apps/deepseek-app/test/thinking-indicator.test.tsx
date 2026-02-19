@@ -72,8 +72,12 @@ describe("ReasoningBlock", () => {
       />
     );
 
-    const toggle = screen.getByText("Reasoning");
+    expect(screen.queryByText(/The user greeted me/)).toBeNull();
+
+    const toggle = screen.getByRole("button", { name: /reasoning/i });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
     fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
 
     expect(
       screen.getByText(/The user greeted me/)

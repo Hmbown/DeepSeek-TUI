@@ -39,6 +39,17 @@ describe("TopBar editable title", () => {
     expect(onTitleChange).toHaveBeenCalledWith("New Title");
   });
 
+  it("enters edit mode from keyboard on Enter", () => {
+    const onTitleChange = vi.fn();
+    render(
+      <TopBar workspace={baseWorkspace} threadTitle="Keyboard Title" onTitleChange={onTitleChange} />
+    );
+
+    const editableTitle = screen.getByRole("button", { name: /edit thread title/i });
+    fireEvent.keyDown(editableTitle, { key: "Enter" });
+    expect(screen.getByDisplayValue("Keyboard Title")).toBeInTheDocument();
+  });
+
   it("cancels editing on Escape", () => {
     const onTitleChange = vi.fn();
     render(
@@ -104,5 +115,16 @@ describe("TopBar commit button", () => {
     );
 
     expect(screen.queryByLabelText("Commit staged changes")).toBeNull();
+  });
+
+  it("calls onCommit when commit button is clicked", () => {
+    const onCommit = vi.fn();
+    const stagedWorkspace = { ...baseWorkspace, staged: 2 };
+    render(
+      <TopBar workspace={stagedWorkspace} onCommit={onCommit} />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /commit staged changes/i }));
+    expect(onCommit).toHaveBeenCalledWith("Commit from DeepSeek App");
   });
 });
