@@ -1,0 +1,3 @@
+cargo:rerun-if-changed=build.rs
+cargo:rustc-check-cfg=cfg(no_intrinsic_type_name)
+cargo:rustc-check-cfg=cfg(no_phantom_pinned)

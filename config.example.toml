@@ -1,7 +1,7 @@
 # ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║                         DeepSeek CLI Configuration                            ║
+# ║                         Wagmii CLI Configuration                            ║
 # ║                                                                              ║
-# ║  Unofficial CLI for DeepSeek Platform - Not affiliated with DeepSeek Inc.     ║
+# ║  Unofficial CLI for Wagmii Platform - Not affiliated with Wagmii Inc.     ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
 # See `docs/CONFIGURATION.md` for how config is loaded (profiles, env overrides, etc.).
@@ -9,27 +9,27 @@
 # ─────────────────────────────────────────────────────────────────────────────────
 # API Keys
 # ─────────────────────────────────────────────────────────────────────────────────
-api_key = "YOUR_DEEPSEEK_API_KEY" # must be non-empty
+api_key = "YOUR_WAGMII_API_KEY" # must be non-empty
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Base URLs
 # ─────────────────────────────────────────────────────────────────────────────────
-base_url = "https://api.deepseek.com"
-# base_url = "https://api.deepseeki.com"         # China users
+base_url = "https://api.wagmii.com"
+# base_url = "https://api.wagmiii.com"         # China users
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Default Models
 # ─────────────────────────────────────────────────────────────────────────────────
-default_text_model = "deepseek-reasoner" # supported: deepseek-reasoner, deepseek-chat
+default_text_model = "wagmii-reasoner" # supported: wagmii-reasoner, wagmii-chat
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Paths
 # ─────────────────────────────────────────────────────────────────────────────────
-skills_dir = "~/.deepseek/skills"
-mcp_config_path = "~/.deepseek/mcp.json"
-notes_path = "~/.deepseek/notes.txt"
+skills_dir = "~/.wagmii/skills"
+mcp_config_path = "~/.wagmii/mcp.json"
+notes_path = "~/.wagmii/notes.txt"
 
-memory_path = "~/.deepseek/memory.md"
+memory_path = "~/.wagmii/memory.md"
 
 # Parsed but currently unused (reserved for future versions):
 # tools_file = "./tools.json"
@@ -42,9 +42,9 @@ approval_policy = "on-request" # on-request | untrusted | never
 sandbox_mode = "workspace-write" # read-only | workspace-write | danger-full-access | external-sandbox
 max_subagents = 5 # optional (1-20)
 
-# Optional managed policy paths (defaults to /etc/deepseek/*.toml on unix):
-# managed_config_path = "/etc/deepseek/managed_config.toml"
-# requirements_path = "/etc/deepseek/requirements.toml"
+# Optional managed policy paths (defaults to /etc/wagmii/*.toml on unix):
+# managed_config_path = "/etc/wagmii/managed_config.toml"
+# requirements_path = "/etc/wagmii/requirements.toml"
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # TUI
@@ -80,7 +80,7 @@ exponential_base = 2.0
 # enabled = false                  # Enable auto-compaction
 # token_threshold = 50000          # Trigger compaction above this token estimate
 # message_threshold = 50           # Or above this message count
-# model = "deepseek-chat"           # Model to use for summarization
+# model = "wagmii-chat"           # Model to use for summarization
 # cache_summary = true             # Cache the summary block
 
 # ─────────────────────────────────────────────────────────────────────────────────
@@ -97,20 +97,20 @@ replan_cooldown_turns = 5
 max_replay_per_turn = 1
 min_turns_before_guardrail = 2
 profile_window = 8
-deepseek_v3_2_chat_prior = 3.9
-deepseek_v3_2_reasoner_prior = 4.1
+wagmii_v3_2_chat_prior = 3.9
+wagmii_v3_2_reasoner_prior = 4.1
 fallback_default_prior = 3.8
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Profile Example (for multiple environments)
 # ─────────────────────────────────────────────────────────────────────────────────
-# Select a profile with `deepseek --profile <name>` or `DEEPSEEK_PROFILE=<name>`.
+# Select a profile with `wagmii --profile <name>` or `WAGMII_PROFILE=<name>`.
 [profiles.work]
-api_key = "WORK_DEEPSEEK_API_KEY"
-base_url = "https://api.deepseek.com"
+api_key = "WORK_WAGMII_API_KEY"
+base_url = "https://api.wagmii.com"
 
 [profiles.dev]
-api_key = "DEV_DEEPSEEK_API_KEY"
+api_key = "DEV_WAGMII_API_KEY"
 allow_shell = true
 
 # ─────────────────────────────────────────────────────────────────────────────────
@@ -125,7 +125,7 @@ allow_shell = true
 #
 # [[hooks.hooks]]
 # event = "session_start"
-# command = "echo 'DeepSeek CLI session started'"
+# command = "echo 'Wagmii CLI session started'"
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Requirements (admin constraints) example file

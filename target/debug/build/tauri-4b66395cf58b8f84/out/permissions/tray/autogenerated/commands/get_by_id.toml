@@ -1,0 +1,14 @@
+# Copyright 2019-2024 Tauri Programme within The Commons Conservancy
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MIT
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-by-id"
+description = "Enables the get_by_id command without any pre-configured scope."
+commands.allow = ["get_by_id"]
+
+[[permission]]
+identifier = "deny-get-by-id"
+description = "Denies the get_by_id command without any pre-configured scope."
+commands.deny = ["get_by_id"]

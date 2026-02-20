@@ -6,9 +6,7 @@ settings:
 
 importers:
 
-  .: {}
-
-  apps/deepseek-app:
+  .:
     dependencies:
       '@tauri-apps/api':
         specifier: ^2.8.0

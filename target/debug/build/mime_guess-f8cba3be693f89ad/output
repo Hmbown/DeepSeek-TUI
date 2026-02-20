@@ -1,0 +1,1 @@
+cargo:rustc-env=MIME_TYPES_GENERATED_PATH=/Volumes/VIXinSSD/deepseek-tui copy/target/debug/build/mime_guess-f8cba3be693f89ad/out/mime_types_generated.rs

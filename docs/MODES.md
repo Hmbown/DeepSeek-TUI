@@ -1,6 +1,6 @@
 # Modes and Approvals
 
-DeepSeek CLI has two related concepts:
+Wagmii CLI has two related concepts:
 
 - **TUI mode**: what kind of interaction you’re in (Normal/Plan/Agent/YOLO).
 - **Approval mode**: how aggressively the UI asks before executing tools.
@@ -55,7 +55,7 @@ See `MCP.md`.
 
 ## Related CLI Flags
 
-Run `deepseek --help` for the canonical list. Common flags:
+Run `wagmii --help` for the canonical list. Common flags:
 
 - `-p, --prompt <TEXT>`: one-shot prompt mode (prints and exits)
 - `--workspace <DIR>`: workspace root for file tools

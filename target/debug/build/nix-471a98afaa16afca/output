@@ -1,0 +1,3 @@
+cargo:rustc-cfg=macos
+cargo:rustc-cfg=apple_targets
+cargo:rustc-cfg=bsd

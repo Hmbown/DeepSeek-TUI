@@ -1,0 +1,2 @@
+cargo:rustc-cfg=std_atomic64
+cargo:rustc-cfg=std_atomic

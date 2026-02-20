@@ -1,0 +1,14 @@
+# Copyright 2019-2024 Tauri Programme within The Commons Conservancy
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MIT
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-all-webviews"
+description = "Enables the get_all_webviews command without any pre-configured scope."
+commands.allow = ["get_all_webviews"]
+
+[[permission]]
+identifier = "deny-get-all-webviews"
+description = "Denies the get_all_webviews command without any pre-configured scope."
+commands.deny = ["get_all_webviews"]

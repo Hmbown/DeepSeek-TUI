@@ -1,0 +1,14 @@
+# Copyright 2019-2024 Tauri Programme within The Commons Conservancy
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MIT
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-from-path"
+description = "Enables the from_path command without any pre-configured scope."
+commands.allow = ["from_path"]
+
+[[permission]]
+identifier = "deny-from-path"
+description = "Denies the from_path command without any pre-configured scope."
+commands.deny = ["from_path"]

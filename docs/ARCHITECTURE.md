@@ -1,6 +1,6 @@
-# DeepSeek CLI Architecture
+# Wagmii CLI Architecture
 
-This document provides an overview of the DeepSeek CLI architecture for developers and contributors.
+This document provides an overview of the Wagmii CLI architecture for developers and contributors.
 
 ## High-Level Overview
 
@@ -48,7 +48,7 @@ This document provides an overview of the DeepSeek CLI architecture for develope
 │  ┌──────────────────────────────────────────────────────────┐  │
 │  │              LLM Client Abstraction (llm_client.rs)       │  │
 │  │  ┌─────────────────┐  ┌─────────────────────────────┐    │  │
-│  │  │  DeepSeek Client │  │  Compatible Client (DeepSeek)│    │  │
+│  │  │  Wagmii Client │  │  Compatible Client (Wagmii)│    │  │
 │  │  │   (client.rs)   │  │       (client.rs)           │    │  │
 │  │  └─────────────────┘  └─────────────────────────────┘    │  │
 │  └──────────────────────────────────────────────────────────┘  │
@@ -77,17 +77,17 @@ This document provides an overview of the DeepSeek CLI architecture for develope
 
 ### LLM Integration
 
-- **`client.rs`** - HTTP client for DeepSeek's OpenAI-compatible Responses API (with chat fallback)
+- **`client.rs`** - HTTP client for Wagmii's OpenAI-compatible Responses API (with chat fallback)
 - **`llm_client.rs`** - Abstract LLM client trait with retry logic
 - **`models.rs`** - Data structures for API requests/responses
 
-#### DeepSeek API Endpoints
+#### Wagmii API Endpoints
 
-DeepSeek exposes OpenAI-compatible endpoints. The CLI uses:
-- `https://api.deepseek.com/v1/responses` - preferred Responses API
-- `https://api.deepseek.com/v1/chat/completions` - fallback if Responses is unavailable
+Wagmii exposes OpenAI-compatible endpoints. The CLI uses:
+- `https://api.wagmii.com/v1/responses` - preferred Responses API
+- `https://api.wagmii.com/v1/chat/completions` - fallback if Responses is unavailable
 
-The engine uses `handle_deepseek_turn()` to drive the agent loop against the
+The engine uses `handle_wagmii_turn()` to drive the agent loop against the
 Responses API (with automatic fallback if needed).
 
 ### Tool System
@@ -134,7 +134,7 @@ Responses API (with automatic fallback if needed).
 - **`prompts.rs`** - System prompt templates
 - **`project_doc.rs`** - Project documentation handling
 - **`session.rs`** - Session serialization
-- **`runtime_api.rs`** - HTTP/SSE runtime API (`deepseek serve --http`)
+- **`runtime_api.rs`** - HTTP/SSE runtime API (`wagmii serve --http`)
 - **`runtime_threads.rs`** - Durable thread/turn/item store + replayable event timeline
 - **`task_manager.rs`** - Durable queue, worker pool, task timelines and artifacts
 
@@ -153,9 +153,9 @@ Responses API (with automatic fallback if needed).
 
 ### Crash Recovery + Offline Queue
 
-1. Before sending user input, the TUI writes a checkpoint snapshot to `~/.deepseek/sessions/checkpoints/latest.json`
+1. Before sending user input, the TUI writes a checkpoint snapshot to `~/.wagmii/sessions/checkpoints/latest.json`
 2. Startup remains fresh by default; prior sessions are resumed explicitly via `--resume`/`--continue` (or `Ctrl+R` in TUI)
-3. While degraded/offline, new prompts are queued in-memory and mirrored to `~/.deepseek/sessions/checkpoints/offline_queue.json`
+3. While degraded/offline, new prompts are queued in-memory and mirrored to `~/.wagmii/sessions/checkpoints/offline_queue.json`
 4. Queue edits (`/queue ...`) are persisted continuously so drafts and queued prompts survive restarts
 5. Successful turn completion clears the active checkpoint and writes a durable session snapshot
 
@@ -172,7 +172,7 @@ Responses API (with automatic fallback if needed).
 ### Background Tasks
 
 1. Client enqueues task (`/task add ...` or `POST /v1/tasks`)
-2. `task_manager.rs` persists task + queue entry under `~/.deepseek/tasks`
+2. `task_manager.rs` persists task + queue entry under `~/.wagmii/tasks`
 3. Worker picks queued task (bounded pool), transitions to `running`
 4. Task creates/uses a runtime thread and starts a runtime turn
 5. `runtime_threads.rs` persists thread/turn/item records + monotonic event sequence
@@ -204,7 +204,7 @@ Responses API (with automatic fallback if needed).
 
 ### Adding an MCP Server
 
-1. Configure in `~/.deepseek/mcp.json`
+1. Configure in `~/.wagmii/mcp.json`
 2. Server auto-discovered at startup
 3. Tools exposed to LLM automatically
 
@@ -212,11 +212,11 @@ Responses API (with automatic fallback if needed).
 
 1. Create skill directory with `SKILL.md`
 2. Define skill prompt and optional scripts
-3. Place in `~/.deepseek/skills/`
+3. Place in `~/.wagmii/skills/`
 
 ### Adding Hooks
 
-Configure in `~/.deepseek/config.toml`:
+Configure in `~/.wagmii/config.toml`:
 
 ```toml
 [[hooks]]
@@ -235,12 +235,12 @@ command = "echo 'Running tool: $TOOL_NAME'"
 
 ## Configuration Files
 
-- `~/.deepseek/config.toml` - Main configuration
-- `/etc/deepseek/managed_config.toml` - Optional managed defaults layer (Unix)
-- `/etc/deepseek/requirements.toml` - Optional allowed-policy constraints (Unix)
-- `~/.deepseek/mcp.json` - MCP server configuration
-- `~/.deepseek/skills/` - User skills directory
-- `~/.deepseek/sessions/` - Session history
-- `~/.deepseek/sessions/checkpoints/` - Crash checkpoint + offline queue persistence
-- `~/.deepseek/tasks/` - Background task records, queue, timelines, artifacts
-- `~/.deepseek/audit.log` - Append-only audit events for credential + approval/elevation actions
+- `~/.wagmii/config.toml` - Main configuration
+- `/etc/wagmii/managed_config.toml` - Optional managed defaults layer (Unix)
+- `/etc/wagmii/requirements.toml` - Optional allowed-policy constraints (Unix)
+- `~/.wagmii/mcp.json` - MCP server configuration
+- `~/.wagmii/skills/` - User skills directory
+- `~/.wagmii/sessions/` - Session history
+- `~/.wagmii/sessions/checkpoints/` - Crash checkpoint + offline queue persistence
+- `~/.wagmii/tasks/` - Background task records, queue, timelines, artifacts
+- `~/.wagmii/audit.log` - Append-only audit events for credential + approval/elevation actions

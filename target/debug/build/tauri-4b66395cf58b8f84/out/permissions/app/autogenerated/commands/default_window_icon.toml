@@ -1,0 +1,14 @@
+# Copyright 2019-2024 Tauri Programme within The Commons Conservancy
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MIT
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-default-window-icon"
+description = "Enables the default_window_icon command without any pre-configured scope."
+commands.allow = ["default_window_icon"]
+
+[[permission]]
+identifier = "deny-default-window-icon"
+description = "Denies the default_window_icon command without any pre-configured scope."
+commands.deny = ["default_window_icon"]

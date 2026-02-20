@@ -1,0 +1,499 @@
+//! Config commands: config, settings, mode switches, trust, logout
+
+use super::CommandResult;
+use crate::config::{COMMON_WAGMII_MODELS, canonical_model_name, clear_api_key};
+use crate::palette;
+use crate::settings::Settings;
+use crate::tui::app::{App, AppAction, AppMode, OnboardingState, SidebarFocus};
+use crate::tui::approval::ApprovalMode;
+
+/// Open the interactive config editor modal.
+pub fn show_config(_app: &mut App) -> CommandResult {
+    CommandResult::action(AppAction::OpenConfigView)
+}
+
+/// Show persistent settings
+pub fn show_settings(_app: &mut App) -> CommandResult {
+    match Settings::load() {
+        Ok(settings) => CommandResult::message(settings.display()),
+        Err(e) => CommandResult::error(format!("Failed to load settings: {e}")),
+    }
+}
+
+/// Modify a setting at runtime
+pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) -> CommandResult {
+    let key = key.to_lowercase();
+
+    match key.as_str() {
+        "model" => {
+            let Some(model) = canonical_model_name(value) else {
+                return CommandResult::error(format!(
+                    "Invalid model '{value}'. Supported models: {}",
+                    COMMON_WAGMII_MODELS.join(", ")
+                ));
+            };
+            app.model = model.to_string();
+            app.update_model_compaction_budget();
+            app.last_prompt_tokens = None;
+            app.last_completion_tokens = None;
+            return CommandResult::with_message_and_action(
+                format!("model = {model}"),
+                AppAction::UpdateCompaction(app.compaction_config()),
+            );
+        }
+        "approval_mode" | "approval" => {
+            let mode = match value.to_lowercase().as_str() {
+                "auto" => Some(ApprovalMode::Auto),
+                "suggest" | "suggested" | "on-request" | "untrusted" => Some(ApprovalMode::Suggest),
+                "never" => Some(ApprovalMode::Never),
+                _ => None,
+            };
+            return match mode {
+                Some(m) => {
+                    app.approval_mode = m;
+                    CommandResult::message(format!("approval_mode = {}", m.label()))
+                }
+                None => CommandResult::error(
+                    "Invalid approval_mode. Use: auto, suggest/on-request/untrusted, never",
+                ),
+            };
+        }
+        _ => {}
+    }
+
+    let mut settings = match Settings::load() {
+        Ok(s) => s,
+        Err(e) if !persist => {
+            app.status_message = Some(format!(
+                "Settings unavailable; applying session-only override ({e})"
+            ));
+            Settings::default()
+        }
+        Err(e) => return CommandResult::error(format!("Failed to load settings: {e}")),
+    };
+
+    if let Err(e) = settings.set(&key, value) {
+        return CommandResult::error(format!("{e}"));
+    }
+
+    let mut action = None;
+    match key.as_str() {
+        "auto_compact" | "compact" => {
+            app.auto_compact = settings.auto_compact;
+            action = Some(AppAction::UpdateCompaction(app.compaction_config()));
+        }
+        "show_thinking" | "thinking" => {
+            app.show_thinking = settings.show_thinking;
+            app.mark_history_updated();
+        }
+        "show_tool_details" | "tool_details" => {
+            app.show_tool_details = settings.show_tool_details;
+            app.mark_history_updated();
+        }
+        "default_mode" | "mode" => {
+            let mode = match settings.default_mode.as_str() {
+                "agent" | "normal" => AppMode::Agent,
+                "plan" => AppMode::Plan,
+                "yolo" => AppMode::Yolo,
+                _ => AppMode::Agent,
+            };
+            app.set_mode(mode);
+        }
+        "max_history" | "history" => {
+            app.max_input_history = settings.max_input_history;
+        }
+        "default_model" => {
+            if let Some(ref model) = settings.default_model {
+                app.model.clone_from(model);
+                app.update_model_compaction_budget();
+                app.last_prompt_tokens = None;
+                app.last_completion_tokens = None;
+                action = Some(AppAction::UpdateCompaction(app.compaction_config()));
+            }
+        }
+        "theme" => {
+            app.ui_theme = palette::ui_theme(&settings.theme);
+            app.mark_history_updated();
+        }
+        "sidebar_width" | "sidebar" => {
+            app.sidebar_width_percent = settings.sidebar_width_percent;
+            app.mark_history_updated();
+        }
+        "sidebar_focus" | "focus" => {
+            app.set_sidebar_focus(SidebarFocus::from_setting(&settings.sidebar_focus));
+        }
+        _ => {}
+    }
+
+    let message = if persist {
+        if let Err(e) = settings.save() {
+            return CommandResult::error(format!("Failed to save: {e}"));
+        }
+        format!("{key} = {value} (saved)")
+    } else {
+        format!("{key} = {value} (session only, add --save to persist)")
+    };
+
+    CommandResult {
+        message: Some(message),
+        action,
+    }
+}
+
+/// Modify a setting at runtime
+#[allow(dead_code)]
+pub fn set_config(app: &mut App, args: Option<&str>) -> CommandResult {
+    let Some(args) = args else {
+        let available = Settings::available_settings()
+            .iter()
+            .map(|(k, d)| format!("  {k}: {d}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        return CommandResult::message(format!(
+            "Usage: /set <key> <value>\n\n\
+             Available settings:\n{available}\n\n\
+             Session-only settings:\n  \
+             model: Current model\n  \
+             approval_mode: auto | suggest | never\n\n\
+             Add --save to persist to settings file."
+        ));
+    };
+
+    let parts: Vec<&str> = args.splitn(2, ' ').collect();
+    if parts.len() < 2 {
+        return CommandResult::error("Usage: /set <key> <value>");
+    }
+
+    let key = parts[0].to_lowercase();
+    let (value, should_save) = if parts[1].ends_with(" --save") {
+        (parts[1].trim_end_matches(" --save").trim(), true)
+    } else {
+        (parts[1].trim(), false)
+    };
+
+    set_config_value(app, &key, value, should_save)
+}
+
+/// Enable YOLO mode (shell + trust + auto-approve)
+pub fn yolo(app: &mut App) -> CommandResult {
+    app.set_mode(AppMode::Yolo);
+    CommandResult::message("YOLO mode enabled - shell + trust + auto-approve!")
+}
+
+/// Enable normal mode (read-only chat, suggestions before approvals)
+pub fn normal_mode(app: &mut App) -> CommandResult {
+    app.set_mode(AppMode::Normal);
+    CommandResult::message("Normal mode enabled.")
+}
+
+/// Enable agent mode (autonomous tool use with approvals)
+pub fn agent_mode(app: &mut App) -> CommandResult {
+    app.set_mode(AppMode::Agent);
+    CommandResult::message("Agent mode enabled.")
+}
+
+/// Enable plan mode (tool planning, then choose execution route)
+pub fn plan_mode(app: &mut App) -> CommandResult {
+    app.set_mode(AppMode::Plan);
+    CommandResult::message(
+        "Plan mode enabled. Describe your goal and I will create a plan before execution.",
+    )
+}
+
+/// Enable trust mode (file access outside workspace)
+pub fn trust(app: &mut App) -> CommandResult {
+    app.trust_mode = true;
+    CommandResult::message("Trust mode enabled - can access files outside workspace")
+}
+
+/// Logout - clear API key and return to onboarding
+pub fn logout(app: &mut App) -> CommandResult {
+    match clear_api_key() {
+        Ok(()) => {
+            app.onboarding = OnboardingState::ApiKey;
+            app.onboarding_needs_api_key = true;
+            app.api_key_input.clear();
+            app.api_key_cursor = 0;
+            CommandResult::message("Logged out. Enter a new API key to continue.")
+        }
+        Err(e) => CommandResult::error(format!("Failed to clear API key: {e}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::test_support::lock_test_env;
+    use crate::tui::app::{App, TuiOptions};
+    use crate::tui::approval::ApprovalMode;
+    use std::env;
+    use std::ffi::OsString;
+    use std::fs;
+    use std::path::Path;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct EnvGuard {
+        home: Option<OsString>,
+        userprofile: Option<OsString>,
+        wagmii_config_path: Option<OsString>,
+    }
+
+    impl EnvGuard {
+        fn new(home: &Path) -> Self {
+            let home_str = OsString::from(home.as_os_str());
+            let config_path = home.join(".wagmii").join("config.toml");
+            let config_str = OsString::from(config_path.as_os_str());
+            let home_prev = env::var_os("HOME");
+            let userprofile_prev = env::var_os("USERPROFILE");
+            let wagmii_config_prev = env::var_os("WAGMII_CONFIG_PATH");
+
+            // Safety: test-only environment mutation guarded by a global mutex.
+            unsafe {
+                env::set_var("HOME", &home_str);
+                env::set_var("USERPROFILE", &home_str);
+                env::set_var("WAGMII_CONFIG_PATH", &config_str);
+            }
+
+            Self {
+                home: home_prev,
+                userprofile: userprofile_prev,
+                wagmii_config_path: wagmii_config_prev,
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(value) = self.home.take() {
+                // Safety: test-only environment mutation guarded by a global mutex.
+                unsafe {
+                    env::set_var("HOME", value);
+                }
+            } else {
+                // Safety: test-only environment mutation guarded by a global mutex.
+                unsafe {
+                    env::remove_var("HOME");
+                }
+            }
+
+            if let Some(value) = self.userprofile.take() {
+                // Safety: test-only environment mutation guarded by a global mutex.
+                unsafe {
+                    env::set_var("USERPROFILE", value);
+                }
+            } else {
+                // Safety: test-only environment mutation guarded by a global mutex.
+                unsafe {
+                    env::remove_var("USERPROFILE");
+                }
+            }
+
+            if let Some(value) = self.wagmii_config_path.take() {
+                // Safety: test-only environment mutation guarded by a global mutex.
+                unsafe {
+                    env::set_var("WAGMII_CONFIG_PATH", value);
+                }
+            } else {
+                // Safety: test-only environment mutation guarded by a global mutex.
+                unsafe {
+                    env::remove_var("WAGMII_CONFIG_PATH");
+                }
+            }
+        }
+    }
+
+    fn create_test_app() -> App {
+        let options = TuiOptions {
+            model: "test-model".to_string(),
+            workspace: PathBuf::from("."),
+            allow_shell: false,
+            use_alt_screen: true,
+            max_subagents: 1,
+            skills_dir: PathBuf::from("."),
+            memory_path: PathBuf::from("memory.md"),
+            notes_path: PathBuf::from("notes.txt"),
+            mcp_config_path: PathBuf::from("mcp.json"),
+            use_memory: false,
+            start_in_agent_mode: false,
+            skip_onboarding: false,
+            yolo: false,
+            resume_session_id: None,
+        };
+        App::new(options, &Config::default())
+    }
+
+    #[test]
+    fn test_yolo_command_sets_all_flags() {
+        let mut app = create_test_app();
+        let _ = yolo(&mut app);
+        assert!(app.allow_shell);
+        assert!(app.trust_mode);
+        assert!(app.yolo);
+        assert_eq!(app.approval_mode, ApprovalMode::Auto);
+        assert_eq!(app.mode, AppMode::Yolo);
+    }
+
+    #[test]
+    fn test_mode_switch_commands() {
+        let mut app = create_test_app();
+        let _ = normal_mode(&mut app);
+        assert_eq!(app.mode, AppMode::Normal);
+        let _ = agent_mode(&mut app);
+        assert_eq!(app.mode, AppMode::Agent);
+        let _ = plan_mode(&mut app);
+        assert_eq!(app.mode, AppMode::Plan);
+    }
+
+    #[test]
+    fn test_show_config_opens_config_editor() {
+        let mut app = create_test_app();
+        app.total_tokens = 1234;
+        let result = show_config(&mut app);
+        assert!(result.message.is_none());
+        assert!(matches!(result.action, Some(AppAction::OpenConfigView)));
+    }
+
+    #[test]
+    fn test_show_settings_loads_from_file() {
+        let _lock = lock_test_env();
+        let mut app = create_test_app();
+        let result = show_settings(&mut app);
+        // Settings should load (may use defaults if file doesn't exist)
+        assert!(result.message.is_some());
+    }
+
+    #[test]
+    fn test_set_without_args_shows_usage() {
+        let mut app = create_test_app();
+        let result = set_config(&mut app, None);
+        assert!(result.message.is_some());
+        let msg = result.message.unwrap();
+        assert!(msg.contains("Usage: /set"));
+        assert!(msg.contains("Available settings:"));
+    }
+
+    #[test]
+    fn test_set_model_updates_app_state() {
+        let mut app = create_test_app();
+        let _old_model = app.model.clone();
+        let result = set_config(&mut app, Some("model wagmii-reasoner"));
+        assert!(result.message.is_some());
+        let msg = result.message.unwrap();
+        assert!(msg.contains("model = wagmii-reasoner"));
+        assert_eq!(app.model, "wagmii-reasoner");
+        assert!(matches!(
+            result.action,
+            Some(AppAction::UpdateCompaction(_))
+        ));
+    }
+
+    #[test]
+    fn test_set_model_with_save_flag() {
+        let mut app = create_test_app();
+        let _result = set_config(&mut app, Some("model wagmii-reasoner --save"));
+        // Note: This test may fail in environments where settings can't be saved
+        // The important thing is that the model is updated
+        assert_eq!(app.model, "wagmii-reasoner");
+    }
+
+    #[test]
+    fn test_set_approval_mode_valid_values() {
+        let mut app = create_test_app();
+        // Test auto
+        let result = set_config(&mut app, Some("approval_mode auto"));
+        assert!(result.message.is_some());
+        assert_eq!(app.approval_mode, ApprovalMode::Auto);
+
+        // Test suggest
+        let result = set_config(&mut app, Some("approval_mode suggest"));
+        assert!(result.message.is_some());
+        assert_eq!(app.approval_mode, ApprovalMode::Suggest);
+
+        // Test never
+        let result = set_config(&mut app, Some("approval_mode never"));
+        assert!(result.message.is_some());
+        assert_eq!(app.approval_mode, ApprovalMode::Never);
+    }
+
+    #[test]
+    fn test_set_approval_mode_invalid_value() {
+        let mut app = create_test_app();
+        let result = set_config(&mut app, Some("approval_mode invalid"));
+        assert!(result.message.is_some());
+        let msg = result.message.unwrap();
+        assert!(msg.contains("Invalid approval_mode"));
+    }
+
+    #[test]
+    fn test_set_without_save_flag() {
+        let _lock = lock_test_env();
+        let mut app = create_test_app();
+        let result = set_config(&mut app, Some("auto_compact true"));
+        assert!(result.message.is_some());
+        let msg = result.message.unwrap();
+        assert!(msg.contains("(session only"));
+    }
+
+    #[test]
+    fn test_trust_enables_flag() {
+        let mut app = create_test_app();
+        assert!(!app.trust_mode);
+        let result = trust(&mut app);
+        assert!(result.message.is_some());
+        let msg = result.message.unwrap();
+        assert!(msg.contains("Trust mode enabled"));
+        assert!(app.trust_mode);
+    }
+
+    #[test]
+    fn test_logout_clears_api_key_state() {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "wagmii-cli-logout-test-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root).unwrap();
+        let _guard = EnvGuard::new(&temp_root);
+
+        let config_path = temp_root.join(".wagmii").join("config.toml");
+        fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        fs::write(&config_path, "api_key = \"test-key\"\n").unwrap();
+
+        let mut app = create_test_app();
+        let result = logout(&mut app);
+        assert!(result.message.is_some());
+        assert_eq!(app.onboarding, OnboardingState::ApiKey);
+        assert!(app.onboarding_needs_api_key);
+        assert!(app.api_key_input.is_empty());
+        assert_eq!(app.api_key_cursor, 0);
+
+        let updated = fs::read_to_string(config_path).unwrap();
+        assert!(!updated.contains("api_key"));
+    }
+
+    #[test]
+    fn test_set_invalid_setting() {
+        let _lock = lock_test_env();
+        let mut app = create_test_app();
+        let _result = set_config(&mut app, Some("nonexistent value"));
+        // Should either error or handle as session setting
+        // The current implementation tries to set it in Settings
+        // which may succeed or fail depending on Settings implementation
+    }
+
+    #[test]
+    fn test_set_key_without_value() {
+        let mut app = create_test_app();
+        let result = set_config(&mut app, Some("model"));
+        assert!(result.message.is_some());
+        let msg = result.message.unwrap();
+        assert!(msg.contains("Usage: /set"));
+    }
+}

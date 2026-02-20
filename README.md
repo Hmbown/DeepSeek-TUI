@@ -1,19 +1,19 @@
-# DeepSeek CLI
+# Wagmii CLI
 
-An agentic coding harness for [DeepSeek](https://platform.deepseek.com) models, built in Rust.
+An agentic coding harness for [Wagmii](https://platform.wagmii.com) models, built in Rust.
 
-[![CI](https://github.com/Hmbown/DeepSeek-TUI/actions/workflows/ci.yml/badge.svg)](https://github.com/Hmbown/DeepSeek-TUI/actions/workflows/ci.yml)
-[![crates.io](https://img.shields.io/crates/v/deepseek-tui)](https://crates.io/crates/deepseek-tui)
+[![CI](https://github.com/Hmbown/wagmii/actions/workflows/ci.yml/badge.svg)](https://github.com/Hmbown/wagmii/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/wagmii-tui)](https://crates.io/crates/wagmii-tui)
 
 <p align="center">
-  <img src="assets/hero.png" alt="DeepSeek CLI" width="800">
+  <img src="assets/hero.png" alt="Wagmii CLI" width="800">
 </p>
 
-Works with DeepSeek v3.2 (chat + reasoner). Ready for v4. Not affiliated with DeepSeek Inc.
+Works with Wagmii v3.2 (chat + reasoner). Ready for v4. Not affiliated with Wagmii Inc.
 
 ## What is this
 
-A terminal-native agent loop that gives DeepSeek the tools it needs to actually write code: file editing, shell execution, web search, git operations, task tracking, and MCP server integration. Coherence-aware memory compaction keeps long sessions on track without blowing up the context window.
+A terminal-native agent loop that gives Wagmii the tools it needs to actually write code: file editing, shell execution, web search, git operations, task tracking, and MCP server integration. Coherence-aware memory compaction keeps long sessions on track without blowing up the context window.
 
 Three modes:
 
@@ -27,25 +27,25 @@ Sub-agent orchestration is in there too (background workers, parallel tool calls
 
 ```bash
 # From crates.io (requires Rust 1.85+)
-cargo install deepseek-tui --locked
+cargo install wagmii-tui --locked
 
 # Or from source
-git clone https://github.com/Hmbown/DeepSeek-TUI.git
-cd DeepSeek-TUI && cargo install --path . --locked
+git clone https://github.com/Hmbown/wagmii.git
+cd wagmii && cargo install --path . --locked
 ```
 
 ## Setup
 
-Create `~/.deepseek/config.toml`:
+Create `~/.wagmii/config.toml`:
 
 ```toml
-api_key = "YOUR_DEEPSEEK_API_KEY"
+api_key = "YOUR_WAGMII_API_KEY"
 ```
 
 Then run:
 
 ```bash
-deepseek
+wagmii
 ```
 
 **Tab** switches modes, **F1** opens help, **Esc** cancels a running request.
@@ -53,17 +53,17 @@ deepseek
 ## Usage
 
 ```bash
-deepseek                                  # interactive TUI
-deepseek -p "explain this in 2 sentences" # one-shot prompt
-deepseek --yolo                           # agent mode, all tools auto-approved
-deepseek doctor                           # check your setup
+wagmii                                  # interactive TUI
+wagmii -p "explain this in 2 sentences" # one-shot prompt
+wagmii --yolo                           # agent mode, all tools auto-approved
+wagmii doctor                           # check your setup
 ```
 
 ## Configuration
 
-Everything lives in `~/.deepseek/config.toml`. See [config.example.toml](config.example.toml) for the full set of options.
+Everything lives in `~/.wagmii/config.toml`. See [config.example.toml](config.example.toml) for the full set of options.
 
-Environment overrides: `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`.
+Environment overrides: `WAGMII_API_KEY`, `WAGMII_BASE_URL`.
 
 ## Docs
 

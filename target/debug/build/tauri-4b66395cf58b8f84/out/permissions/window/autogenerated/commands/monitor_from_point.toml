@@ -1,0 +1,14 @@
+# Copyright 2019-2024 Tauri Programme within The Commons Conservancy
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MIT
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-monitor-from-point"
+description = "Enables the monitor_from_point command without any pre-configured scope."
+commands.allow = ["monitor_from_point"]
+
+[[permission]]
+identifier = "deny-monitor-from-point"
+description = "Denies the monitor_from_point command without any pre-configured scope."
+commands.deny = ["monitor_from_point"]

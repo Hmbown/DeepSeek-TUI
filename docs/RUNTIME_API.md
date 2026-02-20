@@ -1,9 +1,9 @@
 # Runtime API (HTTP/SSE)
 
-DeepSeek CLI can expose a local runtime API for external clients:
+Wagmii CLI can expose a local runtime API for external clients:
 
 ```bash
-deepseek serve --http --host 127.0.0.1 --port 7878 --workers 2
+wagmii serve --http --host 127.0.0.1 --port 7878 --workers 2
 ```
 
 Defaults:
@@ -58,7 +58,7 @@ Resume session request body (all fields optional):
 
 ```json
 {
-  "model": "deepseek-chat",
+  "model": "wagmii-chat",
   "mode": "agent"
 }
 ```
@@ -85,7 +85,7 @@ Request body:
 ```json
 {
   "prompt": "Summarize recent commits",
-  "model": "deepseek-reasoner",
+  "model": "wagmii-reasoner",
   "mode": "agent",
   "workspace": ".",
   "allow_shell": false,
@@ -121,7 +121,7 @@ Create thread request example:
 
 ```json
 {
-  "model": "deepseek-reasoner",
+  "model": "wagmii-reasoner",
   "workspace": ".",
   "mode": "agent",
   "allow_shell": false,
@@ -216,7 +216,7 @@ RRULE support is intentionally constrained to:
 - hourly: `FREQ=HOURLY;INTERVAL=<hours>[;BYDAY=MO,TU,...]`
 - weekly: `FREQ=WEEKLY;BYDAY=...;BYHOUR=<0-23>;BYMINUTE=<0-59>`
 
-Automations are persisted under `~/.deepseek/automations` (override with `DEEPSEEK_AUTOMATIONS_DIR`).
+Automations are persisted under `~/.wagmii/automations` (override with `WAGMII_AUTOMATIONS_DIR`).
 Each run is executed as a normal background task and links to task/thread/turn ids.
 
 ## Persistence
@@ -229,6 +229,6 @@ Runtime store (default under task data root):
 - `runtime/state.json` (monotonic sequence)
 
 Task store:
-- default `~/.deepseek/tasks` (override with `DEEPSEEK_TASKS_DIR`)
+- default `~/.wagmii/tasks` (override with `WAGMII_TASKS_DIR`)
 
 Both runtime and task state are restart-safe.

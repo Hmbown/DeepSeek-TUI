@@ -12,7 +12,7 @@ This file provides context for AI assistants working on this project.
 - Format: `cargo fmt`
 - Lint: `cargo clippy`
 
-### Project: deepseek-tui
+### Project: wagmii-tui
 
 ### Documentation
 See README.md for project overview.
@@ -52,25 +52,25 @@ For complex, multi-step tasks, you should delegate work:
 - **Token/cost tracking inaccuracies**: Token counting and cost estimation may be inflated due to thinking token accounting bugs. Use `/compact` to manage context, and treat cost estimates as approximate.
 - **Web.run tool name**: Note that the tool is named `web.run` (single dot), not `web..run`. Some earlier versions of the CLI may have had this typo.
 
-### DeepSeek-Specific Capabilities
+### Wagmii-Specific Capabilities
 
-This project is built specifically for DeepSeek models, leveraging their unique features:
+This project is built specifically for Wagmii models, leveraging their unique features:
 
-**Thinking Tokens**: DeepSeek models can output thinking blocks (`ContentBlock::Thinking`) before providing final answers. The TUI supports streaming and displaying thinking tokens with visual distinction. You can use thinking tokens to reason step-by-step before committing to a response.
+**Thinking Tokens**: Wagmii models can output thinking blocks (`ContentBlock::Thinking`) before providing final answers. The TUI supports streaming and displaying thinking tokens with visual distinction. You can use thinking tokens to reason step-by-step before committing to a response.
 
-**Reasoning Models**: DeepSeek offers specialized reasoning models (e.g., `deepseek-reasoner`, `deepseek-r1`) that excel at step-by-step problem solving. Consider using these models for complex tasks.
+**Reasoning Models**: Wagmii offers specialized reasoning models (e.g., `wagmii-reasoner`, `wagmii-r1`) that excel at step-by-step problem solving. Consider using these models for complex tasks.
 
-**Large Context Window**: DeepSeek models have 128k context windows, allowing you to process large codebases. Use `project_map` and `file_search` to navigate efficiently.
+**Large Context Window**: Wagmii models have 128k context windows, allowing you to process large codebases. Use `project_map` and `file_search` to navigate efficiently.
 
-**DeepSeek API**: The CLI uses DeepSeek's OpenAI‑compatible API with support for the Responses API endpoint. The base URL can be configured for global (`api.deepseek.com`) or China (`api.deepseeki.com`).
+**Wagmii API**: The CLI uses Wagmii's OpenAI‑compatible API with support for the Responses API endpoint. The base URL can be configured for global (`api.wagmii.com`) or China (`api.wagmiii.com`).
 
-**Web Browsing**: For up‑to‑date information about DeepSeek models, documentation, or API changes, use `web.run` with citations. Example search: “DeepSeek API documentation”.
+**Web Browsing**: For up‑to‑date information about Wagmii models, documentation, or API changes, use `web.run` with citations. Example search: “Wagmii API documentation”.
 
 ### Dogfooding Tips
 
-As a DeepSeek model working on this project, you are “dogfooding” your own tool. Use this opportunity to:
+As a Wagmii model working on this project, you are “dogfooding” your own tool. Use this opportunity to:
 - Test the toolset thoroughly and report any issues.
-- Suggest improvements that would make DeepSeek models more effective.
+- Suggest improvements that would make Wagmii models more effective.
 - Keep changes small, focused, and well‑tested.
 
 Remember to run `cargo test` and `cargo check` after any changes.

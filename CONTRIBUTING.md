@@ -1,6 +1,6 @@
-# Contributing to DeepSeek CLI
+# Contributing to Wagmii CLI
 
-Thank you for your interest in contributing to DeepSeek CLI! This document provides guidelines and instructions for contributing.
+Thank you for your interest in contributing to Wagmii CLI! This document provides guidelines and instructions for contributing.
 
 ## Getting Started
 
@@ -14,8 +14,8 @@ Thank you for your interest in contributing to DeepSeek CLI! This document provi
 
 1. Fork and clone the repository:
    ```bash
-   git clone https://github.com/YOUR_USERNAME/DeepSeek-CLI.git
-   cd DeepSeek-CLI
+   git clone https://github.com/YOUR_USERNAME/Wagmii-CLI.git
+   cd Wagmii-CLI
    ```
 
 2. Build the project:
@@ -67,7 +67,7 @@ Example: `feat: add --doctor command for system diagnostics`
 src/
 ├── main.rs           # Entry point and CLI definition
 ├── config.rs         # Configuration management
-├── client.rs         # HTTP client for DeepSeek API
+├── client.rs         # HTTP client for Wagmii API
 ├── llm_client.rs     # LLM abstraction layer
 ├── models.rs         # Data structures
 ├── mcp.rs            # Model Context Protocol support
@@ -121,7 +121,7 @@ When reporting issues, please include:
 
 - Operating system and version
 - Rust version (`rustc --version`)
-- DeepSeek CLI version (`deepseek --version`)
+- Wagmii CLI version (`wagmii --version`)
 - Steps to reproduce the issue
 - Expected vs actual behavior
 - Relevant error messages or logs
@@ -132,7 +132,7 @@ Be respectful and inclusive. We welcome contributors of all backgrounds and expe
 
 ## License
 
-By contributing to DeepSeek CLI, you agree that your contributions will be licensed under the MIT License.
+By contributing to Wagmii CLI, you agree that your contributions will be licensed under the MIT License.
 
 ## Questions?
 

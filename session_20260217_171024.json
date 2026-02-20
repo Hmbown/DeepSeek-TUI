@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "metadata": {
+    "id": "c58b052f-6b87-4b7e-b947-0cb786adf419",
+    "title": "New Session",
+    "created_at": "2026-02-17T23:10:24.644935Z",
+    "updated_at": "2026-02-17T23:10:24.644935Z",
+    "message_count": 0,
+    "total_tokens": 0,
+    "model": "deepseek-v3.2",
+    "workspace": "/var/folders/gc/lw1tgpk97z51d30mcvbhyb400000gn/T/.tmprgYS7L",
+    "mode": "AGENT"
+  },
+  "messages": [],
+  "system_prompt": null
+}

@@ -1,0 +1,14 @@
+# Copyright 2019-2024 Tauri Programme within The Commons Conservancy
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MIT
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-fetch-data-store-identifiers"
+description = "Enables the fetch_data_store_identifiers command without any pre-configured scope."
+commands.allow = ["fetch_data_store_identifiers"]
+
+[[permission]]
+identifier = "deny-fetch-data-store-identifiers"
+description = "Denies the fetch_data_store_identifiers command without any pre-configured scope."
+commands.deny = ["fetch_data_store_identifiers"]

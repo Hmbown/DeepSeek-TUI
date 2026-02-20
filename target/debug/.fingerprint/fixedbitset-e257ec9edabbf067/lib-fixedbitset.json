@@ -1,0 +1,1 @@
+{"rustc":2833068300835136146,"features":"[]","declared_features":"[\"default\", \"serde\", \"std\"]","target":3590446282960028792,"profile":3033921117576893,"path":721560985083157881,"deps":[],"local":[{"CheckDepInfo":{"dep_info":"debug/.fingerprint/fixedbitset-e257ec9edabbf067/dep-lib-fixedbitset","checksum":false}}],"rustflags":[],"config":2069994364910194474,"compile_kind":0}

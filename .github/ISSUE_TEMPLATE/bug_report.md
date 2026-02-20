@@ -19,7 +19,7 @@ labels: bug
 ## Environment
 
 - OS:
-- DeepSeek CLI version:
+- Wagmii CLI version:
 - Model:
 - Shell:
 

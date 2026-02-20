@@ -1,46 +1,46 @@
 # MCP (External Tool Servers)
 
-DeepSeek CLI can load additional tools via MCP (Model Context Protocol). MCP servers are local processes that the CLI starts and communicates with over stdio.
+Wagmii CLI can load additional tools via MCP (Model Context Protocol). MCP servers are local processes that the CLI starts and communicates with over stdio.
 
 Server mode note:
-- `deepseek serve --mcp` runs the MCP stdio server.
-- `deepseek serve --http` runs the runtime HTTP/SSE API (separate mode).
+- `wagmii serve --mcp` runs the MCP stdio server.
+- `wagmii serve --http` runs the runtime HTTP/SSE API (separate mode).
 
 ## Bootstrap MCP Config
 
 Create a starter MCP config at your resolved MCP path:
 
 ```bash
-deepseek mcp init
+wagmii mcp init
 ```
 
-`deepseek setup --mcp` performs the same MCP bootstrap alongside skills setup.
+`wagmii setup --mcp` performs the same MCP bootstrap alongside skills setup.
 
 Common management commands:
 
 ```bash
-deepseek mcp list
-deepseek mcp tools [server]
-deepseek mcp add <name> --command "<cmd>" --arg "<arg>"
-deepseek mcp add <name> --url "http://localhost:3000/mcp"
-deepseek mcp enable <name>
-deepseek mcp disable <name>
-deepseek mcp remove <name>
-deepseek mcp validate
+wagmii mcp list
+wagmii mcp tools [server]
+wagmii mcp add <name> --command "<cmd>" --arg "<arg>"
+wagmii mcp add <name> --url "http://localhost:3000/mcp"
+wagmii mcp enable <name>
+wagmii mcp disable <name>
+wagmii mcp remove <name>
+wagmii mcp validate
 ```
 
 ## Config File Location
 
 Default path:
 
-- `~/.deepseek/mcp.json`
+- `~/.wagmii/mcp.json`
 
 Overrides:
 
 - Config: `mcp_config_path = "/path/to/mcp.json"`
-- Env: `DEEPSEEK_MCP_CONFIG=/path/to/mcp.json`
+- Env: `WAGMII_MCP_CONFIG=/path/to/mcp.json`
 
-`deepseek mcp init` (and `deepseek setup --mcp`) writes to this resolved path.
+`wagmii mcp init` (and `wagmii setup --mcp`) writes to this resolved path.
 
 After editing the file, restart the TUI.
 
@@ -105,6 +105,6 @@ You should still only configure MCP servers you trust, and treat MCP server conf
 
 ## Troubleshooting
 
-- Run `deepseek doctor` to confirm the MCP config path it resolved and whether it exists.
-- If the MCP config is missing, run `deepseek mcp init --force` to regenerate it.
+- Run `wagmii doctor` to confirm the MCP config path it resolved and whether it exists.
+- If the MCP config is missing, run `wagmii mcp init --force` to regenerate it.
 - If tools don’t appear, verify the server command works from your shell and that the server supports MCP `tools/list`.

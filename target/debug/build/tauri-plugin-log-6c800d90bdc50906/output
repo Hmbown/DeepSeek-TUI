@@ -1,0 +1,7 @@
+cargo:rerun-if-changed=permissions
+cargo:PERMISSION_FILES_PATH=/Volumes/VIXinSSD/wagmii/target/debug/build/tauri-plugin-log-6c800d90bdc50906/out/tauri-plugin-log-permission-files
+cargo:rerun-if-env-changed=REMOVE_UNUSED_COMMANDS
+cargo:GLOBAL_API_SCRIPT_PATH=/Users/hunterbown/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-plugin-log-2.8.0/api-iife.js
+cargo:rustc-check-cfg=cfg(mobile)
+cargo:rustc-check-cfg=cfg(desktop)
+cargo:rustc-cfg=desktop

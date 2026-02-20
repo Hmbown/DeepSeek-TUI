@@ -11,20 +11,20 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            binary: deepseek
-            artifact_name: deepseek-linux-x64
+            binary: wagmii
+            artifact_name: wagmii-linux-x64
           - os: macos-latest
             target: x86_64-apple-darwin
-            binary: deepseek
-            artifact_name: deepseek-macos-x64
+            binary: wagmii
+            artifact_name: wagmii-macos-x64
           - os: macos-latest
             target: aarch64-apple-darwin
-            binary: deepseek
-            artifact_name: deepseek-macos-arm64
+            binary: wagmii
+            artifact_name: wagmii-macos-arm64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            binary: deepseek.exe
-            artifact_name: deepseek-windows-x64.exe
+            binary: wagmii.exe
+            artifact_name: wagmii-windows-x64.exe
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

@@ -1,0 +1,14 @@
+# Copyright 2019-2024 Tauri Programme within The Commons Conservancy
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MIT
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-app-theme"
+description = "Enables the set_app_theme command without any pre-configured scope."
+commands.allow = ["set_app_theme"]
+
+[[permission]]
+identifier = "deny-set-app-theme"
+description = "Denies the set_app_theme command without any pre-configured scope."
+commands.deny = ["set_app_theme"]

@@ -1,68 +1,42 @@
-# Build artifacts
-/target
-*.pdb
-*.exe
-*.dll
-*.so
-*.dylib
-*.rlib
-*.o
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
-# Development
-.env
-.env.*
-node_modules/
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+/src-tauri/target/
+
+# misc
 .DS_Store
-Thumbs.db
+*.pem
 
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-.pytest_cache/
-venv/
-ENV/
-env/
-.venv/
-*.egg-info/
-dist/
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
 
-# Logs
-*.log
-firebase-debug.log
+# env files (can opt-in for committing if needed)
+.env*
 
-# Generated
-outputs/
+# vercel
+.vercel
 
-# Rust
-# Note: Cargo.lock is intentionally NOT ignored for reproducible builds
-firebase-debug.log
-tmp/
-
-# Local dev scripts and temp files
-*.sh
-test.txt
-TODO*.md
-todo*.md
-CLAUDE.md
-NEXT_SESSION.md
-AI_HANDOFF.md
-result.json
-count_deps.py
-project_overhaul_prompt.md
-
-.codex/
-docs/rlm-paper.txt
-.context/
-
-# Local runtime state
-.deepseek/
-session_*.json
-
-# Companion app (tracked separately)
-apps/
+# typescript
+*.tsbuildinfo
+next-env.d.ts

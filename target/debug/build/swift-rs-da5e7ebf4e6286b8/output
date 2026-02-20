@@ -1,0 +1,1 @@
+cargo:rerun-if-env-changed=TEST_SWIFT_RS

@@ -1,0 +1,14 @@
+# Copyright 2019-2024 Tauri Programme within The Commons Conservancy
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MIT
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-register-listener"
+description = "Enables the register_listener command without any pre-configured scope."
+commands.allow = ["register_listener"]
+
+[[permission]]
+identifier = "deny-register-listener"
+description = "Denies the register_listener command without any pre-configured scope."
+commands.deny = ["register_listener"]

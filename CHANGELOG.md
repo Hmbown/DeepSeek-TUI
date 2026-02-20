@@ -14,10 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Retired user-facing `/set` command path (no longer reachable/discoverable).
-- Replaced `/deepseek` command behavior with `/links` (aliases: `dashboard`, `api`).
+- Replaced `/wagmii` command behavior with `/links` (aliases: `dashboard`, `api`).
 
 ### Fixed
-- Legacy `/set` and `/deepseek` inputs now return migration guidance instead of generic unknown-command errors.
+- Legacy `/set` and `/wagmii` inputs now return migration guidance instead of generic unknown-command errors.
 
 ## [0.3.21] - 2026-02-19
 
@@ -39,31 +39,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.3.17] - 2026-02-16
 
 ### Fixed
-- Config loading now expands `~` in `DEEPSEEK_CONFIG_PATH` and `--config` paths.
-- When `DEEPSEEK_CONFIG_PATH` points to a missing file, config loading now falls back to `~/.deepseek/config.toml` if it exists.
+- Config loading now expands `~` in `WAGMII_CONFIG_PATH` and `--config` paths.
+- When `WAGMII_CONFIG_PATH` points to a missing file, config loading now falls back to `~/.wagmii/config.toml` if it exists.
 
 ### Changed
-- Removed committed transient runtime artifacts (`session_*.json`, `.deepseek/trusted`) and added ignore rules to prevent re-commit.
+- Removed committed transient runtime artifacts (`session_*.json`, `.wagmii/trusted`) and added ignore rules to prevent re-commit.
 
 ## [0.3.16] - 2026-02-15
 
 ### Added
-- `deepseek models` CLI command to fetch and list models from the configured `/v1/models` endpoint (with `--json` output mode).
+- `wagmii models` CLI command to fetch and list models from the configured `/v1/models` endpoint (with `--json` output mode).
 - `/models` slash command to fetch and display live model IDs in the TUI.
 - Slash-command autocomplete hints in the composer plus `Tab` completion for `/` commands.
 - Command palette modal (`Ctrl+K`) for quick insertion of slash commands and skills.
 - Persistent right sidebar in wide terminals showing live plan/todo/sub-agent state.
 - Expandable tool payload views (`v` in transcript, `v` in approval modal) for full params/output inspection.
-- Runtime HTTP/SSE API (`deepseek serve --http`) with durable thread/turn/item lifecycle, interrupt/steer, and replayable event timeline.
+- Runtime HTTP/SSE API (`wagmii serve --http`) with durable thread/turn/item lifecycle, interrupt/steer, and replayable event timeline.
 - Background task queue (`/task add|list|show|cancel` and `POST /v1/tasks`) with persistent storage, bounded worker pool, and timeline/artifact tracking.
 
 ### Changed
 - Centralized the default text model (`DEFAULT_TEXT_MODEL`) and shared common model list to reduce drift across runtime/config paths.
-- `/model` now clarifies that any valid DeepSeek model ID is accepted (including future releases), while still showing common model IDs.
+- `/model` now clarifies that any valid Wagmii model ID is accepted (including future releases), while still showing common model IDs.
 
 ### Fixed
 - Expanded reasoning-model detection for chat history reconstruction (supports R-series and reasoner-style naming without hardcoding single versions).
-- Aligned docs/config examples with actual runtime default model (`deepseek-v3.2`).
+- Aligned docs/config examples with actual runtime default model (`wagmii-v3.2`).
 
 ## [0.3.14] - 2026-02-05
 
@@ -85,13 +85,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.3.12] - 2026-02-04
 
 ### Fixed
-- Map dotted tool names to API-safe identifiers for DeepSeek tool calls
+- Map dotted tool names to API-safe identifiers for Wagmii tool calls
 - Encode any invalid tool names for API tool lists while preserving internal names
 
 ## [0.3.11] - 2026-02-04
 
 ### Fixed
-- Fix tool name mapping for DeepSeek API
+- Fix tool name mapping for Wagmii API
 
 ## [0.3.10] - 2026-02-04
 
@@ -130,7 +130,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.3.6] - 2026-02-02
 
 ### Added
-- New welcome banner on startup showing "Welcome to DeepSeek TUI!" with directory, session ID, and model info
+- New welcome banner on startup showing "Welcome to Wagmii TUI!" with directory, session ID, and model info
 - Visual context progress bar in footer showing usage with block characters [████░░░░░░] and percentage
 
 ### Changed
@@ -183,11 +183,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.3.1] - 2026-01-27
 
 ### Added
-- `deepseek setup` to bootstrap MCP config and skills directories
-- `deepseek mcp init` to generate a template `mcp.json` at the configured path
+- `wagmii setup` to bootstrap MCP config and skills directories
+- `wagmii mcp init` to generate a template `mcp.json` at the configured path
 
 ### Changed
-- `deepseek doctor` now follows the resolved config path and config-derived MCP/skills locations
+- `wagmii doctor` now follows the resolved config path and config-derived MCP/skills locations
 
 ### Fixed
 - Doctor no longer reports missing MCP/skills when paths are overridden via config or env
@@ -197,7 +197,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Repo-aware working set tracking with prompt injection for active paths
 - Working set signals now pin relevant messages during auto-compaction
-- Offline eval harness (`deepseek eval`) with CI coverage in the test job
+- Offline eval harness (`wagmii eval`) with CI coverage in the test job
 - Shell tool now emits stdout/stderr summaries and truncation metadata
 - Dependency-aware `agent_swarm` tool for orchestrating multiple sub-agents
 - Expanded sub-agent tool access (apply_patch, web_search, file_search)
@@ -238,21 +238,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.0.1] - 2026-01-19
 
 ### Added
-- DeepSeek Responses API client with chat-completions fallback
+- Wagmii Responses API client with chat-completions fallback
 - CLI parity commands: login/logout, exec, review, apply, mcp, sandbox
 - Resume/fork session workflows with picker fallback
-- DeepSeek blue branding refresh + whale indicator
+- Wagmii blue branding refresh + whale indicator
 - Responses API proxy subcommand for key-isolated forwarding
 - Execpolicy check tooling and feature flag CLI
-- Agentic exec mode (`deepseek exec --auto`) with auto-approvals
+- Agentic exec mode (`wagmii exec --auto`) with auto-approvals
 
 ### Changed
-- Removed multimedia tooling and aligned prompts/docs for text-only DeepSeek API
+- Removed multimedia tooling and aligned prompts/docs for text-only Wagmii API
 
 ## [0.1.9] - 2026-01-17
 
 ### Added
-- API connectivity test in `deepseek doctor` command
+- API connectivity test in `wagmii doctor` command
 - Helpful error diagnostics for common API failures (invalid key, timeout, network issues)
 
 ## [0.1.8] - 2026-01-16
@@ -301,9 +301,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.1.0] - 2026-01-12
 
 ### Added
-- Initial alpha release of DeepSeek CLI
+- Initial alpha release of Wagmii CLI
 - Interactive TUI chat interface
-- DeepSeek API integration (OpenAI-compatible Responses API)
+- Wagmii API integration (OpenAI-compatible Responses API)
 - Tool execution (shell, file ops)
 - MCP (Model Context Protocol) support
 - Session management with history
@@ -312,34 +312,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hooks system and config profiles
 - Example skills and launch assets
 
-[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.22...HEAD
-[0.3.22]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.21...v0.3.22
-[0.3.21]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.17...v0.3.21
-[0.3.17]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.16...v0.3.17
-[0.3.16]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.14...v0.3.16
-[0.3.14]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.13...v0.3.14
-[0.3.13]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.12...v0.3.13
-[0.3.12]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.11...v0.3.12
-[0.3.11]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.10...v0.3.11
-[0.3.10]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.6...v0.3.10
-[0.3.9]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.6...v0.3.10
-[0.3.8]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.6...v0.3.10
-[0.3.7]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.6...v0.3.10
-[0.3.6]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.5...v0.3.6
-[0.3.5]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.4...v0.3.5
-[0.3.4]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.3...v0.3.4
-[0.3.3]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.2...v0.3.3
-[0.3.2]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.1...v0.3.2
-[0.3.1]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.0...v0.3.1
-[0.3.0]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.2.2...v0.3.0
-[0.2.2]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.2.0...v0.2.2
-[0.2.1]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.2.0...v0.2.2
-[0.2.0]: https://github.com/Hmbown/DeepSeek-TUI/releases/tag/v0.2.0
-[0.0.2]: https://github.com/Hmbown/DeepSeek-TUI/releases/tag/v0.0.2
-[0.0.1]: https://github.com/Hmbown/DeepSeek-CLI/releases/tag/v0.0.1
-[0.1.9]: https://github.com/Hmbown/DeepSeek-CLI/compare/v0.1.8...v0.1.9
-[0.1.8]: https://github.com/Hmbown/DeepSeek-CLI/compare/v0.1.7...v0.1.8
-[0.1.7]: https://github.com/Hmbown/DeepSeek-CLI/compare/v0.1.6...v0.1.7
-[0.1.6]: https://github.com/Hmbown/DeepSeek-CLI/compare/v0.1.5...v0.1.6
-[0.1.5]: https://github.com/Hmbown/DeepSeek-CLI/compare/v0.1.0...v0.1.5
-[0.1.0]: https://github.com/Hmbown/DeepSeek-CLI/releases/tag/v0.1.0
+[Unreleased]: https://github.com/Hmbown/wagmii/compare/v0.3.22...HEAD
+[0.3.22]: https://github.com/Hmbown/wagmii/compare/v0.3.21...v0.3.22
+[0.3.21]: https://github.com/Hmbown/wagmii/compare/v0.3.17...v0.3.21
+[0.3.17]: https://github.com/Hmbown/wagmii/compare/v0.3.16...v0.3.17
+[0.3.16]: https://github.com/Hmbown/wagmii/compare/v0.3.14...v0.3.16
+[0.3.14]: https://github.com/Hmbown/wagmii/compare/v0.3.13...v0.3.14
+[0.3.13]: https://github.com/Hmbown/wagmii/compare/v0.3.12...v0.3.13
+[0.3.12]: https://github.com/Hmbown/wagmii/compare/v0.3.11...v0.3.12
+[0.3.11]: https://github.com/Hmbown/wagmii/compare/v0.3.10...v0.3.11
+[0.3.10]: https://github.com/Hmbown/wagmii/compare/v0.3.6...v0.3.10
+[0.3.9]: https://github.com/Hmbown/wagmii/compare/v0.3.6...v0.3.10
+[0.3.8]: https://github.com/Hmbown/wagmii/compare/v0.3.6...v0.3.10
+[0.3.7]: https://github.com/Hmbown/wagmii/compare/v0.3.6...v0.3.10
+[0.3.6]: https://github.com/Hmbown/wagmii/compare/v0.3.5...v0.3.6
+[0.3.5]: https://github.com/Hmbown/wagmii/compare/v0.3.4...v0.3.5
+[0.3.4]: https://github.com/Hmbown/wagmii/compare/v0.3.3...v0.3.4
+[0.3.3]: https://github.com/Hmbown/wagmii/compare/v0.3.2...v0.3.3
+[0.3.2]: https://github.com/Hmbown/wagmii/compare/v0.3.1...v0.3.2
+[0.3.1]: https://github.com/Hmbown/wagmii/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/Hmbown/wagmii/compare/v0.2.2...v0.3.0
+[0.2.2]: https://github.com/Hmbown/wagmii/compare/v0.2.0...v0.2.2
+[0.2.1]: https://github.com/Hmbown/wagmii/compare/v0.2.0...v0.2.2
+[0.2.0]: https://github.com/Hmbown/wagmii/releases/tag/v0.2.0
+[0.0.2]: https://github.com/Hmbown/wagmii/releases/tag/v0.0.2
+[0.0.1]: https://github.com/Hmbown/Wagmii-CLI/releases/tag/v0.0.1
+[0.1.9]: https://github.com/Hmbown/Wagmii-CLI/compare/v0.1.8...v0.1.9
+[0.1.8]: https://github.com/Hmbown/Wagmii-CLI/compare/v0.1.7...v0.1.8
+[0.1.7]: https://github.com/Hmbown/Wagmii-CLI/compare/v0.1.6...v0.1.7
+[0.1.6]: https://github.com/Hmbown/Wagmii-CLI/compare/v0.1.5...v0.1.6
+[0.1.5]: https://github.com/Hmbown/Wagmii-CLI/compare/v0.1.0...v0.1.5
+[0.1.0]: https://github.com/Hmbown/Wagmii-CLI/releases/tag/v0.1.0

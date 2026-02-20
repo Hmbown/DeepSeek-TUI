@@ -1,4 +1,4 @@
-# DeepSeek CLI Operations Runbook
+# Wagmii CLI Operations Runbook
 
 This runbook covers practical debugging and incident response for the local CLI/TUI runtime.
 
@@ -6,14 +6,14 @@ This runbook covers practical debugging and incident response for the local CLI/
 
 1. Confirm binary + config:
    - `cargo run -- --version`
-   - `cat ~/.deepseek/config.toml` (or inspect configured profile)
+   - `cat ~/.wagmii/config.toml` (or inspect configured profile)
 2. Enable verbose logs:
-   - `RUST_LOG=deepseek_cli=debug cargo run`
-   - For HTTP retries/reconnects: `RUST_LOG=deepseek_cli::client=debug cargo run`
+   - `RUST_LOG=wagmii_cli=debug cargo run`
+   - For HTTP retries/reconnects: `RUST_LOG=wagmii_cli::client=debug cargo run`
 3. Capture current state:
-   - `ls ~/.deepseek/sessions`
-   - `ls ~/.deepseek/sessions/checkpoints`
-   - `ls ~/.deepseek/tasks`
+   - `ls ~/.wagmii/sessions`
+   - `ls ~/.wagmii/sessions/checkpoints`
+   - `ls ~/.wagmii/tasks`
 
 ## Incident: Turn Hangs or Stream Stops
 
@@ -22,9 +22,9 @@ Symptoms:
 - partial assistant output with no completion
 
 Checks:
-1. Inspect retry/health logs (`deepseek_cli::client`)
+1. Inspect retry/health logs (`wagmii_cli::client`)
 2. Verify endpoint connectivity:
-   - `curl -sS https://api.deepseek.com/v1/models -H "Authorization: Bearer $DEEPSEEK_API_KEY"`
+   - `curl -sS https://api.wagmii.com/v1/models -H "Authorization: Bearer $WAGMII_API_KEY"`
 3. Confirm no local sandbox/permission deadlock in tool output
 
 Actions:
@@ -36,7 +36,7 @@ Actions:
 
 Expected behavior:
 - New prompts are queued while offline mode is active
-- Queue state persists to `~/.deepseek/sessions/checkpoints/offline_queue.json`
+- Queue state persists to `~/.wagmii/sessions/checkpoints/offline_queue.json`
 
 Checks:
 1. Open queue in TUI: `/queue list`
@@ -50,11 +50,11 @@ Actions:
 ## Incident: Crash Recovery Needed
 
 Expected behavior:
-- Checkpoint stored at `~/.deepseek/sessions/checkpoints/latest.json`
+- Checkpoint stored at `~/.wagmii/sessions/checkpoints/latest.json`
 - Startup begins a fresh session unless `--resume`/`--continue` is supplied
 
 Actions:
-1. Resume prior work explicitly via `deepseek --resume <id>` or `Ctrl+R` in TUI
+1. Resume prior work explicitly via `wagmii --resume <id>` or `Ctrl+R` in TUI
 2. If checkpoint inspection is needed, inspect `latest.json` for schema mismatch/details
 3. If schema is newer than binary supports, upgrade binary or remove stale checkpoint
 
@@ -64,9 +64,9 @@ Symptoms:
 - Errors like `schema vX is newer than supported vY`
 
 Affected stores:
-- sessions (`~/.deepseek/sessions/*.json`)
+- sessions (`~/.wagmii/sessions/*.json`)
 - runtime thread/turn/item records
-- tasks (`~/.deepseek/tasks/tasks/*.json`)
+- tasks (`~/.wagmii/tasks/tasks/*.json`)
 
 Actions:
 1. Confirm binary version and migration expectations
@@ -78,7 +78,7 @@ Actions:
 ## Incident: MCP/Tool Execution Failures
 
 Checks:
-1. Validate `~/.deepseek/mcp.json` schema and server command paths
+1. Validate `~/.wagmii/mcp.json` schema and server command paths
 2. Confirm server process can start manually
 3. Check sandbox denials in TUI history / logs
 

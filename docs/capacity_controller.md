@@ -1,6 +1,6 @@
 # Capacity Controller
 
-`deepseek-tui` includes a capacity-aware context controller that keeps active prompt context near coherent operating range while preserving full history on disk.
+`wagmii-tui` includes a capacity-aware context controller that keeps active prompt context near coherent operating range while preserving full history on disk.
 
 ## Policy Overview
 
@@ -26,8 +26,8 @@ Formula:
 
 Per-model priors:
 
-- `deepseek_v3_2_chat = 3.9`
-- `deepseek_v3_2_reasoner = 4.1`
+- `wagmii_v3_2_chat = 3.9`
+- `wagmii_v3_2_reasoner = 4.1`
 - fallback `3.8`
 
 ### Failure Probability
@@ -101,9 +101,9 @@ The engine evaluates controller policy at:
 
 Path:
 
-- `DEEPSEEK_CAPACITY_MEMORY_DIR` (if set)
-- otherwise `~/.deepseek/memory/<session_id>.jsonl`
-- fallback: `<workspace>/.deepseek/memory/<session_id>.jsonl` when home path is unavailable/unwritable
+- `WAGMII_CAPACITY_MEMORY_DIR` (if set)
+- otherwise `~/.wagmii/memory/<session_id>.jsonl`
+- fallback: `<workspace>/.wagmii/memory/<session_id>.jsonl` when home path is unavailable/unwritable
 
 Record fields:
 
@@ -129,8 +129,8 @@ Loader utility supports fetching last `K` snapshots for rehydration.
 - `max_replay_per_turn`
 - `min_turns_before_guardrail`
 - `profile_window`
-- `deepseek_v3_2_chat_prior`
-- `deepseek_v3_2_reasoner_prior`
+- `wagmii_v3_2_chat_prior`
+- `wagmii_v3_2_reasoner_prior`
 - `fallback_default_prior`
 
-Equivalent environment overrides are available with `DEEPSEEK_CAPACITY_*`.
+Equivalent environment overrides are available with `WAGMII_CAPACITY_*`.

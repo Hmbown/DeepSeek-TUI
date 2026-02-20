@@ -1,0 +1,72 @@
+[package]
+name = "wagmii-tui"
+version = "0.3.22"
+edition = "2024"
+description = "wagmii - we're all gonna make it interface - the ai coworking coding space for all"
+license = "MIT"
+repository = "https://github.com/Hmbown/wagmii"
+keywords = ["wagmii", "cli", "ai", "agent", "llm"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "wagmii"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.100"
+arboard = "3.4"
+async-stream = "0.3.6"
+async-trait = "0.1"
+bytes = "1.11.0"
+base64 = "0.22.1"
+axum = { version = "0.8.4", features = ["json"] }
+clap = { version = "4.5.54", features = ["derive"] }
+clap_complete = "4.5"
+colored = "3.0.0"
+crossterm = "0.28"
+dotenvy = "0.15.7"
+dirs = "6.0.0"
+futures-util = "0.3.31"
+indicatif = "0.18.0"
+ratatui = "0.29"
+regex = "1.11"
+reqwest = { version = "0.13.1", default-features = false, features = ["blocking", "json", "stream", "multipart", "native-tls", "http2"] }
+rustyline = "15.0.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+shellexpand = "3"
+toml = "0.9.7"
+tokio = { version = "1.49.0", features = ["full"] }
+tokio-util = { version = "0.7.16", features = ["io"] }
+unicode-width = "0.2"
+unicode-segmentation = "1.12"
+uuid = { version = "1.11", features = ["v4"] }
+tokio-stream = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+tempfile = "3.16"
+thiserror = "2.0"
+tracing = "0.1"
+tower-http = { version = "0.6", features = ["cors"] }
+wait-timeout = "0.2"
+multimap = "0.10.0"
+shlex = "1.3.0"
+starlark = "0.13.0"
+tiny_http = "0.12"
+portable-pty = "0.8"
+zeroize = "1.8.2"
+ignore = "0.4"
+pdf-extract = "0.7"
+
+[dev-dependencies]
+wiremock = "0.6"
+pretty_assertions = "1.4"
+
+# Platform-specific dependencies
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.60", features = ["Win32_Foundation"] }

@@ -67,7 +67,7 @@ jobs:
           RUSTDOCFLAGS: -Dwarnings
 
   frontend:
-    name: Frontend (deepseek-app)
+    name: Frontend (wagmii-app)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -81,10 +81,10 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
       - name: Lint
-        run: pnpm deepseek-app:lint
+        run: pnpm wagmii-app:lint
       - name: Typecheck
-        run: pnpm deepseek-app:typecheck
+        run: pnpm wagmii-app:typecheck
       - name: Test
-        run: pnpm deepseek-app:test
+        run: pnpm wagmii-app:test
       - name: Build web app
-        run: pnpm deepseek-app:web:build
+        run: pnpm wagmii-app:web:build
