@@ -1,6 +1,6 @@
-# Wagmii CLI
+# wagmii - we're all gonna make it interface
 
-An agentic coding harness for [Wagmii](https://platform.wagmii.com) models, built in Rust.
+**the ai coworking coding space for all**, built in Rust.
 
 [![CI](https://github.com/Hmbown/wagmii/actions/workflows/ci.yml/badge.svg)](https://github.com/Hmbown/wagmii/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/wagmii-tui)](https://crates.io/crates/wagmii-tui)
