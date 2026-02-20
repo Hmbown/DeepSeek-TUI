@@ -1,2 +1,0 @@
-cargo:rustc-cfg=rustc_has_pr45225
-cargo:rerun-if-changed=/Users/hunterbown/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cssparser-0.29.6/src/tokenizer.rs

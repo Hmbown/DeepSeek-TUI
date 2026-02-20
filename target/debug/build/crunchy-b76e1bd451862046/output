@@ -1,1 +1,0 @@
-cargo:rustc-env=CRUNCHY_LIB_SUFFIX=/lib.rs

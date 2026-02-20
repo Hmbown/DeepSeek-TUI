@@ -1,8 +1,0 @@
-# Copyright 2019-2024 Tauri Programme within The Commons Conservancy
-# SPDX-License-Identifier: Apache-2.0
-# SPDX-License-Identifier: MIT
-
-
-[default]
-description = "Default core plugins set."
-permissions = ["core:path:default","core:event:default","core:window:default","core:webview:default","core:app:default","core:image:default","core:resources:default","core:menu:default","core:tray:default"]

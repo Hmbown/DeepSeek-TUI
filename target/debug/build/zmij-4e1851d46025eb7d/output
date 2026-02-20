@@ -1,3 +1,0 @@
-cargo:rerun-if-changed=build.rs
-cargo:rustc-check-cfg=cfg(exhaustive)
-cargo:rustc-check-cfg=cfg(zmij_no_select_unpredictable)

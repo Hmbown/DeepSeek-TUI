@@ -1,3 +1,0 @@
-cargo:rustc-check-cfg=cfg(has_std)
-cargo:rustc-cfg=has_std
-cargo:rerun-if-changed=build.rs

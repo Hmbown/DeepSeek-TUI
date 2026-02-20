@@ -1,3 +1,0 @@
-cargo:rustc-check-cfg=cfg(desktop)
-cargo:rustc-cfg=desktop
-cargo:rustc-check-cfg=cfg(mobile)
