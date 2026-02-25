@@ -124,7 +124,7 @@ pub struct ToolCaller {
 }
 
 /// Tool definition exposed to the model.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct Tool {
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub tool_type: Option<String>,
@@ -188,15 +188,7 @@ pub struct Usage {
 #[must_use]
 pub fn context_window_for_model(model: &str) -> Option<u32> {
     let lower = model.to_lowercase();
-    if lower.contains("deepseek-v3.2") {
-        return Some(DEFAULT_CONTEXT_WINDOW_TOKENS);
-    }
-    if lower.contains("deepseek-chat")
-        || lower.contains("deepseek-reasoner")
-        || lower.contains("deepseek-r1")
-    {
-        return Some(DEFAULT_CONTEXT_WINDOW_TOKENS);
-    }
+    // All DeepSeek models currently share the same 128k context window.
     if lower.contains("deepseek") {
         return Some(DEFAULT_CONTEXT_WINDOW_TOKENS);
     }

@@ -2,8 +2,10 @@
 
 #![allow(dead_code)]
 
-use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+
+use serde::{Deserialize, Serialize};
 
 /// Lifecycle stage for a feature flag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,6 +32,19 @@ pub enum Feature {
     Mcp,
     /// Enable execpolicy integration/tooling.
     ExecPolicy,
+}
+
+impl fmt::Display for Stage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let label = match self {
+            Self::Experimental => "experimental",
+            Self::Beta => "beta",
+            Self::Stable => "stable",
+            Self::Deprecated => "deprecated",
+            Self::Removed => "removed",
+        };
+        f.write_str(label)
+    }
 }
 
 impl Feature {
