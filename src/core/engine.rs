@@ -1779,6 +1779,7 @@ impl Engine {
             self.session.mcp_config_path.clone(),
             mode == AppMode::Yolo,
         )
+        .with_features(self.config.features.clone())
         .with_shell_manager(self.shell_manager.clone())
     }
 

@@ -1,6 +1,7 @@
 //! Shared text helpers for TUI selection and clipboard workflows.
 
 use ratatui::text::Line;
+use unicode_width::UnicodeWidthChar;
 
 use crate::tui::history::HistoryCell;
 
@@ -26,17 +27,36 @@ pub(super) fn line_to_plain(line: &Line<'static>) -> String {
         .collect::<String>()
 }
 
+pub(super) fn text_display_width(text: &str) -> usize {
+    text.chars().map(char_display_width).sum()
+}
+
 pub(super) fn slice_text(text: &str, start: usize, end: usize) -> String {
+    if end <= start {
+        return String::new();
+    }
+
     let mut out = String::new();
-    let mut idx = 0usize;
+    let mut col = 0usize;
     for ch in text.chars() {
-        if idx >= start && idx < end {
+        let ch_width = char_display_width(ch);
+        let ch_start = col;
+        let ch_end = col.saturating_add(ch_width);
+        if ch_end > start && ch_start < end {
             out.push(ch);
         }
-        idx += 1;
-        if idx >= end {
+        col = ch_end;
+        if col >= end {
             break;
         }
     }
     out
+}
+
+fn char_display_width(ch: char) -> usize {
+    if ch == '\t' {
+        4
+    } else {
+        UnicodeWidthChar::width(ch).unwrap_or(0).max(1)
+    }
 }

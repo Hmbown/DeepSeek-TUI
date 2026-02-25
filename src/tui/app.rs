@@ -746,8 +746,13 @@ impl App {
     pub fn add_message(&mut self, msg: HistoryCell) {
         self.history.push(msg);
         self.history_version = self.history_version.wrapping_add(1);
+        let selection_has_range = self
+            .transcript_selection
+            .ordered_endpoints()
+            .is_some_and(|(start, end)| start != end);
         if matches!(self.transcript_scroll, TranscriptScroll::ToBottom)
             && !self.transcript_selection.dragging
+            && !selection_has_range
         {
             self.scroll_to_bottom();
         }

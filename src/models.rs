@@ -188,12 +188,46 @@ pub struct Usage {
 #[must_use]
 pub fn context_window_for_model(model: &str) -> Option<u32> {
     let lower = model.to_lowercase();
-    // All DeepSeek models currently share the same 128k context window.
+    // DeepSeek models default to 128k unless an explicit *k suffix is present.
     if lower.contains("deepseek") {
+        if let Some(explicit_window) = deepseek_context_window_hint(&lower) {
+            return Some(explicit_window);
+        }
         return Some(DEFAULT_CONTEXT_WINDOW_TOKENS);
     }
     if lower.contains("claude") {
         return Some(200_000);
+    }
+    None
+}
+
+fn deepseek_context_window_hint(model_lower: &str) -> Option<u32> {
+    let bytes = model_lower.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_digit() {
+            let start = i;
+            while i < bytes.len() && bytes[i].is_ascii_digit() {
+                i += 1;
+            }
+            if i >= bytes.len() || bytes[i] != b'k' {
+                continue;
+            }
+
+            let before_ok = start == 0 || !bytes[start - 1].is_ascii_alphanumeric();
+            let after_ok = i + 1 >= bytes.len() || !bytes[i + 1].is_ascii_alphanumeric();
+            if !before_ok || !after_ok {
+                continue;
+            }
+
+            if let Ok(kilo_tokens) = model_lower[start..i].parse::<u32>()
+                && (8..=1024).contains(&kilo_tokens)
+            {
+                return Some(kilo_tokens.saturating_mul(1000));
+            }
+        } else {
+            i += 1;
+        }
     }
     None
 }
@@ -319,6 +353,19 @@ mod tests {
         );
         assert_eq!(
             context_window_for_model("deepseek-v3.2-0324"),
+            Some(DEFAULT_CONTEXT_WINDOW_TOKENS)
+        );
+    }
+
+    #[test]
+    fn deepseek_models_with_k_suffix_use_hint() {
+        assert_eq!(context_window_for_model("deepseek-v3.2-32k"), Some(32_000));
+        assert_eq!(
+            context_window_for_model("deepseek-v3.2-256k-preview"),
+            Some(256_000)
+        );
+        assert_eq!(
+            context_window_for_model("deepseek-v3.2-2k-preview"),
             Some(DEFAULT_CONTEXT_WINDOW_TOKENS)
         );
     }

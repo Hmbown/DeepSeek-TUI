@@ -73,7 +73,9 @@ deepseek models
 
 Everything lives in `~/.deepseek/config.toml`. See [config.example.toml](config.example.toml) for the full set of options.
 
-Environment overrides: `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`.
+Common environment overrides: `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`, `DEEPSEEK_CONFIG_PATH`, `DEEPSEEK_PROFILE`, `DEEPSEEK_ALLOW_SHELL`, `DEEPSEEK_TRUST_MODE`, and `DEEPSEEK_CAPACITY_*`.
+
+For the full config/env matrix (profiles, feature flags, capacity tuning, sandbox controls), see [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
 ## Docs
 

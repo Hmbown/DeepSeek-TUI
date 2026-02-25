@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.24] - 2026-02-25
+
+### Fixed
+- Preserve reasoning-only assistant turns for DeepSeek reasoning models (`deepseek-reasoner`, R-series markers) when rebuilding chat history.
+- Align SSE tool streaming indices so each tool block start/delta/stop uses the same block index.
+- Prevent transcript auto-scroll-to-bottom when a non-empty transcript selection is active.
+- Allow session picker search mode to accept the current selection with a single `Enter` press.
+- Preserve tool output whitespace/indentation while still wrapping long unbroken tokens.
+- Make transcript selection copy/highlighting display-width aware (wide chars and tabs).
+- Gate execpolicy behavior on the `exec_policy` feature flag across CLI/tool execution paths.
+- Run doctor API connectivity checks using the effective loaded config/profile (instead of reloading defaults).
+- Parse DeepSeek model context-window suffix hints such as `-32k` and `-256k`.
+- Update README config docs with key environment overrides and a direct link to full configuration docs.
+
 ## [0.3.23] - 2026-02-24
 
 ### Changed

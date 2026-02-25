@@ -248,7 +248,6 @@ impl ModalView for SessionPickerView {
             match key.code {
                 KeyCode::Enter => {
                     self.exit_search();
-                    return ViewAction::None;
                 }
                 KeyCode::Esc => {
                     self.exit_search();

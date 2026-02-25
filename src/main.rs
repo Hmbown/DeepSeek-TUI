@@ -534,7 +534,15 @@ async fn main() -> Result<()> {
                 let config = load_config_from_cli(&cli)?;
                 run_mcp_command(&config, command).await
             }
-            Commands::Execpolicy(command) => run_execpolicy_command(command),
+            Commands::Execpolicy(command) => {
+                let config = load_config_from_cli(&cli)?;
+                if !config.features().enabled(Feature::ExecPolicy) {
+                    bail!(
+                        "The `exec_policy` feature is disabled. Enable it in [features] or via profile."
+                    );
+                }
+                run_execpolicy_command(command)
+            }
             Commands::Features(command) => {
                 let config = load_config_from_cli(&cli)?;
                 run_features_command(&config, command)
@@ -944,7 +952,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         use std::io::Write;
         std::io::stdout().flush().ok();
 
-        match test_api_connectivity().await {
+        match test_api_connectivity(config).await {
             Ok(model) => {
                 println!(
                     "\r  {} API connection successful (model: {})",
@@ -1204,12 +1212,11 @@ async fn run_models(config: &Config, args: ModelsArgs) -> Result<()> {
 }
 
 /// Test API connectivity by making a minimal request
-async fn test_api_connectivity() -> Result<String> {
+async fn test_api_connectivity(config: &Config) -> Result<String> {
     use crate::client::DeepSeekClient;
     use crate::models::{ContentBlock, Message, MessageRequest};
 
-    let config = Config::load(None, None)?;
-    let client = DeepSeekClient::new(&config)?;
+    let client = DeepSeekClient::new(config)?;
     let model = client.model().to_string();
 
     // Minimal request: single word prompt, 1 max token

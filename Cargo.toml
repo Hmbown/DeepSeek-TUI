@@ -1,6 +1,6 @@
 [package]
 name = "deepseek-tui"
-version = "0.3.23"
+version = "0.3.24"
 edition = "2024"
 description = "Terminal-native TUI and CLI for DeepSeek models"
 license = "MIT"

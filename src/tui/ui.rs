@@ -61,7 +61,7 @@ use crate::tui::plan_prompt::PlanPromptView;
 use crate::tui::scrolling::{ScrollDirection, TranscriptScroll};
 use crate::tui::selection::TranscriptSelectionPoint;
 use crate::tui::session_picker::SessionPickerView;
-use crate::tui::ui_text::{history_cell_to_text, line_to_plain, slice_text};
+use crate::tui::ui_text::{history_cell_to_text, line_to_plain, slice_text, text_display_width};
 use crate::tui::user_input::UserInputView;
 
 use super::app::{
@@ -3697,7 +3697,7 @@ fn selection_to_text(app: &App) -> Option<String> {
         let slice = if start_index == end_index {
             slice_text(&line_text, start.column, end.column)
         } else if line_index == start_index {
-            slice_text(&line_text, start.column, line_text.chars().count())
+            slice_text(&line_text, start.column, text_display_width(&line_text))
         } else if line_index == end_index {
             slice_text(&line_text, 0, end.column)
         } else {

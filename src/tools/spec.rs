@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
+use crate::features::Features;
 use crate::tools::shell::{SharedShellManager, new_shared_shell_manager};
 
 /// Capabilities that a tool may have or require.
@@ -195,6 +196,8 @@ pub struct ToolContext {
     /// Whether tools should auto-approve without safety checks (YOLO mode).
     /// When true, command safety analysis is skipped for shell execution.
     pub auto_approve: bool,
+    /// Effective feature flag set for the running session.
+    pub features: Features,
 }
 
 impl ToolContext {
@@ -214,6 +217,7 @@ impl ToolContext {
             mcp_config_path,
             elevated_sandbox_policy: None,
             auto_approve: false,
+            features: Features::with_defaults(),
         }
     }
 
@@ -235,6 +239,7 @@ impl ToolContext {
             mcp_config_path: mcp_config_path.into(),
             elevated_sandbox_policy: None,
             auto_approve: false,
+            features: Features::with_defaults(),
         }
     }
 
@@ -257,6 +262,7 @@ impl ToolContext {
             mcp_config_path: mcp_config_path.into(),
             elevated_sandbox_policy: None,
             auto_approve,
+            features: Features::with_defaults(),
         }
     }
 
@@ -385,6 +391,12 @@ impl ToolContext {
     /// Set the sandbox policy.
     pub fn with_sandbox_policy(mut self, policy: SandboxPolicy) -> Self {
         self.sandbox_policy = policy;
+        self
+    }
+
+    /// Set feature flags for tool execution.
+    pub fn with_features(mut self, features: Features) -> Self {
+        self.features = features;
         self
     }
 

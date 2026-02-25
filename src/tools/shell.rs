@@ -1058,6 +1058,7 @@ pub fn new_shared_shell_manager_with_sandbox(
 
 use crate::command_safety::{SafetyLevel, analyze_command};
 use crate::execpolicy::{ExecPolicyDecision, load_default_policy};
+use crate::features::Feature;
 use crate::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     optional_bool, optional_u64, required_str,
@@ -1159,22 +1160,24 @@ impl ToolSpec for ExecShellTool {
         let background = background || tty;
 
         let mut execpolicy_decision: Option<ExecPolicyDecision> = None;
-        if let Some(policy) = load_default_policy()
-            .map_err(|e| ToolError::execution_failed(format!("execpolicy load failed: {e}")))?
-        {
-            let decision = policy.evaluate(command);
-            execpolicy_decision = Some(decision.clone());
-            if let ExecPolicyDecision::Deny(reason) = decision {
-                return Ok(ToolResult {
-                    content: format!("BLOCKED: {reason}"),
-                    success: false,
-                    metadata: Some(json!({
-                        "execpolicy": {
-                            "decision": "deny",
-                            "reason": reason,
-                        }
-                    })),
-                });
+        if context.features.enabled(Feature::ExecPolicy) {
+            if let Some(policy) = load_default_policy()
+                .map_err(|e| ToolError::execution_failed(format!("execpolicy load failed: {e}")))?
+            {
+                let decision = policy.evaluate(command);
+                execpolicy_decision = Some(decision.clone());
+                if let ExecPolicyDecision::Deny(reason) = decision {
+                    return Ok(ToolResult {
+                        content: format!("BLOCKED: {reason}"),
+                        success: false,
+                        metadata: Some(json!({
+                            "execpolicy": {
+                                "decision": "deny",
+                                "reason": reason,
+                            }
+                        })),
+                    });
+                }
             }
         }
 

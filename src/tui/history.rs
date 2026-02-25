@@ -6,7 +6,7 @@ use std::time::Instant;
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::models::{ContentBlock, Message};
 use crate::palette;
@@ -1224,30 +1224,25 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
 
     let mut lines = Vec::new();
     let mut current = String::new();
-    let mut current_width = 0;
+    let mut current_width = 0usize;
 
-    for word in text.split_whitespace() {
-        let word_width = UnicodeWidthStr::width(word);
-        if current_width == 0 {
-            current.push_str(word);
-            current_width = word_width;
-            continue;
-        }
-
-        if current_width + 1 + word_width <= width {
-            current.push(' ');
-            current.push_str(word);
-            current_width += 1 + word_width;
+    for ch in text.chars() {
+        let ch_width = if ch == '\t' {
+            4
         } else {
-            lines.push(current);
-            current = word.to_string();
-            current_width = word_width;
+            UnicodeWidthChar::width(ch).unwrap_or(0).max(1)
+        };
+
+        if current_width + ch_width > width && !current.is_empty() {
+            lines.push(std::mem::take(&mut current));
+            current_width = 0;
         }
+
+        current.push(ch);
+        current_width = current_width.saturating_add(ch_width);
     }
 
-    if !current.is_empty() {
-        lines.push(current);
-    }
+    lines.push(current);
 
     if lines.is_empty() {
         vec![String::new()]

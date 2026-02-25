@@ -791,7 +791,7 @@ impl LlmClient for DeepSeekClient {
             let mut content_index: u32 = 0;
             let mut text_started = false;
             let mut thinking_started = false;
-            let mut tool_indices: std::collections::HashMap<u32, bool> = std::collections::HashMap::new();
+            let mut tool_indices: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
             let is_reasoning_model = requires_reasoning_content(&model);
 
             let mut byte_stream = std::pin::pin!(byte_stream);
@@ -1346,23 +1346,32 @@ fn build_chat_messages(
 
         if role == "assistant" {
             let content = text_parts.join("\n");
+            let reasoning_content = thinking_parts.join("\n");
             let has_text = !content.trim().is_empty();
             let has_tool_calls = !tool_calls.is_empty();
+            let has_reasoning = include_reasoning && !reasoning_content.trim().is_empty();
 
             // DeepSeek rejects assistant messages where both `content` and
             // `tool_calls` are missing/null. Skip such entries even if they
-            // carry reasoning-only metadata.
-            if !has_text && !has_tool_calls {
+            // carry reasoning-only metadata unless we can send a non-null
+            // placeholder content field.
+            if !has_text && !has_tool_calls && !has_reasoning {
                 pending_tool_calls.clear();
                 continue;
             }
 
             let mut msg = json!({
                 "role": "assistant",
-                "content": if has_text { json!(content) } else { Value::Null },
+                "content": if has_text {
+                    json!(content)
+                } else if has_reasoning {
+                    json!("")
+                } else {
+                    Value::Null
+                },
             });
-            if include_reasoning {
-                msg["reasoning_content"] = json!(thinking_parts.join("\n"));
+            if has_reasoning {
+                msg["reasoning_content"] = json!(reasoning_content);
             }
             if has_tool_calls {
                 msg["tool_calls"] = json!(tool_calls);
@@ -1807,7 +1816,7 @@ fn parse_sse_chunk(
     content_index: &mut u32,
     text_started: &mut bool,
     thinking_started: &mut bool,
-    tool_indices: &mut std::collections::HashMap<u32, bool>,
+    tool_indices: &mut std::collections::HashMap<u32, u32>,
     is_reasoning_model: bool,
 ) -> Vec<StreamEvent> {
     let mut events = Vec::new();
@@ -1891,60 +1900,63 @@ fn parse_sse_chunk(
             if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
                 for tc in tool_calls {
                     let tc_index = tc.get("index").and_then(Value::as_u64).unwrap_or(0) as u32;
+                    let tool_block_index = match tool_indices.entry(tc_index) {
+                        std::collections::hash_map::Entry::Occupied(entry) => *entry.get(),
+                        std::collections::hash_map::Entry::Vacant(entry) => {
+                            // Close text block if transitioning to tool use
+                            if *text_started {
+                                events.push(StreamEvent::ContentBlockStop {
+                                    index: *content_index,
+                                });
+                                *content_index += 1;
+                                *text_started = false;
+                            }
+                            if *thinking_started {
+                                events.push(StreamEvent::ContentBlockStop {
+                                    index: *content_index,
+                                });
+                                *content_index += 1;
+                                *thinking_started = false;
+                            }
 
-                    if let std::collections::hash_map::Entry::Vacant(entry) =
-                        tool_indices.entry(tc_index)
-                    {
-                        // Close text block if transitioning to tool use
-                        if *text_started {
-                            events.push(StreamEvent::ContentBlockStop {
-                                index: *content_index,
-                            });
-                            *content_index += 1;
-                            *text_started = false;
-                        }
-                        if *thinking_started {
-                            events.push(StreamEvent::ContentBlockStop {
-                                index: *content_index,
-                            });
-                            *content_index += 1;
-                            *thinking_started = false;
-                        }
-
-                        let id = tc
-                            .get("id")
-                            .and_then(Value::as_str)
-                            .unwrap_or("tool_call")
-                            .to_string();
-                        let name = tc
-                            .get("function")
-                            .and_then(|f| f.get("name"))
-                            .and_then(Value::as_str)
-                            .unwrap_or("")
-                            .to_string();
-                        let caller = tc.get("caller").and_then(|v| {
-                            v.get("type")
+                            let id = tc
+                                .get("id")
                                 .and_then(Value::as_str)
-                                .map(|caller_type| ToolCaller {
-                                    caller_type: caller_type.to_string(),
-                                    tool_id: v
-                                        .get("tool_id")
-                                        .and_then(Value::as_str)
-                                        .map(std::string::ToString::to_string),
+                                .unwrap_or("tool_call")
+                                .to_string();
+                            let name = tc
+                                .get("function")
+                                .and_then(|f| f.get("name"))
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .to_string();
+                            let caller = tc.get("caller").and_then(|v| {
+                                v.get("type").and_then(Value::as_str).map(|caller_type| {
+                                    ToolCaller {
+                                        caller_type: caller_type.to_string(),
+                                        tool_id: v
+                                            .get("tool_id")
+                                            .and_then(Value::as_str)
+                                            .map(std::string::ToString::to_string),
+                                    }
                                 })
-                        });
+                            });
 
-                        entry.insert(true);
-                        events.push(StreamEvent::ContentBlockStart {
-                            index: *content_index,
-                            content_block: ContentBlockStart::ToolUse {
-                                id,
-                                name: from_api_tool_name(&name),
-                                input: json!({}),
-                                caller,
-                            },
-                        });
-                    }
+                            let block_index = *content_index;
+                            events.push(StreamEvent::ContentBlockStart {
+                                index: block_index,
+                                content_block: ContentBlockStart::ToolUse {
+                                    id,
+                                    name: from_api_tool_name(&name),
+                                    input: json!({}),
+                                    caller,
+                                },
+                            });
+                            *content_index = (*content_index).saturating_add(1);
+                            entry.insert(block_index);
+                            block_index
+                        }
+                    };
 
                     // Stream tool call arguments
                     if let Some(args) = tc
@@ -1954,7 +1966,7 @@ fn parse_sse_chunk(
                     {
                         if !args.is_empty() {
                             events.push(StreamEvent::ContentBlockDelta {
-                                index: *content_index,
+                                index: tool_block_index,
                                 delta: Delta::InputJsonDelta {
                                     partial_json: args.to_string(),
                                 },
@@ -1981,9 +1993,12 @@ fn parse_sse_chunk(
                 *thinking_started = false;
             }
             // Close tool blocks
-            for _ in tool_indices.drain() {
+            let mut open_tool_indices: Vec<u32> =
+                tool_indices.drain().map(|(_, idx)| idx).collect();
+            open_tool_indices.sort_unstable();
+            for tool_block_index in open_tool_indices {
                 events.push(StreamEvent::ContentBlockStop {
-                    index: *content_index,
+                    index: tool_block_index,
                 });
             }
 
@@ -2097,7 +2112,27 @@ mod tests {
     }
 
     #[test]
-    fn chat_messages_drop_thinking_only_assistant_for_r_series_model() {
+    fn chat_messages_preserve_thinking_only_assistant_for_reasoner_model() {
+        let message = Message {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::Thinking {
+                thinking: "plan".to_string(),
+            }],
+        };
+        let out = build_chat_messages(None, &[message], "deepseek-reasoner");
+        let assistant = out
+            .iter()
+            .find(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
+            .expect("assistant message");
+        assert_eq!(assistant.get("content").and_then(Value::as_str), Some(""));
+        assert_eq!(
+            assistant.get("reasoning_content").and_then(Value::as_str),
+            Some("plan")
+        );
+    }
+
+    #[test]
+    fn chat_messages_preserve_thinking_only_assistant_for_r_series_model() {
         let message = Message {
             role: "assistant".to_string(),
             content: vec![ContentBlock::Thinking {
@@ -2105,14 +2140,19 @@ mod tests {
             }],
         };
         let out = build_chat_messages(None, &[message], "deepseek-r2-lite-preview");
-        assert!(
-            !out.iter()
-                .any(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
+        let assistant = out
+            .iter()
+            .find(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
+            .expect("assistant message");
+        assert_eq!(assistant.get("content").and_then(Value::as_str), Some(""));
+        assert_eq!(
+            assistant.get("reasoning_content").and_then(Value::as_str),
+            Some("plan")
         );
     }
 
     #[test]
-    fn chat_messages_drop_thinking_only_assistant_for_v4_mini_model() {
+    fn chat_messages_drop_thinking_only_assistant_for_non_reasoning_model() {
         let message = Message {
             role: "assistant".to_string(),
             content: vec![ContentBlock::Thinking {
@@ -2124,6 +2164,75 @@ mod tests {
             !out.iter()
                 .any(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
         );
+    }
+
+    #[test]
+    fn parse_sse_chunk_closes_each_tool_block_with_matching_index() {
+        let chunk = json!({
+            "choices": [{
+                "delta": {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call_0",
+                            "function": {"name": "read_file", "arguments": "{\"path\":\"a\"}"}
+                        },
+                        {
+                            "index": 1,
+                            "id": "call_1",
+                            "function": {"name": "read_file", "arguments": "{\"path\":\"b\"}"}
+                        }
+                    ]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        });
+
+        let mut content_index = 0;
+        let mut text_started = false;
+        let mut thinking_started = false;
+        let mut tool_indices: std::collections::HashMap<u32, u32> =
+            std::collections::HashMap::new();
+        let events = parse_sse_chunk(
+            &chunk,
+            &mut content_index,
+            &mut text_started,
+            &mut thinking_started,
+            &mut tool_indices,
+            false,
+        );
+
+        let starts: Vec<u32> = events
+            .iter()
+            .filter_map(|event| match event {
+                StreamEvent::ContentBlockStart {
+                    index,
+                    content_block: ContentBlockStart::ToolUse { .. },
+                } => Some(*index),
+                _ => None,
+            })
+            .collect();
+        let stops: Vec<u32> = events
+            .iter()
+            .filter_map(|event| match event {
+                StreamEvent::ContentBlockStop { index } => Some(*index),
+                _ => None,
+            })
+            .collect();
+        let deltas: Vec<u32> = events
+            .iter()
+            .filter_map(|event| match event {
+                StreamEvent::ContentBlockDelta {
+                    index,
+                    delta: Delta::InputJsonDelta { .. },
+                } => Some(*index),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(starts, vec![0, 1]);
+        assert_eq!(stops, vec![0, 1]);
+        assert_eq!(deltas, vec![0, 1]);
     }
 
     #[test]

@@ -18,7 +18,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Padding, Paragraph, Widget, Wrap},
 };
 use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub struct ChatWidget {
     content_area: Rect,
@@ -556,8 +556,8 @@ fn apply_selection_to_line(
 
     for span in &line.spans {
         let span_text: &str = span.content.as_ref();
-        let span_len = span_text.chars().count();
-        let span_end = current_col + span_len;
+        let span_width = text_display_width(span_text);
+        let span_end = current_col.saturating_add(span_width);
 
         if span_end <= col_start || current_col >= col_end {
             result.push(span.clone());
@@ -567,25 +567,33 @@ fn apply_selection_to_line(
                 span.style.patch(selection_style),
             ));
         } else {
-            let span_sel_start = col_start.saturating_sub(current_col).min(span_len);
-            let span_sel_end = col_end.saturating_sub(current_col).min(span_len);
-            let byte_start = byte_index_at_char(span_text, span_sel_start);
-            let byte_end = byte_index_at_char(span_text, span_sel_end);
+            let mut before = String::new();
+            let mut selected = String::new();
+            let mut after = String::new();
+            let mut ch_col = current_col;
 
-            if byte_start > 0 {
-                result.push(Span::styled(
-                    span_text[..byte_start].to_string(),
-                    span.style,
-                ));
+            for ch in span_text.chars() {
+                let ch_width = char_display_width(ch);
+                let ch_start = ch_col;
+                let ch_end = ch_col.saturating_add(ch_width);
+                if ch_end <= col_start {
+                    before.push(ch);
+                } else if ch_start >= col_end {
+                    after.push(ch);
+                } else {
+                    selected.push(ch);
+                }
+                ch_col = ch_end;
             }
-            if byte_end > byte_start {
-                result.push(Span::styled(
-                    span_text[byte_start..byte_end].to_string(),
-                    span.style.patch(selection_style),
-                ));
+
+            if !before.is_empty() {
+                result.push(Span::styled(before, span.style));
             }
-            if byte_end < span_text.len() {
-                result.push(Span::styled(span_text[byte_end..].to_string(), span.style));
+            if !selected.is_empty() {
+                result.push(Span::styled(selected, span.style.patch(selection_style)));
+            }
+            if !after.is_empty() {
+                result.push(Span::styled(after, span.style));
             }
         }
 
@@ -595,14 +603,16 @@ fn apply_selection_to_line(
     result
 }
 
-fn byte_index_at_char(text: &str, char_index: usize) -> usize {
-    if char_index == 0 {
-        return 0;
+fn text_display_width(text: &str) -> usize {
+    text.chars().map(char_display_width).sum()
+}
+
+fn char_display_width(ch: char) -> usize {
+    if ch == '\t' {
+        4
+    } else {
+        UnicodeWidthChar::width(ch).unwrap_or(0).max(1)
     }
-    text.char_indices()
-        .nth(char_index)
-        .map(|(idx, _)| idx)
-        .unwrap_or(text.len())
 }
 
 fn composer_height(
