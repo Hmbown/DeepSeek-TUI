@@ -187,15 +187,42 @@ pub fn output_path(output_dir: &Path, filename: &str) -> PathBuf {
     output_dir.join(filename)
 }
 
-/// Truncate a string to a maximum length, adding an ellipsis if truncated
+/// Truncate a string to a maximum length, adding an ellipsis if truncated.
+///
+/// Uses char boundaries to avoid panicking on multi-byte UTF-8 characters.
 #[must_use]
 pub fn truncate_with_ellipsis(s: &str, max_len: usize, ellipsis: &str) -> String {
     if s.len() <= max_len {
-        s.to_string()
-    } else {
-        let truncate_at = max_len.saturating_sub(ellipsis.len());
-        format!("{}{}", &s[..truncate_at], ellipsis)
+        return s.to_string();
     }
+    let budget = max_len.saturating_sub(ellipsis.len());
+    // Find the last char boundary that fits within the byte budget.
+    let safe_end = s
+        .char_indices()
+        .map(|(i, _)| i)
+        .take_while(|&i| i <= budget)
+        .last()
+        .unwrap_or(0);
+    format!("{}{}", &s[..safe_end], ellipsis)
+}
+
+/// Percent-encode a string for use in URL query parameters.
+///
+/// Encodes all characters except unreserved characters (A-Z, a-z, 0-9, `-`, `_`, `.`, `~`).
+/// Spaces are encoded as `+`.
+#[must_use]
+pub fn url_encode(input: &str) -> String {
+    let mut encoded = String::new();
+    for ch in input.bytes() {
+        match ch {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(ch as char)
+            }
+            b' ' => encoded.push('+'),
+            _ => encoded.push_str(&format!("%{ch:02X}")),
+        }
+    }
+    encoded
 }
 
 /// Estimate the total character count across message content blocks.

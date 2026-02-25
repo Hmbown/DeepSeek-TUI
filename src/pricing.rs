@@ -101,7 +101,7 @@ pub fn calculate_turn_cost(model: &str, input_tokens: u32, output_tokens: u32) -
 #[must_use]
 pub fn format_cost(cost: f64) -> String {
     if cost < 0.0001 {
-        "<$0.01".to_string()
+        "<$0.0001".to_string()
     } else if cost < 0.01 {
         format!("${:.4}", cost)
     } else if cost < 1.0 {

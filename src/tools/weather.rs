@@ -4,6 +4,7 @@ use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     optional_str, optional_u64, required_str,
 };
+use crate::utils::url_encode;
 use async_trait::async_trait;
 use chrono::{NaiveDate, Utc};
 use serde::Serialize;
@@ -319,18 +320,4 @@ async fn fetch_forecast(
 
 fn c_to_f(c: f64) -> f64 {
     c * 9.0 / 5.0 + 32.0
-}
-
-fn url_encode(input: &str) -> String {
-    let mut encoded = String::new();
-    for ch in input.bytes() {
-        match ch {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                encoded.push(ch as char)
-            }
-            b' ' => encoded.push('+'),
-            _ => encoded.push_str(&format!("%{ch:02X}")),
-        }
-    }
-    encoded
 }

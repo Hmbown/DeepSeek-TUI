@@ -3,6 +3,7 @@
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, required_str,
 };
+use crate::utils::url_encode;
 use async_trait::async_trait;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -333,18 +334,4 @@ fn normalize_stooq_symbol(ticker: &str, market: &str) -> String {
 
 fn parse_f64(input: &str) -> Option<f64> {
     input.parse::<f64>().ok()
-}
-
-fn url_encode(input: &str) -> String {
-    let mut encoded = String::new();
-    for ch in input.bytes() {
-        match ch {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                encoded.push(ch as char)
-            }
-            b' ' => encoded.push('+'),
-            _ => encoded.push_str(&format!("%{ch:02X}")),
-        }
-    }
-    encoded
 }

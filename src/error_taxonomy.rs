@@ -3,6 +3,8 @@
 //! Not yet wired into consumers; will be adopted incrementally.
 #![allow(dead_code)]
 
+use std::fmt;
+
 use crate::llm_client::LlmError;
 use crate::tools::spec::ToolError;
 
@@ -41,6 +43,44 @@ pub struct ErrorEnvelope {
     pub code: String,
     pub message: String,
 }
+
+impl fmt::Display for ErrorCategory {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let label = match self {
+            Self::Network => "network",
+            Self::Authentication => "authentication",
+            Self::Authorization => "authorization",
+            Self::RateLimit => "rate_limit",
+            Self::Timeout => "timeout",
+            Self::InvalidInput => "invalid_input",
+            Self::Parse => "parse",
+            Self::Tool => "tool",
+            Self::State => "state",
+            Self::Internal => "internal",
+        };
+        f.write_str(label)
+    }
+}
+
+impl fmt::Display for ErrorSeverity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let label = match self {
+            Self::Info => "info",
+            Self::Warning => "warning",
+            Self::Error => "error",
+            Self::Critical => "critical",
+        };
+        f.write_str(label)
+    }
+}
+
+impl fmt::Display for ErrorEnvelope {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[{}] {}: {}", self.severity, self.code, self.message)
+    }
+}
+
+impl std::error::Error for ErrorEnvelope {}
 
 impl ErrorEnvelope {
     #[must_use]
