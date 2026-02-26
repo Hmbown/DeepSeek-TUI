@@ -3065,6 +3065,7 @@ fn write_csv_worker_outcomes(csv_path: &Path, outcomes: &[CsvWorkerOutcome]) -> 
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_csv_row_agent(
     manager: SharedSubAgentManager,
     runtime: SubAgentRuntime,

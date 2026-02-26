@@ -552,11 +552,7 @@ impl ToolSpec for SwarmResultTool {
                     timed_out = true;
                     break outcome;
                 }
-            } else if !block {
-                return Err(ToolError::execution_failed(format!(
-                    "Swarm '{swarm_id}' not found"
-                )));
-            } else if Instant::now() >= deadline {
+            } else if !block || Instant::now() >= deadline {
                 return Err(ToolError::execution_failed(format!(
                     "Swarm '{swarm_id}' not found"
                 )));
@@ -1044,7 +1040,7 @@ fn emit_swarm_status(event_tx: Option<&tokio::sync::mpsc::Sender<Event>>, outcom
     let _ = event_tx.try_send(Event::Status { message });
 }
 
-fn parse_swarm_id<'a>(input: &'a Value) -> Result<&'a str, ToolError> {
+fn parse_swarm_id(input: &Value) -> Result<&str, ToolError> {
     input
         .get("swarm_id")
         .or_else(|| input.get("id"))
@@ -1170,6 +1166,7 @@ fn retry_delay_for_attempt(task: &SwarmTaskSpec, attempts_made: u32) -> Duration
     Duration::from_millis(delay)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn schedule_retry_if_possible(
     task: &SwarmTaskSpec,
     task_id: &str,
