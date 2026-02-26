@@ -1360,6 +1360,22 @@ fn append_subagent_group(
             ]));
         }
 
+        if let Some(role) = agent.assignment.role.as_deref() {
+            let max_len = content_width.saturating_sub(14);
+            let role = truncate_view_text(role, max_len);
+            lines.push(Line::from(vec![
+                Span::styled("    role: ", Style::default().fg(palette::TEXT_MUTED)),
+                Span::styled(role, Style::default().fg(palette::DEEPSEEK_SKY)),
+            ]));
+        }
+
+        let max_len = content_width.saturating_sub(18);
+        let objective = truncate_view_text(&agent.assignment.objective, max_len);
+        lines.push(Line::from(vec![
+            Span::styled("    objective: ", Style::default().fg(palette::TEXT_MUTED)),
+            Span::styled(objective, Style::default().fg(palette::TEXT_DIM)),
+        ]));
+
         if let Some(result) = agent.result.as_ref() {
             let max_len = content_width.saturating_sub(16);
             let preview = truncate_view_text(result, max_len);

@@ -27,6 +27,7 @@ use crate::models::{
     compaction_threshold_for_model,
 };
 use crate::tools::plan::new_shared_plan_state;
+use crate::tools::subagent::SubAgentStatus;
 use crate::tools::todo::new_shared_todo_list;
 use crate::tui::app::AppMode;
 
@@ -1743,6 +1744,123 @@ impl RuntimeThreadManager {
                         Some(&item.id),
                         "item.failed",
                         json!({ "item": item }),
+                    )
+                    .await?;
+                }
+                EngineEvent::AgentSpawned { id, prompt } => {
+                    let message = format!(
+                        "Sub-agent {id} spawned: {}",
+                        summarize_text(&prompt, SUMMARY_LIMIT)
+                    );
+                    let item = TurnItemRecord {
+                        schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
+                        id: format!("item_{}", &Uuid::new_v4().to_string()[..8]),
+                        turn_id: turn_id.clone(),
+                        kind: TurnItemKind::Status,
+                        status: TurnItemLifecycleStatus::Completed,
+                        summary: summarize_text(&message, SUMMARY_LIMIT),
+                        detail: Some(message),
+                        artifact_refs: Vec::new(),
+                        started_at: Some(Utc::now()),
+                        ended_at: Some(Utc::now()),
+                    };
+                    self.store.save_item(&item)?;
+                    self.attach_item_to_turn(&turn_id, &item.id)?;
+                    self.emit_event(
+                        &thread_id,
+                        Some(&turn_id),
+                        Some(&item.id),
+                        "agent.spawned",
+                        json!({ "item": item, "agent_id": id }),
+                    )
+                    .await?;
+                }
+                EngineEvent::AgentProgress { id, status } => {
+                    let message = format!("Sub-agent {id}: {status}");
+                    let item = TurnItemRecord {
+                        schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
+                        id: format!("item_{}", &Uuid::new_v4().to_string()[..8]),
+                        turn_id: turn_id.clone(),
+                        kind: TurnItemKind::Status,
+                        status: TurnItemLifecycleStatus::Completed,
+                        summary: summarize_text(&message, SUMMARY_LIMIT),
+                        detail: Some(message),
+                        artifact_refs: Vec::new(),
+                        started_at: Some(Utc::now()),
+                        ended_at: Some(Utc::now()),
+                    };
+                    self.store.save_item(&item)?;
+                    self.attach_item_to_turn(&turn_id, &item.id)?;
+                    self.emit_event(
+                        &thread_id,
+                        Some(&turn_id),
+                        Some(&item.id),
+                        "agent.progress",
+                        json!({ "item": item, "agent_id": id }),
+                    )
+                    .await?;
+                }
+                EngineEvent::AgentComplete { id, result } => {
+                    let message = format!(
+                        "Sub-agent {id} completed: {}",
+                        summarize_text(&result, SUMMARY_LIMIT)
+                    );
+                    let item = TurnItemRecord {
+                        schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
+                        id: format!("item_{}", &Uuid::new_v4().to_string()[..8]),
+                        turn_id: turn_id.clone(),
+                        kind: TurnItemKind::Status,
+                        status: TurnItemLifecycleStatus::Completed,
+                        summary: summarize_text(&message, SUMMARY_LIMIT),
+                        detail: Some(message),
+                        artifact_refs: Vec::new(),
+                        started_at: Some(Utc::now()),
+                        ended_at: Some(Utc::now()),
+                    };
+                    self.store.save_item(&item)?;
+                    self.attach_item_to_turn(&turn_id, &item.id)?;
+                    self.emit_event(
+                        &thread_id,
+                        Some(&turn_id),
+                        Some(&item.id),
+                        "agent.completed",
+                        json!({ "item": item, "agent_id": id }),
+                    )
+                    .await?;
+                }
+                EngineEvent::AgentList { agents } => {
+                    let running = agents
+                        .iter()
+                        .filter(|agent| matches!(agent.status, SubAgentStatus::Running))
+                        .count();
+                    let completed = agents
+                        .iter()
+                        .filter(|agent| matches!(agent.status, SubAgentStatus::Completed))
+                        .count();
+                    let message = format!(
+                        "Sub-agent list refreshed: {} total ({running} running, {completed} completed)",
+                        agents.len()
+                    );
+                    let item = TurnItemRecord {
+                        schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
+                        id: format!("item_{}", &Uuid::new_v4().to_string()[..8]),
+                        turn_id: turn_id.clone(),
+                        kind: TurnItemKind::Status,
+                        status: TurnItemLifecycleStatus::Completed,
+                        summary: summarize_text(&message, SUMMARY_LIMIT),
+                        detail: Some(message),
+                        artifact_refs: Vec::new(),
+                        started_at: Some(Utc::now()),
+                        ended_at: Some(Utc::now()),
+                    };
+                    self.store.save_item(&item)?;
+                    self.attach_item_to_turn(&turn_id, &item.id)?;
+                    self.emit_event(
+                        &thread_id,
+                        Some(&turn_id),
+                        Some(&item.id),
+                        "agent.list",
+                        json!({ "item": item, "agents": agents }),
                     )
                     .await?;
                 }

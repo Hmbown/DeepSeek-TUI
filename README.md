@@ -19,9 +19,9 @@ Three modes:
 
 - **Plan** — design-first, proposes before acting
 - **Agent** — multi-step autonomous tool use
-- **YOLO** — full auto-approve, no guardrails
+- **YOLO** — full auto-approve, no guardrails (preloads tools by default)
 
-Sub-agent orchestration is in there too (background workers, parallel tool calls). Still shaking out the rough edges.
+**Recent highlights**: sub‑agent orchestration (background workers, parallel tool calls, dependency‑aware swarms), parallel tool execution (`multi_tool_use.parallel`), runtime HTTP/SSE API (`deepseek serve --http`), background task queue (`/task`), interactive configuration (`/config`), model discovery (`/models`), command palette (`Ctrl+K`), expandable tool payloads (`v`), persistent sidebar for live plan/todo/sub‑agent state, and model context‑window suffix hints (`-32k`, `-256k`).
 
 ## Install
 
@@ -57,13 +57,17 @@ deepseek                                  # interactive TUI
 deepseek -p "explain this in 2 sentences" # one-shot prompt
 deepseek --yolo                           # agent mode, all tools auto-approved
 deepseek doctor                           # check your setup
+deepseek models                           # list available models
+deepseek serve --http                     # start HTTP/SSE API server
 ```
+
+Within the TUI, use `/config`, `/models`, `/task`, and `Ctrl+K` command palette.
 
 ## Model IDs
 
 Common model IDs: `deepseek-chat`, `deepseek-reasoner`.
 
-Any valid `deepseek-*` model ID is accepted (including future releases). To see live IDs from your configured endpoint:
+Any valid `deepseek-*` model ID is accepted (including future releases). Model IDs can include context‑window suffix hints (`-32k`, `-256k`). To see live IDs from your configured endpoint:
 
 ```bash
 deepseek models

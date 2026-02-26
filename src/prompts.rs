@@ -12,16 +12,25 @@ use std::path::Path;
 pub const BASE_PROMPT: &str = include_str!("prompts/base.txt");
 pub const NORMAL_PROMPT: &str = include_str!("prompts/normal.txt");
 pub const AGENT_PROMPT: &str = include_str!("prompts/agent.txt");
+pub const YOLO_PROMPT: &str = include_str!("prompts/yolo.txt");
 pub const PLAN_PROMPT: &str = include_str!("prompts/plan.txt");
+
+fn mode_prompt(mode: AppMode) -> &'static str {
+    match mode {
+        AppMode::Normal => NORMAL_PROMPT,
+        AppMode::Agent => AGENT_PROMPT,
+        AppMode::Yolo => YOLO_PROMPT,
+        AppMode::Plan => PLAN_PROMPT,
+    }
+}
+
+fn compose_mode_prompt(mode: AppMode) -> String {
+    format!("{}\n\n{}", BASE_PROMPT.trim(), mode_prompt(mode).trim())
+}
 
 /// Get the system prompt for a specific mode
 pub fn system_prompt_for_mode(mode: AppMode) -> SystemPrompt {
-    let text = match mode {
-        AppMode::Normal => NORMAL_PROMPT,
-        AppMode::Agent | AppMode::Yolo => AGENT_PROMPT,
-        AppMode::Plan => PLAN_PROMPT,
-    };
-    SystemPrompt::Text(text.trim().to_string())
+    SystemPrompt::Text(compose_mode_prompt(mode))
 }
 
 /// Get the system prompt for a specific mode with project context
@@ -30,27 +39,21 @@ pub fn system_prompt_for_mode_with_context(
     workspace: &Path,
     working_set_summary: Option<&str>,
 ) -> SystemPrompt {
-    let base_prompt = match mode {
-        AppMode::Normal => NORMAL_PROMPT,
-        AppMode::Agent | AppMode::Yolo => AGENT_PROMPT,
-        AppMode::Plan => PLAN_PROMPT,
-    };
+    let mode_prompt = compose_mode_prompt(mode);
 
     // Load project context from workspace
     let project_context = load_project_context_with_parents(workspace);
 
     // Combine base prompt with project context
     let mut full_prompt = if let Some(project_block) = project_context.as_system_block() {
-        format!("{}\n\n{}", base_prompt.trim(), project_block)
+        format!("{}\n\n{}", mode_prompt, project_block)
     } else {
         // Fallback: Generate an automatic project map summary
         let summary = crate::utils::summarize_project(workspace);
         let tree = crate::utils::project_tree(workspace, 2); // Shallow tree for prompt
         format!(
             "{}\n\n### Project Structure (Automatic Map)\n**Summary:** {}\n\n**Tree:**\n```\n{}\n```",
-            base_prompt.trim(),
-            summary,
-            tree
+            mode_prompt, summary, tree
         )
     };
 
@@ -91,13 +94,17 @@ pub fn base_system_prompt() -> SystemPrompt {
 }
 
 pub fn normal_system_prompt() -> SystemPrompt {
-    SystemPrompt::Text(NORMAL_PROMPT.trim().to_string())
+    system_prompt_for_mode(AppMode::Normal)
 }
 
 pub fn agent_system_prompt() -> SystemPrompt {
-    SystemPrompt::Text(AGENT_PROMPT.trim().to_string())
+    system_prompt_for_mode(AppMode::Agent)
+}
+
+pub fn yolo_system_prompt() -> SystemPrompt {
+    system_prompt_for_mode(AppMode::Yolo)
 }
 
 pub fn plan_system_prompt() -> SystemPrompt {
-    SystemPrompt::Text(PLAN_PROMPT.trim().to_string())
+    system_prompt_for_mode(AppMode::Plan)
 }

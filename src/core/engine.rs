@@ -1288,7 +1288,8 @@ impl Engine {
                 }
                 Op::ListSubAgents => {
                     let agents = {
-                        let manager = self.subagent_manager.lock().await;
+                        let mut manager = self.subagent_manager.lock().await;
+                        manager.cleanup(Duration::from_secs(60 * 60));
                         manager.list()
                     };
                     let _ = self.tx_event.send(Event::AgentList { agents }).await;

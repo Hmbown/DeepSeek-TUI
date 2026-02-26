@@ -296,6 +296,10 @@ pub struct App {
     pub max_subagents: usize,
     /// Cached sub-agent snapshots for UI views.
     pub subagent_cache: Vec<SubAgentResult>,
+    /// Last known per-agent progress text for running sub-agents.
+    pub agent_progress: HashMap<String, String>,
+    /// Animation anchor for status-strip active sub-agent spinner.
+    pub agent_activity_started_at: Option<Instant>,
     pub ui_theme: UiTheme,
     // Onboarding
     pub onboarding: OnboardingState,
@@ -574,6 +578,8 @@ impl App {
             allow_shell,
             max_subagents,
             subagent_cache: Vec::new(),
+            agent_progress: HashMap::new(),
+            agent_activity_started_at: None,
             ui_theme,
             onboarding: if needs_onboarding {
                 if was_onboarded && needs_api_key {

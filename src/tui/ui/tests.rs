@@ -116,6 +116,111 @@ fn create_test_app() -> App {
     App::new(options, &Config::default())
 }
 
+fn make_subagent(
+    id: &str,
+    status: crate::tools::subagent::SubAgentStatus,
+) -> crate::tools::subagent::SubAgentResult {
+    crate::tools::subagent::SubAgentResult {
+        agent_id: id.to_string(),
+        agent_type: crate::tools::subagent::SubAgentType::General,
+        assignment: crate::tools::subagent::SubAgentAssignment {
+            objective: format!("objective-{id}"),
+            role: Some("worker".to_string()),
+        },
+        status,
+        result: None,
+        steps_taken: 0,
+        duration_ms: 0,
+    }
+}
+
+#[test]
+fn sort_subagents_orders_running_before_terminal_statuses() {
+    let mut agents = vec![
+        make_subagent("agent_c", crate::tools::subagent::SubAgentStatus::Completed),
+        make_subagent("agent_a", crate::tools::subagent::SubAgentStatus::Running),
+        make_subagent(
+            "agent_b",
+            crate::tools::subagent::SubAgentStatus::Failed("boom".to_string()),
+        ),
+    ];
+
+    sort_subagents_in_place(&mut agents);
+
+    assert_eq!(agents[0].agent_id, "agent_a");
+    assert_eq!(agents[1].agent_id, "agent_b");
+    assert_eq!(agents[2].agent_id, "agent_c");
+}
+
+#[test]
+fn running_agent_count_unions_cache_and_progress() {
+    let mut app = create_test_app();
+    app.subagent_cache = vec![
+        make_subagent("agent_a", crate::tools::subagent::SubAgentStatus::Running),
+        make_subagent("agent_b", crate::tools::subagent::SubAgentStatus::Completed),
+    ];
+    app.agent_progress
+        .insert("agent_c".to_string(), "planning".to_string());
+
+    assert_eq!(running_agent_count(&app), 2);
+}
+
+#[test]
+fn compute_status_layout_reserves_rows_for_active_agents() {
+    let app = create_test_app();
+    let baseline = compute_status_layout(&app, 30, 3);
+    assert_eq!(baseline.status_height, 0);
+
+    let mut with_agents = create_test_app();
+    with_agents
+        .agent_progress
+        .insert("agent_a".to_string(), "running".to_string());
+    let active = compute_status_layout(&with_agents, 30, 3);
+    assert!(active.status_height >= 1);
+}
+
+#[test]
+fn active_agent_rows_prefers_cache_order_and_progress_text() {
+    let mut app = create_test_app();
+    app.subagent_cache = vec![
+        make_subagent("agent_a", crate::tools::subagent::SubAgentStatus::Running),
+        make_subagent("agent_b", crate::tools::subagent::SubAgentStatus::Running),
+    ];
+    app.agent_progress
+        .insert("agent_b".to_string(), "step 2".to_string());
+    app.agent_progress
+        .insert("agent_c".to_string(), "queued".to_string());
+
+    let rows = active_agent_rows(&app, 3);
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0].0, "agent_a");
+    assert!(rows[0].1.contains("objective-agent_a"));
+    assert_eq!(rows[1].0, "agent_b");
+    assert_eq!(rows[1].1, "step 2");
+    assert_eq!(rows[2].0, "agent_c");
+}
+
+#[test]
+fn reconcile_subagent_activity_state_trims_stale_progress_and_sets_anchor() {
+    let mut app = create_test_app();
+    app.subagent_cache = vec![
+        make_subagent("agent_a", crate::tools::subagent::SubAgentStatus::Running),
+        make_subagent("agent_b", crate::tools::subagent::SubAgentStatus::Completed),
+    ];
+    app.agent_progress
+        .insert("agent_stale".to_string(), "old".to_string());
+
+    reconcile_subagent_activity_state(&mut app);
+    assert!(app.agent_progress.contains_key("agent_a"));
+    assert!(!app.agent_progress.contains_key("agent_stale"));
+    assert!(app.agent_activity_started_at.is_some());
+
+    app.subagent_cache.clear();
+    reconcile_subagent_activity_state(&mut app);
+    assert!(app.agent_progress.is_empty());
+    assert!(app.agent_activity_started_at.is_none());
+}
+
 #[test]
 fn format_token_count_compact_formats_units() {
     assert_eq!(format_token_count_compact(999), "999");

@@ -48,7 +48,7 @@ use crate::task_manager::{
 use crate::tools::ReviewOutput;
 use crate::tools::plan::StepStatus;
 use crate::tools::spec::{ToolError, ToolResult};
-use crate::tools::subagent::{SubAgentResult, SubAgentStatus, SubAgentType};
+use crate::tools::subagent::{SubAgentResult, SubAgentStatus};
 use crate::tools::todo::TodoStatus;
 use crate::tui::command_palette::{
     CommandPaletteView, build_entries as build_command_palette_entries,
@@ -95,6 +95,7 @@ const UI_ACTIVE_POLL_MS: u64 = 16;
 const UI_DEEPSEEK_SQUIGGLE_MS: u64 = 120;
 const UI_TYPING_INDICATOR_MS: u64 = 120;
 const UI_STATUS_ANIMATION_MS: u64 = UI_DEEPSEEK_SQUIGGLE_MS;
+const MAX_ACTIVE_AGENT_STATUS_ROWS: usize = 2;
 const WORKSPACE_CONTEXT_REFRESH_SECS: u64 = 15;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -620,38 +621,46 @@ async fn run_event_loop(
                         }
                     }
                     EngineEvent::AgentSpawned { id, prompt } => {
-                        app.add_message(HistoryCell::System {
-                            content: format!(
-                                "Sub-agent {id} spawned: {}",
-                                summarize_tool_output(&prompt)
-                            ),
-                        });
-                        if app.view_stack.top_kind() == Some(ModalKind::SubAgents) {
-                            let _ = engine_handle.send(Op::ListSubAgents).await;
+                        let prompt_summary = summarize_tool_output(&prompt);
+                        app.agent_progress
+                            .insert(id.clone(), format!("starting: {prompt_summary}"));
+                        if app.agent_activity_started_at.is_none() {
+                            app.agent_activity_started_at = Some(Instant::now());
                         }
+                        app.add_message(HistoryCell::System {
+                            content: format!("Sub-agent {id} spawned: {}", prompt_summary),
+                        });
+                        let _ = engine_handle.send(Op::ListSubAgents).await;
                     }
                     EngineEvent::AgentProgress { id, status } => {
+                        app.agent_progress
+                            .insert(id.clone(), summarize_tool_output(&status));
+                        if app.agent_activity_started_at.is_none() {
+                            app.agent_activity_started_at = Some(Instant::now());
+                        }
                         app.status_message = Some(format!("Sub-agent {id}: {status}"));
                     }
                     EngineEvent::AgentComplete { id, result } => {
+                        app.agent_progress.remove(&id);
                         app.add_message(HistoryCell::System {
                             content: format!(
                                 "Sub-agent {id} completed: {}",
                                 summarize_tool_output(&result)
                             ),
                         });
-                        if app.view_stack.top_kind() == Some(ModalKind::SubAgents) {
-                            let _ = engine_handle.send(Op::ListSubAgents).await;
-                        }
+                        let _ = engine_handle.send(Op::ListSubAgents).await;
                     }
                     EngineEvent::AgentList { agents } => {
-                        app.subagent_cache = agents.clone();
-                        if app.view_stack.update_subagents(&agents) {
+                        let mut sorted = agents.clone();
+                        sort_subagents_in_place(&mut sorted);
+                        app.subagent_cache = sorted.clone();
+                        reconcile_subagent_activity_state(app);
+                        if app.view_stack.update_subagents(&sorted) {
                             app.status_message =
-                                Some(format!("Sub-agents: {} total", agents.len()));
+                                Some(format!("Sub-agents: {} total", sorted.len()));
                         } else {
                             app.add_message(HistoryCell::System {
-                                content: format_subagent_list(&agents),
+                                content: format_subagent_list(&sorted),
                             });
                         }
                     }
@@ -815,7 +824,8 @@ async fn run_event_loop(
             handle_view_events(app, &engine_handle, events).await;
         }
 
-        if app.is_loading
+        let has_running_agents = running_agent_count(app) > 0;
+        if (app.is_loading || has_running_agents)
             && last_status_frame.elapsed() >= Duration::from_millis(UI_STATUS_ANIMATION_MS)
         {
             app.needs_redraw = true;
@@ -837,7 +847,7 @@ async fn run_event_loop(
             app.needs_redraw = false;
         }
 
-        let mut poll_timeout = if app.is_loading {
+        let mut poll_timeout = if app.is_loading || has_running_agents {
             Duration::from_millis(UI_ACTIVE_POLL_MS)
         } else {
             Duration::from_millis(UI_IDLE_POLL_MS)
@@ -2140,6 +2150,84 @@ fn compact_queued_preview(app: &App, preview_rows_budget: usize) -> (Vec<String>
     (previews, queue_count > shown_count)
 }
 
+fn running_agent_count(app: &App) -> usize {
+    let mut ids: std::collections::HashSet<&str> =
+        app.agent_progress.keys().map(String::as_str).collect();
+    for agent in app
+        .subagent_cache
+        .iter()
+        .filter(|agent| matches!(agent.status, SubAgentStatus::Running))
+    {
+        ids.insert(agent.agent_id.as_str());
+    }
+    ids.len()
+}
+
+fn active_agent_rows(app: &App, limit: usize) -> Vec<(String, String)> {
+    if limit == 0 {
+        return Vec::new();
+    }
+
+    let mut rows = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for agent in app
+        .subagent_cache
+        .iter()
+        .filter(|agent| matches!(agent.status, SubAgentStatus::Running))
+    {
+        let detail = app
+            .agent_progress
+            .get(&agent.agent_id)
+            .cloned()
+            .unwrap_or_else(|| summarize_tool_output(&agent.assignment.objective));
+        rows.push((agent.agent_id.clone(), summarize_tool_output(&detail)));
+        seen.insert(agent.agent_id.clone());
+        if rows.len() >= limit {
+            return rows;
+        }
+    }
+
+    let mut extras: Vec<(String, String)> = app
+        .agent_progress
+        .iter()
+        .filter(|(id, _)| !seen.contains(id.as_str()))
+        .map(|(id, status)| (id.clone(), summarize_tool_output(status)))
+        .collect();
+    extras.sort_by(|a, b| a.0.cmp(&b.0));
+
+    rows.extend(extras.into_iter().take(limit.saturating_sub(rows.len())));
+    rows
+}
+
+fn reconcile_subagent_activity_state(app: &mut App) {
+    let running_agents: Vec<(String, String)> = app
+        .subagent_cache
+        .iter()
+        .filter(|agent| matches!(agent.status, SubAgentStatus::Running))
+        .map(|agent| {
+            (
+                agent.agent_id.clone(),
+                summarize_tool_output(&agent.assignment.objective),
+            )
+        })
+        .collect();
+
+    let running_ids: std::collections::HashSet<String> =
+        running_agents.iter().map(|(id, _)| id.clone()).collect();
+    app.agent_progress
+        .retain(|id, _| running_ids.contains(id.as_str()));
+    for (id, objective) in running_agents {
+        app.agent_progress.entry(id).or_insert(objective);
+    }
+
+    if running_ids.is_empty() {
+        app.agent_activity_started_at = None;
+    } else if app.agent_activity_started_at.is_none() {
+        app.agent_activity_started_at = Some(Instant::now());
+    }
+}
+
 fn compute_status_layout(
     app: &App,
     terminal_height: u16,
@@ -2154,7 +2242,10 @@ fn compute_status_layout(
         };
     }
 
-    let fixed_rows = usize::from(app.is_loading) + usize::from(app.queued_draft.is_some());
+    let active_agents = running_agent_count(app);
+    let fixed_rows = usize::from(app.is_loading)
+        + usize::from(app.queued_draft.is_some())
+        + usize::from(active_agents > 0);
     let queue_rows_budget = usize::from(status_budget).saturating_sub(fixed_rows);
 
     let (queued_preview, preview_compacted) = if queue_rows_budget > 0 {
@@ -2168,7 +2259,12 @@ fn compute_status_layout(
     } else {
         0
     };
-    let requested_rows = fixed_rows + queue_rows;
+    let mut requested_rows = fixed_rows + queue_rows;
+    if active_agents > 0 {
+        let detail_rows_budget = usize::from(status_budget).saturating_sub(requested_rows);
+        let detail_rows = detail_rows_budget.min(active_agents.min(MAX_ACTIVE_AGENT_STATUS_ROWS));
+        requested_rows += detail_rows;
+    }
     let status_height =
         u16::try_from(requested_rows.min(usize::from(status_budget))).unwrap_or(status_budget);
     let queued_compacted = preview_compacted || (app.queued_message_count() > 0 && queue_rows == 0);
@@ -2605,21 +2701,26 @@ fn render_sidebar_subagents(f: &mut Frame, area: Rect, app: &App) {
                 SubAgentStatus::Failed(_) => ("failed", palette::STATUS_ERROR),
                 SubAgentStatus::Cancelled => ("cancelled", palette::TEXT_MUTED),
             };
-            let agent_type = match agent.agent_type {
-                SubAgentType::General => "general",
-                SubAgentType::Explore => "explore",
-                SubAgentType::Plan => "plan",
-                SubAgentType::Review => "review",
-                SubAgentType::Custom => "custom",
-            };
+            let agent_type = agent.agent_type.as_str();
+            let role = agent.assignment.role.as_deref().unwrap_or("default");
             let summary = format!(
-                "{} {agent_type} {status_label} ({} steps)",
+                "{} {agent_type}/{role} {status_label} ({} steps)",
                 truncate_line_to_width(&agent.agent_id, 10),
                 agent.steps_taken
             );
             lines.push(Line::from(Span::styled(
                 truncate_line_to_width(&summary, content_width.max(1)),
                 Style::default().fg(status_color),
+            )));
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "  {}",
+                    truncate_line_to_width(
+                        &agent.assignment.objective,
+                        content_width.saturating_sub(2).max(1)
+                    )
+                ),
+                Style::default().fg(palette::TEXT_DIM),
             )));
         }
 
@@ -3030,7 +3131,13 @@ fn render_status_indicator(
     queued: &[String],
     queued_compacted: bool,
 ) {
-    let mut lines = Vec::with_capacity(1 + queued.len() + usize::from(app.queued_draft.is_some()));
+    let max_rows = usize::from(area.height);
+    if max_rows == 0 {
+        return;
+    }
+    let mut lines = Vec::with_capacity(
+        2 + queued.len() + usize::from(app.queued_draft.is_some()) + MAX_ACTIVE_AGENT_STATUS_ROWS,
+    );
 
     if app.is_loading {
         let header = if app.show_thinking {
@@ -3081,6 +3188,49 @@ fn render_status_indicator(
         ));
 
         lines.push(Line::from(spans));
+    }
+
+    let active_agent_total = running_agent_count(app);
+    if active_agent_total > 0 && lines.len() < max_rows {
+        let available = area.width as usize;
+        let spinner_start = app.agent_activity_started_at.or(app.turn_started_at);
+        let spinner = deepseek_squiggle(spinner_start);
+        let header = format!("AGENTS {active_agent_total} running | /agents");
+        lines.push(Line::from(vec![
+            Span::styled(spinner, Style::default().fg(palette::DEEPSEEK_SKY).bold()),
+            Span::raw(" "),
+            Span::styled(
+                truncate_line_to_width(&header, available.saturating_sub(2).max(1)),
+                Style::default().fg(palette::DEEPSEEK_SKY).bold(),
+            ),
+        ]));
+
+        let preview_limit = max_rows
+            .saturating_sub(lines.len())
+            .min(MAX_ACTIVE_AGENT_STATUS_ROWS);
+        let active_rows = active_agent_rows(app, preview_limit);
+        for (id, status) in &active_rows {
+            if lines.len() >= max_rows {
+                break;
+            }
+            let id_short = truncate_line_to_width(id, 12);
+            let status_single_line = status.lines().next().unwrap_or(status.as_str());
+            let prefix = format!("  {id_short}: ");
+            let detail_width = available.saturating_sub(prefix.width()).max(1);
+            let detail = truncate_line_to_width(status_single_line, detail_width);
+            lines.push(Line::from(vec![
+                Span::styled(prefix, Style::default().fg(palette::TEXT_MUTED)),
+                Span::styled(detail, Style::default().fg(palette::TEXT_DIM)),
+            ]));
+        }
+
+        let hidden = active_agent_total.saturating_sub(active_rows.len());
+        if hidden > 0 && lines.len() < max_rows {
+            lines.push(Line::from(Span::styled(
+                format!("  +{hidden} more running"),
+                Style::default().fg(palette::TEXT_MUTED),
+            )));
+        }
     }
 
     if let Some(draft) = app.queued_draft.as_ref() {
@@ -3828,20 +3978,48 @@ fn extract_reasoning_header(text: &str) -> Option<String> {
     }
 }
 
+fn subagent_status_rank(status: &SubAgentStatus) -> u8 {
+    match status {
+        SubAgentStatus::Running => 0,
+        SubAgentStatus::Failed(_) => 1,
+        SubAgentStatus::Completed => 2,
+        SubAgentStatus::Cancelled => 3,
+    }
+}
+
+fn sort_subagents_in_place(agents: &mut [SubAgentResult]) {
+    agents.sort_by(|a, b| {
+        subagent_status_rank(&a.status)
+            .cmp(&subagent_status_rank(&b.status))
+            .then_with(|| a.agent_type.as_str().cmp(b.agent_type.as_str()))
+            .then_with(|| a.agent_id.cmp(&b.agent_id))
+    });
+}
+
 fn format_subagent_list(agents: &[SubAgentResult]) -> String {
     if agents.is_empty() {
         return "No sub-agents running.".to_string();
     }
 
+    let mut sorted = agents.to_vec();
+    sort_subagents_in_place(&mut sorted);
+
     let mut lines = Vec::new();
     lines.push("Sub-agents:".to_string());
     lines.push("----------------------------------------".to_string());
 
-    for agent in agents {
+    for agent in &sorted {
         let status = format_subagent_status(&agent.status);
+        let role = agent.assignment.role.as_deref().unwrap_or("default");
         let mut line = format!(
-            "  {} ({:?}) - {} | steps: {} | {}ms",
-            agent.agent_id, agent.agent_type, status, agent.steps_taken, agent.duration_ms
+            "  {} ({}/{}) - {} | steps: {} | {}ms\n    objective: {}",
+            agent.agent_id,
+            agent.agent_type.as_str(),
+            role,
+            status,
+            agent.steps_taken,
+            agent.duration_ms,
+            summarize_tool_output(&agent.assignment.objective)
         );
         if matches!(agent.status, SubAgentStatus::Completed)
             && let Some(result) = agent.result.as_ref()

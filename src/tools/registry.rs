@@ -446,24 +446,52 @@ impl ToolRegistryBuilder {
         runtime: super::subagent::SubAgentRuntime,
     ) -> Self {
         use super::subagent::{
-            AgentCancelTool, AgentListTool, AgentResultTool, AgentSendInputTool, AgentSpawnTool,
-            AgentWaitTool, DelegateToAgentTool,
+            AgentAssignTool, AgentCancelTool, AgentCloseTool, AgentListTool, AgentResultTool,
+            AgentResumeTool, AgentSendInputTool, AgentSpawnTool, AgentWaitTool,
+            DelegateToAgentTool, ReportAgentJobResultTool, SpawnAgentsOnCsvTool,
         };
-        use super::swarm::AgentSwarmTool;
+        use super::swarm::{AgentSwarmTool, SwarmResultTool, SwarmStatusTool};
 
         self.with_tool(Arc::new(AgentSpawnTool::new(
             manager.clone(),
             runtime.clone(),
         )))
+        .with_tool(Arc::new(AgentSpawnTool::with_name(
+            manager.clone(),
+            runtime.clone(),
+            "spawn_agent",
+        )))
         .with_tool(Arc::new(DelegateToAgentTool::new(
             manager.clone(),
             runtime.clone(),
         )))
-        .with_tool(Arc::new(AgentSwarmTool::new(manager.clone(), runtime)))
+        .with_tool(Arc::new(AgentSwarmTool::new(
+            manager.clone(),
+            runtime.clone(),
+        )))
+        .with_tool(Arc::new(SpawnAgentsOnCsvTool::new(
+            manager.clone(),
+            runtime.clone(),
+        )))
+        .with_tool(Arc::new(ReportAgentJobResultTool))
+        .with_tool(Arc::new(SwarmStatusTool::new(
+            runtime.context.workspace.clone(),
+        )))
+        .with_tool(Arc::new(SwarmResultTool::new(
+            runtime.context.workspace.clone(),
+        )))
         .with_tool(Arc::new(AgentResultTool::new(manager.clone())))
         .with_tool(Arc::new(AgentSendInputTool::new(
             manager.clone(),
             "send_input",
+        )))
+        .with_tool(Arc::new(AgentAssignTool::new(
+            manager.clone(),
+            "agent_assign",
+        )))
+        .with_tool(Arc::new(AgentAssignTool::new(
+            manager.clone(),
+            "assign_agent",
         )))
         .with_tool(Arc::new(AgentWaitTool::new(manager.clone(), "wait")))
         .with_tool(Arc::new(AgentSendInputTool::new(
@@ -471,6 +499,11 @@ impl ToolRegistryBuilder {
             "agent_send_input",
         )))
         .with_tool(Arc::new(AgentWaitTool::new(manager.clone(), "agent_wait")))
+        .with_tool(Arc::new(AgentResumeTool::new(
+            manager.clone(),
+            runtime.clone(),
+        )))
+        .with_tool(Arc::new(AgentCloseTool::new(manager.clone())))
         .with_tool(Arc::new(AgentCancelTool::new(manager.clone())))
         .with_tool(Arc::new(AgentListTool::new(manager)))
     }
