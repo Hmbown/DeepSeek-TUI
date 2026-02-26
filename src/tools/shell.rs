@@ -1218,7 +1218,12 @@ impl ToolSpec for ExecShellTool {
             .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
 
         let result = if interactive {
-            manager.execute_interactive(command, None, timeout_ms)
+            manager.execute_interactive_with_policy(
+                command,
+                None,
+                timeout_ms,
+                policy_override.clone(),
+            )
         } else {
             manager.execute_with_options(
                 command,

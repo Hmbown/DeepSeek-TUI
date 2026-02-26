@@ -658,11 +658,9 @@ async fn run_event_loop(
                         if app.view_stack.update_subagents(&sorted) {
                             app.status_message =
                                 Some(format!("Sub-agents: {} total", sorted.len()));
-                        } else {
-                            app.add_message(HistoryCell::System {
-                                content: format_subagent_list(&sorted),
-                            });
                         }
+                        // Individual spawn/complete events already log to history;
+                        // full list available via /agents command.
                     }
                     EngineEvent::ApprovalRequired {
                         id,
@@ -3996,42 +3994,6 @@ fn sort_subagents_in_place(agents: &mut [SubAgentResult]) {
     });
 }
 
-fn format_subagent_list(agents: &[SubAgentResult]) -> String {
-    if agents.is_empty() {
-        return "No sub-agents running.".to_string();
-    }
-
-    let mut sorted = agents.to_vec();
-    sort_subagents_in_place(&mut sorted);
-
-    let mut lines = Vec::new();
-    lines.push("Sub-agents:".to_string());
-    lines.push("----------------------------------------".to_string());
-
-    for agent in &sorted {
-        let status = format_subagent_status(&agent.status);
-        let role = agent.assignment.role.as_deref().unwrap_or("default");
-        let mut line = format!(
-            "  {} ({}/{}) - {} | steps: {} | {}ms\n    objective: {}",
-            agent.agent_id,
-            agent.agent_type.as_str(),
-            role,
-            status,
-            agent.steps_taken,
-            agent.duration_ms,
-            summarize_tool_output(&agent.assignment.objective)
-        );
-        if matches!(agent.status, SubAgentStatus::Completed)
-            && let Some(result) = agent.result.as_ref()
-        {
-            let _ = write!(line, "\n    Result: {}", summarize_tool_output(result));
-        }
-        lines.push(line);
-    }
-
-    lines.join("\n")
-}
-
 fn task_mode_label(mode: AppMode) -> &'static str {
     match mode {
         AppMode::Normal => "normal",
@@ -4192,14 +4154,7 @@ fn format_task_detail(task: &TaskRecord) -> String {
     lines.join("\n")
 }
 
-fn format_subagent_status(status: &SubAgentStatus) -> String {
-    match status {
-        SubAgentStatus::Running => "running".to_string(),
-        SubAgentStatus::Completed => "completed".to_string(),
-        SubAgentStatus::Cancelled => "cancelled".to_string(),
-        SubAgentStatus::Failed(err) => format!("failed: {}", summarize_tool_output(err)),
-    }
-}
+
 
 #[allow(clippy::too_many_lines)]
 fn handle_tool_call_started(app: &mut App, id: &str, name: &str, input: &serde_json::Value) {

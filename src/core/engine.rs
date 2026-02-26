@@ -1773,7 +1773,7 @@ impl Engine {
     }
 
     fn build_tool_context(&self, mode: AppMode) -> ToolContext {
-        ToolContext::with_auto_approve(
+        let ctx = ToolContext::with_auto_approve(
             self.session.workspace.clone(),
             self.session.trust_mode,
             self.session.notes_path.clone(),
@@ -1781,7 +1781,18 @@ impl Engine {
             mode == AppMode::Yolo,
         )
         .with_features(self.config.features.clone())
-        .with_shell_manager(self.shell_manager.clone())
+        .with_shell_manager(self.shell_manager.clone());
+
+        if mode == AppMode::Yolo {
+            ctx.with_elevated_sandbox_policy(crate::sandbox::SandboxPolicy::WorkspaceWrite {
+                writable_roots: vec![self.session.workspace.clone()],
+                network_access: true,
+                exclude_tmpdir: false,
+                exclude_slash_tmp: false,
+            })
+        } else {
+            ctx
+        }
     }
 
     async fn ensure_mcp_pool(&mut self) -> Result<Arc<AsyncMutex<McpPool>>, ToolError> {
