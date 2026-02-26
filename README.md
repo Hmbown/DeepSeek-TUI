@@ -1,4 +1,4 @@
-# DeepSeek CLI
+# DeepSeek TUI
 
 A terminal-native TUI and CLI for [DeepSeek](https://platform.deepseek.com) models, built in Rust.
 
