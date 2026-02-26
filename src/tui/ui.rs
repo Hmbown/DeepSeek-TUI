@@ -4154,8 +4154,6 @@ fn format_task_detail(task: &TaskRecord) -> String {
     lines.join("\n")
 }
 
-
-
 #[allow(clippy::too_many_lines)]
 fn handle_tool_call_started(app: &mut App, id: &str, name: &str, input: &serde_json::Value) {
     let id = id.to_string();
