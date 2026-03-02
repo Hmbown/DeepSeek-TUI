@@ -30,7 +30,7 @@ pub(crate) fn read_auth_header_from_stdin() -> Result<&'static str> {
 /// We perform a low-level read with `read(2)` because `stdio::io::stdin()` has
 /// an internal BufReader:
 ///
-/// https://github.com/rust-lang/rust/blob/bcbbdcb8522fd3cb4a8dde62313b251ab107694d/library/std/src/io/stdio.rs#L250-L252
+/// <https://github.com/rust-lang/rust/blob/bcbbdcb8522fd3cb4a8dde62313b251ab107694d/library/std/src/io/stdio.rs#L250-L252>
 ///
 /// that can end up retaining a copy of stdin data in memory with no way to zero
 /// it out, whereas we aim to guarantee there is exactly one copy of the API key
