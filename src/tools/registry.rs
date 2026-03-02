@@ -305,6 +305,15 @@ impl ToolRegistryBuilder {
             .with_tool(Arc::new(GitDiffTool))
     }
 
+    /// Include git history tools (`git_log`, `git_show`, `git_blame`).
+    #[must_use]
+    pub fn with_git_history_tools(self) -> Self {
+        use super::git_history::{GitBlameTool, GitLogTool, GitShowTool};
+        self.with_tool(Arc::new(GitLogTool))
+            .with_tool(Arc::new(GitShowTool))
+            .with_tool(Arc::new(GitBlameTool))
+    }
+
     /// Include workspace diagnostics tool.
     #[must_use]
     pub fn with_diagnostics_tool(self) -> Self {
@@ -324,6 +333,13 @@ impl ToolRegistryBuilder {
     pub fn with_test_runner_tool(self) -> Self {
         use super::test_runner::RunTestsTool;
         self.with_tool(Arc::new(RunTestsTool))
+    }
+
+    /// Include structured data validation tool (`validate_data`).
+    #[must_use]
+    pub fn with_validation_tools(self) -> Self {
+        use super::validate_data::ValidateDataTool;
+        self.with_tool(Arc::new(ValidateDataTool))
     }
 
     /// Include web search tools.
@@ -382,9 +398,11 @@ impl ToolRegistryBuilder {
             .with_parallel_tool()
             .with_patch_tools()
             .with_git_tools()
+            .with_git_history_tools()
             .with_diagnostics_tool()
             .with_project_tools()
-            .with_test_runner_tool();
+            .with_test_runner_tool()
+            .with_validation_tools();
 
         if allow_shell {
             builder.with_shell_tools()

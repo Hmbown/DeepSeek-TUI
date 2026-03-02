@@ -5,6 +5,7 @@ pub mod diagnostics;
 pub mod file;
 pub mod file_search;
 pub mod git;
+pub mod git_history;
 pub mod parallel;
 pub mod plan;
 pub mod project;
@@ -19,6 +20,7 @@ pub mod swarm;
 pub mod test_runner;
 pub mod todo;
 pub mod user_input;
+pub mod validate_data;
 pub mod web_run;
 pub mod web_search;
 

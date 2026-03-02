@@ -1446,7 +1446,9 @@ impl Engine {
                 .with_read_only_file_tools()
                 .with_search_tools()
                 .with_git_tools()
+                .with_git_history_tools()
                 .with_diagnostics_tool()
+                .with_validation_tools()
                 .with_todo_tool(todo_list.clone())
                 .with_plan_tool(plan_state.clone())
         } else {
