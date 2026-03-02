@@ -443,10 +443,10 @@ impl RuntimeThreadStore {
             }
             let event: RuntimeEventRecord = serde_json::from_str(&line)
                 .with_context(|| format!("Failed to parse event line in {}", path.display()))?;
-            if let Some(since) = since_seq {
-                if event.seq <= since {
-                    continue;
-                }
+            if let Some(since) = since_seq
+                && event.seq <= since
+            {
+                continue;
             }
             out.push(event);
         }
@@ -850,11 +850,7 @@ impl RuntimeThreadManager {
 
         for (user_text, assistant_text) in pending_pairs {
             let turn_id = format!("turn_{}", &Uuid::new_v4().to_string()[..8]);
-            let summary = if user_text.len() > SUMMARY_LIMIT {
-                format!("{}...", &user_text[..SUMMARY_LIMIT.saturating_sub(3)])
-            } else {
-                user_text.clone()
-            };
+            let summary = crate::utils::truncate_with_ellipsis(&user_text, SUMMARY_LIMIT, "...");
             let mut item_ids = Vec::new();
 
             if !user_text.is_empty() {
@@ -1322,11 +1318,13 @@ impl RuntimeThreadManager {
             }
         }
 
-        let mut compaction = CompactionConfig::default();
-        compaction.enabled = true;
-        compaction.model = thread.model.clone();
-        compaction.token_threshold = compaction_threshold_for_model(&thread.model);
-        compaction.message_threshold = compaction_message_threshold_for_model(&thread.model);
+        let compaction = CompactionConfig {
+            enabled: true,
+            model: thread.model.clone(),
+            token_threshold: compaction_threshold_for_model(&thread.model),
+            message_threshold: compaction_message_threshold_for_model(&thread.model),
+            ..Default::default()
+        };
         let engine_cfg = EngineConfig {
             model: thread.model.clone(),
             workspace: thread.workspace.clone(),

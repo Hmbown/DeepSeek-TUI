@@ -933,10 +933,10 @@ impl TaskManager {
         let result = loop {
             tokio::select! {
                 maybe_event = event_rx.recv() => {
-                    if let Some(event) = maybe_event {
-                        if let Err(err) = self.apply_execution_event(&task_id, event).await {
-                            tracing::error!("Failed to apply task event for {task_id}: {err}");
-                        }
+                    if let Some(event) = maybe_event
+                        && let Err(err) = self.apply_execution_event(&task_id, event).await
+                    {
+                        tracing::error!("Failed to apply task event for {task_id}: {err}");
                     }
                 }
                 exec_result = &mut exec_fut => {

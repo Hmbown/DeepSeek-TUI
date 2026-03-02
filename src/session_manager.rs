@@ -6,8 +6,6 @@
 //! - Resuming sessions by ID
 //! - Managing session lifecycle
 
-#![allow(dead_code)] // Public API - session persistence functions for future TUI integration
-
 use crate::models::{ContentBlock, Message, SystemPrompt};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -167,6 +165,7 @@ impl SessionManager {
     }
 
     /// Load the most recent crash-recovery checkpoint if present.
+    #[allow(dead_code)] // Used in tests; will be called from session resume flow
     pub fn load_checkpoint(&self) -> std::io::Result<Option<SavedSession>> {
         let path = self.sessions_dir.join("checkpoints").join("latest.json");
         if !path.exists() {

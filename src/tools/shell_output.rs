@@ -96,8 +96,3 @@ pub(crate) fn summarize_output(text: &str) -> String {
         truncate_chars(&summary, SUMMARY_MAX_CHARS)
     }
 }
-
-/// Truncate output to `MAX_OUTPUT_SIZE`.
-pub(crate) fn truncate_output(output: &str) -> String {
-    truncate_with_meta(output).0
-}

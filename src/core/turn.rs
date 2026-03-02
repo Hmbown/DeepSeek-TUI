@@ -13,6 +13,7 @@ pub struct TurnContext {
     pub id: String,
 
     /// When the turn started
+    #[allow(dead_code)]
     pub started_at: Instant,
 
     /// Current step in the turn (tool call iteration)
@@ -25,6 +26,7 @@ pub struct TurnContext {
     pub tool_calls: Vec<TurnToolCall>,
 
     /// Whether the turn has been cancelled
+    #[allow(dead_code)]
     pub cancelled: bool,
 
     /// Usage for this turn
@@ -77,11 +79,13 @@ impl TurnContext {
     }
 
     /// Cancel the turn
+    #[allow(dead_code)]
     pub fn cancel(&mut self) {
         self.cancelled = true;
     }
 
     /// Get the elapsed time
+    #[allow(dead_code)]
     pub fn elapsed(&self) -> Duration {
         self.started_at.elapsed()
     }

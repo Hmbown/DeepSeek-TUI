@@ -1,3 +1,5 @@
+// TODO(integrate): Wire exec-policy into shell tool — tracked as future work
+#![allow(dead_code)]
 #![allow(unused_imports)]
 
 pub mod amend;

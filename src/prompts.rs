@@ -1,7 +1,8 @@
+// TODO(integrate): Move prompt building from engine into this module — tracked as future refactoring
+#![allow(dead_code)]
+
 //! System prompts for different modes.
 //! NOTE: Prompt building is currently handled directly in engine - these are for future refactoring.
-
-#![allow(dead_code)]
 
 use crate::models::SystemPrompt;
 use crate::project_context::{ProjectContext, load_project_context_with_parents};

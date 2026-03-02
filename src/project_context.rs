@@ -11,8 +11,6 @@
 //! The loaded content is injected into the system prompt to give the agent
 //! context about the project's conventions, structure, and requirements.
 
-#![allow(dead_code)] // Public API - some functions reserved for future use
-
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -63,6 +61,7 @@ pub struct ProjectContext {
     /// Any warnings during loading
     pub warnings: Vec<String>,
     /// Project root directory
+    #[allow(dead_code)] // Part of ProjectContext public interface
     pub project_root: PathBuf,
     /// Whether this is a trusted project
     pub is_trusted: bool,
@@ -267,6 +266,7 @@ Use conventional commits: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore
 }
 
 /// Merge multiple project contexts (e.g., from nested directories)
+#[allow(dead_code)] // Public API for monorepo context merging
 pub fn merge_contexts(contexts: &[ProjectContext]) -> Option<String> {
     let non_empty: Vec<_> = contexts
         .iter()

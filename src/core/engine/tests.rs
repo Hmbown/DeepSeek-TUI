@@ -7,8 +7,10 @@ use std::time::Instant;
 use tempfile::tempdir;
 
 fn build_engine_with_capacity(capacity: CapacityControllerConfig) -> Engine {
-    let mut engine_config = EngineConfig::default();
-    engine_config.capacity = capacity;
+    let engine_config = EngineConfig {
+        capacity,
+        ..Default::default()
+    };
     let (engine, _handle) = Engine::new(engine_config, &Config::default());
     engine
 }
@@ -134,11 +136,13 @@ fn context_budget_reserves_output_and_headroom() {
 
 #[tokio::test]
 async fn pre_request_refresh_invoked_when_medium_risk() {
-    let mut capacity = CapacityControllerConfig::default();
-    capacity.enabled = true;
-    capacity.low_risk_max = 0.0;
-    capacity.medium_risk_max = 1.0;
-    capacity.min_turns_before_guardrail = 0;
+    let capacity = CapacityControllerConfig {
+        enabled: true,
+        low_risk_max: 0.0,
+        medium_risk_max: 1.0,
+        min_turns_before_guardrail: 0,
+        ..Default::default()
+    };
 
     let mut engine = build_engine_with_capacity(capacity.clone());
     engine.config.capacity = capacity.clone();
@@ -175,13 +179,15 @@ async fn post_tool_replay_invoked_when_high_non_severe_risk() {
     let tmp = tempdir().expect("tempdir");
     fs::write(tmp.path().join("sample.txt"), "hello replay").expect("write");
 
-    let mut capacity = CapacityControllerConfig::default();
-    capacity.enabled = true;
-    capacity.low_risk_max = 0.0;
-    capacity.medium_risk_max = 0.0;
-    capacity.severe_min_slack = -10.0;
-    capacity.severe_violation_ratio = 2.0;
-    capacity.min_turns_before_guardrail = 0;
+    let capacity = CapacityControllerConfig {
+        enabled: true,
+        low_risk_max: 0.0,
+        medium_risk_max: 0.0,
+        severe_min_slack: -10.0,
+        severe_violation_ratio: 2.0,
+        min_turns_before_guardrail: 0,
+        ..Default::default()
+    };
 
     let mut engine = build_engine_with_capacity(capacity.clone());
     engine.session.workspace = tmp.path().to_path_buf();
@@ -242,11 +248,13 @@ async fn error_escalation_triggers_replan_when_severe_or_repeated_failures() {
         );
     }
 
-    let mut capacity = CapacityControllerConfig::default();
-    capacity.enabled = true;
-    capacity.low_risk_max = 0.0;
-    capacity.medium_risk_max = 0.0;
-    capacity.min_turns_before_guardrail = 0;
+    let capacity = CapacityControllerConfig {
+        enabled: true,
+        low_risk_max: 0.0,
+        medium_risk_max: 0.0,
+        min_turns_before_guardrail: 0,
+        ..Default::default()
+    };
 
     let mut engine = build_engine_with_capacity(capacity.clone());
     engine.config.capacity = capacity.clone();
@@ -293,8 +301,10 @@ async fn error_escalation_triggers_replan_when_severe_or_repeated_failures() {
 
 #[tokio::test]
 async fn controller_disabled_keeps_behavior_unchanged() {
-    let mut capacity = CapacityControllerConfig::default();
-    capacity.enabled = false;
+    let capacity = CapacityControllerConfig {
+        enabled: false,
+        ..Default::default()
+    };
 
     let mut engine = build_engine_with_capacity(capacity.clone());
     engine.config.capacity = capacity.clone();

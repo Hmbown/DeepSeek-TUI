@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::fs::OpenOptions;
 use std::io::Read;
 use std::io::Seek;

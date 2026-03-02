@@ -4,7 +4,6 @@
 //! - Session start/end
 //! - Tool call before/after
 
-#![allow(dead_code)]
 //! - Mode changes
 //! - Message submission
 //! - Error events
@@ -44,6 +43,7 @@ pub enum HookEvent {
 
 impl HookEvent {
     /// Get string representation for environment variable
+    #[allow(dead_code)] // Used in tests and future hook dispatch
     pub fn as_str(self) -> &'static str {
         match self {
             HookEvent::SessionStart => "session_start",
@@ -130,6 +130,7 @@ fn default_continue_on_error() -> bool {
 
 impl Hook {
     /// Create a new hook with minimal configuration
+    #[allow(dead_code)] // Public builder API, used in tests
     pub fn new(event: HookEvent, command: &str) -> Self {
         Self {
             event,
@@ -143,24 +144,28 @@ impl Hook {
     }
 
     /// Builder: set condition
+    #[allow(dead_code)] // Public builder API, used in tests
     pub fn with_condition(mut self, condition: HookCondition) -> Self {
         self.condition = Some(condition);
         self
     }
 
     /// Builder: set timeout
+    #[allow(dead_code)] // Public builder API, used in tests
     pub fn with_timeout(mut self, secs: u64) -> Self {
         self.timeout_secs = secs;
         self
     }
 
     /// Builder: run in background
+    #[allow(dead_code)] // Public builder API, used in tests
     pub fn background(mut self) -> Self {
         self.background = true;
         self
     }
 
     /// Builder: set name
+    #[allow(dead_code)] // Public builder API, used in tests
     pub fn with_name(mut self, name: &str) -> Self {
         self.name = Some(name.to_string());
         self
@@ -201,6 +206,7 @@ impl HooksConfig {
     }
 
     /// Check if hooks are configured and enabled
+    #[allow(dead_code)] // Public API for hook system consumers
     pub fn has_hooks(&self) -> bool {
         self.enabled && !self.hooks.is_empty()
     }
@@ -244,16 +250,19 @@ impl HookContext {
         Self::default()
     }
 
+    #[allow(dead_code)] // Public builder API, used in tests
     pub fn with_tool_name(mut self, name: &str) -> Self {
         self.tool_name = Some(name.to_string());
         self
     }
 
+    #[allow(dead_code)] // Public builder API
     pub fn with_tool_args(mut self, args: &serde_json::Value) -> Self {
         self.tool_args = Some(args.to_string());
         self
     }
 
+    #[allow(dead_code)] // Public builder API
     pub fn with_tool_result(mut self, result: &str, success: bool, exit_code: Option<i32>) -> Self {
         self.tool_result = Some(result.to_string());
         self.tool_success = Some(success);
@@ -261,6 +270,7 @@ impl HookContext {
         self
     }
 
+    #[allow(dead_code)] // Public builder API, used in tests
     pub fn with_mode(mut self, mode: &str) -> Self {
         self.mode = Some(mode.to_string());
         self
@@ -271,6 +281,7 @@ impl HookContext {
         self
     }
 
+    #[allow(dead_code)] // Public builder API, used in tests
     pub fn with_workspace(mut self, path: PathBuf) -> Self {
         self.workspace = Some(path);
         self
@@ -286,11 +297,13 @@ impl HookContext {
         self
     }
 
+    #[allow(dead_code)] // Public builder API
     pub fn with_message(mut self, message: &str) -> Self {
         self.message = Some(message.to_string());
         self
     }
 
+    #[allow(dead_code)] // Public builder API
     pub fn with_error(mut self, error: &str) -> Self {
         self.error_message = Some(error.to_string());
         self
@@ -301,6 +314,7 @@ impl HookContext {
         self
     }
 
+    #[allow(dead_code)] // Public builder API
     pub fn with_cost(mut self, cost: f64) -> Self {
         self.session_cost = Some(cost);
         self
@@ -383,6 +397,7 @@ impl HookContext {
 
 /// Result of a hook execution
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // Fields are part of public API for hook consumers
 pub struct HookResult {
     /// Hook name (if specified)
     pub name: Option<String>,
@@ -436,6 +451,7 @@ impl HookExecutor {
     }
 
     /// Create a disabled `HookExecutor` (no hooks will run)
+    #[allow(dead_code)] // Used in tests and as convenience constructor
     pub fn disabled() -> Self {
         Self {
             config: HooksConfig {
@@ -448,6 +464,7 @@ impl HookExecutor {
     }
 
     /// Check if hooks are enabled
+    #[allow(dead_code)] // Public API for hook system consumers
     pub fn is_enabled(&self) -> bool {
         self.config.enabled
     }

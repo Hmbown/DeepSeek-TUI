@@ -1,3 +1,6 @@
+// TODO(integrate): Wire streaming collector into TUI rendering pipeline
+#![allow(dead_code)]
+
 //! Markdown stream collector for newline-gated rendering.
 //!
 //! This module implements the pattern from codex-rs where:
@@ -5,8 +8,6 @@
 //! - Only complete lines are committed to the UI
 //! - This prevents visual flashing of partial words
 //! - Final content is emitted when the stream ends
-
-#![allow(dead_code)]
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};

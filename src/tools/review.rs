@@ -1,7 +1,7 @@
 //! Tool for structured code reviews of files, diffs, or pull requests.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use async_trait::async_trait;
@@ -244,19 +244,9 @@ impl ToolSpec for ReviewTool {
 }
 
 enum ReviewSource {
-    File {
-        path: PathBuf,
-        display: String,
-        content: String,
-    },
-    Diff {
-        label: String,
-        diff: String,
-    },
-    PullRequest {
-        label: String,
-        diff: String,
-    },
+    File { display: String, content: String },
+    Diff { label: String, diff: String },
+    PullRequest { label: String, diff: String },
 }
 
 fn resolve_review_source(
@@ -331,11 +321,7 @@ fn resolve_file_target(target: &str, context: &ToolContext) -> Result<ReviewSour
         .unwrap_or(&path)
         .to_string_lossy()
         .to_string();
-    Ok(ReviewSource::File {
-        path,
-        display,
-        content,
-    })
+    Ok(ReviewSource::File { display, content })
 }
 
 fn resolve_diff_target(
@@ -348,10 +334,10 @@ fn resolve_diff_target(
     if staged {
         cmd.arg("--cached");
     }
-    if let Some(base) = base {
-        if !base.trim().is_empty() {
-            cmd.arg(format!("{base}...HEAD"));
-        }
+    if let Some(base) = base
+        && !base.trim().is_empty()
+    {
+        cmd.arg(format!("{base}...HEAD"));
     }
     cmd.current_dir(workspace);
 
@@ -487,7 +473,6 @@ struct PullRequestRef {
     owner: String,
     repo: String,
     number: String,
-    url: String,
 }
 
 impl PullRequestRef {
@@ -516,7 +501,6 @@ fn parse_pr_url(url: &str) -> Option<PullRequestRef> {
         owner: (*owner).to_string(),
         repo: (*repo).to_string(),
         number: (*number).to_string(),
-        url: trimmed.to_string(),
     })
 }
 

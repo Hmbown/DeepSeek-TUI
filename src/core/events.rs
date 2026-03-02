@@ -23,22 +23,42 @@ pub enum TurnOutcomeStatus {
 pub enum Event {
     // === Streaming Events ===
     /// A new message block has started
-    MessageStarted { index: usize },
+    MessageStarted {
+        #[allow(dead_code)]
+        index: usize,
+    },
 
     /// Incremental text content delta
-    MessageDelta { index: usize, content: String },
+    MessageDelta {
+        #[allow(dead_code)]
+        index: usize,
+        content: String,
+    },
 
     /// Message block completed
-    MessageComplete { index: usize },
+    MessageComplete {
+        #[allow(dead_code)]
+        index: usize,
+    },
 
     /// Thinking block started
-    ThinkingStarted { index: usize },
+    ThinkingStarted {
+        #[allow(dead_code)]
+        index: usize,
+    },
 
     /// Incremental thinking content delta
-    ThinkingDelta { index: usize, content: String },
+    ThinkingDelta {
+        #[allow(dead_code)]
+        index: usize,
+        content: String,
+    },
 
     /// Thinking block completed
-    ThinkingComplete { index: usize },
+    ThinkingComplete {
+        #[allow(dead_code)]
+        index: usize,
+    },
 
     // === Tool Events ===
     /// Tool call initiated
@@ -49,6 +69,7 @@ pub enum Event {
     },
 
     /// Tool execution progress (for long-running tools)
+    #[allow(dead_code)]
     ToolCallProgress { id: String, output: String },
 
     /// Tool call completed
@@ -91,6 +112,7 @@ pub enum Event {
     },
 
     /// Capacity decision telemetry.
+    #[allow(dead_code)]
     CapacityDecision {
         session_id: String,
         turn_id: String,
@@ -107,6 +129,7 @@ pub enum Event {
     },
 
     /// Capacity intervention telemetry.
+    #[allow(dead_code)]
     CapacityIntervention {
         session_id: String,
         turn_id: String,
@@ -119,6 +142,7 @@ pub enum Event {
     },
 
     /// Capacity memory persistence failure telemetry.
+    #[allow(dead_code)]
     CapacityMemoryPersistFailed {
         session_id: String,
         turn_id: String,
@@ -141,7 +165,11 @@ pub enum Event {
 
     // === System Events ===
     /// An error occurred
-    Error { message: String, recoverable: bool },
+    Error {
+        message: String,
+        #[allow(dead_code)]
+        recoverable: bool,
+    },
 
     /// Status message for UI display
     Status { message: String },
@@ -166,6 +194,7 @@ pub enum Event {
     },
 
     /// Request user decision after sandbox denial
+    #[allow(dead_code)]
     ElevationRequired {
         tool_id: String,
         tool_name: String,

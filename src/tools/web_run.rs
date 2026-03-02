@@ -15,7 +15,6 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-const DEFAULT_MAX_RESULTS: usize = 5;
 const MAX_RESULTS: usize = 10;
 const DEFAULT_TIMEOUT_MS: u64 = 15_000;
 const DEFAULT_OPEN_TIMEOUT_MS: u64 = 20_000;
@@ -801,10 +800,10 @@ fn page_from_search(query: &str, results: &[SearchEntry]) -> WebPage {
             text: entry.title.clone(),
         });
         lines.push(format!("{}. [{}] {}", id, id, entry.title));
-        if let Some(snippet) = entry.snippet.as_ref() {
-            if !snippet.trim().is_empty() {
-                lines.push(format!("    {snippet}"));
-            }
+        if let Some(snippet) = entry.snippet.as_ref()
+            && !snippet.trim().is_empty()
+        {
+            lines.push(format!("    {snippet}"));
         }
         lines.push(format!("    {url}", url = entry.url));
     }
@@ -873,10 +872,10 @@ async fn fetch_page(url: &str, timeout_ms: u64) -> Result<WebPage, ToolError> {
 }
 
 fn is_pdf(content_type: &Option<String>, url: &str) -> bool {
-    if let Some(ct) = content_type {
-        if ct.to_lowercase().contains("application/pdf") {
-            return true;
-        }
+    if let Some(ct) = content_type
+        && ct.to_lowercase().contains("application/pdf")
+    {
+        return true;
     }
     url.to_lowercase().ends_with(".pdf")
 }
@@ -888,7 +887,7 @@ fn parse_pdf_page(
 ) -> Result<WebPage, ToolError> {
     let text = pdf_extract_text(bytes)?;
     let pages = split_pdf_pages(&text);
-    let lines = pages.get(0).cloned().unwrap_or_else(Vec::new);
+    let lines = pages.first().cloned().unwrap_or_default();
 
     Ok(WebPage {
         url: url.to_string(),
@@ -1163,10 +1162,10 @@ fn resolve_url(base: &str, href: &str) -> String {
     if href.starts_with("//") {
         return format!("https:{href}");
     }
-    if let Ok(base_url) = reqwest::Url::parse(base) {
-        if let Ok(joined) = base_url.join(href) {
-            return joined.to_string();
-        }
+    if let Ok(base_url) = reqwest::Url::parse(base)
+        && let Ok(joined) = base_url.join(href)
+    {
+        return joined.to_string();
     }
     href.to_string()
 }
@@ -1281,14 +1280,14 @@ fn percent_decode(input: &str) -> String {
     let bytes = input.as_bytes();
     let mut idx = 0;
     while idx < bytes.len() {
-        if bytes[idx] == b'%' && idx + 2 < bytes.len() {
-            if let Ok(hex) = std::str::from_utf8(&bytes[idx + 1..idx + 3]) {
-                if let Ok(val) = u8::from_str_radix(hex, 16) {
-                    out.push(val as char);
-                    idx += 3;
-                    continue;
-                }
-            }
+        if bytes[idx] == b'%'
+            && idx + 2 < bytes.len()
+            && let Ok(hex) = std::str::from_utf8(&bytes[idx + 1..idx + 3])
+            && let Ok(val) = u8::from_str_radix(hex, 16)
+        {
+            out.push(val as char);
+            idx += 3;
+            continue;
         }
         out.push(bytes[idx] as char);
         idx += 1;
@@ -1297,17 +1296,7 @@ fn percent_decode(input: &str) -> String {
 }
 
 fn url_encode(input: &str) -> String {
-    let mut encoded = String::new();
-    for ch in input.bytes() {
-        match ch {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                encoded.push(ch as char)
-            }
-            b' ' => encoded.push('+'),
-            _ => encoded.push_str(&format!("%{ch:02X}")),
-        }
-    }
-    encoded
+    crate::utils::url_encode(input)
 }
 
 // === Tests ===

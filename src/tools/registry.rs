@@ -63,28 +63,23 @@ impl ToolRegistry {
         self.tools.contains_key(name)
     }
 
-    /// Check if a tool supports parallel execution.
-    #[must_use]
-    pub fn tool_supports_parallel(&self, name: &str) -> bool {
-        self.get(name)
-            .map(|tool| tool.supports_parallel())
-            .unwrap_or(false)
-    }
-
     /// Get all registered tool names.
     #[must_use]
+    #[allow(dead_code)]
     pub fn names(&self) -> Vec<&str> {
         self.tools.keys().map(std::string::String::as_str).collect()
     }
 
     /// Get the number of registered tools.
     #[must_use]
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.tools.len()
     }
 
     /// Check if the registry is empty.
     #[must_use]
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.tools.is_empty()
     }
@@ -158,6 +153,7 @@ impl ToolRegistry {
 
     /// Convert tools to API Tool format with optional cache control on the last tool.
     #[must_use]
+    #[allow(dead_code)]
     pub fn to_api_tools_with_cache(&self, enable_cache: bool) -> Vec<Tool> {
         let mut tools = self.to_api_tools();
         if enable_cache && let Some(last) = tools.last_mut() {
@@ -170,6 +166,7 @@ impl ToolRegistry {
 
     /// Filter tools by capability.
     #[must_use]
+    #[allow(dead_code)]
     pub fn filter_by_capability(&self, capability: ToolCapability) -> Vec<Arc<dyn ToolSpec>> {
         self.tools
             .values()
@@ -180,6 +177,7 @@ impl ToolRegistry {
 
     /// Get read-only tools (for Normal mode).
     #[must_use]
+    #[allow(dead_code)]
     pub fn read_only_tools(&self) -> Vec<Arc<dyn ToolSpec>> {
         self.tools
             .values()
@@ -190,6 +188,7 @@ impl ToolRegistry {
 
     /// Get tools that require approval.
     #[must_use]
+    #[allow(dead_code)]
     pub fn approval_required_tools(&self) -> Vec<Arc<dyn ToolSpec>> {
         self.tools
             .values()
@@ -200,6 +199,7 @@ impl ToolRegistry {
 
     /// Get tools that suggest approval.
     #[must_use]
+    #[allow(dead_code)]
     pub fn approval_suggested_tools(&self) -> Vec<Arc<dyn ToolSpec>> {
         self.tools
             .values()
@@ -214,23 +214,27 @@ impl ToolRegistry {
     }
 
     /// Update the context (e.g., when workspace changes).
+    #[allow(dead_code)]
     pub fn set_context(&mut self, context: ToolContext) {
         self.context = context;
     }
 
     /// Get a mutable reference to the current context.
     #[must_use]
+    #[allow(dead_code)]
     pub fn context_mut(&mut self) -> &mut ToolContext {
         &mut self.context
     }
 
     /// Remove a tool by name.
     #[must_use]
+    #[allow(dead_code)]
     pub fn remove(&mut self, name: &str) -> Option<Arc<dyn ToolSpec>> {
         self.tools.remove(name)
     }
 
     /// Clear all tools from the registry.
+    #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.tools.clear();
     }
@@ -252,13 +256,6 @@ impl ToolRegistryBuilder {
     #[must_use]
     pub fn with_tool(mut self, tool: Arc<dyn ToolSpec>) -> Self {
         self.tools.push(tool);
-        self
-    }
-
-    /// Add multiple tools.
-    #[must_use]
-    pub fn with_tools(mut self, tools: Vec<Arc<dyn ToolSpec>>) -> Self {
-        self.tools.extend(tools);
         self
     }
 
@@ -352,17 +349,6 @@ impl ToolRegistryBuilder {
         self.with_tool(Arc::new(RequestUserInputTool))
     }
 
-    /// Include structured data tools (weather/finance/sports/time/calculator).
-    #[must_use]
-    pub fn with_structured_data_tools(self) -> Self {
-        use super::{CalculatorTool, FinanceTool, SportsTool, TimeTool, WeatherTool};
-        self.with_tool(Arc::new(WeatherTool))
-            .with_tool(Arc::new(FinanceTool))
-            .with_tool(Arc::new(SportsTool))
-            .with_tool(Arc::new(TimeTool))
-            .with_tool(Arc::new(CalculatorTool))
-    }
-
     /// Include patch tools (`apply_patch`).
     #[must_use]
     pub fn with_patch_tools(self) -> Self {
@@ -394,7 +380,6 @@ impl ToolRegistryBuilder {
             .with_web_tools()
             .with_user_input_tool()
             .with_parallel_tool()
-            .with_structured_data_tools()
             .with_patch_tools()
             .with_git_tools()
             .with_diagnostics_tool()
@@ -423,19 +408,6 @@ impl ToolRegistryBuilder {
     pub fn with_plan_tool(self, plan_state: super::plan::SharedPlanState) -> Self {
         use super::plan::UpdatePlanTool;
         self.with_tool(Arc::new(UpdatePlanTool::new(plan_state)))
-    }
-
-    /// Include all agent tools plus todo and plan tools.
-    #[must_use]
-    pub fn with_full_agent_tools(
-        self,
-        allow_shell: bool,
-        todo_list: super::todo::SharedTodoList,
-        plan_state: super::plan::SharedPlanState,
-    ) -> Self {
-        self.with_agent_tools(allow_shell)
-            .with_todo_tool(todo_list)
-            .with_plan_tool(plan_state)
     }
 
     /// Include sub-agent management tools.

@@ -55,7 +55,9 @@ pub struct Session {
 pub struct SessionUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
+    #[allow(dead_code)]
     pub cache_creation_input_tokens: u64,
+    #[allow(dead_code)]
     pub cache_read_input_tokens: u64,
 }
 
@@ -64,11 +66,6 @@ impl SessionUsage {
     pub fn add(&mut self, usage: &Usage) {
         self.input_tokens += u64::from(usage.input_tokens);
         self.output_tokens += u64::from(usage.output_tokens);
-    }
-
-    /// Total tokens used
-    pub fn total(&self) -> u64 {
-        self.input_tokens + self.output_tokens
     }
 }
 
@@ -107,13 +104,6 @@ impl Session {
         }
     }
 
-    /// Get project instructions as a system prompt block (if available)
-    pub fn get_project_instructions(&self) -> Option<String> {
-        self.project_context
-            .as_ref()
-            .and_then(super::super::project_context::ProjectContext::as_system_block)
-    }
-
     /// Add a message to the conversation
     pub fn add_message(&mut self, message: Message) {
         self.messages.push(message);
@@ -123,16 +113,5 @@ impl Session {
     pub fn rebuild_working_set(&mut self) {
         self.working_set
             .rebuild_from_messages(&self.messages, &self.workspace);
-    }
-
-    /// Clear the conversation history
-    pub fn clear(&mut self) {
-        self.messages.clear();
-        self.compaction_summary_prompt = None;
-    }
-
-    /// Get the message count
-    pub fn message_count(&self) -> usize {
-        self.messages.len()
     }
 }

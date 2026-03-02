@@ -1,7 +1,5 @@
 //! Context compaction for long conversations.
 
-#![allow(dead_code)]
-
 use anyhow::Result;
 use regex::Regex;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -54,7 +52,6 @@ const SUMMARY_INPUT_TAIL_CHARS: usize = 6_000;
 struct CompactionPlan {
     pinned_indices: BTreeSet<usize>,
     summarize_indices: Vec<usize>,
-    working_set_paths: HashSet<String>,
 }
 
 fn path_regex() -> &'static Regex {
@@ -352,10 +349,12 @@ fn plan_compaction(
         .filter(|idx| !pinned_indices.contains(idx))
         .collect();
 
+    // `working_set_paths` was used only for pinning decisions above.
+    drop(working_set_paths);
+
     CompactionPlan {
         pinned_indices,
         summarize_indices,
-        working_set_paths,
     }
 }
 
@@ -594,6 +593,7 @@ pub struct CompactionResult {
     /// Summary system prompt
     pub summary_prompt: Option<SystemPrompt>,
     /// Messages that were removed from the active window
+    #[allow(dead_code)]
     pub removed_messages: Vec<Message>,
     /// Number of retries used before success
     pub retries_used: u32,
@@ -853,10 +853,10 @@ fn extract_workflow_context(messages: &[Message], workspace: Option<&Path>) -> S
                     tools_used.push(name.clone());
 
                     // Extract file paths from tool inputs
-                    if let Some(path) = extract_path_from_input(input) {
-                        if !files_touched.contains(&path) {
-                            files_touched.push(path);
-                        }
+                    if let Some(path) = extract_path_from_input(input)
+                        && !files_touched.contains(&path)
+                    {
+                        files_touched.push(path);
                     }
                 }
                 ContentBlock::Text { text, .. } => {
@@ -924,10 +924,10 @@ fn extract_path_from_input(input: &serde_json::Value) -> Option<String> {
     // Try to find path in nested objects
     if let Some(obj) = input.as_object() {
         for (_, value) in obj {
-            if let Some(path) = value.as_str() {
-                if path.contains('/') || path.contains('\\') || path.contains('.') {
-                    return Some(path.to_string());
-                }
+            if let Some(path) = value.as_str()
+                && (path.contains('/') || path.contains('\\') || path.contains('.'))
+            {
+                return Some(path.to_string());
             }
         }
     }

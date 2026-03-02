@@ -77,18 +77,6 @@ impl TodoList {
         }
     }
 
-    /// Check whether the list is empty.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.items.is_empty()
-    }
-
-    /// Return all todo items.
-    #[must_use]
-    pub fn items(&self) -> &[TodoItem] {
-        &self.items
-    }
-
     /// Return a snapshot of the list with computed metrics.
     #[must_use]
     pub fn snapshot(&self) -> TodoListSnapshot {
@@ -167,19 +155,6 @@ impl TodoList {
         self.next_id = 1;
     }
 
-    /// Auto-create a todo list from a multi-step input.
-    pub fn maybe_auto_create(&mut self, input: &str) -> bool {
-        if !self.items.is_empty() {
-            return false;
-        }
-        if !looks_multi_step(input) {
-            return false;
-        }
-        let summary = summarize_input(input, 64);
-        self.add(format!("Break down: {summary}"), TodoStatus::InProgress);
-        true
-    }
-
     fn set_single_in_progress(&mut self, allow_id: Option<u32>) {
         for item in &mut self.items {
             if Some(item.id) != allow_id && item.status == TodoStatus::InProgress {
@@ -187,62 +162,6 @@ impl TodoList {
             }
         }
     }
-}
-
-fn looks_multi_step(input: &str) -> bool {
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        return false;
-    }
-
-    let lines = trimmed.lines().count();
-    if lines >= 3 {
-        return true;
-    }
-
-    let bullet_lines = trimmed
-        .lines()
-        .filter(|line| {
-            let line = line.trim_start();
-            line.starts_with("- ")
-                || line.starts_with("* ")
-                || line.starts_with("1.")
-                || line.starts_with("2.")
-        })
-        .count();
-    if bullet_lines >= 2 {
-        return true;
-    }
-
-    let sentence_count = trimmed
-        .split(['.', '!', '?'])
-        .filter(|part| !part.trim().is_empty())
-        .count();
-    if sentence_count >= 2 {
-        return true;
-    }
-
-    let lower = trimmed.to_lowercase();
-    let has_conjunction = lower.contains(" then ")
-        || lower.contains(" and ")
-        || lower.contains(" also ")
-        || lower.contains(" next ")
-        || lower.contains(" afterwards ")
-        || lower.contains(" after that ");
-    has_conjunction && trimmed.split_whitespace().count() >= 10
-}
-
-fn summarize_input(input: &str, max_len: usize) -> String {
-    let first_line = input
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or("")
-        .trim();
-    if first_line.chars().count() <= max_len {
-        return first_line.to_string();
-    }
-    let truncated: String = first_line.chars().take(max_len).collect();
-    format!("{truncated}...")
 }
 
 // === TodoWriteTool - ToolSpec implementation ===

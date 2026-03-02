@@ -67,10 +67,10 @@ fn generate_project_map(root: &std::path::Path, max_depth: usize) -> Result<Proj
     let walker = builder.build();
 
     for entry in walker.flatten() {
-        if is_key_file(entry.path()) {
-            if let Ok(rel) = entry.path().strip_prefix(root) {
-                key_files.push(rel.to_string_lossy().to_string());
-            }
+        if is_key_file(entry.path())
+            && let Ok(rel) = entry.path().strip_prefix(root)
+        {
+            key_files.push(rel.to_string_lossy().to_string());
         }
     }
 

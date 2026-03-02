@@ -1,8 +1,9 @@
+// TODO(integrate): Wire into engine/UI — tracked as future work
+#![allow(dead_code)]
+
 //! Shared error taxonomy across client, tools, runtime, and UI.
 //!
 //! Not yet wired into consumers; will be adopted incrementally.
-#![allow(dead_code)]
-
 use std::fmt;
 
 use crate::llm_client::LlmError;

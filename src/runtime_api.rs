@@ -1247,7 +1247,7 @@ fn map_compat_stream_event(event: &crate::runtime_threads::RuntimeEventRecord) -
                 .get("turn")
                 .and_then(|turn| turn.get("usage"))
                 .cloned()
-                .unwrap_or_else(|| json!(null));
+                .unwrap_or(json!(null));
             Some(sse_json("turn.completed", json!({ "usage": usage })))
         }
         _ => None,

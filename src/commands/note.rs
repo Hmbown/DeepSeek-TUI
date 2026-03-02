@@ -23,10 +23,10 @@ pub fn note(app: &mut App, content: Option<&str>) -> CommandResult {
     let notes_path = app.workspace.join(".deepseek").join("notes.md");
 
     // Ensure parent directory exists
-    if let Some(parent) = notes_path.parent() {
-        if let Err(e) = fs::create_dir_all(parent) {
-            return CommandResult::error(format!("Failed to create notes directory: {e}"));
-        }
+    if let Some(parent) = notes_path.parent()
+        && let Err(e) = fs::create_dir_all(parent)
+    {
+        return CommandResult::error(format!("Failed to create notes directory: {e}"));
     }
 
     // Append to notes file

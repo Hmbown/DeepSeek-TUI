@@ -1,3 +1,6 @@
+// TODO(integrate): Wire sandbox policy into shell tool — tracked as future work
+#![allow(dead_code)]
+
 //! Sandbox policy definitions for command execution restrictions.
 //!
 //! This module defines the policies that control what resources a sandboxed

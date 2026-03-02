@@ -164,11 +164,9 @@ impl<'a> HeaderWidget<'a> {
             parts.push(format!("ctx {pct}%"));
         }
 
-        if parts.is_empty() {
-            if self.data.total_tokens > 0 {
-                let token_str = format_token_count(self.data.total_tokens);
-                parts.push(token_str);
-            }
+        if parts.is_empty() && self.data.total_tokens > 0 {
+            let token_str = format_token_count(self.data.total_tokens);
+            parts.push(token_str);
         }
 
         // Cost

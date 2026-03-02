@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use super::decision::Decision;
 use super::error::Error;
 use super::error::Result;

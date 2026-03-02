@@ -1,19 +1,5 @@
 //! CLI entry point for the `DeepSeek` client.
 
-// Allow these clippy lints for now - can be fixed later
-#![allow(clippy::collapsible_if)]
-#![allow(clippy::get_first)]
-#![allow(clippy::field_reassign_with_default)]
-#![allow(clippy::redundant_closure)]
-#![allow(clippy::ptr_arg)]
-#![allow(clippy::useless_conversion)]
-#![allow(clippy::iter_cloned_collect)]
-#![allow(clippy::manual_range_contains)]
-#![allow(clippy::unnecessary_lazy_evaluations)]
-// Allow rustdoc warnings for now
-#![allow(rustdoc::bare_urls)]
-#![allow(rustdoc::invalid_html_tags)]
-
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -1146,7 +1132,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
 
 fn run_execpolicy_command(command: ExecpolicyCommand) -> Result<()> {
     match command.command {
-        ExecpolicySubcommand::Check(cmd) => cmd.run().map_err(Into::into),
+        ExecpolicySubcommand::Check(cmd) => cmd.run(),
     }
 }
 
@@ -1852,13 +1838,8 @@ fn run_sandbox_command(args: SandboxArgs) -> Result<()> {
     let (program, args) = command
         .split_first()
         .ok_or_else(|| anyhow::anyhow!("Command is required"))?;
-    let spec = CommandSpec::program(
-        program,
-        args.iter().cloned().collect(),
-        cwd.clone(),
-        timeout,
-    )
-    .with_policy(policy);
+    let spec =
+        CommandSpec::program(program, args.to_vec(), cwd.clone(), timeout).with_policy(policy);
     let manager = SandboxManager::new();
     let exec_env = manager.prepare(&spec);
 
@@ -2121,11 +2102,13 @@ async fn run_exec_agent(
     use crate::tools::todo::new_shared_todo_list;
     use crate::tui::app::AppMode;
 
-    let mut compaction = CompactionConfig::default();
-    compaction.enabled = true;
-    compaction.model = model.to_string();
-    compaction.token_threshold = compaction_threshold_for_model(model);
-    compaction.message_threshold = compaction_message_threshold_for_model(model);
+    let compaction = CompactionConfig {
+        enabled: true,
+        model: model.to_string(),
+        token_threshold: compaction_threshold_for_model(model),
+        message_threshold: compaction_message_threshold_for_model(model),
+        ..Default::default()
+    };
 
     let engine_config = EngineConfig {
         model: model.to_string(),

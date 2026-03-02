@@ -21,7 +21,7 @@ use wait_timeout::ChildExt;
 
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
-use super::shell_output::{TruncationMeta, summarize_output, truncate_output, truncate_with_meta};
+use super::shell_output::{summarize_output, truncate_with_meta};
 use crate::sandbox::{
     CommandSpec,
     ExecEnv,
@@ -183,7 +183,9 @@ fn spawn_reader_thread<R: Read + Send + 'static>(
 /// A background shell process being tracked
 pub struct BackgroundShell {
     pub id: String,
+    #[allow(dead_code)]
     pub command: String,
+    #[allow(dead_code)]
     pub working_dir: PathBuf,
     pub status: ShellStatus,
     pub exit_code: Option<i32>,
@@ -319,6 +321,7 @@ impl BackgroundShell {
     }
 
     /// Kill the process
+    #[allow(dead_code)]
     fn kill(&mut self) -> Result<()> {
         if let Some(ref mut child) = self.child {
             child.kill().context("Failed to kill process")?;
@@ -330,6 +333,7 @@ impl BackgroundShell {
     }
 
     /// Get a snapshot of the current state
+    #[allow(dead_code)]
     pub fn snapshot(&self) -> ShellResult {
         let sandboxed = !matches!(self.sandbox_type, SandboxType::None);
         let (stdout_full, stderr_full, _, _) = self.full_output();
@@ -361,11 +365,11 @@ impl BackgroundShell {
 
 impl Drop for BackgroundShell {
     fn drop(&mut self) {
-        if self.status == ShellStatus::Running {
-            if let Some(ref mut child) = self.child {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
+        if self.status == ShellStatus::Running
+            && let Some(ref mut child) = self.child
+        {
+            let _ = child.kill();
+            let _ = child.wait();
         }
     }
 }
@@ -390,6 +394,7 @@ impl ShellManager {
     }
 
     /// Create a new `ShellManager` with a specific sandbox policy.
+    #[allow(dead_code)]
     pub fn with_sandbox(workspace: PathBuf, policy: ExecutionSandboxPolicy) -> Self {
         Self {
             processes: HashMap::new(),
@@ -400,21 +405,25 @@ impl ShellManager {
     }
 
     /// Set the sandbox policy for future commands.
+    #[allow(dead_code)]
     pub fn set_sandbox_policy(&mut self, policy: ExecutionSandboxPolicy) {
         self.sandbox_policy = policy;
     }
 
     /// Get the current sandbox policy.
+    #[allow(dead_code)]
     pub fn sandbox_policy(&self) -> &ExecutionSandboxPolicy {
         &self.sandbox_policy
     }
 
     /// Check if sandboxing is available on this platform.
+    #[allow(dead_code)]
     pub fn is_sandbox_available(&mut self) -> bool {
         self.sandbox_manager.is_available()
     }
 
     /// Execute a shell command with the configured sandbox policy.
+    #[allow(dead_code)]
     pub fn execute(
         &mut self,
         command: &str,
@@ -426,6 +435,7 @@ impl ShellManager {
     }
 
     /// Execute a shell command with a specific sandbox policy (overrides default).
+    #[allow(dead_code)]
     pub fn execute_with_policy(
         &mut self,
         command: &str,
@@ -483,6 +493,7 @@ impl ShellManager {
     }
 
     /// Execute a shell command interactively (stdin/stdout/stderr inherit from terminal).
+    #[allow(dead_code)]
     pub fn execute_interactive(
         &mut self,
         command: &str,
@@ -548,13 +559,13 @@ impl ShellManager {
             .spawn()
             .with_context(|| format!("Failed to execute: {original_command}"))?;
 
-        if let Some(input) = stdin_data {
-            if let Some(mut stdin) = child.stdin.take() {
-                stdin
-                    .write_all(input.as_bytes())
-                    .context("Failed to write to stdin")?;
-                stdin.flush().ok();
-            }
+        if let Some(input) = stdin_data
+            && let Some(mut stdin) = child.stdin.take()
+        {
+            stdin
+                .write_all(input.as_bytes())
+                .context("Failed to write to stdin")?;
+            stdin.flush().ok();
         }
 
         let stdout_handle = child.stdout.take().context("Failed to capture stdout")?;
@@ -883,6 +894,7 @@ impl ShellManager {
     }
 
     /// Get output from a background process
+    #[allow(dead_code)]
     pub fn get_output(
         &mut self,
         task_id: &str,
@@ -994,6 +1006,7 @@ impl ShellManager {
     }
 
     /// Kill a running background process
+    #[allow(dead_code)]
     pub fn kill(&mut self, task_id: &str) -> Result<ShellResult> {
         let shell = self
             .processes
@@ -1005,6 +1018,7 @@ impl ShellManager {
     }
 
     /// List all background processes
+    #[allow(dead_code)]
     pub fn list(&mut self) -> Vec<ShellResult> {
         // Poll all processes first
         for shell in self.processes.values_mut() {
@@ -1018,6 +1032,7 @@ impl ShellManager {
     }
 
     /// Clean up completed processes older than the given duration
+    #[allow(dead_code)]
     pub fn cleanup(&mut self, max_age: Duration) {
         let _now = Instant::now();
         self.processes.retain(|_, shell| {
@@ -1044,14 +1059,6 @@ pub type SharedShellManager = Arc<Mutex<ShellManager>>;
 /// Create a new shared shell manager with default sandbox policy.
 pub fn new_shared_shell_manager(workspace: PathBuf) -> SharedShellManager {
     Arc::new(Mutex::new(ShellManager::new(workspace)))
-}
-
-/// Create a new shared shell manager with a specific sandbox policy.
-pub fn new_shared_shell_manager_with_sandbox(
-    workspace: PathBuf,
-    policy: ExecutionSandboxPolicy,
-) -> SharedShellManager {
-    Arc::new(Mutex::new(ShellManager::with_sandbox(workspace, policy)))
 }
 
 // === ToolSpec Implementations ===
@@ -1160,24 +1167,23 @@ impl ToolSpec for ExecShellTool {
         let background = background || tty;
 
         let mut execpolicy_decision: Option<ExecPolicyDecision> = None;
-        if context.features.enabled(Feature::ExecPolicy) {
-            if let Some(policy) = load_default_policy()
+        if context.features.enabled(Feature::ExecPolicy)
+            && let Some(policy) = load_default_policy()
                 .map_err(|e| ToolError::execution_failed(format!("execpolicy load failed: {e}")))?
-            {
-                let decision = policy.evaluate(command);
-                execpolicy_decision = Some(decision.clone());
-                if let ExecPolicyDecision::Deny(reason) = decision {
-                    return Ok(ToolResult {
-                        content: format!("BLOCKED: {reason}"),
-                        success: false,
-                        metadata: Some(json!({
-                            "execpolicy": {
-                                "decision": "deny",
-                                "reason": reason,
-                            }
-                        })),
-                    });
-                }
+        {
+            let decision = policy.evaluate(command);
+            execpolicy_decision = Some(decision.clone());
+            if let ExecPolicyDecision::Deny(reason) = decision {
+                return Ok(ToolResult {
+                    content: format!("BLOCKED: {reason}"),
+                    success: false,
+                    metadata: Some(json!({
+                        "execpolicy": {
+                            "decision": "deny",
+                            "reason": reason,
+                        }
+                    })),
+                });
             }
         }
 

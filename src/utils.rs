@@ -52,10 +52,10 @@ pub fn summarize_project(root: &Path) -> String {
             Ok(entry) => entry,
             Err(_) => continue,
         };
-        if is_key_file(entry.path()) {
-            if let Ok(rel) = entry.path().strip_prefix(root) {
-                key_files.push(rel.to_string_lossy().to_string());
-            }
+        if is_key_file(entry.path())
+            && let Ok(rel) = entry.path().strip_prefix(root)
+        {
+            key_files.push(rel.to_string_lossy().to_string());
         }
     }
 

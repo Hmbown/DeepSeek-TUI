@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.26] - 2026-03-02
+
+### Fixed
+- Resolved SSE stream corruption caused by byte/string position mismatch in streaming parse flow.
+- Hardened base URL validation to reject non-HTTP/HTTPS schemes.
+- Prevented multi-byte UTF-8 truncation panics in common-prefix and runtime thread summary paths.
+- Corrected context usage alert thresholds by separating warning and critical trigger levels.
+
+### Changed
+- Removed non-code utility tools from the runtime tool registry (`calculator`, `weather`, `sports`, `finance`, `time`) and related wiring.
+- Consolidated duplicate URL encoding helpers by delegating to shared `crate::utils::url_encode`.
+- Replaced broad crate-level lint suppressions with targeted `#[allow(...)]` annotations where justified.
+- Cleaned up dead APIs, unused struct fields, unused builder helpers, and non-integrated modules.
+- Addressed clippy findings across the codebase (collapsible conditionals, defaults, indexing helpers, and API signature cleanup).
+
 ## [0.3.24] - 2026-02-25
 
 ### Fixed

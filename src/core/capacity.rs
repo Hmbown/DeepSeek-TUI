@@ -212,11 +212,6 @@ impl CapacityController {
         }
     }
 
-    #[must_use]
-    pub fn config(&self) -> &CapacityControllerConfig {
-        &self.config
-    }
-
     pub fn observe_pre_turn(
         &mut self,
         input: CapacityObservationInput,

@@ -9,8 +9,6 @@
 //! - `session`: Session state management
 //! - `turn`: Turn context and tracking
 
-#![allow(dead_code)]
-
 pub mod capacity;
 pub mod capacity_memory;
 pub mod engine;

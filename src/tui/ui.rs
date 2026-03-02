@@ -89,7 +89,7 @@ const SLASH_MENU_LIMIT: usize = 6;
 const MIN_CHAT_HEIGHT: u16 = 3;
 const MIN_COMPOSER_HEIGHT: u16 = 1;
 const CONTEXT_WARNING_THRESHOLD_PERCENT: f64 = 85.0;
-const CONTEXT_CRITICAL_THRESHOLD_PERCENT: f64 = 85.0;
+const CONTEXT_CRITICAL_THRESHOLD_PERCENT: f64 = 95.0;
 const UI_IDLE_POLL_MS: u64 = 33;
 const UI_ACTIVE_POLL_MS: u64 = 16;
 const UI_DEEPSEEK_SQUIGGLE_MS: u64 = 120;
@@ -434,23 +434,21 @@ async fn run_event_loop(
                             app.reasoning_header = extract_reasoning_header(&app.reasoning_buffer);
                         }
 
-                        if let Some(index) = app.streaming_message_index {
-                            if let Some(HistoryCell::Thinking { content: c, .. }) =
+                        if let Some(index) = app.streaming_message_index
+                            && let Some(HistoryCell::Thinking { content: c, .. }) =
                                 app.history.get_mut(index)
-                            {
-                                c.push_str(&sanitized);
-                                transcript_batch_updated = true;
-                            }
+                        {
+                            c.push_str(&sanitized);
+                            transcript_batch_updated = true;
                         }
                     }
                     EngineEvent::ThinkingComplete { .. } => {
-                        if let Some(index) = app.streaming_message_index.take() {
-                            if let Some(HistoryCell::Thinking { streaming, .. }) =
+                        if let Some(index) = app.streaming_message_index.take()
+                            && let Some(HistoryCell::Thinking { streaming, .. }) =
                                 app.history.get_mut(index)
-                            {
-                                *streaming = false;
-                                transcript_batch_updated = true;
-                            }
+                        {
+                            *streaming = false;
+                            transcript_batch_updated = true;
                         }
 
                         if !app.reasoning_buffer.is_empty() {
@@ -1675,12 +1673,13 @@ fn apply_slash_menu_selection(app: &mut App, entries: &[String], append_space: b
     let selected_idx = app.slash_menu_selected.min(entries.len().saturating_sub(1));
     let mut command = entries[selected_idx].clone();
 
-    if append_space && !command.ends_with(' ') && !command.contains(char::is_whitespace) {
-        if let Some(info) = commands::get_command_info(command.trim_start_matches('/'))
-            && (info.usage.contains('<') || info.usage.contains('['))
-        {
-            command.push(' ');
-        }
+    if append_space
+        && !command.ends_with(' ')
+        && !command.contains(char::is_whitespace)
+        && let Some(info) = commands::get_command_info(command.trim_start_matches('/'))
+        && (info.usage.contains('<') || info.usage.contains('['))
+    {
+        command.push(' ');
     }
 
     app.input = command;
@@ -1740,6 +1739,10 @@ fn longest_common_prefix<'a>(values: &[&'a str]) -> &'a str {
     for value in values.iter().skip(1) {
         while end > 0 && !value.starts_with(&first[..end]) {
             end -= 1;
+            // Ensure we land on a valid UTF-8 char boundary.
+            while end > 0 && !first.is_char_boundary(end) {
+                end -= 1;
+            }
         }
         if end == 0 {
             return "";
@@ -3377,11 +3380,11 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
         ));
 
         // Workspace (directory name)
-        if let Some(workspace_name) = app.workspace.file_name() {
-            if let Some(name) = workspace_name.to_str() {
-                let ws = format!("{} ", name);
-                spans.push(Span::styled(ws, Style::default().fg(palette::FOOTER_HINT)));
-            }
+        if let Some(workspace_name) = app.workspace.file_name()
+            && let Some(name) = workspace_name.to_str()
+        {
+            let ws = format!("{} ", name);
+            spans.push(Span::styled(ws, Style::default().fg(palette::FOOTER_HINT)));
         }
 
         if let Some(workspace_context) = app.workspace_context.as_deref() {
@@ -4579,12 +4582,11 @@ fn is_web_search_tool(name: &str) -> bool {
 }
 
 fn web_search_query(input: &serde_json::Value) -> String {
-    if let Some(searches) = input.get("search_query").and_then(|v| v.as_array()) {
-        if let Some(first) = searches.first() {
-            if let Some(q) = first.get("q").and_then(|v| v.as_str()) {
-                return q.to_string();
-            }
-        }
+    if let Some(searches) = input.get("search_query").and_then(|v| v.as_array())
+        && let Some(first) = searches.first()
+        && let Some(q) = first.get("q").and_then(|v| v.as_str())
+    {
+        return q.to_string();
     }
 
     input
@@ -4657,7 +4659,7 @@ fn parse_patch_summary(input: &serde_json::Value) -> (String, String) {
     if let Some(changes) = input.get("changes").and_then(|v| v.as_array()) {
         let count = changes.len();
         let path = changes
-            .get(0)
+            .first()
             .and_then(|c| c.get("path"))
             .and_then(|v| v.as_str())
             .map(str::to_string)
@@ -4711,7 +4713,7 @@ fn extract_patch_paths(patch: &str) -> Vec<String> {
             }
         } else if let Some(rest) = line.strip_prefix("diff --git ") {
             let parts: Vec<&str> = rest.split_whitespace().collect();
-            if let Some(path) = parts.get(1).or_else(|| parts.get(0)) {
+            if let Some(path) = parts.get(1).or_else(|| parts.first()) {
                 let raw = path.trim();
                 let raw = raw
                     .strip_prefix("b/")

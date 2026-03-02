@@ -21,24 +21,30 @@ pub enum Op {
     },
 
     /// Cancel the current request
+    #[allow(dead_code)]
     CancelRequest,
 
     /// Approve a tool call that requires permission
+    #[allow(dead_code)]
     ApproveToolCall { id: String },
 
     /// Deny a tool call that requires permission
+    #[allow(dead_code)]
     DenyToolCall { id: String },
 
     /// Spawn a sub-agent
+    #[allow(dead_code)]
     SpawnSubAgent { prompt: String },
 
     /// List current sub-agents and their status
     ListSubAgents,
 
     /// Change the operating mode
+    #[allow(dead_code)]
     ChangeMode { mode: AppMode },
 
     /// Update the model being used
+    #[allow(dead_code)]
     SetModel { model: String },
 
     /// Update auto-compaction settings
@@ -75,10 +81,5 @@ impl Op {
             allow_shell,
             trust_mode,
         }
-    }
-
-    /// Create a cancel operation
-    pub fn cancel() -> Self {
-        Op::CancelRequest
     }
 }

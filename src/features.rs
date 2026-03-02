@@ -1,6 +1,7 @@
-//! Feature flags and metadata for deepseek-cli.
-
+// TODO(integrate): Wire feature flags into engine/tool registration — tracked as future work
 #![allow(dead_code)]
+
+//! Feature flags and metadata for deepseek-cli.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;

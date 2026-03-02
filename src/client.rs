@@ -291,10 +291,10 @@ fn release_stream_buffer(mut buf: Vec<u8>) {
     if buf.capacity() > 256 * 1024 {
         buf.shrink_to(256 * 1024);
     }
-    if let Ok(mut pool) = buffer_pool().lock() {
-        if pool.len() < 8 {
-            pool.push(buf);
-        }
+    if let Ok(mut pool) = buffer_pool().lock()
+        && pool.len() < 8
+    {
+        pool.push(buf);
     }
 }
 
@@ -325,13 +325,18 @@ const ERROR_BODY_MAX_BYTES: usize = 64 * 1024;
 
 /// Read an error response body with a size limit to prevent unbounded allocation.
 async fn bounded_error_text(response: reqwest::Response, max_bytes: usize) -> String {
-    match response.bytes().await {
-        Ok(bytes) => {
-            let truncated = &bytes[..bytes.len().min(max_bytes)];
-            String::from_utf8_lossy(truncated).into_owned()
+    use futures_util::StreamExt;
+    let mut stream = response.bytes_stream();
+    let mut buf = Vec::with_capacity(max_bytes.min(8192));
+    while let Some(chunk) = stream.next().await {
+        let Ok(chunk) = chunk else { break };
+        let remaining = max_bytes.saturating_sub(buf.len());
+        if remaining == 0 {
+            break;
         }
-        Err(_) => String::new(),
+        buf.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
     }
+    String::from_utf8_lossy(&buf).into_owned()
 }
 
 fn validate_base_url_security(base_url: &str) -> Result<()> {
@@ -364,7 +369,10 @@ fn validate_base_url_security(base_url: &str) -> Result<()> {
         );
     }
 
-    Ok(())
+    anyhow::bail!(
+        "Refusing base URL '{}': only HTTPS (or explicitly allowed HTTP) URLs are supported.",
+        base_url,
+    )
 }
 
 // === DeepSeekClient ===
@@ -619,10 +627,10 @@ impl DeepSeekClient {
         if let Some(tools) = request.tools.as_ref() {
             body["tools"] = json!(tools.iter().map(tool_to_chat).collect::<Vec<_>>());
         }
-        if let Some(choice) = request.tool_choice.as_ref() {
-            if let Some(mapped) = map_tool_choice_for_chat(choice) {
-                body["tool_choice"] = mapped;
-            }
+        if let Some(choice) = request.tool_choice.as_ref()
+            && let Some(mapped) = map_tool_choice_for_chat(choice)
+        {
+            body["tool_choice"] = mapped;
         }
 
         let url = format!(
@@ -741,10 +749,10 @@ impl LlmClient for DeepSeekClient {
         if let Some(tools) = request.tools.as_ref() {
             body["tools"] = json!(tools.iter().map(tool_to_chat).collect::<Vec<_>>());
         }
-        if let Some(choice) = request.tool_choice.as_ref() {
-            if let Some(mapped) = map_tool_choice_for_chat(choice) {
-                body["tool_choice"] = mapped;
-            }
+        if let Some(choice) = request.tool_choice.as_ref()
+            && let Some(mapped) = map_tool_choice_for_chat(choice)
+        {
+            body["tool_choice"] = mapped;
         }
 
         let url = format!(
@@ -820,12 +828,13 @@ impl LlmClient for DeepSeekClient {
 
                 // Process complete SSE lines from the buffer
                 let mut lines_processed = 0usize;
-                loop {
-                    let buf_str = String::from_utf8_lossy(&byte_buf);
-                    let Some(newline_pos) = buf_str.find('\n') else { break };
-                    let line: String = buf_str[..newline_pos].trim_end_matches('\r').to_string();
-                    let consumed = newline_pos + 1;
-                    byte_buf.drain(..consumed);
+                while let Some(newline_pos) = byte_buf.iter().position(|&b| b == b'\n') {
+                    let mut end = newline_pos;
+                    if end > 0 && byte_buf[end - 1] == b'\r' {
+                        end -= 1;
+                    }
+                    let line = String::from_utf8_lossy(&byte_buf[..end]).into_owned();
+                    byte_buf.drain(..newline_pos + 1);
 
                     if line.is_empty() {
                         // Empty line = event boundary, process accumulated data
@@ -1109,13 +1118,13 @@ fn parse_responses_message(payload: &Value) -> Result<MessageResponse> {
                             if content_type != "output_text" && content_type != "text" {
                                 continue;
                             }
-                            if let Some(text) = content_item.get("text").and_then(Value::as_str) {
-                                if !text.trim().is_empty() {
-                                    content.push(ContentBlock::Text {
-                                        text: text.to_string(),
-                                        cache_control: None,
-                                    });
-                                }
+                            if let Some(text) = content_item.get("text").and_then(Value::as_str)
+                                && !text.trim().is_empty()
+                            {
+                                content.push(ContentBlock::Text {
+                                    text: text.to_string(),
+                                    cache_control: None,
+                                });
                             }
                         }
                     }
@@ -1240,15 +1249,14 @@ fn parse_responses_message(payload: &Value) -> Result<MessageResponse> {
         }
     }
 
-    if content.is_empty() {
-        if let Some(text) = payload.get("output_text").and_then(Value::as_str) {
-            if !text.trim().is_empty() {
-                content.push(ContentBlock::Text {
-                    text: text.to_string(),
-                    cache_control: None,
-                });
-            }
-        }
+    if content.is_empty()
+        && let Some(text) = payload.get("output_text").and_then(Value::as_str)
+        && !text.trim().is_empty()
+    {
+        content.push(ContentBlock::Text {
+            text: text.to_string(),
+            cache_control: None,
+        });
     }
 
     Ok(MessageResponse {
@@ -1278,13 +1286,13 @@ fn build_chat_messages(
     let include_reasoning = requires_reasoning_content(model);
     let mut pending_tool_calls: HashSet<String> = HashSet::new();
 
-    if let Some(instructions) = system_to_instructions(system.cloned()) {
-        if !instructions.trim().is_empty() {
-            out.push(json!({
-                "role": "system",
-                "content": instructions,
-            }));
-        }
+    if let Some(instructions) = system_to_instructions(system.cloned())
+        && !instructions.trim().is_empty()
+    {
+        out.push(json!({
+            "role": "system",
+            "content": instructions,
+        }));
     }
 
     for message in messages {
@@ -1455,10 +1463,10 @@ fn build_chat_messages(
                 if out[scan].get("role").and_then(Value::as_str) == Some("assistant") {
                     break;
                 }
-                if out[scan].get("role").and_then(Value::as_str) == Some("tool") {
-                    if let Some(id) = out[scan].get("tool_call_id").and_then(Value::as_str) {
-                        found_ids.insert(id.to_string());
-                    }
+                if out[scan].get("role").and_then(Value::as_str) == Some("tool")
+                    && let Some(id) = out[scan].get("tool_call_id").and_then(Value::as_str)
+                {
+                    found_ids.insert(id.to_string());
                 }
                 scan += 1;
             }
@@ -1505,12 +1513,11 @@ fn build_chat_messages(
                 let mut j = out.len();
                 while j > i + 1 {
                     j -= 1;
-                    if out[j].get("role").and_then(Value::as_str) == Some("tool") {
-                        if let Some(id) = out[j].get("tool_call_id").and_then(Value::as_str) {
-                            if expected_ids.contains(id) {
-                                out.remove(j);
-                            }
-                        }
+                    if out[j].get("role").and_then(Value::as_str) == Some("tool")
+                        && let Some(id) = out[j].get("tool_call_id").and_then(Value::as_str)
+                        && expected_ids.contains(id)
+                    {
+                        out.remove(j);
                     }
                 }
             }
@@ -1602,27 +1609,27 @@ fn parse_chat_message(payload: &Value) -> Result<MessageResponse> {
         .and_then(Value::as_array)
         .context("Chat API response missing choices")?;
     let choice = choices
-        .get(0)
+        .first()
         .context("Chat API response missing first choice")?;
     let message = choice
         .get("message")
         .context("Chat API response missing message")?;
 
     let mut content_blocks = Vec::new();
-    if let Some(reasoning) = message.get("reasoning_content").and_then(Value::as_str) {
-        if !reasoning.trim().is_empty() {
-            content_blocks.push(ContentBlock::Thinking {
-                thinking: reasoning.to_string(),
-            });
-        }
+    if let Some(reasoning) = message.get("reasoning_content").and_then(Value::as_str)
+        && !reasoning.trim().is_empty()
+    {
+        content_blocks.push(ContentBlock::Thinking {
+            thinking: reasoning.to_string(),
+        });
     }
-    if let Some(text) = message.get("content").and_then(Value::as_str) {
-        if !text.trim().is_empty() {
-            content_blocks.push(ContentBlock::Text {
-                text: text.to_string(),
-                cache_control: None,
-            });
-        }
+    if let Some(text) = message.get("content").and_then(Value::as_str)
+        && !text.trim().is_empty()
+    {
+        content_blocks.push(ContentBlock::Text {
+            text: text.to_string(),
+            cache_control: None,
+        });
     }
 
     if let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array) {
@@ -1845,55 +1852,54 @@ fn parse_sse_chunk(
 
         if let Some(delta) = delta {
             // Handle reasoning_content (DeepSeek-Reasoner thinking)
-            if is_reasoning_model {
-                if let Some(reasoning) = delta.get("reasoning_content").and_then(Value::as_str) {
-                    if !reasoning.is_empty() {
-                        if !*thinking_started {
-                            events.push(StreamEvent::ContentBlockStart {
-                                index: *content_index,
-                                content_block: ContentBlockStart::Thinking {
-                                    thinking: String::new(),
-                                },
-                            });
-                            *thinking_started = true;
-                        }
-                        events.push(StreamEvent::ContentBlockDelta {
-                            index: *content_index,
-                            delta: Delta::ThinkingDelta {
-                                thinking: reasoning.to_string(),
-                            },
-                        });
-                    }
+            if is_reasoning_model
+                && let Some(reasoning) = delta.get("reasoning_content").and_then(Value::as_str)
+                && !reasoning.is_empty()
+            {
+                if !*thinking_started {
+                    events.push(StreamEvent::ContentBlockStart {
+                        index: *content_index,
+                        content_block: ContentBlockStart::Thinking {
+                            thinking: String::new(),
+                        },
+                    });
+                    *thinking_started = true;
                 }
+                events.push(StreamEvent::ContentBlockDelta {
+                    index: *content_index,
+                    delta: Delta::ThinkingDelta {
+                        thinking: reasoning.to_string(),
+                    },
+                });
             }
 
             // Handle regular content
-            if let Some(content) = delta.get("content").and_then(Value::as_str) {
-                if !content.is_empty() {
-                    // Close thinking block if transitioning to text
-                    if *thinking_started {
-                        events.push(StreamEvent::ContentBlockStop {
-                            index: *content_index,
-                        });
-                        *content_index += 1;
-                        *thinking_started = false;
-                    }
-                    if !*text_started {
-                        events.push(StreamEvent::ContentBlockStart {
-                            index: *content_index,
-                            content_block: ContentBlockStart::Text {
-                                text: String::new(),
-                            },
-                        });
-                        *text_started = true;
-                    }
-                    events.push(StreamEvent::ContentBlockDelta {
+            if let Some(content) = delta.get("content").and_then(Value::as_str)
+                && !content.is_empty()
+            {
+                // Close thinking block if transitioning to text
+                if *thinking_started {
+                    events.push(StreamEvent::ContentBlockStop {
                         index: *content_index,
-                        delta: Delta::TextDelta {
-                            text: content.to_string(),
+                    });
+                    *content_index += 1;
+                    *thinking_started = false;
+                }
+                if !*text_started {
+                    events.push(StreamEvent::ContentBlockStart {
+                        index: *content_index,
+                        content_block: ContentBlockStart::Text {
+                            text: String::new(),
                         },
                     });
+                    *text_started = true;
                 }
+                events.push(StreamEvent::ContentBlockDelta {
+                    index: *content_index,
+                    delta: Delta::TextDelta {
+                        text: content.to_string(),
+                    },
+                });
             }
 
             // Handle tool calls
@@ -1963,15 +1969,14 @@ fn parse_sse_chunk(
                         .get("function")
                         .and_then(|f| f.get("arguments"))
                         .and_then(Value::as_str)
+                        && !args.is_empty()
                     {
-                        if !args.is_empty() {
-                            events.push(StreamEvent::ContentBlockDelta {
-                                index: tool_block_index,
-                                delta: Delta::InputJsonDelta {
-                                    partial_json: args.to_string(),
-                                },
-                            });
-                        }
+                        events.push(StreamEvent::ContentBlockDelta {
+                            index: tool_block_index,
+                            delta: Delta::InputJsonDelta {
+                                partial_json: args.to_string(),
+                            },
+                        });
                     }
                 }
             }

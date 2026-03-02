@@ -60,8 +60,11 @@ pub struct FileSummary {
 #[derive(Debug, Clone)]
 pub struct Hunk {
     pub old_start: usize,
+    #[allow(dead_code)]
     pub old_count: usize,
+    #[allow(dead_code)]
     pub new_start: usize,
+    #[allow(dead_code)]
     pub new_count: usize,
     pub lines: Vec<HunkLine>,
 }
@@ -508,10 +511,10 @@ fn inspect_patch_shape(patch: &str) -> PatchShape {
         if let Some(stripped) = line.strip_prefix("+++ ") {
             let new_path = normalize_diff_path(stripped);
             let resolved = new_path.or(old_path.clone());
-            if let Some(path) = resolved {
-                if seen.insert(path.clone()) {
-                    shape.header_files.push(path);
-                }
+            if let Some(path) = resolved
+                && seen.insert(path.clone())
+            {
+                shape.header_files.push(path);
             }
             old_path = None;
         }

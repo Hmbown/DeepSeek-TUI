@@ -9,7 +9,6 @@
 //! - `RetryConfig`: Configurable retry behavior with exponential backoff and jitter
 //! - `LlmError`: Classified errors with retryability information
 
-#![allow(dead_code)]
 //! - `with_retry`: Generic retry wrapper for any async operation
 //!
 //! # Example
@@ -47,7 +46,7 @@ pub type StreamEventBox =
 /// - All methods are async and require `Send + Sync` for thread safety
 /// - The `create_message_stream` method returns a pinned boxed stream for SSE
 /// - Implementations should handle their own authentication and base URL configuration
-#[allow(async_fn_in_trait)]
+#[allow(async_fn_in_trait, dead_code)] // Trait methods are part of the LLM provider interface
 pub trait LlmClient: Send + Sync {
     /// Returns the provider name (e.g., "openai", "deepseek")
     fn provider_name(&self) -> &'static str;
@@ -70,6 +69,7 @@ pub trait LlmClient: Send + Sync {
 }
 
 /// Trait for clients that support configurable retry behavior
+#[allow(dead_code)] // Part of LLM provider interface, will be used by additional providers
 pub trait RetryConfigurable {
     fn retry_config(&self) -> &RetryConfig;
     fn set_retry_config(&mut self, config: RetryConfig);
@@ -325,9 +325,11 @@ pub struct RetryConfig {
     pub respect_retry_after: bool,
 
     /// HTTP status codes that should trigger a retry
+    #[allow(dead_code)] // Used in tests via is_retryable_status()
     pub retryable_status_codes: Vec<u16>,
 
     /// Timeout for individual requests (seconds, 0 = no timeout)
+    #[allow(dead_code)] // Configuration field for retry consumers
     pub request_timeout: f64,
 
     /// Total timeout for all retry attempts (seconds, 0 = no total timeout)
@@ -352,6 +354,7 @@ impl Default for RetryConfig {
     }
 }
 
+#[allow(dead_code)] // Public builder API, used in tests
 impl RetryConfig {
     /// Creates a new `RetryConfig` with default values
     pub fn new() -> Self {
@@ -632,6 +635,7 @@ where
 }
 
 /// Simplified version of `with_retry` without callback
+#[allow(dead_code)] // Convenience wrapper for with_retry
 pub async fn with_retry_simple<F, Fut, T>(config: &RetryConfig, operation: F) -> RetryResult<T>
 where
     F: FnMut() -> Fut,

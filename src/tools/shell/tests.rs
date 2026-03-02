@@ -150,7 +150,7 @@ fn test_write_stdin_streams_output() {
 #[test]
 fn test_output_truncation() {
     let long_output = "x".repeat(50_000);
-    let truncated = truncate_output(&long_output);
+    let (truncated, _meta) = truncate_with_meta(&long_output);
 
     assert!(truncated.len() < long_output.len());
     assert!(truncated.contains("truncated"));
@@ -170,7 +170,7 @@ fn test_truncate_with_meta_reports_omission_counts() {
 #[test]
 fn test_summarize_output_strips_truncation_note() {
     let long_output = "x".repeat(60_000);
-    let truncated = truncate_output(&long_output);
+    let (truncated, _meta) = truncate_with_meta(&long_output);
     let summary = summarize_output(&truncated);
     assert!(!summary.contains("Output truncated at"));
 }

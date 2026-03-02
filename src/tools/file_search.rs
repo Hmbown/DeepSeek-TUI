@@ -1,7 +1,7 @@
 //! File search tool with fuzzy matching and scoring.
 
 use std::cmp::Ordering;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use async_trait::async_trait;
 use ignore::WalkBuilder;
@@ -96,12 +96,12 @@ fn parse_extensions(input: &Value) -> Vec<String> {
             }
         }
     }
-    if out.is_empty() {
-        if let Some(value) = input.get("extension").and_then(|v| v.as_str()) {
-            let ext = value.trim().trim_start_matches('.').to_ascii_lowercase();
-            if !ext.is_empty() {
-                out.push(ext);
-            }
+    if out.is_empty()
+        && let Some(value) = input.get("extension").and_then(|v| v.as_str())
+    {
+        let ext = value.trim().trim_start_matches('.').to_ascii_lowercase();
+        if !ext.is_empty() {
+            out.push(ext);
         }
     }
     out
@@ -160,7 +160,7 @@ fn search_files(
         });
     }
 
-    results.sort_by(|a, b| compare_match(a, b));
+    results.sort_by(compare_match);
     if results.len() > limit {
         results.truncate(limit);
     }

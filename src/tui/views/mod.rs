@@ -818,7 +818,6 @@ fn build_help_tool_sections(workspace: &Path) -> Vec<(String, Vec<String>)> {
         .with_shell_tools()
         .with_web_tools()
         .with_git_tools()
-        .with_structured_data_tools()
         .with_user_input_tool()
         .with_parallel_tool()
         .with_patch_tools()

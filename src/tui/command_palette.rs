@@ -77,7 +77,6 @@ pub fn build_entries(skills_dir: &Path, workspace: &Path) -> Vec<CommandPaletteE
         .with_shell_tools()
         .with_web_tools()
         .with_git_tools()
-        .with_structured_data_tools()
         .with_user_input_tool()
         .with_parallel_tool()
         .with_patch_tools()

@@ -238,17 +238,7 @@ fn decode_html_entities(text: &str) -> String {
 }
 
 fn url_encode(input: &str) -> String {
-    let mut out = String::new();
-    for b in input.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            b' ' => out.push('+'),
-            _ => out.push_str(&format!("%{:02X}", b)),
-        }
-    }
-    out
+    crate::utils::url_encode(input)
 }
 
 fn percent_decode(input: &str) -> String {

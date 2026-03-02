@@ -6,8 +6,6 @@
 //! - Configurable timeouts per-server and globally
 //! - Backward compatibility with existing sync API
 
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -748,6 +746,7 @@ impl McpConnection {
     }
 
     /// Get server name
+    #[allow(dead_code)] // Public API for MCP consumers
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -763,6 +762,7 @@ impl McpConnection {
     }
 
     /// Get connection state
+    #[allow(dead_code)] // Public API for MCP consumers
     pub fn state(&self) -> ConnectionState {
         self.state
     }
@@ -790,6 +790,7 @@ impl McpConnection {
     }
 
     /// Gracefully close the connection
+    #[allow(dead_code)] // Public API for MCP consumers
     pub fn close(&mut self) {
         self.cancel_token.cancel();
         self.state = ConnectionState::Disconnected;
@@ -937,6 +938,7 @@ impl McpPool {
     }
 
     /// Get all discovered resource templates with server-prefixed names
+    #[allow(dead_code)] // Public API for MCP resource discovery
     pub fn all_resource_templates(&self) -> Vec<(String, &McpResourceTemplate)> {
         let mut templates = Vec::new();
         for (server, conn) in &self.connections {
@@ -1272,6 +1274,7 @@ impl McpPool {
     }
 
     /// Get list of configured server names
+    #[allow(dead_code)] // Public API for MCP consumers
     pub fn server_names(&self) -> Vec<&str> {
         self.config
             .servers
@@ -1290,11 +1293,13 @@ impl McpPool {
     }
 
     /// Disconnect all connections
+    #[allow(dead_code)] // Public API for MCP lifecycle management
     pub fn disconnect_all(&mut self) {
         self.connections.clear();
     }
 
     /// Get the underlying configuration
+    #[allow(dead_code)] // Public API for MCP consumers
     pub fn config(&self) -> &McpConfig {
         &self.config
     }
@@ -1312,6 +1317,7 @@ impl McpPool {
 // === Helper Functions ===
 
 /// Format MCP tool result for display
+#[allow(dead_code)] // Will be used when MCP tool results are displayed in TUI
 pub fn format_tool_result(result: &serde_json::Value) -> String {
     let is_error = result
         .get("isError")
@@ -1342,9 +1348,11 @@ pub fn format_tool_result(result: &serde_json::Value) -> String {
 }
 
 // === Backward Compatibility - Sync API (Legacy) ===
+// TODO(integrate): Wire legacy sync API into CLI subcommands or remove
 
 /// Legacy input struct for adding MCP servers
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // Legacy sync API, not yet wired into CLI subcommands
 pub struct McpServerInput {
     pub name: String,
     pub command: String,
@@ -1354,6 +1362,7 @@ pub struct McpServerInput {
 
 /// Legacy MCP server struct for internal use
 #[derive(Debug, Serialize, Deserialize, Default)]
+#[allow(dead_code)] // Legacy sync API
 struct LegacyMcpServer {
     command: String,
     args: Vec<String>,
@@ -1368,6 +1377,7 @@ struct LegacyMcpServer {
 
 /// Legacy config wrapper for backward compatibility
 #[derive(Debug, Serialize, Deserialize, Default)]
+#[allow(dead_code)] // Legacy sync API
 struct LegacyMcpConfig {
     #[serde(default, alias = "mcpServers")]
     servers: HashMap<String, LegacyMcpServer>,
@@ -1376,6 +1386,7 @@ struct LegacyMcpConfig {
 }
 
 /// List configured MCP servers (sync, for CLI)
+#[allow(dead_code)] // Legacy sync API, not yet wired into CLI subcommands
 pub fn list(path: &Path) -> Result<()> {
     let config = load_legacy(path)?;
     if config.servers.is_empty() {
@@ -1390,6 +1401,7 @@ pub fn list(path: &Path) -> Result<()> {
 }
 
 /// Add an MCP server to configuration (sync, for CLI)
+#[allow(dead_code)] // Legacy sync API
 pub fn add(path: &Path, input: McpServerInput) -> Result<()> {
     let mut config = load_legacy(path)?;
     let env = parse_env(&input.env)?;
@@ -1410,6 +1422,7 @@ pub fn add(path: &Path, input: McpServerInput) -> Result<()> {
 }
 
 /// Remove an MCP server from configuration (sync, for CLI)
+#[allow(dead_code)] // Legacy sync API
 pub fn remove(path: &Path, name: &str) -> Result<()> {
     let mut config = load_legacy(path)?;
     if config.servers.remove(name).is_some() {
@@ -1422,6 +1435,7 @@ pub fn remove(path: &Path, name: &str) -> Result<()> {
 }
 
 /// Call an MCP tool (sync, for backward compatibility)
+#[allow(dead_code)] // Legacy sync API
 pub fn call_tool(
     path: &Path,
     server: &str,
@@ -1528,6 +1542,7 @@ pub fn call_tool(
     Ok(serde_json::to_string_pretty(&response)?)
 }
 
+#[allow(dead_code)] // Legacy sync API
 fn load_legacy(path: &Path) -> Result<LegacyMcpConfig> {
     if path.exists() {
         let contents = fs::read_to_string(path)
@@ -1540,6 +1555,7 @@ fn load_legacy(path: &Path) -> Result<LegacyMcpConfig> {
     }
 }
 
+#[allow(dead_code)] // Legacy sync API
 fn save_legacy(path: &Path, config: &LegacyMcpConfig) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -1549,6 +1565,7 @@ fn save_legacy(path: &Path, config: &LegacyMcpConfig) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)] // Legacy sync API
 fn parse_env(items: &[String]) -> Result<HashMap<String, String>> {
     let mut env = HashMap::new();
     for item in items {
@@ -1561,6 +1578,7 @@ fn parse_env(items: &[String]) -> Result<HashMap<String, String>> {
     Ok(env)
 }
 
+#[allow(dead_code)] // Legacy sync API
 fn send_request_sync(stdin: &mut impl Write, payload: &serde_json::Value) -> Result<()> {
     let line = serde_json::to_string(payload)?;
     stdin
@@ -1570,6 +1588,7 @@ fn send_request_sync(stdin: &mut impl Write, payload: &serde_json::Value) -> Res
     Ok(())
 }
 
+#[allow(dead_code)] // Legacy sync API
 fn read_response_with_timeout(
     reader: &Arc<Mutex<BufReader<std::process::ChildStdout>>>,
     child: &Arc<Mutex<std::process::Child>>,
@@ -1599,6 +1618,7 @@ fn read_response_with_timeout(
     }
 }
 
+#[allow(dead_code)] // Legacy sync API
 fn read_response_sync(
     reader: &Arc<Mutex<BufReader<std::process::ChildStdout>>>,
     id: u64,
@@ -1627,6 +1647,7 @@ fn read_response_sync(
     }
 }
 
+#[allow(dead_code)] // Legacy sync API
 fn next_id() -> u64 {
     let micros = SystemTime::now()
         .duration_since(UNIX_EPOCH)

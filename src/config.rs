@@ -816,34 +816,34 @@ fn apply_requirements(config: &mut Config) -> Result<()> {
     let requirements: RequirementsFile = toml::from_str(&contents)
         .with_context(|| format!("Failed to parse requirements file: {}", path.display()))?;
 
-    if !requirements.allowed_approval_policies.is_empty() {
-        if let Some(policy) = config.approval_policy.as_ref() {
-            let policy = policy.to_ascii_lowercase();
-            if !requirements
-                .allowed_approval_policies
-                .iter()
-                .any(|p| p.eq_ignore_ascii_case(&policy))
-            {
-                anyhow::bail!(
-                    "approval_policy '{policy}' is not allowed by requirements ({})",
-                    requirements.allowed_approval_policies.join(", ")
-                );
-            }
+    if !requirements.allowed_approval_policies.is_empty()
+        && let Some(policy) = config.approval_policy.as_ref()
+    {
+        let policy = policy.to_ascii_lowercase();
+        if !requirements
+            .allowed_approval_policies
+            .iter()
+            .any(|p| p.eq_ignore_ascii_case(&policy))
+        {
+            anyhow::bail!(
+                "approval_policy '{policy}' is not allowed by requirements ({})",
+                requirements.allowed_approval_policies.join(", ")
+            );
         }
     }
-    if !requirements.allowed_sandbox_modes.is_empty() {
-        if let Some(mode) = config.sandbox_mode.as_ref() {
-            let mode = mode.to_ascii_lowercase();
-            if !requirements
-                .allowed_sandbox_modes
-                .iter()
-                .any(|m| m.eq_ignore_ascii_case(&mode))
-            {
-                anyhow::bail!(
-                    "sandbox_mode '{mode}' is not allowed by requirements ({})",
-                    requirements.allowed_sandbox_modes.join(", ")
-                );
-            }
+    if !requirements.allowed_sandbox_modes.is_empty()
+        && let Some(mode) = config.sandbox_mode.as_ref()
+    {
+        let mode = mode.to_ascii_lowercase();
+        if !requirements
+            .allowed_sandbox_modes
+            .iter()
+            .any(|m| m.eq_ignore_ascii_case(&mode))
+        {
+            anyhow::bail!(
+                "sandbox_mode '{mode}' is not allowed by requirements ({})",
+                requirements.allowed_sandbox_modes.join(", ")
+            );
         }
     }
 

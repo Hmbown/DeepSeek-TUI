@@ -3,13 +3,12 @@
 //! Provides types and overlay widget for requesting user approval before
 //! executing tools that may have costs or side effects.
 
-use crate::pricing::CostEstimate;
 use crate::sandbox::SandboxPolicy;
 use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
 use crate::tui::widgets::{ApprovalWidget, ElevationWidget, Renderable};
 use crossterm::event::{KeyCode, KeyEvent};
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 /// Determines when tool executions require user approval
@@ -69,21 +68,17 @@ pub struct ApprovalRequest {
     pub category: ToolCategory,
     /// Tool parameters (for display)
     pub params: Value,
-    /// Estimated cost (for paid tools)
-    pub estimated_cost: Option<CostEstimate>,
 }
 
 impl ApprovalRequest {
     pub fn new(id: &str, tool_name: &str, params: &Value) -> Self {
         let category = get_tool_category(tool_name);
-        let estimated_cost = crate::pricing::estimate_tool_cost(tool_name, params);
 
         Self {
             id: id.to_string(),
             tool_name: tool_name.to_string(),
             category,
             params: params.clone(),
-            estimated_cost,
         }
     }
 
@@ -281,12 +276,12 @@ impl ElevationOption {
     }
 
     /// Convert to a sandbox policy.
-    pub fn to_policy(&self, base_cwd: &PathBuf) -> SandboxPolicy {
+    pub fn to_policy(&self, base_cwd: &Path) -> SandboxPolicy {
         match self {
             ElevationOption::WithNetwork => SandboxPolicy::workspace_with_network(),
             ElevationOption::WithWriteAccess(paths) => {
                 let mut roots = paths.clone();
-                roots.push(base_cwd.clone());
+                roots.push(base_cwd.to_path_buf());
                 SandboxPolicy::workspace_with_roots(roots, false)
             }
             ElevationOption::FullAccess => SandboxPolicy::DangerFullAccess,

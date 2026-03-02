@@ -93,6 +93,7 @@ impl ToolError {
     }
 
     #[must_use]
+    #[allow(dead_code)]
     pub fn path_escape(path: impl Into<PathBuf>) -> Self {
         Self::PathEscape { path: path.into() }
     }
@@ -168,11 +169,6 @@ pub enum SandboxPolicy {
     /// No sandboxing (dangerous but sometimes needed)
     #[default]
     None,
-    /// Standard sandbox with workspace write access
-    Standard {
-        writable_roots: Vec<PathBuf>,
-        allow_network: bool,
-    },
 }
 
 /// Context passed to tools during execution.
@@ -185,10 +181,12 @@ pub struct ToolContext {
     /// Whether to allow paths outside workspace
     pub trust_mode: bool,
     /// Current sandbox policy
+    #[allow(dead_code)]
     pub sandbox_policy: SandboxPolicy,
     /// Path for notes file
     pub notes_path: PathBuf,
     /// MCP configuration path
+    #[allow(dead_code)]
     pub mcp_config_path: PathBuf,
     /// Elevated sandbox policy override (used when retrying after sandbox denial).
     /// This overrides the default sandbox behavior for shell commands.
@@ -222,6 +220,7 @@ impl ToolContext {
     }
 
     /// Create a `ToolContext` with all settings specified.
+    #[allow(dead_code)]
     pub fn with_options(
         workspace: impl Into<PathBuf>,
         trust_mode: bool,
@@ -383,12 +382,14 @@ impl ToolContext {
     }
 
     /// Set the trust mode.
+    #[allow(dead_code)]
     pub fn with_trust_mode(mut self, trust: bool) -> Self {
         self.trust_mode = trust;
         self
     }
 
     /// Set the sandbox policy.
+    #[allow(dead_code)]
     pub fn with_sandbox_policy(mut self, policy: SandboxPolicy) -> Self {
         self.sandbox_policy = policy;
         self
@@ -488,6 +489,7 @@ pub trait ToolSpec: Send + Sync {
     }
 
     /// Returns whether this tool is sandboxable.
+    #[allow(dead_code)]
     fn is_sandboxable(&self) -> bool {
         self.capabilities().contains(&ToolCapability::Sandboxable)
     }
@@ -525,6 +527,7 @@ pub fn optional_str<'a>(input: &'a Value, field: &str) -> Option<&'a str> {
 }
 
 /// Helper to extract required u64 field from JSON input.
+#[allow(dead_code)]
 pub fn required_u64(input: &Value, field: &str) -> Result<u64, ToolError> {
     input
         .get(field)
@@ -545,22 +548,6 @@ pub fn optional_bool(input: &Value, field: &str, default: bool) -> bool {
     input
         .get(field)
         .and_then(serde_json::Value::as_bool)
-        .unwrap_or(default)
-}
-
-/// Helper to extract required i64 field from JSON input.
-pub fn required_i64(input: &Value, field: &str) -> Result<i64, ToolError> {
-    input
-        .get(field)
-        .and_then(serde_json::Value::as_i64)
-        .ok_or_else(|| ToolError::missing_field(field))
-}
-
-/// Helper to extract optional i64 field with default.
-pub fn optional_i64(input: &Value, field: &str, default: i64) -> i64 {
-    input
-        .get(field)
-        .and_then(serde_json::Value::as_i64)
         .unwrap_or(default)
 }
 

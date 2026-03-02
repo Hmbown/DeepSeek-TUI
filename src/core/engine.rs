@@ -145,6 +145,7 @@ impl EngineHandle {
 
     /// Check if a request is currently cancelled
     #[must_use]
+    #[allow(dead_code)]
     pub fn is_cancelled(&self) -> bool {
         match self.cancel_token.lock() {
             Ok(token) => token.is_cancelled(),
@@ -330,9 +331,10 @@ struct ParallelToolResult {
 }
 
 // Hold the lock guard for the duration of a tool execution.
+// The inner guards are held for RAII purposes (dropped when the guard is dropped).
 enum ToolExecGuard<'a> {
-    Read(tokio::sync::RwLockReadGuard<'a, ()>),
-    Write(tokio::sync::RwLockWriteGuard<'a, ()>),
+    Read(#[allow(dead_code)] tokio::sync::RwLockReadGuard<'a, ()>),
+    Write(#[allow(dead_code)] tokio::sync::RwLockWriteGuard<'a, ()>),
 }
 
 /// Maximum time to wait for a single stream chunk before assuming a stall.
@@ -621,10 +623,11 @@ fn initial_active_tools(catalog: &[Tool]) -> std::collections::HashSet<String> {
             active.insert(tool.name.clone());
         }
     }
-    if active.is_empty() && !catalog.is_empty() {
-        if let Some(first) = catalog.first() {
-            active.insert(first.name.clone());
-        }
+    if active.is_empty()
+        && !catalog.is_empty()
+        && let Some(first) = catalog.first()
+    {
+        active.insert(first.name.clone());
     }
     active
 }
@@ -1456,8 +1459,7 @@ impl Engine {
         builder = builder
             .with_review_tool(self.deepseek_client.clone(), self.session.model.clone())
             .with_user_input_tool()
-            .with_parallel_tool()
-            .with_structured_data_tools();
+            .with_parallel_tool();
 
         if self.config.features.enabled(Feature::ApplyPatch) && mode != AppMode::Plan {
             builder = builder.with_patch_tools();
@@ -1829,15 +1831,6 @@ impl Engine {
         pool.to_api_tools()
     }
 
-    async fn execute_mcp_tool(
-        &mut self,
-        name: &str,
-        input: serde_json::Value,
-    ) -> Result<ToolResult, ToolError> {
-        let pool = self.ensure_mcp_pool().await?;
-        Self::execute_mcp_tool_with_pool(pool, name, input).await
-    }
-
     async fn execute_mcp_tool_with_pool(
         pool: Arc<AsyncMutex<McpPool>>,
         name: &str,
@@ -2087,7 +2080,7 @@ impl Engine {
         turn: &mut TurnContext,
         tool_registry: Option<&crate::tools::ToolRegistry>,
         tools: Option<Vec<Tool>>,
-        _mode: AppMode,
+        mode: AppMode,
     ) -> (TurnOutcomeStatus, Option<String>) {
         let client = self
             .deepseek_client
@@ -2134,7 +2127,7 @@ impl Engine {
             }
 
             // Ensure system prompt is up to date with latest session states
-            self.refresh_system_prompt(_mode);
+            self.refresh_system_prompt(mode);
 
             if turn.at_max_steps() {
                 let _ = self
@@ -2234,7 +2227,7 @@ impl Engine {
             }
 
             if self
-                .run_capacity_pre_request_checkpoint(turn, Some(&client), _mode)
+                .run_capacity_pre_request_checkpoint(turn, Some(&client), mode)
                 .await
             {
                 continue;
@@ -2581,41 +2574,39 @@ impl Engine {
                             }
                             Some(ContentBlockKind::ToolUse) | None => {}
                         }
-                        if matches!(stopped_kind, Some(ContentBlockKind::ToolUse)) {
-                            if let Some(index) = current_tool_index.take()
-                                && let Some(tool_state) = tool_uses.get_mut(index)
-                            {
-                                crate::logging::info(format!(
-                                    "Tool '{}' block stop. Buffer: '{}', Current input: {:?}",
-                                    tool_state.name, tool_state.input_buffer, tool_state.input
-                                ));
-                                if !tool_state.input_buffer.trim().is_empty() {
-                                    if let Some(value) = parse_tool_input(&tool_state.input_buffer)
-                                    {
-                                        tool_state.input = value;
-                                        crate::logging::info(format!(
-                                            "Tool '{}' final input: {:?}",
-                                            tool_state.name, tool_state.input
-                                        ));
-                                    } else {
-                                        crate::logging::warn(format!(
-                                            "Tool '{}' failed to parse final input buffer: '{}'",
-                                            tool_state.name, tool_state.input_buffer
-                                        ));
-                                        let _ = self
-                                            .tx_event
-                                            .send(Event::status(format!(
-                                                "⚠ Tool '{}' received malformed arguments from model",
-                                                tool_state.name
-                                            )))
-                                            .await;
-                                    }
-                                } else {
-                                    crate::logging::warn(format!(
-                                        "Tool '{}' input buffer is empty, using initial input: {:?}",
+                        if matches!(stopped_kind, Some(ContentBlockKind::ToolUse))
+                            && let Some(index) = current_tool_index.take()
+                            && let Some(tool_state) = tool_uses.get_mut(index)
+                        {
+                            crate::logging::info(format!(
+                                "Tool '{}' block stop. Buffer: '{}', Current input: {:?}",
+                                tool_state.name, tool_state.input_buffer, tool_state.input
+                            ));
+                            if !tool_state.input_buffer.trim().is_empty() {
+                                if let Some(value) = parse_tool_input(&tool_state.input_buffer) {
+                                    tool_state.input = value;
+                                    crate::logging::info(format!(
+                                        "Tool '{}' final input: {:?}",
                                         tool_state.name, tool_state.input
                                     ));
+                                } else {
+                                    crate::logging::warn(format!(
+                                        "Tool '{}' failed to parse final input buffer: '{}'",
+                                        tool_state.name, tool_state.input_buffer
+                                    ));
+                                    let _ = self
+                                        .tx_event
+                                        .send(Event::status(format!(
+                                            "⚠ Tool '{}' received malformed arguments from model",
+                                            tool_state.name
+                                        )))
+                                        .await;
                                 }
+                            } else {
+                                crate::logging::warn(format!(
+                                    "Tool '{}' input buffer is empty, using initial input: {:?}",
+                                    tool_state.name, tool_state.input
+                                ));
                             }
                         }
                     }
@@ -3233,7 +3224,7 @@ impl Engine {
             if self
                 .run_capacity_post_tool_checkpoint(
                     turn,
-                    _mode,
+                    mode,
                     tool_registry,
                     tool_exec_lock.clone(),
                     mcp_pool.clone(),
@@ -3270,7 +3261,7 @@ impl Engine {
             if self
                 .run_capacity_error_escalation_checkpoint(
                     turn,
-                    _mode,
+                    mode,
                     step_error_count,
                     consecutive_tool_error_steps,
                 )
@@ -4127,16 +4118,6 @@ impl Engine {
             Some("Rehydrated canonical state from memory."),
         );
         self.merge_compaction_summary(Some(prompt));
-    }
-
-    /// Get a reference to the session
-    pub fn session(&self) -> &Session {
-        &self.session
-    }
-
-    /// Get a mutable reference to the session
-    pub fn session_mut(&mut self) -> &mut Session {
-        &mut self.session
     }
 
     /// Refresh the system prompt based on current mode and context.

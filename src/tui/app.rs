@@ -1,7 +1,7 @@
 //! Application state for the `DeepSeek` TUI.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use ratatui::layout::Rect;
@@ -29,7 +29,7 @@ use crate::tui::transcript::TranscriptViewCache;
 use crate::tui::views::ViewStack;
 
 /// Format a nice welcome banner.
-fn format_welcome_banner(model: &str, workspace: &PathBuf, yolo: bool) -> String {
+fn format_welcome_banner(model: &str, workspace: &Path, yolo: bool) -> String {
     let mode_line = if yolo {
         "\nYOLO mode — shell + trust + auto-approve enabled\n"
     } else {
@@ -477,7 +477,7 @@ impl App {
         let sidebar_focus = SidebarFocus::from_setting(&settings.sidebar_focus);
         let max_input_history = settings.max_input_history;
         let ui_theme = palette::ui_theme(&settings.theme);
-        let model = settings.default_model.clone().unwrap_or_else(|| model);
+        let model = settings.default_model.clone().unwrap_or(model);
         let compact_threshold = compaction_threshold_for_model(&model);
 
         // Start in YOLO mode if --yolo flag was passed
@@ -687,12 +687,10 @@ impl App {
             self.allow_shell = true;
             self.trust_mode = true;
             self.approval_mode = ApprovalMode::Auto;
-        } else if leaving_yolo {
-            if let Some(restore) = self.yolo_restore.take() {
-                self.allow_shell = restore.allow_shell;
-                self.trust_mode = restore.trust_mode;
-                self.approval_mode = restore.approval_mode;
-            }
+        } else if leaving_yolo && let Some(restore) = self.yolo_restore.take() {
+            self.allow_shell = restore.allow_shell;
+            self.trust_mode = restore.trust_mode;
+            self.approval_mode = restore.approval_mode;
         }
 
         self.yolo = mode == AppMode::Yolo;
@@ -1223,12 +1221,13 @@ impl App {
     }
 
     pub fn compaction_config(&self) -> CompactionConfig {
-        let mut compaction = CompactionConfig::default();
-        compaction.enabled = self.auto_compact;
-        compaction.token_threshold = self.compact_threshold;
-        compaction.message_threshold = compaction_message_threshold_for_model(&self.model);
-        compaction.model = self.model.clone();
-        compaction
+        CompactionConfig {
+            enabled: self.auto_compact,
+            token_threshold: self.compact_threshold,
+            message_threshold: compaction_message_threshold_for_model(&self.model),
+            model: self.model.clone(),
+            ..Default::default()
+        }
     }
 }
 
@@ -1452,8 +1451,10 @@ mod tests {
 
     #[test]
     fn leaving_yolo_after_startup_restores_baseline_policies() {
-        let mut config = Config::default();
-        config.allow_shell = Some(false);
+        let config = Config {
+            allow_shell: Some(false),
+            ..Default::default()
+        };
 
         let mut app = App::new(test_options(true), &config);
         assert_eq!(app.mode, AppMode::Yolo);

@@ -283,29 +283,6 @@ impl Renderable for ApprovalWidget<'_> {
             ),
         ]));
 
-        if let Some(cost) = &self.request.estimated_cost {
-            lines.push(Line::from(""));
-            lines.push(Line::from(vec![
-                Span::raw("  Cost: "),
-                Span::styled(
-                    cost.display(),
-                    Style::default()
-                        .fg(palette::STATUS_WARNING)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]));
-            lines.push(Line::from(Span::styled(
-                format!("  {}", &cost.breakdown),
-                Style::default().fg(palette::TEXT_MUTED),
-            )));
-        } else {
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                "  No cost (free operation)",
-                Style::default().fg(palette::TEXT_MUTED),
-            )));
-        }
-
         lines.push(Line::from(""));
         let params_str = self.request.params_display();
         let params_truncated = crate::utils::truncate_with_ellipsis(&params_str, 50, "...");
@@ -900,7 +877,7 @@ mod tests {
         // Cursor at 2 (after emoji) should account for emoji width
         let (_row, col) = cursor_row_col(input, 2, 10);
         // Emoji width varies by system, but should be either 1 or 2
-        assert!(col >= 2 && col <= 3, "col = {col}, expected 2 or 3");
+        assert!((2..=3).contains(&col), "col = {col}, expected 2 or 3");
     }
 
     #[test]

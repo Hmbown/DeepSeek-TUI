@@ -46,15 +46,6 @@ pub struct CapacityMemoryRecord {
     pub replay_info: Option<ReplayInfo>,
 }
 
-/// Resolve `~/.deepseek/memory`.
-#[must_use]
-pub fn default_capacity_memory_dir() -> PathBuf {
-    capacity_memory_dirs()
-        .into_iter()
-        .next()
-        .unwrap_or_else(|| PathBuf::from(".").join(".deepseek").join("memory"))
-}
-
 fn capacity_memory_dirs() -> Vec<PathBuf> {
     if let Ok(raw) = std::env::var("DEEPSEEK_CAPACITY_MEMORY_DIR") {
         let trimmed = raw.trim();
@@ -76,11 +67,6 @@ fn capacity_memory_dirs() -> Vec<PathBuf> {
 
     dirs.dedup();
     dirs
-}
-
-#[must_use]
-pub fn session_memory_path(session_id: &str) -> PathBuf {
-    default_capacity_memory_dir().join(format!("{session_id}.jsonl"))
 }
 
 pub fn append_capacity_record(session_id: &str, record: &CapacityMemoryRecord) -> Result<PathBuf> {

@@ -144,11 +144,6 @@ impl SubAgentType {
                 "web.run",
                 "web_search",
                 "multi_tool_use.parallel",
-                "weather",
-                "finance",
-                "sports",
-                "time",
-                "calculator",
                 "exec_shell",
                 "exec_shell_wait",
                 "exec_shell_interact",
@@ -170,11 +165,6 @@ impl SubAgentType {
                 "web.run",
                 "web_search",
                 "multi_tool_use.parallel",
-                "weather",
-                "finance",
-                "sports",
-                "time",
-                "calculator",
                 "exec_shell",
                 "exec_shell_wait",
                 "exec_shell_interact",
@@ -188,11 +178,6 @@ impl SubAgentType {
                 "file_search",
                 "web.run",
                 "note",
-                "weather",
-                "finance",
-                "sports",
-                "time",
-                "calculator",
                 "update_plan",
                 "todo_write",
                 "todo_add",
@@ -443,6 +428,7 @@ impl SubAgent {
 /// Manager for active sub-agents.
 pub struct SubAgentManager {
     agents: HashMap<String, SubAgent>,
+    #[allow(dead_code)] // Stored for future workspace-scoped operations
     workspace: PathBuf,
     state_path: Option<PathBuf>,
     max_steps: u32,
@@ -3251,19 +3237,19 @@ After the tool call succeeds, stop.",
                 };
             };
 
-            if let Some(schema) = output_schema.as_ref() {
-                if let Err(error) = validate_output_schema(schema, &report.result) {
-                    return CsvWorkerOutcome {
-                        row_index,
-                        item_id,
-                        status: "failed".to_string(),
-                        agent_id: Some(snapshot.agent_id),
-                        duration_ms: snapshot.duration_ms,
-                        error: Some(error),
-                        result: snapshot.result,
-                        result_json: Some(report.result),
-                    };
-                }
+            if let Some(schema) = output_schema.as_ref()
+                && let Err(error) = validate_output_schema(schema, &report.result)
+            {
+                return CsvWorkerOutcome {
+                    row_index,
+                    item_id,
+                    status: "failed".to_string(),
+                    agent_id: Some(snapshot.agent_id),
+                    duration_ms: snapshot.duration_ms,
+                    error: Some(error),
+                    result: snapshot.result,
+                    result_json: Some(report.result),
+                };
             }
 
             if report.stop {
@@ -3370,7 +3356,6 @@ impl SubAgentToolRegistry {
             .with_patch_tools()
             .with_web_tools()
             .with_parallel_tool()
-            .with_structured_data_tools()
             .with_todo_tool(todo_list)
             .with_plan_tool(plan_state)
             .with_tool(Arc::new(ReportAgentJobResultTool));
