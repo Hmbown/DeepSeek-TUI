@@ -1,0 +1,477 @@
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
+
+pub const CONFIG_FILE_NAME: &str = "config.toml";
+const DEFAULT_DEEPSEEK_MODEL: &str = "deepseek-reasoner";
+const DEFAULT_OPENAI_MODEL: &str = "gpt-4.1";
+const DEFAULT_DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com";
+const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProviderKind {
+    #[default]
+    Deepseek,
+    Openai,
+}
+
+impl ProviderKind {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Deepseek => "deepseek",
+            Self::Openai => "openai",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "deepseek" | "deep-seek" => Some(Self::Deepseek),
+            "openai" | "open-ai" => Some(Self::Openai),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProviderConfigToml {
+    pub api_key: Option<String>,
+    pub base_url: Option<String>,
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProvidersToml {
+    #[serde(default)]
+    pub deepseek: ProviderConfigToml,
+    #[serde(default)]
+    pub openai: ProviderConfigToml,
+}
+
+impl ProvidersToml {
+    #[must_use]
+    pub fn for_provider(&self, provider: ProviderKind) -> &ProviderConfigToml {
+        match provider {
+            ProviderKind::Deepseek => &self.deepseek,
+            ProviderKind::Openai => &self.openai,
+        }
+    }
+
+    pub fn for_provider_mut(&mut self, provider: ProviderKind) -> &mut ProviderConfigToml {
+        match provider {
+            ProviderKind::Deepseek => &mut self.deepseek,
+            ProviderKind::Openai => &mut self.openai,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ConfigToml {
+    #[serde(default)]
+    pub provider: ProviderKind,
+    pub model: Option<String>,
+    pub auth_mode: Option<String>,
+    pub chatgpt_access_token: Option<String>,
+    pub device_code_session: Option<String>,
+    pub output_mode: Option<String>,
+    pub log_level: Option<String>,
+    pub telemetry: Option<bool>,
+    pub approval_policy: Option<String>,
+    pub sandbox_mode: Option<String>,
+    #[serde(default)]
+    pub providers: ProvidersToml,
+    #[serde(flatten)]
+    pub extras: BTreeMap<String, toml::Value>,
+}
+
+impl ConfigToml {
+    #[must_use]
+    pub fn get_value(&self, key: &str) -> Option<String> {
+        match key {
+            "provider" => Some(self.provider.as_str().to_string()),
+            "model" => self.model.clone(),
+            "auth.mode" => self.auth_mode.clone(),
+            "auth.chatgpt_access_token" => self.chatgpt_access_token.clone(),
+            "auth.device_code_session" => self.device_code_session.clone(),
+            "output_mode" => self.output_mode.clone(),
+            "log_level" => self.log_level.clone(),
+            "telemetry" => self.telemetry.map(|v| v.to_string()),
+            "approval_policy" => self.approval_policy.clone(),
+            "sandbox_mode" => self.sandbox_mode.clone(),
+            "providers.deepseek.api_key" => self.providers.deepseek.api_key.clone(),
+            "providers.deepseek.base_url" => self.providers.deepseek.base_url.clone(),
+            "providers.deepseek.model" => self.providers.deepseek.model.clone(),
+            "providers.openai.api_key" => self.providers.openai.api_key.clone(),
+            "providers.openai.base_url" => self.providers.openai.base_url.clone(),
+            "providers.openai.model" => self.providers.openai.model.clone(),
+            _ => self.extras.get(key).map(toml::Value::to_string),
+        }
+    }
+
+    pub fn set_value(&mut self, key: &str, value: &str) -> Result<()> {
+        match key {
+            "provider" => {
+                self.provider = ProviderKind::parse(value)
+                    .with_context(|| format!("unknown provider '{value}'"))?;
+            }
+            "model" => self.model = Some(value.to_string()),
+            "auth.mode" => self.auth_mode = Some(value.to_string()),
+            "auth.chatgpt_access_token" => self.chatgpt_access_token = Some(value.to_string()),
+            "auth.device_code_session" => self.device_code_session = Some(value.to_string()),
+            "output_mode" => self.output_mode = Some(value.to_string()),
+            "log_level" => self.log_level = Some(value.to_string()),
+            "telemetry" => {
+                self.telemetry = Some(parse_bool(value)?);
+            }
+            "approval_policy" => self.approval_policy = Some(value.to_string()),
+            "sandbox_mode" => self.sandbox_mode = Some(value.to_string()),
+            "providers.deepseek.api_key" => {
+                self.providers.deepseek.api_key = Some(value.to_string())
+            }
+            "providers.deepseek.base_url" => {
+                self.providers.deepseek.base_url = Some(value.to_string());
+            }
+            "providers.deepseek.model" => self.providers.deepseek.model = Some(value.to_string()),
+            "providers.openai.api_key" => self.providers.openai.api_key = Some(value.to_string()),
+            "providers.openai.base_url" => self.providers.openai.base_url = Some(value.to_string()),
+            "providers.openai.model" => self.providers.openai.model = Some(value.to_string()),
+            _ => {
+                self.extras
+                    .insert(key.to_string(), toml::Value::String(value.to_string()));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn unset_value(&mut self, key: &str) -> Result<()> {
+        match key {
+            "provider" => self.provider = ProviderKind::Deepseek,
+            "model" => self.model = None,
+            "auth.mode" => self.auth_mode = None,
+            "auth.chatgpt_access_token" => self.chatgpt_access_token = None,
+            "auth.device_code_session" => self.device_code_session = None,
+            "output_mode" => self.output_mode = None,
+            "log_level" => self.log_level = None,
+            "telemetry" => self.telemetry = None,
+            "approval_policy" => self.approval_policy = None,
+            "sandbox_mode" => self.sandbox_mode = None,
+            "providers.deepseek.api_key" => self.providers.deepseek.api_key = None,
+            "providers.deepseek.base_url" => self.providers.deepseek.base_url = None,
+            "providers.deepseek.model" => self.providers.deepseek.model = None,
+            "providers.openai.api_key" => self.providers.openai.api_key = None,
+            "providers.openai.base_url" => self.providers.openai.base_url = None,
+            "providers.openai.model" => self.providers.openai.model = None,
+            _ => {
+                self.extras.remove(key);
+            }
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn list_values(&self) -> BTreeMap<String, String> {
+        let mut out = BTreeMap::new();
+        out.insert("provider".to_string(), self.provider.as_str().to_string());
+
+        if let Some(v) = self.model.as_ref() {
+            out.insert("model".to_string(), v.clone());
+        }
+        if let Some(v) = self.auth_mode.as_ref() {
+            out.insert("auth.mode".to_string(), v.clone());
+        }
+        if let Some(v) = self.chatgpt_access_token.as_ref() {
+            out.insert("auth.chatgpt_access_token".to_string(), redact_secret(v));
+        }
+        if let Some(v) = self.device_code_session.as_ref() {
+            out.insert("auth.device_code_session".to_string(), redact_secret(v));
+        }
+        if let Some(v) = self.output_mode.as_ref() {
+            out.insert("output_mode".to_string(), v.clone());
+        }
+        if let Some(v) = self.log_level.as_ref() {
+            out.insert("log_level".to_string(), v.clone());
+        }
+        if let Some(v) = self.telemetry {
+            out.insert("telemetry".to_string(), v.to_string());
+        }
+        if let Some(v) = self.approval_policy.as_ref() {
+            out.insert("approval_policy".to_string(), v.clone());
+        }
+        if let Some(v) = self.sandbox_mode.as_ref() {
+            out.insert("sandbox_mode".to_string(), v.clone());
+        }
+        if let Some(v) = self.providers.deepseek.api_key.as_ref() {
+            out.insert("providers.deepseek.api_key".to_string(), redact_secret(v));
+        }
+        if let Some(v) = self.providers.deepseek.base_url.as_ref() {
+            out.insert("providers.deepseek.base_url".to_string(), v.clone());
+        }
+        if let Some(v) = self.providers.deepseek.model.as_ref() {
+            out.insert("providers.deepseek.model".to_string(), v.clone());
+        }
+        if let Some(v) = self.providers.openai.api_key.as_ref() {
+            out.insert("providers.openai.api_key".to_string(), redact_secret(v));
+        }
+        if let Some(v) = self.providers.openai.base_url.as_ref() {
+            out.insert("providers.openai.base_url".to_string(), v.clone());
+        }
+        if let Some(v) = self.providers.openai.model.as_ref() {
+            out.insert("providers.openai.model".to_string(), v.clone());
+        }
+
+        for (k, v) in &self.extras {
+            out.insert(k.clone(), v.to_string());
+        }
+        out
+    }
+
+    #[must_use]
+    pub fn resolve_runtime_options(&self, cli: &CliRuntimeOverrides) -> ResolvedRuntimeOptions {
+        let env = EnvRuntimeOverrides::load();
+        let provider = cli.provider.or(env.provider).unwrap_or(self.provider);
+
+        let provider_cfg = self.providers.for_provider(provider);
+        let api_key = cli
+            .api_key
+            .clone()
+            .or_else(|| env.api_key_for(provider))
+            .or_else(|| provider_cfg.api_key.clone());
+
+        let base_url = cli
+            .base_url
+            .clone()
+            .or_else(|| env.base_url_for(provider))
+            .or_else(|| provider_cfg.base_url.clone())
+            .unwrap_or_else(|| match provider {
+                ProviderKind::Deepseek => DEFAULT_DEEPSEEK_BASE_URL.to_string(),
+                ProviderKind::Openai => DEFAULT_OPENAI_BASE_URL.to_string(),
+            });
+
+        let model = cli
+            .model
+            .clone()
+            .or_else(|| env.model.clone())
+            .or_else(|| provider_cfg.model.clone())
+            .or_else(|| self.model.clone())
+            .unwrap_or_else(|| match provider {
+                ProviderKind::Deepseek => DEFAULT_DEEPSEEK_MODEL.to_string(),
+                ProviderKind::Openai => DEFAULT_OPENAI_MODEL.to_string(),
+            });
+
+        let output_mode = cli
+            .output_mode
+            .clone()
+            .or_else(|| env.output_mode.clone())
+            .or_else(|| self.output_mode.clone());
+        let auth_mode = cli
+            .auth_mode
+            .clone()
+            .or_else(|| env.auth_mode.clone())
+            .or_else(|| self.auth_mode.clone());
+        let log_level = cli
+            .log_level
+            .clone()
+            .or_else(|| env.log_level.clone())
+            .or_else(|| self.log_level.clone());
+        let telemetry = cli
+            .telemetry
+            .or(env.telemetry)
+            .or(self.telemetry)
+            .unwrap_or(false);
+        let approval_policy = cli
+            .approval_policy
+            .clone()
+            .or_else(|| env.approval_policy.clone())
+            .or_else(|| self.approval_policy.clone());
+        let sandbox_mode = cli
+            .sandbox_mode
+            .clone()
+            .or_else(|| env.sandbox_mode.clone())
+            .or_else(|| self.sandbox_mode.clone());
+
+        ResolvedRuntimeOptions {
+            provider,
+            model,
+            api_key,
+            base_url,
+            auth_mode,
+            output_mode,
+            log_level,
+            telemetry,
+            approval_policy,
+            sandbox_mode,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CliRuntimeOverrides {
+    pub provider: Option<ProviderKind>,
+    pub model: Option<String>,
+    pub api_key: Option<String>,
+    pub base_url: Option<String>,
+    pub auth_mode: Option<String>,
+    pub output_mode: Option<String>,
+    pub log_level: Option<String>,
+    pub telemetry: Option<bool>,
+    pub approval_policy: Option<String>,
+    pub sandbox_mode: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedRuntimeOptions {
+    pub provider: ProviderKind,
+    pub model: String,
+    pub api_key: Option<String>,
+    pub base_url: String,
+    pub auth_mode: Option<String>,
+    pub output_mode: Option<String>,
+    pub log_level: Option<String>,
+    pub telemetry: bool,
+    pub approval_policy: Option<String>,
+    pub sandbox_mode: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConfigStore {
+    path: PathBuf,
+    pub config: ConfigToml,
+}
+
+impl ConfigStore {
+    pub fn load(path: Option<PathBuf>) -> Result<Self> {
+        let path = resolve_config_path(path)?;
+        if !path.exists() {
+            return Ok(Self {
+                path,
+                config: ConfigToml::default(),
+            });
+        }
+
+        let raw = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read config at {}", path.display()))?;
+        let parsed: ConfigToml = toml::from_str(&raw)
+            .with_context(|| format!("failed to parse config at {}", path.display()))?;
+
+        Ok(Self {
+            path,
+            config: parsed,
+        })
+    }
+
+    pub fn save(&self) -> Result<()> {
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!("failed to create config directory {}", parent.display())
+            })?;
+        }
+        let body = toml::to_string_pretty(&self.config).context("failed to serialize config")?;
+        fs::write(&self.path, body)
+            .with_context(|| format!("failed to write config at {}", self.path.display()))?;
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+pub fn resolve_config_path(explicit: Option<PathBuf>) -> Result<PathBuf> {
+    if let Some(path) = explicit {
+        return Ok(path);
+    }
+    if let Ok(path) = std::env::var("DEEPSEEK_CONFIG_PATH") {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() {
+            return Ok(PathBuf::from(trimmed));
+        }
+    }
+    default_config_path()
+}
+
+pub fn default_config_path() -> Result<PathBuf> {
+    let home = dirs::home_dir().context("failed to resolve home directory for config path")?;
+    Ok(home.join(".deepseek").join(CONFIG_FILE_NAME))
+}
+
+fn parse_bool(raw: &str) -> Result<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" | "enabled" => Ok(true),
+        "0" | "false" | "no" | "off" | "disabled" => Ok(false),
+        _ => bail!("invalid boolean '{raw}'"),
+    }
+}
+
+fn redact_secret(secret: &str) -> String {
+    if secret.len() <= 8 {
+        return "********".to_string();
+    }
+    format!("{}***{}", &secret[..4], &secret[secret.len() - 4..])
+}
+
+#[derive(Debug, Clone, Default)]
+struct EnvRuntimeOverrides {
+    provider: Option<ProviderKind>,
+    model: Option<String>,
+    output_mode: Option<String>,
+    auth_mode: Option<String>,
+    log_level: Option<String>,
+    telemetry: Option<bool>,
+    approval_policy: Option<String>,
+    sandbox_mode: Option<String>,
+    deepseek_api_key: Option<String>,
+    openai_api_key: Option<String>,
+    deepseek_base_url: Option<String>,
+    openai_base_url: Option<String>,
+}
+
+impl EnvRuntimeOverrides {
+    fn load() -> Self {
+        Self {
+            provider: std::env::var("DEEPSEEK_PROVIDER")
+                .ok()
+                .and_then(|v| ProviderKind::parse(&v)),
+            model: std::env::var("DEEPSEEK_MODEL").ok(),
+            output_mode: std::env::var("DEEPSEEK_OUTPUT_MODE").ok(),
+            auth_mode: std::env::var("DEEPSEEK_AUTH_MODE").ok(),
+            log_level: std::env::var("DEEPSEEK_LOG_LEVEL").ok(),
+            telemetry: std::env::var("DEEPSEEK_TELEMETRY")
+                .ok()
+                .and_then(|v| parse_bool(&v).ok()),
+            approval_policy: std::env::var("DEEPSEEK_APPROVAL_POLICY").ok(),
+            sandbox_mode: std::env::var("DEEPSEEK_SANDBOX_MODE").ok(),
+            deepseek_api_key: std::env::var("DEEPSEEK_API_KEY")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+            openai_api_key: std::env::var("OPENAI_API_KEY")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+            deepseek_base_url: std::env::var("DEEPSEEK_BASE_URL")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+            openai_base_url: std::env::var("OPENAI_BASE_URL")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+        }
+    }
+
+    fn api_key_for(&self, provider: ProviderKind) -> Option<String> {
+        match provider {
+            ProviderKind::Deepseek => self.deepseek_api_key.clone(),
+            ProviderKind::Openai => self.openai_api_key.clone(),
+        }
+    }
+
+    fn base_url_for(&self, provider: ProviderKind) -> Option<String> {
+        match provider {
+            ProviderKind::Deepseek => self.deepseek_base_url.clone(),
+            ProviderKind::Openai => self.openai_base_url.clone(),
+        }
+    }
+}

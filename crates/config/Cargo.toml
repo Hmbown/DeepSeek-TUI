@@ -1,0 +1,14 @@
+[package]
+name = "deepseek-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Config schema and precedence model for DeepSeek workspace architecture"
+
+[dependencies]
+anyhow.workspace = true
+dirs.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true

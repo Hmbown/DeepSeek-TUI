@@ -4,11 +4,42 @@ on:
   push:
     tags: ['v*']
 
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -Dwarnings
+
 jobs:
+  parity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Format check
+        run: cargo fmt --all -- --check
+      - name: Compile check
+        run: cargo check --workspace --all-targets --locked
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Workspace tests
+        run: cargo test --workspace --all-features --locked
+      - name: TUI snapshot parity
+        run: cargo test -p deepseek-tui-core --test snapshot --locked
+      - name: Protocol schema parity
+        run: cargo test -p deepseek-protocol --test parity_protocol --locked
+      - name: State persistence parity
+        run: cargo test -p deepseek-state --test parity_state --locked
+      - name: Lockfile drift guard
+        run: git diff --exit-code -- Cargo.lock
+
   build:
+    needs: parity
     strategy:
       matrix:
         include:
+          # --- deepseek (cli) ---
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             binary: deepseek
@@ -25,13 +56,30 @@ jobs:
             target: x86_64-pc-windows-msvc
             binary: deepseek.exe
             artifact_name: deepseek-windows-x64.exe
+          # --- deepseek-tui (TUI) ---
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary: deepseek-tui
+            artifact_name: deepseek-tui-linux-x64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            binary: deepseek-tui
+            artifact_name: deepseek-tui-macos-x64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            binary: deepseek-tui
+            artifact_name: deepseek-tui-macos-arm64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary: deepseek-tui.exe
+            artifact_name: deepseek-tui-windows-x64.exe
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - run: cargo build --release --target ${{ matrix.target }}
+      - run: cargo build --release --locked --target ${{ matrix.target }}
       - name: Rename binary
         shell: bash
         run: |

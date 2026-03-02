@@ -1,0 +1,58 @@
+name: parity
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -Dwarnings
+
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Compile check
+        run: cargo check --workspace --all-targets --locked
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+      - name: Unit and parity tests
+        run: cargo test --workspace --all-features --locked
+
+      - name: TUI snapshot parity
+        run: cargo test -p deepseek-tui-core --test snapshot --locked
+
+      - name: Protocol schema sanity
+        run: cargo test -p deepseek-protocol --test parity_protocol --locked
+
+      - name: State persistence sanity
+        run: cargo test -p deepseek-state --test parity_state --locked
+
+      - name: Lockfile drift guard
+        run: git diff --exit-code -- Cargo.lock

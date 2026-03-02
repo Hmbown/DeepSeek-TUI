@@ -1,0 +1,25 @@
+[package]
+name = "deepseek-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Codex-style CLI facade for DeepSeek workspace architecture"
+
+[[bin]]
+name = "deepseek"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+clap_complete.workspace = true
+deepseek-agent = { path = "../agent" }
+deepseek-app-server = { path = "../app-server" }
+deepseek-config = { path = "../config" }
+deepseek-execpolicy = { path = "../execpolicy" }
+deepseek-mcp = { path = "../mcp" }
+deepseek-state = { path = "../state" }
+chrono.workspace = true
+serde_json.workspace = true
+tokio.workspace = true

@@ -1,0 +1,13 @@
+[package]
+name = "deepseek-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "MCP server lifecycle and tool proxy compatibility for DeepSeek workspace architecture"
+
+[dependencies]
+anyhow.workspace = true
+deepseek-protocol = { path = "../protocol" }
+serde.workspace = true
+serde_json.workspace = true

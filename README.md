@@ -21,7 +21,7 @@ Three modes:
 - **Agent** — multi-step autonomous tool use
 - **YOLO** — full auto-approve, no guardrails (preloads tools by default)
 
-**Recent highlights**: sub‑agent orchestration (background workers, parallel tool calls, dependency‑aware swarms), parallel tool execution (`multi_tool_use.parallel`), runtime HTTP/SSE API (`deepseek serve --http`), background task queue (`/task`), interactive configuration (`/config`), model discovery (`/models`), command palette (`Ctrl+K`), expandable tool payloads (`v`), persistent sidebar for live plan/todo/sub‑agent state, and model context‑window suffix hints (`-32k`, `-256k`).
+**Recent highlights**: workspace architecture (modular crates mirroring [Codex](https://github.com/openai/codex) layout), sub-agent orchestration (background workers, parallel tool calls, dependency-aware swarms), parallel tool execution (`multi_tool_use.parallel`), runtime HTTP/SSE API (`deepseek serve --http`), background task queue (`/task`), interactive configuration (`/config`), model discovery (`/models`), command palette (`Ctrl+K`), expandable tool payloads (`v`), persistent sidebar for live plan/todo/sub-agent state, and model context-window suffix hints (`-32k`, `-256k`).
 
 ## Install
 
@@ -31,7 +31,9 @@ cargo install deepseek-tui --locked
 
 # Or from source
 git clone https://github.com/Hmbown/DeepSeek-TUI.git
-cd DeepSeek-TUI && cargo install --path . --locked
+cd DeepSeek-TUI
+cargo install --path crates/tui --locked   # TUI (interactive terminal)
+cargo install --path crates/cli --locked   # CLI (dispatcher + server)
 ```
 
 ## Setup
@@ -45,7 +47,9 @@ api_key = "YOUR_DEEPSEEK_API_KEY"
 Then run:
 
 ```bash
-deepseek
+deepseek-tui          # interactive TUI
+# or
+deepseek              # CLI dispatcher (delegates to deepseek-tui for interactive use)
 ```
 
 **Tab** switches modes, **F1** opens help, **Esc** cancels a running request.
@@ -53,21 +57,40 @@ deepseek
 ## Usage
 
 ```bash
-deepseek                                  # interactive TUI
-deepseek -p "explain this in 2 sentences" # one-shot prompt
-deepseek --yolo                           # agent mode, all tools auto-approved
-deepseek doctor                           # check your setup
-deepseek models                           # list available models
-deepseek serve --http                     # start HTTP/SSE API server
+deepseek-tui                                  # interactive TUI
+deepseek-tui -p "explain this in 2 sentences" # one-shot prompt
+deepseek-tui --yolo                           # agent mode, all tools auto-approved
+deepseek doctor                               # check your setup
+deepseek models                               # list available models
+deepseek serve --http                         # start HTTP/SSE API server
 ```
 
 Within the TUI, use `/config`, `/models`, `/task`, and `Ctrl+K` command palette.
+
+## Workspace Architecture
+
+```
+crates/
+  cli/          deepseek-cli        → deepseek          CLI dispatcher + server
+  tui/          deepseek-tui        → deepseek-tui      Interactive terminal UI
+  app-server/   deepseek-app-server                      HTTP/SSE + JSON-RPC server
+  core/         deepseek-core                            Agent loop + engine
+  protocol/     deepseek-protocol                        Request/response framing
+  config/       deepseek-config                          Configuration + profiles
+  state/        deepseek-state                           SQLite session persistence
+  tools/        deepseek-tools                           Tool registry + specs
+  mcp/          deepseek-mcp                             MCP server integration
+  hooks/        deepseek-hooks                           Lifecycle hooks
+  execpolicy/   deepseek-execpolicy                      Approval policy engine
+  agent/        deepseek-agent                           Model/provider registry
+  tui-core/     deepseek-tui-core                        TUI state machine scaffold
+```
 
 ## Model IDs
 
 Common model IDs: `deepseek-chat`, `deepseek-reasoner`.
 
-Any valid `deepseek-*` model ID is accepted (including future releases). Model IDs can include context‑window suffix hints (`-32k`, `-256k`). To see live IDs from your configured endpoint:
+Any valid `deepseek-*` model ID is accepted (including future releases). Model IDs can include context-window suffix hints (`-32k`, `-256k`). To see live IDs from your configured endpoint:
 
 ```bash
 deepseek models

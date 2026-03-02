@@ -1,0 +1,7 @@
+[package]
+name = "deepseek-tui-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Event-driven TUI state machine scaffold for DeepSeek workspace architecture"

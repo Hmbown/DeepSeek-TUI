@@ -1,0 +1,11 @@
+[package]
+name = "deepseek-protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Codex-style app-server protocol frames for DeepSeek workspace architecture"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
