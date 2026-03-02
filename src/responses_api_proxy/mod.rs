@@ -27,7 +27,7 @@ pub struct Args {
     #[arg(long)]
     pub port: Option<u16>,
 
-    /// Path to a JSON file to write startup info (single line). Includes {"port": <u16>}.
+    /// Path to a JSON file to write startup info (single line). Includes `{"port": 12345}`.
     #[arg(long, value_name = "FILE")]
     pub server_info: Option<PathBuf>,
 
