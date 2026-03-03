@@ -55,6 +55,7 @@ AI_HANDOFF.md
 result.json
 count_deps.py
 project_overhaul_prompt.md
+prompt_for_release_agent.md
 
 .codex/
 docs/rlm-paper.txt

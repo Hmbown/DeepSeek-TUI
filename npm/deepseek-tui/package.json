@@ -1,0 +1,42 @@
+{
+  "name": "deepseek-tui",
+  "version": "0.3.28",
+  "description": "Install and run deepseek and deepseek-tui binaries from GitHub release artifacts.",
+  "author": "Hmbown",
+  "license": "MIT",
+  "homepage": "https://github.com/Hmbown/DeepSeek-TUI",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Hmbown/DeepSeek-TUI.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Hmbown/DeepSeek-TUI/issues"
+  },
+  "keywords": [
+    "deepseek",
+    "cli",
+    "tui",
+    "rust",
+    "binary",
+    "terminal"
+  ],
+  "type": "commonjs",
+  "bin": {
+    "deepseek": "bin/deepseek.js",
+    "deepseek-tui": "bin/deepseek-tui.js"
+  },
+  "scripts": {
+    "postinstall": "node scripts/install.js",
+    "prepack": "node scripts/install.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "preferGlobal": true,
+  "files": [
+    "bin/*.js",
+    "scripts/*.js",
+    "README.md",
+    "package.json"
+  ]
+}

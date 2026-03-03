@@ -4,6 +4,7 @@ A terminal-native TUI and CLI for [DeepSeek](https://platform.deepseek.com) mode
 
 [![CI](https://github.com/Hmbown/DeepSeek-TUI/actions/workflows/ci.yml/badge.svg)](https://github.com/Hmbown/DeepSeek-TUI/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/deepseek-tui)](https://crates.io/crates/deepseek-tui)
+[![npm](https://img.shields.io/npm/v/deepseek-tui)](https://www.npmjs.com/package/deepseek-tui)
 
 <p align="center">
   <img src="assets/hero.png" alt="DeepSeek CLI" width="800">
@@ -26,15 +27,27 @@ Three modes:
 ## Install
 
 ```bash
+# Recommended — no Rust toolchain needed
+npm install -g deepseek-tui
+```
+
+This downloads prebuilt binaries for your platform (macOS, Linux, Windows). After install, both `deepseek` and `deepseek-tui` commands are available.
+
+<details>
+<summary>Other install methods</summary>
+
+```bash
 # From crates.io (requires Rust 1.85+)
 cargo install deepseek-tui --locked
 
-# Or from source
+# From source
 git clone https://github.com/Hmbown/DeepSeek-TUI.git
 cd DeepSeek-TUI
 cargo install --path crates/tui --locked   # TUI (interactive terminal)
 cargo install --path crates/cli --locked   # CLI (dispatcher + server)
 ```
+
+</details>
 
 ## Setup
 
