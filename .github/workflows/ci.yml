@@ -23,7 +23,7 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Clippy
-        run: cargo clippy --all-targets --all-features
+        run: cargo clippy --workspace --all-targets --all-features
 
   test:
     name: Test
@@ -36,9 +36,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Run tests
-        run: cargo test --all-features
+        run: cargo test --workspace --all-features
       - name: Run Offline Eval Harness
-        run: cargo run --all-features -- eval
+        run: cargo run -p deepseek-tui --all-features -- eval
 
   build:
     name: Build
@@ -62,6 +62,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build docs
-        run: cargo doc --no-deps
+        run: cargo doc --workspace --no-deps
         env:
           RUSTDOCFLAGS: -Dwarnings
