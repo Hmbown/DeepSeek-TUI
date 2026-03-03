@@ -71,7 +71,7 @@ Within the TUI, use `/config`, `/models`, `/task`, and `Ctrl+K` command palette.
 
 ```
 crates/
-  cli/          deepseek-cli        → deepseek          CLI dispatcher + server
+  cli/          deepseek-tui-cli    → deepseek          CLI dispatcher + server
   tui/          deepseek-tui        → deepseek-tui      Interactive terminal UI
   app-server/   deepseek-app-server                      HTTP/SSE + JSON-RPC server
   core/         deepseek-core                            Agent loop + engine

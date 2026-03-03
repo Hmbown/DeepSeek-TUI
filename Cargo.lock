@@ -836,24 +836,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "deepseek-cli"
-version = "0.3.28"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "clap_complete",
- "deepseek-agent",
- "deepseek-app-server",
- "deepseek-config",
- "deepseek-execpolicy",
- "deepseek-mcp",
- "deepseek-state",
- "serde_json",
- "tokio",
-]
-
-[[package]]
 name = "deepseek-config"
 version = "0.3.28"
 dependencies = [
@@ -1001,6 +983,24 @@ dependencies = [
  "windows",
  "wiremock",
  "zeroize",
+]
+
+[[package]]
+name = "deepseek-tui-cli"
+version = "0.3.28"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "clap_complete",
+ "deepseek-agent",
+ "deepseek-app-server",
+ "deepseek-config",
+ "deepseek-execpolicy",
+ "deepseek-mcp",
+ "deepseek-state",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
