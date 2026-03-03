@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.28] - 2026-03-02
+
+### Added
+- Converted the project to a modular Cargo workspace using a `crates/` layout.
+- Added new crate boundaries mirroring a deepseek architecture (`agent`, `config`, `core`, `execpolicy`, `hooks`, `mcp`, `protocol`, `state`, `tools`, `tui-core`, `tui`, and `app-server`).
+
+### Changed
+- Added parity CI coverage with protocol/state/snapshot checks.
+- Updated release workflow to build both `deepseek` and `deepseek-tui` binaries.
+
 ## [0.3.26] - 2026-03-02
 
 ### Fixed
@@ -353,7 +363,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hooks system and config profiles
 - Example skills and launch assets
 
-[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.23...HEAD
+[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.28...HEAD
+[0.3.28]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.27...v0.3.28
 [0.3.23]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.22...v0.3.23
 [0.3.22]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.21...v0.3.22
 [0.3.21]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.17...v0.3.21
