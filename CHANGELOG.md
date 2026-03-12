@@ -19,9 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Redesigned the footer status strip with mode/model/token/cost layout, quadrant separators, and a context-usage bar.
 - Added Unicode prefix indicators (▸ You, ◆ Answer, ● System) to chat history cells for visual distinction.
 - Improved thinking token delineation with labeled delimiters in transcript rendering.
+- Refactored source code into workspace crates for better modularity and dependency management.
 
 ### Fixed
 - Fixed Plan mode ESC key dismissing the prompt without clearing `plan_prompt_pending`, which prevented the prompt from reappearing on subsequent plan completions.
+- Fixed clippy lint (collapsible_if) in web browsing session management.
 
 ## [0.3.30] - 2026-03-06
 
