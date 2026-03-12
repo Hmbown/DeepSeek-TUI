@@ -1,7 +1,7 @@
 //! Application state for the `DeepSeek` TUI.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Instant;
 
 use ratatui::layout::Rect;
@@ -29,28 +29,6 @@ use crate::tui::streaming::StreamingState;
 use crate::tui::transcript::TranscriptViewCache;
 use crate::tui::views::ViewStack;
 
-/// Format a nice welcome banner.
-fn format_welcome_banner(model: &str, workspace: &Path, yolo: bool) -> String {
-    let mode_line = if yolo {
-        "\nYOLO mode — shell + trust + auto-approve enabled\n"
-    } else {
-        ""
-    };
-
-    format!(
-        "Start with a workflow instead of a shortcut:\n\
-         - Normal asks questions, Agent runs tools, Plan reviews the approach first\n\
-         - Watch approvals, queued prompts, and sub-agents in the runtime status area\n\
-         - Use /queue to edit pending work and Ctrl+R or /sessions to resume past threads\n\
-         - Ctrl+K opens the command palette, F1 opens help, Esc cancels current work\n\
-         {mode_line}\
-         Directory: {}\n\
-         Model: {}",
-        workspace.display(),
-        model
-    )
-}
-
 // === Types ===
 
 /// State machine for onboarding new users.
@@ -66,7 +44,6 @@ pub enum OnboardingState {
 /// Supported application modes for the TUI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppMode {
-    Normal,
     Agent,
     Yolo,
     Plan,
@@ -80,6 +57,42 @@ pub enum SidebarFocus {
     Todos,
     Tasks,
     Agents,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComposerDensity {
+    Compact,
+    Comfortable,
+    Spacious,
+}
+
+impl ComposerDensity {
+    #[must_use]
+    pub fn from_setting(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "compact" | "tight" => Self::Compact,
+            "spacious" | "loose" => Self::Spacious,
+            _ => Self::Comfortable,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TranscriptSpacing {
+    Compact,
+    Comfortable,
+    Spacious,
+}
+
+impl TranscriptSpacing {
+    #[must_use]
+    pub fn from_setting(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "compact" | "tight" => Self::Compact,
+            "spacious" | "loose" => Self::Spacious,
+            _ => Self::Comfortable,
+        }
+    }
 }
 
 impl SidebarFocus {
@@ -184,7 +197,6 @@ impl AppMode {
     #[must_use]
     pub fn from_setting(value: &str) -> Self {
         match value.trim().to_ascii_lowercase().as_str() {
-            "normal" => Self::Normal,
             "plan" => Self::Plan,
             "yolo" => Self::Yolo,
             _ => Self::Agent,
@@ -194,7 +206,6 @@ impl AppMode {
     #[must_use]
     pub fn as_setting(self) -> &'static str {
         match self {
-            Self::Normal => "normal",
             Self::Agent => "agent",
             Self::Yolo => "yolo",
             Self::Plan => "plan",
@@ -204,7 +215,6 @@ impl AppMode {
     /// Short label used in the UI footer.
     pub fn label(self) -> &'static str {
         match self {
-            AppMode::Normal => "NORMAL",
             AppMode::Agent => "AGENT",
             AppMode::Yolo => "YOLO",
             AppMode::Plan => "PLAN",
@@ -215,7 +225,6 @@ impl AppMode {
     /// Description shown in help or onboarding text.
     pub fn description(self) -> &'static str {
         match self {
-            AppMode::Normal => "Chat mode - ask questions, get answers",
             AppMode::Agent => "Agent mode - autonomous task execution with tools",
             AppMode::Yolo => "YOLO mode - full tool access without approvals",
             AppMode::Plan => "Plan mode - design before implementing",
@@ -301,8 +310,12 @@ pub struct App {
     pub input_history: Vec<String>,
     pub history_index: Option<usize>,
     pub auto_compact: bool,
+    pub calm_mode: bool,
+    pub low_motion: bool,
     pub show_thinking: bool,
     pub show_tool_details: bool,
+    pub composer_density: ComposerDensity,
+    pub transcript_spacing: TranscriptSpacing,
     pub sidebar_width_percent: u16,
     pub sidebar_focus: SidebarFocus,
     /// Slash menu selection index in composer.
@@ -409,8 +422,6 @@ pub struct App {
     pub task_panel: Vec<TaskPanelEntry>,
     /// Whether the UI needs to be redrawn.
     pub needs_redraw: bool,
-    /// Session start time for elapsed-time display in the footer.
-    pub session_start: Instant,
     /// When the current thinking block started (for duration tracking).
     pub thinking_started_at: Option<Instant>,
     /// Whether context compaction is currently in progress.
@@ -504,8 +515,12 @@ impl App {
         let needs_onboarding = !skip_onboarding && (!was_onboarded || needs_api_key);
         let settings = Settings::load().unwrap_or_else(|_| Settings::default());
         let auto_compact = settings.auto_compact;
+        let calm_mode = settings.calm_mode;
+        let low_motion = settings.low_motion;
         let show_thinking = settings.show_thinking;
         let show_tool_details = settings.show_tool_details;
+        let composer_density = ComposerDensity::from_setting(&settings.composer_density);
+        let transcript_spacing = TranscriptSpacing::from_setting(&settings.transcript_spacing);
         let sidebar_width_percent = settings.sidebar_width_percent;
         let sidebar_focus = SidebarFocus::from_setting(&settings.sidebar_focus);
         let max_input_history = settings.max_input_history;
@@ -534,22 +549,12 @@ impl App {
         };
         let allow_shell = allow_shell || initial_mode == AppMode::Yolo;
 
-        let history = if needs_onboarding {
-            Vec::new() // No welcome message during onboarding
-        } else {
-            vec![HistoryCell::System {
-                content: format_welcome_banner(&model, &workspace, yolo),
-            }]
-        };
-
         // Initialize hooks executor from config
         let hooks_config = config.hooks_config();
         let hooks = HookExecutor::new(hooks_config, workspace.clone());
 
         // Initialize plan state
         let plan_state = new_shared_plan_state();
-
-        let history_len = history.len() as u64;
 
         let agents_skills_dir = workspace.join(".agents").join("skills");
         let local_skills_dir = workspace.join("skills");
@@ -566,8 +571,8 @@ impl App {
             input: String::new(),
             cursor_position: 0,
             paste_burst: PasteBurst::default(),
-            history,
-            history_version: history_len,
+            history: Vec::new(),
+            history_version: 0,
             api_messages: Vec::new(),
             transcript_scroll: TranscriptScroll::ToBottom,
             pending_scroll_delta: 0,
@@ -593,8 +598,12 @@ impl App {
             input_history: Vec::new(),
             history_index: None,
             auto_compact,
+            calm_mode,
+            low_motion,
             show_thinking,
             show_tool_details,
+            composer_density,
+            transcript_spacing,
             sidebar_width_percent,
             sidebar_focus,
             slash_menu_selected: 0,
@@ -665,7 +674,6 @@ impl App {
             workspace_context_refreshed_at: None,
             task_panel: Vec::new(),
             needs_redraw: true,
-            session_start: Instant::now(),
             thinking_started_at: None,
             is_compacting: false,
             last_send_at: None,
@@ -694,9 +702,7 @@ impl App {
         if let Err(err) = crate::tui::onboarding::mark_onboarded() {
             self.status_message = Some(format!("Failed to mark onboarding: {err}"));
         }
-        self.add_message(HistoryCell::System {
-            content: format_welcome_banner(&self.model, &self.workspace, self.yolo),
-        });
+        self.needs_redraw = true;
     }
 
     pub fn set_mode(&mut self, mode: AppMode) -> bool {
@@ -743,22 +749,20 @@ impl App {
         true
     }
 
-    /// Cycle through modes: Normal -> Agent -> YOLO -> Plan
+    /// Cycle through modes: Plan -> Agent -> YOLO
     pub fn cycle_mode(&mut self) {
         let next = match self.mode {
-            AppMode::Normal => AppMode::Agent,
+            AppMode::Plan => AppMode::Agent,
             AppMode::Agent => AppMode::Yolo,
             AppMode::Yolo => AppMode::Plan,
-            AppMode::Plan => AppMode::Normal,
         };
         let _ = self.set_mode(next);
     }
 
-    /// Cycle through modes in reverse: Plan -> YOLO -> Agent -> Normal
+    /// Cycle through modes in reverse: YOLO -> Agent -> Plan
     pub fn cycle_mode_reverse(&mut self) {
         let next = match self.mode {
-            AppMode::Normal => AppMode::Plan,
-            AppMode::Agent => AppMode::Normal,
+            AppMode::Agent => AppMode::Plan,
             AppMode::Yolo => AppMode::Agent,
             AppMode::Plan => AppMode::Yolo,
         };
@@ -935,6 +939,9 @@ impl App {
         TranscriptRenderOptions {
             show_thinking: self.show_thinking,
             show_tool_details: self.show_tool_details,
+            calm_mode: self.calm_mode,
+            low_motion: self.low_motion,
+            spacing: self.transcript_spacing,
         }
     }
 
@@ -1183,24 +1190,6 @@ impl App {
         self.queued_messages.remove(index)
     }
 
-    pub fn queued_message_previews(&self, max: usize) -> Vec<String> {
-        if max == 0 {
-            return Vec::new();
-        }
-
-        let mut previews: Vec<String> = self
-            .queued_messages
-            .iter()
-            .take(max)
-            .map(|msg| msg.display.clone())
-            .collect();
-        let extra = self.queued_messages.len().saturating_sub(previews.len());
-        if extra > 0 {
-            previews.push(format!("+{extra} more"));
-        }
-        previews
-    }
-
     pub fn queued_message_count(&self) -> usize {
         self.queued_messages.len()
     }
@@ -1345,6 +1334,13 @@ mod tests {
     }
 
     #[test]
+    fn app_starts_without_seeded_transcript_messages() {
+        let app = App::new(test_options(false), &Config::default());
+        assert!(app.history.is_empty());
+        assert_eq!(app.history_version, 0);
+    }
+
+    #[test]
     fn clear_todos_resets_plan_state() {
         let mut app = App::new(test_options(false), &Config::default());
 
@@ -1390,7 +1386,7 @@ mod tests {
         app.cycle_mode_reverse();
         assert_eq!(app.mode, AppMode::Yolo);
 
-        app.mode = AppMode::Normal;
+        app.mode = AppMode::Agent;
         app.cycle_mode_reverse();
         assert_eq!(app.mode, AppMode::Plan);
     }

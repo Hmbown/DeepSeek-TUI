@@ -54,11 +54,10 @@ project.
 
 An agent loop with file editing, shell execution, `web.run` browsing, git operations, task tracking, and [MCP](https://modelcontextprotocol.io) server integration. Context-aware memory compaction keeps long sessions on track. `crates/tui` remains the live shipped runtime while the workspace extraction continues.
 
-Four modes (**Tab** / **Shift+Tab** to cycle):
+Three visible modes (**Tab** / **Shift+Tab** to cycle):
 
 | Mode | Behavior |
 |------|----------|
-| **Normal** | Chat-first mode for questions, explanation, and low-friction steering |
 | **Plan** | Design-first — proposes before acting |
 | **Agent** | Multi-step autonomous tool use |
 | **YOLO** | Full auto-approve, no guardrails |
@@ -67,7 +66,7 @@ Four modes (**Tab** / **Shift+Tab** to cycle):
 
 1. Paste your API key in onboarding.
 2. Choose a mode for the task in front of you:
-   `Normal` to ask questions, `Plan` to review a plan first, `Agent` to let the model use tools, `YOLO` only inside a trusted workspace.
+   `Plan` to review a plan first, `Agent` to let the model use tools, `YOLO` only inside a trusted workspace.
 3. Watch the status area while work is running:
    approvals, queued work, and active sub-agents stay there while the turn is live.
 4. Recover work with `Ctrl+R` or `/sessions` if you need to resume an interrupted thread.

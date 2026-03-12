@@ -2251,7 +2251,6 @@ fn enforce_lru_capacity(
 
 fn parse_mode(mode: &str) -> AppMode {
     match mode.trim().to_ascii_lowercase().as_str() {
-        "normal" => AppMode::Normal,
         "plan" => AppMode::Plan,
         "yolo" => AppMode::Yolo,
         _ => AppMode::Agent,

@@ -1,9 +1,8 @@
 //! Cached transcript rendering for the TUI.
 
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::Line;
 
-use crate::palette;
+use crate::tui::app::TranscriptSpacing;
 use crate::tui::history::{HistoryCell, TranscriptRenderOptions};
 use crate::tui::scrolling::TranscriptLineMeta;
 
@@ -61,20 +60,12 @@ impl TranscriptViewCache {
                 });
             }
 
-            if cell_index + 1 < cells.len()
-                && !cell.is_stream_continuation()
-                && cell.is_conversational()
-                && cells[cell_index + 1].is_conversational()
-            {
-                // Add subtle horizontal separator between messages
-                let separator = Span::styled(
-                    "─".repeat(usize::from(width)),
-                    Style::default()
-                        .fg(palette::TEXT_MUTED)
-                        .add_modifier(Modifier::DIM),
-                );
-                lines.push(Line::from(separator));
-                meta.push(TranscriptLineMeta::Spacer);
+            if let Some(next_cell) = cells.get(cell_index + 1) {
+                let spacer_rows = spacer_rows_between(cell, next_cell, options.spacing);
+                for _ in 0..spacer_rows {
+                    lines.push(Line::from(""));
+                    meta.push(TranscriptLineMeta::Spacer);
+                }
             }
         }
 
@@ -98,5 +89,36 @@ impl TranscriptViewCache {
     #[must_use]
     pub fn total_lines(&self) -> usize {
         self.lines.len()
+    }
+}
+
+fn spacer_rows_between(
+    current: &HistoryCell,
+    next: &HistoryCell,
+    spacing: TranscriptSpacing,
+) -> usize {
+    if current.is_stream_continuation() {
+        return 0;
+    }
+
+    let conversational_gap = match spacing {
+        TranscriptSpacing::Compact => 0,
+        TranscriptSpacing::Comfortable => 1,
+        TranscriptSpacing::Spacious => 2,
+    };
+    let secondary_gap = match spacing {
+        TranscriptSpacing::Compact => 0,
+        TranscriptSpacing::Comfortable => 1,
+        TranscriptSpacing::Spacious => 1,
+    };
+
+    if current.is_conversational() && next.is_conversational() {
+        conversational_gap
+    } else if matches!(current, HistoryCell::System { .. } | HistoryCell::Tool(_))
+        || matches!(next, HistoryCell::System { .. } | HistoryCell::Tool(_))
+    {
+        secondary_gap
+    } else {
+        0
     }
 }

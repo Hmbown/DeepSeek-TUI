@@ -148,4 +148,4 @@ See DEPENDENCY_GRAPH.md for the full dependency graph.
 - TUI binary still references monolith source (src/) — migration incremental
 - DeepSeek API: Responses API preferred, chat completions fallback
 - Sandbox: macOS Seatbelt, Linux Landlock
-- Modes: Normal, Plan, Agent, YOLO, RLM, Duo (each gates different tools)
+- Modes: Plan, Agent, YOLO (visible). Hidden `/normal` and legacy `default_mode = "normal"` normalize to Agent.

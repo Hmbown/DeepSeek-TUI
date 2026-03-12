@@ -50,6 +50,7 @@ pub const TEXT_HINT: Color = Color::Rgb(160, 160, 160); // #A0A0A0
 pub const TEXT_ACCENT: Color = DEEPSEEK_SKY;
 pub const FOOTER_HINT: Color = Color::Rgb(180, 190, 208); // #B4BED0
 pub const SELECTION_TEXT: Color = Color::White;
+pub const TEXT_SOFT: Color = Color::Rgb(214, 223, 235); // #D6DFEB
 
 // Compatibility aliases for existing call sites.
 pub const TEXT_PRIMARY: Color = TEXT_BODY;
@@ -69,6 +70,26 @@ pub const BACKGROUND_LIGHT: Color = Color::Rgb(30, 47, 71); // #1E2F47
 pub const BACKGROUND_DARK: Color = Color::Rgb(13, 26, 48); // #0D1A30
 #[allow(dead_code)]
 pub const STATUS_NEUTRAL: Color = Color::Rgb(160, 160, 160); // #A0A0A0
+#[allow(dead_code)]
+pub const SURFACE_PANEL: Color = Color::Rgb(21, 33, 52); // #152134
+#[allow(dead_code)]
+pub const SURFACE_ELEVATED: Color = Color::Rgb(28, 42, 64); // #1C2A40
+#[allow(dead_code)]
+pub const SURFACE_REASONING: Color = Color::Rgb(54, 44, 26); // #362C1A
+#[allow(dead_code)]
+pub const SURFACE_REASONING_ACTIVE: Color = Color::Rgb(68, 53, 28); // #44351C
+#[allow(dead_code)]
+pub const SURFACE_TOOL: Color = Color::Rgb(24, 39, 60); // #18273C
+#[allow(dead_code)]
+pub const SURFACE_TOOL_ACTIVE: Color = Color::Rgb(29, 48, 73); // #1D3049
+#[allow(dead_code)]
+pub const SURFACE_SUCCESS: Color = Color::Rgb(22, 56, 63); // #16383F
+#[allow(dead_code)]
+pub const SURFACE_ERROR: Color = Color::Rgb(63, 27, 36); // #3F1B24
+pub const ACCENT_REASONING_LIVE: Color = Color::Rgb(146, 198, 248); // #92C6F8
+pub const ACCENT_TOOL_LIVE: Color = Color::Rgb(133, 184, 234); // #85B8EA
+pub const ACCENT_TOOL_ISSUE: Color = Color::Rgb(192, 143, 153); // #C08F99
+pub const TEXT_TOOL_OUTPUT: Color = Color::Rgb(205, 216, 228); // #CDD8E4
 
 // Legacy status colors - keep for backward compatibility
 pub const STATUS_SUCCESS: Color = DEEPSEEK_SKY;
@@ -78,7 +99,6 @@ pub const STATUS_ERROR: Color = DEEPSEEK_RED;
 pub const STATUS_INFO: Color = DEEPSEEK_BLUE;
 
 // Mode-specific accent colors for mode badges
-pub const MODE_NORMAL: Color = Color::Rgb(192, 192, 192); // #C0C0C0
 pub const MODE_AGENT: Color = Color::Rgb(80, 150, 255); // Bright blue
 pub const MODE_YOLO: Color = Color::Rgb(255, 100, 100); // Warning red
 pub const MODE_PLAN: Color = Color::Rgb(255, 170, 60); // Orange

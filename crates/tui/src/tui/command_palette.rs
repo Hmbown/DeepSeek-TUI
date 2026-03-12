@@ -219,7 +219,6 @@ fn command_runs_directly(name: &str) -> bool {
             | "export"
             | "config"
             | "yolo"
-            | "normal"
             | "agent"
             | "plan"
             | "trust"

@@ -17,11 +17,19 @@ pub struct Settings {
     pub theme: String,
     /// Auto-compact conversations when they get long
     pub auto_compact: bool,
+    /// Reduce status noise and collapse details more aggressively
+    pub calm_mode: bool,
+    /// Reduce animation and redraw churn
+    pub low_motion: bool,
     /// Show thinking blocks from the model
     pub show_thinking: bool,
     /// Show detailed tool output
     pub show_tool_details: bool,
-    /// Default mode: "normal", "agent", "plan", "yolo"
+    /// Composer layout density: compact, comfortable, spacious
+    pub composer_density: String,
+    /// Transcript spacing rhythm: compact, comfortable, spacious
+    pub transcript_spacing: String,
+    /// Default mode: "agent", "plan", "yolo"
     pub default_mode: String,
     /// Sidebar width as percentage of terminal width
     pub sidebar_width_percent: u16,
@@ -38,8 +46,12 @@ impl Default for Settings {
         Self {
             theme: "whale".to_string(),
             auto_compact: true,
+            calm_mode: false,
+            low_motion: false,
             show_thinking: true,
             show_tool_details: true,
+            composer_density: "comfortable".to_string(),
+            transcript_spacing: "comfortable".to_string(),
             default_mode: "agent".to_string(),
             sidebar_width_percent: 28,
             sidebar_focus: "auto".to_string(),
@@ -70,6 +82,10 @@ impl Settings {
         let mut settings: Settings = toml::from_str(&content)
             .with_context(|| format!("Failed to parse settings from {}", path.display()))?;
         settings.default_mode = normalize_mode(&settings.default_mode).to_string();
+        settings.composer_density =
+            normalize_composer_density(&settings.composer_density).to_string();
+        settings.transcript_spacing =
+            normalize_transcript_spacing(&settings.transcript_spacing).to_string();
         settings.sidebar_focus = normalize_sidebar_focus(&settings.sidebar_focus).to_string();
         settings.default_model = settings
             .default_model
@@ -109,17 +125,41 @@ impl Settings {
             "auto_compact" | "compact" => {
                 self.auto_compact = parse_bool(value)?;
             }
+            "calm_mode" | "calm" => {
+                self.calm_mode = parse_bool(value)?;
+            }
+            "low_motion" | "motion" => {
+                self.low_motion = parse_bool(value)?;
+            }
             "show_thinking" | "thinking" => {
                 self.show_thinking = parse_bool(value)?;
             }
             "show_tool_details" | "tool_details" => {
                 self.show_tool_details = parse_bool(value)?;
             }
+            "composer_density" | "composer" => {
+                let normalized = normalize_composer_density(value);
+                if !["compact", "comfortable", "spacious"].contains(&normalized) {
+                    anyhow::bail!(
+                        "Failed to update setting: invalid composer density '{value}'. Expected: compact, comfortable, spacious."
+                    );
+                }
+                self.composer_density = normalized.to_string();
+            }
+            "transcript_spacing" | "spacing" => {
+                let normalized = normalize_transcript_spacing(value);
+                if !["compact", "comfortable", "spacious"].contains(&normalized) {
+                    anyhow::bail!(
+                        "Failed to update setting: invalid transcript spacing '{value}'. Expected: compact, comfortable, spacious."
+                    );
+                }
+                self.transcript_spacing = normalized.to_string();
+            }
             "default_mode" | "mode" => {
                 let normalized = normalize_mode(value);
-                if !["normal", "agent", "plan", "yolo"].contains(&normalized) {
+                if !["agent", "plan", "yolo"].contains(&normalized) {
                     anyhow::bail!(
-                        "Failed to update setting: invalid mode '{value}'. Expected: normal, agent, plan, yolo."
+                        "Failed to update setting: invalid mode '{value}'. Expected: agent, plan, yolo."
                     );
                 }
                 self.default_mode = normalized.to_string();
@@ -195,8 +235,12 @@ impl Settings {
         lines.push("─────────────────────────────".to_string());
         lines.push(format!("  theme:              {}", self.theme));
         lines.push(format!("  auto_compact:       {}", self.auto_compact));
+        lines.push(format!("  calm_mode:          {}", self.calm_mode));
+        lines.push(format!("  low_motion:         {}", self.low_motion));
         lines.push(format!("  show_thinking:      {}", self.show_thinking));
         lines.push(format!("  show_tool_details:  {}", self.show_tool_details));
+        lines.push(format!("  composer_density:   {}", self.composer_density));
+        lines.push(format!("  transcript_spacing: {}", self.transcript_spacing));
         lines.push(format!("  default_mode:       {}", self.default_mode));
         lines.push(format!(
             "  sidebar_width:      {}%",
@@ -222,9 +266,19 @@ impl Settings {
         vec![
             ("theme", "Color theme: default, dark, light"),
             ("auto_compact", "Auto-compact conversations: on/off"),
+            ("calm_mode", "Calmer UI defaults: on/off"),
+            ("low_motion", "Reduce animation and redraw churn: on/off"),
             ("show_thinking", "Show model thinking: on/off"),
             ("show_tool_details", "Show detailed tool output: on/off"),
-            ("default_mode", "Default mode: normal, agent, plan, yolo"),
+            (
+                "composer_density",
+                "Composer density: compact, comfortable, spacious",
+            ),
+            (
+                "transcript_spacing",
+                "Transcript spacing: compact, comfortable, spacious",
+            ),
+            ("default_mode", "Default mode: agent, plan, yolo"),
             ("sidebar_width", "Sidebar width percentage: 10-50"),
             (
                 "sidebar_focus",
@@ -253,10 +307,28 @@ fn parse_bool(value: &str) -> Result<bool> {
 fn normalize_mode(value: &str) -> &str {
     match value.trim().to_ascii_lowercase().as_str() {
         "edit" => "agent",
-        "normal" => "normal",
+        "normal" => "agent",
         "agent" => "agent",
         "plan" => "plan",
         "yolo" => "yolo",
+        _ => value,
+    }
+}
+
+fn normalize_composer_density(value: &str) -> &str {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "compact" | "tight" => "compact",
+        "comfortable" | "default" | "normal" => "comfortable",
+        "spacious" | "loose" => "spacious",
+        _ => value,
+    }
+}
+
+fn normalize_transcript_spacing(value: &str) -> &str {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "compact" | "tight" => "compact",
+        "comfortable" | "default" | "normal" => "comfortable",
+        "spacious" | "loose" => "spacious",
         _ => value,
     }
 }

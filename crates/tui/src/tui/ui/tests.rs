@@ -116,6 +116,29 @@ fn create_test_app() -> App {
     App::new(options, &Config::default())
 }
 
+#[test]
+fn alt_4_switches_to_plan_mode() {
+    let mut app = create_test_app();
+    app.mode = AppMode::Agent;
+
+    apply_alt_4_shortcut(&mut app, KeyModifiers::ALT);
+
+    assert_eq!(app.mode, AppMode::Plan);
+}
+
+#[test]
+fn ctrl_alt_4_focuses_agents_sidebar_without_switching_modes() {
+    let mut app = create_test_app();
+    app.mode = AppMode::Agent;
+    app.sidebar_focus = SidebarFocus::Auto;
+
+    apply_alt_4_shortcut(&mut app, KeyModifiers::ALT | KeyModifiers::CONTROL);
+
+    assert_eq!(app.mode, AppMode::Agent);
+    assert_eq!(app.sidebar_focus, SidebarFocus::Agents);
+    assert_eq!(app.status_message.as_deref(), Some("Sidebar focus: agents"));
+}
+
 fn make_subagent(
     id: &str,
     status: crate::tools::subagent::SubAgentStatus,
@@ -166,34 +189,35 @@ fn running_agent_count_unions_cache_and_progress() {
 }
 
 #[test]
-fn compute_status_layout_reserves_rows_for_active_agents() {
+fn compute_status_layout_reserves_extra_rows_for_active_state() {
     let app = create_test_app();
-    let baseline = compute_status_layout(&app, 30, 120, 3);
-    assert_eq!(baseline.status_height, 0);
+    let baseline = compute_status_layout(&app, 30, 3);
+    assert_eq!(baseline.status_height, 1);
 
     let mut with_agents = create_test_app();
     with_agents
         .agent_progress
         .insert("agent_a".to_string(), "running".to_string());
-    let active = compute_status_layout(&with_agents, 30, 120, 3);
-    assert!(active.status_height >= 1);
+    let active = compute_status_layout(&with_agents, 30, 3);
+    assert!(active.status_height > baseline.status_height);
 }
 
 #[test]
-fn narrow_layout_adds_compact_runtime_summary_without_sidebar() {
+fn status_summary_line_mentions_queue_and_approval_mode() {
     let mut app = create_test_app();
-    app.agent_progress
-        .insert("agent_a".to_string(), "running".to_string());
+    app.approval_mode = crate::tui::approval::ApprovalMode::Auto;
     app.queue_message(crate::tui::app::QueuedMessage::new(
         "queued message".to_string(),
         None,
     ));
-
-    let narrow = compute_status_layout(&app, 30, 80, 3);
-    let wide = compute_status_layout(&app, 30, 120, 3);
-
-    assert!(narrow.compact_runtime_summary);
-    assert!(!wide.compact_runtime_summary);
+    let summary = status_summary_line(&app, 120);
+    let summary_text = summary
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect::<String>();
+    assert!(summary_text.contains("queue 1"));
+    assert!(summary_text.contains("approvals auto"));
 }
 
 #[test]
@@ -476,10 +500,8 @@ fn status_layout_budget_preserves_chat_and_composer_on_tiny_heights() {
         ));
     }
 
-    let layout = compute_status_layout(&app, 9, 80, 3);
+    let layout = compute_status_layout(&app, 9, 3);
     assert_eq!(layout.status_height, 1);
-    assert!(layout.queued_preview.is_empty());
-    assert!(layout.queued_compacted);
 }
 
 #[test]
@@ -507,25 +529,20 @@ fn api_key_validation_warns_without_blocking_unusual_formats() {
 }
 
 #[test]
-fn compact_queued_preview_summarizes_hidden_messages() {
+fn status_detail_lines_show_queue_draft_when_editing() {
     let mut app = create_test_app();
-    for idx in 0..4 {
-        app.queue_message(crate::tui::app::QueuedMessage::new(
-            format!("queued message {idx}"),
-            None,
-        ));
-    }
-
-    let (one_row, compacted_one_row) = compact_queued_preview(&app, 1);
-    assert_eq!(one_row, vec!["+4 more".to_string()]);
-    assert!(compacted_one_row);
-
-    let (two_rows, compacted_two_rows) = compact_queued_preview(&app, 2);
-    assert_eq!(
-        two_rows,
-        vec!["queued message 0".to_string(), "+3 more".to_string()]
-    );
-    assert!(compacted_two_rows);
+    app.queued_draft = Some(crate::tui::app::QueuedMessage::new(
+        "refine the queued prompt".to_string(),
+        None,
+    ));
+    let details = status_detail_lines(&app, 120, 2);
+    assert!(!details.is_empty());
+    let text = details[0]
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect::<String>();
+    assert!(text.contains("Editing queued draft"));
 }
 
 #[test]
