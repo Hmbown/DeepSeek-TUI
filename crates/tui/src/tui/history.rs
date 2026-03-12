@@ -1674,7 +1674,8 @@ mod tests {
         // Use a 2× cycle offset so the animated frame lands on index 2,
         // which is maximally far from index 0. This avoids flaky failures on
         // platforms with coarse timer resolution (Windows ≈ 15.6 ms) and
-        // gives 1800 ms of headroom before the index could wrap back to 0.
+        // gives 3600 ms of headroom before the index could wrap back to 0
+        // (indices 2 → 3 → 0 requires two more full cycles).
         let started_at =
             Some(Instant::now() - Duration::from_millis(TOOL_STATUS_SYMBOL_MS * 2));
         let cell = HistoryCell::Tool(ToolCell::Exec(ExecCell {

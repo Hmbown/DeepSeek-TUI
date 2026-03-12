@@ -213,7 +213,7 @@ impl Renderable for ComposerWidget<'_> {
         let mut input_lines = Vec::new();
         if self.app.input.is_empty() {
             input_lines.push(Line::from(Span::styled(
-                "Write a task or use /.",
+                COMPOSER_PLACEHOLDER,
                 Style::default().fg(palette::TEXT_MUTED).italic(),
             )));
         } else {
@@ -225,7 +225,16 @@ impl Renderable for ComposerWidget<'_> {
             }
         }
 
-        let top_padding = composer_top_padding(input_lines.len(), input_rows_budget);
+        // For non-empty input, input_lines.len() already reflects wrapping via
+        // layout_input.  For the empty-input placeholder, Paragraph::wrap will
+        // wrap the single Line at render time, so we must estimate the wrapped
+        // row count ourselves to keep padding accurate on narrow widths.
+        let visual_rows = if self.app.input.is_empty() {
+            placeholder_visual_lines(content_width)
+        } else {
+            input_lines.len()
+        };
+        let top_padding = composer_top_padding(visual_rows, input_rows_budget);
         let mut lines = Vec::new();
         for _ in 0..top_padding {
             lines.push(Line::from(""));
@@ -284,7 +293,12 @@ impl Renderable for ComposerWidget<'_> {
             content_width,
             input_rows_budget,
         );
-        let top_padding = composer_top_padding(visible_lines.len(), input_rows_budget);
+        let visual_rows = if self.app.input.is_empty() {
+            placeholder_visual_lines(content_width)
+        } else {
+            visible_lines.len()
+        };
+        let top_padding = composer_top_padding(visual_rows, input_rows_budget);
 
         let cursor_x = area
             .x
@@ -794,7 +808,15 @@ fn composer_input_rows_budget(inner_height: u16, extra_lines: usize) -> usize {
 }
 
 fn composer_top_padding(content_lines: usize, rows_budget: usize) -> usize {
-    rows_budget.saturating_sub(content_lines.max(1).min(rows_budget))
+    rows_budget.saturating_sub(content_lines.clamp(1, rows_budget))
+}
+
+/// Placeholder text shown when the composer input is empty.
+const COMPOSER_PLACEHOLDER: &str = "Write a task or use /.";
+
+/// How many visual rows the empty-input placeholder occupies after wrapping.
+fn placeholder_visual_lines(content_width: usize) -> usize {
+    wrap_text(COMPOSER_PLACEHOLDER, content_width).len().max(1)
 }
 
 fn composer_min_input_rows(density: ComposerDensity) -> usize {
@@ -1010,9 +1032,9 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
 mod tests {
     use super::{
         COMPOSER_PANEL_HEIGHT, ComposerWidget, Renderable, apply_selection_to_line,
-        composer_height, composer_max_height, composer_min_input_rows, cursor_row_col,
-        layout_input, pad_lines_to_bottom, should_render_empty_state, slash_completion_hints,
-        wrap_input_lines, wrap_text,
+        composer_height, composer_max_height, composer_min_input_rows, composer_top_padding,
+        cursor_row_col, layout_input, pad_lines_to_bottom, placeholder_visual_lines,
+        should_render_empty_state, slash_completion_hints, wrap_input_lines, wrap_text,
     };
     use crate::config::Config;
     use crate::palette;
@@ -1292,19 +1314,59 @@ mod tests {
         app.composer_density = ComposerDensity::Comfortable;
         let slash_menu_entries = Vec::<String>::new();
         let widget = ComposerWidget::new(&app, 5, &slash_menu_entries);
+
+        // Use a wide area so the placeholder fits on one line (no wrapping).
         let area = Rect {
             x: 0,
             y: 0,
-            width: 20,
+            width: 40,
             height: 5,
         };
 
-        // inner_area: {x:1, y:1, w:18, h:3}  (borders shrink by 1 each side)
-        // input_rows_budget = 3, visible_lines = [""] (len=1)
-        // top_padding = 3 - max(1,1).min(3) = 2
+        // inner_area: {x:1, y:1, w:38, h:3}  (borders shrink by 1 each side)
+        // input_rows_budget = 3
+        // placeholder_visual_lines(38) = 1  (placeholder is 22 chars, fits in 38)
+        // top_padding = 3 - clamp(1, 1, 3) = 2
         // cursor_x = 0 + (1-0) + 0 = 1
         // cursor_y = 0 + (1-0) + (2+0) = 3
         assert_eq!(widget.cursor_pos(area), Some((1, 3)));
+    }
+
+    #[test]
+    fn empty_composer_cursor_accounts_for_placeholder_wrapping() {
+        let mut app = create_test_app();
+        app.composer_density = ComposerDensity::Comfortable;
+        let slash_menu_entries = Vec::<String>::new();
+        let widget = ComposerWidget::new(&app, 5, &slash_menu_entries);
+
+        // Narrow area forces the placeholder to wrap.
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 14,
+            height: 5,
+        };
+
+        // inner_area: {x:1, y:1, w:12, h:3}
+        // input_rows_budget = 3
+        // placeholder_visual_lines(12) = 2  ("Write a task" / " or use /.")
+        // top_padding = 3 - clamp(2, 1, 3) = 1
+        // cursor_x = 0 + (1-0) + 0 = 1
+        // cursor_y = 0 + (1-0) + (1+0) = 2
+        assert_eq!(placeholder_visual_lines(12), 2);
+        assert_eq!(widget.cursor_pos(area), Some((1, 2)));
+    }
+
+    #[test]
+    fn composer_top_padding_uses_clamp() {
+        // content_lines=0 is clamped to 1
+        assert_eq!(composer_top_padding(0, 3), 2);
+        // content_lines=1
+        assert_eq!(composer_top_padding(1, 3), 2);
+        // content_lines=3 fills the budget
+        assert_eq!(composer_top_padding(3, 3), 0);
+        // content_lines > budget is clamped
+        assert_eq!(composer_top_padding(5, 3), 0);
     }
 
     #[test]
