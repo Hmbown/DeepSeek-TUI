@@ -1671,7 +1671,12 @@ mod tests {
 
     #[test]
     fn tool_lines_with_options_respects_low_motion_in_default_path() {
-        let started_at = Some(Instant::now() - Duration::from_millis(TOOL_STATUS_SYMBOL_MS));
+        // Use a 2× cycle offset so the animated frame lands on index 2,
+        // which is maximally far from index 0. This avoids flaky failures on
+        // platforms with coarse timer resolution (Windows ≈ 15.6 ms) and
+        // gives 1800 ms of headroom before the index could wrap back to 0.
+        let started_at =
+            Some(Instant::now() - Duration::from_millis(TOOL_STATUS_SYMBOL_MS * 2));
         let cell = HistoryCell::Tool(ToolCell::Exec(ExecCell {
             command: "echo hi".to_string(),
             status: ToolStatus::Running,
@@ -1694,7 +1699,9 @@ mod tests {
         let animated_symbol = animated[0].spans[0].content.trim();
         let low_motion_symbol = low_motion[0].spans[0].content.trim();
 
-        assert_ne!(animated_symbol, TOOL_RUNNING_SYMBOLS[0]);
+        // low_motion always pins to the first (static) frame.
         assert_eq!(low_motion_symbol, TOOL_RUNNING_SYMBOLS[0]);
+        // The animated path should be on a different frame (index 2).
+        assert_ne!(animated_symbol, TOOL_RUNNING_SYMBOLS[0]);
     }
 }
