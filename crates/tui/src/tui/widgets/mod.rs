@@ -1287,7 +1287,9 @@ mod tests {
 
     #[test]
     fn empty_composer_cursor_matches_placeholder_padding() {
-        let app = create_test_app();
+        let mut app = create_test_app();
+        // Pin density so the test is independent of any loaded user settings.
+        app.composer_density = ComposerDensity::Comfortable;
         let slash_menu_entries = Vec::<String>::new();
         let widget = ComposerWidget::new(&app, 5, &slash_menu_entries);
         let area = Rect {
@@ -1297,6 +1299,11 @@ mod tests {
             height: 5,
         };
 
+        // inner_area: {x:1, y:1, w:18, h:3}  (borders shrink by 1 each side)
+        // input_rows_budget = 3, visible_lines = [""] (len=1)
+        // top_padding = 3 - max(1,1).min(3) = 2
+        // cursor_x = 0 + (1-0) + 0 = 1
+        // cursor_y = 0 + (1-0) + (2+0) = 3
         assert_eq!(widget.cursor_pos(area), Some((1, 3)));
     }
 
