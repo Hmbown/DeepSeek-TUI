@@ -95,7 +95,8 @@ impl WebRunState {
 
     fn touch_session(&mut self, namespace: &str) {
         self.cleanup();
-        if !self.sessions.contains_key(namespace) && self.sessions.len() >= MAX_WEB_RUN_SESSIONS
+        if !self.sessions.contains_key(namespace)
+            && self.sessions.len() >= MAX_WEB_RUN_SESSIONS
             && let Some(oldest_namespace) = self
                 .sessions
                 .iter()
