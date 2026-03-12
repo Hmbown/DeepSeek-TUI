@@ -1,6 +1,6 @@
 # Runtime API (HTTP/SSE)
 
-DeepSeek CLI can expose a local runtime API for external clients:
+DeepSeek TUI can expose a local runtime API for external clients:
 
 ```bash
 deepseek serve --http --host 127.0.0.1 --port 7878 --workers 2
@@ -9,6 +9,10 @@ deepseek serve --http --host 127.0.0.1 --port 7878 --workers 2
 Defaults:
 - bind: `127.0.0.1:7878`
 - workers: `2` (clamped to `1..8`)
+
+Implementation note:
+- The current production runtime lives in `crates/tui` (`runtime_api.rs`, `runtime_threads.rs`, `task_manager.rs`).
+- Workspace crate extraction is in progress, but external behavior should be read from the `crates/tui` implementation today.
 
 ## Security Model (Local-First)
 
@@ -39,6 +43,13 @@ The event log is append-only with global monotonic `seq` for replay/resume.
 
 Session resume note:
 - Saved session `system_prompt` currently round-trips as plain text. Structured `SystemPrompt::Blocks` metadata is not preserved when resuming into runtime threads.
+
+Restart note:
+- If the process restarts while a turn or item is `queued` or `in_progress`, the recovered record is marked `interrupted` with an `"Interrupted by process restart"` error instead of remaining stuck in a live state.
+
+Approval note:
+- `auto_approve` applies to the runtime approval bridge and the engine tool context. When enabled for a thread/turn/task, approval-required tools are auto-approved in the non-interactive runtime path, shell safety checks run in auto-approved mode, and spawned subagents inherit that effective setting for their own tool context.
+- If omitted when creating a thread or starting `/v1/stream`, `auto_approve` defaults to `false`.
 
 ## Endpoints
 
@@ -231,4 +242,5 @@ Runtime store (default under task data root):
 Task store:
 - default `~/.deepseek/tasks` (override with `DEEPSEEK_TASKS_DIR`)
 
-Both runtime and task state are restart-safe.
+Both runtime and task state are restart-aware.
+Queued or in-progress runtime turns reload as `interrupted`; task execution performs its own recovery on top of the same persisted thread/turn store.

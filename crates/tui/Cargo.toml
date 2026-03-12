@@ -8,7 +8,7 @@ description = "Terminal UI for DeepSeek"
 
 [[bin]]
 name = "deepseek-tui"
-path = "../../src/main.rs"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.100"

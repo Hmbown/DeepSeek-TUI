@@ -1,6 +1,6 @@
 # Configuration
 
-DeepSeek CLI reads configuration from a TOML file plus environment variables.
+DeepSeek TUI reads configuration from a TOML file plus environment variables.
 
 ## Where It Looks
 
@@ -36,7 +36,7 @@ Select a profile with:
 - CLI: `deepseek --profile work`
 - Env: `DEEPSEEK_PROFILE=work`
 
-If a profile is selected but missing, DeepSeek CLI exits with an error listing available profiles.
+If a profile is selected but missing, DeepSeek TUI exits with an error listing available profiles.
 
 ## Environment Variables
 
@@ -72,7 +72,7 @@ These override config values:
 
 ## Settings File (Persistent UI Preferences)
 
-DeepSeek CLI also stores user preferences in:
+DeepSeek TUI also stores user preferences in:
 
 - `~/.config/deepseek/settings.toml`
 
@@ -163,7 +163,7 @@ want to force on or off.
 [features]
 shell_tool = true
 subagents = true
-web_search = true # enables web.run and web_search
+web_search = true # enables canonical web.run plus the compatibility web_search alias
 apply_patch = true
 mcp = true
 exec_policy = true
@@ -178,7 +178,7 @@ Use `deepseek features list` to inspect known flags and their effective state.
 
 ## Managed Configuration and Requirements
 
-DeepSeek CLI supports a policy layering model:
+DeepSeek TUI supports a policy layering model:
 
 1. user config + profile + env overrides
 2. managed config (if present)

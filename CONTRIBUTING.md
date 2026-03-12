@@ -1,6 +1,6 @@
-# Contributing to DeepSeek CLI
+# Contributing to DeepSeek TUI
 
-Thank you for your interest in contributing to DeepSeek CLI! This document provides guidelines and instructions for contributing.
+Thank you for your interest in contributing to DeepSeek TUI! This document provides guidelines and instructions for contributing.
 
 ## Getting Started
 
@@ -14,8 +14,8 @@ Thank you for your interest in contributing to DeepSeek CLI! This document provi
 
 1. Fork and clone the repository:
    ```bash
-   git clone https://github.com/YOUR_USERNAME/DeepSeek-CLI.git
-   cd DeepSeek-CLI
+   git clone https://github.com/YOUR_USERNAME/DeepSeek-TUI.git
+   cd DeepSeek-TUI
    ```
 
 2. Build the project:
@@ -121,7 +121,7 @@ When reporting issues, please include:
 
 - Operating system and version
 - Rust version (`rustc --version`)
-- DeepSeek CLI version (`deepseek --version`)
+- DeepSeek TUI version (`deepseek --version`)
 - Steps to reproduce the issue
 - Expected vs actual behavior
 - Relevant error messages or logs
@@ -132,7 +132,7 @@ Be respectful and inclusive. We welcome contributors of all backgrounds and expe
 
 ## License
 
-By contributing to DeepSeek CLI, you agree that your contributions will be licensed under the MIT License.
+By contributing to DeepSeek TUI, you agree that your contributions will be licensed under the MIT License.
 
 ## Questions?
 

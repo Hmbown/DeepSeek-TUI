@@ -44,11 +44,24 @@ For complex, multi-step tasks, you should delegate work:
 - **Delegation**: If a task is large, break it down into sub-tasks and use `agent_swarm` or `agent_spawn`.
 - **Testing**: Rigorously verify changes using `cargo test` and `cargo check`.
 
+## Trimtab Workflow
+
+This repo uses the Trimtab closed-loop protocol for self-verifying agentic development.
+
+- **Protocol:** `.trimtab/init-trimtab-protocol.md` (canonical — read this first)
+- **Task graph:** `DEPENDENCY_GRAPH.md` (crate deps + task deps with ready queue)
+- **Task queue:** `AI_HANDOFF.md` (7 open issues with priorities)
+- **Goals:** `todo.md` (high-level objectives)
+- **Claude entrypoint:** `.claude/commands/init-trimtab.md`
+- **Codex skill:** `.codex/skills/init-trimtab/SKILL.md`
+
+**No-self-verdict rule:** The agent that wrote code must not be the one to declare it passes. Always use an independent verifier (fresh Codex context or separate sub-agent).
+
 ## Important Notes
 
 <!-- Add project-specific notes here -->
 
-- **Finance tool currently unavailable**: The finance tool relies on Stooq which frequently returns no data. As a workaround, use `web.run` to fetch financial data from web sources.
+
 - **Token/cost tracking inaccuracies**: Token counting and cost estimation may be inflated due to thinking token accounting bugs. Use `/compact` to manage context, and treat cost estimates as approximate.
 - **Web.run tool name**: Note that the tool is named `web.run` (single dot), not `web..run`. Some earlier versions of the CLI may have had this typo.
 

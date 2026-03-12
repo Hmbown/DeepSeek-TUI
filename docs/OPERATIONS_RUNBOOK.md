@@ -1,4 +1,4 @@
-# DeepSeek CLI Operations Runbook
+# DeepSeek TUI Operations Runbook
 
 This runbook covers practical debugging and incident response for the local CLI/TUI runtime.
 
@@ -28,9 +28,9 @@ Checks:
 3. Confirm no local sandbox/permission deadlock in tool output
 
 Actions:
-1. Cancel current turn (`Esc` in TUI)
+1. Cancel current turn (`Esc` in TUI while loading)
 2. Retry prompt; if still failing, restart TUI
-3. On restart, verify crash checkpoint recovery message appears
+3. On restart, verify the previous queued/in-flight runtime turn is shown as interrupted rather than left in a running state
 
 ## Incident: Network Outage / Offline Behavior
 

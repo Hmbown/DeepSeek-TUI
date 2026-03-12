@@ -1,20 +1,27 @@
 const fs = require("fs");
 const https = require("https");
 const http = require("http");
-const { mkdir, chmod, stat, rename, readFile, writeFile } = fs.promises;
+const crypto = require("crypto");
+const { mkdir, chmod, stat, rename, readFile, unlink, writeFile } = fs.promises;
 const { createWriteStream } = fs;
 const { pipeline } = require("stream/promises");
 const path = require("path");
 
 const {
+  checksumManifestUrl,
   detectBinaryNames,
   releaseAssetUrl,
   releaseBinaryDirectory,
 } = require("./artifacts");
+const pkg = require("../package.json");
 
 function resolvePackageVersion() {
-  const pkg = require("../package.json");
-  return process.env.DEEPSEEK_TUI_VERSION || process.env.DEEPSEEK_VERSION || pkg.version;
+  const configuredVersion =
+    process.env.DEEPSEEK_TUI_VERSION ||
+    process.env.DEEPSEEK_VERSION ||
+    pkg.deepseekBinaryVersion ||
+    pkg.version;
+  return String(configuredVersion).trim();
 }
 
 function resolveRepo() {
@@ -64,6 +71,19 @@ async function download(url, destination) {
   await pipeline(resolved.response, createWriteStream(destination));
 }
 
+async function downloadText(url) {
+  const resolved = await httpGet(url);
+  if (resolved.redirect) {
+    return downloadText(resolved.redirect);
+  }
+  const chunks = [];
+  resolved.response.setEncoding("utf8");
+  for await (const chunk of resolved.response) {
+    chunks.push(chunk);
+  }
+  return chunks.join("");
+}
+
 async function readLocalVersion(file) {
   return readFile(file, "utf8").catch(() => "");
 }
@@ -77,7 +97,45 @@ async function fileExists(file) {
   }
 }
 
-async function ensureBinary(targetPath, assetName, version, repo) {
+function parseChecksumManifest(text) {
+  const checksums = new Map();
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+    const match = trimmed.match(/^([a-fA-F0-9]{64})\s+\*?(.+)$/);
+    if (!match) {
+      throw new Error(`Invalid checksum manifest line: ${trimmed}`);
+    }
+    checksums.set(match[2], match[1].toLowerCase());
+  }
+  return checksums;
+}
+
+async function sha256File(filePath) {
+  const content = await readFile(filePath);
+  return crypto.createHash("sha256").update(content).digest("hex");
+}
+
+async function verifyChecksum(filePath, assetName, checksums) {
+  const expected = checksums.get(assetName);
+  if (!expected) {
+    throw new Error(`Checksum manifest is missing ${assetName}`);
+  }
+  const actual = await sha256File(filePath);
+  if (actual !== expected) {
+    throw new Error(
+      `Checksum mismatch for ${assetName}: expected ${expected}, got ${actual}`,
+    );
+  }
+}
+
+async function loadChecksums(version, repo) {
+  return parseChecksumManifest(await downloadText(checksumManifestUrl(version, repo)));
+}
+
+async function ensureBinary(targetPath, assetName, version, repo, checksums) {
   const marker = `${targetPath}.version`;
   const downloadIfNeeded =
     process.env.DEEPSEEK_TUI_FORCE_DOWNLOAD === "1" || process.env.DEEPSEEK_FORCE_DOWNLOAD === "1";
@@ -86,6 +144,7 @@ async function ensureBinary(targetPath, assetName, version, repo) {
     if (existing) {
       const markerVersion = await readLocalVersion(marker);
       if (markerVersion === String(version)) {
+        await verifyChecksum(targetPath, assetName, checksums);
         return targetPath;
       }
     }
@@ -93,6 +152,12 @@ async function ensureBinary(targetPath, assetName, version, repo) {
   const url = releaseAssetUrl(assetName, version, repo);
   const destination = `${targetPath}.download`;
   await download(url, destination);
+  try {
+    await verifyChecksum(destination, assetName, checksums);
+  } catch (error) {
+    await unlink(destination).catch(() => {});
+    throw error;
+  }
   if (process.platform !== "win32") {
     await chmod(destination, 0o755);
   }
@@ -110,10 +175,11 @@ async function run() {
   const paths = binaryPaths();
   const releaseDir = releaseBinaryDirectory();
   await mkdir(releaseDir, { recursive: true });
+  const checksums = await loadChecksums(version, repo);
 
   await Promise.all([
-    ensureBinary(paths.deepseek.target, paths.deepseek.asset, version, repo),
-    ensureBinary(paths.tui.target, paths.tui.asset, version, repo),
+    ensureBinary(paths.deepseek.target, paths.deepseek.asset, version, repo, checksums),
+    ensureBinary(paths.tui.target, paths.tui.asset, version, repo, checksums),
   ]);
 }
 

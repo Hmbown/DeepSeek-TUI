@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.31] - 2026-03-08
+
+### Added
+- Replaced the finance tool backend with Yahoo Finance v8 + CoinGecko fallback for reliable real-time market data (stocks, ETFs, indices, forex, crypto).
+- Added compaction UX: status strip shows animated COMPACTING indicator during context summarization, footer reflects compaction state, and CompactionCompleted events now include message count statistics.
+- Added send flash: brief tinted background highlight on the last user message after sending.
+- Added braille typing indicator with smooth 10-frame animation cycle.
+
+### Changed
+- Redesigned the footer status strip with mode/model/token/cost layout, quadrant separators, and a context-usage bar.
+- Added Unicode prefix indicators (▸ You, ◆ Answer, ● System) to chat history cells for visual distinction.
+- Improved thinking token delineation with labeled delimiters in transcript rendering.
+
+### Fixed
+- Fixed Plan mode ESC key dismissing the prompt without clearing `plan_prompt_pending`, which prevented the prompt from reappearing on subsequent plan completions.
+
+## [0.3.30] - 2026-03-06
+
+### Added
+- Added a release-ready local npm smoke path that builds binaries, serves release assets locally, packs the wrapper, installs the tarball, and checks both entrypoints before publish.
+- Added an opt-in full-matrix local release-asset fixture so `npm run release:check` can be exercised before GitHub release assets exist.
+
+### Changed
+- Bumped the Rust workspace crates and npm wrapper to `0.3.30`.
+- Pointed the npm wrapper's default `deepseekBinaryVersion` at `0.3.30` for the next coordinated Rust + npm release.
+- Updated the crates dry-run helper to work from a dirty workspace and to preflight dependent workspace crates without requiring unpublished versions to already exist on crates.io.
+
+## [0.3.29] - 2026-03-03
+
+### Added
+- Added npm publish-time release asset verification for the `deepseek-tui` package to fail fast when expected GitHub binaries are missing.
+- Added checksum manifests to GitHub release assets and checksum verification in the npm installer.
+- Added `npm pack` install-and-smoke CI coverage for the `deepseek-tui` wrapper package.
+- Added an end-to-end release runbook covering crates.io, GitHub Releases, and npm publication.
+
+### Changed
+- Updated npm package documentation for clearer install modes, environment overrides, and release integrity behavior.
+- Improved installer support-matrix error messaging for unsupported platform/architecture combinations.
+- Decoupled npm package version from default binary artifact version via `deepseekBinaryVersion`, enabling packaging-only npm releases.
+- Moved the `deepseek-tui` binary target inside `crates/tui` so `cargo publish --dry-run -p deepseek-tui` works from the workspace package layout.
+- Replaced the root-level crates publish workflow with an ordered workspace publish flow.
+- Reworked first-run onboarding and README copy around primary workflows instead of shortcut memorization.
+- Relaxed onboarding API-key format heuristics so unusual keys warn instead of blocking setup.
+
 ## [0.3.28] - 2026-03-02
 
 ### Added
@@ -352,7 +396,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.1.0] - 2026-01-12
 
 ### Added
-- Initial alpha release of DeepSeek CLI
+- Initial alpha release of DeepSeek TUI
 - Interactive TUI chat interface
 - DeepSeek API integration (OpenAI-compatible Responses API)
 - Tool execution (shell, file ops)
@@ -363,7 +407,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hooks system and config profiles
 - Example skills and launch assets
 
-[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.28...HEAD
+[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.31...HEAD
+[0.3.31]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.30...v0.3.31
+[0.3.30]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.29...v0.3.30
+[0.3.29]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.28...v0.3.29
 [0.3.28]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.27...v0.3.28
 [0.3.23]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.22...v0.3.23
 [0.3.22]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.21...v0.3.22
@@ -389,10 +436,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.2.1]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.2.0...v0.2.2
 [0.2.0]: https://github.com/Hmbown/DeepSeek-TUI/releases/tag/v0.2.0
 [0.0.2]: https://github.com/Hmbown/DeepSeek-TUI/releases/tag/v0.0.2
-[0.0.1]: https://github.com/Hmbown/DeepSeek-CLI/releases/tag/v0.0.1
-[0.1.9]: https://github.com/Hmbown/DeepSeek-CLI/compare/v0.1.8...v0.1.9
-[0.1.8]: https://github.com/Hmbown/DeepSeek-CLI/compare/v0.1.7...v0.1.8
-[0.1.7]: https://github.com/Hmbown/DeepSeek-CLI/compare/v0.1.6...v0.1.7
-[0.1.6]: https://github.com/Hmbown/DeepSeek-CLI/compare/v0.1.5...v0.1.6
-[0.1.5]: https://github.com/Hmbown/DeepSeek-CLI/compare/v0.1.0...v0.1.5
-[0.1.0]: https://github.com/Hmbown/DeepSeek-CLI/releases/tag/v0.1.0
+[0.0.1]: https://github.com/Hmbown/DeepSeek-TUI/releases/tag/v0.0.1
+[0.1.9]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.1.8...v0.1.9
+[0.1.8]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.1.7...v0.1.8
+[0.1.7]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.1.6...v0.1.7
+[0.1.6]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.1.5...v0.1.6
+[0.1.5]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.1.0...v0.1.5
+[0.1.0]: https://github.com/Hmbown/DeepSeek-TUI/releases/tag/v0.1.0

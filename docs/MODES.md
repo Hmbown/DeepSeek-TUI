@@ -1,18 +1,29 @@
 # Modes and Approvals
 
-DeepSeek CLI has two related concepts:
+DeepSeek TUI has two related concepts:
 
 - **TUI mode**: what kind of interaction you’re in (Normal/Plan/Agent/YOLO).
 - **Approval mode**: how aggressively the UI asks before executing tools.
 
 ## TUI Modes
 
-Press `Tab` to cycle: **Plan → Agent → YOLO → Plan**.
+Press `Tab` to cycle forward: **Normal → Agent → YOLO → Plan → Normal**.
+Press `Shift+Tab` to cycle in reverse.
 
 - **Normal**: chat-first. Approvals for file writes, shell, and paid tools.
 - **Plan**: design-first prompting. Approvals match Normal.
 - **Agent**: multi-step tool use. Approvals for shell and paid tools (file writes are allowed without a prompt).
 - **YOLO**: enables shell + trust mode and auto-approves all tools. Use only in trusted repos.
+
+## Escape Key Behavior
+
+`Esc` is a cancel stack, not a mode switch.
+
+- Close slash menus or transient UI first.
+- Cancel the active request if a turn is running.
+- Discard a queued draft if the composer is empty.
+- Clear the current input if text is present.
+- Otherwise it is a no-op.
 
 ## Approval Mode
 

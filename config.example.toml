@@ -1,5 +1,5 @@
 # ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║                         DeepSeek CLI Configuration                            ║
+# ║                         DeepSeek TUI Configuration                            ║
 # ║                                                                              ║
 # ║  Unofficial CLI for DeepSeek Platform - Not affiliated with DeepSeek Inc.     ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
@@ -58,7 +58,7 @@ alternate_screen = "auto"   # auto | always | never
 [features]
 shell_tool = true
 subagents = true
-web_search = true # enables web.run and web_search
+web_search = true # enables canonical web.run plus the compatibility web_search alias
 apply_patch = true
 mcp = true
 exec_policy = true
@@ -125,7 +125,7 @@ allow_shell = true
 #
 # [[hooks.hooks]]
 # event = "session_start"
-# command = "echo 'DeepSeek CLI session started'"
+# command = "echo 'DeepSeek TUI session started'"
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Requirements (admin constraints) example file

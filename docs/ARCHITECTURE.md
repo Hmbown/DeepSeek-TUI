@@ -1,6 +1,10 @@
-# DeepSeek CLI Architecture
+# DeepSeek TUI Architecture
 
-This document provides an overview of the DeepSeek CLI architecture for developers and contributors.
+This document provides an overview of the DeepSeek TUI architecture for developers and contributors.
+
+Current boundary note:
+- `crates/tui` is still the live end-user runtime for the TUI, runtime API, task manager, and tool execution loop.
+- Other workspace crates are being split out incrementally, but they are not yet the sole runtime source of truth.
 
 ## High-Level Overview
 
@@ -111,7 +115,7 @@ Responses API (with automatic fallback if needed).
 
 - **`tui/`** - Terminal UI components (ratatui-based)
   - `app.rs` - Application state and message handling
-  - `ui.rs` - Rendering logic
+  - `ui.rs` - Event handling, streaming state, and rendering logic
   - `approval.rs` - Tool approval dialog
   - `clipboard.rs` - Clipboard handling
   - `streaming.rs` - Streaming text collector
@@ -227,11 +231,11 @@ command = "echo 'Running tool: $TOOL_NAME'"
 ## Key Design Decisions
 
 1. **Streaming-first**: All LLM responses stream for responsiveness
-2. **Tool safety**: Non-yolo mode requires approval for destructive operations, including side-effectful MCP tools
+2. **Tool safety**: Non-YOLO mode requires approval for destructive operations, including side-effectful MCP tools
 3. **Extensibility**: MCP, skills, and hooks allow customization without code changes
 4. **Cross-platform**: Core works on Linux/macOS/Windows, sandboxing macOS-only
 5. **Minimal dependencies**: Careful dependency selection for build speed
-6. **Local-first runtime API**: HTTP/SSE endpoints are intended for trusted localhost access
+6. **Local-first runtime API**: HTTP/SSE endpoints are intended for trusted localhost access and are served by the `crates/tui` runtime today
 
 ## Configuration Files
 

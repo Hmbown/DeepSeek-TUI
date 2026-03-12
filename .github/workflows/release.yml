@@ -99,6 +99,18 @@ jobs:
           path: artifacts
       - name: List artifacts
         run: find artifacts -type f
+      - name: Generate checksum manifest
+        shell: bash
+        run: |
+          mkdir -p artifacts/checksums
+          manifest="artifacts/checksums/deepseek-artifacts-sha256.txt"
+          : > "${manifest}"
+          while IFS= read -r -d '' file; do
+            hash="$(sha256sum "${file}" | awk '{print $1}')"
+            base="$(basename "${file}")"
+            printf '%s  %s\n' "${hash}" "${base}" >> "${manifest}"
+          done < <(find artifacts -type f ! -path 'artifacts/checksums/*' -print0 | sort -z)
+          cat "${manifest}"
       - uses: softprops/action-gh-release@v1
         with:
           files: artifacts/*/*

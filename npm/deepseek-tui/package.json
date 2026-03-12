@@ -1,6 +1,7 @@
 {
   "name": "deepseek-tui",
-  "version": "0.3.28",
+  "version": "0.3.31",
+  "deepseekBinaryVersion": "0.3.31",
   "description": "Install and run deepseek and deepseek-tui binaries from GitHub release artifacts.",
   "author": "Hmbown",
   "license": "MIT",
@@ -26,11 +27,16 @@
     "deepseek-tui": "bin/deepseek-tui.js"
   },
   "scripts": {
+    "release:check": "node scripts/verify-release-assets.js",
     "postinstall": "node scripts/install.js",
+    "prepublishOnly": "node scripts/verify-release-assets.js",
     "prepack": "node scripts/install.js"
   },
   "engines": {
     "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "preferGlobal": true,
   "files": [

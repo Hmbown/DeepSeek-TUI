@@ -806,7 +806,7 @@ dependencies = [
 
 [[package]]
 name = "deepseek-agent"
-version = "0.3.28"
+version = "0.3.31"
 dependencies = [
  "deepseek-config",
  "serde",
@@ -814,7 +814,7 @@ dependencies = [
 
 [[package]]
 name = "deepseek-app-server"
-version = "0.3.28"
+version = "0.3.31"
 dependencies = [
  "anyhow",
  "axum",
@@ -837,7 +837,7 @@ dependencies = [
 
 [[package]]
 name = "deepseek-config"
-version = "0.3.28"
+version = "0.3.31"
 dependencies = [
  "anyhow",
  "dirs",
@@ -848,7 +848,7 @@ dependencies = [
 
 [[package]]
 name = "deepseek-core"
-version = "0.3.28"
+version = "0.3.31"
 dependencies = [
  "anyhow",
  "chrono",
@@ -867,7 +867,7 @@ dependencies = [
 
 [[package]]
 name = "deepseek-execpolicy"
-version = "0.3.28"
+version = "0.3.31"
 dependencies = [
  "anyhow",
  "deepseek-protocol",
@@ -876,7 +876,7 @@ dependencies = [
 
 [[package]]
 name = "deepseek-hooks"
-version = "0.3.28"
+version = "0.3.31"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -890,7 +890,7 @@ dependencies = [
 
 [[package]]
 name = "deepseek-mcp"
-version = "0.3.28"
+version = "0.3.31"
 dependencies = [
  "anyhow",
  "deepseek-protocol",
@@ -900,7 +900,7 @@ dependencies = [
 
 [[package]]
 name = "deepseek-protocol"
-version = "0.3.28"
+version = "0.3.31"
 dependencies = [
  "serde",
  "serde_json",
@@ -908,7 +908,7 @@ dependencies = [
 
 [[package]]
 name = "deepseek-state"
-version = "0.3.28"
+version = "0.3.31"
 dependencies = [
  "anyhow",
  "chrono",
@@ -920,7 +920,7 @@ dependencies = [
 
 [[package]]
 name = "deepseek-tools"
-version = "0.3.28"
+version = "0.3.31"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -933,7 +933,7 @@ dependencies = [
 
 [[package]]
 name = "deepseek-tui"
-version = "0.3.28"
+version = "0.3.31"
 dependencies = [
  "anyhow",
  "arboard",
@@ -987,7 +987,7 @@ dependencies = [
 
 [[package]]
 name = "deepseek-tui-cli"
-version = "0.3.28"
+version = "0.3.31"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1005,7 +1005,7 @@ dependencies = [
 
 [[package]]
 name = "deepseek-tui-core"
-version = "0.3.28"
+version = "0.3.31"
 
 [[package]]
 name = "deranged"

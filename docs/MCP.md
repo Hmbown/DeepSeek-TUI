@@ -1,6 +1,10 @@
 # MCP (External Tool Servers)
 
-DeepSeek CLI can load additional tools via MCP (Model Context Protocol). MCP servers are local processes that the CLI starts and communicates with over stdio.
+DeepSeek TUI can load additional tools via MCP (Model Context Protocol). MCP servers are local processes that the TUI starts and communicates with over stdio.
+
+Browsing note:
+- `web.run` is the canonical built-in browsing tool.
+- `web_search` remains available as a compatibility alias for older prompts and integrations.
 
 Server mode note:
 - `deepseek serve --mcp` runs the MCP stdio server.
@@ -82,6 +86,75 @@ The CLI also exposes helper tools when MCP is enabled:
 ```
 
 You can also use `mcpServers` instead of `servers` for compatibility with other clients.
+
+## Running DeepSeek as an MCP Server
+
+You can register your local DeepSeek binary as an MCP server so other DeepSeek sessions (or any MCP client) can call its tools.
+
+### Quick Setup
+
+```bash
+deepseek mcp add-self
+```
+
+This resolves the current binary path, generates a config entry that runs `deepseek serve --mcp`, and writes it to your MCP config file. The default server name is `deepseek`.
+
+Options:
+
+- `--name <NAME>` — custom server name (default: `deepseek`)
+- `--workspace <PATH>` — workspace directory for the server
+
+### Manual Config
+
+Equivalent manual entry in `~/.deepseek/mcp.json`:
+
+```json
+{
+  "servers": {
+    "deepseek": {
+      "command": "/path/to/deepseek",
+      "args": ["serve", "--mcp"],
+      "env": {}
+    }
+  }
+}
+```
+
+Either the `deepseek` or `deepseek-tui` binary works — both support `serve --mcp`. Use whichever is on your `PATH` (run `which deepseek` or `which deepseek-tui` to find the full path). The `mcp add-self` command automatically resolves the correct binary.
+
+### Prerequisites
+
+- The binary referenced in `command` must exist and be executable.
+- The MCP server runs as a child process via stdio — no network ports required.
+- Each MCP client session spawns its own server process.
+
+### Tool Naming
+
+Tools from a self-hosted DeepSeek server follow the standard naming convention:
+
+- `mcp_deepseek_<tool>` (if the server is named `deepseek`)
+
+For example, the `shell` tool becomes `mcp_deepseek_shell`.
+
+### MCP Server vs HTTP/SSE API
+
+| | `deepseek serve --mcp` | `deepseek serve --http` |
+|---|---|---|
+| **Protocol** | MCP stdio | HTTP/SSE JSON-RPC |
+| **Use case** | Tool server for MCP clients | Runtime API for apps |
+| **Config** | `~/.deepseek/mcp.json` entry | Direct URL connection |
+| **Lifecycle** | Spawned per client session | Long-running daemon |
+
+Use `mcp add-self` when you want DeepSeek tools available to other MCP clients. Use `serve --http` when building applications that consume the API directly.
+
+### Verification
+
+After adding, test the connection:
+
+```bash
+deepseek mcp validate
+deepseek mcp tools deepseek
+```
 
 ## Server Fields
 
