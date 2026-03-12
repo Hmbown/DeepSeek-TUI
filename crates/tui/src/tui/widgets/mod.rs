@@ -793,12 +793,8 @@ fn composer_input_rows_budget(inner_height: u16, extra_lines: usize) -> usize {
     usize::from(inner_height).saturating_sub(extra_lines).max(1)
 }
 
-fn composer_vertical_padding(content_lines: usize, rows_budget: usize) -> usize {
-    rows_budget.saturating_sub(content_lines)
-}
-
 fn composer_top_padding(content_lines: usize, rows_budget: usize) -> usize {
-    composer_vertical_padding(content_lines.max(1).min(rows_budget), rows_budget)
+    rows_budget.saturating_sub(content_lines.max(1).min(rows_budget))
 }
 
 fn composer_min_input_rows(density: ComposerDensity) -> usize {
@@ -1306,27 +1302,7 @@ mod tests {
 
     #[test]
     fn empty_state_renders_only_without_transcript_activity() {
-        use crate::config::Config;
-        use crate::tui::app::{App, TuiOptions};
-        use std::path::PathBuf;
-
-        let options = TuiOptions {
-            model: "deepseek-chat".to_string(),
-            workspace: PathBuf::from("."),
-            allow_shell: false,
-            use_alt_screen: true,
-            max_subagents: 1,
-            skills_dir: PathBuf::from("."),
-            memory_path: PathBuf::from("memory.md"),
-            notes_path: PathBuf::from("notes.txt"),
-            mcp_config_path: PathBuf::from("mcp.json"),
-            use_memory: false,
-            start_in_agent_mode: true,
-            skip_onboarding: true,
-            yolo: false,
-            resume_session_id: None,
-        };
-        let mut app = App::new(options, &Config::default());
+        let mut app = create_test_app();
         assert!(should_render_empty_state(&app));
         app.add_message(crate::tui::history::HistoryCell::User {
             content: "hello".to_string(),

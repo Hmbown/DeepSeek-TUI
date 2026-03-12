@@ -154,7 +154,9 @@ impl HistoryCell {
                 lines
             }
             HistoryCell::Tool(cell) => cell.lines_with_motion(width, options.low_motion),
-            _ => self.lines(width),
+            HistoryCell::User { .. }
+            | HistoryCell::Assistant { .. }
+            | HistoryCell::System { .. } => self.lines(width),
         }
     }
 
