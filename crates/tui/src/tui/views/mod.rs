@@ -199,7 +199,7 @@ const HELP_COMMAND_SECTION_ORDER: [&str; 7] = [
 fn help_command_section(name: &str) -> &'static str {
     match name {
         "help" | "clear" | "exit" | "model" | "models" | "home" | "links" => "Core",
-        "normal" | "agent" | "yolo" | "plan" | "trust" | "logout" => "Modes",
+        "agent" | "yolo" | "plan" | "trust" | "logout" => "Modes",
         "save" | "sessions" | "load" | "export" | "compact" | "queue" => "Session",
         "config" | "settings" => "Configuration",
         "task" | "skills" | "skill" | "subagents" | "review" => "Workflows",
@@ -304,6 +304,18 @@ impl ConfigView {
                 scope: ConfigScope::Saved,
             },
             ConfigRow {
+                key: "calm_mode".to_string(),
+                value: settings.calm_mode.to_string(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                key: "low_motion".to_string(),
+                value: settings.low_motion.to_string(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
                 key: "show_thinking".to_string(),
                 value: settings.show_thinking.to_string(),
                 editable: true,
@@ -312,6 +324,18 @@ impl ConfigView {
             ConfigRow {
                 key: "show_tool_details".to_string(),
                 value: settings.show_tool_details.to_string(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                key: "composer_density".to_string(),
+                value: settings.composer_density.clone(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                key: "transcript_spacing".to_string(),
+                value: settings.transcript_spacing.clone(),
                 editable: true,
                 scope: ConfigScope::Saved,
             },
@@ -553,8 +577,11 @@ fn config_hint_for_key(key: &str) -> &'static str {
             "deepseek-chat | deepseek-reasoner | deepseek-* (aliases: deepseek-v3, deepseek-v3.2, deepseek-r1)"
         }
         "approval_mode" => "auto | suggest | never",
-        "auto_compact" | "show_thinking" | "show_tool_details" => "on/off, true/false, yes/no, 1/0",
-        "default_mode" => "normal | agent | plan | yolo",
+        "auto_compact" | "calm_mode" | "low_motion" | "show_thinking" | "show_tool_details" => {
+            "on/off, true/false, yes/no, 1/0"
+        }
+        "composer_density" | "transcript_spacing" => "compact | comfortable | spacious",
+        "default_mode" => "agent | plan | yolo",
         "theme" => "default | dark | light | whale",
         "sidebar_width" => "10..=50",
         "sidebar_focus" => "auto | plan | todos | tasks | agents",
@@ -968,19 +995,19 @@ impl ModalView for HelpView {
             Line::from("  Left / Right      - Move cursor"),
             Line::from("  Ctrl+A / Ctrl+E   - Jump to start / end of line"),
             Line::from("  Backspace / Delete - Delete character before / after cursor"),
-            Line::from("  Ctrl+U            - Clear entire input line"),
+            Line::from("  Ctrl+U            - Clear the current draft"),
             Line::from(""),
             Line::from(vec![Span::styled(
                 "=== Multi-line Input ===",
                 Style::default().fg(palette::DEEPSEEK_SKY).bold(),
             )]),
-            Line::from("  Ctrl+J / Alt+Enter - Insert newline (without submitting)"),
+            Line::from("  Ctrl+J / Alt+Enter - Insert a new line in the composer"),
             Line::from(""),
             Line::from(vec![Span::styled(
                 "=== Actions ===",
                 Style::default().fg(palette::DEEPSEEK_SKY).bold(),
             )]),
-            Line::from("  Enter             - Submit message"),
+            Line::from("  Enter             - Send the current draft"),
             Line::from(
                 "  Esc               - Close menu, cancel request, discard draft, or clear input",
             ),
@@ -988,7 +1015,7 @@ impl ModalView for HelpView {
             Line::from("  Ctrl+D            - Exit when input is empty"),
             Line::from("  Ctrl+K            - Open command palette"),
             Line::from("  l                 - Open pager for last message (when input empty)"),
-            Line::from("  v                 - Open tool details (when input empty)"),
+            Line::from("  v                 - Open details for the selected tool or message"),
             Line::from("  Enter (selection) - Open pager for selected text"),
             Line::from(""),
             Line::from(vec![Span::styled(
@@ -996,11 +1023,11 @@ impl ModalView for HelpView {
                 Style::default().fg(palette::DEEPSEEK_SKY).bold(),
             )]),
             Line::from("  Tab / Shift+Tab  - Complete /command or cycle modes"),
-            Line::from("  Alt+1/2/3/4       - Directly jump to Normal/Agent/YOLO/Plan"),
-            Line::from("  Alt+N/A/Y/P       - Alternative jump to Normal/Agent/YOLO/Plan"),
+            Line::from("  Alt+1/2/3         - Directly jump to Plan/Agent/YOLO"),
+            Line::from("  Alt+P/A/Y         - Alternative jump to Plan/Agent/YOLO"),
             Line::from("  Alt+!/@/#/$/+)     - Focus Plan/Todos/Tasks/Agents/Auto sidebar"),
-            Line::from("  /normal /agent /yolo /plan - Set mode directly"),
-            Line::from("  Ctrl+X            - Toggle between Agent and Normal modes"),
+            Line::from("  /agent /yolo /plan - Set mode directly"),
+            Line::from("  Ctrl+X            - Toggle between Plan and Agent modes"),
             Line::from(""),
             Line::from(vec![Span::styled(
                 "=== Sessions ===",
@@ -1032,7 +1059,7 @@ impl ModalView for HelpView {
                 "Mode Cycle:",
                 Style::default().fg(palette::DEEPSEEK_SKY).bold(),
             )]),
-            Line::from("  Normal → Agent → YOLO → Plan (Tab), reverse with Shift+Tab"),
+            Line::from("  Plan → Agent → YOLO (Tab), reverse with Shift+Tab"),
             Line::from(""),
             Line::from(vec![Span::styled(
                 "Commands:",
@@ -1178,7 +1205,7 @@ impl ModalView for SubAgentsView {
 
         if self.agents.is_empty() {
             lines.push(Line::from(Span::styled(
-                "No sub-agents running.",
+                "No agents running.",
                 Style::default().fg(palette::TEXT_MUTED),
             )));
         } else {

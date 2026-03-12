@@ -11,6 +11,7 @@ use std::path::Path;
 
 // Prompt files loaded at compile time
 pub const BASE_PROMPT: &str = include_str!("prompts/base.txt");
+#[allow(dead_code)]
 pub const NORMAL_PROMPT: &str = include_str!("prompts/normal.txt");
 pub const AGENT_PROMPT: &str = include_str!("prompts/agent.txt");
 pub const YOLO_PROMPT: &str = include_str!("prompts/yolo.txt");
@@ -18,7 +19,6 @@ pub const PLAN_PROMPT: &str = include_str!("prompts/plan.txt");
 
 fn mode_prompt(mode: AppMode) -> &'static str {
     match mode {
-        AppMode::Normal => NORMAL_PROMPT,
         AppMode::Agent => AGENT_PROMPT,
         AppMode::Yolo => YOLO_PROMPT,
         AppMode::Plan => PLAN_PROMPT,
@@ -95,7 +95,7 @@ pub fn base_system_prompt() -> SystemPrompt {
 }
 
 pub fn normal_system_prompt() -> SystemPrompt {
-    system_prompt_for_mode(AppMode::Normal)
+    system_prompt_for_mode(AppMode::Agent)
 }
 
 pub fn agent_system_prompt() -> SystemPrompt {

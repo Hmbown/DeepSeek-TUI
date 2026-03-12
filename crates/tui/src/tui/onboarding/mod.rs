@@ -11,7 +11,7 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Paragraph, Wrap},
+    widgets::{Block, Borders, Padding, Paragraph, Wrap},
 };
 
 use crate::palette;
@@ -21,8 +21,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default().style(Style::default().bg(palette::DEEPSEEK_INK));
     f.render_widget(block, area);
 
-    let content_width = 72.min(area.width.saturating_sub(4));
-    let content_height = 26.min(area.height.saturating_sub(4));
+    let content_width = 76.min(area.width.saturating_sub(4));
+    let content_height = 20.min(area.height.saturating_sub(4));
     let content_area = Rect {
         x: (area.width - content_width) / 2,
         y: (area.height - content_height) / 2,
@@ -40,18 +40,27 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
 
     if !lines.is_empty() {
         let (step, total) = onboarding_step(app);
-        let mut decorated = vec![
-            Line::from(Span::styled(
-                format!("Step {step}/{total}"),
+        let panel = Block::default()
+            .title(Line::from(Span::styled(
+                " DeepSeek TUI ",
+                Style::default()
+                    .fg(palette::DEEPSEEK_BLUE)
+                    .add_modifier(Modifier::BOLD),
+            )))
+            .title_bottom(Line::from(Span::styled(
+                format!(" Step {step}/{total} "),
                 Style::default()
                     .fg(palette::TEXT_MUTED)
                     .add_modifier(Modifier::BOLD),
-            )),
-            Line::from(""),
-        ];
-        decorated.extend(lines);
-        let paragraph = Paragraph::new(decorated).wrap(Wrap { trim: false });
-        f.render_widget(paragraph, content_area);
+            )))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(palette::BORDER_COLOR))
+            .style(Style::default().bg(palette::DEEPSEEK_SLATE))
+            .padding(Padding::new(2, 2, 1, 1));
+        let inner = panel.inner(content_area);
+        f.render_widget(panel, content_area);
+        let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+        f.render_widget(paragraph, inner);
     }
 }
 
@@ -88,45 +97,23 @@ pub fn tips_lines() -> Vec<ratatui::text::Line<'static>> {
 
     vec![
         Line::from(Span::styled(
-            "Start With These Workflows",
-            Style::default()
-                .fg(palette::DEEPSEEK_SKY)
-                .add_modifier(Modifier::BOLD),
-        )),
-        Line::from(""),
-        Line::from(Span::raw("  1. Pick a mode for the task:")),
-        Line::from(Span::raw(
-            "     Normal asks questions, Agent runs tools, Plan lets you review the approach first.",
-        )),
-        Line::from(Span::raw("  2. Watch the runtime state while work runs:")),
-        Line::from(Span::raw(
-            "     approvals, queued prompts, and active sub-agents stay visible in the status area.",
-        )),
-        Line::from(Span::raw(
-            "  3. Use /queue when you want to review or edit queued prompts.",
-        )),
-        Line::from(Span::raw(
-            "  4. Use /subagents or the status strip to inspect agent fan-out.",
-        )),
-        Line::from(Span::raw(
-            "  5. Use Ctrl+R or /sessions to resume interrupted work.",
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Controls",
+            "Start Simple",
             Style::default()
                 .fg(palette::DEEPSEEK_SKY)
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(Span::raw(
-            "  - F1 help, Ctrl+K command palette, Esc cancel current work",
+            "Write the task in plain language. Use /help or Ctrl+K when you want a command.",
         )),
         Line::from(Span::raw(
-            "  - Tab cycles modes, Alt+1/2/3/4 switches directly",
+            "The bottom composer is multi-line: Enter sends, Alt+Enter or Ctrl+J adds a new line.",
         )),
         Line::from(Span::raw(
-            "  - Alt+!/@/#/$/) focuses Plan/Todos/Tasks/Agents/Auto",
+            "Switch modes only when the job changes: Plan for review-first work, Agent for execution, YOLO when you want auto-approval.",
+        )),
+        Line::from(Span::raw(
+            "Ctrl+R resumes earlier sessions, and Esc backs out of the current draft or overlay.",
         )),
         Line::from(vec![
             Span::styled("Press ", Style::default().fg(palette::TEXT_MUTED)),
@@ -137,7 +124,7 @@ pub fn tips_lines() -> Vec<ratatui::text::Line<'static>> {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                " to start working",
+                " to open the workspace",
                 Style::default().fg(palette::TEXT_MUTED),
             ),
         ]),

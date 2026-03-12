@@ -17,6 +17,7 @@ use super::Renderable;
 /// Data required to render the header bar.
 pub struct HeaderData<'a> {
     pub model: &'a str,
+    pub workspace_name: &'a str,
     pub mode: AppMode,
     pub is_streaming: bool,
     pub background: ratatui::style::Color,
@@ -36,11 +37,13 @@ impl<'a> HeaderData<'a> {
     pub fn new(
         mode: AppMode,
         model: &'a str,
+        workspace_name: &'a str,
         is_streaming: bool,
         background: ratatui::style::Color,
     ) -> Self {
         Self {
             model,
+            workspace_name,
             mode,
             is_streaming,
             background,
@@ -84,33 +87,53 @@ impl<'a> HeaderWidget<'a> {
     /// Get the color for a mode.
     fn mode_color(mode: AppMode) -> ratatui::style::Color {
         match mode {
-            AppMode::Normal => palette::MODE_NORMAL,
             AppMode::Agent => palette::MODE_AGENT,
             AppMode::Yolo => palette::MODE_YOLO,
             AppMode::Plan => palette::MODE_PLAN,
         }
     }
 
-    /// Build the mode badge span (no brackets, lowercase, bold).
-    fn mode_badge(&self) -> Span<'static> {
-        let label = self.data.mode.label().to_lowercase();
-        let color = Self::mode_color(self.data.mode);
-        Span::styled(
-            label,
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
-        )
+    fn mode_name(mode: AppMode) -> &'static str {
+        match mode {
+            AppMode::Agent => "Agent",
+            AppMode::Yolo => "Yolo",
+            AppMode::Plan => "Plan",
+        }
     }
 
-    /// Build the model name span (muted, truncated).
-    fn model_span(&self) -> Span<'static> {
-        let display_name = if self.data.model.chars().count() > 25 {
-            let truncated: String = self.data.model.chars().take(22).collect();
-            format!("{truncated}...")
-        } else {
-            self.data.model.to_string()
-        };
+    fn mode_segments(&self) -> Vec<Span<'static>> {
+        let modes = [AppMode::Plan, AppMode::Agent, AppMode::Yolo];
+        let mut spans = Vec::new();
+        for (idx, mode) in modes.into_iter().enumerate() {
+            if idx > 0 {
+                spans.push(Span::raw(" "));
+            }
+            let is_selected = mode == self.data.mode;
+            let style = if is_selected {
+                Style::default()
+                    .fg(self.data.background)
+                    .bg(Self::mode_color(mode))
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(palette::TEXT_HINT)
+            };
+            spans.push(Span::styled(format!(" {} ", Self::mode_name(mode)), style));
+        }
+        spans
+    }
 
-        Span::styled(display_name, Style::default().fg(palette::TEXT_HINT))
+    fn context_text(&self, max_chars: usize) -> String {
+        let raw = format!("{}  ·  {}", self.data.workspace_name, self.data.model);
+        if raw.chars().count() <= max_chars {
+            raw
+        } else {
+            let mut truncated = String::new();
+            for ch in raw.chars().take(max_chars.saturating_sub(3)) {
+                truncated.push(ch);
+            }
+            truncated.push_str("...");
+            truncated
+        }
     }
 
     /// Build the streaming indicator span.
@@ -134,31 +157,36 @@ impl Renderable for HeaderWidget<'_> {
             return;
         }
 
-        // Build left section: mode + model
-        let mode_span = self.mode_badge();
-        let model_span = self.model_span();
+        let mut left_spans = self.mode_segments();
 
         // Build right section: streaming indicator only. Footer owns context.
         let streaming_span = self.streaming_indicator();
 
         // Calculate widths
-        let mode_width = mode_span.content.width();
-        let model_width = model_span.content.width();
+        let mut left_width: usize = left_spans.iter().map(|span| span.content.width()).sum();
         let streaming_width = streaming_span.as_ref().map_or(0, |s| s.content.width());
         let right_width = streaming_width;
-
-        let left_width = mode_width + 2 + model_width; // mode + "  " + model
 
         let available = area.width as usize;
 
         // Build final line based on available space
         let mut spans = Vec::new();
 
-        if available >= left_width + right_width + 2 {
-            // Full layout: mode  model  (spacer)  ●
-            spans.push(mode_span);
-            spans.push(Span::raw("  "));
-            spans.push(model_span);
+        let context_room = available
+            .saturating_sub(left_width + right_width)
+            .saturating_sub(2);
+        if context_room >= 10 {
+            let context_text = self.context_text(context_room);
+            left_spans.push(Span::raw("  "));
+            left_spans.push(Span::styled(
+                context_text,
+                Style::default().fg(palette::TEXT_HINT),
+            ));
+            left_width = left_spans.iter().map(|span| span.content.width()).sum();
+        }
+
+        if available >= left_width + right_width {
+            spans.extend(left_spans);
 
             // Spacer to push right elements to the end
             let padding_needed = available.saturating_sub(left_width + right_width);
@@ -170,24 +198,14 @@ impl Renderable for HeaderWidget<'_> {
             if let Some(streaming) = streaming_span {
                 spans.push(streaming);
             }
-        } else if available >= mode_width + 2 + model_width.min(10) {
-            // Compact layout: mode  truncated_model
-            spans.push(mode_span);
-            spans.push(Span::raw("  "));
-            let model_str = self.data.model;
-            let display_model = if model_str.chars().count() > 10 {
-                let truncated: String = model_str.chars().take(7).collect();
-                format!("{truncated}...")
-            } else {
-                model_str.to_string()
-            };
+        } else if available >= 12 {
             spans.push(Span::styled(
-                display_model,
-                Style::default().fg(palette::TEXT_HINT),
+                format!(" {} ", Self::mode_name(self.data.mode)),
+                Style::default()
+                    .fg(self.data.background)
+                    .bg(Self::mode_color(self.data.mode))
+                    .add_modifier(Modifier::BOLD),
             ));
-        } else if available >= mode_width {
-            // Minimal: just mode badge
-            spans.push(mode_span);
         } else {
             // Ultra-minimal: single lowercase char
             let first_char = self

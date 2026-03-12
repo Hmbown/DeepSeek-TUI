@@ -35,7 +35,7 @@ pub enum HookEvent {
     ToolCallBefore,
     /// Triggered after a tool completes (success or failure)
     ToolCallAfter,
-    /// Triggered when the user changes modes (Normal, Edit, Agent, Plan)
+    /// Triggered when the user changes modes (Plan, Agent, Yolo)
     ModeChange,
     /// Triggered when an error occurs
     OnError,

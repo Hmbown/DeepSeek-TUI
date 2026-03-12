@@ -2,18 +2,22 @@
 
 DeepSeek TUI has two related concepts:
 
-- **TUI mode**: what kind of interaction you’re in (Normal/Plan/Agent/YOLO).
+- **TUI mode**: what kind of visible interaction you’re in (Plan/Agent/YOLO).
 - **Approval mode**: how aggressively the UI asks before executing tools.
 
 ## TUI Modes
 
-Press `Tab` to cycle forward: **Normal → Agent → YOLO → Plan → Normal**.
+Press `Tab` to cycle through the visible modes: **Plan → Agent → YOLO → Plan**.
 Press `Shift+Tab` to cycle in reverse.
 
-- **Normal**: chat-first. Approvals for file writes, shell, and paid tools.
-- **Plan**: design-first prompting. Approvals match Normal.
+- **Plan**: design-first prompting. Read-only investigation tools stay available, but shell and patch execution stay off.
 - **Agent**: multi-step tool use. Approvals for shell and paid tools (file writes are allowed without a prompt).
 - **YOLO**: enables shell + trust mode and auto-approves all tools. Use only in trusted repos.
+
+## Compatibility Notes
+
+- `/normal` is a hidden compatibility alias that switches to `Agent`.
+- Older settings files with `default_mode = "normal"` still load as `agent`; saving rewrites the normalized value.
 
 ## Escape Key Behavior
 

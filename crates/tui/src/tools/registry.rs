@@ -175,7 +175,7 @@ impl ToolRegistry {
             .collect()
     }
 
-    /// Get read-only tools (for Normal mode).
+    /// Get read-only tools.
     #[must_use]
     #[allow(dead_code)]
     pub fn read_only_tools(&self) -> Vec<Arc<dyn ToolSpec>> {

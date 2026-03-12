@@ -213,12 +213,6 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "/yolo",
     },
     CommandInfo {
-        name: "normal",
-        aliases: &[],
-        description: "Switch to normal mode (no autonomous tool flow)",
-        usage: "/normal",
-    },
-    CommandInfo {
         name: "agent",
         aliases: &[],
         description: "Switch to agent mode",
@@ -346,7 +340,6 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "config" => config::show_config(app),
         "settings" => config::show_settings(app),
         "yolo" => config::yolo(app),
-        "normal" => config::normal_mode(app),
         "agent" => config::agent_mode(app),
         "plan" => config::plan_mode(app),
         "trust" => config::trust(app),
@@ -372,6 +365,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "set" => CommandResult::error(
             "The /set command was retired. Use /config to edit settings and /settings to inspect current values.",
         ),
+        "normal" => config::normal_mode(app),
         "deepseek" => CommandResult::error(
             "The /deepseek command was renamed. Use /links (aliases: /dashboard, /api).",
         ),

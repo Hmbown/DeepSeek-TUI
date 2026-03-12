@@ -11,16 +11,28 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::models::{ContentBlock, Message};
 use crate::palette;
 use crate::tools::review::ReviewOutput;
+use crate::tui::app::TranscriptSpacing;
 use crate::tui::diff_render;
 use crate::tui::markdown_render;
 
 // === Constants ===
 
-const TOOL_COMMAND_LINE_LIMIT: usize = 5;
-const TOOL_OUTPUT_LINE_LIMIT: usize = 12;
-const TOOL_TEXT_LIMIT: usize = 240;
-const TOOL_RUNNING_SYMBOLS: [&str; 3] = ["◌", "◍", "◉"];
-const TOOL_STATUS_SYMBOL_MS: u64 = 900;
+const TOOL_COMMAND_LINE_LIMIT: usize = 3;
+const TOOL_OUTPUT_LINE_LIMIT: usize = 6;
+const TOOL_TEXT_LIMIT: usize = 180;
+const TOOL_RUNNING_SYMBOLS: [&str; 4] = ["·", "◦", "•", "◦"];
+const TOOL_STATUS_SYMBOL_MS: u64 = 1_800;
+const TOOL_CARD_SUMMARY_LINES: usize = 4;
+const THINKING_SUMMARY_LINE_LIMIT: usize = 4;
+const TOOL_DONE_SYMBOL: &str = "•";
+const TOOL_FAILED_SYMBOL: &str = "•";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ThinkingVisualState {
+    Live,
+    Done,
+    Idle,
+}
 
 // === History Cells ===
 
@@ -49,6 +61,9 @@ pub enum HistoryCell {
 pub struct TranscriptRenderOptions {
     pub show_thinking: bool,
     pub show_tool_details: bool,
+    pub calm_mode: bool,
+    pub low_motion: bool,
+    pub spacing: TranscriptSpacing,
 }
 
 impl Default for TranscriptRenderOptions {
@@ -56,6 +71,9 @@ impl Default for TranscriptRenderOptions {
         Self {
             show_thinking: true,
             show_tool_details: true,
+            calm_mode: false,
+            low_motion: false,
+            spacing: TranscriptSpacing::Comfortable,
         }
     }
 }
@@ -64,19 +82,33 @@ impl HistoryCell {
     /// Render the cell into a set of terminal lines.
     pub fn lines(&self, width: u16) -> Vec<Line<'static>> {
         match self {
-            HistoryCell::User { content } => render_message("▸ You", content, user_style(), width),
-            HistoryCell::Assistant { content, .. } => {
-                render_message("◆ Answer", content, assistant_style(), width)
-            }
-            HistoryCell::System { content } => {
-                render_message("● System", content, system_style(), width)
-            }
+            HistoryCell::User { content } => render_message(
+                "You",
+                user_label_style(),
+                message_body_style(),
+                content,
+                width,
+            ),
+            HistoryCell::Assistant { content, .. } => render_message(
+                "Assistant",
+                assistant_label_style(),
+                message_body_style(),
+                content,
+                width,
+            ),
+            HistoryCell::System { content } => render_message(
+                "Note",
+                system_label_style(),
+                system_body_style(),
+                content,
+                width,
+            ),
             HistoryCell::Thinking {
                 content,
                 streaming,
                 duration_secs,
-            } => render_thinking(content, width, *streaming, *duration_secs),
-            HistoryCell::Tool(cell) => cell.lines(width),
+            } => render_thinking(content, width, *streaming, *duration_secs, false, false),
+            HistoryCell::Tool(cell) => cell.lines_with_motion(width, false),
         }
     }
 
@@ -87,14 +119,37 @@ impl HistoryCell {
     ) -> Vec<Line<'static>> {
         match self {
             HistoryCell::Thinking { .. } if !options.show_thinking => Vec::new(),
+            HistoryCell::Thinking {
+                content,
+                streaming,
+                duration_secs,
+            } => render_thinking(
+                content,
+                width,
+                *streaming,
+                *duration_secs,
+                !*streaming,
+                options.low_motion,
+            ),
             HistoryCell::Tool(cell) if !options.show_tool_details => {
-                let mut lines = cell.lines(width);
+                let mut lines = cell.lines_with_motion(width, options.low_motion);
                 if lines.len() > 2 {
                     lines.truncate(2);
-                    lines.push(Line::from(Span::styled(
-                        "  … details hidden (show_tool_details=off)",
+                    lines.push(details_affordance_line(
+                        "details hidden",
                         Style::default().fg(palette::TEXT_MUTED).italic(),
-                    )));
+                    ));
+                }
+                lines
+            }
+            HistoryCell::Tool(cell) if options.calm_mode => {
+                let mut lines = cell.lines_with_motion(width, options.low_motion);
+                if lines.len() > TOOL_CARD_SUMMARY_LINES {
+                    lines.truncate(TOOL_CARD_SUMMARY_LINES);
+                    lines.push(details_affordance_line(
+                        "press v for details",
+                        Style::default().fg(palette::TEXT_MUTED).italic(),
+                    ));
                 }
                 lines
             }
@@ -211,17 +266,21 @@ pub enum ToolCell {
 impl ToolCell {
     /// Render the tool cell into lines.
     pub fn lines(&self, width: u16) -> Vec<Line<'static>> {
+        self.lines_with_motion(width, false)
+    }
+
+    pub fn lines_with_motion(&self, width: u16, low_motion: bool) -> Vec<Line<'static>> {
         match self {
-            ToolCell::Exec(cell) => cell.lines(width),
-            ToolCell::Exploring(cell) => cell.lines(width),
-            ToolCell::PlanUpdate(cell) => cell.lines(width),
-            ToolCell::PatchSummary(cell) => cell.lines(width),
-            ToolCell::Review(cell) => cell.lines(width),
-            ToolCell::DiffPreview(cell) => cell.lines(width),
-            ToolCell::Mcp(cell) => cell.lines(width),
-            ToolCell::ViewImage(cell) => cell.lines(width),
-            ToolCell::WebSearch(cell) => cell.lines(width),
-            ToolCell::Generic(cell) => cell.lines(width),
+            ToolCell::Exec(cell) => cell.lines_with_motion(width, low_motion),
+            ToolCell::Exploring(cell) => cell.lines_with_motion(width, low_motion),
+            ToolCell::PlanUpdate(cell) => cell.lines_with_motion(width, low_motion),
+            ToolCell::PatchSummary(cell) => cell.lines_with_motion(width, low_motion),
+            ToolCell::Review(cell) => cell.lines_with_motion(width, low_motion),
+            ToolCell::DiffPreview(cell) => cell.lines_with_motion(width, low_motion),
+            ToolCell::Mcp(cell) => cell.lines_with_motion(width, low_motion),
+            ToolCell::ViewImage(cell) => cell.lines_with_motion(width, low_motion),
+            ToolCell::WebSearch(cell) => cell.lines_with_motion(width, low_motion),
+            ToolCell::Generic(cell) => cell.lines_with_motion(width, low_motion),
         }
     }
 }
@@ -248,24 +307,24 @@ pub struct ExecCell {
 
 impl ExecCell {
     /// Render the execution cell into lines.
-    pub fn lines(&self, width: u16) -> Vec<Line<'static>> {
+    pub fn lines_with_motion(&self, width: u16, low_motion: bool) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
-        let (label, color) = match self.status {
-            ToolStatus::Running => ("Running", palette::STATUS_WARNING),
-            ToolStatus::Success => match self.source {
-                ExecSource::User => ("You ran", palette::STATUS_SUCCESS),
-                ExecSource::Assistant => ("Ran", palette::STATUS_SUCCESS),
-            },
-            ToolStatus::Failed => ("Failed", palette::STATUS_ERROR),
-        };
-        let dot = status_symbol(self.started_at, self.status);
-        lines.push(Line::from(vec![
-            Span::styled(format!("{dot} "), Style::default().fg(color)),
-            Span::styled(
-                label,
-                Style::default().fg(color).add_modifier(Modifier::BOLD),
-            ),
-        ]));
+        lines.push(render_tool_header(
+            "Shell",
+            tool_status_label(self.status),
+            self.status,
+            self.started_at,
+            low_motion,
+        ));
+
+        if self.status == ToolStatus::Success && self.source == ExecSource::User {
+            lines.extend(render_compact_kv(
+                "source",
+                "started by you",
+                Style::default().fg(palette::TEXT_MUTED),
+                width,
+            ));
+        }
 
         if let Some(interaction) = self.interaction.as_ref() {
             lines.extend(wrap_plain_line(
@@ -290,10 +349,12 @@ impl ExecCell {
 
         if let Some(duration_ms) = self.duration_ms {
             let seconds = f64::from(u32::try_from(duration_ms).unwrap_or(u32::MAX)) / 1000.0;
-            lines.push(Line::from(Span::styled(
-                format!("  {seconds:.2}s"),
-                Style::default().fg(palette::TEXT_MUTED),
-            )));
+            lines.extend(render_compact_kv(
+                "time",
+                &format!("{seconds:.2}s"),
+                Style::default().fg(palette::TEXT_DIM),
+                width,
+            ));
         }
 
         lines
@@ -315,33 +376,37 @@ pub struct ExploringCell {
 
 impl ExploringCell {
     /// Render the exploring cell into lines.
-    pub fn lines(&self, width: u16) -> Vec<Line<'static>> {
+    pub fn lines_with_motion(&self, width: u16, low_motion: bool) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
         let all_done = self
             .entries
             .iter()
             .all(|entry| entry.status != ToolStatus::Running);
-        let header = if all_done { "Explored" } else { "Exploring" };
-        lines.push(Line::from(Span::styled(
-            header,
-            Style::default()
-                .fg(palette::DEEPSEEK_SKY)
-                .add_modifier(Modifier::BOLD),
-        )));
+        let status = if all_done {
+            ToolStatus::Success
+        } else {
+            ToolStatus::Running
+        };
+        lines.push(render_tool_header(
+            "Workspace",
+            if all_done { "done" } else { "running" },
+            status,
+            None,
+            low_motion,
+        ));
 
         for entry in &self.entries {
             let prefix = match entry.status {
-                ToolStatus::Running => "•",
-                ToolStatus::Success => "ok",
-                ToolStatus::Failed => "!!",
+                ToolStatus::Running => "live",
+                ToolStatus::Success => "done",
+                ToolStatus::Failed => "issue",
             };
-            let style = match entry.status {
-                ToolStatus::Running => Style::default().fg(palette::DEEPSEEK_SKY),
-                ToolStatus::Success => Style::default().fg(palette::STATUS_SUCCESS),
-                ToolStatus::Failed => Style::default().fg(palette::STATUS_ERROR),
-            };
-            let line = format!("  {} {}", prefix, entry.label);
-            lines.extend(wrap_plain_line(&line, style, width));
+            lines.extend(render_compact_kv(
+                prefix,
+                &entry.label,
+                tool_value_style(),
+                width,
+            ));
         }
         lines
     }
@@ -371,33 +436,36 @@ pub struct PlanUpdateCell {
 
 impl PlanUpdateCell {
     /// Render the plan update cell into lines.
-    pub fn lines(&self, width: u16) -> Vec<Line<'static>> {
+    pub fn lines_with_motion(&self, width: u16, low_motion: bool) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
-        let header = match self.status {
-            ToolStatus::Running => "Updating Plan",
-            _ => "Updated Plan",
-        };
-        lines.push(Line::from(Span::styled(
-            header,
-            Style::default()
-                .fg(palette::DEEPSEEK_BLUE)
-                .add_modifier(Modifier::BOLD),
-        )));
+        lines.push(render_tool_header(
+            "Plan",
+            tool_status_label(self.status),
+            self.status,
+            None,
+            low_motion,
+        ));
 
         if let Some(explanation) = self.explanation.as_ref() {
-            lines.extend(render_message(" ", explanation, system_style(), width));
+            lines.extend(render_message(
+                "",
+                system_label_style(),
+                system_body_style(),
+                explanation,
+                width,
+            ));
         }
 
         for step in &self.steps {
             let marker = match step.status.as_str() {
-                "completed" => "[x]",
-                "in_progress" => "[~]",
-                _ => "[ ]",
+                "completed" => "done",
+                "in_progress" => "live",
+                _ => "next",
             };
-            let line = format!("  {} {}", marker, step.step);
-            lines.extend(wrap_plain_line(
-                &line,
-                Style::default().fg(palette::DEEPSEEK_BLUE),
+            lines.extend(render_compact_kv(
+                marker,
+                &step.step,
+                tool_value_style(),
                 width,
             ));
         }
@@ -424,25 +492,19 @@ pub struct PatchSummaryCell {
 
 impl PatchSummaryCell {
     /// Render the patch summary cell into lines.
-    pub fn lines(&self, width: u16) -> Vec<Line<'static>> {
+    pub fn lines_with_motion(&self, width: u16, low_motion: bool) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
-        let header = match self.status {
-            ToolStatus::Running => "Applying Patch",
-            ToolStatus::Success => "Patch Applied",
-            ToolStatus::Failed => "Patch Failed",
-        };
-        let color = match self.status {
-            ToolStatus::Running => palette::STATUS_WARNING,
-            ToolStatus::Success => palette::STATUS_SUCCESS,
-            ToolStatus::Failed => palette::STATUS_ERROR,
-        };
-        lines.push(Line::from(Span::styled(
-            header,
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
-        )));
-        lines.extend(wrap_plain_line(
-            &format!("  {}", self.path),
-            Style::default().fg(palette::TEXT_MUTED),
+        lines.push(render_tool_header(
+            "Patch",
+            tool_status_label(self.status),
+            self.status,
+            None,
+            low_motion,
+        ));
+        lines.extend(render_compact_kv(
+            "file",
+            &self.path,
+            tool_value_style(),
             width,
         ));
         lines.extend(render_tool_output(
@@ -467,22 +529,21 @@ pub struct ReviewCell {
 }
 
 impl ReviewCell {
-    pub fn lines(&self, width: u16) -> Vec<Line<'static>> {
+    pub fn lines_with_motion(&self, width: u16, low_motion: bool) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
-        let (label, color) = match self.status {
-            ToolStatus::Running => ("Reviewing", palette::STATUS_WARNING),
-            ToolStatus::Success => ("Review Complete", palette::STATUS_SUCCESS),
-            ToolStatus::Failed => ("Review Failed", palette::STATUS_ERROR),
-        };
-        lines.push(Line::from(Span::styled(
-            label,
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
-        )));
+        lines.push(render_tool_header(
+            "Review",
+            tool_status_label(self.status),
+            self.status,
+            None,
+            low_motion,
+        ));
 
         if !self.target.trim().is_empty() {
-            lines.extend(wrap_plain_line(
-                &format!("  Target: {}", self.target.trim()),
-                Style::default().fg(palette::TEXT_MUTED),
+            lines.extend(render_compact_kv(
+                "target",
+                self.target.trim(),
+                tool_value_style(),
                 width,
             ));
         }
@@ -592,14 +653,21 @@ pub struct DiffPreviewCell {
 }
 
 impl DiffPreviewCell {
-    pub fn lines(&self, width: u16) -> Vec<Line<'static>> {
+    pub fn lines_with_motion(&self, width: u16, low_motion: bool) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
-        lines.push(Line::from(Span::styled(
-            self.title.clone(),
-            Style::default()
-                .fg(palette::DEEPSEEK_BLUE)
-                .add_modifier(Modifier::BOLD),
-        )));
+        lines.push(render_tool_header(
+            "Diff",
+            "done",
+            ToolStatus::Success,
+            None,
+            low_motion,
+        ));
+        lines.extend(render_compact_kv(
+            "title",
+            &self.title,
+            tool_value_style(),
+            width,
+        ));
         lines.extend(diff_render::render_diff(&self.diff, width));
         lines
     }
@@ -616,27 +684,29 @@ pub struct McpToolCell {
 
 impl McpToolCell {
     /// Render the MCP tool cell into lines.
-    pub fn lines(&self, width: u16) -> Vec<Line<'static>> {
+    pub fn lines_with_motion(&self, width: u16, low_motion: bool) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
-        let header = match self.status {
-            ToolStatus::Running => format!("Calling {}", self.tool),
-            _ => format!("Called {}", self.tool),
-        };
-        let color = if self.status == ToolStatus::Failed {
-            palette::STATUS_ERROR
-        } else {
-            palette::DEEPSEEK_SKY
-        };
-        lines.push(Line::from(Span::styled(
-            header,
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
-        )));
+        lines.push(render_tool_header(
+            "Tool",
+            tool_status_label(self.status),
+            self.status,
+            None,
+            low_motion,
+        ));
+        lines.extend(render_compact_kv(
+            "name",
+            &self.tool,
+            tool_value_style(),
+            width,
+        ));
 
         if self.is_image {
-            lines.push(Line::from(Span::styled(
-                "  (image result)",
-                Style::default().fg(palette::TEXT_MUTED),
-            )));
+            lines.extend(render_compact_kv(
+                "result",
+                "image",
+                tool_value_style(),
+                width,
+            ));
         }
 
         if let Some(content) = self.content.as_ref() {
@@ -654,9 +724,21 @@ pub struct ViewImageCell {
 
 impl ViewImageCell {
     /// Render the image view cell into lines.
-    pub fn lines(&self, width: u16) -> Vec<Line<'static>> {
-        let header = format!("Viewed Image {}", self.path.display());
-        wrap_plain_line(&header, Style::default().fg(palette::DEEPSEEK_SKY), width)
+    pub fn lines_with_motion(&self, width: u16, low_motion: bool) -> Vec<Line<'static>> {
+        let mut lines = vec![render_tool_header(
+            "Image",
+            "done",
+            ToolStatus::Success,
+            None,
+            low_motion,
+        )];
+        lines.extend(render_compact_kv(
+            "path",
+            &self.path.display().to_string(),
+            tool_value_style(),
+            width,
+        ));
+        lines
     }
 }
 
@@ -670,28 +752,26 @@ pub struct WebSearchCell {
 
 impl WebSearchCell {
     /// Render the web search cell into lines.
-    pub fn lines(&self, width: u16) -> Vec<Line<'static>> {
+    pub fn lines_with_motion(&self, width: u16, low_motion: bool) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
-        let header = match self.status {
-            ToolStatus::Running => "Searching",
-            _ => "Searched",
-        };
-        lines.push(Line::from(Span::styled(
-            header,
-            Style::default()
-                .fg(palette::DEEPSEEK_BLUE)
-                .add_modifier(Modifier::BOLD),
-        )));
-        lines.extend(wrap_plain_line(
-            &format!("  {}", self.query),
-            Style::default().fg(palette::TEXT_MUTED),
+        lines.push(render_tool_header(
+            "Search",
+            tool_status_label(self.status),
+            self.status,
+            None,
+            low_motion,
+        ));
+        lines.extend(render_compact_kv(
+            "query",
+            &self.query,
+            tool_value_style(),
             width,
         ));
         if let Some(summary) = self.summary.as_ref() {
             lines.extend(render_compact_kv(
-                "result:",
+                "result",
                 summary,
-                Style::default().fg(palette::TEXT_MUTED),
+                tool_value_style(),
                 width,
             ));
         }
@@ -710,37 +790,37 @@ pub struct GenericToolCell {
 
 impl GenericToolCell {
     /// Render the generic tool cell into lines.
-    pub fn lines(&self, width: u16) -> Vec<Line<'static>> {
+    pub fn lines_with_motion(&self, width: u16, low_motion: bool) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
-        let header = match self.status {
-            ToolStatus::Running => format!("Calling {}", self.name),
-            _ => format!("Called {}", self.name),
-        };
-        let color = if self.status == ToolStatus::Failed {
-            palette::STATUS_ERROR
-        } else {
-            palette::DEEPSEEK_SKY
-        };
-        lines.push(Line::from(Span::styled(
-            header,
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
-        )));
+        lines.push(render_tool_header(
+            "Tool",
+            tool_status_label(self.status),
+            self.status,
+            None,
+            low_motion,
+        ));
+        lines.extend(render_compact_kv(
+            "name",
+            &self.name,
+            tool_value_style(),
+            width,
+        ));
         let show_args = matches!(self.status, ToolStatus::Running) || self.output.is_none();
         if show_args && let Some(summary) = self.input_summary.as_ref() {
             lines.extend(render_compact_kv(
-                "args:",
+                "args",
                 summary,
-                Style::default().fg(palette::TEXT_MUTED),
+                tool_value_style(),
                 width,
             ));
         }
         if let Some(output) = self.output.as_ref() {
-            let style = if self.status == ToolStatus::Failed {
-                Style::default().fg(palette::STATUS_ERROR)
-            } else {
-                Style::default().fg(palette::TEXT_MUTED)
-            };
-            lines.extend(render_compact_kv("result:", output, style, width));
+            lines.extend(render_compact_kv(
+                "result",
+                output,
+                tool_value_style(),
+                width,
+            ));
         }
         lines
     }
@@ -1001,7 +1081,6 @@ pub fn output_is_image(output: &str) -> bool {
     .any(|ext| lower.contains(ext))
 }
 
-#[cfg(test)]
 #[must_use]
 pub fn extract_reasoning_summary(text: &str) -> Option<String> {
     let mut lines = text.lines().peekable();
@@ -1048,90 +1127,102 @@ fn render_thinking(
     width: u16,
     streaming: bool,
     duration_secs: Option<f32>,
+    collapsed: bool,
+    low_motion: bool,
 ) -> Vec<Line<'static>> {
+    let state = thinking_visual_state(streaming, duration_secs);
     let style = thinking_style();
-    let border_style = Style::default().fg(palette::STATUS_WARNING);
-    let w = usize::from(width);
-
-    // Top border: ┌─ THINKING (3.2s) ───────┐
-    let label = if streaming {
-        " THINKING ".to_string()
-    } else if let Some(dur) = duration_secs {
-        format!(" THINKING ({dur:.1}s) ")
-    } else {
-        " THINKING ".to_string()
-    };
-    let label_width = UnicodeWidthStr::width(label.as_str());
-    let fill = w.saturating_sub(2 + label_width); // 2 for ┌ and ┐
-    let top_line = format!("┌{}{}{}", "─".repeat(0), label, "─".repeat(fill));
-    let top_line = if top_line.chars().count() < w {
-        format!("{}┐", &top_line)
-    } else {
-        truncate_to_width(&top_line, w)
-    };
-
     let mut lines = Vec::new();
-    lines.push(Line::from(Span::styled(top_line, border_style)));
+    let mut header_spans = vec![
+        Span::styled(
+            format!("{} ", thinking_symbol(state, low_motion)),
+            Style::default().fg(thinking_state_accent(state)),
+        ),
+        Span::styled("thinking", thinking_title_style()),
+    ];
+    header_spans.push(Span::styled(" ", Style::default()));
+    header_spans.push(Span::styled(
+        thinking_status_label(state),
+        thinking_status_style(state),
+    ));
+    if let Some(dur) = duration_secs {
+        header_spans.push(Span::styled(" · ", Style::default().fg(palette::TEXT_DIM)));
+        header_spans.push(Span::styled(format!("{dur:.1}s"), thinking_meta_style()));
+    }
+    lines.push(Line::from(header_spans));
 
-    // Content with │ prefix
-    let content_width = width.saturating_sub(4).max(1); // 4 for "│ " and " │"
-    let rendered = markdown_render::render_markdown(content, content_width, style);
+    let content_width = width.saturating_sub(3).max(1);
+    let body_text = if collapsed {
+        extract_reasoning_summary(content).unwrap_or_else(|| content.trim().to_string())
+    } else {
+        content.to_string()
+    };
+    let mut rendered = markdown_render::render_markdown(&body_text, content_width, style);
+    let mut truncated = false;
+    if collapsed && rendered.len() > THINKING_SUMMARY_LINE_LIMIT {
+        rendered.truncate(THINKING_SUMMARY_LINE_LIMIT);
+        truncated = true;
+    }
 
     if rendered.is_empty() && streaming {
-        // Show animated placeholder while waiting for first content
         lines.push(Line::from(vec![
-            Span::styled("│ ", border_style),
-            Span::styled("...", style),
+            Span::styled("▏ ", Style::default().fg(thinking_state_accent(state))),
+            Span::styled("reasoning in progress...", style.italic()),
         ]));
     }
 
     for line in rendered {
-        let mut spans = vec![Span::styled("│ ", border_style)];
+        let mut spans = vec![Span::styled(
+            "▏ ",
+            Style::default().fg(thinking_state_accent(state)),
+        )];
         spans.extend(line.spans);
         lines.push(Line::from(spans));
     }
 
-    // Bottom border: └────────────────────────┘
-    let bottom_fill = w.saturating_sub(2); // 2 for └ and ┘
-    let bottom_line = format!("└{}┘", "─".repeat(bottom_fill));
-    lines.push(Line::from(Span::styled(
-        truncate_to_width(&bottom_line, w),
-        border_style,
-    )));
+    if collapsed && (!streaming && (truncated || body_text.trim() != content.trim())) {
+        lines.push(Line::from(vec![
+            Span::styled("▏ ", Style::default().fg(thinking_state_accent(state))),
+            Span::styled(
+                "summary only; press v for details",
+                Style::default().fg(palette::TEXT_MUTED).italic(),
+            ),
+        ]));
+    }
 
     lines
 }
 
-fn truncate_to_width(s: &str, max_width: usize) -> String {
-    let mut out = String::new();
-    let mut w = 0;
-    for ch in s.chars() {
-        let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
-        if w + cw > max_width {
-            break;
-        }
-        out.push(ch);
-        w += cw;
-    }
-    out
-}
-
-fn render_message(prefix: &str, content: &str, style: Style, width: u16) -> Vec<Line<'static>> {
+fn render_message(
+    prefix: &str,
+    label_style: Style,
+    body_style: Style,
+    content: &str,
+    width: u16,
+) -> Vec<Line<'static>> {
     let prefix_width = UnicodeWidthStr::width(prefix);
     let prefix_width_u16 = u16::try_from(prefix_width.saturating_add(2)).unwrap_or(u16::MAX);
     let content_width = usize::from(width.saturating_sub(prefix_width_u16).max(1));
     let mut lines = Vec::new();
-    let rendered = markdown_render::render_markdown(content, content_width as u16, style);
+    let rendered = markdown_render::render_markdown(content, content_width as u16, body_style);
     for (idx, line) in rendered.into_iter().enumerate() {
         if idx == 0 {
-            let mut spans = vec![
-                Span::styled(prefix.to_string(), style.add_modifier(Modifier::BOLD)),
-                Span::raw(" "),
-            ];
+            let mut spans = Vec::new();
+            if !prefix.is_empty() {
+                spans.push(Span::styled(
+                    prefix.to_string(),
+                    label_style.add_modifier(Modifier::BOLD),
+                ));
+                spans.push(Span::raw(" "));
+            }
             spans.extend(line.spans);
             lines.push(Line::from(spans));
         } else {
-            let indent = " ".repeat(prefix_width + 1);
+            let indent = if prefix.is_empty() {
+                String::new()
+            } else {
+                " ".repeat(prefix_width + 1)
+            };
             let mut spans = vec![Span::raw(indent)];
             spans.extend(line.spans);
             lines.push(Line::from(spans));
@@ -1150,23 +1241,24 @@ fn render_command(command: &str, width: u16) -> Vec<Line<'static>> {
         .enumerate()
     {
         if count >= TOOL_COMMAND_LINE_LIMIT {
-            lines.push(Line::from(Span::styled(
-                "  ...",
+            lines.push(details_affordance_line(
+                "command clipped; press v for details",
                 Style::default().fg(palette::TEXT_MUTED),
-            )));
+            ));
             break;
         }
-        lines.push(Line::from(vec![
-            Span::styled("  $ ", Style::default().fg(palette::TEXT_MUTED)),
-            Span::styled(chunk, Style::default().fg(palette::TEXT_PRIMARY)),
-        ]));
+        lines.extend(render_card_detail_line(
+            if count == 0 { Some("command") } else { None },
+            chunk.as_str(),
+            tool_value_style(),
+            width,
+        ));
     }
     lines
 }
 
 fn render_compact_kv(label: &str, value: &str, style: Style, width: u16) -> Vec<Line<'static>> {
-    let line = format!("  {label} {value}");
-    wrap_plain_line(&line, style, width)
+    render_card_detail_line(Some(label.trim_end_matches(':')), value, style, width)
 }
 
 fn render_tool_output(output: &str, width: u16, line_limit: usize) -> Vec<Line<'static>> {
@@ -1187,17 +1279,19 @@ fn render_tool_output(output: &str, width: u16, line_limit: usize) -> Vec<Line<'
         if idx >= line_limit {
             let omitted = total.saturating_sub(line_limit);
             if omitted > 0 {
-                lines.push(Line::from(Span::styled(
-                    format!("  ... +{omitted} lines"),
+                lines.push(details_affordance_line(
+                    &format!("+{omitted} more lines; press v for details"),
                     Style::default().fg(palette::TEXT_MUTED),
-                )));
+                ));
             }
             break;
         }
-        lines.push(Line::from(vec![
-            Span::styled("  | ", Style::default().fg(palette::TEXT_MUTED)),
-            Span::styled(line, Style::default().fg(palette::TEXT_MUTED)),
-        ]));
+        lines.extend(render_card_detail_line(
+            if idx == 0 { Some("result") } else { None },
+            &line,
+            tool_value_style(),
+            width,
+        ));
     }
     lines
 }
@@ -1237,32 +1331,38 @@ fn render_exec_output(output: &str, width: u16, line_limit: usize) -> Vec<Line<'
 
     let total = all_lines.len();
     let head_end = total.min(line_limit);
-    for line in &all_lines[..head_end] {
-        lines.push(Line::from(vec![
-            Span::styled("  | ", Style::default().fg(palette::TEXT_MUTED)),
-            Span::styled(line.to_string(), Style::default().fg(palette::TEXT_MUTED)),
-        ]));
+    for (idx, line) in all_lines[..head_end].iter().enumerate() {
+        lines.extend(render_card_detail_line(
+            if idx == 0 { Some("output") } else { None },
+            line,
+            tool_value_style(),
+            width,
+        ));
     }
 
     if total > 2 * line_limit {
         let omitted = total.saturating_sub(2 * line_limit);
-        lines.push(Line::from(Span::styled(
-            format!("  ... +{omitted} lines"),
+        lines.push(details_affordance_line(
+            &format!("+{omitted} more lines; press v for details"),
             Style::default().fg(palette::TEXT_MUTED),
-        )));
+        ));
         let tail_start = total.saturating_sub(line_limit);
         for line in &all_lines[tail_start..] {
-            lines.push(Line::from(vec![
-                Span::styled("  | ", Style::default().fg(palette::TEXT_MUTED)),
-                Span::styled(line.to_string(), Style::default().fg(palette::TEXT_MUTED)),
-            ]));
+            lines.extend(render_card_detail_line(
+                None,
+                line,
+                tool_value_style(),
+                width,
+            ));
         }
     } else if total > head_end {
         for line in &all_lines[head_end..] {
-            lines.push(Line::from(vec![
-                Span::styled("  | ", Style::default().fg(palette::TEXT_MUTED)),
-                Span::styled(line.to_string(), Style::default().fg(palette::TEXT_MUTED)),
-            ]));
+            lines.extend(render_card_detail_line(
+                None,
+                line,
+                tool_value_style(),
+                width,
+            ));
         }
     }
 
@@ -1314,10 +1414,20 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
     }
 }
 
-fn status_symbol(started_at: Option<Instant>, status: ToolStatus) -> String {
+fn status_symbol(started_at: Option<Instant>, status: ToolStatus, low_motion: bool) -> String {
     match status {
         ToolStatus::Running => {
-            let elapsed_ms = started_at.map_or(0, |t| t.elapsed().as_millis());
+            if low_motion {
+                return TOOL_RUNNING_SYMBOLS[0].to_string();
+            }
+            let elapsed_ms = started_at.map_or_else(
+                || {
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |duration| duration.as_millis())
+                },
+                |t| t.elapsed().as_millis(),
+            );
             let cycle = u128::from(TOOL_STATUS_SYMBOL_MS);
             let idx = if cycle == 0 {
                 0
@@ -1326,9 +1436,16 @@ fn status_symbol(started_at: Option<Instant>, status: ToolStatus) -> String {
             };
             TOOL_RUNNING_SYMBOLS[usize::try_from(idx).unwrap_or_default()].to_string()
         }
-        ToolStatus::Success => "o".to_string(),
-        ToolStatus::Failed => "x".to_string(),
+        ToolStatus::Success => TOOL_DONE_SYMBOL.to_string(),
+        ToolStatus::Failed => TOOL_FAILED_SYMBOL.to_string(),
     }
+}
+
+fn details_affordance_line(text: &str, style: Style) -> Line<'static> {
+    Line::from(vec![
+        Span::styled("▏ ", Style::default().fg(palette::TEXT_DIM)),
+        Span::styled(format!("{text}"), style),
+    ])
 }
 
 fn truncate_text(text: &str, max_len: usize) -> String {
@@ -1343,29 +1460,175 @@ fn truncate_text(text: &str, max_len: usize) -> String {
     out
 }
 
-fn user_style() -> Style {
-    Style::default()
-        .fg(palette::TEXT_PRIMARY)
-        .add_modifier(Modifier::BOLD)
+fn user_label_style() -> Style {
+    Style::default().fg(palette::TEXT_MUTED)
 }
 
-fn assistant_style() -> Style {
+fn assistant_label_style() -> Style {
     Style::default().fg(palette::DEEPSEEK_SKY)
 }
 
-fn system_style() -> Style {
+fn system_label_style() -> Style {
+    Style::default().fg(palette::TEXT_DIM)
+}
+
+fn message_body_style() -> Style {
+    Style::default().fg(palette::TEXT_PRIMARY)
+}
+
+fn system_body_style() -> Style {
     Style::default().fg(palette::TEXT_MUTED).italic()
 }
 
 fn thinking_style() -> Style {
+    Style::default().fg(palette::TEXT_TOOL_OUTPUT)
+}
+
+fn render_tool_header(
+    title: &str,
+    state: &str,
+    status: ToolStatus,
+    started_at: Option<Instant>,
+    low_motion: bool,
+) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            format!("{} ", status_symbol(started_at, status, low_motion)),
+            Style::default().fg(tool_state_color(status)),
+        ),
+        Span::styled(title.to_string(), tool_title_style()),
+        Span::styled(" ", Style::default()),
+        Span::styled(state.to_string(), tool_status_style(status)),
+    ])
+}
+
+fn render_card_detail_line(
+    label: Option<&str>,
+    value: &str,
+    value_style: Style,
+    width: u16,
+) -> Vec<Line<'static>> {
+    let label_text = label.map(|text| format!("{text}:"));
+    let prefix_width = UnicodeWidthStr::width("▏ ")
+        + label_text.as_deref().map_or(0, UnicodeWidthStr::width)
+        + usize::from(label.is_some());
+    let content_width = usize::from(width).saturating_sub(prefix_width).max(1);
+
+    let mut lines = Vec::new();
+    for (idx, part) in wrap_text(value, content_width).into_iter().enumerate() {
+        let mut spans = vec![Span::styled("▏ ", Style::default().fg(palette::TEXT_DIM))];
+        if idx == 0 {
+            if let Some(label_text) = label_text.as_deref() {
+                spans.push(Span::styled(
+                    label_text.to_string(),
+                    tool_detail_label_style(),
+                ));
+                spans.push(Span::raw(" "));
+            }
+        } else if let Some(label_text) = label_text.as_deref() {
+            spans.push(Span::raw(
+                " ".repeat(UnicodeWidthStr::width(label_text) + 1),
+            ));
+        }
+        spans.push(Span::styled(part, value_style));
+        lines.push(Line::from(spans));
+    }
+    lines
+}
+
+fn tool_title_style() -> Style {
     Style::default()
-        .fg(palette::TEXT_PRIMARY)
-        .add_modifier(Modifier::ITALIC)
+        .fg(palette::TEXT_SOFT)
+        .add_modifier(Modifier::BOLD)
+}
+
+fn tool_status_style(status: ToolStatus) -> Style {
+    Style::default().fg(match status {
+        ToolStatus::Running => palette::ACCENT_TOOL_LIVE,
+        ToolStatus::Success => palette::TEXT_DIM,
+        ToolStatus::Failed => palette::ACCENT_TOOL_ISSUE,
+    })
+}
+
+fn tool_detail_label_style() -> Style {
+    Style::default().fg(palette::TEXT_DIM)
+}
+
+fn tool_state_color(status: ToolStatus) -> Color {
+    match status {
+        ToolStatus::Running => palette::ACCENT_TOOL_LIVE,
+        ToolStatus::Success => palette::TEXT_DIM,
+        ToolStatus::Failed => palette::ACCENT_TOOL_ISSUE,
+    }
+}
+
+fn tool_status_label(status: ToolStatus) -> &'static str {
+    match status {
+        ToolStatus::Running => "running",
+        ToolStatus::Success => "done",
+        ToolStatus::Failed => "issue",
+    }
+}
+
+fn tool_value_style() -> Style {
+    Style::default().fg(palette::TEXT_MUTED)
+}
+
+fn thinking_visual_state(streaming: bool, duration_secs: Option<f32>) -> ThinkingVisualState {
+    if streaming {
+        ThinkingVisualState::Live
+    } else if duration_secs.is_some() {
+        ThinkingVisualState::Done
+    } else {
+        ThinkingVisualState::Idle
+    }
+}
+
+fn thinking_status_label(state: ThinkingVisualState) -> &'static str {
+    match state {
+        ThinkingVisualState::Live => "live",
+        ThinkingVisualState::Done => "done",
+        ThinkingVisualState::Idle => "idle",
+    }
+}
+
+fn thinking_symbol(state: ThinkingVisualState, low_motion: bool) -> String {
+    match state {
+        ThinkingVisualState::Live => status_symbol(None, ToolStatus::Running, low_motion),
+        ThinkingVisualState::Done => "◦".to_string(),
+        ThinkingVisualState::Idle => "·".to_string(),
+    }
+}
+
+fn thinking_title_style() -> Style {
+    Style::default()
+        .fg(palette::TEXT_SOFT)
+        .add_modifier(Modifier::BOLD)
+}
+
+fn thinking_status_style(state: ThinkingVisualState) -> Style {
+    Style::default().fg(match state {
+        ThinkingVisualState::Live => palette::ACCENT_REASONING_LIVE,
+        ThinkingVisualState::Done => palette::TEXT_DIM,
+        ThinkingVisualState::Idle => palette::TEXT_DIM,
+    })
+}
+
+fn thinking_meta_style() -> Style {
+    Style::default().fg(palette::TEXT_DIM)
+}
+
+fn thinking_state_accent(state: ThinkingVisualState) -> Color {
+    match state {
+        ThinkingVisualState::Live => palette::ACCENT_REASONING_LIVE,
+        ThinkingVisualState::Done => palette::TEXT_DIM,
+        ThinkingVisualState::Idle => palette::TEXT_DIM,
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::extract_reasoning_summary;
+    use super::{extract_reasoning_summary, render_thinking};
 
     #[test]
     fn extract_reasoning_summary_prefers_summary_block() {
@@ -1379,5 +1642,23 @@ mod tests {
         let text = "Line one\nLine two";
         let summary = extract_reasoning_summary(text).expect("summary should exist");
         assert_eq!(summary, "Line one\nLine two");
+    }
+
+    #[test]
+    fn render_thinking_collapsed_shows_details_affordance() {
+        let lines = render_thinking(
+            "Summary: First line\nSecond line\nThird line\nFourth line\nFifth line",
+            80,
+            false,
+            Some(2.0),
+            true,
+            false,
+        );
+        let text = lines
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
+            .collect::<String>();
+        assert!(text.contains("summary only; press v for details"));
+        assert!(text.contains("thinking"));
     }
 }

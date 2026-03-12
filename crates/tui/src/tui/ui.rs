@@ -84,27 +84,21 @@ use super::widgets::{
 
 // === Constants ===
 
-const MAX_QUEUED_PREVIEW: usize = 3;
 const SLASH_MENU_LIMIT: usize = 6;
 const MIN_CHAT_HEIGHT: u16 = 3;
-const MIN_COMPOSER_HEIGHT: u16 = 1;
+const MIN_COMPOSER_HEIGHT: u16 = 3;
 const CONTEXT_WARNING_THRESHOLD_PERCENT: f64 = 85.0;
 const CONTEXT_CRITICAL_THRESHOLD_PERCENT: f64 = 95.0;
-const UI_IDLE_POLL_MS: u64 = 33;
-const UI_ACTIVE_POLL_MS: u64 = 16;
-const UI_DEEPSEEK_SQUIGGLE_MS: u64 = 120;
-const UI_TYPING_INDICATOR_MS: u64 = 120;
-const UI_STATUS_ANIMATION_MS: u64 = UI_DEEPSEEK_SQUIGGLE_MS;
-const MAX_ACTIVE_AGENT_STATUS_ROWS: usize = 2;
+const UI_IDLE_POLL_MS: u64 = 48;
+const UI_ACTIVE_POLL_MS: u64 = 24;
+const UI_DEEPSEEK_SQUIGGLE_MS: u64 = 320;
+const UI_STATUS_ANIMATION_MS: u64 = 360;
 const WORKSPACE_CONTEXT_REFRESH_SECS: u64 = 15;
 const SIDEBAR_VISIBLE_MIN_WIDTH: u16 = 100;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct StatusLayoutPlan {
     status_height: u16,
-    queued_preview: Vec<String>,
-    queued_compacted: bool,
-    compact_runtime_summary: bool,
 }
 
 /// Run the interactive TUI event loop.
@@ -830,8 +824,12 @@ async fn run_event_loop(
 
         let has_running_agents = running_agent_count(app) > 0;
         if (app.is_loading || has_running_agents || app.is_compacting)
-            && last_status_frame.elapsed() >= Duration::from_millis(UI_STATUS_ANIMATION_MS)
+            && last_status_frame.elapsed()
+                >= Duration::from_millis(status_animation_interval_ms(app))
         {
+            if !app.low_motion && history_has_live_motion(&app.history) {
+                app.mark_history_updated();
+            }
             app.needs_redraw = true;
             last_status_frame = Instant::now();
         }
@@ -852,9 +850,9 @@ async fn run_event_loop(
         }
 
         let mut poll_timeout = if app.is_loading || has_running_agents || app.is_compacting {
-            Duration::from_millis(UI_ACTIVE_POLL_MS)
+            Duration::from_millis(active_poll_ms(app))
         } else {
-            Duration::from_millis(UI_IDLE_POLL_MS)
+            Duration::from_millis(idle_poll_ms(app))
         };
         if let Some(until_flush) = app.paste_burst.next_flush_delay(now) {
             poll_timeout = poll_timeout.min(until_flush);
@@ -1097,7 +1095,7 @@ async fn run_event_loop(
                         app.set_sidebar_focus(SidebarFocus::Plan);
                         app.status_message = Some("Sidebar focus: plan".to_string());
                     } else {
-                        app.set_mode(AppMode::Normal);
+                        app.set_mode(AppMode::Plan);
                     }
                     continue;
                 }
@@ -1120,12 +1118,7 @@ async fn run_event_loop(
                     continue;
                 }
                 KeyCode::Char('4') if key.modifiers.contains(KeyModifiers::ALT) => {
-                    if key.modifiers.contains(KeyModifiers::CONTROL) {
-                        app.set_sidebar_focus(SidebarFocus::Agents);
-                        app.status_message = Some("Sidebar focus: agents".to_string());
-                    } else {
-                        app.set_mode(AppMode::Plan);
-                    }
+                    apply_alt_4_shortcut(app, key.modifiers);
                     continue;
                 }
                 KeyCode::Char('!') if key.modifiers.contains(KeyModifiers::ALT) => {
@@ -1370,17 +1363,13 @@ async fn run_event_loop(
                 }
                 KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     let new_mode = match app.mode {
-                        AppMode::Agent => AppMode::Normal,
-                        _ => AppMode::Agent,
+                        AppMode::Plan => AppMode::Agent,
+                        _ => AppMode::Plan,
                     };
                     app.set_mode(new_mode);
                 }
                 KeyCode::Char('v') if is_paste_shortcut(&key) => {
                     app.paste_from_clipboard();
-                }
-                KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::ALT) => {
-                    app.set_mode(AppMode::Normal);
-                    continue;
                 }
                 KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::ALT) => {
                     app.set_mode(AppMode::Agent);
@@ -1392,10 +1381,6 @@ async fn run_event_loop(
                 }
                 KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::ALT) => {
                     app.set_mode(AppMode::Plan);
-                    continue;
-                }
-                KeyCode::Char('N') if key.modifiers.contains(KeyModifiers::ALT) => {
-                    app.set_mode(AppMode::Normal);
                     continue;
                 }
                 KeyCode::Char('A') if key.modifiers.contains(KeyModifiers::ALT) => {
@@ -1463,6 +1448,15 @@ fn handle_paste_burst_key(app: &mut App, key: &KeyEvent, now: Instant) -> bool {
     }
 
     false
+}
+
+fn apply_alt_4_shortcut(app: &mut App, modifiers: KeyModifiers) {
+    if modifiers.contains(KeyModifiers::CONTROL) {
+        app.set_sidebar_focus(SidebarFocus::Agents);
+        app.status_message = Some("Sidebar focus: agents".to_string());
+    } else {
+        app.set_mode(AppMode::Plan);
+    }
 }
 
 fn handle_paste_burst_decision(
@@ -2143,7 +2137,7 @@ fn plan_next_step_prompt() -> String {
         "  1) Accept + implement in Agent mode",
         "  2) Accept + implement in YOLO mode",
         "  3) Revise the plan / ask follow-ups",
-        "  4) Exit Plan mode",
+        "  4) Return to Agent mode without implementing",
         "",
         "Use the plan confirmation popup or type 1-4 and press Enter.",
     ]
@@ -2173,7 +2167,7 @@ fn parse_plan_choice(input: &str) -> Option<PlanChoice> {
         "accept" | "approve" | "agent" | "a" => Some(PlanChoice::AcceptAgent),
         "accept-yolo" | "yolo" | "y" => Some(PlanChoice::AcceptYolo),
         "revise" | "edit" | "plan" | "stay" => Some(PlanChoice::RevisePlan),
-        "normal" | "exit" | "cancel" | "back" => Some(PlanChoice::ExitPlan),
+        "exit" | "cancel" | "back" => Some(PlanChoice::ExitPlan),
         _ => None,
     }
 }
@@ -2268,30 +2262,6 @@ fn status_row_budget(
     body_height.saturating_sub(composer_height.max(MIN_COMPOSER_HEIGHT) + chat_floor)
 }
 
-fn compact_queued_preview(app: &App, preview_rows_budget: usize) -> (Vec<String>, bool) {
-    if app.queued_message_count() == 0 || preview_rows_budget == 0 {
-        return (Vec::new(), false);
-    }
-
-    let preview_rows_budget = preview_rows_budget.min(MAX_QUEUED_PREVIEW);
-    let queue_count = app.queued_message_count();
-    let mut previews = app.queued_message_previews(preview_rows_budget);
-    if previews.len() > preview_rows_budget {
-        previews.truncate(preview_rows_budget);
-        if let Some(last) = previews.last_mut() {
-            let shown_count = preview_rows_budget.saturating_sub(1);
-            let hidden_count = queue_count.saturating_sub(shown_count);
-            *last = format!("+{hidden_count} more");
-        }
-    }
-
-    let shown_count = previews
-        .iter()
-        .filter(|line| !line.starts_with('+'))
-        .count();
-    (previews, queue_count > shown_count)
-}
-
 fn running_agent_count(app: &App) -> usize {
     let mut ids: std::collections::HashSet<&str> =
         app.agent_progress.keys().map(String::as_str).collect();
@@ -2370,98 +2340,28 @@ fn reconcile_subagent_activity_state(app: &mut App) {
     }
 }
 
-fn compact_runtime_parts(app: &App) -> Vec<String> {
-    let mut parts = Vec::new();
-
-    let active_agents = running_agent_count(app);
-    if active_agents > 0 {
-        parts.push(format!(
-            "{active_agents} agent{}",
-            if active_agents == 1 { "" } else { "s" }
-        ));
-    }
-
-    let running_tasks = app
-        .task_panel
-        .iter()
-        .filter(|task| task.status == "running")
-        .count();
-    if running_tasks > 0 {
-        parts.push(format!(
-            "{running_tasks} task{}",
-            if running_tasks == 1 { "" } else { "s" }
-        ));
-    }
-
-    let queued = app.queued_message_count();
-    if queued > 0 {
-        parts.push(format!("{queued} queued"));
-    }
-    if app.queued_draft.is_some() {
-        parts.push("editing queue".to_string());
-    }
-
-    match app.view_stack.top_kind() {
-        Some(ModalKind::Approval) => parts.push("approval open".to_string()),
-        Some(ModalKind::Elevation) => parts.push("elevation open".to_string()),
-        _ => {}
-    }
-
-    parts
-}
-
 fn compute_status_layout(
     app: &App,
     terminal_height: u16,
-    terminal_width: u16,
     composer_height: u16,
 ) -> StatusLayoutPlan {
     let status_budget = status_row_budget(terminal_height, 1, 1, composer_height);
     if status_budget == 0 {
-        return StatusLayoutPlan {
-            status_height: 0,
-            queued_preview: Vec::new(),
-            queued_compacted: app.queued_message_count() > 0,
-            compact_runtime_summary: false,
-        };
+        return StatusLayoutPlan { status_height: 0 };
     }
 
-    let active_agents = running_agent_count(app);
-    let compact_runtime_summary =
-        terminal_width < SIDEBAR_VISIBLE_MIN_WIDTH && !compact_runtime_parts(app).is_empty();
-    let fixed_rows = usize::from(app.is_loading || app.is_compacting)
-        + usize::from(compact_runtime_summary)
+    let active_details = usize::from(app.is_loading || app.is_compacting)
         + usize::from(app.queued_draft.is_some())
-        + usize::from(active_agents > 0);
-    let queue_rows_budget = usize::from(status_budget).saturating_sub(fixed_rows);
-
-    let (queued_preview, preview_compacted) = if queue_rows_budget > 0 {
-        compact_queued_preview(app, queue_rows_budget.saturating_sub(1))
-    } else {
-        (Vec::new(), app.queued_message_count() > 0)
-    };
-
-    let queue_rows = if app.queued_message_count() > 0 && queue_rows_budget > 0 {
-        1 + queued_preview.len()
-    } else {
-        0
-    };
-    let mut requested_rows = fixed_rows + queue_rows;
-    if active_agents > 0 {
-        let detail_rows_budget = usize::from(status_budget).saturating_sub(requested_rows);
-        let detail_rows = detail_rows_budget.min(active_agents.min(MAX_ACTIVE_AGENT_STATUS_ROWS));
-        requested_rows += detail_rows;
-    }
+        + usize::from(running_agent_count(app) > 0)
+        + usize::from(matches!(
+            app.view_stack.top_kind(),
+            Some(ModalKind::Approval | ModalKind::Elevation)
+        ));
+    let requested_rows = 1 + active_details.min(2);
     let status_height =
         u16::try_from(requested_rows.min(usize::from(status_budget))).unwrap_or(status_budget);
-    let queued_compacted = preview_compacted || (app.queued_message_count() > 0 && queue_rows == 0);
 
-    StatusLayoutPlan {
-        status_height,
-        queued_preview,
-        queued_compacted,
-        compact_runtime_summary,
-    }
+    StatusLayoutPlan { status_height }
 }
 
 fn render(f: &mut Frame, app: &mut App) {
@@ -2480,23 +2380,20 @@ fn render(f: &mut Frame, app: &mut App) {
     let header_height = 1;
     let footer_height = 1;
     let body_height = size.height.saturating_sub(header_height + footer_height);
-    let prompt = prompt_for_mode(app.mode);
     let slash_menu_entries = visible_slash_menu_entries(app, SLASH_MENU_LIMIT);
     let composer_for_budget = {
         let max_composer_height = body_height
             .saturating_sub(chat_height_floor(body_height))
             .max(MIN_COMPOSER_HEIGHT);
-        let composer_widget =
-            ComposerWidget::new(app, prompt, max_composer_height, &slash_menu_entries);
+        let composer_widget = ComposerWidget::new(app, max_composer_height, &slash_menu_entries);
         composer_widget.desired_height(size.width)
     };
-    let status_layout = compute_status_layout(app, size.height, size.width, composer_for_budget);
+    let status_layout = compute_status_layout(app, size.height, composer_for_budget);
     let composer_max_height = body_height
         .saturating_sub(status_layout.status_height + chat_height_floor(body_height))
         .max(MIN_COMPOSER_HEIGHT);
     let composer_height = {
-        let composer_widget =
-            ComposerWidget::new(app, prompt, composer_max_height, &slash_menu_entries);
+        let composer_widget = ComposerWidget::new(app, composer_max_height, &slash_menu_entries);
         composer_widget.desired_height(size.width)
     };
 
@@ -2514,14 +2411,25 @@ fn render(f: &mut Frame, app: &mut App) {
     // Render header
     {
         let context_window = crate::models::context_window_for_model(&app.model);
-        let header_data =
-            HeaderData::new(app.mode, &app.model, app.is_loading, app.ui_theme.header_bg)
-                .with_usage(
-                    app.total_conversation_tokens,
-                    context_window,
-                    app.session_cost,
-                    app.last_prompt_tokens,
-                );
+        let workspace_name = app
+            .workspace
+            .file_name()
+            .and_then(|value| value.to_str())
+            .filter(|value| !value.is_empty())
+            .unwrap_or("workspace");
+        let header_data = HeaderData::new(
+            app.mode,
+            &app.model,
+            workspace_name,
+            app.is_loading,
+            app.ui_theme.header_bg,
+        )
+        .with_usage(
+            app.total_conversation_tokens,
+            context_window,
+            app.session_cost,
+            app.last_prompt_tokens,
+        );
         let header_widget = HeaderWidget::new(header_data);
         let buf = f.buffer_mut();
         header_widget.render(chunks[0], buf);
@@ -2560,21 +2468,12 @@ fn render(f: &mut Frame, app: &mut App) {
 
     // Render status
     if status_layout.status_height > 0 {
-        render_status_indicator(
-            f,
-            chunks[2],
-            app,
-            app.queued_message_count(),
-            &status_layout.queued_preview,
-            status_layout.queued_compacted,
-            status_layout.compact_runtime_summary,
-        );
+        render_status_indicator(f, chunks[2], app);
     }
 
     // Render composer
     let cursor_pos = {
-        let composer_widget =
-            ComposerWidget::new(app, prompt, composer_max_height, &slash_menu_entries);
+        let composer_widget = ComposerWidget::new(app, composer_max_height, &slash_menu_entries);
         let buf = f.buffer_mut();
         composer_widget.render(chunks[3], buf);
         composer_widget.cursor_pos(chunks[3])
@@ -2861,7 +2760,7 @@ fn render_sidebar_subagents(f: &mut Frame, area: Rect, app: &App) {
 
     if app.subagent_cache.is_empty() {
         lines.push(Line::from(Span::styled(
-            "No sub-agents",
+            "No agents",
             Style::default().fg(palette::TEXT_MUTED),
         )));
     } else {
@@ -2923,7 +2822,7 @@ fn render_sidebar_subagents(f: &mut Frame, area: Rect, app: &App) {
         }
     }
 
-    render_sidebar_section(f, area, "Sub-Agents", lines);
+    render_sidebar_section(f, area, "Agents", lines);
 }
 
 fn render_sidebar_section(f: &mut Frame, area: Rect, title: &str, lines: Vec<Line<'static>>) {
@@ -3334,198 +3233,189 @@ fn resume_terminal(
     Ok(())
 }
 
-fn render_status_indicator(
-    f: &mut Frame,
-    area: Rect,
-    app: &App,
-    queued_count: usize,
-    queued: &[String],
-    queued_compacted: bool,
-    compact_runtime_summary: bool,
-) {
-    let max_rows = usize::from(area.height);
-    if max_rows == 0 {
+fn render_status_indicator(f: &mut Frame, area: Rect, app: &App) {
+    if area.height == 0 || area.width == 0 {
         return;
     }
-    let mut lines = Vec::with_capacity(
-        2 + queued.len() + usize::from(app.queued_draft.is_some()) + MAX_ACTIVE_AGENT_STATUS_ROWS,
-    );
 
-    if app.is_loading {
-        let header = if app.show_thinking {
-            app.reasoning_header.clone()
-        } else {
-            None
-        };
-        let elapsed = app.turn_started_at.map(format_elapsed);
-        // Distinguish thinking streaming from answer streaming.
-        let is_thinking_streaming = app.streaming_message_index.is_some_and(|idx| {
-            matches!(
-                app.history.get(idx),
-                Some(HistoryCell::Thinking {
-                    streaming: true,
-                    ..
-                })
-            )
-        });
-        let is_answer_streaming = app.streaming_message_index.is_some() && !is_thinking_streaming;
-        let spinner = if is_answer_streaming {
-            typing_indicator(app.turn_started_at)
+    let mut lines = vec![status_summary_line(app, area.width)];
+    let detail_budget = usize::from(area.height.saturating_sub(1));
+    lines.extend(status_detail_lines(app, area.width, detail_budget));
+
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+    f.render_widget(paragraph, area);
+}
+
+fn approval_mode_summary(app: &App) -> &'static str {
+    match app.approval_mode {
+        ApprovalMode::Auto => "auto",
+        ApprovalMode::Suggest => "review",
+        ApprovalMode::Never => "off",
+    }
+}
+
+fn workspace_short_name(app: &App) -> String {
+    app.workspace
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("workspace")
+        .to_string()
+}
+
+fn current_run_state(app: &App) -> (&'static str, ratatui::style::Color) {
+    if app.is_compacting {
+        ("Compacting", palette::STATUS_WARNING)
+    } else if app.is_loading {
+        ("Working", palette::DEEPSEEK_SKY)
+    } else if running_agent_count(app) > 0 {
+        ("Agents active", palette::DEEPSEEK_SKY)
+    } else if app.queued_draft.is_some() {
+        ("Editing queue", palette::STATUS_WARNING)
+    } else {
+        ("Ready", palette::TEXT_MUTED)
+    }
+}
+
+fn status_summary_line(app: &App, width: u16) -> Line<'static> {
+    let queue = app.queued_message_count();
+    let running_tasks = app
+        .task_panel
+        .iter()
+        .filter(|task| task.status == "running")
+        .count();
+    let active_agents = running_agent_count(app);
+    let (state, state_color) = current_run_state(app);
+    let mut parts = vec![workspace_short_name(app)];
+    if queue > 0 {
+        parts.push(format!("queue {queue}"));
+    }
+    if !matches!(app.approval_mode, ApprovalMode::Suggest) {
+        parts.push(format!("approvals {}", approval_mode_summary(app)));
+    }
+    if running_tasks > 0 {
+        parts.push(format!(
+            "{} task{}",
+            running_tasks,
+            if running_tasks == 1 { "" } else { "s" }
+        ));
+    }
+    if active_agents > 0 {
+        parts.push(format!(
+            "{} agent{}",
+            active_agents,
+            if active_agents == 1 { "" } else { "s" }
+        ));
+    }
+    if width >= 100
+        && let Some(workspace_context) = app.workspace_context.as_ref()
+    {
+        parts.push(workspace_context.to_string());
+    }
+    let text = parts.join("  ·  ");
+
+    let available_width = if state == "Ready" {
+        usize::from(width)
+    } else {
+        usize::from(width).saturating_sub(state.len() + 3)
+    };
+    let mut spans = vec![Span::styled(
+        truncate_line_to_width(&text, available_width.max(1)),
+        Style::default().fg(palette::TEXT_MUTED),
+    )];
+    if state != "Ready" {
+        spans.push(Span::styled(
+            "  ·  ",
+            Style::default().fg(palette::TEXT_DIM),
+        ));
+        spans.push(Span::styled(
+            state.to_string(),
+            Style::default().fg(state_color),
+        ));
+    }
+    Line::from(spans)
+}
+
+fn status_detail_lines(app: &App, width: u16, budget: usize) -> Vec<Line<'static>> {
+    if budget == 0 {
+        return Vec::new();
+    }
+
+    let mut lines = Vec::new();
+
+    if app.is_loading && lines.len() < budget {
+        let header = app
+            .reasoning_header
+            .as_deref()
+            .filter(|header| !header.trim().is_empty())
+            .unwrap_or("streaming response");
+        let spinner = if app.low_motion {
+            "·"
         } else {
             deepseek_squiggle(app.turn_started_at)
         };
-        let (label, label_color) = if is_answer_streaming {
-            ("ANSWER", palette::DEEPSEEK_SKY)
-        } else if app.show_thinking || is_thinking_streaming {
-            ("THINKING", palette::STATUS_WARNING)
+        let elapsed = app.turn_started_at.map(format_elapsed).unwrap_or_default();
+        let detail = if elapsed.is_empty() {
+            format!("{spinner} {header}  ·  Esc interrupts")
         } else {
-            ("WORKING", palette::STATUS_WARNING)
+            format!("{spinner} {header}  ·  {elapsed}  ·  Esc interrupts")
         };
-        let mut spans = vec![
-            Span::styled(spinner, Style::default().fg(palette::DEEPSEEK_SKY).bold()),
-            Span::raw(" "),
-            Span::styled(label, Style::default().fg(label_color).bold()),
-        ];
-        if !is_answer_streaming && let Some(header) = header {
-            spans.push(Span::raw(": "));
-            spans.push(Span::styled(
-                header,
-                Style::default().fg(palette::STATUS_WARNING),
-            ));
-        }
-
-        if let Some(elapsed) = elapsed {
-            spans.push(Span::raw(" | "));
-            spans.push(Span::styled(
-                elapsed,
-                Style::default().fg(palette::TEXT_MUTED),
-            ));
-        }
-
-        spans.push(Span::raw(" | "));
-        spans.push(Span::styled(
-            "Esc/Ctrl+C to interrupt",
+        lines.push(Line::from(Span::styled(
+            truncate_line_to_width(&detail, usize::from(width)),
             Style::default().fg(palette::TEXT_MUTED),
-        ));
-
-        lines.push(Line::from(spans));
-    } else if app.is_compacting {
-        let spinner = deepseek_squiggle(None);
-        let spans = vec![
-            Span::styled(spinner, Style::default().fg(palette::STATUS_WARNING).bold()),
-            Span::raw(" "),
-            Span::styled(
-                "COMPACTING",
-                Style::default().fg(palette::STATUS_WARNING).bold(),
-            ),
-            Span::raw(" "),
-            Span::styled(
-                "summarizing context...",
-                Style::default().fg(palette::TEXT_MUTED),
-            ),
-        ];
-        lines.push(Line::from(spans));
+        )));
     }
 
-    if compact_runtime_summary && lines.len() < max_rows {
-        let summary = compact_runtime_parts(app).join(" | ");
-        if !summary.is_empty() {
-            let available = area.width as usize;
-            lines.push(Line::from(vec![
-                Span::styled("STATE ", Style::default().fg(palette::DEEPSEEK_SKY).bold()),
-                Span::styled(
-                    truncate_line_to_width(&summary, available.saturating_sub(6).max(1)),
-                    Style::default().fg(palette::TEXT_MUTED),
-                ),
-            ]));
-        }
+    if app.is_compacting && lines.len() < budget {
+        lines.push(Line::from(Span::styled(
+            truncate_line_to_width(
+                "Compacting context  ·  summarizing older turns  ·  Esc interrupts",
+                usize::from(width),
+            ),
+            Style::default().fg(palette::TEXT_MUTED),
+        )));
     }
 
-    let active_agent_total = running_agent_count(app);
-    if active_agent_total > 0 && lines.len() < max_rows {
-        let available = area.width as usize;
-        let spinner_start = app.agent_activity_started_at.or(app.turn_started_at);
-        let spinner = deepseek_squiggle(spinner_start);
-        let header = format!("AGENTS {active_agent_total} running | /agents");
-        lines.push(Line::from(vec![
-            Span::styled(spinner, Style::default().fg(palette::DEEPSEEK_SKY).bold()),
-            Span::raw(" "),
-            Span::styled(
-                truncate_line_to_width(&header, available.saturating_sub(2).max(1)),
-                Style::default().fg(palette::DEEPSEEK_SKY).bold(),
+    if let Some(draft) = app.queued_draft.as_ref()
+        && lines.len() < budget
+    {
+        lines.push(Line::from(Span::styled(
+            truncate_line_to_width(
+                &format!("Editing queued draft  ·  {}", draft.display),
+                usize::from(width),
             ),
-        ]));
+            Style::default().fg(palette::TEXT_MUTED),
+        )));
+    }
 
-        let preview_limit = max_rows
-            .saturating_sub(lines.len())
-            .min(MAX_ACTIVE_AGENT_STATUS_ROWS);
-        let active_rows = active_agent_rows(app, preview_limit);
-        for (id, status) in &active_rows {
-            if lines.len() >= max_rows {
-                break;
-            }
-            let id_short = truncate_line_to_width(id, 12);
-            let status_single_line = status.lines().next().unwrap_or(status.as_str());
-            let prefix = format!("  {id_short}: ");
-            let detail_width = available.saturating_sub(prefix.width()).max(1);
-            let detail = truncate_line_to_width(status_single_line, detail_width);
-            lines.push(Line::from(vec![
-                Span::styled(prefix, Style::default().fg(palette::TEXT_MUTED)),
-                Span::styled(detail, Style::default().fg(palette::TEXT_DIM)),
-            ]));
-        }
-
-        let hidden = active_agent_total.saturating_sub(active_rows.len());
-        if hidden > 0 && lines.len() < max_rows {
+    if running_agent_count(app) > 0 && lines.len() < budget {
+        let active_rows = active_agent_rows(app, 1);
+        if let Some((id, status)) = active_rows.first() {
             lines.push(Line::from(Span::styled(
-                format!("  +{hidden} more running"),
+                truncate_line_to_width(
+                    &format!("Agent {id}  ·  {}", status.lines().next().unwrap_or(status)),
+                    usize::from(width),
+                ),
                 Style::default().fg(palette::TEXT_MUTED),
             )));
         }
     }
 
-    if let Some(draft) = app.queued_draft.as_ref() {
-        let available = area.width as usize;
-        let prefix = "Editing queued:";
-        let prefix_width = prefix.width() + 1;
-        let max_len = available.saturating_sub(prefix_width).max(1);
-        let preview = truncate_line_to_width(&draft.display, max_len);
-        lines.push(Line::from(vec![
-            Span::styled(prefix, Style::default().fg(palette::TEXT_MUTED)),
-            Span::raw(" "),
-            Span::styled(preview, Style::default().fg(palette::DEEPSEEK_SKY)),
-        ]));
-    }
-
-    if queued_count > 0 {
-        let available = area.width as usize;
-        let header = if queued_compacted {
-            format!("Queued ({queued_count}) [compact] - /queue edit <n>")
-        } else {
-            format!("Queued ({queued_count}) - /queue edit <n>")
-        };
-        let header = truncate_line_to_width(&header, available.max(1));
-        lines.push(Line::from(vec![Span::styled(
-            header,
+    if matches!(
+        app.view_stack.top_kind(),
+        Some(ModalKind::Approval | ModalKind::Elevation)
+    ) && lines.len() < budget
+    {
+        lines.push(Line::from(Span::styled(
+            truncate_line_to_width(
+                "Review open request  ·  Esc closes the overlay",
+                usize::from(width),
+            ),
             Style::default().fg(palette::TEXT_MUTED),
-        )]));
-
-        for (idx, message) in queued.iter().enumerate() {
-            let label = if message.starts_with('+') {
-                message.to_string()
-            } else {
-                format!("{}. {message}", idx + 1)
-            };
-            let preview = truncate_line_to_width(&label, available.max(1));
-            lines.push(Line::from(vec![Span::styled(
-                preview,
-                Style::default().fg(palette::TEXT_DIM),
-            )]));
-        }
+        )));
     }
 
-    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
-    f.render_widget(paragraph, area);
+    lines
 }
 
 fn status_color(level: StatusToastLevel) -> ratatui::style::Color {
@@ -3591,47 +3481,11 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
             Style::default().fg(status_color(toast.level)),
         )]
     } else {
-        // Kimi-style: "00:07  yolo  agent (model, thinking)"
-        let mut spans = Vec::new();
-
-        // Elapsed time HH:MM
-        let elapsed = app.session_start.elapsed();
-        let total_secs = elapsed.as_secs();
-        let hours = total_secs / 3600;
-        let mins = (total_secs % 3600) / 60;
-        spans.push(Span::styled(
-            format!("{hours:02}:{mins:02}"),
+        let hint = footer_hint_text(app);
+        vec![Span::styled(
+            hint,
             Style::default().fg(palette::FOOTER_HINT),
-        ));
-        spans.push(Span::raw("  "));
-
-        // Mode (lowercase, colored)
-        let (mode_label, mode_color) = footer_mode_style(app);
-        spans.push(Span::styled(
-            mode_label.to_string(),
-            Style::default().fg(mode_color),
-        ));
-        spans.push(Span::raw("  "));
-
-        // "agent" label + model name + status in parens
-        let model_short = app.model.rsplit('/').next().unwrap_or(&app.model);
-        let status = if app.is_compacting {
-            ", compacting"
-        } else if app.is_loading {
-            ", thinking"
-        } else {
-            ""
-        };
-        spans.push(Span::styled(
-            "agent ",
-            Style::default().fg(palette::TEXT_HINT),
-        ));
-        spans.push(Span::styled(
-            format!("({model_short}{status})"),
-            Style::default().fg(palette::TEXT_HINT),
-        ));
-
-        spans
+        )]
     };
 
     let left_width: usize = left_spans.iter().map(|s| s.content.width()).sum();
@@ -3645,10 +3499,32 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
     f.render_widget(footer, area);
 }
 
+fn footer_hint_text(app: &App) -> String {
+    let slash_menu_open = !visible_slash_menu_entries(app, 1).is_empty();
+    if !app.view_stack.is_empty() {
+        return "Esc close overlay".to_string();
+    }
+    if app.is_loading || app.is_compacting {
+        return "Esc interrupt".to_string();
+    }
+    if slash_menu_open {
+        return "Up/Down move  ·  Tab accept".to_string();
+    }
+    if !app.input.is_empty() {
+        if app.input.contains('\n') {
+            return "Enter send  ·  Esc clear".to_string();
+        }
+        return "Enter send  ·  Alt+Enter newline".to_string();
+    }
+    if app.input_history.is_empty() {
+        return "Ctrl+K commands  ·  F1 help".to_string();
+    }
+    "Ctrl+K commands".to_string()
+}
+
 fn footer_mode_style(app: &App) -> (&'static str, ratatui::style::Color) {
     let label = app.mode.as_setting();
     let color = match app.mode {
-        crate::tui::app::AppMode::Normal => palette::MODE_NORMAL,
         crate::tui::app::AppMode::Agent => palette::MODE_AGENT,
         crate::tui::app::AppMode::Yolo => palette::MODE_YOLO,
         crate::tui::app::AppMode::Plan => palette::MODE_PLAN,
@@ -3824,15 +3700,6 @@ fn jump_to_adjacent_tool_cell(app: &mut App, direction: SearchDirection) -> bool
     false
 }
 
-fn prompt_for_mode(mode: AppMode) -> &'static str {
-    match mode {
-        AppMode::Normal => "> ",
-        AppMode::Agent => "agent> ",
-        AppMode::Yolo => "yolo> ",
-        AppMode::Plan => "plan> ",
-    }
-}
-
 fn estimated_context_tokens(app: &App) -> Option<i64> {
     i64::try_from(estimate_input_tokens_conservative(
         &app.api_messages,
@@ -3917,20 +3784,52 @@ fn format_elapsed(start: Instant) -> String {
 }
 
 fn deepseek_squiggle(start: Option<Instant>) -> &'static str {
-    const FRAMES: [&str; 6] = ["◍", "◉", "◌", "◌", "◉", "◍"];
+    const FRAMES: [&str; 4] = ["·", "◦", "•", "◦"];
     let elapsed_ms = start.map_or(0, |t| t.elapsed().as_millis());
     let idx = ((elapsed_ms / u128::from(UI_DEEPSEEK_SQUIGGLE_MS)) as usize) % FRAMES.len();
     FRAMES[idx]
 }
 
-/// Braille spinner frames — a prominent rotating circle pattern.
-const TYPING_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+fn status_animation_interval_ms(app: &App) -> u64 {
+    if app.low_motion {
+        2_400
+    } else {
+        UI_STATUS_ANIMATION_MS
+    }
+}
 
-/// Returns the typing indicator frame based on elapsed time.
-fn typing_indicator(start: Option<Instant>) -> &'static str {
-    let elapsed_ms = start.map_or(0, |t| t.elapsed().as_millis());
-    let idx = ((elapsed_ms / u128::from(UI_TYPING_INDICATOR_MS)) as usize) % TYPING_FRAMES.len();
-    TYPING_FRAMES[idx]
+fn active_poll_ms(app: &App) -> u64 {
+    if app.low_motion {
+        96
+    } else {
+        UI_ACTIVE_POLL_MS
+    }
+}
+
+fn idle_poll_ms(app: &App) -> u64 {
+    if app.low_motion { 120 } else { UI_IDLE_POLL_MS }
+}
+
+fn history_has_live_motion(history: &[HistoryCell]) -> bool {
+    history.iter().any(|cell| match cell {
+        HistoryCell::Thinking { streaming, .. } => *streaming,
+        HistoryCell::Tool(tool) => match tool {
+            ToolCell::Exec(cell) => cell.status == ToolStatus::Running,
+            ToolCell::Exploring(cell) => cell
+                .entries
+                .iter()
+                .any(|entry| entry.status == ToolStatus::Running),
+            ToolCell::PlanUpdate(cell) => cell.status == ToolStatus::Running,
+            ToolCell::PatchSummary(cell) => cell.status == ToolStatus::Running,
+            ToolCell::Review(cell) => cell.status == ToolStatus::Running,
+            ToolCell::DiffPreview(_) => false,
+            ToolCell::Mcp(cell) => cell.status == ToolStatus::Running,
+            ToolCell::ViewImage(_) => false,
+            ToolCell::WebSearch(cell) => cell.status == ToolStatus::Running,
+            ToolCell::Generic(cell) => cell.status == ToolStatus::Running,
+        },
+        _ => false,
+    })
 }
 
 fn truncate_line_to_width(text: &str, max_width: usize) -> String {
@@ -4140,38 +4039,54 @@ fn open_tool_details_pager(app: &mut App) -> bool {
             .and_then(|meta| meta.cell_line())
             .map(|(cell_index, _)| cell_index)
     } else {
-        app.history
-            .len()
-            .checked_sub(1)
-            .filter(|idx| app.tool_details_by_cell.contains_key(idx))
-            .or_else(|| app.tool_details_by_cell.keys().copied().max())
+        app.history.len().checked_sub(1)
     };
 
     let Some(cell_index) = target_cell else {
         return false;
     };
-    let Some(detail) = app.tool_details_by_cell.get(&cell_index) else {
-        app.status_message = Some("No tool details for selected line".to_string());
+    if let Some(detail) = app.tool_details_by_cell.get(&cell_index) {
+        let input = serde_json::to_string_pretty(&detail.input)
+            .unwrap_or_else(|_| detail.input.to_string());
+        let output = detail.output.as_deref().map_or(
+            "(not available)".to_string(),
+            std::string::ToString::to_string,
+        );
+        let content = format!(
+            "Tool ID: {}\nTool: {}\n\nInput:\n{}\n\nOutput:\n{}",
+            detail.tool_id, detail.tool_name, input, output
+        );
+
+        let width = app
+            .last_transcript_area
+            .map(|area| area.width)
+            .unwrap_or(80);
+        app.view_stack.push(PagerView::from_text(
+            format!("Tool: {}", detail.tool_name),
+            &content,
+            width.saturating_sub(2),
+        ));
+        return true;
+    }
+
+    let Some(cell) = app.history.get(cell_index) else {
+        app.status_message = Some("No details available for the selected line".to_string());
         return false;
     };
-
-    let input =
-        serde_json::to_string_pretty(&detail.input).unwrap_or_else(|_| detail.input.to_string());
-    let output = detail.output.as_deref().map_or(
-        "(not available)".to_string(),
-        std::string::ToString::to_string,
-    );
-    let content = format!(
-        "Tool ID: {}\nTool: {}\n\nInput:\n{}\n\nOutput:\n{}",
-        detail.tool_id, detail.tool_name, input, output
-    );
-
+    let title = match cell {
+        HistoryCell::User { .. } => "You".to_string(),
+        HistoryCell::Assistant { .. } => "Assistant".to_string(),
+        HistoryCell::System { .. } => "Note".to_string(),
+        HistoryCell::Thinking { .. } => "Reasoning".to_string(),
+        HistoryCell::Tool(_) => "Message".to_string(),
+    };
     let width = app
         .last_transcript_area
         .map(|area| area.width)
         .unwrap_or(80);
+    let content = history_cell_to_text(cell, width);
     app.view_stack.push(PagerView::from_text(
-        format!("Tool: {}", detail.tool_name),
+        title,
         &content,
         width.saturating_sub(2),
     ));

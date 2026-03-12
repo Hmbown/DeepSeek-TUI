@@ -7,7 +7,7 @@ pub use renderable::Renderable;
 use std::time::Duration;
 
 use crate::palette;
-use crate::tui::app::App;
+use crate::tui::app::{App, AppMode, ComposerDensity};
 use crate::tui::approval::{ApprovalRequest, ElevationOption, ElevationRequest, ToolCategory};
 use crate::tui::history::HistoryCell;
 use crate::tui::scrolling::{TranscriptLineMeta, TranscriptScroll};
@@ -24,6 +24,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const SEND_FLASH_DURATION: Duration = Duration::from_millis(500);
+const COMPOSER_PANEL_HEIGHT: u16 = 2;
 
 pub struct ChatWidget {
     content_area: Rect,
@@ -35,6 +36,19 @@ impl ChatWidget {
         let content_area = area;
         let visible_lines = content_area.height as usize;
         let render_options = app.transcript_render_options();
+
+        if should_render_empty_state(app) {
+            let lines = build_empty_state_lines(app, content_area);
+            app.last_transcript_area = Some(content_area);
+            app.last_transcript_top = 0;
+            app.last_transcript_visible = visible_lines;
+            app.last_transcript_total = 0;
+            app.last_transcript_padding_top = 0;
+            return Self {
+                content_area,
+                lines,
+            };
+        }
 
         app.transcript_cache.ensure(
             &app.history,
@@ -74,7 +88,9 @@ impl ChatWidget {
         };
 
         // Brief flash highlight on the most recently sent user message.
-        if let Some(send_at) = app.last_send_at {
+        if !app.low_motion
+            && let Some(send_at) = app.last_send_at
+        {
             if send_at.elapsed() < SEND_FLASH_DURATION {
                 apply_send_flash(&mut lines, top, &app.history, line_meta);
             } else {
@@ -109,73 +125,112 @@ impl Renderable for ChatWidget {
 
 pub struct ComposerWidget<'a> {
     app: &'a App,
-    prompt: &'a str,
     max_height: u16,
     slash_menu_entries: &'a [String],
 }
 
 impl<'a> ComposerWidget<'a> {
-    pub fn new(
-        app: &'a App,
-        prompt: &'a str,
-        max_height: u16,
-        slash_menu_entries: &'a [String],
-    ) -> Self {
+    pub fn new(app: &'a App, max_height: u16, slash_menu_entries: &'a [String]) -> Self {
         Self {
             app,
-            prompt,
             max_height,
             slash_menu_entries,
         }
+    }
+
+    fn has_panel(area: Rect) -> bool {
+        area.height >= 3 && area.width >= 12
+    }
+
+    fn inner_area(area: Rect) -> Rect {
+        if Self::has_panel(area) {
+            Block::default().borders(Borders::ALL).inner(area)
+        } else {
+            area
+        }
+    }
+
+    fn mode_color(&self) -> Color {
+        match self.app.mode {
+            AppMode::Agent => palette::MODE_AGENT,
+            AppMode::Yolo => palette::MODE_YOLO,
+            AppMode::Plan => palette::MODE_PLAN,
+        }
+    }
+
+    fn max_height_cap(&self) -> u16 {
+        composer_max_height(self.app.composer_density)
     }
 }
 
 impl Renderable for ComposerWidget<'_> {
     fn render(&self, area: Rect, buf: &mut Buffer) {
-        let prompt_width = self.prompt.width();
-        let prompt_width_u16 = u16::try_from(prompt_width).unwrap_or(u16::MAX);
-        let content_width = usize::from(area.width.saturating_sub(prompt_width_u16).max(1));
+        let background = Style::default().bg(self.app.ui_theme.composer_bg);
+        let has_panel = Self::has_panel(area);
+        let inner_area = Self::inner_area(area);
         let menu_lines = self.slash_menu_entries.len();
-        let max_height = usize::from(area.height).saturating_sub(menu_lines).max(1);
-        let continuation = " ".repeat(prompt_width);
-
+        let input_rows_budget = composer_input_rows_budget(inner_area.height, menu_lines);
+        let content_width = usize::from(inner_area.width.max(1));
         let (visible_lines, _cursor_row, _cursor_col) = layout_input(
             &self.app.input,
             self.app.cursor_position,
             content_width,
-            max_height,
+            input_rows_budget,
         );
+        let is_draft_mode = self.app.input.contains('\n') || visible_lines.len() > 1;
+        if has_panel {
+            let border_color = if self.app.input.trim().is_empty() {
+                palette::BORDER_COLOR
+            } else {
+                self.mode_color()
+            };
+            let hint_line = if self.slash_menu_entries.is_empty() {
+                None
+            } else {
+                Some(Line::from(vec![
+                    Span::styled(" Up/Down move  ", Style::default().fg(palette::TEXT_MUTED)),
+                    Span::styled("Tab accept  ", Style::default().fg(palette::TEXT_MUTED)),
+                    Span::styled("Esc close", Style::default().fg(palette::TEXT_MUTED)),
+                ]))
+            };
 
-        let background = Style::default().bg(self.app.ui_theme.composer_bg);
-        let block = Block::default().style(background);
-        block.render(area, buf);
-
-        let mut lines = Vec::new();
-        if self.app.input.is_empty() {
-            let placeholder = "Type a message or /help for commands...";
-            lines.push(Line::from(vec![
-                Span::styled(
-                    self.prompt,
-                    Style::default().fg(palette::DEEPSEEK_SKY).bold(),
-                ),
-                Span::styled(
-                    placeholder,
-                    Style::default().fg(palette::TEXT_MUTED).italic(),
-                ),
-            ]));
+            let mut block = Block::default()
+                .title(Line::from(Span::styled(
+                    if is_draft_mode { "Draft" } else { "Composer" },
+                    Style::default().fg(palette::TEXT_MUTED),
+                )))
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(border_color))
+                .style(background);
+            if let Some(hint_line) = hint_line {
+                block = block.title_bottom(hint_line);
+            }
+            block.render(area, buf);
         } else {
-            for (idx, line) in visible_lines.iter().enumerate() {
-                let prefix = if idx == 0 {
-                    self.prompt
-                } else {
-                    continuation.as_str()
-                };
-                lines.push(Line::from(vec![
-                    Span::styled(prefix, Style::default().fg(palette::DEEPSEEK_SKY).bold()),
-                    Span::styled(line.clone(), Style::default().fg(palette::TEXT_PRIMARY)),
-                ]));
+            Block::default().style(background).render(area, buf);
+        }
+
+        let mut input_lines = Vec::new();
+        if self.app.input.is_empty() {
+            input_lines.push(Line::from(Span::styled(
+                "Write a task or use /.",
+                Style::default().fg(palette::TEXT_MUTED).italic(),
+            )));
+        } else {
+            for line in &visible_lines {
+                input_lines.push(Line::from(Span::styled(
+                    line.clone(),
+                    Style::default().fg(palette::TEXT_PRIMARY),
+                )));
             }
         }
+
+        let top_padding = composer_vertical_padding(input_lines.len(), input_rows_budget);
+        let mut lines = Vec::new();
+        for _ in 0..top_padding {
+            lines.push(Line::from(""));
+        }
+        lines.extend(input_lines);
 
         if !self.slash_menu_entries.is_empty() {
             let selected = self
@@ -201,42 +256,56 @@ impl Renderable for ComposerWidget<'_> {
             }
         }
 
-        let paragraph = Paragraph::new(lines).style(background);
-        paragraph.render(area, buf);
+        let paragraph = Paragraph::new(lines)
+            .style(background)
+            .wrap(Wrap { trim: false });
+        paragraph.render(inner_area, buf);
     }
 
     fn desired_height(&self, width: u16) -> u16 {
         composer_height(
             &self.app.input,
             width,
-            self.max_height,
-            self.prompt,
+            self.max_height.min(self.max_height_cap()),
             self.slash_menu_entries.len(),
+            self.app.composer_density,
         )
     }
 
     fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
-        let prompt_width = self.prompt.width();
-        let prompt_width_u16 = u16::try_from(prompt_width).unwrap_or(u16::MAX);
-        let content_width = usize::from(area.width.saturating_sub(prompt_width_u16).max(1));
-        let max_height = usize::from(area.height)
-            .saturating_sub(self.slash_menu_entries.len())
-            .max(1);
+        let inner_area = Self::inner_area(area);
+        let content_width = usize::from(inner_area.width.max(1));
+        let input_rows_budget =
+            composer_input_rows_budget(inner_area.height, self.slash_menu_entries.len());
 
         let (_visible_lines, cursor_row, cursor_col) = layout_input(
             &self.app.input,
             self.app.cursor_position,
             content_width,
-            max_height,
+            input_rows_budget,
         );
+        let top_padding = if self.app.input.is_empty() {
+            let empty_lines = if self.app.input_history.is_empty() && input_rows_budget > 1 {
+                2
+            } else {
+                1
+            };
+            composer_vertical_padding(empty_lines, input_rows_budget)
+        } else {
+            let visible_count = wrap_input_lines(&self.app.input, content_width)
+                .len()
+                .max(1);
+            composer_vertical_padding(visible_count.min(input_rows_budget), input_rows_budget)
+        };
 
         let cursor_x = area
             .x
-            .saturating_add(prompt_width_u16)
+            .saturating_add(inner_area.x.saturating_sub(area.x))
             .saturating_add(u16::try_from(cursor_col).unwrap_or(u16::MAX));
         let cursor_y = area
             .y
-            .saturating_add(u16::try_from(cursor_row).unwrap_or(u16::MAX));
+            .saturating_add(inner_area.y.saturating_sub(area.y))
+            .saturating_add(u16::try_from(top_padding + cursor_row).unwrap_or(u16::MAX));
         if cursor_x < area.x + area.width && cursor_y < area.y + area.height {
             Some((cursor_x, cursor_y))
         } else {
@@ -681,22 +750,110 @@ fn char_display_width(ch: char) -> usize {
     }
 }
 
+fn should_render_empty_state(app: &App) -> bool {
+    app.history.is_empty() && !app.is_loading && !app.is_compacting
+}
+
+fn build_empty_state_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
+    if area.width == 0 || area.height == 0 {
+        return Vec::new();
+    }
+
+    let workspace_name = app
+        .workspace
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .map(std::string::ToString::to_string)
+        .unwrap_or_else(|| app.workspace.to_string_lossy().into_owned());
+    let body_width = usize::from(area.width.saturating_sub(8).clamp(24, 72));
+    let left_padding = usize::from(area.width.saturating_sub(body_width as u16) / 2);
+    let inset = " ".repeat(left_padding);
+
+    let mut body = vec![
+        Line::from(Span::styled(
+            format!("{inset}DeepSeek TUI"),
+            Style::default().fg(palette::DEEPSEEK_BLUE).bold(),
+        )),
+        Line::from(Span::styled(
+            format!("{inset}{workspace_name}  ·  {}", app.model),
+            Style::default().fg(palette::TEXT_MUTED),
+        )),
+        Line::from(""),
+    ];
+
+    for line in wrap_text(
+        "Start in plain language. The transcript stays clear until the first real turn.",
+        body_width,
+    ) {
+        body.push(Line::from(Span::styled(
+            format!("{inset}{line}"),
+            Style::default().fg(palette::TEXT_PRIMARY),
+        )));
+    }
+
+    let top_padding = usize::from(area.height.saturating_sub(body.len() as u16) / 3);
+    let mut lines = Vec::new();
+    for _ in 0..top_padding {
+        lines.push(Line::from(""));
+    }
+    lines.extend(body);
+    lines
+}
+
+fn composer_input_rows_budget(inner_height: u16, extra_lines: usize) -> usize {
+    usize::from(inner_height).saturating_sub(extra_lines).max(1)
+}
+
+fn composer_vertical_padding(content_lines: usize, rows_budget: usize) -> usize {
+    rows_budget.saturating_sub(content_lines)
+}
+
+fn composer_min_input_rows(density: ComposerDensity) -> usize {
+    match density {
+        ComposerDensity::Compact => 2,
+        ComposerDensity::Comfortable => 3,
+        ComposerDensity::Spacious => 4,
+    }
+}
+
+fn composer_max_height(density: ComposerDensity) -> u16 {
+    match density {
+        ComposerDensity::Compact => 7,
+        ComposerDensity::Comfortable => 9,
+        ComposerDensity::Spacious => 12,
+    }
+}
+
 fn composer_height(
     input: &str,
     width: u16,
     available_height: u16,
-    prompt: &str,
     extra_lines: usize,
+    density: ComposerDensity,
 ) -> u16 {
-    let prompt_width = prompt.width();
-    let prompt_width_u16 = u16::try_from(prompt_width).unwrap_or(u16::MAX);
-    let content_width = usize::from(width.saturating_sub(prompt_width_u16).max(1));
+    let has_panel = available_height >= 3 && width >= 12;
+    let chrome_height = if has_panel {
+        usize::from(COMPOSER_PANEL_HEIGHT)
+    } else {
+        0
+    };
+    let content_width = if has_panel {
+        usize::from(width.saturating_sub(2).max(1))
+    } else {
+        usize::from(width.max(1))
+    };
     let mut line_count = wrap_input_lines(input, content_width).len();
     if line_count == 0 {
         line_count = 1;
     }
-    line_count = line_count.saturating_add(extra_lines);
-    let max_height = usize::from(available_height.clamp(1, 8));
+    if has_panel {
+        line_count = line_count.max(composer_min_input_rows(density));
+    }
+    line_count = line_count
+        .saturating_add(extra_lines)
+        .saturating_add(chrome_height);
+    let max_height = usize::from(available_height.clamp(1, composer_max_height(density)));
     line_count.clamp(1, max_height).try_into().unwrap_or(1)
 }
 
@@ -864,10 +1021,12 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_selection_to_line, composer_height, cursor_row_col, layout_input,
-        pad_lines_to_bottom, slash_completion_hints, wrap_input_lines, wrap_text,
+        COMPOSER_PANEL_HEIGHT, apply_selection_to_line, composer_height, composer_max_height,
+        composer_min_input_rows, cursor_row_col, layout_input, pad_lines_to_bottom,
+        should_render_empty_state, slash_completion_hints, wrap_input_lines, wrap_text,
     };
     use crate::palette;
+    use crate::tui::app::ComposerDensity;
     use ratatui::{
         style::Style,
         text::{Line, Span},
@@ -1058,15 +1217,32 @@ mod tests {
     #[test]
     fn composer_layout_helpers_stay_consistent() {
         let input = "line one wraps nicely\nline two wraps as well";
-        let prompt = "> ";
         let width = 16;
         let available_height = 6;
         let menu_lines = 2;
 
-        let height = composer_height(input, width, available_height, prompt, menu_lines);
-        let prompt_width = u16::try_from(prompt.width()).unwrap_or(u16::MAX);
-        let content_width = usize::from(width.saturating_sub(prompt_width).max(1));
-        let input_height_budget = usize::from(height).saturating_sub(menu_lines).max(1);
+        let height = composer_height(
+            input,
+            width,
+            available_height,
+            menu_lines,
+            ComposerDensity::Comfortable,
+        );
+        let has_panel = available_height >= 3 && width >= 12;
+        let chrome_height = if has_panel {
+            usize::from(COMPOSER_PANEL_HEIGHT)
+        } else {
+            0
+        };
+        let content_width = if has_panel {
+            usize::from(width.saturating_sub(2).max(1))
+        } else {
+            usize::from(width.max(1))
+        };
+        let input_height_budget = usize::from(height)
+            .saturating_sub(menu_lines)
+            .saturating_sub(chrome_height)
+            .max(1);
         let (visible, cursor_row, cursor_col) = layout_input(
             input,
             input.chars().count(),
@@ -1078,5 +1254,52 @@ mod tests {
         assert!(!visible.is_empty());
         assert!(cursor_row < visible.len());
         assert!(cursor_col < content_width.max(1));
+        assert!(height >= 5);
+    }
+
+    #[test]
+    fn composer_height_prefers_panel_shape_when_space_allows() {
+        let height = composer_height("", 40, 8, 0, ComposerDensity::Comfortable);
+        assert_eq!(height, 5);
+    }
+
+    #[test]
+    fn composer_density_changes_min_rows_and_height_cap() {
+        assert_eq!(composer_min_input_rows(ComposerDensity::Compact), 2);
+        assert_eq!(composer_min_input_rows(ComposerDensity::Spacious), 4);
+        assert!(
+            composer_max_height(ComposerDensity::Spacious)
+                > composer_max_height(ComposerDensity::Compact)
+        );
+    }
+
+    #[test]
+    fn empty_state_renders_only_without_transcript_activity() {
+        use crate::config::Config;
+        use crate::tui::app::{App, TuiOptions};
+        use std::path::PathBuf;
+
+        let options = TuiOptions {
+            model: "deepseek-chat".to_string(),
+            workspace: PathBuf::from("."),
+            allow_shell: false,
+            use_alt_screen: true,
+            max_subagents: 1,
+            skills_dir: PathBuf::from("."),
+            memory_path: PathBuf::from("memory.md"),
+            notes_path: PathBuf::from("notes.txt"),
+            mcp_config_path: PathBuf::from("mcp.json"),
+            use_memory: false,
+            start_in_agent_mode: true,
+            skip_onboarding: true,
+            yolo: false,
+            resume_session_id: None,
+        };
+        let mut app = App::new(options, &Config::default());
+        assert!(should_render_empty_state(&app));
+        app.add_message(crate::tui::history::HistoryCell::User {
+            content: "hello".to_string(),
+        });
+        assert!(!should_render_empty_state(&app));
     }
 }

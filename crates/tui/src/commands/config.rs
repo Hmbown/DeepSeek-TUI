@@ -82,12 +82,30 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
             app.auto_compact = settings.auto_compact;
             action = Some(AppAction::UpdateCompaction(app.compaction_config()));
         }
+        "calm_mode" | "calm" => {
+            app.calm_mode = settings.calm_mode;
+            app.mark_history_updated();
+        }
+        "low_motion" | "motion" => {
+            app.low_motion = settings.low_motion;
+            app.needs_redraw = true;
+        }
         "show_thinking" | "thinking" => {
             app.show_thinking = settings.show_thinking;
             app.mark_history_updated();
         }
         "show_tool_details" | "tool_details" => {
             app.show_tool_details = settings.show_tool_details;
+            app.mark_history_updated();
+        }
+        "composer_density" | "composer" => {
+            app.composer_density =
+                crate::tui::app::ComposerDensity::from_setting(&settings.composer_density);
+            app.needs_redraw = true;
+        }
+        "transcript_spacing" | "spacing" => {
+            app.transcript_spacing =
+                crate::tui::app::TranscriptSpacing::from_setting(&settings.transcript_spacing);
             app.mark_history_updated();
         }
         "default_mode" | "mode" => {
@@ -120,13 +138,18 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
         _ => {}
     }
 
+    let display_value = match key.as_str() {
+        "default_mode" | "mode" => settings.default_mode.clone(),
+        _ => value.to_string(),
+    };
+
     let message = if persist {
         if let Err(e) = settings.save() {
             return CommandResult::error(format!("Failed to save: {e}"));
         }
-        format!("{key} = {value} (saved)")
+        format!("{key} = {display_value} (saved)")
     } else {
-        format!("{key} = {value} (session only, add --save to persist)")
+        format!("{key} = {display_value} (session only, add --save to persist)")
     };
 
     CommandResult {
@@ -175,10 +198,10 @@ pub fn yolo(app: &mut App) -> CommandResult {
     CommandResult::message("YOLO mode enabled - shell + trust + auto-approve!")
 }
 
-/// Enable normal mode (read-only chat, suggestions before approvals)
+/// Legacy alias for the removed normal mode.
 pub fn normal_mode(app: &mut App) -> CommandResult {
-    app.set_mode(AppMode::Normal);
-    CommandResult::message("Normal mode enabled.")
+    app.set_mode(AppMode::Agent);
+    CommandResult::message("Normal mode was removed. Switched to Agent mode.")
 }
 
 /// Enable agent mode (autonomous tool use with approvals)
@@ -334,7 +357,7 @@ mod tests {
     fn test_mode_switch_commands() {
         let mut app = create_test_app();
         let _ = normal_mode(&mut app);
-        assert_eq!(app.mode, AppMode::Normal);
+        assert_eq!(app.mode, AppMode::Agent);
         let _ = agent_mode(&mut app);
         assert_eq!(app.mode, AppMode::Agent);
         let _ = plan_mode(&mut app);
@@ -401,6 +424,32 @@ mod tests {
         // Note: This test may fail in environments where settings can't be saved
         // The important thing is that the model is updated
         assert_eq!(app.model, "deepseek-reasoner");
+    }
+
+    #[test]
+    fn test_set_default_mode_normal_save_reports_normalized_value() {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-default-mode-test-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root).unwrap();
+        let _guard = EnvGuard::new(&temp_root);
+
+        let mut app = create_test_app();
+        let result = set_config(&mut app, Some("default_mode normal --save"));
+        let msg = result.message.unwrap();
+        assert_eq!(msg, "default_mode = agent (saved)");
+        assert_eq!(app.mode, AppMode::Agent);
+
+        let settings_path = Settings::path().unwrap();
+        let saved = fs::read_to_string(settings_path).unwrap();
+        assert!(saved.contains("default_mode = \"agent\""));
     }
 
     #[test]

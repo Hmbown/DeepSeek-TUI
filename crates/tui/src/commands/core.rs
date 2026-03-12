@@ -180,11 +180,12 @@ pub fn home_dashboard(app: &mut App) -> CommandResult {
     let _ = writeln!(stats, "\nMode Tips");
     let _ = writeln!(stats, "--------------------------------------------");
     match app.mode {
-        AppMode::Normal => {
-            let _ = writeln!(stats, "Normal mode - Chat with the assistant");
-        }
         AppMode::Agent => {
             let _ = writeln!(stats, "Agent mode - Use tools for autonomous tasks");
+            let _ = writeln!(
+                stats,
+                "  Use Ctrl+X to review in Plan mode before executing"
+            );
             let _ = writeln!(stats, "  Type /yolo to enable full tool access");
         }
         AppMode::Yolo => {
@@ -444,12 +445,7 @@ mod tests {
 
     #[test]
     fn test_home_dashboard_mode_tips_for_each_mode() {
-        let modes = [
-            AppMode::Normal,
-            AppMode::Agent,
-            AppMode::Yolo,
-            AppMode::Plan,
-        ];
+        let modes = [AppMode::Agent, AppMode::Yolo, AppMode::Plan];
         for mode in modes {
             let mut app = create_test_app();
             app.mode = mode;

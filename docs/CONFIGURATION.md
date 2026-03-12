@@ -86,9 +86,13 @@ Common settings keys:
 - `auto_compact` (on/off)
 - `show_thinking` (on/off)
 - `show_tool_details` (on/off)
-- `default_mode` (normal, agent, plan, yolo)
+- `default_mode` (agent, plan, yolo; legacy `normal` is accepted and normalized to `agent`)
 - `max_history` (number of input history entries)
 - `default_model` (model name override)
+
+Only `agent`, `plan`, and `yolo` are visible modes in the UI. For compatibility,
+older settings files with `default_mode = "normal"` still load as `agent`, and
+the hidden `/normal` slash command switches to `Agent`.
 
 Readability semantics:
 
@@ -103,6 +107,8 @@ If you are upgrading from older releases:
   New: `/links` (aliases: `/dashboard`, `/api`)
 - Old: `/set model deepseek-reasoner`
   New: `/config` and edit the `model` row to `deepseek-reasoner`
+- Old: visible `Normal` mode or `default_mode = "normal"`
+  New: use `Agent` / `default_mode = "agent"`; legacy `normal` still maps to `agent`
 - Old: discover `/set` in slash UX/help
   New: use `/config` for editing and `/settings` for read-only inspection
 
