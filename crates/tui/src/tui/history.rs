@@ -1447,7 +1447,7 @@ fn status_symbol(started_at: Option<Instant>, status: ToolStatus, low_motion: bo
 fn details_affordance_line(text: &str, style: Style) -> Line<'static> {
     Line::from(vec![
         Span::styled("▏ ", Style::default().fg(palette::TEXT_DIM)),
-        Span::styled(format!("{text}"), style),
+        Span::styled(text.to_string(), style),
     ])
 }
 
