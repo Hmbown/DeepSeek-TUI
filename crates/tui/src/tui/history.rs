@@ -1676,8 +1676,7 @@ mod tests {
         // platforms with coarse timer resolution (Windows ≈ 15.6 ms) and
         // gives 3600 ms of headroom before the index could wrap back to 0
         // (indices 2 → 3 → 0 requires two more full cycles).
-        let started_at =
-            Some(Instant::now() - Duration::from_millis(TOOL_STATUS_SYMBOL_MS * 2));
+        let started_at = Some(Instant::now() - Duration::from_millis(TOOL_STATUS_SYMBOL_MS * 2));
         let cell = HistoryCell::Tool(ToolCell::Exec(ExecCell {
             command: "echo hi".to_string(),
             status: ToolStatus::Running,

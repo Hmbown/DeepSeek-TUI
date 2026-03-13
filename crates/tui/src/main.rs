@@ -1918,7 +1918,9 @@ fn doctor_check_mcp_server(server: &McpServerConfig) -> McpServerDoctorStatus {
     }
 
     let cmd_path = Path::new(cmd);
-    let is_absolute = cmd_path.is_absolute();
+    // Also accept Unix-style `/` prefix on Windows, where Path::is_absolute()
+    // requires a drive letter.
+    let is_absolute = cmd_path.is_absolute() || cmd.starts_with('/');
 
     if is_absolute && !cmd_path.exists() {
         return McpServerDoctorStatus::Error(format!("command not found: {cmd}"));

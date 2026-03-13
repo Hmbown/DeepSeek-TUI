@@ -1555,13 +1555,27 @@ mod tests {
         let ref_id = format!("{}turn0search1", scoped_ref_prefix(namespace));
         store_page(namespace, &ref_id, sample_page("https://example.com/alpha"));
 
-        with_state(|state| {
+        // On Windows, Instant's epoch is system boot.  If the CI runner has
+        // been up for less than WEB_RUN_SESSION_TTL the subtraction would
+        // underflow, so we skip the test in that case.
+        let stale = WEB_RUN_SESSION_TTL + Duration::from_secs(1);
+        let can_test = with_state(|state| {
             let session = state
                 .sessions
                 .get_mut(namespace)
                 .expect("session should exist");
-            session.last_access = Instant::now() - WEB_RUN_SESSION_TTL - Duration::from_secs(1);
+            match Instant::now().checked_sub(stale) {
+                Some(past) => {
+                    session.last_access = past;
+                    true
+                }
+                None => false,
+            }
         });
+        if !can_test {
+            // System uptime shorter than session TTL; can't test eviction.
+            return;
+        }
 
         let _ = next_turn_for_namespace("session-beta");
 
