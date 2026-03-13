@@ -18,16 +18,19 @@ A coding agent for [DeepSeek](https://platform.deepseek.com) models that runs in
 npm install -g deepseek-tui
 ```
 
-Set your API key:
-
-```bash
-mkdir -p ~/.deepseek && echo 'api_key = "YOUR_DEEPSEEK_API_KEY"' > ~/.deepseek/config.toml
-```
-
-Then run:
+Start the TUI:
 
 ```bash
 deepseek-tui
+```
+
+On first launch, it will prompt for your API key if one is not already configured.
+
+You can also set auth ahead of time with either of these:
+
+```bash
+deepseek-tui login
+DEEPSEEK_API_KEY="YOUR_DEEPSEEK_API_KEY" deepseek-tui
 ```
 
 <details>
@@ -52,31 +55,15 @@ project.
 
 ## What it does
 
-An agent loop with file editing, shell execution, `web.run` browsing, git operations, task tracking, and [MCP](https://modelcontextprotocol.io) server integration. Context-aware memory compaction keeps long sessions on track. `crates/tui` remains the live shipped runtime while the workspace extraction continues.
+A terminal coding agent for DeepSeek models with file editing, shell execution, `web.run` browsing, git operations, session resume, and [MCP](https://modelcontextprotocol.io) server integration.
 
 Three visible modes (**Tab** / **Shift+Tab** to cycle):
 
 | Mode | Behavior |
 |------|----------|
-| **Plan** | Design-first — proposes before acting |
-| **Agent** | Multi-step autonomous tool use |
-| **YOLO** | Full auto-approve, no guardrails |
-
-## First Run Workflow
-
-1. Paste your API key in onboarding.
-2. Choose a mode for the task in front of you:
-   `Plan` to review a plan first, `Agent` to let the model use tools, `YOLO` only inside a trusted workspace.
-3. Watch the status area while work is running:
-   approvals, queued work, and active sub-agents stay there while the turn is live.
-4. Recover work with `Ctrl+R` or `/sessions` if you need to resume an interrupted thread.
-
-## Everyday Workflows
-
-- Use `Ctrl+K` for the command palette when you want to switch modes, open config, resume sessions, or inspect a tool quickly.
-- Use `/queue` to review or edit queued prompts before sending them.
-- Use `/subagents` to inspect background agent state when autonomous work fans out.
-- Use `/config` to adjust approval mode, theme, sidebar focus, and other runtime preferences.
+| **Plan** | Review a plan before the agent starts making changes |
+| **Agent** | Default interactive mode with multi-step tool use |
+| **YOLO** | Auto-approve tools in a trusted workspace |
 
 ## Usage
 
@@ -84,12 +71,13 @@ Three visible modes (**Tab** / **Shift+Tab** to cycle):
 deepseek-tui                                  # interactive TUI
 deepseek-tui -p "explain this in 2 sentences" # one-shot prompt
 deepseek-tui --yolo                           # YOLO mode
-deepseek doctor                               # check setup
-deepseek models                               # list available models
-deepseek serve --http                         # HTTP/SSE API server
+deepseek-tui login                            # save API key to config
+deepseek-tui doctor                           # check setup
+deepseek-tui models                           # list available models
+deepseek-tui serve --http                     # HTTP/SSE API server
 ```
 
-Controls: `F1` help, `Esc` walks the cancel stack, `Ctrl+K` command palette.
+Controls: `F1` help, `Esc` backs out of the current action, `Ctrl+K` command palette.
 
 ## Configuration
 
@@ -101,7 +89,7 @@ Full reference: [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
 ## Docs
 
-[docs/](docs/) — architecture, modes, MCP integration, runtime API, and release runbooks. The live runtime still ships from `crates/tui`; the newer workspace crates are incremental extraction targets.
+[docs/](docs/) — configuration, modes, MCP integration, runtime API, and release runbooks.
 
 ## Contributing
 
