@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::config::normalize_model_name;
+use crate::config::{expand_path, normalize_model_name};
 
 /// User settings with defaults
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -70,7 +70,7 @@ impl Settings {
         if let Ok(config_path) = std::env::var("DEEPSEEK_CONFIG_PATH") {
             let config_path = config_path.trim();
             if !config_path.is_empty() {
-                let p = PathBuf::from(config_path);
+                let p = expand_path(config_path);
                 if let Some(parent) = p.parent() {
                     return Ok(parent.join("settings.toml"));
                 }
