@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::config::normalize_model_name;
+use crate::config::{expand_path, normalize_model_name};
 
 /// User settings with defaults
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,6 +64,19 @@ impl Default for Settings {
 impl Settings {
     /// Get the settings file path
     pub fn path() -> Result<PathBuf> {
+        // Allow tests to override the settings directory via the same env var
+        // used for config (DEEPSEEK_CONFIG_PATH points at config.toml; the
+        // settings file lives as a sibling in the same directory).
+        if let Ok(config_path) = std::env::var("DEEPSEEK_CONFIG_PATH") {
+            let config_path = config_path.trim();
+            if !config_path.is_empty() {
+                let p = expand_path(config_path);
+                if let Some(parent) = p.parent() {
+                    return Ok(parent.join("settings.toml"));
+                }
+            }
+        }
+
         let config_dir = dirs::config_dir()
             .context("Failed to resolve config directory: not found.")?
             .join("deepseek");

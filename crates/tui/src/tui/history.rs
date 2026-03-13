@@ -153,7 +153,10 @@ impl HistoryCell {
                 }
                 lines
             }
-            _ => self.lines(width),
+            HistoryCell::Tool(cell) => cell.lines_with_motion(width, options.low_motion),
+            HistoryCell::User { .. }
+            | HistoryCell::Assistant { .. }
+            | HistoryCell::System { .. } => self.lines(width),
         }
     }
 
@@ -1444,7 +1447,7 @@ fn status_symbol(started_at: Option<Instant>, status: ToolStatus, low_motion: bo
 fn details_affordance_line(text: &str, style: Style) -> Line<'static> {
     Line::from(vec![
         Span::styled("▏ ", Style::default().fg(palette::TEXT_DIM)),
-        Span::styled(format!("{text}"), style),
+        Span::styled(text.to_string(), style),
     ])
 }
 
@@ -1628,7 +1631,11 @@ fn thinking_state_accent(state: ThinkingVisualState) -> Color {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_reasoning_summary, render_thinking};
+    use super::{
+        ExecCell, ExecSource, HistoryCell, TOOL_RUNNING_SYMBOLS, TOOL_STATUS_SYMBOL_MS, ToolCell,
+        ToolStatus, TranscriptRenderOptions, extract_reasoning_summary, render_thinking,
+    };
+    use std::time::{Duration, Instant};
 
     #[test]
     fn extract_reasoning_summary_prefers_summary_block() {
@@ -1660,5 +1667,41 @@ mod tests {
             .collect::<String>();
         assert!(text.contains("summary only; press v for details"));
         assert!(text.contains("thinking"));
+    }
+
+    #[test]
+    fn tool_lines_with_options_respects_low_motion_in_default_path() {
+        // Use a 2× cycle offset so the animated frame lands on index 2,
+        // which is maximally far from index 0. This avoids flaky failures on
+        // platforms with coarse timer resolution (Windows ≈ 15.6 ms) and
+        // gives 3600 ms of headroom before the index could wrap back to 0
+        // (indices 2 → 3 → 0 requires two more full cycles).
+        let started_at = Some(Instant::now() - Duration::from_millis(TOOL_STATUS_SYMBOL_MS * 2));
+        let cell = HistoryCell::Tool(ToolCell::Exec(ExecCell {
+            command: "echo hi".to_string(),
+            status: ToolStatus::Running,
+            output: None,
+            started_at,
+            duration_ms: None,
+            source: ExecSource::Assistant,
+            interaction: None,
+        }));
+
+        let animated = cell.lines_with_options(80, TranscriptRenderOptions::default());
+        let low_motion = cell.lines_with_options(
+            80,
+            TranscriptRenderOptions {
+                low_motion: true,
+                ..TranscriptRenderOptions::default()
+            },
+        );
+
+        let animated_symbol = animated[0].spans[0].content.trim();
+        let low_motion_symbol = low_motion[0].spans[0].content.trim();
+
+        // low_motion always pins to the first (static) frame.
+        assert_eq!(low_motion_symbol, TOOL_RUNNING_SYMBOLS[0]);
+        // The animated path should be on a different frame (index 2).
+        assert_ne!(animated_symbol, TOOL_RUNNING_SYMBOLS[0]);
     }
 }

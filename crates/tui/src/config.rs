@@ -525,7 +525,7 @@ fn default_requirements_path() -> Option<PathBuf> {
     }
 }
 
-fn expand_path(path: &str) -> PathBuf {
+pub(crate) fn expand_path(path: &str) -> PathBuf {
     if let Some(stripped) = path.strip_prefix('~')
         && (stripped.is_empty() || stripped.starts_with('/') || stripped.starts_with('\\'))
         && let Some(mut home) = effective_home_dir()
