@@ -138,12 +138,12 @@ impl<'a> ComposerWidget<'a> {
         }
     }
 
-    fn has_panel(area: Rect) -> bool {
-        area.height >= 3 && area.width >= 12
+    fn has_panel(&self, area: Rect) -> bool {
+        self.app.composer_border && area.height >= 3 && area.width >= 12
     }
 
-    fn inner_area(area: Rect) -> Rect {
-        if Self::has_panel(area) {
+    fn inner_area(&self, area: Rect) -> Rect {
+        if self.has_panel(area) {
             Block::default().borders(Borders::ALL).inner(area)
         } else {
             area
@@ -166,8 +166,8 @@ impl<'a> ComposerWidget<'a> {
 impl Renderable for ComposerWidget<'_> {
     fn render(&self, area: Rect, buf: &mut Buffer) {
         let background = Style::default().bg(self.app.ui_theme.composer_bg);
-        let has_panel = Self::has_panel(area);
-        let inner_area = Self::inner_area(area);
+        let has_panel = self.has_panel(area);
+        let inner_area = self.inner_area(area);
         let menu_lines = self.slash_menu_entries.len();
         let input_rows_budget = composer_input_rows_budget(inner_area.height, menu_lines);
         let content_width = usize::from(inner_area.width.max(1));
@@ -278,11 +278,12 @@ impl Renderable for ComposerWidget<'_> {
             self.max_height.min(self.max_height_cap()),
             self.slash_menu_entries.len(),
             self.app.composer_density,
+            self.app.composer_border,
         )
     }
 
     fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
-        let inner_area = Self::inner_area(area);
+        let inner_area = self.inner_area(area);
         let content_width = usize::from(inner_area.width.max(1));
         let input_rows_budget =
             composer_input_rows_budget(inner_area.height, self.slash_menu_entries.len());
@@ -841,8 +842,9 @@ fn composer_height(
     available_height: u16,
     extra_lines: usize,
     density: ComposerDensity,
+    show_panel: bool,
 ) -> u16 {
-    let has_panel = available_height >= 3 && width >= 12;
+    let has_panel = show_panel && available_height >= 3 && width >= 12;
     let chrome_height = if has_panel {
         usize::from(COMPOSER_PANEL_HEIGHT)
     } else {
@@ -1261,6 +1263,7 @@ mod tests {
             available_height,
             menu_lines,
             ComposerDensity::Comfortable,
+            true,
         );
         let has_panel = available_height >= 3 && width >= 12;
         let chrome_height = if has_panel {
@@ -1293,8 +1296,18 @@ mod tests {
 
     #[test]
     fn composer_height_prefers_panel_shape_when_space_allows() {
-        let height = composer_height("", 40, 8, 0, ComposerDensity::Comfortable);
+        let height = composer_height("", 40, 8, 0, ComposerDensity::Comfortable, true);
         assert_eq!(height, 5);
+    }
+
+    #[test]
+    fn composer_height_skips_panel_chrome_when_border_disabled() {
+        let with_border = composer_height("", 40, 8, 0, ComposerDensity::Comfortable, true);
+        let without_border = composer_height("", 40, 8, 0, ComposerDensity::Comfortable, false);
+
+        assert_eq!(with_border, 5);
+        assert_eq!(without_border, 1);
+        assert!(without_border < with_border);
     }
 
     #[test]
@@ -1355,6 +1368,24 @@ mod tests {
         // cursor_y = 0 + (1-0) + (1+0) = 2
         assert_eq!(placeholder_visual_lines(12), 2);
         assert_eq!(widget.cursor_pos(area), Some((1, 2)));
+    }
+
+    #[test]
+    fn empty_composer_cursor_uses_full_area_when_border_disabled() {
+        let mut app = create_test_app();
+        app.composer_density = ComposerDensity::Comfortable;
+        app.composer_border = false;
+        let slash_menu_entries = Vec::<String>::new();
+        let widget = ComposerWidget::new(&app, 3, &slash_menu_entries);
+
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 40,
+            height: 3,
+        };
+
+        assert_eq!(widget.cursor_pos(area), Some((0, 2)));
     }
 
     #[test]

@@ -334,6 +334,12 @@ impl ConfigView {
                 scope: ConfigScope::Saved,
             },
             ConfigRow {
+                key: "composer_border".to_string(),
+                value: settings.composer_border.to_string(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
                 key: "transcript_spacing".to_string(),
                 value: settings.transcript_spacing.clone(),
                 editable: true,
@@ -577,9 +583,8 @@ fn config_hint_for_key(key: &str) -> &'static str {
             "deepseek-chat | deepseek-reasoner | deepseek-* (aliases: deepseek-v3, deepseek-v3.2, deepseek-r1)"
         }
         "approval_mode" => "auto | suggest | never",
-        "auto_compact" | "calm_mode" | "low_motion" | "show_thinking" | "show_tool_details" => {
-            "on/off, true/false, yes/no, 1/0"
-        }
+        "auto_compact" | "calm_mode" | "low_motion" | "show_thinking" | "show_tool_details"
+        | "composer_border" => "on/off, true/false, yes/no, 1/0",
         "composer_density" | "transcript_spacing" => "compact | comfortable | spacious",
         "default_mode" => "agent | plan | yolo",
         "theme" => "default | dark | light | whale",
@@ -1545,6 +1550,7 @@ mod tests {
         assert!(keys.contains(&"model"));
         assert!(keys.contains(&"approval_mode"));
         assert!(keys.contains(&"auto_compact"));
+        assert!(keys.contains(&"composer_border"));
         assert!(view.rows.iter().all(|row| row.editable));
     }
 

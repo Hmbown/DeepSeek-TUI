@@ -27,6 +27,8 @@ pub struct Settings {
     pub show_tool_details: bool,
     /// Composer layout density: compact, comfortable, spacious
     pub composer_density: String,
+    /// Show a border around the composer input area
+    pub composer_border: bool,
     /// Transcript spacing rhythm: compact, comfortable, spacious
     pub transcript_spacing: String,
     /// Default mode: "agent", "plan", "yolo"
@@ -51,6 +53,7 @@ impl Default for Settings {
             show_thinking: true,
             show_tool_details: true,
             composer_density: "comfortable".to_string(),
+            composer_border: true,
             transcript_spacing: "comfortable".to_string(),
             default_mode: "agent".to_string(),
             sidebar_width_percent: 28,
@@ -159,6 +162,9 @@ impl Settings {
                 }
                 self.composer_density = normalized.to_string();
             }
+            "composer_border" | "border" => {
+                self.composer_border = parse_bool(value)?;
+            }
             "transcript_spacing" | "spacing" => {
                 let normalized = normalize_transcript_spacing(value);
                 if !["compact", "comfortable", "spacious"].contains(&normalized) {
@@ -253,6 +259,7 @@ impl Settings {
         lines.push(format!("  show_thinking:      {}", self.show_thinking));
         lines.push(format!("  show_tool_details:  {}", self.show_tool_details));
         lines.push(format!("  composer_density:   {}", self.composer_density));
+        lines.push(format!("  composer_border:    {}", self.composer_border));
         lines.push(format!("  transcript_spacing: {}", self.transcript_spacing));
         lines.push(format!("  default_mode:       {}", self.default_mode));
         lines.push(format!(
@@ -286,6 +293,10 @@ impl Settings {
             (
                 "composer_density",
                 "Composer density: compact, comfortable, spacious",
+            ),
+            (
+                "composer_border",
+                "Show a border around the composer input area: on/off",
             ),
             (
                 "transcript_spacing",

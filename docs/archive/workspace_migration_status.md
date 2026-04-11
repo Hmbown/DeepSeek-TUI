@@ -1,8 +1,10 @@
 # DeepSeek Workspace Migration Status
 
-This document maps the initial workspace migration implementation to Linear issues `SHA-1554` to `SHA-1568`.
+This document is a historical snapshot of the initial workspace migration implementation for Linear issues `SHA-1554` to `SHA-1568`.
 
-## Implemented in this patch
+It is not maintained as a live status board. Some items below describe work that was still in progress at the time this patch landed and may no longer reflect the current codebase. For current behavior, use the active docs in `docs/` and the current source tree.
+
+## Implemented in the initial patch
 
 - `SHA-1554`:
   - Root converted to Cargo workspace.
@@ -78,7 +80,7 @@ This document maps the initial workspace migration implementation to Linear issu
   - Added matching release preflight parity gates in `.github/workflows/release.yml`.
   - Updated release artifact naming to include explicit `deepseek` entrypoint compatibility.
 
-## Not yet implemented in this patch
+## Open items at the time of the initial patch
 
 - Codex-level protocol field-by-field parity for every `thread/*` operation remains in progress.
 - MCP transport now provides stdio JSON-RPC compatibility flows; external subprocess execution remains scaffolded.

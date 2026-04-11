@@ -1,7 +1,10 @@
 use super::*;
 use crate::config::Config;
 use crate::tui::history::{GenericToolCell, ToolCell, ToolStatus};
+use crate::tui::views::{ModalView, ViewAction};
 use std::path::PathBuf;
+use std::process::Command;
+use tempfile::TempDir;
 
 #[test]
 fn selection_point_from_position_ignores_top_padding() {
@@ -66,16 +69,11 @@ fn parse_plan_choice_accepts_numbers() {
 }
 
 #[test]
-fn parse_plan_choice_accepts_aliases() {
-    assert_eq!(parse_plan_choice("accept"), Some(PlanChoice::AcceptAgent));
-    assert_eq!(parse_plan_choice("agent"), Some(PlanChoice::AcceptAgent));
-    assert_eq!(
-        parse_plan_choice("accept-yolo"),
-        Some(PlanChoice::AcceptYolo)
-    );
-    assert_eq!(parse_plan_choice("yolo"), Some(PlanChoice::AcceptYolo));
-    assert_eq!(parse_plan_choice("revise"), Some(PlanChoice::RevisePlan));
-    assert_eq!(parse_plan_choice("exit"), Some(PlanChoice::ExitPlan));
+fn parse_plan_choice_rejects_aliases_and_extra_text() {
+    assert_eq!(parse_plan_choice("accept"), None);
+    assert_eq!(parse_plan_choice("agent"), None);
+    assert_eq!(parse_plan_choice("yolo"), None);
+    assert_eq!(parse_plan_choice("3 revise"), None);
     assert_eq!(parse_plan_choice("unknown"), None);
 }
 
@@ -86,6 +84,18 @@ fn plan_choice_from_option_maps_expected_values() {
     assert_eq!(plan_choice_from_option(3), Some(PlanChoice::RevisePlan));
     assert_eq!(plan_choice_from_option(4), Some(PlanChoice::ExitPlan));
     assert_eq!(plan_choice_from_option(5), None);
+}
+
+#[test]
+fn plan_prompt_view_escape_emits_dismiss_event() {
+    let mut view = PlanPromptView::new();
+
+    let action = view.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    assert!(matches!(
+        action,
+        ViewAction::EmitAndClose(ViewEvent::PlanPromptDismissed)
+    ));
 }
 
 #[test]
@@ -114,6 +124,50 @@ fn create_test_app() -> App {
         resume_session_id: None,
     };
     App::new(options, &Config::default())
+}
+
+fn init_git_repo() -> TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+
+    let init = Command::new("git")
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .expect("git init should run");
+    assert!(
+        init.status.success(),
+        "git init failed: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+
+    let commit = Command::new("git")
+        .args([
+            "-c",
+            "user.name=DeepSeek TUI Tests",
+            "-c",
+            "user.email=tests@example.com",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "init",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .expect("git commit should run");
+    assert!(
+        commit.status.success(),
+        "git commit failed: {}",
+        String::from_utf8_lossy(&commit.stderr)
+    );
+
+    dir
+}
+
+fn spans_text(spans: &[Span<'_>]) -> String {
+    spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect::<String>()
 }
 
 #[test]
@@ -273,6 +327,74 @@ fn format_token_count_compact_formats_units() {
 fn format_context_budget_caps_overflow_display() {
     assert_eq!(format_context_budget(5_000, 128_000), "5.0k/128.0k");
     assert_eq!(format_context_budget(250_000, 128_000), ">128.0k/128.0k");
+}
+
+#[test]
+fn footer_state_label_prefers_compacting_then_thinking() {
+    let mut app = create_test_app();
+    assert_eq!(footer_state_label(&app).0, "ready");
+
+    app.is_loading = true;
+    assert_eq!(footer_state_label(&app).0, "thinking");
+
+    app.is_compacting = true;
+    assert_eq!(footer_state_label(&app).0, "compacting");
+}
+
+#[test]
+fn footer_context_spans_uses_decimal_context_label() {
+    let full = spans_text(&footer_context_spans(12.34, 32));
+    assert_eq!(full, "context: 12.3%");
+
+    let compact = spans_text(&footer_context_spans(12.34, 6));
+    assert_eq!(compact, "12.3%");
+}
+
+#[test]
+fn footer_narrow_status_spans_hides_ready_state_but_shows_activity() {
+    let mut app = create_test_app();
+    assert_eq!(spans_text(&footer_narrow_status_spans(&app, 24)), "agent");
+
+    app.is_loading = true;
+    assert_eq!(
+        spans_text(&footer_narrow_status_spans(&app, 24)),
+        "agent thinking"
+    );
+
+    app.is_loading = false;
+    app.is_compacting = true;
+    assert_eq!(
+        spans_text(&footer_narrow_status_spans(&app, 24)),
+        "agent compacting"
+    );
+}
+
+#[test]
+fn footer_status_line_spans_truncate_long_model_names() {
+    let mut app = create_test_app();
+    app.model = "deepseek-reasoner-with-an-extremely-long-model-name".to_string();
+    app.is_loading = true;
+
+    let line = spans_text(&footer_status_line_spans(&app, 48));
+    assert!(line.contains("agent ("));
+    assert!(line.contains(", thinking)"));
+    assert!(line.contains("..."));
+    assert!(UnicodeWidthStr::width(line.as_str()) <= 48);
+}
+
+#[test]
+fn sync_footer_clock_to_marks_redraw_only_when_minute_changes() {
+    let mut app = create_test_app();
+    app.footer_clock_label = "12:00".to_string();
+    app.needs_redraw = false;
+
+    sync_footer_clock_to(&mut app, "12:00".to_string());
+    assert_eq!(app.footer_clock_label, "12:00");
+    assert!(!app.needs_redraw);
+
+    sync_footer_clock_to(&mut app, "12:01".to_string());
+    assert_eq!(app.footer_clock_label, "12:01");
+    assert!(app.needs_redraw);
 }
 
 #[test]
@@ -502,6 +624,117 @@ fn status_layout_budget_preserves_chat_and_composer_on_tiny_heights() {
 
     let layout = compute_status_layout(&app, 9, 3);
     assert_eq!(layout.status_height, 1);
+}
+
+#[test]
+fn workspace_context_refresh_is_deferred_while_ui_is_busy() {
+    let repo = init_git_repo();
+    let mut app = create_test_app();
+    app.workspace = repo.path().to_path_buf();
+
+    let now = Instant::now();
+    refresh_workspace_context_if_needed(&mut app, now, false);
+
+    assert!(app.workspace_context.is_none());
+    assert!(app.workspace_context_refreshed_at.is_none());
+
+    refresh_workspace_context_if_needed(&mut app, now, true);
+
+    let context = app
+        .workspace_context
+        .as_deref()
+        .expect("idle refresh should populate workspace context");
+    assert!(context.contains("clean"));
+    assert_eq!(app.workspace_context_refreshed_at, Some(now));
+}
+
+#[test]
+fn workspace_context_refresh_respects_ttl_before_requerying_git() {
+    let repo = init_git_repo();
+    let mut app = create_test_app();
+    app.workspace = repo.path().to_path_buf();
+
+    let start = Instant::now();
+    refresh_workspace_context_if_needed(&mut app, start, true);
+    let initial = app
+        .workspace_context
+        .clone()
+        .expect("initial refresh should populate context");
+
+    std::fs::write(repo.path().join("dirty.txt"), "dirty").expect("write dirty marker");
+
+    let before_ttl = start + Duration::from_secs(WORKSPACE_CONTEXT_REFRESH_SECS - 1);
+    refresh_workspace_context_if_needed(&mut app, before_ttl, true);
+    assert_eq!(app.workspace_context.as_deref(), Some(initial.as_str()));
+
+    let after_ttl = start + Duration::from_secs(WORKSPACE_CONTEXT_REFRESH_SECS);
+    refresh_workspace_context_if_needed(&mut app, after_ttl, true);
+    let refreshed = app
+        .workspace_context
+        .as_deref()
+        .expect("refresh after ttl should update context");
+    assert!(refreshed.contains("untracked"));
+    assert_ne!(refreshed, initial);
+}
+
+#[tokio::test]
+async fn dismissed_plan_prompt_leaves_non_numeric_input_for_normal_send_path() {
+    let mut app = create_test_app();
+    app.mode = AppMode::Plan;
+    app.plan_prompt_pending = true;
+    app.offline_mode = true;
+
+    let engine = crate::core::engine::mock_engine_handle();
+
+    let handled = handle_plan_choice(&mut app, &engine.handle, "yolo")
+        .await
+        .expect("plan choice");
+
+    assert!(!handled);
+    assert!(!app.plan_prompt_pending);
+    assert_eq!(app.mode, AppMode::Plan);
+
+    let queued = build_queued_message(&mut app, "yolo".to_string());
+    submit_or_steer_message(&mut app, &engine.handle, queued)
+        .await
+        .expect("submit normal message");
+
+    assert_eq!(app.queued_message_count(), 1);
+    assert_eq!(
+        app.queued_messages
+            .front()
+            .map(crate::tui::app::QueuedMessage::content),
+        Some("yolo".to_string())
+    );
+    assert_eq!(
+        app.status_message.as_deref(),
+        Some("Offline mode: queued 1 message(s) - /queue to review")
+    );
+}
+
+#[tokio::test]
+async fn numeric_plan_choice_still_queues_follow_up_when_busy() {
+    let mut app = create_test_app();
+    app.mode = AppMode::Plan;
+    app.plan_prompt_pending = true;
+    app.is_loading = true;
+
+    let engine = crate::core::engine::mock_engine_handle();
+
+    let handled = handle_plan_choice(&mut app, &engine.handle, "2")
+        .await
+        .expect("plan choice");
+
+    assert!(handled);
+    assert!(!app.plan_prompt_pending);
+    assert_eq!(app.mode, AppMode::Yolo);
+    assert_eq!(app.queued_message_count(), 1);
+    assert_eq!(
+        app.queued_messages
+            .front()
+            .map(crate::tui::app::QueuedMessage::content),
+        Some("Proceed with the accepted plan.".to_string())
+    );
 }
 
 #[test]

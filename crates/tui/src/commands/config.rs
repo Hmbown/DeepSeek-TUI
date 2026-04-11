@@ -103,6 +103,10 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
                 crate::tui::app::ComposerDensity::from_setting(&settings.composer_density);
             app.needs_redraw = true;
         }
+        "composer_border" | "border" => {
+            app.composer_border = settings.composer_border;
+            app.needs_redraw = true;
+        }
         "transcript_spacing" | "spacing" => {
             app.transcript_spacing =
                 crate::tui::app::TranscriptSpacing::from_setting(&settings.transcript_spacing);
@@ -488,6 +492,19 @@ mod tests {
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
         assert!(msg.contains("(session only"));
+    }
+
+    #[test]
+    fn test_set_composer_border_updates_live_app() {
+        let _lock = lock_test_env();
+        let mut app = create_test_app();
+        app.composer_border = true;
+
+        let result = set_config(&mut app, Some("composer_border false"));
+
+        assert!(result.message.is_some());
+        assert!(!app.composer_border);
+        assert!(app.needs_redraw);
     }
 
     #[test]

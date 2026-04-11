@@ -1,18 +1,22 @@
-//! Header bar widget displaying mode, model, and streaming state.
+//! Header bar widget displaying mode, workspace/model context, and session status.
 
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Paragraph, Widget},
 };
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::palette;
 use crate::tui::app::AppMode;
 
 use super::Renderable;
+
+const CONTEXT_WARNING_THRESHOLD_PERCENT: f64 = 85.0;
+const CONTEXT_CRITICAL_THRESHOLD_PERCENT: f64 = 95.0;
+const CONTEXT_SIGNAL_WIDTH: usize = 4;
 
 /// Data required to render the header bar.
 pub struct HeaderData<'a> {
@@ -72,8 +76,6 @@ impl<'a> HeaderData<'a> {
 }
 
 /// Header bar widget (1 line height).
-///
-/// Layout: `mode  model                        ●`
 pub struct HeaderWidget<'a> {
     data: HeaderData<'a>,
 }
@@ -84,8 +86,7 @@ impl<'a> HeaderWidget<'a> {
         Self { data }
     }
 
-    /// Get the color for a mode.
-    fn mode_color(mode: AppMode) -> ratatui::style::Color {
+    fn mode_color(mode: AppMode) -> Color {
         match mode {
             AppMode::Agent => palette::MODE_AGENT,
             AppMode::Yolo => palette::MODE_YOLO,
@@ -101,53 +102,232 @@ impl<'a> HeaderWidget<'a> {
         }
     }
 
-    fn mode_segments(&self) -> Vec<Span<'static>> {
-        let modes = [AppMode::Plan, AppMode::Agent, AppMode::Yolo];
-        let mut spans = Vec::new();
-        for (idx, mode) in modes.into_iter().enumerate() {
-            if idx > 0 {
-                spans.push(Span::raw(" "));
-            }
-            let is_selected = mode == self.data.mode;
-            let style = if is_selected {
-                Style::default()
-                    .fg(self.data.background)
-                    .bg(Self::mode_color(mode))
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(palette::TEXT_HINT)
-            };
-            spans.push(Span::styled(format!(" {} ", Self::mode_name(mode)), style));
+    fn span_width(spans: &[Span<'_>]) -> usize {
+        spans.iter().map(|span| span.content.width()).sum()
+    }
+
+    fn truncate_to_width(text: &str, max_width: usize) -> String {
+        const ELLIPSIS: &str = "...";
+        let ellipsis_width = ELLIPSIS.width();
+
+        if text.width() <= max_width {
+            return text.to_string();
         }
+        if max_width == 0 {
+            return String::new();
+        }
+        if max_width <= ellipsis_width {
+            return ".".repeat(max_width);
+        }
+
+        let mut truncated = String::new();
+        let mut width = 0;
+        for ch in text.chars() {
+            let ch_width = ch.width().unwrap_or(0);
+            if width + ch_width + ellipsis_width > max_width {
+                break;
+            }
+            truncated.push(ch);
+            width += ch_width;
+        }
+        truncated.push_str(ELLIPSIS);
+        truncated
+    }
+
+    fn context_percent(&self) -> Option<f64> {
+        let used = f64::from(self.data.last_prompt_tokens?);
+        let max = f64::from(self.data.context_window?);
+        if max <= 0.0 {
+            return None;
+        }
+        Some((used / max * 100.0).clamp(0.0, 999.0))
+    }
+
+    fn context_color(percent: f64) -> Color {
+        if percent >= CONTEXT_CRITICAL_THRESHOLD_PERCENT {
+            palette::STATUS_ERROR
+        } else if percent >= CONTEXT_WARNING_THRESHOLD_PERCENT {
+            palette::STATUS_WARNING
+        } else {
+            palette::DEEPSEEK_SKY
+        }
+    }
+
+    fn context_signal_spans(&self, show_percent: bool) -> Vec<Span<'static>> {
+        let Some(percent) = self.context_percent() else {
+            return Vec::new();
+        };
+
+        let color = Self::context_color(percent);
+        let filled = ((percent / 100.0) * CONTEXT_SIGNAL_WIDTH as f64)
+            .ceil()
+            .clamp(0.0, CONTEXT_SIGNAL_WIDTH as f64) as usize;
+        let empty = CONTEXT_SIGNAL_WIDTH.saturating_sub(filled);
+
+        let mut spans = Vec::new();
+        if show_percent {
+            spans.push(Span::styled(
+                format!("{percent:.0}%"),
+                Style::default().fg(color),
+            ));
+            spans.push(Span::raw(" "));
+        }
+        spans.push(Span::styled("▰".repeat(filled), Style::default().fg(color)));
+        spans.push(Span::styled(
+            "▱".repeat(empty),
+            Style::default().fg(palette::BORDER_COLOR),
+        ));
         spans
     }
 
-    fn context_text(&self, max_chars: usize) -> String {
-        let raw = format!("{}  ·  {}", self.data.workspace_name, self.data.model);
-        if raw.chars().count() <= max_chars {
-            raw
-        } else {
-            let mut truncated = String::new();
-            for ch in raw.chars().take(max_chars.saturating_sub(3)) {
-                truncated.push(ch);
+    fn status_variant(&self, show_stream_label: bool, show_percent: bool) -> Vec<Span<'static>> {
+        let mut spans = Vec::new();
+
+        if self.data.is_streaming {
+            spans.push(Span::styled(
+                "●",
+                Style::default()
+                    .fg(palette::DEEPSEEK_SKY)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            if show_stream_label {
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled(
+                    "Live",
+                    Style::default().fg(palette::TEXT_SOFT),
+                ));
             }
-            truncated.push_str("...");
-            truncated
         }
+
+        let context_spans = self.context_signal_spans(show_percent);
+        if !context_spans.is_empty() {
+            if !spans.is_empty() {
+                spans.push(Span::raw("  "));
+            }
+            spans.extend(context_spans);
+        }
+
+        spans
     }
 
-    /// Build the streaming indicator span.
-    fn streaming_indicator(&self) -> Option<Span<'static>> {
-        if !self.data.is_streaming {
-            return None;
+    fn right_spans(&self, max_width: usize) -> Vec<Span<'static>> {
+        let candidates = [
+            self.status_variant(true, true),
+            self.status_variant(false, true),
+            self.status_variant(false, false),
+        ];
+
+        candidates
+            .into_iter()
+            .find(|spans| Self::span_width(spans) <= max_width)
+            .unwrap_or_default()
+    }
+
+    fn metadata_spans(&self, max_width: usize) -> Vec<Span<'static>> {
+        let workspace = self.data.workspace_name.trim();
+        let model = self.data.model.trim();
+
+        if max_width < 4 || (workspace.is_empty() && model.is_empty()) {
+            return Vec::new();
         }
 
-        Some(Span::styled(
-            "●",
-            Style::default()
-                .fg(palette::DEEPSEEK_SKY)
-                .add_modifier(Modifier::BOLD),
-        ))
+        if workspace.is_empty() {
+            return vec![Span::styled(
+                Self::truncate_to_width(model, max_width),
+                Style::default().fg(palette::TEXT_HINT),
+            )];
+        }
+
+        if model.is_empty() || max_width < 12 {
+            return vec![Span::styled(
+                Self::truncate_to_width(workspace, max_width),
+                Style::default().fg(palette::TEXT_SECONDARY),
+            )];
+        }
+
+        let separator_width = 3; // " · "
+        if workspace.width() + separator_width + model.width() <= max_width {
+            return vec![
+                Span::styled(
+                    workspace.to_string(),
+                    Style::default().fg(palette::TEXT_SECONDARY),
+                ),
+                Span::styled(" · ", Style::default().fg(palette::TEXT_HINT)),
+                Span::styled(model.to_string(), Style::default().fg(palette::TEXT_HINT)),
+            ];
+        }
+
+        let content_width = max_width.saturating_sub(separator_width);
+        if content_width < 9 {
+            return vec![Span::styled(
+                Self::truncate_to_width(workspace, max_width),
+                Style::default().fg(palette::TEXT_SECONDARY),
+            )];
+        }
+
+        let workspace_width = workspace.width();
+        let model_width = model.width();
+        let total_width = workspace_width + model_width;
+        let min_workspace = 4;
+        let min_model = 4;
+
+        let proportional_workspace =
+            ((content_width as f64 * workspace_width as f64) / total_width as f64).round() as usize;
+        let workspace_budget =
+            proportional_workspace.clamp(min_workspace, content_width.saturating_sub(min_model));
+        let model_budget = content_width.saturating_sub(workspace_budget);
+
+        vec![
+            Span::styled(
+                Self::truncate_to_width(workspace, workspace_budget),
+                Style::default().fg(palette::TEXT_SECONDARY),
+            ),
+            Span::styled(" · ", Style::default().fg(palette::TEXT_HINT)),
+            Span::styled(
+                Self::truncate_to_width(model, model_budget),
+                Style::default().fg(palette::TEXT_HINT),
+            ),
+        ]
+    }
+
+    fn left_spans(&self, max_width: usize) -> Vec<Span<'static>> {
+        if max_width == 0 {
+            return Vec::new();
+        }
+
+        let mode_label = Self::mode_name(self.data.mode);
+        let mode_style = Style::default()
+            .fg(Self::mode_color(self.data.mode))
+            .add_modifier(Modifier::BOLD);
+
+        if max_width < mode_label.width() {
+            let fallback = self
+                .data
+                .mode
+                .label()
+                .chars()
+                .next()
+                .unwrap_or('?')
+                .to_string();
+            return vec![Span::styled(fallback, mode_style)];
+        }
+
+        let mut spans = vec![Span::styled(mode_label.to_string(), mode_style)];
+        let metadata_width = max_width
+            .saturating_sub(mode_label.width())
+            .saturating_sub(2);
+        let metadata = if metadata_width >= 4 {
+            self.metadata_spans(metadata_width)
+        } else {
+            Vec::new()
+        };
+
+        if !metadata.is_empty() {
+            spans.push(Span::raw("  "));
+            spans.extend(metadata);
+        }
+
+        spans
     }
 }
 
@@ -157,71 +337,21 @@ impl Renderable for HeaderWidget<'_> {
             return;
         }
 
-        let mut left_spans = self.mode_segments();
-
-        // Build right section: streaming indicator only. Footer owns context.
-        let streaming_span = self.streaming_indicator();
-
-        // Calculate widths
-        let mut left_width: usize = left_spans.iter().map(|span| span.content.width()).sum();
-        let streaming_width = streaming_span.as_ref().map_or(0, |s| s.content.width());
-        let right_width = streaming_width;
-
         let available = area.width as usize;
+        let right_budget = available.saturating_sub(6);
+        let right_spans = self.right_spans(right_budget);
+        let right_width = Self::span_width(&right_spans);
+        let spacer_min = usize::from(right_width > 0);
+        let left_budget = available.saturating_sub(right_width + spacer_min);
+        let left_spans = self.left_spans(left_budget);
+        let left_width = Self::span_width(&left_spans);
+        let spacer_width = available.saturating_sub(left_width + right_width);
 
-        // Build final line based on available space
-        let mut spans = Vec::new();
-
-        let context_room = available
-            .saturating_sub(left_width + right_width)
-            .saturating_sub(2);
-        if context_room >= 10 {
-            let context_text = self.context_text(context_room);
-            left_spans.push(Span::raw("  "));
-            left_spans.push(Span::styled(
-                context_text,
-                Style::default().fg(palette::TEXT_HINT),
-            ));
-            left_width = left_spans.iter().map(|span| span.content.width()).sum();
+        let mut spans = left_spans;
+        if spacer_width > 0 {
+            spans.push(Span::raw(" ".repeat(spacer_width)));
         }
-
-        if available >= left_width + right_width {
-            spans.extend(left_spans);
-
-            // Spacer to push right elements to the end
-            let padding_needed = available.saturating_sub(left_width + right_width);
-            if padding_needed > 0 {
-                spans.push(Span::raw(" ".repeat(padding_needed)));
-            }
-
-            // Streaming indicator
-            if let Some(streaming) = streaming_span {
-                spans.push(streaming);
-            }
-        } else if available >= 12 {
-            spans.push(Span::styled(
-                format!(" {} ", Self::mode_name(self.data.mode)),
-                Style::default()
-                    .fg(self.data.background)
-                    .bg(Self::mode_color(self.data.mode))
-                    .add_modifier(Modifier::BOLD),
-            ));
-        } else {
-            // Ultra-minimal: single lowercase char
-            let first_char = self
-                .data
-                .mode
-                .label()
-                .chars()
-                .next()
-                .unwrap_or('?')
-                .to_lowercase()
-                .to_string();
-            spans.push(Span::styled(
-                first_char,
-                Style::default().fg(Self::mode_color(self.data.mode)),
-            ));
-        }
+        spans.extend(right_spans);
 
         let line = Line::from(spans);
         let paragraph = Paragraph::new(line).style(Style::default().bg(self.data.background));
@@ -229,6 +359,98 @@ impl Renderable for HeaderWidget<'_> {
     }
 
     fn desired_height(&self, _width: u16) -> u16 {
-        1 // Header is always 1 line
+        1
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{HeaderData, HeaderWidget, Renderable};
+    use crate::palette;
+    use crate::tui::app::AppMode;
+    use ratatui::{buffer::Buffer, layout::Rect};
+
+    fn render_header(data: HeaderData<'_>, width: u16) -> String {
+        let widget = HeaderWidget::new(data);
+        let area = Rect::new(0, 0, width, 1);
+        let mut buf = Buffer::empty(area);
+        widget.render(area, &mut buf);
+
+        (0..width).map(|x| buf[(x, 0)].symbol()).collect::<String>()
+    }
+
+    #[test]
+    fn wide_header_shows_plain_mode_and_single_metadata_cluster() {
+        let rendered = render_header(
+            HeaderData::new(
+                AppMode::Agent,
+                "deepseek-v3.2",
+                "deepseek-tui",
+                false,
+                palette::DEEPSEEK_INK,
+            ),
+            72,
+        );
+
+        assert!(rendered.contains("Agent"));
+        assert!(rendered.contains("deepseek-tui"));
+        assert!(rendered.contains("deepseek-v3.2"));
+        assert!(!rendered.contains("Plan"));
+        assert!(!rendered.contains("Yolo"));
+    }
+
+    #[test]
+    fn streaming_header_integrates_live_state_with_context_signal() {
+        let rendered = render_header(
+            HeaderData::new(
+                AppMode::Plan,
+                "deepseek-reasoner",
+                "workspace",
+                true,
+                palette::DEEPSEEK_INK,
+            )
+            .with_usage(42_000, Some(128_000), 0.0, Some(48_000)),
+            72,
+        );
+
+        assert!(rendered.contains("Live"));
+        assert!(rendered.contains("38%"));
+        assert!(rendered.contains("▰"));
+    }
+
+    #[test]
+    fn narrow_header_falls_back_to_mode_without_rendering_all_modes() {
+        let rendered = render_header(
+            HeaderData::new(
+                AppMode::Yolo,
+                "deepseek-chat",
+                "repo",
+                true,
+                palette::DEEPSEEK_INK,
+            )
+            .with_usage(1_000, Some(10_000), 0.0, Some(4_000)),
+            8,
+        );
+
+        assert!(rendered.trim_start().starts_with('Y'));
+        assert!(!rendered.contains("Plan"));
+        assert!(!rendered.contains("Agent"));
+    }
+
+    #[test]
+    fn header_hides_context_signal_when_usage_snapshot_is_missing() {
+        let rendered = render_header(
+            HeaderData::new(
+                AppMode::Agent,
+                "deepseek-chat",
+                "repo",
+                false,
+                palette::DEEPSEEK_INK,
+            ),
+            48,
+        );
+
+        assert!(!rendered.contains('%'));
+        assert!(!rendered.contains("▰"));
     }
 }

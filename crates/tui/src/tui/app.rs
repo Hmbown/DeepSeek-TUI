@@ -315,6 +315,7 @@ pub struct App {
     pub show_thinking: bool,
     pub show_tool_details: bool,
     pub composer_density: ComposerDensity,
+    pub composer_border: bool,
     pub transcript_spacing: TranscriptSpacing,
     pub sidebar_width_percent: u16,
     pub sidebar_focus: SidebarFocus,
@@ -428,6 +429,8 @@ pub struct App {
     pub is_compacting: bool,
     /// Timestamp of the last user message send (for brief visual feedback).
     pub last_send_at: Option<Instant>,
+    /// Cached footer clock label so idle sessions still repaint when the minute changes.
+    pub footer_clock_label: String,
 }
 
 /// Message queued while the engine is busy.
@@ -520,6 +523,7 @@ impl App {
         let show_thinking = settings.show_thinking;
         let show_tool_details = settings.show_tool_details;
         let composer_density = ComposerDensity::from_setting(&settings.composer_density);
+        let composer_border = settings.composer_border;
         let transcript_spacing = TranscriptSpacing::from_setting(&settings.transcript_spacing);
         let sidebar_width_percent = settings.sidebar_width_percent;
         let sidebar_focus = SidebarFocus::from_setting(&settings.sidebar_focus);
@@ -603,6 +607,7 @@ impl App {
             show_thinking,
             show_tool_details,
             composer_density,
+            composer_border,
             transcript_spacing,
             sidebar_width_percent,
             sidebar_focus,
@@ -677,6 +682,7 @@ impl App {
             thinking_started_at: None,
             is_compacting: false,
             last_send_at: None,
+            footer_clock_label: chrono::Local::now().format("%H:%M").to_string(),
         }
     }
 

@@ -67,40 +67,37 @@ Layer 5:           deepseek-tui-cli
 Canonical source: https://linear.app/shannon-labs/project/deepseek-tui-6213bbbeaa26
 
 ```
-[High] SHA-2794  UI Footer Redesign (Kimi CLI Style)
-  -> no blockers                                          ← READY
-  -> files: crates/tui/src/tui/ui.rs, crates/tui/src/palette.rs
+[High] SHA-2794  UI Footer Redesign (Kimi CLI Style)                ← DONE (v0.3.31)
+  -> landed: mode/model/token/cost layout, quadrant separators, context bar
+  -> remaining polish tracked in AI_HANDOFF.md
 
-[High] SHA-2795  Thinking vs Normal Chat Delineation
-  -> no blockers                                          ← READY
-  -> files: crates/tui/src/tui/ui.rs, history.rs, streaming.rs
+[High] SHA-2795  Thinking vs Normal Chat Delineation                ← DONE (v0.3.31)
+  -> landed: labeled delimiters, separate transcript cell, show_thinking
 
-[High] SHA-2798  Finance Tool Replacement
-  -> no blockers                                          ← READY
-  -> files: crates/tui/src/tools/
+[High] SHA-2798  Finance Tool Replacement                           ← DONE (v0.3.31)
+  -> landed: Yahoo Finance v8 + CoinGecko fallback
 
-[Med]  SHA-2796  Intelligent Compaction UX
-  -> no blockers                                          ← READY
-  -> files: crates/tui/src/compaction.rs, core/engine.rs
+[Med]  SHA-2796  Intelligent Compaction UX                          ← DONE (v0.3.31)
+  -> landed: auto-compaction, /compact, status strip, CompactionCompleted stats
 
 [Med]  SHA-2797  Escape Key After Plan Mode
-  -> no blockers (investigation)                          ← READY
+  -> base fix landed (v0.3.31); remaining: regression test coverage  ← READY
   -> files: crates/tui/src/tui/ui.rs, app.rs
 
 [Med]  SHA-2799  "Alive and Animated" Feel
-  -> blocked by SHA-2794, SHA-2795
+  -> was blocked by SHA-2794, SHA-2795 (now done)                   ← READY
   -> files: crates/tui/src/tui/ (various)
 
 [Med]  SHA-2801  Docs and Workflow Update
-  -> blocked by SHA-2798
+  -> was blocked by SHA-2798 (now done)                             ← READY
   -> files: AGENTS.md, README.md, CHANGELOG.md
 
 [Med]  SHA-2802  Release Prep
-  -> blocked by SHA-2794, SHA-2795, SHA-2798
+  -> was blocked by SHA-2794, SHA-2795, SHA-2798 (all done)        ← READY
   -> files: Cargo.toml, CHANGELOG.md, npm/
 
 [Low]  SHA-2800  Header Redesign
-  -> blocked by SHA-2794
+  -> was blocked by SHA-2794 (now done)                             ← READY
   -> files: crates/tui/src/tui/widgets/header.rs
 
 [Low]  SHA-2803  Context Window Visualization
@@ -110,8 +107,8 @@ Canonical source: https://linear.app/shannon-labs/project/deepseek-tui-6213bbbea
 
 ## Ready Queue (unblocked, by priority)
 
-1. **SHA-2794** UI Footer Redesign (High)
-2. **SHA-2795** Thinking vs Chat Delineation (High)
-3. **SHA-2798** Finance Tool Replacement (High)
-4. **SHA-2796** Intelligent Compaction UX (Medium)
-5. **SHA-2797** Escape Key After Plan Mode (Medium)
+1. **SHA-2797** Escape Key regression test (Medium)
+2. **SHA-2799** "Alive and Animated" Feel (Medium)
+3. **SHA-2801** Docs and Workflow Update (Medium)
+4. **SHA-2802** Release Prep (Medium)
+5. **SHA-2800** Header Redesign (Low)

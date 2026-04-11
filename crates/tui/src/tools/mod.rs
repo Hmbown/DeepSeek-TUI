@@ -4,6 +4,7 @@ pub mod apply_patch;
 pub mod diagnostics;
 pub mod file;
 pub mod file_search;
+pub mod finance;
 
 pub mod git;
 pub mod git_history;

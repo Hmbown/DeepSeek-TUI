@@ -1629,7 +1629,11 @@ impl RuntimeThreadManager {
                     .await?;
                 }
                 EngineEvent::CompactionCompleted {
-                    id, auto, message, ..
+                    id,
+                    auto,
+                    message,
+                    messages_before,
+                    messages_after,
                 } => {
                     if let Some(item_id) = compaction_items.remove(&id) {
                         let mut item = self.store.load_item(&item_id)?;
@@ -1643,7 +1647,12 @@ impl RuntimeThreadManager {
                             Some(&turn_id),
                             Some(&item_id),
                             "item.completed",
-                            json!({ "item": item, "auto": auto }),
+                            json!({
+                                "item": item,
+                                "auto": auto,
+                                "messages_before": messages_before,
+                                "messages_after": messages_after,
+                            }),
                         )
                         .await?;
                     }
@@ -3336,7 +3345,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn compaction_lifecycle_emits_item_events_for_auto_and_manual() -> Result<()> {
+    async fn compaction_lifecycle_emits_item_events_with_compaction_counts() -> Result<()> {
         let manager = test_manager(test_runtime_dir())?;
         let thread = manager
             .create_thread(CreateThreadRequest {
@@ -3377,8 +3386,8 @@ mod tests {
                                 id: "auto_compact_1".to_string(),
                                 auto: true,
                                 message: "auto compact done".to_string(),
-                                messages_before: None,
-                                messages_after: None,
+                                messages_before: Some(7),
+                                messages_after: Some(3),
                             })
                             .await;
                         let _ = tx_event
@@ -3407,8 +3416,8 @@ mod tests {
                                 id: "manual_compact_1".to_string(),
                                 auto: false,
                                 message: "manual compact done".to_string(),
-                                messages_before: None,
-                                messages_after: None,
+                                messages_before: Some(5),
+                                messages_after: Some(2),
                             })
                             .await;
                         let _ = tx_event
@@ -3480,7 +3489,21 @@ mod tests {
                     .and_then(|item| item.get("kind"))
                     .and_then(Value::as_str)
                     == Some("context_compaction")
+                && ev.payload.get("auto").and_then(Value::as_bool) == Some(true)
+                && ev.payload.get("messages_before").and_then(Value::as_u64) == Some(7)
+                && ev.payload.get("messages_after").and_then(Value::as_u64) == Some(3)
+        }));
+        assert!(events.iter().any(|ev| {
+            ev.event == "item.completed"
+                && ev
+                    .payload
+                    .get("item")
+                    .and_then(|item| item.get("kind"))
+                    .and_then(Value::as_str)
+                    == Some("context_compaction")
                 && ev.payload.get("auto").and_then(Value::as_bool) == Some(false)
+                && ev.payload.get("messages_before").and_then(Value::as_u64) == Some(5)
+                && ev.payload.get("messages_after").and_then(Value::as_u64) == Some(2)
         }));
         Ok(())
     }

@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.32] - 2026-04-11
+
+### Added
+- Finance tool: Yahoo Finance v8 quote endpoint with chart fallback, supporting stocks, ETFs, indices, forex, and crypto lookups.
+- Header widget redesign: proportional truncation, context-usage bar with gradient fill, streaming indicator, and graceful narrow-terminal degradation.
+- Expanded test coverage: 680+ tests including footer state, context spans, plan prompt lifecycle, workspace context refresh, header rendering, and finance tool integration tests with wiremock.
+- Workspace context refresh with configurable TTL and deferred initial fetch.
+- Config command additions for runtime settings management.
+
+### Changed
+- Redesigned footer status strip with mode/model/status layout, context bar, and narrow-terminal fallback.
+- Plan prompt now uses numeric selection (1-4) instead of keyword input; old aliases are sent as regular messages.
+- Archived outdated docs (`workspace_migration_status.md` -> `docs/archive/`).
+- Trimmed AGENTS.md boilerplate and updated task counts.
+- Clarified release-surface documentation: crates.io publication may lag the workspace/npm wrapper.
+
+### Fixed
+- Header `metadata_spans` now uses `saturating_sub` to prevent underflow on narrow terminals.
+- Finance tool reuses a single HTTP client instead of rebuilding per request.
+- Finance tool tests no longer leak temp directories.
+
 ## [0.3.31] - 2026-03-08
 
 ### Added
@@ -409,10 +430,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hooks system and config profiles
 - Example skills and launch assets
 
-[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.31...HEAD
-[0.3.31]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.30...v0.3.31
-[0.3.30]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.29...v0.3.30
-[0.3.29]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.28...v0.3.29
+[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.32...HEAD
+[0.3.32]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.31...v0.3.32
+[0.3.31]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.28...v0.3.31
 [0.3.28]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.27...v0.3.28
 [0.3.23]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.22...v0.3.23
 [0.3.22]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.21...v0.3.22
@@ -424,9 +444,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.3.12]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.11...v0.3.12
 [0.3.11]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.10...v0.3.11
 [0.3.10]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.6...v0.3.10
-[0.3.9]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.6...v0.3.10
-[0.3.8]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.6...v0.3.10
-[0.3.7]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.6...v0.3.10
 [0.3.6]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.3...v0.3.4
@@ -435,7 +452,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.3.1]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.2.0...v0.2.2
-[0.2.1]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.2.0...v0.2.2
 [0.2.0]: https://github.com/Hmbown/DeepSeek-TUI/releases/tag/v0.2.0
 [0.0.2]: https://github.com/Hmbown/DeepSeek-TUI/releases/tag/v0.0.2
 [0.0.1]: https://github.com/Hmbown/DeepSeek-TUI/releases/tag/v0.0.1

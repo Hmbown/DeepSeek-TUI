@@ -7,6 +7,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use chrono::Local;
 use crossterm::{
     event::{
         self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
@@ -842,7 +843,10 @@ async fn run_event_loop(
         let now = Instant::now();
         app.flush_paste_burst_if_due(now);
         app.sync_status_message_to_toasts();
-        refresh_workspace_context_if_needed(app, now);
+        sync_footer_clock(app);
+        let allow_workspace_context_refresh =
+            !app.is_loading && !has_running_agents && !app.is_compacting;
+        refresh_workspace_context_if_needed(app, now, allow_workspace_context_refresh);
 
         if app.needs_redraw {
             terminal.draw(|f| render(f, app))?; // app is &mut
@@ -2155,19 +2159,13 @@ fn plan_choice_from_option(option: usize) -> Option<PlanChoice> {
 }
 
 fn parse_plan_choice(input: &str) -> Option<PlanChoice> {
-    let trimmed = input.trim().to_lowercase();
-    let first = trimmed.chars().next()?;
-    if let Some(digit) = first.to_digit(10)
-        && let Some(choice) = plan_choice_from_option(usize::try_from(digit).unwrap_or(0))
-    {
-        return Some(choice);
-    }
-
-    match trimmed.as_str() {
-        "accept" | "approve" | "agent" | "a" => Some(PlanChoice::AcceptAgent),
-        "accept-yolo" | "yolo" | "y" => Some(PlanChoice::AcceptYolo),
-        "revise" | "edit" | "plan" | "stay" => Some(PlanChoice::RevisePlan),
-        "exit" | "cancel" | "back" => Some(PlanChoice::ExitPlan),
+    // Once the modal is dismissed, only the advertised 1-4 fallback remains active.
+    // Letter shortcuts stay modal-only so normal messages like "yolo" are not captured.
+    match input.trim() {
+        "1" => Some(PlanChoice::AcceptAgent),
+        "2" => Some(PlanChoice::AcceptYolo),
+        "3" => Some(PlanChoice::RevisePlan),
+        "4" => Some(PlanChoice::ExitPlan),
         _ => None,
     }
 }
@@ -3077,13 +3075,17 @@ fn apply_loaded_session(app: &mut App, session: &SavedSession) {
     app.scroll_to_bottom();
 }
 
-fn refresh_workspace_context_if_needed(app: &mut App, now: Instant) {
+fn refresh_workspace_context_if_needed(app: &mut App, now: Instant, allow_blocking_refresh: bool) {
     if app
         .workspace_context_refreshed_at
         .is_some_and(|refreshed_at| {
             now.duration_since(refreshed_at) < Duration::from_secs(WORKSPACE_CONTEXT_REFRESH_SECS)
         })
     {
+        return;
+    }
+
+    if !allow_blocking_refresh {
         return;
     }
 
@@ -3429,66 +3431,31 @@ fn status_color(level: StatusToastLevel) -> ratatui::style::Color {
 
 fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
     let available_width = area.width as usize;
-
-    // Context percentage
-    let context_snapshot = context_usage_snapshot(app);
-    let percent = context_snapshot
-        .map(|(_, _, pct)| pct as f32)
-        .unwrap_or(0.0);
-    let bar_color = context_color_for_percent(f64::from(percent));
-
-    // Narrow terminal fallback (< 60 cols): just mode + percent with mini bar
-    if available_width < 60 {
-        let (mode_label, mode_color) = footer_mode_style(app);
-        let narrow_left = vec![Span::styled(
-            mode_label.to_string(),
-            Style::default().fg(mode_color),
-        )];
-        let narrow_right = context_bar_spans(percent, bar_color, false);
-
-        let nl_width: usize = narrow_left.iter().map(|s| s.content.width()).sum();
-        let nr_width: usize = narrow_right.iter().map(|s| s.content.width()).sum();
-        let ns_width = available_width.saturating_sub(nl_width + nr_width);
-
-        let mut all_spans = narrow_left;
-        all_spans.push(Span::raw(" ".repeat(ns_width)));
-        all_spans.extend(narrow_right);
-
-        let footer = Paragraph::new(Line::from(all_spans));
-        f.render_widget(footer, area);
+    if available_width == 0 {
         return;
     }
 
-    // Right side: context percentage + mini bar + token count
-    let show_tokens = available_width >= 80;
-    let right_spans = context_bar_spans_with_tokens(
-        percent,
-        bar_color,
-        show_tokens.then_some(context_snapshot).flatten(),
-    );
-    let right_width: usize = right_spans.iter().map(|s| s.content.width()).sum();
-
-    // Left side: toast or Kimi-style status line
+    let percent = context_usage_snapshot(app)
+        .map(|(_, _, pct)| pct)
+        .unwrap_or(0.0);
+    let right_spans = footer_context_spans(percent, available_width);
+    let right_width = spans_width(&right_spans);
     let active_status = app.active_status_toast();
+    let min_gap = if available_width < 60 { 1 } else { 2 };
+    let max_left_width = available_width
+        .saturating_sub(right_width)
+        .saturating_sub(min_gap)
+        .max(1);
+
     let left_spans = if let Some(toast) = active_status.as_ref() {
-        let max_left = available_width
-            .saturating_sub(right_width)
-            .saturating_sub(2)
-            .max(1);
-        let truncated = truncate_line_to_width(&toast.text, max_left);
-        vec![Span::styled(
-            truncated,
-            Style::default().fg(status_color(toast.level)),
-        )]
+        footer_toast_spans(toast, max_left_width)
+    } else if available_width < 60 {
+        footer_narrow_status_spans(app, max_left_width)
     } else {
-        let hint = footer_hint_text(app);
-        vec![Span::styled(
-            hint,
-            Style::default().fg(palette::FOOTER_HINT),
-        )]
+        footer_status_line_spans(app, max_left_width)
     };
 
-    let left_width: usize = left_spans.iter().map(|s| s.content.width()).sum();
+    let left_width = spans_width(&left_spans);
     let spacer_width = available_width.saturating_sub(left_width + right_width);
 
     let mut all_spans = left_spans;
@@ -3499,27 +3466,116 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
     f.render_widget(footer, area);
 }
 
-fn footer_hint_text(app: &App) -> String {
-    let slash_menu_open = !visible_slash_menu_entries(app, 1).is_empty();
+fn footer_toast_spans(
+    toast: &crate::tui::app::StatusToast,
+    max_width: usize,
+) -> Vec<Span<'static>> {
+    let truncated = truncate_line_to_width(&toast.text, max_width.max(1));
+    vec![Span::styled(
+        truncated,
+        Style::default().fg(status_color(toast.level)),
+    )]
+}
+
+fn footer_narrow_status_spans(app: &App, max_width: usize) -> Vec<Span<'static>> {
+    let (mode_label, mode_color) = footer_mode_style(app);
+    let (status_label, status_color) = footer_state_label(app);
+    let mode_width = mode_label.width();
+
+    if max_width <= mode_width || status_label == "ready" {
+        return vec![Span::styled(
+            truncate_line_to_width(mode_label, max_width.max(1)),
+            Style::default().fg(mode_color),
+        )];
+    }
+
+    let status_width = max_width.saturating_sub(mode_width + 1);
+    let truncated_status = truncate_line_to_width(status_label, status_width.max(1));
+
+    vec![
+        Span::styled(mode_label.to_string(), Style::default().fg(mode_color)),
+        Span::raw(" "),
+        Span::styled(truncated_status, Style::default().fg(status_color)),
+    ]
+}
+
+fn footer_status_line_spans(app: &App, max_width: usize) -> Vec<Span<'static>> {
+    if max_width == 0 {
+        return Vec::new();
+    }
+
+    let time_label = app.footer_clock_label.clone();
+    let (mode_label, mode_color) = footer_mode_style(app);
+    let (status_label, status_color) = footer_state_label(app);
+    let fixed_width = time_label.width()
+        + 2
+        + mode_label.width()
+        + 2
+        + "agent (".width()
+        + ", ".width()
+        + status_label.width()
+        + 1;
+
+    if max_width <= fixed_width {
+        return footer_narrow_status_spans(app, max_width);
+    }
+
+    let model_width = max_width.saturating_sub(fixed_width).max(1);
+    let model_label = truncate_line_to_width(&app.model, model_width);
+
+    vec![
+        Span::styled(time_label, Style::default().fg(palette::TEXT_MUTED)),
+        Span::raw("  "),
+        Span::styled(mode_label.to_string(), Style::default().fg(mode_color)),
+        Span::raw("  "),
+        Span::styled(
+            "agent".to_string(),
+            Style::default().fg(palette::FOOTER_HINT),
+        ),
+        Span::styled(" (".to_string(), Style::default().fg(palette::TEXT_DIM)),
+        Span::styled(model_label, Style::default().fg(palette::TEXT_HINT)),
+        Span::styled(", ".to_string(), Style::default().fg(palette::TEXT_DIM)),
+        Span::styled(status_label.to_string(), Style::default().fg(status_color)),
+        Span::styled(")".to_string(), Style::default().fg(palette::TEXT_DIM)),
+    ]
+}
+
+fn sync_footer_clock(app: &mut App) {
+    sync_footer_clock_to(app, Local::now().format("%H:%M").to_string());
+}
+
+fn sync_footer_clock_to(app: &mut App, time_label: String) {
+    if app.footer_clock_label == time_label {
+        return;
+    }
+
+    app.footer_clock_label = time_label;
+    app.needs_redraw = true;
+}
+
+fn footer_state_label(app: &App) -> (&'static str, ratatui::style::Color) {
+    if app.is_compacting {
+        return ("compacting", palette::STATUS_WARNING);
+    }
+    if app.is_loading {
+        return ("thinking", palette::STATUS_WARNING);
+    }
+    if running_agent_count(app) > 0 {
+        return ("working", palette::DEEPSEEK_SKY);
+    }
+    if app.queued_draft.is_some() {
+        return ("draft", palette::TEXT_MUTED);
+    }
+
     if !app.view_stack.is_empty() {
-        return "Esc close overlay".to_string();
+        return ("overlay", palette::TEXT_MUTED);
     }
-    if app.is_loading || app.is_compacting {
-        return "Esc interrupt".to_string();
-    }
-    if slash_menu_open {
-        return "Up/Down move  ·  Tab accept".to_string();
-    }
+
     if !app.input.is_empty() {
-        if app.input.contains('\n') {
-            return "Enter send  ·  Esc clear".to_string();
-        }
-        return "Enter send  ·  Alt+Enter newline".to_string();
+        return ("draft", palette::TEXT_MUTED);
     }
-    if app.input_history.is_empty() {
-        return "Ctrl+K commands  ·  F1 help".to_string();
-    }
-    "Ctrl+K commands".to_string()
+
+    ("ready", palette::TEXT_MUTED)
 }
 
 fn footer_mode_style(app: &App) -> (&'static str, ratatui::style::Color) {
@@ -3573,64 +3629,29 @@ fn context_color_for_percent(percent: f64) -> ratatui::style::Color {
     }
 }
 
-/// Build context bar spans: `42.0% ▮▮▮░░░░░`
-fn context_bar_spans(
-    percent: f32,
-    color: ratatui::style::Color,
-    show_label: bool,
-) -> Vec<Span<'static>> {
-    const BAR_WIDTH: u32 = 8;
-    let filled = ((percent as f64 / 100.0) * BAR_WIDTH as f64)
-        .round()
-        .clamp(0.0, BAR_WIDTH as f64) as u32;
-    let empty = BAR_WIDTH.saturating_sub(filled);
+fn footer_context_spans(percent: f64, max_width: usize) -> Vec<Span<'static>> {
+    let color = context_color_for_percent(percent);
+    let value = format!("{percent:.1}%");
+    let full_width = "context: ".width() + value.width();
 
-    let bar_filled: String = "▮".repeat(filled as usize);
-    let bar_empty: String = "░".repeat(empty as usize);
-
-    let mut spans = Vec::new();
-    if show_label {
-        spans.push(Span::styled(
-            format!("context: {percent:.1}% "),
-            Style::default().fg(color),
-        ));
-    } else {
-        spans.push(Span::styled(
-            format!("{percent:.0}% "),
-            Style::default().fg(color),
-        ));
+    if max_width >= full_width {
+        return vec![
+            Span::styled(
+                "context: ".to_string(),
+                Style::default().fg(palette::TEXT_MUTED),
+            ),
+            Span::styled(value, Style::default().fg(color)),
+        ];
     }
-    spans.push(Span::styled(bar_filled, Style::default().fg(color)));
-    spans.push(Span::styled(
-        bar_empty,
-        Style::default().fg(palette::BORDER_COLOR),
-    ));
-    spans
+
+    vec![Span::styled(
+        truncate_line_to_width(&value, max_width.max(1)),
+        Style::default().fg(color),
+    )]
 }
 
-/// Build context bar spans with optional token count detail.
-fn context_bar_spans_with_tokens(
-    percent: f32,
-    color: ratatui::style::Color,
-    snapshot: Option<(i64, u32, f64)>,
-) -> Vec<Span<'static>> {
-    let mut spans = context_bar_spans(percent, color, true);
-
-    // Show token counts when available: " (12.3k/128k)"
-    if let Some((used, max, _)) = snapshot {
-        let used_u64 = u64::try_from(used.max(0)).unwrap_or(0);
-        let max_u64 = u64::from(max);
-        spans.push(Span::styled(
-            format!(
-                " ({}/{})",
-                format_token_count_compact(used_u64),
-                format_token_count_compact(max_u64)
-            ),
-            Style::default().fg(palette::TEXT_HINT),
-        ));
-    }
-
-    spans
+fn spans_width(spans: &[Span<'_>]) -> usize {
+    spans.iter().map(|span| span.content.width()).sum()
 }
 
 #[allow(dead_code)]

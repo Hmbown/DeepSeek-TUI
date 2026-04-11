@@ -49,7 +49,9 @@ cargo install --path crates/tui --locked
 
 The canonical crates.io packages for this repository are `deepseek-tui` and
 `deepseek-tui-cli`. The unrelated `deepseek-cli` crate is not part of this
-project.
+project. crates.io publication can lag the repository workspace version and the
+npm wrapper, so use npm or install from source if you need the newest release
+surface immediately.
 
 </details>
 

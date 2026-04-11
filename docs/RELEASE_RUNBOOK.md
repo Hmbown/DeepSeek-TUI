@@ -29,7 +29,7 @@ Current packaging note:
 ## Version Coordination
 
 - Rust crates inherit the shared workspace version from [Cargo.toml](../Cargo.toml).
-- Internal path dependency versions should match that workspace version; stale `0.3.30` pins are release blockers once the workspace moves to `0.3.31+`.
+- Internal path dependency versions should match the shared workspace version; stale older pins are release blockers once the workspace version moves.
 - The npm wrapper version lives in [npm/deepseek-tui/package.json](../npm/deepseek-tui/package.json).
 - `deepseekBinaryVersion` controls which GitHub release binaries the npm wrapper downloads.
 - Packaging-only npm releases are allowed:
@@ -82,8 +82,10 @@ directory with a full asset matrix fixture before starting the server:
 ```bash
 DEEPSEEK_TUI_PREPARE_ALL_ASSETS=1 node scripts/release/prepare-local-release-assets.js
 cd npm/deepseek-tui
-DEEPSEEK_TUI_VERSION=0.3.31 DEEPSEEK_TUI_RELEASE_BASE_URL=http://127.0.0.1:8123/ npm run release:check
+DEEPSEEK_TUI_VERSION=X.Y.Z DEEPSEEK_TUI_RELEASE_BASE_URL=http://127.0.0.1:8123/ npm run release:check
 ```
+
+Set `DEEPSEEK_TUI_VERSION` to the npm package version you are verifying for that local run.
 
 The CI workflow runs the same tarball install + smoke test on Linux and macOS.
 

@@ -345,9 +345,11 @@ impl ToolRegistryBuilder {
     /// Include web search tools.
     #[must_use]
     pub fn with_web_tools(self) -> Self {
+        use super::finance::FinanceTool;
         use super::web_run::WebRunTool;
         use super::web_search::WebSearchTool;
         self.with_tool(Arc::new(WebSearchTool))
+            .with_tool(Arc::new(FinanceTool::new()))
             .with_tool(Arc::new(WebRunTool))
     }
 
@@ -710,5 +712,27 @@ mod tests {
         let readonly = registry.read_only_tools();
         assert_eq!(readonly.len(), 1);
         assert_eq!(readonly[0].name(), "reader");
+    }
+
+    #[test]
+    fn test_builder_with_web_tools_includes_finance() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+
+        let registry = ToolRegistryBuilder::new().with_web_tools().build(ctx);
+
+        assert!(registry.contains("finance"));
+    }
+
+    #[test]
+    fn test_builder_with_agent_tools_includes_finance() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+
+        let registry = ToolRegistryBuilder::new()
+            .with_agent_tools(false)
+            .build(ctx);
+
+        assert!(registry.contains("finance"));
     }
 }
