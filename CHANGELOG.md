@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.33] - 2026-04-11
+
+### Changed
+- Footer polish: simplified footer rendering, removed footer clock label, updated status line layout
+- Palette cleanup: removed `FOOTER_HINT` color constant
+
+### Removed
+- `FOOTER_HINT` color constant from palette (use `TEXT_MUTED` or `TEXT_HINT` instead)
+
+### Fixed
+- Test updates to align with simplified footer logic
+- Empty state placeholder text removed for cleaner UI
+
 ## [0.3.32] - 2026-04-11
 
 ### Added

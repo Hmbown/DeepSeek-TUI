@@ -198,16 +198,4 @@ fn contrast_guardrails_for_key_ui_pairs() {
         palette::DEEPSEEK_INK,
         min_readable,
     );
-    assert_min_contrast(
-        "FOOTER_HINT on DEEPSEEK_INK",
-        palette::FOOTER_HINT,
-        palette::DEEPSEEK_INK,
-        min_readable,
-    );
-    assert_min_contrast(
-        "FOOTER_HINT on DEEPSEEK_SLATE",
-        palette::FOOTER_HINT,
-        palette::DEEPSEEK_SLATE,
-        min_readable,
-    );
 }

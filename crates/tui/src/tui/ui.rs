@@ -7,7 +7,6 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use chrono::Local;
 use crossterm::{
     event::{
         self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
@@ -87,20 +86,14 @@ use super::widgets::{
 
 const SLASH_MENU_LIMIT: usize = 6;
 const MIN_CHAT_HEIGHT: u16 = 3;
-const MIN_COMPOSER_HEIGHT: u16 = 3;
+const MIN_COMPOSER_HEIGHT: u16 = 2;
 const CONTEXT_WARNING_THRESHOLD_PERCENT: f64 = 85.0;
 const CONTEXT_CRITICAL_THRESHOLD_PERCENT: f64 = 95.0;
 const UI_IDLE_POLL_MS: u64 = 48;
 const UI_ACTIVE_POLL_MS: u64 = 24;
-const UI_DEEPSEEK_SQUIGGLE_MS: u64 = 320;
 const UI_STATUS_ANIMATION_MS: u64 = 360;
 const WORKSPACE_CONTEXT_REFRESH_SECS: u64 = 15;
 const SIDEBAR_VISIBLE_MIN_WIDTH: u16 = 100;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct StatusLayoutPlan {
-    status_height: u16,
-}
 
 /// Run the interactive TUI event loop.
 ///
@@ -843,7 +836,6 @@ async fn run_event_loop(
         let now = Instant::now();
         app.flush_paste_burst_if_due(now);
         app.sync_status_message_to_toasts();
-        sync_footer_clock(app);
         let allow_workspace_context_refresh =
             !app.is_loading && !has_running_agents && !app.is_compacting;
         refresh_workspace_context_if_needed(app, now, allow_workspace_context_refresh);
@@ -2243,23 +2235,6 @@ async fn handle_plan_choice(
     Ok(true)
 }
 
-fn chat_height_floor(body_height: u16) -> u16 {
-    body_height
-        .saturating_sub(MIN_COMPOSER_HEIGHT)
-        .clamp(1, MIN_CHAT_HEIGHT)
-}
-
-fn status_row_budget(
-    terminal_height: u16,
-    header_height: u16,
-    footer_height: u16,
-    composer_height: u16,
-) -> u16 {
-    let body_height = terminal_height.saturating_sub(header_height + footer_height);
-    let chat_floor = chat_height_floor(body_height);
-    body_height.saturating_sub(composer_height.max(MIN_COMPOSER_HEIGHT) + chat_floor)
-}
-
 fn running_agent_count(app: &App) -> usize {
     let mut ids: std::collections::HashSet<&str> =
         app.agent_progress.keys().map(String::as_str).collect();
@@ -2271,43 +2246,6 @@ fn running_agent_count(app: &App) -> usize {
         ids.insert(agent.agent_id.as_str());
     }
     ids.len()
-}
-
-fn active_agent_rows(app: &App, limit: usize) -> Vec<(String, String)> {
-    if limit == 0 {
-        return Vec::new();
-    }
-
-    let mut rows = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-
-    for agent in app
-        .subagent_cache
-        .iter()
-        .filter(|agent| matches!(agent.status, SubAgentStatus::Running))
-    {
-        let detail = app
-            .agent_progress
-            .get(&agent.agent_id)
-            .cloned()
-            .unwrap_or_else(|| summarize_tool_output(&agent.assignment.objective));
-        rows.push((agent.agent_id.clone(), summarize_tool_output(&detail)));
-        seen.insert(agent.agent_id.clone());
-        if rows.len() >= limit {
-            return rows;
-        }
-    }
-
-    let mut extras: Vec<(String, String)> = app
-        .agent_progress
-        .iter()
-        .filter(|(id, _)| !seen.contains(id.as_str()))
-        .map(|(id, status)| (id.clone(), summarize_tool_output(status)))
-        .collect();
-    extras.sort_by(|a, b| a.0.cmp(&b.0));
-
-    rows.extend(extras.into_iter().take(limit.saturating_sub(rows.len())));
-    rows
 }
 
 fn reconcile_subagent_activity_state(app: &mut App) {
@@ -2338,30 +2276,6 @@ fn reconcile_subagent_activity_state(app: &mut App) {
     }
 }
 
-fn compute_status_layout(
-    app: &App,
-    terminal_height: u16,
-    composer_height: u16,
-) -> StatusLayoutPlan {
-    let status_budget = status_row_budget(terminal_height, 1, 1, composer_height);
-    if status_budget == 0 {
-        return StatusLayoutPlan { status_height: 0 };
-    }
-
-    let active_details = usize::from(app.is_loading || app.is_compacting)
-        + usize::from(app.queued_draft.is_some())
-        + usize::from(running_agent_count(app) > 0)
-        + usize::from(matches!(
-            app.view_stack.top_kind(),
-            Some(ModalKind::Approval | ModalKind::Elevation)
-        ));
-    let requested_rows = 1 + active_details.min(2);
-    let status_height =
-        u16::try_from(requested_rows.min(usize::from(status_budget))).unwrap_or(status_budget);
-
-    StatusLayoutPlan { status_height }
-}
-
 fn render(f: &mut Frame, app: &mut App) {
     let size = f.area();
 
@@ -2379,16 +2293,8 @@ fn render(f: &mut Frame, app: &mut App) {
     let footer_height = 1;
     let body_height = size.height.saturating_sub(header_height + footer_height);
     let slash_menu_entries = visible_slash_menu_entries(app, SLASH_MENU_LIMIT);
-    let composer_for_budget = {
-        let max_composer_height = body_height
-            .saturating_sub(chat_height_floor(body_height))
-            .max(MIN_COMPOSER_HEIGHT);
-        let composer_widget = ComposerWidget::new(app, max_composer_height, &slash_menu_entries);
-        composer_widget.desired_height(size.width)
-    };
-    let status_layout = compute_status_layout(app, size.height, composer_for_budget);
     let composer_max_height = body_height
-        .saturating_sub(status_layout.status_height + chat_height_floor(body_height))
+        .saturating_sub(MIN_CHAT_HEIGHT)
         .max(MIN_COMPOSER_HEIGHT);
     let composer_height = {
         let composer_widget = ComposerWidget::new(app, composer_max_height, &slash_menu_entries);
@@ -2398,11 +2304,10 @@ fn render(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(header_height),               // Header
-            Constraint::Min(1),                              // Chat area
-            Constraint::Length(status_layout.status_height), // Status indicator
-            Constraint::Length(composer_height),             // Composer
-            Constraint::Length(footer_height),               // Footer
+            Constraint::Length(header_height),   // Header
+            Constraint::Min(1),                  // Chat area
+            Constraint::Length(composer_height), // Composer
+            Constraint::Length(footer_height),   // Footer
         ])
         .split(size);
 
@@ -2464,24 +2369,19 @@ fn render(f: &mut Frame, app: &mut App) {
         }
     }
 
-    // Render status
-    if status_layout.status_height > 0 {
-        render_status_indicator(f, chunks[2], app);
-    }
-
     // Render composer
     let cursor_pos = {
         let composer_widget = ComposerWidget::new(app, composer_max_height, &slash_menu_entries);
         let buf = f.buffer_mut();
-        composer_widget.render(chunks[3], buf);
-        composer_widget.cursor_pos(chunks[3])
+        composer_widget.render(chunks[2], buf);
+        composer_widget.cursor_pos(chunks[2])
     };
     if let Some(cursor_pos) = cursor_pos {
         f.set_cursor_position(cursor_pos);
     }
 
     // Render footer
-    render_footer(f, chunks[4], app);
+    render_footer(f, chunks[3], app);
 
     if !app.view_stack.is_empty() {
         let buf = f.buffer_mut();
@@ -3235,191 +3135,6 @@ fn resume_terminal(
     Ok(())
 }
 
-fn render_status_indicator(f: &mut Frame, area: Rect, app: &App) {
-    if area.height == 0 || area.width == 0 {
-        return;
-    }
-
-    let mut lines = vec![status_summary_line(app, area.width)];
-    let detail_budget = usize::from(area.height.saturating_sub(1));
-    lines.extend(status_detail_lines(app, area.width, detail_budget));
-
-    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
-    f.render_widget(paragraph, area);
-}
-
-fn approval_mode_summary(app: &App) -> &'static str {
-    match app.approval_mode {
-        ApprovalMode::Auto => "auto",
-        ApprovalMode::Suggest => "review",
-        ApprovalMode::Never => "off",
-    }
-}
-
-fn workspace_short_name(app: &App) -> String {
-    app.workspace
-        .file_name()
-        .and_then(|value| value.to_str())
-        .filter(|value| !value.is_empty())
-        .unwrap_or("workspace")
-        .to_string()
-}
-
-fn current_run_state(app: &App) -> (&'static str, ratatui::style::Color) {
-    if app.is_compacting {
-        ("Compacting", palette::STATUS_WARNING)
-    } else if app.is_loading {
-        ("Working", palette::DEEPSEEK_SKY)
-    } else if running_agent_count(app) > 0 {
-        ("Agents active", palette::DEEPSEEK_SKY)
-    } else if app.queued_draft.is_some() {
-        ("Editing queue", palette::STATUS_WARNING)
-    } else {
-        ("Ready", palette::TEXT_MUTED)
-    }
-}
-
-fn status_summary_line(app: &App, width: u16) -> Line<'static> {
-    let queue = app.queued_message_count();
-    let running_tasks = app
-        .task_panel
-        .iter()
-        .filter(|task| task.status == "running")
-        .count();
-    let active_agents = running_agent_count(app);
-    let (state, state_color) = current_run_state(app);
-    let mut parts = vec![workspace_short_name(app)];
-    if queue > 0 {
-        parts.push(format!("queue {queue}"));
-    }
-    if !matches!(app.approval_mode, ApprovalMode::Suggest) {
-        parts.push(format!("approvals {}", approval_mode_summary(app)));
-    }
-    if running_tasks > 0 {
-        parts.push(format!(
-            "{} task{}",
-            running_tasks,
-            if running_tasks == 1 { "" } else { "s" }
-        ));
-    }
-    if active_agents > 0 {
-        parts.push(format!(
-            "{} agent{}",
-            active_agents,
-            if active_agents == 1 { "" } else { "s" }
-        ));
-    }
-    if width >= 100
-        && let Some(workspace_context) = app.workspace_context.as_ref()
-    {
-        parts.push(workspace_context.to_string());
-    }
-    let text = parts.join("  ·  ");
-
-    let available_width = if state == "Ready" {
-        usize::from(width)
-    } else {
-        usize::from(width).saturating_sub(state.len() + 3)
-    };
-    let mut spans = vec![Span::styled(
-        truncate_line_to_width(&text, available_width.max(1)),
-        Style::default().fg(palette::TEXT_MUTED),
-    )];
-    if state != "Ready" {
-        spans.push(Span::styled(
-            "  ·  ",
-            Style::default().fg(palette::TEXT_DIM),
-        ));
-        spans.push(Span::styled(
-            state.to_string(),
-            Style::default().fg(state_color),
-        ));
-    }
-    Line::from(spans)
-}
-
-fn status_detail_lines(app: &App, width: u16, budget: usize) -> Vec<Line<'static>> {
-    if budget == 0 {
-        return Vec::new();
-    }
-
-    let mut lines = Vec::new();
-
-    if app.is_loading && lines.len() < budget {
-        let header = app
-            .reasoning_header
-            .as_deref()
-            .filter(|header| !header.trim().is_empty())
-            .unwrap_or("streaming response");
-        let spinner = if app.low_motion {
-            "·"
-        } else {
-            deepseek_squiggle(app.turn_started_at)
-        };
-        let elapsed = app.turn_started_at.map(format_elapsed).unwrap_or_default();
-        let detail = if elapsed.is_empty() {
-            format!("{spinner} {header}  ·  Esc interrupts")
-        } else {
-            format!("{spinner} {header}  ·  {elapsed}  ·  Esc interrupts")
-        };
-        lines.push(Line::from(Span::styled(
-            truncate_line_to_width(&detail, usize::from(width)),
-            Style::default().fg(palette::TEXT_MUTED),
-        )));
-    }
-
-    if app.is_compacting && lines.len() < budget {
-        lines.push(Line::from(Span::styled(
-            truncate_line_to_width(
-                "Compacting context  ·  summarizing older turns  ·  Esc interrupts",
-                usize::from(width),
-            ),
-            Style::default().fg(palette::TEXT_MUTED),
-        )));
-    }
-
-    if let Some(draft) = app.queued_draft.as_ref()
-        && lines.len() < budget
-    {
-        lines.push(Line::from(Span::styled(
-            truncate_line_to_width(
-                &format!("Editing queued draft  ·  {}", draft.display),
-                usize::from(width),
-            ),
-            Style::default().fg(palette::TEXT_MUTED),
-        )));
-    }
-
-    if running_agent_count(app) > 0 && lines.len() < budget {
-        let active_rows = active_agent_rows(app, 1);
-        if let Some((id, status)) = active_rows.first() {
-            lines.push(Line::from(Span::styled(
-                truncate_line_to_width(
-                    &format!("Agent {id}  ·  {}", status.lines().next().unwrap_or(status)),
-                    usize::from(width),
-                ),
-                Style::default().fg(palette::TEXT_MUTED),
-            )));
-        }
-    }
-
-    if matches!(
-        app.view_stack.top_kind(),
-        Some(ModalKind::Approval | ModalKind::Elevation)
-    ) && lines.len() < budget
-    {
-        lines.push(Line::from(Span::styled(
-            truncate_line_to_width(
-                "Review open request  ·  Esc closes the overlay",
-                usize::from(width),
-            ),
-            Style::default().fg(palette::TEXT_MUTED),
-        )));
-    }
-
-    lines
-}
-
 fn status_color(level: StatusToastLevel) -> ratatui::style::Color {
     match level {
         StatusToastLevel::Info => palette::DEEPSEEK_SKY,
@@ -3435,13 +3150,17 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
-    let percent = context_usage_snapshot(app)
-        .map(|(_, _, pct)| pct)
-        .unwrap_or(0.0);
-    let right_spans = footer_context_spans(percent, available_width);
+    let right_spans = if app.session_cost > 0.001 {
+        vec![Span::styled(
+            format!("${:.2}", app.session_cost),
+            Style::default().fg(palette::TEXT_MUTED),
+        )]
+    } else {
+        Vec::new()
+    };
     let right_width = spans_width(&right_spans);
     let active_status = app.active_status_toast();
-    let min_gap = if available_width < 60 { 1 } else { 2 };
+    let min_gap = if right_width > 0 { 2 } else { 0 };
     let max_left_width = available_width
         .saturating_sub(right_width)
         .saturating_sub(min_gap)
@@ -3449,8 +3168,6 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
 
     let left_spans = if let Some(toast) = active_status.as_ref() {
         footer_toast_spans(toast, max_left_width)
-    } else if available_width < 60 {
-        footer_narrow_status_spans(app, max_left_width)
     } else {
         footer_status_line_spans(app, max_left_width)
     };
@@ -3477,88 +3194,60 @@ fn footer_toast_spans(
     )]
 }
 
-fn footer_narrow_status_spans(app: &App, max_width: usize) -> Vec<Span<'static>> {
-    let (mode_label, mode_color) = footer_mode_style(app);
-    let (status_label, status_color) = footer_state_label(app);
-    let mode_width = mode_label.width();
-
-    if max_width <= mode_width || status_label == "ready" {
-        return vec![Span::styled(
-            truncate_line_to_width(mode_label, max_width.max(1)),
-            Style::default().fg(mode_color),
-        )];
-    }
-
-    let status_width = max_width.saturating_sub(mode_width + 1);
-    let truncated_status = truncate_line_to_width(status_label, status_width.max(1));
-
-    vec![
-        Span::styled(mode_label.to_string(), Style::default().fg(mode_color)),
-        Span::raw(" "),
-        Span::styled(truncated_status, Style::default().fg(status_color)),
-    ]
-}
-
 fn footer_status_line_spans(app: &App, max_width: usize) -> Vec<Span<'static>> {
     if max_width == 0 {
         return Vec::new();
     }
 
-    let time_label = app.footer_clock_label.clone();
     let (mode_label, mode_color) = footer_mode_style(app);
     let (status_label, status_color) = footer_state_label(app);
-    let fixed_width = time_label.width()
-        + 2
-        + mode_label.width()
-        + 2
-        + "agent (".width()
-        + ", ".width()
-        + status_label.width()
-        + 1;
+    let sep = " \u{00B7} ";
+    let show_status = status_label != "ready";
 
-    if max_width <= fixed_width {
-        return footer_narrow_status_spans(app, max_width);
+    let fixed_width = mode_label.width()
+        + sep.width()
+        + if show_status {
+            sep.width() + status_label.width()
+        } else {
+            0
+        };
+
+    if max_width <= mode_label.width() {
+        return vec![Span::styled(
+            truncate_line_to_width(mode_label, max_width),
+            Style::default().fg(mode_color),
+        )];
     }
 
-    let model_width = max_width.saturating_sub(fixed_width).max(1);
-    let model_label = truncate_line_to_width(&app.model, model_width);
+    let model_budget = max_width.saturating_sub(fixed_width).max(1);
+    let model_label = truncate_line_to_width(&app.model, model_budget);
 
-    vec![
-        Span::styled(time_label, Style::default().fg(palette::TEXT_MUTED)),
-        Span::raw("  "),
+    let mut spans = vec![
         Span::styled(mode_label.to_string(), Style::default().fg(mode_color)),
-        Span::raw("  "),
-        Span::styled(
-            "agent".to_string(),
-            Style::default().fg(palette::FOOTER_HINT),
-        ),
-        Span::styled(" (".to_string(), Style::default().fg(palette::TEXT_DIM)),
+        Span::styled(sep.to_string(), Style::default().fg(palette::TEXT_DIM)),
         Span::styled(model_label, Style::default().fg(palette::TEXT_HINT)),
-        Span::styled(", ".to_string(), Style::default().fg(palette::TEXT_DIM)),
-        Span::styled(status_label.to_string(), Style::default().fg(status_color)),
-        Span::styled(")".to_string(), Style::default().fg(palette::TEXT_DIM)),
-    ]
-}
+    ];
 
-fn sync_footer_clock(app: &mut App) {
-    sync_footer_clock_to(app, Local::now().format("%H:%M").to_string());
-}
-
-fn sync_footer_clock_to(app: &mut App, time_label: String) {
-    if app.footer_clock_label == time_label {
-        return;
+    if show_status {
+        spans.push(Span::styled(
+            sep.to_string(),
+            Style::default().fg(palette::TEXT_DIM),
+        ));
+        spans.push(Span::styled(
+            status_label.to_string(),
+            Style::default().fg(status_color),
+        ));
     }
 
-    app.footer_clock_label = time_label;
-    app.needs_redraw = true;
+    spans
 }
 
 fn footer_state_label(app: &App) -> (&'static str, ratatui::style::Color) {
     if app.is_compacting {
-        return ("compacting", palette::STATUS_WARNING);
+        return ("compacting \u{238B}", palette::STATUS_WARNING);
     }
     if app.is_loading {
-        return ("thinking", palette::STATUS_WARNING);
+        return ("thinking \u{238B}", palette::STATUS_WARNING);
     }
     if running_agent_count(app) > 0 {
         return ("working", palette::DEEPSEEK_SKY);
@@ -3617,37 +3306,6 @@ fn format_context_budget(used: i64, max: u32) -> String {
         format_token_count_compact(used_u64),
         format_token_count_compact(max_u64)
     )
-}
-
-fn context_color_for_percent(percent: f64) -> ratatui::style::Color {
-    if percent >= CONTEXT_CRITICAL_THRESHOLD_PERCENT {
-        palette::STATUS_ERROR
-    } else if percent >= CONTEXT_WARNING_THRESHOLD_PERCENT {
-        palette::STATUS_WARNING
-    } else {
-        palette::DEEPSEEK_SKY
-    }
-}
-
-fn footer_context_spans(percent: f64, max_width: usize) -> Vec<Span<'static>> {
-    let color = context_color_for_percent(percent);
-    let value = format!("{percent:.1}%");
-    let full_width = "context: ".width() + value.width();
-
-    if max_width >= full_width {
-        return vec![
-            Span::styled(
-                "context: ".to_string(),
-                Style::default().fg(palette::TEXT_MUTED),
-            ),
-            Span::styled(value, Style::default().fg(color)),
-        ];
-    }
-
-    vec![Span::styled(
-        truncate_line_to_width(&value, max_width.max(1)),
-        Style::default().fg(color),
-    )]
 }
 
 fn spans_width(spans: &[Span<'_>]) -> usize {
@@ -3793,22 +3451,6 @@ fn should_auto_compact_before_send(app: &App) -> bool {
     context_usage_snapshot(app)
         .map(|(_, _, pct)| pct >= CONTEXT_CRITICAL_THRESHOLD_PERCENT)
         .unwrap_or(false)
-}
-
-fn format_elapsed(start: Instant) -> String {
-    let elapsed = start.elapsed().as_secs();
-    if elapsed >= 60 {
-        format!("{}m{:02}s", elapsed / 60, elapsed % 60)
-    } else {
-        format!("{elapsed}s")
-    }
-}
-
-fn deepseek_squiggle(start: Option<Instant>) -> &'static str {
-    const FRAMES: [&str; 4] = ["·", "◦", "•", "◦"];
-    let elapsed_ms = start.map_or(0, |t| t.elapsed().as_millis());
-    let idx = ((elapsed_ms / u128::from(UI_DEEPSEEK_SQUIGGLE_MS)) as usize) % FRAMES.len();
-    FRAMES[idx]
 }
 
 fn status_animation_interval_ms(app: &App) -> u64 {

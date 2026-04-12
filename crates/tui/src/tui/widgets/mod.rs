@@ -773,7 +773,7 @@ fn build_empty_state_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
     let left_padding = usize::from(area.width.saturating_sub(body_width as u16) / 2);
     let inset = " ".repeat(left_padding);
 
-    let mut body = vec![
+    let body = vec![
         Line::from(Span::styled(
             format!("{inset}DeepSeek TUI"),
             Style::default().fg(palette::DEEPSEEK_BLUE).bold(),
@@ -782,18 +782,7 @@ fn build_empty_state_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
             format!("{inset}{workspace_name}  ·  {}", app.model),
             Style::default().fg(palette::TEXT_MUTED),
         )),
-        Line::from(""),
     ];
-
-    for line in wrap_text(
-        "Start in plain language. The transcript stays clear until the first real turn.",
-        body_width,
-    ) {
-        body.push(Line::from(Span::styled(
-            format!("{inset}{line}"),
-            Style::default().fg(palette::TEXT_PRIMARY),
-        )));
-    }
 
     let top_padding = usize::from(area.height.saturating_sub(body.len() as u16) / 3);
     let mut lines = Vec::new();

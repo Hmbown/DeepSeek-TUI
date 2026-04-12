@@ -243,59 +243,6 @@ fn running_agent_count_unions_cache_and_progress() {
 }
 
 #[test]
-fn compute_status_layout_reserves_extra_rows_for_active_state() {
-    let app = create_test_app();
-    let baseline = compute_status_layout(&app, 30, 3);
-    assert_eq!(baseline.status_height, 1);
-
-    let mut with_agents = create_test_app();
-    with_agents
-        .agent_progress
-        .insert("agent_a".to_string(), "running".to_string());
-    let active = compute_status_layout(&with_agents, 30, 3);
-    assert!(active.status_height > baseline.status_height);
-}
-
-#[test]
-fn status_summary_line_mentions_queue_and_approval_mode() {
-    let mut app = create_test_app();
-    app.approval_mode = crate::tui::approval::ApprovalMode::Auto;
-    app.queue_message(crate::tui::app::QueuedMessage::new(
-        "queued message".to_string(),
-        None,
-    ));
-    let summary = status_summary_line(&app, 120);
-    let summary_text = summary
-        .spans
-        .iter()
-        .map(|span| span.content.as_ref())
-        .collect::<String>();
-    assert!(summary_text.contains("queue 1"));
-    assert!(summary_text.contains("approvals auto"));
-}
-
-#[test]
-fn active_agent_rows_prefers_cache_order_and_progress_text() {
-    let mut app = create_test_app();
-    app.subagent_cache = vec![
-        make_subagent("agent_a", crate::tools::subagent::SubAgentStatus::Running),
-        make_subagent("agent_b", crate::tools::subagent::SubAgentStatus::Running),
-    ];
-    app.agent_progress
-        .insert("agent_b".to_string(), "step 2".to_string());
-    app.agent_progress
-        .insert("agent_c".to_string(), "queued".to_string());
-
-    let rows = active_agent_rows(&app, 3);
-    assert_eq!(rows.len(), 3);
-    assert_eq!(rows[0].0, "agent_a");
-    assert!(rows[0].1.contains("objective-agent_a"));
-    assert_eq!(rows[1].0, "agent_b");
-    assert_eq!(rows[1].1, "step 2");
-    assert_eq!(rows[2].0, "agent_c");
-}
-
-#[test]
 fn reconcile_subagent_activity_state_trims_stale_progress_and_sets_anchor() {
     let mut app = create_test_app();
     app.subagent_cache = vec![
@@ -335,38 +282,28 @@ fn footer_state_label_prefers_compacting_then_thinking() {
     assert_eq!(footer_state_label(&app).0, "ready");
 
     app.is_loading = true;
-    assert_eq!(footer_state_label(&app).0, "thinking");
+    assert!(footer_state_label(&app).0.starts_with("thinking"));
 
     app.is_compacting = true;
-    assert_eq!(footer_state_label(&app).0, "compacting");
+    assert!(footer_state_label(&app).0.starts_with("compacting"));
 }
 
 #[test]
-fn footer_context_spans_uses_decimal_context_label() {
-    let full = spans_text(&footer_context_spans(12.34, 32));
-    assert_eq!(full, "context: 12.3%");
-
-    let compact = spans_text(&footer_context_spans(12.34, 6));
-    assert_eq!(compact, "12.3%");
-}
-
-#[test]
-fn footer_narrow_status_spans_hides_ready_state_but_shows_activity() {
+fn footer_status_line_spans_show_mode_model_and_status() {
     let mut app = create_test_app();
-    assert_eq!(spans_text(&footer_narrow_status_spans(&app, 24)), "agent");
+    app.model = "deepseek-chat".to_string();
+
+    let idle = spans_text(&footer_status_line_spans(&app, 60));
+    assert!(idle.contains("agent"));
+    assert!(idle.contains("deepseek-chat"));
+    assert!(idle.contains("\u{00B7}"));
+    assert!(!idle.contains("ready"));
 
     app.is_loading = true;
-    assert_eq!(
-        spans_text(&footer_narrow_status_spans(&app, 24)),
-        "agent thinking"
-    );
-
-    app.is_loading = false;
-    app.is_compacting = true;
-    assert_eq!(
-        spans_text(&footer_narrow_status_spans(&app, 24)),
-        "agent compacting"
-    );
+    let active = spans_text(&footer_status_line_spans(&app, 60));
+    assert!(active.contains("agent"));
+    assert!(active.contains("deepseek-chat"));
+    assert!(active.contains("thinking"));
 }
 
 #[test]
@@ -375,26 +312,9 @@ fn footer_status_line_spans_truncate_long_model_names() {
     app.model = "deepseek-reasoner-with-an-extremely-long-model-name".to_string();
     app.is_loading = true;
 
-    let line = spans_text(&footer_status_line_spans(&app, 48));
-    assert!(line.contains("agent ("));
-    assert!(line.contains(", thinking)"));
+    let line = spans_text(&footer_status_line_spans(&app, 40));
     assert!(line.contains("..."));
-    assert!(UnicodeWidthStr::width(line.as_str()) <= 48);
-}
-
-#[test]
-fn sync_footer_clock_to_marks_redraw_only_when_minute_changes() {
-    let mut app = create_test_app();
-    app.footer_clock_label = "12:00".to_string();
-    app.needs_redraw = false;
-
-    sync_footer_clock_to(&mut app, "12:00".to_string());
-    assert_eq!(app.footer_clock_label, "12:00");
-    assert!(!app.needs_redraw);
-
-    sync_footer_clock_to(&mut app, "12:01".to_string());
-    assert_eq!(app.footer_clock_label, "12:01");
-    assert!(app.needs_redraw);
+    assert!(UnicodeWidthStr::width(line.as_str()) <= 40);
 }
 
 #[test]
@@ -612,21 +532,6 @@ fn apply_slash_menu_selection_appends_space_for_arg_commands() {
 }
 
 #[test]
-fn status_layout_budget_preserves_chat_and_composer_on_tiny_heights() {
-    let mut app = create_test_app();
-    app.is_loading = true;
-    for idx in 0..5 {
-        app.queue_message(crate::tui::app::QueuedMessage::new(
-            format!("queued message {idx}"),
-            None,
-        ));
-    }
-
-    let layout = compute_status_layout(&app, 9, 3);
-    assert_eq!(layout.status_height, 1);
-}
-
-#[test]
 fn workspace_context_refresh_is_deferred_while_ui_is_busy() {
     let repo = init_git_repo();
     let mut app = create_test_app();
@@ -759,23 +664,6 @@ fn api_key_validation_warns_without_blocking_unusual_formats() {
         validate_api_key_for_onboarding("sk-valid-format-1234567890"),
         ApiKeyValidation::Accept { warning: None }
     ));
-}
-
-#[test]
-fn status_detail_lines_show_queue_draft_when_editing() {
-    let mut app = create_test_app();
-    app.queued_draft = Some(crate::tui::app::QueuedMessage::new(
-        "refine the queued prompt".to_string(),
-        None,
-    ));
-    let details = status_detail_lines(&app, 120, 2);
-    assert!(!details.is_empty());
-    let text = details[0]
-        .spans
-        .iter()
-        .map(|span| span.content.as_ref())
-        .collect::<String>();
-    assert!(text.contains("Editing queued draft"));
 }
 
 #[test]

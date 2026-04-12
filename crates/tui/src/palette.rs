@@ -48,7 +48,6 @@ pub const TEXT_BODY: Color = Color::White;
 pub const TEXT_SECONDARY: Color = Color::Rgb(192, 192, 192); // #C0C0C0
 pub const TEXT_HINT: Color = Color::Rgb(160, 160, 160); // #A0A0A0
 pub const TEXT_ACCENT: Color = DEEPSEEK_SKY;
-pub const FOOTER_HINT: Color = Color::Rgb(180, 190, 208); // #B4BED0
 pub const SELECTION_TEXT: Color = Color::White;
 pub const TEXT_SOFT: Color = Color::Rgb(214, 223, 235); // #D6DFEB
 

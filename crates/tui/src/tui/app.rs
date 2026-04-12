@@ -429,8 +429,6 @@ pub struct App {
     pub is_compacting: bool,
     /// Timestamp of the last user message send (for brief visual feedback).
     pub last_send_at: Option<Instant>,
-    /// Cached footer clock label so idle sessions still repaint when the minute changes.
-    pub footer_clock_label: String,
 }
 
 /// Message queued while the engine is busy.
@@ -682,7 +680,6 @@ impl App {
             thinking_started_at: None,
             is_compacting: false,
             last_send_at: None,
-            footer_clock_label: chrono::Local::now().format("%H:%M").to_string(),
         }
     }
 
