@@ -318,6 +318,24 @@ fn footer_status_line_spans_truncate_long_model_names() {
 }
 
 #[test]
+fn footer_auxiliary_spans_prioritize_context_when_busy() {
+    let mut app = create_test_app();
+    app.is_loading = true;
+    app.last_prompt_tokens = Some(48_000);
+    app.session_cost = 12.34;
+
+    let compact = spans_text(&footer_auxiliary_spans(&app, 8));
+    assert!(compact.contains("ctx"));
+    assert!(compact.contains('%'));
+    assert!(!compact.contains('$'));
+
+    let roomy = spans_text(&footer_auxiliary_spans(&app, 20));
+    assert!(roomy.contains("ctx"));
+    assert!(roomy.contains('%'));
+    assert!(roomy.contains("$12.34"));
+}
+
+#[test]
 fn context_usage_snapshot_prefers_estimate_when_reported_exceeds_window() {
     let mut app = create_test_app();
     app.last_prompt_tokens = Some(320_000);
@@ -335,6 +353,28 @@ fn context_usage_snapshot_prefers_estimate_when_reported_exceeds_window() {
     assert!(used > 0);
     assert!(used <= i64::from(max));
     assert!(percent < 100.0);
+}
+
+#[test]
+fn context_usage_snapshot_prefers_live_estimate_while_loading() {
+    let mut app = create_test_app();
+    app.is_loading = true;
+    app.last_prompt_tokens = Some(128);
+    app.api_messages = vec![Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "context ".repeat(6_000),
+            cache_control: None,
+        }],
+    }];
+
+    let estimated = estimated_context_tokens(&app).expect("estimated context should be available");
+    let (used, max, percent) =
+        context_usage_snapshot(&app).expect("context usage should be available");
+    assert_eq!(used, estimated);
+    assert_eq!(max, 128_000);
+    assert!(used > i64::from(app.last_prompt_tokens.expect("reported tokens")));
+    assert!(percent > 0.0);
 }
 
 #[test]

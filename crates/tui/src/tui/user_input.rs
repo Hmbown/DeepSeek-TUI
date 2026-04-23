@@ -3,7 +3,7 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Alignment, Rect};
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Padding, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph, Widget, Wrap};
 
 use crate::palette;
 use crate::tools::user_input::{
@@ -21,6 +21,65 @@ fn modal_block(title: &str) -> Block<'static> {
         .border_style(Style::default().fg(palette::BORDER_COLOR))
         .style(Style::default().bg(palette::DEEPSEEK_INK))
         .padding(Padding::uniform(1))
+}
+
+fn render_modal_chrome(area: Rect, popup_area: Rect, buf: &mut Buffer) {
+    let shadow_x = popup_area.x.saturating_add(1);
+    let shadow_y = popup_area.y.saturating_add(1);
+    let shadow_right = area.x.saturating_add(area.width);
+    let shadow_bottom = area.y.saturating_add(area.height);
+    let shadow_width = popup_area.width.min(shadow_right.saturating_sub(shadow_x));
+    let shadow_height = popup_area
+        .height
+        .min(shadow_bottom.saturating_sub(shadow_y));
+
+    if shadow_width > 0 && shadow_height > 0 {
+        Block::default()
+            .style(Style::default().bg(palette::DEEPSEEK_NAVY))
+            .render(
+                Rect {
+                    x: shadow_x,
+                    y: shadow_y,
+                    width: shadow_width,
+                    height: shadow_height,
+                },
+                buf,
+            );
+    }
+
+    Clear.render(popup_area, buf);
+}
+
+fn push_option_lines(
+    lines: &mut Vec<Line<'static>>,
+    selected: bool,
+    number: usize,
+    label: String,
+    description: String,
+) {
+    let row_style = if selected {
+        Style::default()
+            .fg(palette::SELECTION_TEXT)
+            .bg(palette::SELECTION_BG)
+            .bold()
+    } else {
+        Style::default().fg(palette::TEXT_PRIMARY)
+    };
+    let detail_style = if selected {
+        row_style
+    } else {
+        Style::default().fg(palette::TEXT_MUTED)
+    };
+    let prefix = if selected { ">" } else { " " };
+
+    lines.push(Line::from(Span::styled(
+        format!("{prefix} {number}) {label}"),
+        row_style,
+    )));
+    lines.push(Line::from(Span::styled(
+        format!("    {description}"),
+        detail_style,
+    )));
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -198,73 +257,54 @@ impl ModalView for UserInputView {
 
         let mut lines: Vec<Line> = Vec::new();
         lines.push(Line::from(vec![Span::styled(
+            "Action required",
+            Style::default().fg(palette::DEEPSEEK_SKY).bold(),
+        )]));
+        lines.push(Line::from(vec![
+            Span::styled(
+                question.header.clone(),
+                Style::default().fg(palette::TEXT_PRIMARY).bold(),
+            ),
+            Span::styled(
+                format!("  Question {} of {}", self.question_index + 1, total),
+                Style::default().fg(palette::TEXT_MUTED),
+            ),
+        ]));
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![Span::styled(
             question.question.clone(),
             Style::default().fg(palette::TEXT_PRIMARY).bold(),
         )]));
         lines.push(Line::from(""));
 
         for (idx, option) in question.options.iter().enumerate() {
-            let selected = self.selected == idx;
-            let prefix = if selected { ">" } else { " " };
             let number = idx + 1;
-            if selected {
-                // Single span with consistent foreground and background
-                let content = format!(
-                    "{prefix} {number}) {} - {}",
-                    option.label, option.description
-                );
-                lines.push(Line::from(Span::styled(
-                    content,
-                    Style::default()
-                        .fg(palette::SELECTION_TEXT)
-                        .bg(palette::SELECTION_BG)
-                        .bold(),
-                )));
-            } else {
-                // Keep original multi‑span formatting
-                lines.push(Line::from(vec![
-                    Span::raw(format!("{prefix} {number}) ")),
-                    Span::styled(
-                        option.label.clone(),
-                        Style::default().fg(palette::TEXT_PRIMARY),
-                    ),
-                    Span::raw(" - "),
-                    Span::styled(
-                        option.description.clone(),
-                        Style::default().fg(palette::TEXT_MUTED),
-                    ),
-                ]));
-            }
+            push_option_lines(
+                &mut lines,
+                self.selected == idx,
+                number,
+                option.label.clone(),
+                option.description.clone(),
+            );
         }
 
         let other_index = question.options.len();
-        let other_selected = self.selected == other_index;
         let other_number = other_index + 1;
-        if other_selected {
-            let content = format!("> {other_number}) Other - Provide a custom response");
-            lines.push(Line::from(Span::styled(
-                content,
-                Style::default()
-                    .fg(palette::SELECTION_TEXT)
-                    .bg(palette::SELECTION_BG)
-                    .bold(),
-            )));
-        } else {
-            lines.push(Line::from(vec![
-                Span::raw(format!("  {other_number}) ")),
-                Span::styled("Other", Style::default().fg(palette::TEXT_PRIMARY)),
-                Span::raw(" - "),
-                Span::styled(
-                    "Provide a custom response",
-                    Style::default().fg(palette::TEXT_MUTED),
-                ),
-            ]));
-        }
+        push_option_lines(
+            &mut lines,
+            self.selected == other_index,
+            other_number,
+            "Other".to_string(),
+            "Type a custom response".to_string(),
+        );
 
         if self.mode == InputMode::OtherInput {
             lines.push(Line::from(""));
             lines.push(Line::from(vec![
-                Span::styled("Other:", Style::default().fg(palette::TEXT_PRIMARY)),
+                Span::styled(
+                    "> Custom response:",
+                    Style::default().fg(palette::TEXT_PRIMARY).bold(),
+                ),
                 Span::raw(" "),
                 Span::styled(
                     if self.other_input.is_empty() {
@@ -278,22 +318,37 @@ impl ModalView for UserInputView {
         }
 
         lines.push(Line::from(""));
-        let hint = if self.mode == InputMode::OtherInput {
-            "Enter=submit, Esc=back"
+        if self.mode == InputMode::OtherInput {
+            lines.push(Line::from(vec![
+                Span::styled("Enter", Style::default().fg(palette::DEEPSEEK_SKY).bold()),
+                Span::styled(" submit", Style::default().fg(palette::TEXT_MUTED)),
+                Span::raw("  "),
+                Span::styled("Esc", Style::default().fg(palette::DEEPSEEK_SKY).bold()),
+                Span::styled(" back", Style::default().fg(palette::TEXT_MUTED)),
+            ]));
         } else {
-            "Number keys=quick pick, Up/Down=select, Enter=confirm, Esc=cancel"
-        };
-        lines.push(Line::from(Span::styled(
-            hint,
-            Style::default().fg(palette::TEXT_MUTED),
-        )));
+            lines.push(Line::from(vec![
+                Span::styled("1-4", Style::default().fg(palette::DEEPSEEK_SKY).bold()),
+                Span::styled(" quick pick", Style::default().fg(palette::TEXT_MUTED)),
+                Span::raw("  "),
+                Span::styled("Up/Down", Style::default().fg(palette::DEEPSEEK_SKY).bold()),
+                Span::styled(" move", Style::default().fg(palette::TEXT_MUTED)),
+                Span::raw("  "),
+                Span::styled("Enter", Style::default().fg(palette::DEEPSEEK_SKY).bold()),
+                Span::styled(" confirm", Style::default().fg(palette::TEXT_MUTED)),
+                Span::raw("  "),
+                Span::styled("Esc", Style::default().fg(palette::DEEPSEEK_SKY).bold()),
+                Span::styled(" cancel", Style::default().fg(palette::TEXT_MUTED)),
+            ]));
+        }
 
         let paragraph = Paragraph::new(lines)
             .alignment(Alignment::Left)
             .wrap(Wrap { trim: true })
             .block(modal_block(&header));
 
-        let popup_area = centered_rect(80, 60, area);
+        let popup_area = centered_rect(82, 68, area);
+        render_modal_chrome(area, popup_area, buf);
         paragraph.render(popup_area, buf);
     }
 }
@@ -316,4 +371,69 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
         ])
         .split(popup_layout[1]);
     horizontal[1]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tools::user_input::{UserInputOption, UserInputQuestion, UserInputRequest};
+
+    fn render_view(view: &UserInputView, width: u16, height: u16) -> String {
+        let area = Rect::new(0, 0, width, height);
+        let mut buf = Buffer::empty(area);
+        view.render(area, &mut buf);
+
+        (0..height)
+            .map(|y| (0..width).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn sample_view() -> UserInputView {
+        UserInputView::new(
+            "tool-1",
+            UserInputRequest {
+                questions: vec![UserInputQuestion {
+                    header: "Confirm".to_string(),
+                    id: "confirm".to_string(),
+                    question: "What should happen next?".to_string(),
+                    options: vec![
+                        UserInputOption {
+                            label: "Ship it".to_string(),
+                            description: "Proceed with the current change set".to_string(),
+                        },
+                        UserInputOption {
+                            label: "Revise it".to_string(),
+                            description: "Return to editing before continuing".to_string(),
+                        },
+                    ],
+                }],
+            },
+        )
+    }
+
+    #[test]
+    fn user_input_modal_calls_out_required_action_and_controls() {
+        let rendered = render_view(&sample_view(), 110, 36);
+
+        assert!(rendered.contains("Action required"));
+        assert!(rendered.contains("Question 1 of 1"));
+        assert!(rendered.contains("1-4"));
+        assert!(rendered.contains("quick pick"));
+    }
+
+    #[test]
+    fn user_input_modal_renders_custom_response_state() {
+        let mut view = sample_view();
+        view.selected = 2;
+        view.mode = InputMode::OtherInput;
+        view.other_input = "Need one more pass".to_string();
+
+        let rendered = render_view(&view, 110, 36);
+
+        assert!(rendered.contains("Custom response"));
+        assert!(rendered.contains("Need one more pass"));
+        assert!(rendered.contains("Enter"));
+        assert!(rendered.contains("submit"));
+    }
 }

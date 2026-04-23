@@ -7,30 +7,32 @@ Browsing note:
 - `web_search` remains available as a compatibility alias for older prompts and integrations.
 
 Server mode note:
-- `deepseek serve --mcp` runs the MCP stdio server.
-- `deepseek serve --http` runs the runtime HTTP/SSE API (separate mode).
+- `deepseek-tui serve --mcp` runs the MCP stdio server.
+- `deepseek-tui serve --http` runs the runtime HTTP/SSE API (separate mode).
+- The `deepseek` dispatcher exposes `deepseek mcp-server` as an equivalent stdio
+  entrypoint used by the split CLI.
 
 ## Bootstrap MCP Config
 
 Create a starter MCP config at your resolved MCP path:
 
 ```bash
-deepseek mcp init
+deepseek-tui mcp init
 ```
 
-`deepseek setup --mcp` performs the same MCP bootstrap alongside skills setup.
+`deepseek-tui setup --mcp` performs the same MCP bootstrap alongside skills setup.
 
 Common management commands:
 
 ```bash
-deepseek mcp list
-deepseek mcp tools [server]
-deepseek mcp add <name> --command "<cmd>" --arg "<arg>"
-deepseek mcp add <name> --url "http://localhost:3000/mcp"
-deepseek mcp enable <name>
-deepseek mcp disable <name>
-deepseek mcp remove <name>
-deepseek mcp validate
+deepseek-tui mcp list
+deepseek-tui mcp tools [server]
+deepseek-tui mcp add <name> --command "<cmd>" --arg "<arg>"
+deepseek-tui mcp add <name> --url "http://localhost:3000/mcp"
+deepseek-tui mcp enable <name>
+deepseek-tui mcp disable <name>
+deepseek-tui mcp remove <name>
+deepseek-tui mcp validate
 ```
 
 ## Config File Location
@@ -44,7 +46,7 @@ Overrides:
 - Config: `mcp_config_path = "/path/to/mcp.json"`
 - Env: `DEEPSEEK_MCP_CONFIG=/path/to/mcp.json`
 
-`deepseek mcp init` (and `deepseek setup --mcp`) writes to this resolved path.
+`deepseek-tui mcp init` (and `deepseek-tui setup --mcp`) writes to this resolved path.
 
 After editing the file, restart the TUI.
 
@@ -94,10 +96,10 @@ You can register your local DeepSeek binary as an MCP server so other DeepSeek s
 ### Quick Setup
 
 ```bash
-deepseek mcp add-self
+deepseek-tui mcp add-self
 ```
 
-This resolves the current binary path, generates a config entry that runs `deepseek serve --mcp`, and writes it to your MCP config file. The default server name is `deepseek`.
+This resolves the current binary path, generates a config entry that runs `deepseek-tui serve --mcp`, and writes it to your MCP config file. The default server name is `deepseek`.
 
 Options:
 
@@ -120,7 +122,11 @@ Equivalent manual entry in `~/.deepseek/mcp.json`:
 }
 ```
 
-Either the `deepseek` or `deepseek-tui` binary works — both support `serve --mcp`. Use whichever is on your `PATH` (run `which deepseek` or `which deepseek-tui` to find the full path). The `mcp add-self` command automatically resolves the correct binary.
+The `deepseek-tui` binary supports `serve --mcp` directly. The `deepseek`
+dispatcher offers the equivalent `deepseek mcp-server` stdio entrypoint. Use
+whichever is on your `PATH` (run `which deepseek` or `which deepseek-tui` to
+find the full path). The `mcp add-self` command automatically resolves the
+correct binary.
 
 ### Prerequisites
 
@@ -138,7 +144,7 @@ For example, the `shell` tool becomes `mcp_deepseek_shell`.
 
 ### MCP Server vs HTTP/SSE API
 
-| | `deepseek serve --mcp` | `deepseek serve --http` |
+| | `deepseek-tui serve --mcp` | `deepseek-tui serve --http` |
 |---|---|---|
 | **Protocol** | MCP stdio | HTTP/SSE JSON-RPC |
 | **Use case** | Tool server for MCP clients | Runtime API for apps |
@@ -152,8 +158,8 @@ Use `mcp add-self` when you want DeepSeek tools available to other MCP clients. 
 After adding, test the connection:
 
 ```bash
-deepseek mcp validate
-deepseek mcp tools deepseek
+deepseek-tui mcp validate
+deepseek-tui mcp tools deepseek
 ```
 
 ## Server Fields
@@ -178,6 +184,6 @@ You should still only configure MCP servers you trust, and treat MCP server conf
 
 ## Troubleshooting
 
-- Run `deepseek doctor` to confirm the MCP config path it resolved and whether it exists.
-- If the MCP config is missing, run `deepseek mcp init --force` to regenerate it.
+- Run `deepseek-tui doctor` to confirm the MCP config path it resolved and whether it exists.
+- If the MCP config is missing, run `deepseek-tui mcp init --force` to regenerate it.
 - If tools don’t appear, verify the server command works from your shell and that the server supports MCP `tools/list`.

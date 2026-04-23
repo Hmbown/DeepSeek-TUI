@@ -15,8 +15,14 @@ Overrides:
 
 If both are set, `--config` wins. Environment variable overrides are applied after the file is loaded.
 
-To bootstrap MCP and skills directories at their resolved paths, run `deepseek setup`.
-To only scaffold MCP, run `deepseek mcp init`.
+To bootstrap MCP and skills directories at their resolved paths, run `deepseek-tui setup`.
+To only scaffold MCP, run `deepseek-tui mcp init`.
+
+Note: setup, doctor, mcp, features, sessions, resume/fork, exec, review, and eval
+are subcommands of the `deepseek-tui` binary. The `deepseek` dispatcher exposes a
+distinct set of commands (`auth`, `config`, `model`, `thread`, `sandbox`,
+`app-server`, `mcp-server`, `completion`) and forwards plain prompts to
+`deepseek-tui`.
 
 ## Profiles
 
@@ -177,10 +183,10 @@ exec_policy = true
 
 You can also override features for a single run:
 
-- `deepseek --enable web_search`
-- `deepseek --disable subagents`
+- `deepseek-tui --enable web_search`
+- `deepseek-tui --disable subagents`
 
-Use `deepseek features list` to inspect known flags and their effective state.
+Use `deepseek-tui features list` to inspect known flags and their effective state.
 
 ## Managed Configuration and Requirements
 
@@ -205,11 +211,12 @@ If configured values violate requirements, startup fails with a descriptive erro
 
 See `docs/capacity_controller.md` for formulas, intervention behavior, and telemetry.
 
-## Notes On `deepseek doctor`
+## Notes On `deepseek-tui doctor`
 
-`deepseek doctor` now follows the same config resolution rules as the rest of the CLI.
-That means `--config` / `DEEPSEEK_CONFIG_PATH` are respected, and MCP/skills checks
-use the resolved `mcp_config_path` / `skills_dir` (including env overrides).
+`deepseek-tui doctor` follows the same config resolution rules as the rest of the
+TUI. That means `--config` / `DEEPSEEK_CONFIG_PATH` are respected, and MCP/skills
+checks use the resolved `mcp_config_path` / `skills_dir` (including env overrides).
 
-To bootstrap missing MCP/skills paths, run `deepseek setup --all`. You can also
-run `deepseek setup --skills --local` to create a workspace-local `./skills` dir.
+To bootstrap missing MCP/skills paths, run `deepseek-tui setup --all`. You can
+also run `deepseek-tui setup --skills --local` to create a workspace-local
+`./skills` dir.

@@ -585,15 +585,9 @@ async fn run_event_loop(
                         app.is_compacting = false;
                         app.status_message = Some(message);
                     }
-                    EngineEvent::CapacityDecision {
-                        risk_band,
-                        action,
-                        reason,
-                        ..
-                    } => {
-                        app.status_message = Some(format!(
-                            "Capacity decision: risk={risk_band} action={action} ({reason})"
-                        ));
+                    EngineEvent::CapacityDecision { .. } => {
+                        // Telemetry-only event. Surface actual interventions and failures
+                        // instead of replacing the footer with no-op guardrail chatter.
                     }
                     EngineEvent::CapacityIntervention {
                         action,
@@ -721,7 +715,10 @@ async fn run_event_loop(
                     }
                     EngineEvent::UserInputRequired { id, request } => {
                         app.view_stack.push(UserInputView::new(id.clone(), request));
-                        app.status_message = Some("User input requested".to_string());
+                        app.status_message = Some(
+                            "Action required: answer the popup with 1-4, arrows, or Enter"
+                                .to_string(),
+                        );
                     }
                     EngineEvent::ToolCallProgress { id, output } => {
                         app.status_message =
@@ -2129,13 +2126,13 @@ enum PlanChoice {
 
 fn plan_next_step_prompt() -> String {
     [
-        "Plan ready. Review and choose:",
+        "Action required: choose the next step for this plan.",
         "  1) Accept + implement in Agent mode",
         "  2) Accept + implement in YOLO mode",
         "  3) Revise the plan / ask follow-ups",
         "  4) Return to Agent mode without implementing",
         "",
-        "Use the plan confirmation popup or type 1-4 and press Enter.",
+        "Use the plan confirmation popup, or type 1-4 and press Enter.",
     ]
     .join("\n")
 }
@@ -2293,6 +2290,7 @@ fn render(f: &mut Frame, app: &mut App) {
     let footer_height = 1;
     let body_height = size.height.saturating_sub(header_height + footer_height);
     let slash_menu_entries = visible_slash_menu_entries(app, SLASH_MENU_LIMIT);
+    let context_usage = context_usage_snapshot(app);
     let composer_max_height = body_height
         .saturating_sub(MIN_CHAT_HEIGHT)
         .max(MIN_COMPOSER_HEIGHT);
@@ -2313,7 +2311,13 @@ fn render(f: &mut Frame, app: &mut App) {
 
     // Render header
     {
-        let context_window = crate::models::context_window_for_model(&app.model);
+        let sanitized_context_window = context_usage
+            .as_ref()
+            .map(|(_, max, _)| *max)
+            .or_else(|| crate::models::context_window_for_model(&app.model));
+        let sanitized_prompt_tokens = context_usage
+            .as_ref()
+            .and_then(|(used, _, _)| u32::try_from(*used).ok());
         let workspace_name = app
             .workspace
             .file_name()
@@ -2329,9 +2333,9 @@ fn render(f: &mut Frame, app: &mut App) {
         )
         .with_usage(
             app.total_conversation_tokens,
-            context_window,
+            sanitized_context_window,
             app.session_cost,
-            app.last_prompt_tokens,
+            sanitized_prompt_tokens,
         );
         let header_widget = HeaderWidget::new(header_data);
         let buf = f.buffer_mut();
@@ -2856,10 +2860,8 @@ async fn handle_view_events(
             }
             ViewEvent::PlanPromptDismissed => {
                 app.plan_prompt_pending = true;
-                app.status_message = Some(
-                    "Plan prompt dismissed. Type 1-4 with Enter or reopen it by finishing the plan turn again."
-                        .to_string(),
-                );
+                app.status_message =
+                    Some("Plan prompt closed. Type 1-4 and press Enter to choose.".to_string());
             }
             ViewEvent::SessionSelected { session_id } => {
                 let manager = match SessionManager::default_location() {
@@ -3150,14 +3152,7 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
-    let right_spans = if app.session_cost > 0.001 {
-        vec![Span::styled(
-            format!("${:.2}", app.session_cost),
-            Style::default().fg(palette::TEXT_MUTED),
-        )]
-    } else {
-        Vec::new()
-    };
+    let right_spans = footer_auxiliary_spans(app, available_width);
     let right_width = spans_width(&right_spans);
     let active_status = app.active_status_toast();
     let min_gap = if right_width > 0 { 2 } else { 0 };
@@ -3181,6 +3176,58 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
 
     let footer = Paragraph::new(Line::from(all_spans));
     f.render_widget(footer, area);
+}
+
+fn footer_auxiliary_spans(app: &App, max_width: usize) -> Vec<Span<'static>> {
+    let context_spans = footer_context_spans(app);
+    let cost_spans = if app.session_cost > 0.001 {
+        vec![Span::styled(
+            format!("${:.2}", app.session_cost),
+            Style::default().fg(palette::TEXT_MUTED),
+        )]
+    } else {
+        Vec::new()
+    };
+
+    let mut candidates = Vec::new();
+    if !context_spans.is_empty() && !cost_spans.is_empty() {
+        let mut combined = context_spans.clone();
+        combined.push(Span::raw("  "));
+        combined.extend(cost_spans.clone());
+        candidates.push(combined);
+    }
+    if !context_spans.is_empty() {
+        candidates.push(context_spans);
+    }
+    if !cost_spans.is_empty() {
+        candidates.push(cost_spans);
+    }
+    candidates.push(Vec::new());
+
+    candidates
+        .into_iter()
+        .find(|spans| spans_width(spans) <= max_width)
+        .unwrap_or_default()
+}
+
+fn footer_context_spans(app: &App) -> Vec<Span<'static>> {
+    let (_, _, percent) = match context_usage_snapshot(app) {
+        Some(snapshot) => snapshot,
+        None => return Vec::new(),
+    };
+
+    let color = if percent >= CONTEXT_CRITICAL_THRESHOLD_PERCENT {
+        palette::STATUS_ERROR
+    } else if percent >= CONTEXT_WARNING_THRESHOLD_PERCENT {
+        palette::STATUS_WARNING
+    } else {
+        palette::DEEPSEEK_SKY
+    };
+
+    vec![Span::styled(
+        format!("ctx {:.0}%", percent),
+        Style::default().fg(color),
+    )]
 }
 
 fn footer_toast_spans(
@@ -3396,15 +3443,23 @@ fn context_usage_snapshot(app: &App) -> Option<(i64, u32, f64)> {
         .map(|tokens| tokens.max(0));
     let estimated = estimated_context_tokens(app).map(|tokens| tokens.max(0));
 
-    let used = match (reported, estimated) {
-        (Some(reported), Some(estimated))
-            if reported > max_i64 && estimated > 0 && estimated <= max_i64 =>
-        {
-            estimated
+    let used = if app.is_loading {
+        match (estimated, reported) {
+            (Some(estimated), _) => estimated,
+            (None, Some(reported)) => reported,
+            (None, None) => return None,
         }
-        (Some(reported), _) => reported,
-        (None, Some(estimated)) => estimated,
-        (None, None) => return None,
+    } else {
+        match (reported, estimated) {
+            (Some(reported), Some(estimated))
+                if reported > max_i64 && estimated > 0 && estimated <= max_i64 =>
+            {
+                estimated
+            }
+            (Some(reported), _) => reported,
+            (None, Some(estimated)) => estimated,
+            (None, None) => return None,
+        }
     };
 
     let max_f64 = f64::from(max);

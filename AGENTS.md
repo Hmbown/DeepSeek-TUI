@@ -14,18 +14,6 @@ This file provides context for AI assistants working on this project.
 ### Documentation
 See README.md for project overview, docs/ARCHITECTURE.md for internals.
 
-## Trimtab Workflow
-
-This repo uses the Trimtab closed-loop protocol for self-verifying agentic development.
-
-- **Protocol:** `.trimtab/init-trimtab-protocol.md` (canonical — read this first)
-- **Task graph:** `DEPENDENCY_GRAPH.md` (crate deps + task deps with ready queue)
-- **Task queue:** `AI_HANDOFF.md` (6 open items with priorities)
-- **Claude entrypoint:** `.claude/commands/init-trimtab.md`
-- **Codex skill:** `.codex/skills/init-trimtab/SKILL.md`
-
-**No-self-verdict rule:** The agent that wrote code must not be the one to declare it passes. Always use an independent verifier (fresh context or separate sub-agent).
-
 ## DeepSeek-Specific Notes
 
 - **Thinking Tokens**: DeepSeek models output thinking blocks (`ContentBlock::Thinking`) before final answers. The TUI streams and displays these with visual distinction.

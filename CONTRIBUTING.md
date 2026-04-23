@@ -45,8 +45,11 @@ Thank you for your interest in contributing to DeepSeek TUI! This document provi
 ### Testing
 
 - Write tests for new functionality
-- Ensure all existing tests pass: `cargo test`
-- For integration tests, use the `tests/` directory
+- Ensure all existing tests pass: `cargo test --workspace --all-features`
+- Colocate unit tests beside the code they cover (standard Rust `#[cfg(test)]`
+  modules), and add integration tests under the owning crate's `tests/`
+  directory (for example `crates/tui/tests/` or `crates/state/tests/`). The
+  repository root `tests/` directory is not used
 
 ### Commit Messages
 
@@ -59,34 +62,33 @@ Use clear, descriptive commit messages following conventional commits:
 - `test:` Adding or updating tests
 - `chore:` Maintenance tasks
 
-Example: `feat: add --doctor command for system diagnostics`
+Example: `feat: add doctor subcommand for system diagnostics`
 
 ## Project Structure
 
+DeepSeek TUI is a Cargo workspace. The live runtime and the majority of TUI,
+engine, and tool code currently live in `crates/tui/src/`. Smaller workspace
+crates provide shared abstractions that are being extracted incrementally.
+
 ```
-src/
-├── main.rs           # Entry point and CLI definition
-├── config.rs         # Configuration management
-├── client.rs         # HTTP client for DeepSeek API
-├── llm_client.rs     # LLM abstraction layer
-├── models.rs         # Data structures
-├── mcp.rs            # Model Context Protocol support
-├── hooks.rs          # Hook system for extensibility
-├── skills.rs         # Skills/plugin system
-├── core/             # Core engine components
-│   ├── engine.rs     # Main agent loop
-│   ├── session.rs    # Session management
-│   └── ...
-├── tools/            # Built-in tools
-│   ├── shell.rs      # Shell execution
-│   ├── file.rs       # File operations
-│   └── ...
-├── tui/              # Terminal UI
-│   ├── app.rs        # Application state
-│   ├── ui.rs         # Rendering logic
-│   └── ...
-└── sandbox/          # Sandbox execution (macOS)
+crates/
+├── tui/           deepseek-tui binary (interactive TUI + runtime API)
+├── cli/           deepseek binary (dispatcher facade)
+├── app-server/    HTTP/SSE + JSON-RPC transport
+├── core/          Agent loop / session / turn management
+├── protocol/      Request/response framing
+├── config/        Config loading, profiles, env precedence
+├── state/         SQLite thread/session persistence
+├── tools/         Typed tool specs and lifecycle
+├── mcp/           MCP client + stdio server
+├── hooks/         Lifecycle hooks (stdout/jsonl/webhook)
+├── execpolicy/    Approval/sandbox policy engine
+├── agent/         Model/provider registry
+└── tui-core/      Event-driven TUI state machine scaffold
 ```
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the live data flow across
+these crates and [DEPENDENCY_GRAPH.md](DEPENDENCY_GRAPH.md) for build ordering.
 
 ## Submitting Changes
 

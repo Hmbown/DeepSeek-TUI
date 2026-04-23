@@ -643,6 +643,27 @@ fn active_tool_list_from_catalog(
         .collect()
 }
 
+fn active_tools_for_step(
+    catalog: &[Tool],
+    active: &std::collections::HashSet<String>,
+    force_update_plan: bool,
+) -> Vec<Tool> {
+    // DeepSeek reasoning models reject explicit named tool_choice forcing here, so for
+    // obvious quick-plan asks we narrow the first-step tool surface to update_plan instead.
+    if force_update_plan {
+        let forced: Vec<_> = catalog
+            .iter()
+            .filter(|tool| tool.name == "update_plan")
+            .cloned()
+            .collect();
+        if !forced.is_empty() {
+            return forced;
+        }
+    }
+
+    active_tool_list_from_catalog(catalog, active)
+}
+
 fn tool_search_haystack(tool: &Tool) -> String {
     format!(
         "{}\n{}\n{}",
@@ -900,6 +921,62 @@ fn should_parallelize_tool_batch(plans: &[ToolExecutionPlan]) -> bool {
         && plans.iter().all(|plan| {
             plan.read_only && plan.supports_parallel && !plan.approval_required && !plan.interactive
         })
+}
+
+fn should_stop_after_plan_tool(
+    mode: AppMode,
+    tool_name: &str,
+    result: &Result<ToolResult, ToolError>,
+) -> bool {
+    mode == AppMode::Plan && tool_name == "update_plan" && result.is_ok()
+}
+
+fn should_force_update_plan_first(mode: AppMode, content: &str) -> bool {
+    if mode != AppMode::Plan {
+        return false;
+    }
+
+    let lower = content.to_ascii_lowercase();
+    let asks_for_direct_plan = [
+        "quick plan",
+        "short plan",
+        "simple plan",
+        "3-step plan",
+        "3 step plan",
+        "three-step plan",
+        "three step plan",
+        "high-level plan",
+        "high level plan",
+        "give me a plan",
+        "make a plan",
+        "outline a plan",
+        "draft a plan",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle));
+
+    if !asks_for_direct_plan {
+        return false;
+    }
+
+    let asks_for_repo_exploration = [
+        "inspect the repo",
+        "inspect the code",
+        "explore the repo",
+        "search the repo",
+        "read the code",
+        "review the code",
+        "analyze the code",
+        "investigate",
+        "look through",
+        "understand the current",
+        "ground it in the codebase",
+        "based on the codebase",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle));
+
+    !asks_for_repo_exploration
 }
 
 fn mcp_tool_is_parallel_safe(name: &str) -> bool {
@@ -1420,6 +1497,7 @@ impl Engine {
         self.session
             .working_set
             .observe_user_message(&content, &self.session.workspace);
+        let force_update_plan_first = should_force_update_plan_first(mode, &content);
 
         // Add user message to session
         let user_msg = Message {
@@ -1544,7 +1622,13 @@ impl Engine {
 
         // Main turn loop
         let (status, error) = self
-            .handle_deepseek_turn(&mut turn, tool_registry.as_ref(), tools, mode)
+            .handle_deepseek_turn(
+                &mut turn,
+                tool_registry.as_ref(),
+                tools,
+                mode,
+                force_update_plan_first,
+            )
             .await;
 
         // Update session usage
@@ -2130,6 +2214,7 @@ impl Engine {
         tool_registry: Option<&crate::tools::ToolRegistry>,
         tools: Option<Vec<Tool>>,
         mode: AppMode,
+        force_update_plan_first: bool,
     ) -> (TurnOutcomeStatus, Option<String>) {
         let client = self
             .deepseek_client
@@ -2320,12 +2405,14 @@ impl Engine {
             }
 
             // Build the request
+            let force_update_plan_this_step = force_update_plan_first && turn.tool_calls.is_empty();
             let active_tools = if tool_catalog.is_empty() {
                 None
             } else {
-                Some(active_tool_list_from_catalog(
+                Some(active_tools_for_step(
                     &tool_catalog,
                     &active_tool_names,
+                    force_update_plan_this_step,
                 ))
             };
             let request = MessageRequest {
@@ -3208,6 +3295,7 @@ impl Engine {
             }
 
             let mut step_error_count = 0usize;
+            let mut stop_after_plan_tool = false;
 
             for outcome in outcomes.into_iter().flatten() {
                 let duration = outcome.started_at.elapsed();
@@ -3215,6 +3303,8 @@ impl Engine {
                 let tool_name_for_ws = outcome.name.clone();
                 let mut tool_call =
                     TurnToolCall::new(outcome.id.clone(), outcome.name.clone(), outcome.input);
+                let should_stop_this_turn =
+                    should_stop_after_plan_tool(mode, &outcome.name, &outcome.result);
 
                 match outcome.result {
                     Ok(output) => {
@@ -3275,6 +3365,11 @@ impl Engine {
                 }
 
                 turn.record_tool_call(tool_call);
+                stop_after_plan_tool |= should_stop_this_turn;
+            }
+
+            if stop_after_plan_tool {
+                break;
             }
 
             if self

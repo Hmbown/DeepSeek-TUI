@@ -74,6 +74,86 @@ fn parallel_batch_requires_read_only_parallel_tools() {
 }
 
 #[test]
+fn successful_update_plan_ends_plan_mode_turn_immediately() {
+    assert!(should_stop_after_plan_tool(
+        AppMode::Plan,
+        "update_plan",
+        &Ok(ToolResult::success("planned"))
+    ));
+    assert!(!should_stop_after_plan_tool(
+        AppMode::Agent,
+        "update_plan",
+        &Ok(ToolResult::success("planned"))
+    ));
+    assert!(!should_stop_after_plan_tool(
+        AppMode::Plan,
+        "request_user_input",
+        &Ok(ToolResult::success("input"))
+    ));
+    assert!(!should_stop_after_plan_tool(
+        AppMode::Plan,
+        "update_plan",
+        &Err(ToolError::execution_failed("failed".to_string()))
+    ));
+}
+
+#[test]
+fn quick_plan_requests_force_update_plan_on_first_step() {
+    assert!(should_force_update_plan_first(
+        AppMode::Plan,
+        "Give me a quick 3-step plan to verify the UI changes."
+    ));
+    assert!(should_force_update_plan_first(
+        AppMode::Plan,
+        "Make a high-level plan for the footer work."
+    ));
+    assert!(!should_force_update_plan_first(
+        AppMode::Plan,
+        "Inspect the repo and then give me a quick plan."
+    ));
+    assert!(!should_force_update_plan_first(
+        AppMode::Agent,
+        "Give me a quick 3-step plan."
+    ));
+}
+
+#[test]
+fn quick_plan_turn_can_narrow_first_step_tools_to_update_plan() {
+    let catalog = vec![
+        Tool {
+            tool_type: Some("function".to_string()),
+            name: "read_file".to_string(),
+            description: "Read a file".to_string(),
+            input_schema: json!({"type": "object"}),
+            allowed_callers: Some(vec!["direct".to_string()]),
+            defer_loading: Some(false),
+            input_examples: None,
+            strict: None,
+            cache_control: None,
+        },
+        Tool {
+            tool_type: Some("function".to_string()),
+            name: "update_plan".to_string(),
+            description: "Publish a plan".to_string(),
+            input_schema: json!({"type": "object"}),
+            allowed_callers: Some(vec!["direct".to_string()]),
+            defer_loading: Some(false),
+            input_examples: None,
+            strict: None,
+            cache_control: None,
+        },
+    ];
+    let active = initial_active_tools(&catalog);
+
+    let forced = active_tools_for_step(&catalog, &active, true);
+    assert_eq!(forced.len(), 1);
+    assert_eq!(forced[0].name, "update_plan");
+
+    let default = active_tools_for_step(&catalog, &active, false);
+    assert_eq!(default.len(), 2);
+}
+
+#[test]
 fn tool_error_messages_include_actionable_hints() {
     let path_error = ToolError::path_escape(PathBuf::from("../escape.txt"));
     let formatted = format_tool_error(&path_error, "read_file");

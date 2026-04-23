@@ -34,15 +34,12 @@ dist/
 
 # Logs
 *.log
-firebase-debug.log
 
 # Generated
 outputs/
-
-# Rust
-# Note: Cargo.lock is intentionally NOT ignored for reproducible builds
-firebase-debug.log
 tmp/
+
+# Note: Cargo.lock is intentionally NOT ignored for reproducible builds
 
 # Local dev scripts and temp files
 *.sh
@@ -57,12 +54,11 @@ result.json
 count_deps.py
 project_overhaul_prompt.md
 .codex/
-docs/rlm-paper.txt
 .context/
 
 # Local runtime state
 .deepseek/
-session_*.json
+**/session_*.json
 *.db
 
 # Companion app (tracked separately)

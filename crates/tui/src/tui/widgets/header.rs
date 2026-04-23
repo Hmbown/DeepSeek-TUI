@@ -140,7 +140,7 @@ impl<'a> HeaderWidget<'a> {
         if max <= 0.0 {
             return None;
         }
-        Some((used / max * 100.0).clamp(0.0, 999.0))
+        Some((used / max * 100.0).clamp(0.0, 100.0))
     }
 
     fn context_color(percent: f64) -> Color {
@@ -180,7 +180,23 @@ impl<'a> HeaderWidget<'a> {
         spans
     }
 
-    fn status_variant(&self, show_stream_label: bool, show_percent: bool) -> Vec<Span<'static>> {
+    fn context_percent_spans(&self) -> Vec<Span<'static>> {
+        let Some(percent) = self.context_percent() else {
+            return Vec::new();
+        };
+
+        vec![Span::styled(
+            format!("{percent:.0}%"),
+            Style::default().fg(Self::context_color(percent)),
+        )]
+    }
+
+    fn status_variant(
+        &self,
+        show_stream_label: bool,
+        show_percent: bool,
+        show_signal: bool,
+    ) -> Vec<Span<'static>> {
         let mut spans = Vec::new();
 
         if self.data.is_streaming {
@@ -199,7 +215,13 @@ impl<'a> HeaderWidget<'a> {
             }
         }
 
-        let context_spans = self.context_signal_spans(show_percent);
+        let context_spans = if show_signal {
+            self.context_signal_spans(show_percent)
+        } else if show_percent {
+            self.context_percent_spans()
+        } else {
+            Vec::new()
+        };
         if !context_spans.is_empty() {
             if !spans.is_empty() {
                 spans.push(Span::raw("  "));
@@ -212,9 +234,10 @@ impl<'a> HeaderWidget<'a> {
 
     fn right_spans(&self, max_width: usize) -> Vec<Span<'static>> {
         let candidates = [
-            self.status_variant(true, true),
-            self.status_variant(false, true),
-            self.status_variant(false, false),
+            self.status_variant(true, true, true),
+            self.status_variant(false, true, true),
+            self.status_variant(false, true, false),
+            self.status_variant(false, false, true),
         ];
 
         candidates
@@ -419,6 +442,21 @@ mod tests {
     }
 
     #[test]
+    fn narrow_header_keeps_context_percent_visible() {
+        let rendered = render_header(
+            HeaderData::new(AppMode::Agent, "", "", true, palette::DEEPSEEK_INK).with_usage(
+                0,
+                Some(128_000),
+                0.0,
+                Some(48_000),
+            ),
+            14,
+        );
+
+        assert!(rendered.contains('%'));
+    }
+
+    #[test]
     fn narrow_header_falls_back_to_mode_without_rendering_all_modes() {
         let rendered = render_header(
             HeaderData::new(
@@ -452,5 +490,23 @@ mod tests {
 
         assert!(!rendered.contains('%'));
         assert!(!rendered.contains("▰"));
+    }
+
+    #[test]
+    fn header_caps_context_signal_at_hundred_percent() {
+        let rendered = render_header(
+            HeaderData::new(
+                AppMode::Agent,
+                "deepseek-chat",
+                "repo",
+                false,
+                palette::DEEPSEEK_INK,
+            )
+            .with_usage(1_000, Some(128_000), 0.0, Some(320_000)),
+            48,
+        );
+
+        assert!(rendered.contains("100%"));
+        assert!(!rendered.contains("250%"));
     }
 }

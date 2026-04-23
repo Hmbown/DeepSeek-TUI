@@ -109,3 +109,22 @@ pub fn yolo_system_prompt() -> SystemPrompt {
 pub fn plan_system_prompt() -> SystemPrompt {
     system_prompt_for_mode(AppMode::Plan)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plan_prompt_prefers_best_effort_plans_over_clarifying_loops() {
+        let prompt = match system_prompt_for_mode(AppMode::Plan) {
+            SystemPrompt::Text(text) => text,
+            SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
+        };
+
+        assert!(prompt.contains("Default to publishing a best-effort plan immediately."));
+        assert!(prompt.contains("your first action should be update_plan."));
+        assert!(prompt.contains("do not browse the repo first"));
+        assert!(prompt.contains("Do not ask clarifying questions for straightforward requests"));
+        assert!(prompt.contains("If the user asks for \"a 3-step plan\""));
+    }
+}

@@ -3,7 +3,7 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Alignment, Rect};
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Padding, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph, Widget, Wrap};
 
 use crate::palette;
 use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
@@ -23,6 +23,77 @@ const PLAN_OPTIONS: [(&str, &str); 4] = [
         "Return to Agent mode without implementation",
     ),
 ];
+
+fn modal_block() -> Block<'static> {
+    Block::default()
+        .title(Line::from(vec![Span::styled(
+            " Plan Confirmation ",
+            Style::default().fg(palette::DEEPSEEK_BLUE).bold(),
+        )]))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(palette::BORDER_COLOR))
+        .style(Style::default().bg(palette::DEEPSEEK_INK))
+        .padding(Padding::uniform(1))
+}
+
+fn render_modal_chrome(area: Rect, popup_area: Rect, buf: &mut Buffer) {
+    let shadow_x = popup_area.x.saturating_add(1);
+    let shadow_y = popup_area.y.saturating_add(1);
+    let shadow_right = area.x.saturating_add(area.width);
+    let shadow_bottom = area.y.saturating_add(area.height);
+    let shadow_width = popup_area.width.min(shadow_right.saturating_sub(shadow_x));
+    let shadow_height = popup_area
+        .height
+        .min(shadow_bottom.saturating_sub(shadow_y));
+
+    if shadow_width > 0 && shadow_height > 0 {
+        Block::default()
+            .style(Style::default().bg(palette::DEEPSEEK_NAVY))
+            .render(
+                Rect {
+                    x: shadow_x,
+                    y: shadow_y,
+                    width: shadow_width,
+                    height: shadow_height,
+                },
+                buf,
+            );
+    }
+
+    Clear.render(popup_area, buf);
+}
+
+fn push_option_lines(
+    lines: &mut Vec<Line<'static>>,
+    selected: bool,
+    number: usize,
+    label: &str,
+    description: &str,
+) {
+    let row_style = if selected {
+        Style::default()
+            .fg(palette::SELECTION_TEXT)
+            .bg(palette::SELECTION_BG)
+            .bold()
+    } else {
+        Style::default().fg(palette::TEXT_PRIMARY)
+    };
+    let detail_style = if selected {
+        row_style
+    } else {
+        Style::default().fg(palette::TEXT_MUTED)
+    };
+    let prefix = if selected { ">" } else { " " };
+
+    lines.push(Line::from(Span::styled(
+        format!("{prefix} {number}) {label}"),
+        row_style,
+    )));
+    lines.push(Line::from(Span::styled(
+        format!("    {description}"),
+        detail_style,
+    )));
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct PlanPromptView {
@@ -115,56 +186,45 @@ impl ModalView for PlanPromptView {
     fn render(&self, area: Rect, buf: &mut Buffer) {
         let mut lines: Vec<Line> = Vec::new();
         lines.push(Line::from(vec![Span::styled(
-            "Plan ready. Confirm next step:",
+            "Action required",
+            Style::default().fg(palette::DEEPSEEK_SKY).bold(),
+        )]));
+        lines.push(Line::from(vec![Span::styled(
+            "Choose what should happen after this plan.",
             Style::default().fg(palette::TEXT_PRIMARY).bold(),
         )]));
         lines.push(Line::from(""));
 
         for (idx, (label, description)) in PLAN_OPTIONS.iter().enumerate() {
-            let selected = self.selected == idx;
-            let prefix = if selected { ">" } else { " " };
             let number = idx + 1;
-            let style = if selected {
-                Style::default()
-                    .fg(palette::DEEPSEEK_SKY)
-                    .bg(palette::SELECTION_BG)
-                    .bold()
-            } else {
-                Style::default().fg(palette::TEXT_PRIMARY)
-            };
-            lines.push(Line::from(vec![
-                Span::raw(format!("{prefix} {number}) ")),
-                Span::styled((*label).to_string(), style),
-                Span::raw(" — "),
-                Span::styled(
-                    (*description).to_string(),
-                    Style::default().fg(palette::TEXT_MUTED),
-                ),
-            ]));
+            push_option_lines(&mut lines, self.selected == idx, number, label, description);
         }
 
         lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "1-4 / a / y / r / q = quick pick, Up/Down=select, Enter=confirm, Esc=close",
-            Style::default().fg(palette::TEXT_MUTED),
-        )));
+        lines.push(Line::from(vec![
+            Span::styled(
+                "1-4 / a / y / r / q",
+                Style::default().fg(palette::DEEPSEEK_SKY).bold(),
+            ),
+            Span::styled(" quick pick", Style::default().fg(palette::TEXT_MUTED)),
+            Span::raw("  "),
+            Span::styled("Up/Down", Style::default().fg(palette::DEEPSEEK_SKY).bold()),
+            Span::styled(" move", Style::default().fg(palette::TEXT_MUTED)),
+            Span::raw("  "),
+            Span::styled("Enter", Style::default().fg(palette::DEEPSEEK_SKY).bold()),
+            Span::styled(" confirm", Style::default().fg(palette::TEXT_MUTED)),
+            Span::raw("  "),
+            Span::styled("Esc", Style::default().fg(palette::DEEPSEEK_SKY).bold()),
+            Span::styled(" close", Style::default().fg(palette::TEXT_MUTED)),
+        ]));
 
         let paragraph = Paragraph::new(lines)
             .alignment(Alignment::Left)
             .wrap(Wrap { trim: true })
-            .block(
-                Block::default()
-                    .title(Line::from(vec![Span::styled(
-                        " Plan Confirmation ",
-                        Style::default().fg(palette::DEEPSEEK_BLUE).bold(),
-                    )]))
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(palette::BORDER_COLOR))
-                    .style(Style::default().bg(palette::DEEPSEEK_INK))
-                    .padding(Padding::uniform(1)),
-            );
+            .block(modal_block());
 
-        let popup_area = centered_rect(66, 42, area);
+        let popup_area = centered_rect(72, 52, area);
+        render_modal_chrome(area, popup_area, buf);
         paragraph.render(popup_area, buf);
     }
 }
@@ -187,4 +247,41 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(popup_layout[1])[1]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn render_view(view: &PlanPromptView, width: u16, height: u16) -> String {
+        let area = Rect::new(0, 0, width, height);
+        let mut buf = Buffer::empty(area);
+        view.render(area, &mut buf);
+
+        (0..height)
+            .map(|y| (0..width).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn plan_prompt_calls_out_required_action_and_controls() {
+        let rendered = render_view(&PlanPromptView::new(), 110, 36);
+
+        assert!(rendered.contains("Action required"));
+        assert!(rendered.contains("Choose what should happen after this plan."));
+        assert!(rendered.contains("1-4"));
+        assert!(rendered.contains("Enter"));
+    }
+
+    #[test]
+    fn plan_prompt_keeps_selected_option_and_description_together() {
+        let mut view = PlanPromptView::new();
+        view.selected = 1;
+
+        let rendered = render_view(&view, 110, 36);
+
+        assert!(rendered.contains("> 2) Accept plan (YOLO)"));
+        assert!(rendered.contains("Start implementation in YOLO mode (auto-approve)"));
+    }
 }
