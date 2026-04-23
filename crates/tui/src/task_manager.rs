@@ -767,7 +767,7 @@ impl TaskManager {
             .values()
             .map(TaskSummary::from)
             .collect::<Vec<_>>();
-        items.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        items.sort_by_key(|i| std::cmp::Reverse(i.created_at));
         if let Some(limit) = limit {
             items.truncate(limit);
         }

@@ -1432,11 +1432,9 @@ fn status_symbol(started_at: Option<Instant>, status: ToolStatus, low_motion: bo
                 |t| t.elapsed().as_millis(),
             );
             let cycle = u128::from(TOOL_STATUS_SYMBOL_MS);
-            let idx = if cycle == 0 {
-                0
-            } else {
-                (elapsed_ms / cycle) % (TOOL_RUNNING_SYMBOLS.len() as u128)
-            };
+            let idx = elapsed_ms
+                .checked_div(cycle)
+                .map_or(0, |d| d % (TOOL_RUNNING_SYMBOLS.len() as u128));
             TOOL_RUNNING_SYMBOLS[usize::try_from(idx).unwrap_or_default()].to_string()
         }
         ToolStatus::Success => TOOL_DONE_SYMBOL.to_string(),

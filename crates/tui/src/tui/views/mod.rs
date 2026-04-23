@@ -1256,7 +1256,7 @@ impl ModalView for SubAgentsView {
                 if idx > 0 {
                     summary.push(Span::raw("  ·  "));
                 }
-                summary.extend(part.into_iter());
+                summary.extend(part);
             }
             lines.push(Line::from(summary));
             lines.push(Line::from(Span::styled(

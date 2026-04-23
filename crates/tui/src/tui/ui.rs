@@ -907,13 +907,11 @@ async fn run_event_loop(
                         let _ = engine_handle.send(Op::Shutdown).await;
                         return Ok(());
                     }
-                    KeyCode::Esc => {
-                        if app.onboarding == OnboardingState::ApiKey {
-                            app.onboarding = OnboardingState::Welcome;
-                            app.api_key_input.clear();
-                            app.api_key_cursor = 0;
-                            app.status_message = None;
-                        }
+                    KeyCode::Esc if app.onboarding == OnboardingState::ApiKey => {
+                        app.onboarding = OnboardingState::Welcome;
+                        app.api_key_input.clear();
+                        app.api_key_cursor = 0;
+                        app.status_message = None;
                     }
                     KeyCode::Enter => match app.onboarding {
                         OnboardingState::Welcome => {
@@ -1068,20 +1066,26 @@ async fn run_event_loop(
 
             // Global keybindings
             match key.code {
-                KeyCode::Enter if app.input.is_empty() && app.transcript_selection.is_active() => {
-                    if open_pager_for_selection(app) {
-                        continue;
-                    }
+                KeyCode::Enter
+                    if app.input.is_empty()
+                        && app.transcript_selection.is_active()
+                        && open_pager_for_selection(app) =>
+                {
+                    continue;
                 }
-                KeyCode::Char('l') if key.modifiers.is_empty() && app.input.is_empty() => {
-                    if open_pager_for_last_message(app) {
-                        continue;
-                    }
+                KeyCode::Char('l')
+                    if key.modifiers.is_empty()
+                        && app.input.is_empty()
+                        && open_pager_for_last_message(app) =>
+                {
+                    continue;
                 }
-                KeyCode::Char('v') if key.modifiers.is_empty() && app.input.is_empty() => {
-                    if open_tool_details_pager(app) {
-                        continue;
-                    }
+                KeyCode::Char('v')
+                    if key.modifiers.is_empty()
+                        && app.input.is_empty()
+                        && open_tool_details_pager(app) =>
+                {
+                    continue;
                 }
                 KeyCode::Char('1') if key.modifiers.contains(KeyModifiers::ALT) => {
                     if key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -1169,11 +1173,11 @@ async fn run_event_loop(
                         return Ok(());
                     }
                 }
-                KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    if app.input.is_empty() {
-                        let _ = engine_handle.send(Op::Shutdown).await;
-                        return Ok(());
-                    }
+                KeyCode::Char('d')
+                    if key.modifiers.contains(KeyModifiers::CONTROL) && app.input.is_empty() =>
+                {
+                    let _ = engine_handle.send(Op::Shutdown).await;
+                    return Ok(());
                 }
                 KeyCode::Esc => match next_escape_action(app, slash_menu_open) {
                     EscapeAction::CloseSlashMenu => app.close_slash_menu(),
@@ -1193,10 +1197,12 @@ async fn run_event_loop(
                 KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => {
                     app.scroll_up(3);
                 }
-                KeyCode::Up if key.modifiers.is_empty() && slash_menu_open => {
-                    if app.slash_menu_selected > 0 {
-                        app.slash_menu_selected = app.slash_menu_selected.saturating_sub(1);
-                    }
+                KeyCode::Up
+                    if key.modifiers.is_empty()
+                        && slash_menu_open
+                        && app.slash_menu_selected > 0 =>
+                {
+                    app.slash_menu_selected = app.slash_menu_selected.saturating_sub(1);
                 }
                 KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => {
                     app.scroll_down(3);
@@ -1243,18 +1249,20 @@ async fn run_event_loop(
                     app.scroll_to_bottom();
                 }
                 KeyCode::Char('[')
-                    if key.modifiers.is_empty() && app.input.is_empty() && !slash_menu_open =>
+                    if key.modifiers.is_empty()
+                        && app.input.is_empty()
+                        && !slash_menu_open
+                        && !jump_to_adjacent_tool_cell(app, SearchDirection::Backward) =>
                 {
-                    if !jump_to_adjacent_tool_cell(app, SearchDirection::Backward) {
-                        app.status_message = Some("No previous tool output".to_string());
-                    }
+                    app.status_message = Some("No previous tool output".to_string());
                 }
                 KeyCode::Char(']')
-                    if key.modifiers.is_empty() && app.input.is_empty() && !slash_menu_open =>
+                    if key.modifiers.is_empty()
+                        && app.input.is_empty()
+                        && !slash_menu_open
+                        && !jump_to_adjacent_tool_cell(app, SearchDirection::Forward) =>
                 {
-                    if !jump_to_adjacent_tool_cell(app, SearchDirection::Forward) {
-                        app.status_message = Some("No next tool output".to_string());
-                    }
+                    app.status_message = Some("No next tool output".to_string());
                 }
                 // Input handling
                 KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -3612,12 +3620,10 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
                 app.transcript_selection.head = Some(point);
             }
         }
-        MouseEventKind::Up(MouseButton::Left) => {
-            if app.transcript_selection.dragging {
-                app.transcript_selection.dragging = false;
-                if selection_has_content(app) {
-                    copy_active_selection(app);
-                }
+        MouseEventKind::Up(MouseButton::Left) if app.transcript_selection.dragging => {
+            app.transcript_selection.dragging = false;
+            if selection_has_content(app) {
+                copy_active_selection(app);
             }
         }
         _ => {}

@@ -2343,25 +2343,19 @@ async fn run_exec_agent(
                 }
                 ends_with_newline = content.ends_with('\n');
             }
-            Event::MessageComplete { .. } => {
-                if !json_output && !ends_with_newline {
-                    println!();
+            Event::MessageComplete { .. } if !json_output && !ends_with_newline => {
+                println!();
+            }
+            Event::ToolCallStarted { name, input, .. } if !json_output => {
+                let summary = summarize_tool_args(&input);
+                if let Some(summary) = summary {
+                    eprintln!("tool: {name} ({summary})");
+                } else {
+                    eprintln!("tool: {name}");
                 }
             }
-            Event::ToolCallStarted { name, input, .. } => {
-                if !json_output {
-                    let summary = summarize_tool_args(&input);
-                    if let Some(summary) = summary {
-                        eprintln!("tool: {name} ({summary})");
-                    } else {
-                        eprintln!("tool: {name}");
-                    }
-                }
-            }
-            Event::ToolCallProgress { id, output } => {
-                if !json_output {
-                    eprintln!("tool {id}: {}", summarize_tool_output(&output));
-                }
+            Event::ToolCallProgress { id, output } if !json_output => {
+                eprintln!("tool {id}: {}", summarize_tool_output(&output));
             }
             Event::ToolCallComplete { name, result, .. } => match result {
                 Ok(output) => {

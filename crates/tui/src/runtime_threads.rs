@@ -320,7 +320,7 @@ impl RuntimeThreadStore {
             }
             out.push(thread);
         }
-        out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        out.sort_by_key(|t| std::cmp::Reverse(t.updated_at));
         Ok(out)
     }
 
@@ -349,7 +349,7 @@ impl RuntimeThreadStore {
                 out.push(turn);
             }
         }
-        out.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        out.sort_by_key(|a| a.created_at);
         Ok(out)
     }
 

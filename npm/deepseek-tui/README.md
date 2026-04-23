@@ -20,6 +20,19 @@ npx deepseek-tui --help
 `postinstall` downloads platform binaries into `bin/downloads/` and exposes
 `deepseek` and `deepseek-tui` commands.
 
+## First run
+
+```bash
+deepseek login --api-key "YOUR_DEEPSEEK_API_KEY"
+deepseek doctor
+deepseek
+```
+
+The `deepseek` facade and `deepseek-tui` binary share `~/.deepseek/config.toml`
+for DeepSeek auth and default model settings. Common TUI commands are available
+directly through the facade, including `deepseek doctor`, `deepseek models`,
+`deepseek sessions`, and `deepseek resume --last`.
+
 ## Supported platforms
 
 - Linux x64

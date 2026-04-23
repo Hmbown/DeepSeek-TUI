@@ -2311,10 +2311,8 @@ async fn run_subagent(
         let mut tool_uses = Vec::new();
         for block in &response.content {
             match block {
-                ContentBlock::Text { text, .. } => {
-                    if !text.trim().is_empty() {
-                        final_result = Some(text.clone());
-                    }
+                ContentBlock::Text { text, .. } if !text.trim().is_empty() => {
+                    final_result = Some(text.clone());
                 }
                 ContentBlock::ToolUse {
                     id, name, input, ..

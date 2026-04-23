@@ -21,15 +21,18 @@ npm install -g deepseek-tui
 Start the TUI:
 
 ```bash
-deepseek-tui
+deepseek
 ```
 
 On first launch, it will prompt for your API key if one is not already configured.
+The package also installs `deepseek-tui`; both commands share the same
+`~/.deepseek/config.toml` for DeepSeek auth and default model settings.
 
 You can also set auth ahead of time with either of these:
 
 ```bash
-deepseek-tui login
+deepseek login --api-key "YOUR_DEEPSEEK_API_KEY"
+deepseek-tui login --api-key "YOUR_DEEPSEEK_API_KEY"
 DEEPSEEK_API_KEY="YOUR_DEEPSEEK_API_KEY" deepseek-tui
 ```
 
@@ -70,13 +73,16 @@ Three visible modes (**Tab** / **Shift+Tab** to cycle):
 ## Usage
 
 ```bash
-deepseek-tui                                  # interactive TUI
-deepseek-tui -p "explain this in 2 sentences" # one-shot prompt
-deepseek-tui --yolo                           # YOLO mode
-deepseek-tui login                            # save API key to config
-deepseek-tui doctor                           # check setup
-deepseek-tui models                           # list available models
-deepseek-tui serve --http                     # HTTP/SSE API server
+deepseek                                      # interactive TUI
+deepseek "explain this in 2 sentences"        # one-shot prompt
+deepseek --model deepseek-chat "summarize"    # one-shot with model override
+deepseek --yolo                               # YOLO mode
+deepseek login --api-key "..."                # save API key to shared config
+deepseek doctor                               # check setup
+deepseek models                               # list live DeepSeek API models
+deepseek sessions                             # list saved sessions
+deepseek resume --last                        # resume the latest session
+deepseek serve --http                         # HTTP/SSE API server
 ```
 
 Controls: `F1` help, `Esc` backs out of the current action, `Ctrl+K` command palette.
@@ -85,7 +91,8 @@ Controls: `F1` help, `Esc` backs out of the current action, `Ctrl+K` command pal
 
 `~/.deepseek/config.toml` — see [config.example.toml](config.example.toml) for all options.
 
-Key environment overrides: `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`, `DEEPSEEK_PROFILE`.
+Key environment overrides: `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`,
+`DEEPSEEK_MODEL`, `DEEPSEEK_PROFILE`.
 
 Full reference: [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 

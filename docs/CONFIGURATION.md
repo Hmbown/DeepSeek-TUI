@@ -15,6 +15,11 @@ Overrides:
 
 If both are set, `--config` wins. Environment variable overrides are applied after the file is loaded.
 
+The `deepseek` facade and `deepseek-tui` binary share the same config file for
+DeepSeek auth and model defaults. `deepseek login --api-key ...` writes the
+root `api_key` field that `deepseek-tui` reads directly, and `deepseek --model
+deepseek-chat` is forwarded to the TUI as `DEEPSEEK_MODEL`.
+
 To bootstrap MCP and skills directories at their resolved paths, run `deepseek-tui setup`.
 To only scaffold MCP, run `deepseek-tui mcp init`.
 
@@ -50,6 +55,7 @@ These override config values:
 
 - `DEEPSEEK_API_KEY`
 - `DEEPSEEK_BASE_URL`
+- `DEEPSEEK_MODEL` or `DEEPSEEK_DEFAULT_TEXT_MODEL`
 - `DEEPSEEK_SKILLS_DIR`
 - `DEEPSEEK_MCP_CONFIG`
 - `DEEPSEEK_NOTES_PATH`
@@ -124,7 +130,7 @@ If you are upgrading from older releases:
 
 - `api_key` (string, required): must be non-empty (or set `DEEPSEEK_API_KEY`).
 - `base_url` (string, optional): defaults to `https://api.deepseek.com` (OpenAI-compatible Responses API).
-- `default_text_model` (string, optional): defaults to `deepseek-reasoner`. Any valid DeepSeek model ID is accepted (common IDs: `deepseek-reasoner`, `deepseek-chat`). Use `/models` to discover live IDs from your configured endpoint.
+- `default_text_model` (string, optional): defaults to `deepseek-reasoner`. Any valid DeepSeek model ID is accepted (common IDs: `deepseek-reasoner`, `deepseek-chat`). Use `/models` or `deepseek models` to discover live IDs from your configured endpoint. `DEEPSEEK_MODEL` overrides this for a single process.
 - `allow_shell` (bool, optional): defaults to `true` (sandboxed).
 - `approval_policy` (string, optional): `on-request`, `untrusted`, or `never`. Runtime `approval_mode` editing in `/config` also accepts `on-request` and `untrusted` aliases.
 - `sandbox_mode` (string, optional): `read-only`, `workspace-write`, `danger-full-access`, `external-sandbox`.

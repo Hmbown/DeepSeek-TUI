@@ -566,6 +566,11 @@ fn apply_env_overrides(config: &mut Config) {
     if let Ok(value) = std::env::var("DEEPSEEK_BASE_URL") {
         config.base_url = Some(value);
     }
+    if let Ok(value) =
+        std::env::var("DEEPSEEK_MODEL").or_else(|_| std::env::var("DEEPSEEK_DEFAULT_TEXT_MODEL"))
+    {
+        config.default_text_model = Some(value);
+    }
     if let Ok(value) = std::env::var("DEEPSEEK_SKILLS_DIR") {
         config.skills_dir = Some(value);
     }
@@ -1007,6 +1012,8 @@ mod tests {
         userprofile: Option<OsString>,
         deepseek_config_path: Option<OsString>,
         deepseek_api_key: Option<OsString>,
+        deepseek_model: Option<OsString>,
+        deepseek_default_text_model: Option<OsString>,
     }
 
     impl EnvGuard {
@@ -1018,18 +1025,24 @@ mod tests {
             let userprofile_prev = env::var_os("USERPROFILE");
             let deepseek_config_prev = env::var_os("DEEPSEEK_CONFIG_PATH");
             let api_key_prev = env::var_os("DEEPSEEK_API_KEY");
+            let model_prev = env::var_os("DEEPSEEK_MODEL");
+            let default_text_model_prev = env::var_os("DEEPSEEK_DEFAULT_TEXT_MODEL");
             // Safety: test-only environment mutation guarded by a global mutex.
             unsafe {
                 env::set_var("HOME", &home_str);
                 env::set_var("USERPROFILE", &home_str);
                 env::set_var("DEEPSEEK_CONFIG_PATH", &config_str);
                 env::remove_var("DEEPSEEK_API_KEY");
+                env::remove_var("DEEPSEEK_MODEL");
+                env::remove_var("DEEPSEEK_DEFAULT_TEXT_MODEL");
             }
             Self {
                 home: home_prev,
                 userprofile: userprofile_prev,
                 deepseek_config_path: deepseek_config_prev,
                 deepseek_api_key: api_key_prev,
+                deepseek_model: model_prev,
+                deepseek_default_text_model: default_text_model_prev,
             }
         }
     }
@@ -1042,6 +1055,11 @@ mod tests {
                 Self::restore_var("USERPROFILE", self.userprofile.take());
                 Self::restore_var("DEEPSEEK_CONFIG_PATH", self.deepseek_config_path.take());
                 Self::restore_var("DEEPSEEK_API_KEY", self.deepseek_api_key.take());
+                Self::restore_var("DEEPSEEK_MODEL", self.deepseek_model.take());
+                Self::restore_var(
+                    "DEEPSEEK_DEFAULT_TEXT_MODEL",
+                    self.deepseek_default_text_model.take(),
+                );
             }
         }
     }
@@ -1278,6 +1296,31 @@ mod tests {
             ..Default::default()
         };
         config.validate()?;
+        Ok(())
+    }
+
+    #[test]
+    fn deepseek_model_env_overrides_default_text_model() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-model-env-test-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        // Safety: test-only environment mutation guarded by a global mutex.
+        unsafe {
+            env::set_var("DEEPSEEK_MODEL", "deepseek-chat");
+        }
+
+        let config = Config::load(None, None)?;
+        assert_eq!(config.default_text_model.as_deref(), Some("deepseek-chat"));
         Ok(())
     }
 }

@@ -859,15 +859,14 @@ fn extract_workflow_context(messages: &[Message], workspace: Option<&Path>) -> S
                         files_touched.push(path);
                     }
                 }
-                ContentBlock::Text { text, .. } => {
+                ContentBlock::Text { text, .. }
                     // Look for task/todo mentions
-                    if text.contains("TODO") || text.contains("task") || text.contains("need to") {
+                    if (text.contains("TODO") || text.contains("task") || text.contains("need to")) => {
                         let task = truncate_chars(text, 200).to_string();
                         if !tasks_identified.contains(&task) {
                             tasks_identified.push(task);
                         }
                     }
-                }
                 _ => {}
             }
         }
