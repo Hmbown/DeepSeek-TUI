@@ -8,10 +8,6 @@ A coding agent for [DeepSeek](https://platform.deepseek.com) models that runs in
 [![crates.io](https://img.shields.io/crates/v/deepseek-tui)](https://crates.io/crates/deepseek-tui)
 [![npm](https://img.shields.io/npm/v/deepseek-tui)](https://www.npmjs.com/package/deepseek-tui)
 
-<p align="center">
-  <img src="assets/hero.png" alt="DeepSeek TUI" width="800">
-</p>
-
 ## Quickstart
 
 ```bash
