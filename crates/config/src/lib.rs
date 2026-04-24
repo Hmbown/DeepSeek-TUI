@@ -6,7 +6,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 pub const CONFIG_FILE_NAME: &str = "config.toml";
-const DEFAULT_DEEPSEEK_MODEL: &str = "deepseek-reasoner";
+const DEFAULT_DEEPSEEK_MODEL: &str = "deepseek-v4-pro";
 const DEFAULT_OPENAI_MODEL: &str = "gpt-4.1";
 const DEFAULT_DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com";
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
@@ -72,6 +72,13 @@ impl ProvidersToml {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ConfigToml {
+    /// TUI-compatible DeepSeek API key. Kept at the root so both `deepseek`
+    /// and `deepseek-tui` can share a single config file.
+    pub api_key: Option<String>,
+    /// TUI-compatible DeepSeek base URL.
+    pub base_url: Option<String>,
+    /// TUI-compatible default DeepSeek model.
+    pub default_text_model: Option<String>,
     #[serde(default)]
     pub provider: ProviderKind,
     pub model: Option<String>,
@@ -94,6 +101,9 @@ impl ConfigToml {
     pub fn get_value(&self, key: &str) -> Option<String> {
         match key {
             "provider" => Some(self.provider.as_str().to_string()),
+            "api_key" => self.api_key.clone(),
+            "base_url" => self.base_url.clone(),
+            "default_text_model" => self.default_text_model.clone(),
             "model" => self.model.clone(),
             "auth.mode" => self.auth_mode.clone(),
             "auth.chatgpt_access_token" => self.chatgpt_access_token.clone(),
@@ -119,6 +129,9 @@ impl ConfigToml {
                 self.provider = ProviderKind::parse(value)
                     .with_context(|| format!("unknown provider '{value}'"))?;
             }
+            "api_key" => self.api_key = Some(value.to_string()),
+            "base_url" => self.base_url = Some(value.to_string()),
+            "default_text_model" => self.default_text_model = Some(value.to_string()),
             "model" => self.model = Some(value.to_string()),
             "auth.mode" => self.auth_mode = Some(value.to_string()),
             "auth.chatgpt_access_token" => self.chatgpt_access_token = Some(value.to_string()),
@@ -131,12 +144,20 @@ impl ConfigToml {
             "approval_policy" => self.approval_policy = Some(value.to_string()),
             "sandbox_mode" => self.sandbox_mode = Some(value.to_string()),
             "providers.deepseek.api_key" => {
-                self.providers.deepseek.api_key = Some(value.to_string())
+                let value = value.to_string();
+                self.providers.deepseek.api_key = Some(value.clone());
+                self.api_key = Some(value);
             }
             "providers.deepseek.base_url" => {
-                self.providers.deepseek.base_url = Some(value.to_string());
+                let value = value.to_string();
+                self.providers.deepseek.base_url = Some(value.clone());
+                self.base_url = Some(value);
             }
-            "providers.deepseek.model" => self.providers.deepseek.model = Some(value.to_string()),
+            "providers.deepseek.model" => {
+                let value = value.to_string();
+                self.providers.deepseek.model = Some(value.clone());
+                self.default_text_model = Some(value);
+            }
             "providers.openai.api_key" => self.providers.openai.api_key = Some(value.to_string()),
             "providers.openai.base_url" => self.providers.openai.base_url = Some(value.to_string()),
             "providers.openai.model" => self.providers.openai.model = Some(value.to_string()),
@@ -151,6 +172,9 @@ impl ConfigToml {
     pub fn unset_value(&mut self, key: &str) -> Result<()> {
         match key {
             "provider" => self.provider = ProviderKind::Deepseek,
+            "api_key" => self.api_key = None,
+            "base_url" => self.base_url = None,
+            "default_text_model" => self.default_text_model = None,
             "model" => self.model = None,
             "auth.mode" => self.auth_mode = None,
             "auth.chatgpt_access_token" => self.chatgpt_access_token = None,
@@ -160,9 +184,18 @@ impl ConfigToml {
             "telemetry" => self.telemetry = None,
             "approval_policy" => self.approval_policy = None,
             "sandbox_mode" => self.sandbox_mode = None,
-            "providers.deepseek.api_key" => self.providers.deepseek.api_key = None,
-            "providers.deepseek.base_url" => self.providers.deepseek.base_url = None,
-            "providers.deepseek.model" => self.providers.deepseek.model = None,
+            "providers.deepseek.api_key" => {
+                self.providers.deepseek.api_key = None;
+                self.api_key = None;
+            }
+            "providers.deepseek.base_url" => {
+                self.providers.deepseek.base_url = None;
+                self.base_url = None;
+            }
+            "providers.deepseek.model" => {
+                self.providers.deepseek.model = None;
+                self.default_text_model = None;
+            }
             "providers.openai.api_key" => self.providers.openai.api_key = None,
             "providers.openai.base_url" => self.providers.openai.base_url = None,
             "providers.openai.model" => self.providers.openai.model = None,
@@ -178,6 +211,15 @@ impl ConfigToml {
         let mut out = BTreeMap::new();
         out.insert("provider".to_string(), self.provider.as_str().to_string());
 
+        if let Some(v) = self.api_key.as_ref() {
+            out.insert("api_key".to_string(), redact_secret(v));
+        }
+        if let Some(v) = self.base_url.as_ref() {
+            out.insert("base_url".to_string(), v.clone());
+        }
+        if let Some(v) = self.default_text_model.as_ref() {
+            out.insert("default_text_model".to_string(), v.clone());
+        }
         if let Some(v) = self.model.as_ref() {
             out.insert("model".to_string(), v.clone());
         }
@@ -236,17 +278,28 @@ impl ConfigToml {
         let provider = cli.provider.or(env.provider).unwrap_or(self.provider);
 
         let provider_cfg = self.providers.for_provider(provider);
+        let root_deepseek_api_key = (provider == ProviderKind::Deepseek)
+            .then(|| self.api_key.clone())
+            .flatten();
+        let root_deepseek_base_url = (provider == ProviderKind::Deepseek)
+            .then(|| self.base_url.clone())
+            .flatten();
+        let root_deepseek_model = (provider == ProviderKind::Deepseek)
+            .then(|| self.default_text_model.clone())
+            .flatten();
         let api_key = cli
             .api_key
             .clone()
             .or_else(|| env.api_key_for(provider))
-            .or_else(|| provider_cfg.api_key.clone());
+            .or_else(|| provider_cfg.api_key.clone())
+            .or(root_deepseek_api_key);
 
         let base_url = cli
             .base_url
             .clone()
             .or_else(|| env.base_url_for(provider))
             .or_else(|| provider_cfg.base_url.clone())
+            .or(root_deepseek_base_url)
             .unwrap_or_else(|| match provider {
                 ProviderKind::Deepseek => DEFAULT_DEEPSEEK_BASE_URL.to_string(),
                 ProviderKind::Openai => DEFAULT_OPENAI_BASE_URL.to_string(),
@@ -257,6 +310,7 @@ impl ConfigToml {
             .clone()
             .or_else(|| env.model.clone())
             .or_else(|| provider_cfg.model.clone())
+            .or(root_deepseek_model)
             .or_else(|| self.model.clone())
             .unwrap_or_else(|| match provider {
                 ProviderKind::Deepseek => DEFAULT_DEEPSEEK_MODEL.to_string(),
@@ -473,5 +527,119 @@ impl EnvRuntimeOverrides {
             ProviderKind::Deepseek => self.deepseek_base_url.clone(),
             ProviderKind::Openai => self.openai_base_url.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+    use std::ffi::OsString;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    struct EnvGuard {
+        deepseek_api_key: Option<OsString>,
+        deepseek_base_url: Option<OsString>,
+        deepseek_model: Option<OsString>,
+        deepseek_provider: Option<OsString>,
+    }
+
+    impl EnvGuard {
+        fn without_deepseek_runtime_overrides() -> Self {
+            let guard = Self {
+                deepseek_api_key: env::var_os("DEEPSEEK_API_KEY"),
+                deepseek_base_url: env::var_os("DEEPSEEK_BASE_URL"),
+                deepseek_model: env::var_os("DEEPSEEK_MODEL"),
+                deepseek_provider: env::var_os("DEEPSEEK_PROVIDER"),
+            };
+            // Safety: test-only environment mutation guarded by a module mutex.
+            unsafe {
+                env::remove_var("DEEPSEEK_API_KEY");
+                env::remove_var("DEEPSEEK_BASE_URL");
+                env::remove_var("DEEPSEEK_MODEL");
+                env::remove_var("DEEPSEEK_PROVIDER");
+            }
+            guard
+        }
+
+        unsafe fn restore_var(key: &str, value: Option<OsString>) {
+            if let Some(value) = value {
+                unsafe { env::set_var(key, value) };
+            } else {
+                unsafe { env::remove_var(key) };
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            // Safety: test-only environment mutation guarded by a module mutex.
+            unsafe {
+                Self::restore_var("DEEPSEEK_API_KEY", self.deepseek_api_key.take());
+                Self::restore_var("DEEPSEEK_BASE_URL", self.deepseek_base_url.take());
+                Self::restore_var("DEEPSEEK_MODEL", self.deepseek_model.take());
+                Self::restore_var("DEEPSEEK_PROVIDER", self.deepseek_provider.take());
+            }
+        }
+    }
+
+    #[test]
+    fn root_deepseek_fields_are_runtime_fallbacks() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let config = ConfigToml {
+            api_key: Some("root-key".to_string()),
+            base_url: Some("https://api.deepseek.com".to_string()),
+            default_text_model: Some("deepseek-chat".to_string()),
+            ..ConfigToml::default()
+        };
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Deepseek);
+        assert_eq!(resolved.api_key.as_deref(), Some("root-key"));
+        assert_eq!(resolved.base_url, "https://api.deepseek.com");
+        assert_eq!(resolved.model, "deepseek-chat");
+    }
+
+    #[test]
+    fn provider_specific_deepseek_fields_override_tui_compat_fields() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let mut config = ConfigToml {
+            api_key: Some("root-key".to_string()),
+            base_url: Some("https://api.deepseek.com".to_string()),
+            default_text_model: Some("deepseek-chat".to_string()),
+            ..ConfigToml::default()
+        };
+        config.providers.deepseek.api_key = Some("provider-key".to_string());
+        config.providers.deepseek.base_url = Some("https://api.deepseeki.com".to_string());
+        config.providers.deepseek.model = Some("deepseek-reasoner".to_string());
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.api_key.as_deref(), Some("provider-key"));
+        assert_eq!(resolved.base_url, "https://api.deepseeki.com");
+        assert_eq!(resolved.model, "deepseek-reasoner");
+    }
+
+    #[test]
+    fn list_values_redacts_root_api_key() {
+        let config = ConfigToml {
+            api_key: Some("sk-deepseek-secret".to_string()),
+            ..ConfigToml::default()
+        };
+
+        let values = config.list_values();
+
+        assert_eq!(
+            values.get("api_key").map(String::as_str),
+            Some("sk-d***cret")
+        );
     }
 }

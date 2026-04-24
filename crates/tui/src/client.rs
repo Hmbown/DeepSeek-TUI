@@ -1,7 +1,8 @@
-//! HTTP client for the DeepSeek OpenAI-compatible APIs.
+//! HTTP client for DeepSeek's OpenAI-compatible Chat Completions API.
 //!
-//! Uses the OpenAI Responses API when available, falling back to Chat Completions
-//! if the Responses endpoint is unsupported by the target base URL.
+//! DeepSeek documents `/chat/completions` as the primary endpoint. A legacy
+//! Responses probe remains available behind `DEEPSEEK_EXPERIMENTAL_RESPONSES_API`
+//! for local compatibility experiments, but normal traffic uses chat completions.
 
 use std::collections::HashSet;
 use std::pin::Pin;
@@ -134,15 +135,16 @@ pub struct DeepSeekClient {
     retry: RetryPolicy,
     default_model: String,
     use_chat_completions: AtomicBool,
-    /// Counter of chat-completions requests since last Responses API probe.
-    /// After RESPONSES_RECOVERY_INTERVAL requests, we retry the Responses API.
+    /// Counter of chat-completions requests since last experimental Responses API probe.
+    /// After RESPONSES_RECOVERY_INTERVAL requests, we retry the Responses API when
+    /// `DEEPSEEK_EXPERIMENTAL_RESPONSES_API` is set.
     chat_fallback_counter: AtomicU32,
     connection_health: Arc<AsyncMutex<ConnectionHealth>>,
     rate_limiter: Arc<AsyncMutex<TokenBucket>>,
 }
 
-/// After this many chat-completions requests, retry the Responses API to see
-/// if it has recovered.
+/// After this many chat-completions requests, retry the experimental Responses
+/// API to see if it has recovered.
 const RESPONSES_RECOVERY_INTERVAL: u32 = 20;
 const CONNECTION_FAILURE_THRESHOLD: u32 = 2;
 const RECOVERY_PROBE_COOLDOWN: Duration = Duration::from_secs(15);
@@ -150,6 +152,7 @@ const RECOVERY_PROBE_COOLDOWN: Duration = Duration::from_secs(15);
 const DEFAULT_CLIENT_RATE_LIMIT_RPS: f64 = 8.0;
 const DEFAULT_CLIENT_RATE_LIMIT_BURST: f64 = 16.0;
 const ALLOW_INSECURE_HTTP_ENV: &str = "DEEPSEEK_ALLOW_INSECURE_HTTP";
+const EXPERIMENTAL_RESPONSES_API_ENV: &str = "DEEPSEEK_EXPERIMENTAL_RESPONSES_API";
 
 const SSE_BACKPRESSURE_HIGH_WATERMARK: usize = 8 * 1024 * 1024; // 8 MB
 const SSE_BACKPRESSURE_SLEEP_MS: u64 = 10;
@@ -375,6 +378,30 @@ fn validate_base_url_security(base_url: &str) -> Result<()> {
     )
 }
 
+fn experimental_responses_api_enabled() -> bool {
+    std::env::var(EXPERIMENTAL_RESPONSES_API_ENV)
+        .ok()
+        .as_deref()
+        .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+}
+
+fn versioned_base_url(base_url: &str) -> String {
+    let trimmed = base_url.trim_end_matches('/');
+    if trimmed.ends_with("/v1") || trimmed.ends_with("/beta") {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}/v1")
+    }
+}
+
+fn api_url(base_url: &str, path: &str) -> String {
+    format!(
+        "{}/{}",
+        versioned_base_url(base_url).trim_end_matches('/'),
+        path.trim_start_matches('/')
+    )
+}
+
 // === DeepSeekClient ===
 
 impl DeepSeekClient {
@@ -428,7 +455,7 @@ impl DeepSeekClient {
 
     /// List available models from the provider.
     pub async fn list_models(&self) -> Result<Vec<AvailableModel>> {
-        let url = format!("{}/v1/models", self.base_url.trim_end_matches('/'));
+        let url = api_url(&self.base_url, "models");
         let response = self.send_with_retry(|| self.http_client.get(&url)).await?;
 
         let status = response.status();
@@ -475,7 +502,7 @@ impl DeepSeekClient {
         if !should_probe {
             return;
         }
-        let health_url = format!("{}/v1/models", self.base_url.trim_end_matches('/'));
+        let health_url = api_url(&self.base_url, "models");
         let probe = self.http_client.get(health_url).send().await;
         match probe {
             Ok(resp) if resp.status().is_success() => {
@@ -581,8 +608,9 @@ impl DeepSeekClient {
         if let Some(choice) = request.tool_choice.as_ref() {
             body["tool_choice"] = choice.clone();
         }
+        apply_reasoning_effort(&mut body, request.reasoning_effort.as_deref());
 
-        let url = format!("{}/v1/responses", self.base_url.trim_end_matches('/'));
+        let url = api_url(&self.base_url, "responses");
         let response = self
             .send_with_retry(|| self.http_client.post(&url).json(&body))
             .await?;
@@ -632,11 +660,9 @@ impl DeepSeekClient {
         {
             body["tool_choice"] = mapped;
         }
+        apply_reasoning_effort(&mut body, request.reasoning_effort.as_deref());
 
-        let url = format!(
-            "{}/v1/chat/completions",
-            self.base_url.trim_end_matches('/')
-        );
+        let url = api_url(&self.base_url, "chat/completions");
         let response = self
             .send_with_retry(|| self.http_client.post(&url).json(&body))
             .await?;
@@ -666,7 +692,7 @@ impl LlmClient for DeepSeekClient {
     }
 
     async fn health_check(&self) -> Result<bool> {
-        let health_url = format!("{}/v1/models", self.base_url.trim_end_matches('/'));
+        let health_url = api_url(&self.base_url, "models");
         self.wait_for_rate_limit().await;
         let response = self.http_client.get(health_url).send().await;
         match response {
@@ -688,6 +714,10 @@ impl LlmClient for DeepSeekClient {
     }
 
     async fn create_message(&self, request: MessageRequest) -> Result<MessageResponse> {
+        if !experimental_responses_api_enabled() {
+            return self.create_message_chat(&request).await;
+        }
+
         // Check if it's time to probe Responses API recovery
         if self.use_chat_completions.load(Ordering::Relaxed) {
             let count = self.chat_fallback_counter.fetch_add(1, Ordering::Relaxed);
@@ -738,6 +768,9 @@ impl LlmClient for DeepSeekClient {
             "messages": messages,
             "max_tokens": request.max_tokens,
             "stream": true,
+            "stream_options": {
+                "include_usage": true
+            },
         });
 
         if let Some(temperature) = request.temperature {
@@ -754,11 +787,9 @@ impl LlmClient for DeepSeekClient {
         {
             body["tool_choice"] = mapped;
         }
+        apply_reasoning_effort(&mut body, request.reasoning_effort.as_deref());
 
-        let url = format!(
-            "{}/v1/chat/completions",
-            self.base_url.trim_end_matches('/')
-        );
+        let url = api_url(&self.base_url, "chat/completions");
         let response = self
             .send_with_retry(|| self.http_client.post(&url).json(&body))
             .await?;
@@ -789,7 +820,7 @@ impl LlmClient for DeepSeekClient {
                     usage: Usage {
                         input_tokens: 0,
                         output_tokens: 0,
-                        server_tool_use: None,
+                        ..Usage::default()
                     },
                 },
             });
@@ -1357,7 +1388,8 @@ fn build_chat_messages(
             let reasoning_content = thinking_parts.join("\n");
             let has_text = !content.trim().is_empty();
             let has_tool_calls = !tool_calls.is_empty();
-            let has_reasoning = include_reasoning && !reasoning_content.trim().is_empty();
+            let include_reasoning_for_turn = include_reasoning && has_tool_calls;
+            let has_reasoning = include_reasoning_for_turn && !reasoning_content.trim().is_empty();
 
             // DeepSeek rejects assistant messages where both `content` and
             // `tool_calls` are missing/null. Skip such entries even if they
@@ -1546,8 +1578,10 @@ fn tool_to_chat(tool: &Tool) -> Value {
     if let Some(input_examples) = &tool.input_examples {
         value["input_examples"] = json!(input_examples);
     }
-    if let Some(strict) = tool.strict {
-        value["strict"] = json!(strict);
+    if let Some(strict) = tool.strict
+        && let Some(function) = value.get_mut("function")
+    {
+        function["strict"] = json!(strict);
     }
     value
 }
@@ -1576,10 +1610,41 @@ fn map_tool_choice_for_chat(choice: &Value) -> Option<Value> {
 fn requires_reasoning_content(model: &str) -> bool {
     let lower = model.to_lowercase();
     lower.contains("deepseek-v3.2")
+        || lower.contains("deepseek-v4")
         || lower.contains("reasoner")
         || lower.contains("-reasoning")
         || lower.contains("-thinking")
         || has_deepseek_r_series_marker(&lower)
+}
+
+/// Translate the TUI's effort-tier string into DeepSeek's request fields.
+///
+/// The config surface accepts `off | low | medium | high | max`. DeepSeek
+/// itself collapses `low`/`medium` → `"high"` and `xhigh` → `"max"` at the
+/// API boundary (per their docs); `off` emits the disable toggle.
+fn apply_reasoning_effort(body: &mut Value, effort: Option<&str>) {
+    let Some(effort) = effort else {
+        return;
+    };
+    let normalized = effort.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "off" | "disabled" | "none" | "false" => {
+            body["thinking"] = json!({ "type": "disabled" });
+        }
+        "max" | "maximum" | "xhigh" => {
+            body["reasoning_effort"] = json!("max");
+            body["thinking"] = json!({ "type": "enabled" });
+        }
+        "low" | "minimal" | "medium" | "mid" | "high" | "" => {
+            // Per DeepSeek docs: low/medium compat-map to "high".
+            body["reasoning_effort"] = json!("high");
+            body["thinking"] = json!({ "type": "enabled" });
+        }
+        _ => {
+            // Unknown value — do not mutate the request, let the provider
+            // apply its own defaults.
+        }
+    }
 }
 
 fn has_deepseek_r_series_marker(model_lower: &str) -> bool {
@@ -1701,6 +1766,19 @@ fn parse_usage(usage: Option<&Value>) -> Usage {
         })
         .and_then(Value::as_u64)
         .unwrap_or(0);
+    let prompt_cache_hit_tokens = usage
+        .and_then(|u| u.get("prompt_cache_hit_tokens"))
+        .and_then(Value::as_u64)
+        .map(|v| v as u32);
+    let prompt_cache_miss_tokens = usage
+        .and_then(|u| u.get("prompt_cache_miss_tokens"))
+        .and_then(Value::as_u64)
+        .map(|v| v as u32);
+    let reasoning_tokens = usage
+        .and_then(|u| u.get("completion_tokens_details"))
+        .and_then(|details| details.get("reasoning_tokens"))
+        .and_then(Value::as_u64)
+        .map(|v| v as u32);
 
     let server_tool_use = usage.and_then(|u| u.get("server_tool_use")).map(|server| {
         let code_execution_requests = server
@@ -1720,6 +1798,9 @@ fn parse_usage(usage: Option<&Value>) -> Usage {
     Usage {
         input_tokens: input_tokens as u32,
         output_tokens: output_tokens as u32,
+        prompt_cache_hit_tokens,
+        prompt_cache_miss_tokens,
+        reasoning_tokens,
         server_tool_use,
     }
 }
@@ -1842,6 +1923,20 @@ fn parse_sse_chunk(
         }
         return events;
     };
+
+    if choices.is_empty() {
+        if let Some(usage_val) = chunk.get("usage") {
+            let usage = parse_usage(Some(usage_val));
+            events.push(StreamEvent::MessageDelta {
+                delta: MessageDelta {
+                    stop_reason: None,
+                    stop_sequence: None,
+                },
+                usage: Some(usage),
+            });
+        }
+        return events;
+    }
 
     for choice in choices {
         let delta = choice.get("delta");
@@ -2077,7 +2172,23 @@ mod tests {
     }
 
     #[test]
-    fn chat_messages_include_reasoning_content_for_reasoner() {
+    fn api_url_handles_default_v1_and_beta_base_urls() {
+        assert_eq!(
+            api_url("https://api.deepseek.com", "chat/completions"),
+            "https://api.deepseek.com/v1/chat/completions"
+        );
+        assert_eq!(
+            api_url("https://api.deepseek.com/v1", "chat/completions"),
+            "https://api.deepseek.com/v1/chat/completions"
+        );
+        assert_eq!(
+            api_url("https://api.deepseek.com/beta", "chat/completions"),
+            "https://api.deepseek.com/beta/chat/completions"
+        );
+    }
+
+    #[test]
+    fn chat_messages_strip_reasoning_content_from_final_answer() {
         let message = Message {
             role: "assistant".to_string(),
             content: vec![
@@ -2096,9 +2207,10 @@ mod tests {
             .find(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
             .expect("assistant message");
         assert_eq!(
-            assistant.get("reasoning_content").and_then(Value::as_str),
-            Some("plan")
+            assistant.get("content").and_then(Value::as_str),
+            Some("done")
         );
+        assert!(assistant.get("reasoning_content").is_none());
     }
 
     #[test]
@@ -2117,7 +2229,7 @@ mod tests {
     }
 
     #[test]
-    fn chat_messages_preserve_thinking_only_assistant_for_reasoner_model() {
+    fn chat_messages_drop_thinking_only_assistant_for_reasoner_model() {
         let message = Message {
             role: "assistant".to_string(),
             content: vec![ContentBlock::Thinking {
@@ -2125,19 +2237,14 @@ mod tests {
             }],
         };
         let out = build_chat_messages(None, &[message], "deepseek-reasoner");
-        let assistant = out
-            .iter()
-            .find(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
-            .expect("assistant message");
-        assert_eq!(assistant.get("content").and_then(Value::as_str), Some(""));
-        assert_eq!(
-            assistant.get("reasoning_content").and_then(Value::as_str),
-            Some("plan")
+        assert!(
+            !out.iter()
+                .any(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
         );
     }
 
     #[test]
-    fn chat_messages_preserve_thinking_only_assistant_for_r_series_model() {
+    fn chat_messages_drop_thinking_only_assistant_for_r_series_model() {
         let message = Message {
             role: "assistant".to_string(),
             content: vec![ContentBlock::Thinking {
@@ -2145,6 +2252,47 @@ mod tests {
             }],
         };
         let out = build_chat_messages(None, &[message], "deepseek-r2-lite-preview");
+        assert!(
+            !out.iter()
+                .any(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
+        );
+    }
+
+    #[test]
+    fn chat_messages_preserve_current_tool_round_reasoning_for_reasoner_model() {
+        let messages = vec![
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "Need the date".to_string(),
+                    cache_control: None,
+                }],
+            },
+            Message {
+                role: "assistant".to_string(),
+                content: vec![
+                    ContentBlock::Thinking {
+                        thinking: "Need to call a tool".to_string(),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "tool-1".to_string(),
+                        name: "get_date".to_string(),
+                        input: json!({}),
+                        caller: None,
+                    },
+                ],
+            },
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "tool-1".to_string(),
+                    content: "2026-04-23".to_string(),
+                    is_error: None,
+                    content_blocks: None,
+                }],
+            },
+        ];
+        let out = build_chat_messages(None, &messages, "deepseek-reasoner");
         let assistant = out
             .iter()
             .find(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
@@ -2152,8 +2300,181 @@ mod tests {
         assert_eq!(assistant.get("content").and_then(Value::as_str), Some(""));
         assert_eq!(
             assistant.get("reasoning_content").and_then(Value::as_str),
-            Some("plan")
+            Some("Need to call a tool")
         );
+    }
+
+    #[test]
+    fn chat_messages_preserve_prior_tool_round_reasoning_after_new_user_turn() {
+        let messages = vec![
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "Need the date".to_string(),
+                    cache_control: None,
+                }],
+            },
+            Message {
+                role: "assistant".to_string(),
+                content: vec![
+                    ContentBlock::Thinking {
+                        thinking: "Need to call a tool".to_string(),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "tool-1".to_string(),
+                        name: "get_date".to_string(),
+                        input: json!({}),
+                        caller: None,
+                    },
+                ],
+            },
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "tool-1".to_string(),
+                    content: "2026-04-23".to_string(),
+                    is_error: None,
+                    content_blocks: None,
+                }],
+            },
+            Message {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "It is 2026-04-23.".to_string(),
+                    cache_control: None,
+                }],
+            },
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "Thanks. Next question.".to_string(),
+                    cache_control: None,
+                }],
+            },
+        ];
+        let out = build_chat_messages(None, &messages, "deepseek-reasoner");
+        let assistant = out
+            .iter()
+            .find(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
+            .expect("assistant message");
+        assert_eq!(
+            assistant.get("reasoning_content").and_then(Value::as_str),
+            Some("Need to call a tool")
+        );
+    }
+
+    #[test]
+    fn chat_messages_preserve_v4_tool_round_reasoning() {
+        let messages = vec![
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "Use a tool".to_string(),
+                    cache_control: None,
+                }],
+            },
+            Message {
+                role: "assistant".to_string(),
+                content: vec![
+                    ContentBlock::Thinking {
+                        thinking: "Need a tool for this".to_string(),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "call-1".to_string(),
+                        name: "read_file".to_string(),
+                        input: json!({"path": "Cargo.toml"}),
+                        caller: None,
+                    },
+                ],
+            },
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "call-1".to_string(),
+                    content: "workspace manifest".to_string(),
+                    is_error: None,
+                    content_blocks: None,
+                }],
+            },
+            Message {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "Read it.".to_string(),
+                    cache_control: None,
+                }],
+            },
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "Now continue.".to_string(),
+                    cache_control: None,
+                }],
+            },
+        ];
+
+        let out = build_chat_messages(None, &messages, "deepseek-v4-pro");
+        let assistant = out
+            .iter()
+            .find(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
+            .expect("assistant message");
+        assert_eq!(
+            assistant.get("reasoning_content").and_then(Value::as_str),
+            Some("Need a tool for this")
+        );
+        assert!(assistant.get("tool_calls").is_some());
+    }
+
+    #[test]
+    fn reasoning_effort_uses_deepseek_top_level_thinking_parameter() {
+        let mut body = json!({});
+        apply_reasoning_effort(&mut body, Some("max"));
+
+        assert_eq!(
+            body.get("reasoning_effort").and_then(Value::as_str),
+            Some("max")
+        );
+        assert_eq!(
+            body.pointer("/thinking/type").and_then(Value::as_str),
+            Some("enabled")
+        );
+        assert!(body.get("extra_body").is_none());
+    }
+
+    #[test]
+    fn reasoning_effort_off_disables_top_level_thinking() {
+        let mut body = json!({});
+        apply_reasoning_effort(&mut body, Some("off"));
+
+        assert_eq!(
+            body.pointer("/thinking/type").and_then(Value::as_str),
+            Some("disabled")
+        );
+        assert!(body.get("reasoning_effort").is_none());
+        assert!(body.get("extra_body").is_none());
+    }
+
+    #[test]
+    fn chat_tool_strict_flag_is_nested_under_function() {
+        let tool = Tool {
+            tool_type: Some("function".to_string()),
+            name: "emit_json".to_string(),
+            description: "Emit JSON".to_string(),
+            input_schema: json!({"type": "object", "properties": {}}),
+            allowed_callers: None,
+            defer_loading: None,
+            input_examples: None,
+            strict: Some(true),
+            cache_control: None,
+        };
+        let encoded = tool_to_chat(&tool);
+        assert_eq!(
+            encoded
+                .get("function")
+                .and_then(|function| function.get("strict"))
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert!(encoded.get("strict").is_none());
     }
 
     #[test]
@@ -2238,6 +2559,43 @@ mod tests {
         assert_eq!(starts, vec![0, 1]);
         assert_eq!(stops, vec![0, 1]);
         assert_eq!(deltas, vec![0, 1]);
+    }
+
+    #[test]
+    fn parse_sse_chunk_handles_empty_choices_usage_chunk() {
+        let chunk = json!({
+            "choices": [],
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 20,
+                "prompt_cache_hit_tokens": 70,
+                "prompt_cache_miss_tokens": 30
+            }
+        });
+
+        let mut content_index = 0;
+        let mut text_started = false;
+        let mut thinking_started = false;
+        let mut tool_indices: std::collections::HashMap<u32, u32> =
+            std::collections::HashMap::new();
+        let events = parse_sse_chunk(
+            &chunk,
+            &mut content_index,
+            &mut text_started,
+            &mut thinking_started,
+            &mut tool_indices,
+            false,
+        );
+
+        let StreamEvent::MessageDelta {
+            usage: Some(usage), ..
+        } = &events[0]
+        else {
+            panic!("expected usage delta");
+        };
+        assert_eq!(usage.input_tokens, 100);
+        assert_eq!(usage.prompt_cache_hit_tokens, Some(70));
+        assert_eq!(usage.prompt_cache_miss_tokens, Some(30));
     }
 
     #[test]
@@ -2513,6 +2871,25 @@ mod tests {
                 }
             ]
         );
+    }
+
+    #[test]
+    fn parse_usage_reads_deepseek_cache_and_reasoning_tokens() {
+        let usage = parse_usage(Some(&json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "prompt_cache_hit_tokens": 70,
+            "prompt_cache_miss_tokens": 30,
+            "completion_tokens_details": {
+                "reasoning_tokens": 12
+            }
+        })));
+
+        assert_eq!(usage.input_tokens, 100);
+        assert_eq!(usage.output_tokens, 20);
+        assert_eq!(usage.prompt_cache_hit_tokens, Some(70));
+        assert_eq!(usage.prompt_cache_miss_tokens, Some(30));
+        assert_eq!(usage.reasoning_tokens, Some(12));
     }
 
     #[test]

@@ -57,7 +57,7 @@ impl TurnContext {
             usage: Usage {
                 input_tokens: 0,
                 output_tokens: 0,
-                server_tool_use: None,
+                ..Usage::default()
             },
         }
     }
@@ -94,6 +94,25 @@ impl TurnContext {
     pub fn add_usage(&mut self, usage: &Usage) {
         self.usage.input_tokens += usage.input_tokens;
         self.usage.output_tokens += usage.output_tokens;
+        self.usage.prompt_cache_hit_tokens = add_optional_usage(
+            self.usage.prompt_cache_hit_tokens,
+            usage.prompt_cache_hit_tokens,
+        );
+        self.usage.prompt_cache_miss_tokens = add_optional_usage(
+            self.usage.prompt_cache_miss_tokens,
+            usage.prompt_cache_miss_tokens,
+        );
+        self.usage.reasoning_tokens =
+            add_optional_usage(self.usage.reasoning_tokens, usage.reasoning_tokens);
+    }
+}
+
+fn add_optional_usage(total: Option<u32>, delta: Option<u32>) -> Option<u32> {
+    match (total, delta) {
+        (Some(total), Some(delta)) => Some(total.saturating_add(delta)),
+        (None, Some(delta)) => Some(delta),
+        (Some(total), None) => Some(total),
+        (None, None) => None,
     }
 }
 

@@ -15,14 +15,24 @@ use crate::hooks::HooksConfig;
 
 pub const DEFAULT_MAX_SUBAGENTS: usize = 5;
 pub const MAX_SUBAGENTS: usize = 20;
-pub const DEFAULT_TEXT_MODEL: &str = "deepseek-reasoner";
+pub const DEFAULT_TEXT_MODEL: &str = "deepseek-v4-pro";
 const API_KEYRING_SENTINEL: &str = "__KEYRING__";
-pub const COMMON_DEEPSEEK_MODELS: &[&str] = &["deepseek-chat", "deepseek-reasoner"];
+pub const COMMON_DEEPSEEK_MODELS: &[&str] = &[
+    "deepseek-v4-pro",
+    "deepseek-v4-flash",
+    "deepseek-chat",
+    "deepseek-reasoner",
+];
 
 /// Canonicalize common model aliases to stable DeepSeek IDs.
+///
+/// Legacy `deepseek-chat` / `deepseek-reasoner` remain as silent aliases: they
+/// resolve to themselves for API compatibility and are priced as `deepseek-v4-flash`.
 #[must_use]
 pub fn canonical_model_name(model: &str) -> Option<&'static str> {
     match model.trim().to_ascii_lowercase().as_str() {
+        "deepseek-v4-pro" | "deepseek-v4pro" => Some("deepseek-v4-pro"),
+        "deepseek-v4-flash" | "deepseek-v4flash" => Some("deepseek-v4-flash"),
         "deepseek-chat" | "deepseek-v3" | "deepseek-v3.2" => Some("deepseek-chat"),
         "deepseek-reasoner" | "deepseek-r1" => Some("deepseek-reasoner"),
         _ => None,
@@ -123,6 +133,9 @@ pub struct Config {
     pub api_key: Option<String>,
     pub base_url: Option<String>,
     pub default_text_model: Option<String>,
+    /// DeepSeek reasoning-effort tier: `"off" | "low" | "medium" | "high" | "max"`.
+    /// Defaults to `"max"` at runtime if unset.
+    pub reasoning_effort: Option<String>,
     pub tools_file: Option<String>,
     pub skills_dir: Option<String>,
     pub mcp_config_path: Option<String>,
@@ -215,7 +228,7 @@ impl Config {
             && normalize_model_name(model).is_none()
         {
             anyhow::bail!(
-                "Invalid default_text_model '{model}': expected a DeepSeek model ID (for example: deepseek-chat, deepseek-reasoner, deepseek-v4)."
+                "Invalid default_text_model '{model}': expected a DeepSeek model ID (for example: deepseek-v4-pro, deepseek-v4-flash)."
             );
         }
         if let Some(policy) = self.approval_policy.as_deref() {
@@ -371,6 +384,12 @@ impl Config {
         self.max_subagents
             .unwrap_or(DEFAULT_MAX_SUBAGENTS)
             .clamp(1, MAX_SUBAGENTS)
+    }
+
+    /// Return the configured DeepSeek reasoning-effort tier, if any.
+    #[must_use]
+    pub fn reasoning_effort(&self) -> Option<&str> {
+        self.reasoning_effort.as_deref()
     }
 
     /// Get hooks configuration, returning default if not configured.
@@ -566,6 +585,11 @@ fn apply_env_overrides(config: &mut Config) {
     if let Ok(value) = std::env::var("DEEPSEEK_BASE_URL") {
         config.base_url = Some(value);
     }
+    if let Ok(value) =
+        std::env::var("DEEPSEEK_MODEL").or_else(|_| std::env::var("DEEPSEEK_DEFAULT_TEXT_MODEL"))
+    {
+        config.default_text_model = Some(value);
+    }
     if let Ok(value) = std::env::var("DEEPSEEK_SKILLS_DIR") {
         config.skills_dir = Some(value);
     }
@@ -753,6 +777,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         api_key: override_cfg.api_key.or(base.api_key),
         base_url: override_cfg.base_url.or(base.base_url),
         default_text_model: override_cfg.default_text_model.or(base.default_text_model),
+        reasoning_effort: override_cfg.reasoning_effort.or(base.reasoning_effort),
         tools_file: override_cfg.tools_file.or(base.tools_file),
         skills_dir: override_cfg.skills_dir.or(base.skills_dir),
         mcp_config_path: override_cfg.mcp_config_path.or(base.mcp_config_path),
@@ -926,6 +951,11 @@ api_key = "{key_to_write}"
 
 # Default model
 default_text_model = "{default_model}"
+
+# Thinking mode (DeepSeek V4 reasoning effort):
+# "off" | "low" | "medium" | "high" | "max"
+# Shift+Tab in the TUI cycles between off / high / max.
+reasoning_effort = "max"
 "#,
             default_model = DEFAULT_TEXT_MODEL
         )
@@ -1007,6 +1037,8 @@ mod tests {
         userprofile: Option<OsString>,
         deepseek_config_path: Option<OsString>,
         deepseek_api_key: Option<OsString>,
+        deepseek_model: Option<OsString>,
+        deepseek_default_text_model: Option<OsString>,
     }
 
     impl EnvGuard {
@@ -1018,18 +1050,24 @@ mod tests {
             let userprofile_prev = env::var_os("USERPROFILE");
             let deepseek_config_prev = env::var_os("DEEPSEEK_CONFIG_PATH");
             let api_key_prev = env::var_os("DEEPSEEK_API_KEY");
+            let model_prev = env::var_os("DEEPSEEK_MODEL");
+            let default_text_model_prev = env::var_os("DEEPSEEK_DEFAULT_TEXT_MODEL");
             // Safety: test-only environment mutation guarded by a global mutex.
             unsafe {
                 env::set_var("HOME", &home_str);
                 env::set_var("USERPROFILE", &home_str);
                 env::set_var("DEEPSEEK_CONFIG_PATH", &config_str);
                 env::remove_var("DEEPSEEK_API_KEY");
+                env::remove_var("DEEPSEEK_MODEL");
+                env::remove_var("DEEPSEEK_DEFAULT_TEXT_MODEL");
             }
             Self {
                 home: home_prev,
                 userprofile: userprofile_prev,
                 deepseek_config_path: deepseek_config_prev,
                 deepseek_api_key: api_key_prev,
+                deepseek_model: model_prev,
+                deepseek_default_text_model: default_text_model_prev,
             }
         }
     }
@@ -1042,6 +1080,11 @@ mod tests {
                 Self::restore_var("USERPROFILE", self.userprofile.take());
                 Self::restore_var("DEEPSEEK_CONFIG_PATH", self.deepseek_config_path.take());
                 Self::restore_var("DEEPSEEK_API_KEY", self.deepseek_api_key.take());
+                Self::restore_var("DEEPSEEK_MODEL", self.deepseek_model.take());
+                Self::restore_var(
+                    "DEEPSEEK_DEFAULT_TEXT_MODEL",
+                    self.deepseek_default_text_model.take(),
+                );
             }
         }
     }
@@ -1278,6 +1321,31 @@ mod tests {
             ..Default::default()
         };
         config.validate()?;
+        Ok(())
+    }
+
+    #[test]
+    fn deepseek_model_env_overrides_default_text_model() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-model-env-test-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        // Safety: test-only environment mutation guarded by a global mutex.
+        unsafe {
+            env::set_var("DEEPSEEK_MODEL", "deepseek-chat");
+        }
+
+        let config = Config::load(None, None)?;
+        assert_eq!(config.default_text_model.as_deref(), Some("deepseek-chat"));
         Ok(())
     }
 }

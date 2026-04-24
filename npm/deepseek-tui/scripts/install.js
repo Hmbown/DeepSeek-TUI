@@ -150,7 +150,7 @@ async function ensureBinary(targetPath, assetName, version, repo, checksums) {
     }
   }
   const url = releaseAssetUrl(assetName, version, repo);
-  const destination = `${targetPath}.download`;
+  const destination = `${targetPath}.${process.pid}.${Date.now()}.download`;
   await download(url, destination);
   try {
     await verifyChecksum(destination, assetName, checksums);

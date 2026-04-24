@@ -767,7 +767,7 @@ impl TaskManager {
             .values()
             .map(TaskSummary::from)
             .collect::<Vec<_>>();
-        items.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        items.sort_by_key(|i| std::cmp::Reverse(i.created_at));
         if let Some(limit) = limit {
             items.truncate(limit);
         }
@@ -1483,7 +1483,7 @@ mod tests {
             data_dir: root,
             worker_count: 1,
             default_workspace: PathBuf::from("."),
-            default_model: "deepseek-v3.2".to_string(),
+            default_model: "deepseek-v4-flash".to_string(),
             default_mode: "agent".to_string(),
             allow_shell: false,
             trust_mode: false,

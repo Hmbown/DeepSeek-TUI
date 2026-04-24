@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- DeepSeek V4 thinking-mode tool calls now preserve prior assistant `reasoning_content` whenever a tool call is replayed, matching DeepSeek's multi-turn contract and avoiding HTTP 400 rejections on later turns.
+- Raw Chat Completions requests now send DeepSeek's top-level `thinking` parameter instead of the OpenAI SDK-only `extra_body` wrapper.
+- Context-window budgeting now treats legacy `deepseek-chat` / `deepseek-reasoner` aliases as V4 Flash's 1M-token context window.
+- npm wrapper first-run downloads now use process-unique temp files so concurrent `deepseek` / `deepseek-tui` invocations do not race on `*.download` files.
+
+## [0.4.0] - 2026-04-23
+
+### Added
+- **DeepSeek V4 support**: `deepseek-v4-pro` (flagship) and `deepseek-v4-flash` (fast/cheap) are now first-class model IDs with 1M context windows.
+- **Reasoning-effort tier**: new `reasoning_effort` config field (`off | low | medium | high | max`) mapped to DeepSeek's `reasoning_effort` + `thinking` request fields. Defaults to `max`.
+- **Shift+Tab cycles reasoning-effort** through the three behaviorally distinct tiers (`off → high → max`). The current tier is shown as a ⚡ chip in the header.
+- Per-model pricing table: `deepseek-v4-pro` priced at $0.145/$1.74/$3.48 per 1M tokens (cache-hit/miss/output); `deepseek-v4-flash` and legacy aliases at $0.028/$0.14/$0.28.
+
+### Changed
+- **Default model flipped to `deepseek-v4-pro`** (from `deepseek-reasoner`).
+- `deepseek-chat` / `deepseek-reasoner` remain as silent aliases of `deepseek-v4-flash` for API compatibility; priced identically.
+- **Context compaction**: raised `MAX_COMPACTION_MESSAGE_THRESHOLD` from 150 → 500 so 1M-context models can use proportionally more history before message-count compaction. Token-based compaction still triggers at 80% of the window and scales automatically.
+- Cycling modes is now Tab-only; Shift+Tab is repurposed for reasoning-effort (reverse-mode cycle was low-value with only three modes).
+- Updated help/hint strings, validator error messages, and the model picker to reference V4 IDs.
+
+### Fixed
+- `requires_reasoning_content` now recognizes `deepseek-v4*` so thinking streams render correctly on V4 models.
+
 ## [0.3.33] - 2026-04-11
 
 ### Changed

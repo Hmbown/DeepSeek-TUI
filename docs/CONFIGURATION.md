@@ -15,6 +15,11 @@ Overrides:
 
 If both are set, `--config` wins. Environment variable overrides are applied after the file is loaded.
 
+The `deepseek` facade and `deepseek-tui` binary share the same config file for
+DeepSeek auth and model defaults. `deepseek login --api-key ...` writes the
+root `api_key` field that `deepseek-tui` reads directly, and `deepseek --model
+deepseek-chat` is forwarded to the TUI as `DEEPSEEK_MODEL`.
+
 To bootstrap MCP and skills directories at their resolved paths, run `deepseek-tui setup`.
 To only scaffold MCP, run `deepseek-tui mcp init`.
 
@@ -30,7 +35,7 @@ You can define multiple profiles in the same file:
 
 ```toml
 api_key = "PERSONAL_KEY"
-default_text_model = "deepseek-reasoner"
+default_text_model = "deepseek-v4-pro"
 
 [profiles.work]
 api_key = "WORK_KEY"
@@ -50,6 +55,7 @@ These override config values:
 
 - `DEEPSEEK_API_KEY`
 - `DEEPSEEK_BASE_URL`
+- `DEEPSEEK_MODEL` or `DEEPSEEK_DEFAULT_TEXT_MODEL`
 - `DEEPSEEK_SKILLS_DIR`
 - `DEEPSEEK_MCP_CONFIG`
 - `DEEPSEEK_NOTES_PATH`
@@ -123,8 +129,9 @@ If you are upgrading from older releases:
 ### Core keys (used by the TUI/engine)
 
 - `api_key` (string, required): must be non-empty (or set `DEEPSEEK_API_KEY`).
-- `base_url` (string, optional): defaults to `https://api.deepseek.com` (OpenAI-compatible Responses API).
-- `default_text_model` (string, optional): defaults to `deepseek-reasoner`. Any valid DeepSeek model ID is accepted (common IDs: `deepseek-reasoner`, `deepseek-chat`). Use `/models` to discover live IDs from your configured endpoint.
+- `base_url` (string, optional): defaults to `https://api.deepseek.com` for DeepSeek's OpenAI-compatible Chat Completions API. `https://api.deepseek.com/v1` is also accepted for SDK compatibility; use `https://api.deepseek.com/beta` only for DeepSeek beta features such as strict tool mode, chat prefix completion, and FIM completion.
+- `default_text_model` (string, optional): defaults to `deepseek-v4-pro`. Current public DeepSeek IDs are `deepseek-v4-pro` and `deepseek-v4-flash`, both with 1M context windows and thinking mode enabled by default. Legacy `deepseek-chat` and `deepseek-reasoner` remain compatibility aliases for `deepseek-v4-flash`. Use `/models` or `deepseek models` to discover live IDs from your configured endpoint. `DEEPSEEK_MODEL` overrides this for a single process.
+- `reasoning_effort` (string, optional): `off`, `low`, `medium`, `high`, or `max`; defaults to the configured UI tier. `off` sends `thinking = {"type": "disabled"}`. `low` and `medium` are normalized to `high`; `max` sends `reasoning_effort = "max"`.
 - `allow_shell` (bool, optional): defaults to `true` (sandboxed).
 - `approval_policy` (string, optional): `on-request`, `untrusted`, or `never`. Runtime `approval_mode` editing in `/config` also accepts `on-request` and `untrusted` aliases.
 - `sandbox_mode` (string, optional): `read-only`, `workspace-write`, `danger-full-access`, `external-sandbox`.

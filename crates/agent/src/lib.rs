@@ -30,18 +30,24 @@ impl Default for ModelRegistry {
     fn default() -> Self {
         let models = vec![
             ModelInfo {
-                id: "deepseek-reasoner".to_string(),
+                id: "deepseek-v4-pro".to_string(),
                 provider: ProviderKind::Deepseek,
-                aliases: vec!["deepseek-r1".to_string()],
+                aliases: vec![],
                 supports_tools: true,
                 supports_reasoning: true,
             },
             ModelInfo {
-                id: "deepseek-chat".to_string(),
+                id: "deepseek-v4-flash".to_string(),
                 provider: ProviderKind::Deepseek,
-                aliases: vec!["deepseek-v3".to_string(), "deepseek-v3.2".to_string()],
+                aliases: vec![
+                    "deepseek-chat".to_string(),
+                    "deepseek-reasoner".to_string(),
+                    "deepseek-r1".to_string(),
+                    "deepseek-v3".to_string(),
+                    "deepseek-v3.2".to_string(),
+                ],
                 supports_tools: true,
-                supports_reasoning: false,
+                supports_reasoning: true,
             },
             ModelInfo {
                 id: "gpt-4.1".to_string(),
@@ -112,13 +118,13 @@ impl ModelRegistry {
         }
 
         let final_fallback = self.models.first().cloned().unwrap_or(ModelInfo {
-            id: "deepseek-reasoner".to_string(),
+            id: "deepseek-v4-pro".to_string(),
             provider: ProviderKind::Deepseek,
             aliases: Vec::new(),
             supports_tools: true,
             supports_reasoning: true,
         });
-        fallback_chain.push("global_default:deepseek-reasoner".to_string());
+        fallback_chain.push("global_default:deepseek-v4-pro".to_string());
         ModelResolution {
             requested: requested.map(ToOwned::to_owned),
             resolved: final_fallback,

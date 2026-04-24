@@ -49,6 +49,81 @@ pub enum AppMode {
     Plan,
 }
 
+/// DeepSeek reasoning-effort tier, mirrored on ChatGPT/Claude effort pickers.
+///
+/// The config file accepts all five string values for forward-compat with
+/// providers that expose the full spectrum; DeepSeek currently collapses
+/// `Low`/`Medium` → `high` and `Max` → `max` at the API boundary. The
+/// keyboard cycler (Shift+Tab) walks only the three behaviorally distinct
+/// tiers: `Off` → `High` → `Max` → `Off`.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum ReasoningEffort {
+    Off,
+    Low,
+    Medium,
+    High,
+    #[default]
+    Max,
+}
+
+impl ReasoningEffort {
+    /// Parse a config-file string into an effort tier. Unknown values fall
+    /// back to the default (`Max`) rather than erroring out.
+    #[must_use]
+    pub fn from_setting(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "off" | "disabled" | "none" | "false" => Self::Off,
+            "low" | "minimal" => Self::Low,
+            "medium" | "mid" => Self::Medium,
+            "high" => Self::High,
+            "max" | "maximum" | "xhigh" => Self::Max,
+            _ => Self::default(),
+        }
+    }
+
+    /// Canonical lowercase label used for config storage and UI hints.
+    #[must_use]
+    pub fn as_setting(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Max => "max",
+        }
+    }
+
+    /// Short label for the header chip.
+    #[must_use]
+    pub fn short_label(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Low => "low",
+            Self::Medium => "med",
+            Self::High => "high",
+            Self::Max => "max",
+        }
+    }
+
+    /// Value forwarded to the engine/client. `None` means "provider default"
+    /// (for `Off` we still emit `"off"` so the client can inject
+    /// `thinking = {"type": "disabled"}`).
+    #[must_use]
+    pub fn api_value(self) -> Option<&'static str> {
+        Some(self.as_setting())
+    }
+
+    /// Cycle through the three behaviorally distinct tiers.
+    #[must_use]
+    pub fn cycle_next(self) -> Self {
+        match self {
+            Self::Off => Self::High,
+            Self::Low | Self::Medium | Self::High => Self::Max,
+            Self::Max => Self::Off,
+        }
+    }
+}
+
 /// Sidebar content focus mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SidebarFocus {
@@ -302,6 +377,9 @@ pub struct App {
     /// Last status text already promoted from `status_message` into toast state.
     pub last_status_message_seen: Option<String>,
     pub model: String,
+    /// Current reasoning-effort tier for DeepSeek thinking mode.
+    /// Cycled via Shift+Tab; initialized from config at startup.
+    pub reasoning_effort: ReasoningEffort,
     pub workspace: PathBuf,
     pub skills_dir: PathBuf,
     pub use_alt_screen: bool,
@@ -415,6 +493,10 @@ pub struct App {
     pub last_prompt_tokens: Option<u32>,
     /// Last completion token usage
     pub last_completion_tokens: Option<u32>,
+    /// DeepSeek context-cache hit tokens from the last API call.
+    pub last_prompt_cache_hit_tokens: Option<u32>,
+    /// DeepSeek context-cache miss tokens from the last API call.
+    pub last_prompt_cache_miss_tokens: Option<u32>,
     /// Cached git context snapshot for the footer.
     pub workspace_context: Option<String>,
     /// Timestamp for cached workspace context.
@@ -593,6 +675,11 @@ impl App {
             sticky_status: None,
             last_status_message_seen: None,
             model,
+            reasoning_effort: config
+                .reasoning_effort()
+                .map_or_else(ReasoningEffort::default, |s| {
+                    ReasoningEffort::from_setting(s)
+                }),
             workspace,
             skills_dir,
             use_alt_screen,
@@ -673,6 +760,8 @@ impl App {
             runtime_turn_status: None,
             last_prompt_tokens: None,
             last_completion_tokens: None,
+            last_prompt_cache_hit_tokens: None,
+            last_prompt_cache_miss_tokens: None,
             workspace_context: None,
             workspace_context_refreshed_at: None,
             task_panel: Vec::new(),
@@ -763,6 +852,7 @@ impl App {
     }
 
     /// Cycle through modes in reverse: YOLO -> Agent -> Plan
+    #[allow(dead_code)]
     pub fn cycle_mode_reverse(&mut self) {
         let next = match self.mode {
             AppMode::Agent => AppMode::Plan,
@@ -770,6 +860,18 @@ impl App {
             AppMode::Plan => AppMode::Yolo,
         };
         let _ = self.set_mode(next);
+    }
+
+    /// Cycle reasoning-effort through the three behaviorally distinct tiers:
+    /// `Off` → `High` → `Max` → `Off`.
+    pub fn cycle_effort(&mut self) {
+        self.reasoning_effort = self.reasoning_effort.cycle_next();
+        self.needs_redraw = true;
+        self.push_status_toast(
+            format!("Thinking: {}", self.reasoning_effort.short_label()),
+            StatusToastLevel::Info,
+            Some(1_500),
+        );
     }
 
     /// Execute hooks for a specific event with the given context
@@ -1538,10 +1640,10 @@ mod tests {
     fn test_update_model_compaction_budget() {
         let mut app = App::new(test_options(false), &Config::default());
         let initial_threshold = app.compact_threshold;
-        app.model = "deepseek-reasoner".to_string();
+        app.model = "deepseek-v3.2-128k".to_string();
         app.update_model_compaction_budget();
         // Threshold may have changed based on model
-        // deepseek-reasoner has 128k context, so threshold should be higher
+        // Explicit 128k DeepSeek model IDs have a higher threshold than unknown models.
         assert!(app.compact_threshold >= initial_threshold);
     }
 

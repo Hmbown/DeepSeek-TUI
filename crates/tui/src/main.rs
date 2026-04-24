@@ -1264,6 +1264,7 @@ async fn test_api_connectivity(config: &Config) -> Result<String> {
         tool_choice: None,
         metadata: None,
         thinking: None,
+        reasoning_effort: None,
         stream: Some(false),
         temperature: None,
         top_p: None,
@@ -1548,6 +1549,7 @@ Provide findings ordered by severity with file references, then open questions, 
         tool_choice: None,
         metadata: None,
         thinking: None,
+        reasoning_effort: None,
         stream: Some(false),
         temperature: Some(0.2),
         top_p: Some(0.9),
@@ -2175,6 +2177,7 @@ async fn run_one_shot(config: &Config, model: &str, prompt: &str) -> Result<()> 
         tool_choice: None,
         metadata: None,
         thinking: None,
+        reasoning_effort: None,
         stream: Some(false),
         temperature: None,
         top_p: None,
@@ -2213,6 +2216,7 @@ async fn run_one_shot_json(config: &Config, model: &str, prompt: &str) -> Result
         tool_choice: None,
         metadata: None,
         thinking: None,
+        reasoning_effort: None,
         stream: Some(false),
         temperature: Some(0.2),
         top_p: Some(0.9),
@@ -2293,6 +2297,7 @@ async fn run_exec_agent(
             prompt,
             mode,
             model,
+            None,
             auto_approve || config.allow_shell(),
             trust_mode,
             auto_approve,
@@ -2343,25 +2348,19 @@ async fn run_exec_agent(
                 }
                 ends_with_newline = content.ends_with('\n');
             }
-            Event::MessageComplete { .. } => {
-                if !json_output && !ends_with_newline {
-                    println!();
+            Event::MessageComplete { .. } if !json_output && !ends_with_newline => {
+                println!();
+            }
+            Event::ToolCallStarted { name, input, .. } if !json_output => {
+                let summary = summarize_tool_args(&input);
+                if let Some(summary) = summary {
+                    eprintln!("tool: {name} ({summary})");
+                } else {
+                    eprintln!("tool: {name}");
                 }
             }
-            Event::ToolCallStarted { name, input, .. } => {
-                if !json_output {
-                    let summary = summarize_tool_args(&input);
-                    if let Some(summary) = summary {
-                        eprintln!("tool: {name} ({summary})");
-                    } else {
-                        eprintln!("tool: {name}");
-                    }
-                }
-            }
-            Event::ToolCallProgress { id, output } => {
-                if !json_output {
-                    eprintln!("tool {id}: {}", summarize_tool_output(&output));
-                }
+            Event::ToolCallProgress { id, output } if !json_output => {
+                eprintln!("tool {id}: {}", summarize_tool_output(&output));
             }
             Event::ToolCallComplete { name, result, .. } => match result {
                 Ok(output) => {

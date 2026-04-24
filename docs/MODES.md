@@ -73,6 +73,7 @@ See `MCP.md`.
 Run `deepseek --help` for the canonical list. Common flags:
 
 - `-p, --prompt <TEXT>`: one-shot prompt mode (prints and exits)
+- `--model <MODEL>`: when using the `deepseek` facade, forward a DeepSeek model override to the TUI
 - `--workspace <DIR>`: workspace root for file tools
 - `--yolo`: start in YOLO mode
 - `-r, --resume <ID|PREFIX|latest>`: resume a saved session

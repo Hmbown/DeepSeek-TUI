@@ -16,6 +16,9 @@ pub enum Op {
         content: String,
         mode: AppMode,
         model: String,
+        /// Reasoning-effort tier: `"off" | "low" | "medium" | "high" | "max"`.
+        /// `None` lets the provider apply its default.
+        reasoning_effort: Option<String>,
         allow_shell: bool,
         trust_mode: bool,
         auto_approve: bool,
@@ -72,6 +75,7 @@ impl Op {
         content: impl Into<String>,
         mode: AppMode,
         model: impl Into<String>,
+        reasoning_effort: Option<String>,
         allow_shell: bool,
         trust_mode: bool,
         auto_approve: bool,
@@ -80,6 +84,7 @@ impl Op {
             content: content.into(),
             mode,
             model: model.into(),
+            reasoning_effort,
             allow_shell,
             trust_mode,
             auto_approve,

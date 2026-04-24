@@ -148,6 +148,8 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
                 app.total_conversation_tokens = app.total_tokens;
                 app.last_prompt_tokens = None;
                 app.last_completion_tokens = None;
+                app.last_prompt_cache_hit_tokens = None;
+                app.last_prompt_cache_miss_tokens = None;
                 if let Some(prompt) = saved.system_prompt {
                     app.system_prompt = Some(SystemPrompt::Text(prompt));
                 }
@@ -521,16 +523,16 @@ async fn run_event_loop(
                             app.total_conversation_tokens.saturating_add(turn_tokens);
                         app.last_prompt_tokens = Some(usage.input_tokens);
                         app.last_completion_tokens = Some(usage.output_tokens);
+                        app.last_prompt_cache_hit_tokens = usage.prompt_cache_hit_tokens;
+                        app.last_prompt_cache_miss_tokens = usage.prompt_cache_miss_tokens;
                         if let Some(error) = error {
                             app.status_message = Some(format!("Turn failed: {error}"));
                         }
 
                         // Update session cost
-                        if let Some(turn_cost) = crate::pricing::calculate_turn_cost(
-                            &app.model,
-                            usage.input_tokens,
-                            usage.output_tokens,
-                        ) {
+                        if let Some(turn_cost) =
+                            crate::pricing::calculate_turn_cost_from_usage(&app.model, &usage)
+                        {
                             app.session_cost += turn_cost;
                         }
 
@@ -907,13 +909,11 @@ async fn run_event_loop(
                         let _ = engine_handle.send(Op::Shutdown).await;
                         return Ok(());
                     }
-                    KeyCode::Esc => {
-                        if app.onboarding == OnboardingState::ApiKey {
-                            app.onboarding = OnboardingState::Welcome;
-                            app.api_key_input.clear();
-                            app.api_key_cursor = 0;
-                            app.status_message = None;
-                        }
+                    KeyCode::Esc if app.onboarding == OnboardingState::ApiKey => {
+                        app.onboarding = OnboardingState::Welcome;
+                        app.api_key_input.clear();
+                        app.api_key_cursor = 0;
+                        app.status_message = None;
                     }
                     KeyCode::Enter => match app.onboarding {
                         OnboardingState::Welcome => {
@@ -1068,20 +1068,26 @@ async fn run_event_loop(
 
             // Global keybindings
             match key.code {
-                KeyCode::Enter if app.input.is_empty() && app.transcript_selection.is_active() => {
-                    if open_pager_for_selection(app) {
-                        continue;
-                    }
+                KeyCode::Enter
+                    if app.input.is_empty()
+                        && app.transcript_selection.is_active()
+                        && open_pager_for_selection(app) =>
+                {
+                    continue;
                 }
-                KeyCode::Char('l') if key.modifiers.is_empty() && app.input.is_empty() => {
-                    if open_pager_for_last_message(app) {
-                        continue;
-                    }
+                KeyCode::Char('l')
+                    if key.modifiers.is_empty()
+                        && app.input.is_empty()
+                        && open_pager_for_last_message(app) =>
+                {
+                    continue;
                 }
-                KeyCode::Char('v') if key.modifiers.is_empty() && app.input.is_empty() => {
-                    if open_tool_details_pager(app) {
-                        continue;
-                    }
+                KeyCode::Char('v')
+                    if key.modifiers.is_empty()
+                        && app.input.is_empty()
+                        && open_tool_details_pager(app) =>
+                {
+                    continue;
                 }
                 KeyCode::Char('1') if key.modifiers.contains(KeyModifiers::ALT) => {
                     if key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -1169,11 +1175,11 @@ async fn run_event_loop(
                         return Ok(());
                     }
                 }
-                KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    if app.input.is_empty() {
-                        let _ = engine_handle.send(Op::Shutdown).await;
-                        return Ok(());
-                    }
+                KeyCode::Char('d')
+                    if key.modifiers.contains(KeyModifiers::CONTROL) && app.input.is_empty() =>
+                {
+                    let _ = engine_handle.send(Op::Shutdown).await;
+                    return Ok(());
                 }
                 KeyCode::Esc => match next_escape_action(app, slash_menu_open) {
                     EscapeAction::CloseSlashMenu => app.close_slash_menu(),
@@ -1193,10 +1199,12 @@ async fn run_event_loop(
                 KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => {
                     app.scroll_up(3);
                 }
-                KeyCode::Up if key.modifiers.is_empty() && slash_menu_open => {
-                    if app.slash_menu_selected > 0 {
-                        app.slash_menu_selected = app.slash_menu_selected.saturating_sub(1);
-                    }
+                KeyCode::Up
+                    if key.modifiers.is_empty()
+                        && slash_menu_open
+                        && app.slash_menu_selected > 0 =>
+                {
+                    app.slash_menu_selected = app.slash_menu_selected.saturating_sub(1);
                 }
                 KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => {
                     app.scroll_down(3);
@@ -1224,7 +1232,7 @@ async fn run_event_loop(
                     app.cycle_mode();
                 }
                 KeyCode::BackTab => {
-                    app.cycle_mode_reverse();
+                    app.cycle_effort();
                 }
                 KeyCode::Char('g')
                     if key.modifiers.is_empty() && app.input.is_empty() && !slash_menu_open =>
@@ -1243,18 +1251,20 @@ async fn run_event_loop(
                     app.scroll_to_bottom();
                 }
                 KeyCode::Char('[')
-                    if key.modifiers.is_empty() && app.input.is_empty() && !slash_menu_open =>
+                    if key.modifiers.is_empty()
+                        && app.input.is_empty()
+                        && !slash_menu_open
+                        && !jump_to_adjacent_tool_cell(app, SearchDirection::Backward) =>
                 {
-                    if !jump_to_adjacent_tool_cell(app, SearchDirection::Backward) {
-                        app.status_message = Some("No previous tool output".to_string());
-                    }
+                    app.status_message = Some("No previous tool output".to_string());
                 }
                 KeyCode::Char(']')
-                    if key.modifiers.is_empty() && app.input.is_empty() && !slash_menu_open =>
+                    if key.modifiers.is_empty()
+                        && app.input.is_empty()
+                        && !slash_menu_open
+                        && !jump_to_adjacent_tool_cell(app, SearchDirection::Forward) =>
                 {
-                    if !jump_to_adjacent_tool_cell(app, SearchDirection::Forward) {
-                        app.status_message = Some("No next tool output".to_string());
-                    }
+                    app.status_message = Some("No next tool output".to_string());
                 }
                 // Input handling
                 KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -1861,6 +1871,8 @@ async fn dispatch_user_message(
     }
     app.last_prompt_tokens = None;
     app.last_completion_tokens = None;
+    app.last_prompt_cache_hit_tokens = None;
+    app.last_prompt_cache_miss_tokens = None;
     // Persist immediately so abrupt termination can recover this in-flight turn.
     persist_checkpoint(app);
 
@@ -1869,6 +1881,7 @@ async fn dispatch_user_message(
             content,
             mode: app.mode,
             model: app.model.clone(),
+            reasoning_effort: app.reasoning_effort.api_value().map(str::to_string),
             allow_shell: app.allow_shell,
             trust_mode: app.trust_mode,
             auto_approve: app.mode == AppMode::Yolo,
@@ -2324,6 +2337,7 @@ fn render(f: &mut Frame, app: &mut App) {
             .and_then(|value| value.to_str())
             .filter(|value| !value.is_empty())
             .unwrap_or("workspace");
+        let effort_label = app.reasoning_effort.short_label();
         let header_data = HeaderData::new(
             app.mode,
             &app.model,
@@ -2336,7 +2350,8 @@ fn render(f: &mut Frame, app: &mut App) {
             sanitized_context_window,
             app.session_cost,
             sanitized_prompt_tokens,
-        );
+        )
+        .with_reasoning_effort(Some(effort_label));
         let header_widget = HeaderWidget::new(header_data);
         let buf = f.buffer_mut();
         header_widget.render(chunks[0], buf);
@@ -2966,6 +2981,8 @@ fn apply_loaded_session(app: &mut App, session: &SavedSession) {
     app.total_conversation_tokens = app.total_tokens;
     app.last_prompt_tokens = None;
     app.last_completion_tokens = None;
+    app.last_prompt_cache_hit_tokens = None;
+    app.last_prompt_cache_miss_tokens = None;
     app.current_session_id = Some(session.metadata.id.clone());
     app.workspace_context = None;
     app.workspace_context_refreshed_at = None;
@@ -3180,6 +3197,7 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
 
 fn footer_auxiliary_spans(app: &App, max_width: usize) -> Vec<Span<'static>> {
     let context_spans = footer_context_spans(app);
+    let cache_spans = footer_cache_spans(app);
     let cost_spans = if app.session_cost > 0.001 {
         vec![Span::styled(
             format!("${:.2}", app.session_cost),
@@ -3190,6 +3208,20 @@ fn footer_auxiliary_spans(app: &App, max_width: usize) -> Vec<Span<'static>> {
     };
 
     let mut candidates = Vec::new();
+    if !context_spans.is_empty() && !cache_spans.is_empty() && !cost_spans.is_empty() {
+        let mut combined = context_spans.clone();
+        combined.push(Span::raw("  "));
+        combined.extend(cache_spans.clone());
+        combined.push(Span::raw("  "));
+        combined.extend(cost_spans.clone());
+        candidates.push(combined);
+    }
+    if !context_spans.is_empty() && !cache_spans.is_empty() {
+        let mut combined = context_spans.clone();
+        combined.push(Span::raw("  "));
+        combined.extend(cache_spans.clone());
+        candidates.push(combined);
+    }
     if !context_spans.is_empty() && !cost_spans.is_empty() {
         let mut combined = context_spans.clone();
         combined.push(Span::raw("  "));
@@ -3198,6 +3230,9 @@ fn footer_auxiliary_spans(app: &App, max_width: usize) -> Vec<Span<'static>> {
     }
     if !context_spans.is_empty() {
         candidates.push(context_spans);
+    }
+    if !cache_spans.is_empty() {
+        candidates.push(cache_spans);
     }
     if !cost_spans.is_empty() {
         candidates.push(cost_spans);
@@ -3208,6 +3243,23 @@ fn footer_auxiliary_spans(app: &App, max_width: usize) -> Vec<Span<'static>> {
         .into_iter()
         .find(|spans| spans_width(spans) <= max_width)
         .unwrap_or_default()
+}
+
+fn footer_cache_spans(app: &App) -> Vec<Span<'static>> {
+    let Some(hit_tokens) = app.last_prompt_cache_hit_tokens else {
+        return Vec::new();
+    };
+    let miss_tokens = app.last_prompt_cache_miss_tokens.unwrap_or(0);
+    let total = hit_tokens.saturating_add(miss_tokens);
+    if total == 0 {
+        return Vec::new();
+    }
+
+    let percent = (f64::from(hit_tokens) / f64::from(total) * 100.0).clamp(0.0, 100.0);
+    vec![Span::styled(
+        format!("cache {:.0}%", percent),
+        Style::default().fg(palette::TEXT_MUTED),
+    )]
 }
 
 fn footer_context_spans(app: &App) -> Vec<Span<'static>> {
@@ -3612,12 +3664,10 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
                 app.transcript_selection.head = Some(point);
             }
         }
-        MouseEventKind::Up(MouseButton::Left) => {
-            if app.transcript_selection.dragging {
-                app.transcript_selection.dragging = false;
-                if selection_has_content(app) {
-                    copy_active_selection(app);
-                }
+        MouseEventKind::Up(MouseButton::Left) if app.transcript_selection.dragging => {
+            app.transcript_selection.dragging = false;
+            if selection_has_content(app) {
+                copy_active_selection(app);
             }
         }
         _ => {}

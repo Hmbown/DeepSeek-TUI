@@ -462,7 +462,9 @@ fn estimate_tokens_for_message(message: &Message) -> usize {
         .iter()
         .map(|c| match c {
             ContentBlock::Text { text, .. } => text.len() / 4,
-            ContentBlock::Thinking { thinking } => thinking.len() / 4,
+            // Historical reasoning blocks are UI/session metadata for DeepSeek.
+            // They are only sent back during an in-progress tool-call round.
+            ContentBlock::Thinking { .. } => 0,
             ContentBlock::ToolUse { input, .. } => serde_json::to_string(input)
                 .map(|s| s.len() / 4)
                 .unwrap_or(100),
@@ -819,6 +821,7 @@ async fn create_summary(
         tool_choice: None,
         metadata: None,
         thinking: None,
+        reasoning_effort: None,
         stream: Some(false),
         temperature: Some(0.3),
         top_p: None,
@@ -859,15 +862,14 @@ fn extract_workflow_context(messages: &[Message], workspace: Option<&Path>) -> S
                         files_touched.push(path);
                     }
                 }
-                ContentBlock::Text { text, .. } => {
+                ContentBlock::Text { text, .. }
                     // Look for task/todo mentions
-                    if text.contains("TODO") || text.contains("task") || text.contains("need to") {
+                    if (text.contains("TODO") || text.contains("task") || text.contains("need to")) => {
                         let task = truncate_chars(text, 200).to_string();
                         if !tasks_identified.contains(&task) {
                             tasks_identified.push(task);
                         }
                     }
-                }
                 _ => {}
             }
         }

@@ -320,7 +320,7 @@ impl RuntimeThreadStore {
             }
             out.push(thread);
         }
-        out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        out.sort_by_key(|t| std::cmp::Reverse(t.updated_at));
         Ok(out)
     }
 
@@ -349,7 +349,7 @@ impl RuntimeThreadStore {
                 out.push(turn);
             }
         }
-        out.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        out.sort_by_key(|a| a.created_at);
         Ok(out)
     }
 
@@ -1044,6 +1044,7 @@ impl RuntimeThreadManager {
                 prompt,
                 mode,
                 model.clone(),
+                None,
                 allow_shell,
                 trust_mode,
                 auto_approve,
@@ -2638,7 +2639,7 @@ mod tests {
                         usage: Usage {
                             input_tokens: 10,
                             output_tokens: 12,
-                            server_tool_use: None,
+                            ..Usage::default()
                         },
                         status: TurnOutcomeStatus::Completed,
                         error: None,
@@ -2913,7 +2914,7 @@ mod tests {
                         usage: Usage {
                             input_tokens: 5,
                             output_tokens: 5,
-                            server_tool_use: None,
+                            ..Usage::default()
                         },
                         status: TurnOutcomeStatus::Completed,
                         error: None,
@@ -3144,7 +3145,7 @@ mod tests {
                 usage: Usage {
                     input_tokens: 0,
                     output_tokens: 0,
-                    server_tool_use: None,
+                    ..Usage::default()
                 },
                 status: TurnOutcomeStatus::Completed,
                 error: None,
@@ -3226,7 +3227,7 @@ mod tests {
                 usage: Usage {
                     input_tokens: 0,
                     output_tokens: 0,
-                    server_tool_use: None,
+                    ..Usage::default()
                 },
                 status: TurnOutcomeStatus::Completed,
                 error: None,
@@ -3286,7 +3287,7 @@ mod tests {
                         usage: Usage {
                             input_tokens: 8,
                             output_tokens: 9,
-                            server_tool_use: None,
+                            ..Usage::default()
                         },
                         status: TurnOutcomeStatus::Completed,
                         error: None,
@@ -3395,7 +3396,7 @@ mod tests {
                                 usage: Usage {
                                     input_tokens: 3,
                                     output_tokens: 3,
-                                    server_tool_use: None,
+                                    ..Usage::default()
                                 },
                                 status: TurnOutcomeStatus::Completed,
                                 error: None,
@@ -3425,7 +3426,7 @@ mod tests {
                                 usage: Usage {
                                     input_tokens: 1,
                                     output_tokens: 1,
-                                    server_tool_use: None,
+                                    ..Usage::default()
                                 },
                                 status: TurnOutcomeStatus::Completed,
                                 error: None,

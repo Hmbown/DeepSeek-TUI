@@ -83,14 +83,14 @@ impl SessionPickerView {
         match self.sort_mode {
             SortMode::Recent => {
                 self.sessions
-                    .sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+                    .sort_by_key(|s| std::cmp::Reverse(s.updated_at));
             }
             SortMode::Name => {
                 self.sessions.sort_by(|a, b| a.title.cmp(&b.title));
             }
             SortMode::Size => {
                 self.sessions
-                    .sort_by(|a, b| b.message_count.cmp(&a.message_count));
+                    .sort_by_key(|s| std::cmp::Reverse(s.message_count));
             }
         }
 

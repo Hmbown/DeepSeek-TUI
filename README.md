@@ -21,15 +21,18 @@ npm install -g deepseek-tui
 Start the TUI:
 
 ```bash
-deepseek-tui
+deepseek
 ```
 
 On first launch, it will prompt for your API key if one is not already configured.
+The package also installs `deepseek-tui`; both commands share the same
+`~/.deepseek/config.toml` for DeepSeek auth and default model settings.
 
 You can also set auth ahead of time with either of these:
 
 ```bash
-deepseek-tui login
+deepseek login --api-key "YOUR_DEEPSEEK_API_KEY"
+deepseek-tui login --api-key "YOUR_DEEPSEEK_API_KEY"
 DEEPSEEK_API_KEY="YOUR_DEEPSEEK_API_KEY" deepseek-tui
 ```
 
@@ -59,7 +62,7 @@ surface immediately.
 
 A terminal coding agent for DeepSeek models with file editing, shell execution, `web.run` browsing, git operations, session resume, and [MCP](https://modelcontextprotocol.io) server integration.
 
-Three visible modes (**Tab** / **Shift+Tab** to cycle):
+Three visible modes (**Tab** to cycle):
 
 | Mode | Behavior |
 |------|----------|
@@ -67,16 +70,35 @@ Three visible modes (**Tab** / **Shift+Tab** to cycle):
 | **Agent** | Default interactive mode with multi-step tool use |
 | **YOLO** | Auto-approve tools in a trusted workspace |
 
+**Shift+Tab** cycles the reasoning-effort tier for DeepSeek thinking mode:
+`off` → `high` → `max`. The current tier is shown as a ⚡ chip in the header.
+Set a default in config with `reasoning_effort = "max"` (or `off` / `low` /
+`medium` / `high`).
+
+## Models & pricing
+
+| Model | Thinking | Context | Input cache hit | Input cache miss | Output |
+|---|---|---|---|---|---|
+| `deepseek-v4-pro` | default | 1M | $0.145 / 1M | $1.74 / 1M | $3.48 / 1M |
+| `deepseek-v4-flash` | default | 1M | $0.028 / 1M | $0.14 / 1M | $0.28 / 1M |
+
+Legacy `deepseek-chat` and `deepseek-reasoner` remain as silent aliases for
+`deepseek-v4-flash` (priced identically). Pricing is per 1M tokens as published
+by DeepSeek and is subject to change.
+
 ## Usage
 
 ```bash
-deepseek-tui                                  # interactive TUI
-deepseek-tui -p "explain this in 2 sentences" # one-shot prompt
-deepseek-tui --yolo                           # YOLO mode
-deepseek-tui login                            # save API key to config
-deepseek-tui doctor                           # check setup
-deepseek-tui models                           # list available models
-deepseek-tui serve --http                     # HTTP/SSE API server
+deepseek                                      # interactive TUI
+deepseek "explain this in 2 sentences"        # one-shot prompt
+deepseek --model deepseek-v4-flash "summarize" # one-shot with model override
+deepseek --yolo                               # YOLO mode
+deepseek login --api-key "..."                # save API key to shared config
+deepseek doctor                               # check setup
+deepseek models                               # list live DeepSeek API models
+deepseek sessions                             # list saved sessions
+deepseek resume --last                        # resume the latest session
+deepseek serve --http                         # HTTP/SSE API server
 ```
 
 Controls: `F1` help, `Esc` backs out of the current action, `Ctrl+K` command palette.
@@ -85,7 +107,13 @@ Controls: `F1` help, `Esc` backs out of the current action, `Ctrl+K` command pal
 
 `~/.deepseek/config.toml` — see [config.example.toml](config.example.toml) for all options.
 
-Key environment overrides: `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`, `DEEPSEEK_PROFILE`.
+Key environment overrides: `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`,
+`DEEPSEEK_MODEL`, `DEEPSEEK_PROFILE`.
+
+The client targets DeepSeek's documented OpenAI-compatible Chat Completions API
+(`/chat/completions`). DeepSeek context caching is automatic; when the API
+returns cache hit/miss token fields, the TUI includes them in usage and cost
+tracking.
 
 Full reference: [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 

@@ -274,7 +274,7 @@ impl WorkingSet {
             .values()
             .map(|entry| (entry.path.clone(), score_entry(entry, self.turn)))
             .collect();
-        ranked.sort_by(|a, b| a.1.cmp(&b.1));
+        ranked.sort_by_key(|a| a.1);
 
         let to_remove = self.entries.len().saturating_sub(max_entries);
         for (path, _) in ranked.into_iter().take(to_remove) {

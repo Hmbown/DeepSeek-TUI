@@ -16,11 +16,28 @@ api_key = "YOUR_DEEPSEEK_API_KEY" # must be non-empty
 # ─────────────────────────────────────────────────────────────────────────────────
 base_url = "https://api.deepseek.com"
 # base_url = "https://api.deepseeki.com"         # China users
+# base_url = "https://api.deepseek.com/beta"     # DeepSeek beta features such as strict tool mode
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Default Models
 # ─────────────────────────────────────────────────────────────────────────────────
-default_text_model = "deepseek-reasoner" # common IDs: deepseek-reasoner, deepseek-chat (any deepseek-* ID is valid)
+# DeepSeek V4 family:
+#   deepseek-v4-pro    — flagship reasoning model
+#   deepseek-v4-flash  — fast, cost-efficient (legacy aliases: deepseek-chat, deepseek-reasoner)
+default_text_model = "deepseek-v4-pro"
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Thinking Mode (DeepSeek V4 reasoning effort)
+# ─────────────────────────────────────────────────────────────────────────────────
+# "off"    — disables chain-of-thought (thinking.type = disabled)
+# "low"    — compat-maps to "high" server-side
+# "medium" — compat-maps to "high" server-side
+# "high"   — reasoning_effort = high (DeepSeek default)
+# "max"    — reasoning_effort = max (deepest reasoning)
+#
+# Shift+Tab in the TUI cycles between off / high / max. The header shows the
+# current tier as a ⚡ chip.
+reasoning_effort = "max"
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Paths
@@ -81,7 +98,7 @@ exponential_base = 2.0
 # token_threshold = 50000          # Trigger compaction above this token estimate
 # message_threshold = 50           # Or above this message count
 # model = "deepseek-chat"           # Model to use for summarization
-# cache_summary = true             # Cache the summary block
+# cache_summary = true             # Keep summary blocks stable; DeepSeek context caching is automatic
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Capacity Controller (runtime pressure guardrails)

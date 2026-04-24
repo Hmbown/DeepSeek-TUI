@@ -81,18 +81,21 @@ Current boundary note:
 
 ### LLM Integration
 
-- **`client.rs`** - HTTP client for DeepSeek's OpenAI-compatible Responses API (with chat fallback)
+- **`client.rs`** - HTTP client for DeepSeek's documented OpenAI-compatible Chat Completions API
 - **`llm_client.rs`** - Abstract LLM client trait with retry logic
 - **`models.rs`** - Data structures for API requests/responses
 
 #### DeepSeek API Endpoints
 
 DeepSeek exposes OpenAI-compatible endpoints. The CLI uses:
-- `https://api.deepseek.com/v1/responses` - preferred Responses API
-- `https://api.deepseek.com/v1/chat/completions` - fallback if Responses is unavailable
+- `https://api.deepseek.com/v1/chat/completions` - normal and streaming model turns
+- `https://api.deepseek.com/v1/models` - live model discovery and health checks
 
-The engine uses `handle_deepseek_turn()` to drive the agent loop against the
-Responses API (with automatic fallback if needed).
+`https://api.deepseek.com/v1` is accepted for OpenAI SDK compatibility, and
+`https://api.deepseek.com/beta` can be configured for beta-only features such as
+strict tool mode, chat prefix completion, and FIM completion. The public
+DeepSeek docs do not document a Responses API path for this workflow; the engine
+drives turns through Chat Completions.
 
 ### Tool System
 

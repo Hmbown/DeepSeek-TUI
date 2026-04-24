@@ -30,7 +30,7 @@ use crate::llm_client::LlmClient;
 use crate::mcp::McpPool;
 use crate::models::{
     ContentBlock, ContentBlockStart, DEFAULT_CONTEXT_WINDOW_TOKENS, Delta, Message, MessageRequest,
-    StreamEvent, SystemPrompt, Tool, ToolCaller, Usage, context_window_for_model,
+    StreamEvent, SystemBlock, SystemPrompt, Tool, ToolCaller, Usage, context_window_for_model,
 };
 use crate::prompts;
 use crate::tools::plan::{SharedPlanState, new_shared_plan_state};
@@ -360,6 +360,7 @@ const TOOL_RESULT_CONTEXT_SNIPPET_CHARS: usize = 900;
 /// Max chars to keep from metadata-provided output summaries.
 const TOOL_RESULT_METADATA_SUMMARY_CHARS: usize = 320;
 const COMPACTION_SUMMARY_MARKER: &str = "Conversation Summary (Auto-Generated)";
+const WORKING_SET_SUMMARY_MARKER: &str = "## Repo Working Set";
 
 const TOOL_CALL_START_MARKERS: [&str; 5] = [
     "[TOOL_CALL]",
@@ -1127,6 +1128,56 @@ fn extract_compaction_summary_prompt(prompt: Option<SystemPrompt>) -> Option<Sys
     }
 }
 
+fn remove_working_set_summary(prompt: Option<&SystemPrompt>) -> Option<SystemPrompt> {
+    match prompt {
+        Some(SystemPrompt::Blocks(blocks)) => {
+            let filtered: Vec<SystemBlock> = blocks
+                .iter()
+                .filter(|block| !block.text.contains(WORKING_SET_SUMMARY_MARKER))
+                .cloned()
+                .collect();
+            if filtered.is_empty() {
+                None
+            } else {
+                Some(SystemPrompt::Blocks(filtered))
+            }
+        }
+        Some(SystemPrompt::Text(text)) => Some(SystemPrompt::Text(text.clone())),
+        None => None,
+    }
+}
+
+fn append_working_set_summary(
+    prompt: Option<SystemPrompt>,
+    working_set_summary: Option<&str>,
+) -> Option<SystemPrompt> {
+    let Some(summary) = working_set_summary.map(str::trim).filter(|s| !s.is_empty()) else {
+        return prompt;
+    };
+    let working_set_block = SystemBlock {
+        block_type: "text".to_string(),
+        text: summary.to_string(),
+        cache_control: None,
+    };
+
+    match prompt {
+        Some(SystemPrompt::Text(text)) => Some(SystemPrompt::Blocks(vec![
+            SystemBlock {
+                block_type: "text".to_string(),
+                text,
+                cache_control: None,
+            },
+            working_set_block,
+        ])),
+        Some(SystemPrompt::Blocks(mut blocks)) => {
+            blocks.retain(|block| !block.text.contains(WORKING_SET_SUMMARY_MARKER));
+            blocks.push(working_set_block);
+            Some(SystemPrompt::Blocks(blocks))
+        }
+        None => Some(SystemPrompt::Blocks(vec![working_set_block])),
+    }
+}
+
 fn estimate_text_tokens_conservative(text: &str) -> usize {
     text.chars().count().div_ceil(3)
 }
@@ -1231,12 +1282,10 @@ impl Engine {
 
         // Set up system prompt with project context (default to agent mode)
         let working_set_summary = session.working_set.summary_block(&config.workspace);
-        let system_prompt = prompts::system_prompt_for_mode_with_context(
-            AppMode::Agent,
-            &config.workspace,
-            working_set_summary.as_deref(),
-        );
-        session.system_prompt = Some(system_prompt);
+        let system_prompt =
+            prompts::system_prompt_for_mode_with_context(AppMode::Agent, &config.workspace, None);
+        session.system_prompt =
+            append_working_set_summary(Some(system_prompt), working_set_summary.as_deref());
 
         let subagent_manager =
             new_shared_subagent_manager(config.workspace.clone(), config.max_subagents);
@@ -1285,6 +1334,7 @@ impl Engine {
                     content,
                     mode,
                     model,
+                    reasoning_effort,
                     allow_shell,
                     trust_mode,
                     auto_approve,
@@ -1293,6 +1343,7 @@ impl Engine {
                         content,
                         mode,
                         model,
+                        reasoning_effort,
                         allow_shell,
                         trust_mode,
                         auto_approve,
@@ -1444,11 +1495,13 @@ impl Engine {
     }
 
     /// Handle a send message operation
+    #[allow(clippy::too_many_arguments)]
     async fn handle_send_message(
         &mut self,
         content: String,
         mode: AppMode,
         model: String,
+        reasoning_effort: Option<String>,
         allow_shell: bool,
         trust_mode: bool,
         auto_approve: bool,
@@ -1511,6 +1564,7 @@ impl Engine {
 
         self.session.model = model;
         self.config.model.clone_from(&self.session.model);
+        self.session.reasoning_effort = reasoning_effort;
         self.session.allow_shell = allow_shell;
         self.config.allow_shell = allow_shell;
         self.session.trust_mode = trust_mode;
@@ -1650,7 +1704,7 @@ impl Engine {
         let zero_usage = Usage {
             input_tokens: 0,
             output_tokens: 0,
-            server_tool_use: None,
+            ..Usage::default()
         };
         let Some(client) = self.deepseek_client.clone() else {
             let message = "Manual compaction unavailable: API client not configured".to_string();
@@ -2428,6 +2482,7 @@ impl Engine {
                 },
                 metadata: None,
                 thinking: None,
+                reasoning_effort: self.session.reasoning_effort.clone(),
                 stream: Some(true),
                 temperature: None,
                 top_p: None,
@@ -2471,7 +2526,7 @@ impl Engine {
             let mut usage = Usage {
                 input_tokens: 0,
                 output_tokens: 0,
-                server_tool_use: None,
+                ..Usage::default()
             };
             let mut current_block_kind: Option<ContentBlockKind> = None;
             let mut current_tool_index: Option<usize> = None;
@@ -4277,13 +4332,11 @@ impl Engine {
             .session
             .working_set
             .summary_block(&self.config.workspace);
-        let base = prompts::system_prompt_for_mode_with_context(
-            mode,
-            &self.config.workspace,
-            working_set_summary.as_deref(),
-        );
-        self.session.system_prompt =
+        let base = prompts::system_prompt_for_mode_with_context(mode, &self.config.workspace, None);
+        let stable_prompt =
             merge_system_prompts(Some(&base), self.session.compaction_summary_prompt.clone());
+        self.session.system_prompt =
+            append_working_set_summary(stable_prompt, working_set_summary.as_deref());
     }
 
     fn merge_compaction_summary(&mut self, summary_prompt: Option<SystemPrompt>) {
@@ -4294,8 +4347,15 @@ impl Engine {
             self.session.compaction_summary_prompt.as_ref(),
             summary_prompt.clone(),
         );
+        let current_without_working_set =
+            remove_working_set_summary(self.session.system_prompt.as_ref());
+        let merged = merge_system_prompts(current_without_working_set.as_ref(), summary_prompt);
+        let working_set_summary = self
+            .session
+            .working_set
+            .summary_block(&self.config.workspace);
         self.session.system_prompt =
-            merge_system_prompts(self.session.system_prompt.as_ref(), summary_prompt);
+            append_working_set_summary(merged, working_set_summary.as_deref());
     }
 }
 

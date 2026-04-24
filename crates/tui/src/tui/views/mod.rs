@@ -580,7 +580,7 @@ impl ConfigView {
 fn config_hint_for_key(key: &str) -> &'static str {
     match key {
         "model" => {
-            "deepseek-chat | deepseek-reasoner | deepseek-* (aliases: deepseek-v3, deepseek-v3.2, deepseek-r1)"
+            "deepseek-v4-pro | deepseek-v4-flash | deepseek-* (aliases: deepseek-chat, deepseek-reasoner, deepseek-v3, deepseek-v3.2, deepseek-r1)"
         }
         "approval_mode" => "auto | suggest | never",
         "auto_compact" | "calm_mode" | "low_motion" | "show_thinking" | "show_tool_details"
@@ -591,7 +591,7 @@ fn config_hint_for_key(key: &str) -> &'static str {
         "sidebar_width" => "10..=50",
         "sidebar_focus" => "auto | plan | todos | tasks | agents",
         "max_history" => "integer (0 allowed)",
-        "default_model" => "deepseek-chat | deepseek-reasoner | deepseek-* | none/default",
+        "default_model" => "deepseek-v4-pro | deepseek-v4-flash | deepseek-* | none/default",
         _ => "",
     }
 }
@@ -1256,7 +1256,7 @@ impl ModalView for SubAgentsView {
                 if idx > 0 {
                     summary.push(Span::raw("  ·  "));
                 }
-                summary.extend(part.into_iter());
+                summary.extend(part);
             }
             lines.push(Line::from(summary));
             lines.push(Line::from(Span::styled(

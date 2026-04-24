@@ -10,7 +10,7 @@ use deepseek_agent::ModelRegistry;
 use deepseek_app_server::{
     AppServerOptions, run as run_app_server, run_stdio as run_app_server_stdio,
 };
-use deepseek_config::{CliRuntimeOverrides, ConfigStore, ProviderKind};
+use deepseek_config::{CliRuntimeOverrides, ConfigStore, ProviderKind, ResolvedRuntimeOptions};
 use deepseek_execpolicy::{AskForApproval, ExecPolicyContext, ExecPolicyEngine};
 use deepseek_mcp::{McpServerDefinition, run_stdio_server};
 use deepseek_state::{StateStore, ThreadListFilters};
@@ -42,7 +42,11 @@ struct Cli {
     config: Option<PathBuf>,
     #[arg(long)]
     profile: Option<String>,
-    #[arg(long, value_enum)]
+    #[arg(
+        long,
+        value_enum,
+        help = "Advanced provider selector for non-TUI registry/config commands"
+    )]
     provider: Option<ProviderArg>,
     #[arg(long)]
     model: Option<String>,
@@ -70,7 +74,37 @@ struct Cli {
 enum Commands {
     /// Run interactive/non-interactive flows via the TUI binary.
     Run(RunArgs),
-    /// Login using API key, ChatGPT token, or device code style session.
+    /// Run DeepSeek TUI diagnostics.
+    Doctor(TuiPassthroughArgs),
+    /// List live DeepSeek API models via the TUI binary.
+    Models(TuiPassthroughArgs),
+    /// List saved TUI sessions.
+    Sessions(TuiPassthroughArgs),
+    /// Resume a saved TUI session.
+    Resume(TuiPassthroughArgs),
+    /// Fork a saved TUI session.
+    Fork(TuiPassthroughArgs),
+    /// Create a default AGENTS.md in the current directory.
+    Init(TuiPassthroughArgs),
+    /// Bootstrap MCP config and/or skills directories.
+    Setup(TuiPassthroughArgs),
+    /// Run the DeepSeek TUI non-interactive agent command.
+    Exec(TuiPassthroughArgs),
+    /// Run a DeepSeek-powered code review over a git diff.
+    Review(TuiPassthroughArgs),
+    /// Apply a patch file or stdin to the working tree.
+    Apply(TuiPassthroughArgs),
+    /// Run the offline TUI evaluation harness.
+    Eval(TuiPassthroughArgs),
+    /// Manage TUI MCP servers.
+    Mcp(TuiPassthroughArgs),
+    /// Inspect TUI feature flags.
+    Features(TuiPassthroughArgs),
+    /// Run a local TUI server.
+    Serve(TuiPassthroughArgs),
+    /// Generate shell completions for the TUI binary.
+    Completions(TuiPassthroughArgs),
+    /// Save a DeepSeek API key to the shared config.
     Login(LoginArgs),
     /// Remove saved authentication state.
     Logout,
@@ -101,17 +135,23 @@ struct RunArgs {
     args: Vec<String>,
 }
 
+#[derive(Debug, Args, Clone)]
+struct TuiPassthroughArgs {
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    args: Vec<String>,
+}
+
 #[derive(Debug, Args)]
 struct LoginArgs {
-    #[arg(long, value_enum, default_value_t = ProviderArg::Deepseek)]
+    #[arg(long, value_enum, default_value_t = ProviderArg::Deepseek, hide = true)]
     provider: ProviderArg,
     #[arg(long)]
     api_key: Option<String>,
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = false, hide = true)]
     chatgpt: bool,
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = false, hide = true)]
     device_code: bool,
-    #[arg(long)]
+    #[arg(long, hide = true)]
     token: Option<String>,
 }
 
@@ -279,12 +319,57 @@ fn run() -> Result<()> {
         approval_policy: cli.approval_policy.clone(),
         sandbox_mode: cli.sandbox_mode.clone(),
     };
-    let _resolved_runtime = store.config.resolve_runtime_options(&runtime_overrides);
+    let resolved_runtime = store.config.resolve_runtime_options(&runtime_overrides);
 
     let command = cli.command.take();
 
     match command {
-        Some(Commands::Run(args)) => delegate_to_tui(&cli, args.args),
+        Some(Commands::Run(args)) => delegate_to_tui(&cli, &resolved_runtime, args.args),
+        Some(Commands::Doctor(args)) => {
+            delegate_to_tui(&cli, &resolved_runtime, tui_args("doctor", args))
+        }
+        Some(Commands::Models(args)) => {
+            delegate_to_tui(&cli, &resolved_runtime, tui_args("models", args))
+        }
+        Some(Commands::Sessions(args)) => {
+            delegate_to_tui(&cli, &resolved_runtime, tui_args("sessions", args))
+        }
+        Some(Commands::Resume(args)) => {
+            delegate_to_tui(&cli, &resolved_runtime, tui_args("resume", args))
+        }
+        Some(Commands::Fork(args)) => {
+            delegate_to_tui(&cli, &resolved_runtime, tui_args("fork", args))
+        }
+        Some(Commands::Init(args)) => {
+            delegate_to_tui(&cli, &resolved_runtime, tui_args("init", args))
+        }
+        Some(Commands::Setup(args)) => {
+            delegate_to_tui(&cli, &resolved_runtime, tui_args("setup", args))
+        }
+        Some(Commands::Exec(args)) => {
+            delegate_to_tui(&cli, &resolved_runtime, tui_args("exec", args))
+        }
+        Some(Commands::Review(args)) => {
+            delegate_to_tui(&cli, &resolved_runtime, tui_args("review", args))
+        }
+        Some(Commands::Apply(args)) => {
+            delegate_to_tui(&cli, &resolved_runtime, tui_args("apply", args))
+        }
+        Some(Commands::Eval(args)) => {
+            delegate_to_tui(&cli, &resolved_runtime, tui_args("eval", args))
+        }
+        Some(Commands::Mcp(args)) => {
+            delegate_to_tui(&cli, &resolved_runtime, tui_args("mcp", args))
+        }
+        Some(Commands::Features(args)) => {
+            delegate_to_tui(&cli, &resolved_runtime, tui_args("features", args))
+        }
+        Some(Commands::Serve(args)) => {
+            delegate_to_tui(&cli, &resolved_runtime, tui_args("serve", args))
+        }
+        Some(Commands::Completions(args)) => {
+            delegate_to_tui(&cli, &resolved_runtime, tui_args("completions", args))
+        }
         Some(Commands::Login(args)) => run_login_command(&mut store, args),
         Some(Commands::Logout) => run_logout_command(&mut store),
         Some(Commands::Auth(args)) => run_auth_command(&mut store, args.command),
@@ -305,9 +390,16 @@ fn run() -> Result<()> {
                 forwarded.push("--prompt".to_string());
                 forwarded.push(prompt);
             }
-            delegate_to_tui(&cli, forwarded)
+            delegate_to_tui(&cli, &resolved_runtime, forwarded)
         }
     }
+}
+
+fn tui_args(command: &str, args: TuiPassthroughArgs) -> Vec<String> {
+    let mut forwarded = Vec::with_capacity(args.args.len() + 1);
+    forwarded.push(command.to_string());
+    forwarded.extend(args.args);
+    forwarded
 }
 
 fn run_login_command(store: &mut ConfigStore, args: LoginArgs) -> Result<()> {
@@ -349,12 +441,33 @@ fn run_login_command(store: &mut ConfigStore, args: LoginArgs) -> Result<()> {
     };
     store.config.auth_mode = Some("api_key".to_string());
     store.config.providers.for_provider_mut(provider).api_key = Some(api_key);
+    if provider == ProviderKind::Deepseek {
+        store.config.api_key = store.config.providers.deepseek.api_key.clone();
+        if store.config.default_text_model.is_none() {
+            store.config.default_text_model = Some(
+                store
+                    .config
+                    .providers
+                    .deepseek
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| "deepseek-v4-pro".to_string()),
+            );
+        }
+    }
     store.save()?;
-    println!("logged in using API key mode ({})", provider.as_str());
+    if provider == ProviderKind::Deepseek {
+        println!(
+            "logged in using API key mode (deepseek). This also updates the shared deepseek-tui config."
+        );
+    } else {
+        println!("logged in using API key mode ({})", provider.as_str());
+    }
     Ok(())
 }
 
 fn run_logout_command(store: &mut ConfigStore) -> Result<()> {
+    store.config.api_key = None;
     store.config.providers.deepseek.api_key = None;
     store.config.providers.openai.api_key = None;
     store.config.auth_mode = None;
@@ -382,6 +495,7 @@ fn run_auth_command(store: &mut ConfigStore, command: AuthCommand) -> Result<()>
                 .deepseek
                 .api_key
                 .as_ref()
+                .or(store.config.api_key.as_ref())
                 .is_some_and(|v| !v.trim().is_empty());
             let openai_file = store
                 .config
@@ -407,6 +521,9 @@ fn run_auth_command(store: &mut ConfigStore, command: AuthCommand) -> Result<()>
             };
             store.config.provider = provider;
             store.config.providers.for_provider_mut(provider).api_key = Some(api_key);
+            if provider == ProviderKind::Deepseek {
+                store.config.api_key = store.config.providers.deepseek.api_key.clone();
+            }
             store.save()?;
             println!("saved API key for {}", provider.as_str());
             Ok(())
@@ -414,6 +531,9 @@ fn run_auth_command(store: &mut ConfigStore, command: AuthCommand) -> Result<()>
         AuthCommand::Clear { provider } => {
             let provider: ProviderKind = provider.into();
             store.config.providers.for_provider_mut(provider).api_key = None;
+            if provider == ProviderKind::Deepseek {
+                store.config.api_key = None;
+            }
             store.save()?;
             println!("cleared API key for {}", provider.as_str());
             Ok(())
@@ -623,7 +743,11 @@ fn persist_mcp_server_definitions(
     store.save()
 }
 
-fn delegate_to_tui(cli: &Cli, passthrough: Vec<String>) -> Result<()> {
+fn delegate_to_tui(
+    cli: &Cli,
+    resolved_runtime: &ResolvedRuntimeOptions,
+    passthrough: Vec<String>,
+) -> Result<()> {
     let current = std::env::current_exe().context("failed to locate current executable path")?;
     let tui = current.with_file_name("deepseek-tui");
     if !tui.exists() {
@@ -641,6 +765,19 @@ fn delegate_to_tui(cli: &Cli, passthrough: Vec<String>) -> Result<()> {
         cmd.arg("--profile").arg(profile);
     }
     cmd.args(passthrough);
+
+    if resolved_runtime.provider != ProviderKind::Deepseek {
+        bail!(
+            "The interactive TUI only supports the DeepSeek API. Remove --provider {} or use `deepseek model ...` for provider registry inspection.",
+            resolved_runtime.provider.as_str()
+        );
+    }
+
+    cmd.env("DEEPSEEK_MODEL", &resolved_runtime.model);
+    cmd.env("DEEPSEEK_BASE_URL", &resolved_runtime.base_url);
+    if let Some(api_key) = resolved_runtime.api_key.as_ref() {
+        cmd.env("DEEPSEEK_API_KEY", api_key);
+    }
 
     if let Some(provider) = cli.provider {
         cmd.env("DEEPSEEK_PROVIDER", ProviderKind::from(provider).as_str());
@@ -932,6 +1069,67 @@ mod tests {
     }
 
     #[test]
+    fn parses_direct_tui_command_aliases() {
+        let cli = parse_ok(&["deepseek", "doctor"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Doctor(TuiPassthroughArgs { ref args })) if args.is_empty()
+        ));
+
+        let cli = parse_ok(&["deepseek", "models", "--json"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Models(TuiPassthroughArgs { ref args })) if args == &["--json"]
+        ));
+
+        let cli = parse_ok(&["deepseek", "resume", "abc123"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Resume(TuiPassthroughArgs { ref args })) if args == &["abc123"]
+        ));
+
+        let cli = parse_ok(&["deepseek", "setup", "--skills", "--local"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Setup(TuiPassthroughArgs { ref args }))
+                if args == &["--skills", "--local"]
+        ));
+    }
+
+    #[test]
+    fn deepseek_login_writes_tui_compatible_config() {
+        let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
+        let path = std::env::temp_dir().join(format!(
+            "deepseek-cli-login-test-{}-{nanos}.toml",
+            std::process::id()
+        ));
+        let mut store = ConfigStore::load(Some(path.clone())).expect("store should load");
+
+        run_login_command(
+            &mut store,
+            LoginArgs {
+                provider: ProviderArg::Deepseek,
+                api_key: Some("sk-test".to_string()),
+                chatgpt: false,
+                device_code: false,
+                token: None,
+            },
+        )
+        .expect("login should write config");
+
+        assert_eq!(store.config.api_key.as_deref(), Some("sk-test"));
+        assert_eq!(
+            store.config.default_text_model.as_deref(),
+            Some("deepseek-v4-pro")
+        );
+        let saved = std::fs::read_to_string(&path).expect("config should be written");
+        assert!(saved.contains("api_key = \"sk-test\""));
+        assert!(saved.contains("default_text_model = \"deepseek-v4-pro\""));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn parses_global_override_flags() {
         let cli = parse_ok(&[
             "deepseek",
@@ -981,6 +1179,11 @@ mod tests {
 
         for token in [
             "run",
+            "doctor",
+            "models",
+            "sessions",
+            "resume",
+            "setup",
             "login",
             "logout",
             "auth",

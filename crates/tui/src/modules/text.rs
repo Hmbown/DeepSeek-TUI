@@ -180,6 +180,7 @@ async fn process_deepseek_turn(
         tool_choice: options.tool_choice.clone(),
         metadata: None,
         thinking: None,
+        reasoning_effort: None,
         stream: Some(options.stream),
         temperature: options.temperature,
         top_p: options.top_p,

@@ -322,6 +322,8 @@ fn footer_auxiliary_spans_prioritize_context_when_busy() {
     let mut app = create_test_app();
     app.is_loading = true;
     app.last_prompt_tokens = Some(48_000);
+    app.last_prompt_cache_hit_tokens = Some(36_000);
+    app.last_prompt_cache_miss_tokens = Some(12_000);
     app.session_cost = 12.34;
 
     let compact = spans_text(&footer_auxiliary_spans(&app, 8));
@@ -332,13 +334,27 @@ fn footer_auxiliary_spans_prioritize_context_when_busy() {
     let roomy = spans_text(&footer_auxiliary_spans(&app, 20));
     assert!(roomy.contains("ctx"));
     assert!(roomy.contains('%'));
+    assert!(roomy.contains("cache"));
+}
+
+#[test]
+fn footer_auxiliary_spans_can_display_cache_and_cost_when_roomy() {
+    let mut app = create_test_app();
+    app.last_prompt_tokens = Some(48_000);
+    app.last_prompt_cache_hit_tokens = Some(36_000);
+    app.last_prompt_cache_miss_tokens = Some(12_000);
+    app.session_cost = 12.34;
+
+    let roomy = spans_text(&footer_auxiliary_spans(&app, 32));
+    assert!(roomy.contains("ctx"));
+    assert!(roomy.contains("cache 75%"));
     assert!(roomy.contains("$12.34"));
 }
 
 #[test]
 fn context_usage_snapshot_prefers_estimate_when_reported_exceeds_window() {
     let mut app = create_test_app();
-    app.last_prompt_tokens = Some(320_000);
+    app.last_prompt_tokens = Some(1_200_000);
     app.api_messages = vec![Message {
         role: "user".to_string(),
         content: vec![ContentBlock::Text {
@@ -349,7 +365,7 @@ fn context_usage_snapshot_prefers_estimate_when_reported_exceeds_window() {
 
     let (used, max, percent) =
         context_usage_snapshot(&app).expect("context usage should be available");
-    assert_eq!(max, 128_000);
+    assert_eq!(max, 1_000_000);
     assert!(used > 0);
     assert!(used <= i64::from(max));
     assert!(percent < 100.0);
@@ -372,7 +388,7 @@ fn context_usage_snapshot_prefers_live_estimate_while_loading() {
     let (used, max, percent) =
         context_usage_snapshot(&app).expect("context usage should be available");
     assert_eq!(used, estimated);
-    assert_eq!(max, 128_000);
+    assert_eq!(max, 1_000_000);
     assert!(used > i64::from(app.last_prompt_tokens.expect("reported tokens")));
     assert!(percent > 0.0);
 }
@@ -380,7 +396,7 @@ fn context_usage_snapshot_prefers_live_estimate_while_loading() {
 #[test]
 fn should_auto_compact_before_send_respects_threshold_and_setting() {
     let mut app = create_test_app();
-    app.last_prompt_tokens = Some(123_000);
+    app.last_prompt_tokens = Some(950_000);
     app.auto_compact = true;
     assert!(should_auto_compact_before_send(&app));
 

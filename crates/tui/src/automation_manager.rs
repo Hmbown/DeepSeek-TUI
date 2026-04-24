@@ -403,7 +403,7 @@ impl AutomationManager {
             }
             out.push(record);
         }
-        out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        out.sort_by_key(|r| std::cmp::Reverse(r.updated_at));
         Ok(out)
     }
 
@@ -522,7 +522,7 @@ impl AutomationManager {
             out.push(run);
         }
 
-        out.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        out.sort_by_key(|r| std::cmp::Reverse(r.created_at));
         if let Some(limit) = limit {
             out.truncate(limit);
         }

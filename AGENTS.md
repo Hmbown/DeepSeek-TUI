@@ -17,9 +17,10 @@ See README.md for project overview, docs/ARCHITECTURE.md for internals.
 ## DeepSeek-Specific Notes
 
 - **Thinking Tokens**: DeepSeek models output thinking blocks (`ContentBlock::Thinking`) before final answers. The TUI streams and displays these with visual distinction.
-- **Reasoning Models**: `deepseek-reasoner` and `deepseek-r1` excel at step-by-step problem solving.
-- **Large Context Window**: 128k tokens. Use search tools to navigate efficiently.
-- **API**: OpenAI-compatible with Responses API preferred, chat completions as fallback. Base URL configurable for global (`api.deepseek.com`) or China (`api.deepseeki.com`).
+- **Reasoning Models**: `deepseek-v4-pro` and `deepseek-v4-flash` are the documented V4 model IDs. Legacy `deepseek-chat` and `deepseek-reasoner` are compatibility aliases for `deepseek-v4-flash`.
+- **Large Context Window**: DeepSeek V4 models have 1M-token context windows. Use search tools to navigate efficiently.
+- **API**: OpenAI-compatible Chat Completions (`/chat/completions`) is the documented DeepSeek API path. Base URL configurable for global (`api.deepseek.com`) or China (`api.deepseeki.com`); `/v1` is accepted for OpenAI SDK compatibility, and `/beta` is only needed for beta features such as strict tool mode, chat prefix completion, and FIM completion.
+- **Thinking + Tool Calls**: In V4 thinking mode, assistant messages that contain tool calls must replay their `reasoning_content` in all subsequent requests or the API returns HTTP 400.
 
 ## Important Notes
 
