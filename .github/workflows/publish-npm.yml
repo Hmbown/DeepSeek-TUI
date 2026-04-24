@@ -1,0 +1,39 @@
+name: Publish npm
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Package/release version to publish, without the leading v'
+        required: true
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+      - name: Verify package version
+        working-directory: npm/deepseek-tui
+        run: |
+          actual="$(node -p "require('./package.json').version")"
+          expected="${{ inputs.version }}"
+          if [ "${actual}" != "${expected}" ]; then
+            echo "package.json version ${actual} does not match requested ${expected}" >&2
+            exit 1
+          fi
+      - name: Publish wrapper to npm
+        working-directory: npm/deepseek-tui
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --provenance --access public
