@@ -14,6 +14,7 @@ use crate::llm_client::LlmClient;
 use crate::logging;
 use crate::models::{
     CacheControl, ContentBlock, Message, MessageRequest, SystemBlock, SystemPrompt,
+    context_window_for_model,
 };
 
 /// Configuration for conversation compaction behavior.
@@ -47,6 +48,50 @@ const SUMMARY_TOOL_RESULT_SNIPPET_CHARS: usize = 240;
 const SUMMARY_INPUT_MAX_CHARS: usize = 24_000;
 const SUMMARY_INPUT_HEAD_CHARS: usize = 14_000;
 const SUMMARY_INPUT_TAIL_CHARS: usize = 6_000;
+const LARGE_CONTEXT_SUMMARY_TEXT_SNIPPET_CHARS: usize = 2_000;
+const LARGE_CONTEXT_SUMMARY_TOOL_RESULT_SNIPPET_CHARS: usize = 4_000;
+const LARGE_CONTEXT_SUMMARY_INPUT_MAX_CHARS: usize = 120_000;
+const LARGE_CONTEXT_SUMMARY_INPUT_HEAD_CHARS: usize = 72_000;
+const LARGE_CONTEXT_SUMMARY_INPUT_TAIL_CHARS: usize = 36_000;
+const LARGE_CONTEXT_SUMMARY_MAX_TOKENS: u32 = 2_048;
+const LARGE_CONTEXT_WINDOW_TOKENS: u32 = 500_000;
+
+#[derive(Debug, Clone, Copy)]
+struct SummaryInputLimits {
+    text_snippet_chars: usize,
+    tool_result_snippet_chars: usize,
+    input_max_chars: usize,
+    input_head_chars: usize,
+    input_tail_chars: usize,
+    max_tokens: u32,
+    word_limit: usize,
+}
+
+fn summary_input_limits_for_model(model: &str) -> SummaryInputLimits {
+    let is_large_context =
+        context_window_for_model(model).is_some_and(|window| window >= LARGE_CONTEXT_WINDOW_TOKENS);
+    if is_large_context {
+        SummaryInputLimits {
+            text_snippet_chars: LARGE_CONTEXT_SUMMARY_TEXT_SNIPPET_CHARS,
+            tool_result_snippet_chars: LARGE_CONTEXT_SUMMARY_TOOL_RESULT_SNIPPET_CHARS,
+            input_max_chars: LARGE_CONTEXT_SUMMARY_INPUT_MAX_CHARS,
+            input_head_chars: LARGE_CONTEXT_SUMMARY_INPUT_HEAD_CHARS,
+            input_tail_chars: LARGE_CONTEXT_SUMMARY_INPUT_TAIL_CHARS,
+            max_tokens: LARGE_CONTEXT_SUMMARY_MAX_TOKENS,
+            word_limit: 900,
+        }
+    } else {
+        SummaryInputLimits {
+            text_snippet_chars: SUMMARY_TEXT_SNIPPET_CHARS,
+            tool_result_snippet_chars: SUMMARY_TOOL_RESULT_SNIPPET_CHARS,
+            input_max_chars: SUMMARY_INPUT_MAX_CHARS,
+            input_head_chars: SUMMARY_INPUT_HEAD_CHARS,
+            input_tail_chars: SUMMARY_INPUT_TAIL_CHARS,
+            max_tokens: 1_024,
+            word_limit: 500,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Default)]
 struct CompactionPlan {
@@ -757,6 +802,7 @@ async fn create_summary(
     messages: &[Message],
     model: &str,
 ) -> Result<String> {
+    let limits = summary_input_limits_for_model(model);
     // Format messages for summarization
     let mut conversation_text = String::new();
     for msg in messages {
@@ -768,14 +814,14 @@ async fn create_summary(
         for block in &msg.content {
             match block {
                 ContentBlock::Text { text, .. } => {
-                    let snippet = truncate_chars(text, SUMMARY_TEXT_SNIPPET_CHARS);
+                    let snippet = truncate_chars(text, limits.text_snippet_chars);
                     let _ = write!(conversation_text, "{role}: {snippet}\n\n");
                 }
                 ContentBlock::ToolUse { name, .. } => {
                     let _ = write!(conversation_text, "{role}: [Used tool: {name}]\n\n");
                 }
                 ContentBlock::ToolResult { content, .. } => {
-                    let snippet = truncate_chars(content, SUMMARY_TOOL_RESULT_SNIPPET_CHARS);
+                    let snippet = truncate_chars(content, limits.tool_result_snippet_chars);
                     let _ = write!(conversation_text, "Tool result: {}\n\n", snippet);
                 }
                 ContentBlock::Thinking { .. } => {
@@ -789,9 +835,9 @@ async fn create_summary(
     }
 
     let conversation_chars = conversation_text.chars().count();
-    if conversation_chars > SUMMARY_INPUT_MAX_CHARS {
-        let head = truncate_chars(&conversation_text, SUMMARY_INPUT_HEAD_CHARS).to_string();
-        let tail = tail_chars(&conversation_text, SUMMARY_INPUT_TAIL_CHARS);
+    if conversation_chars > limits.input_max_chars {
+        let head = truncate_chars(&conversation_text, limits.input_head_chars).to_string();
+        let tail = tail_chars(&conversation_text, limits.input_tail_chars);
         let omitted = conversation_chars
             .saturating_sub(head.chars().count())
             .saturating_sub(tail.chars().count());
@@ -806,14 +852,16 @@ async fn create_summary(
             content: vec![ContentBlock::Text {
                 text: format!(
                     "Summarize the following conversation in a concise but comprehensive way. \
-                     Preserve key information, decisions made, and any important context. \
-                     Tool outputs may be abbreviated. \
-                     Keep it under 500 words.\n\n---\n\n{conversation_text}"
+                     Preserve key information, decisions made, exact file paths, commands, \
+                     errors, and tool-result facts needed to continue the work. \
+                     Tool outputs may be abbreviated only when they are repetitive. \
+                     Keep it under {} words.\n\n---\n\n{conversation_text}",
+                    limits.word_limit
                 ),
                 cache_control: None,
             }],
         }],
-        max_tokens: 1024,
+        max_tokens: limits.max_tokens,
         system: Some(SystemPrompt::Text(
             "You are a helpful assistant that creates concise conversation summaries.".to_string(),
         )),
@@ -1033,6 +1081,16 @@ mod tests {
 
         let validation_err = anyhow::anyhow!("Invalid request: missing required field");
         assert!(!is_transient_error(&validation_err));
+    }
+
+    #[test]
+    fn summary_limits_expand_for_v4_context() {
+        let legacy = summary_input_limits_for_model("deepseek-v3.2-128k");
+        let v4 = summary_input_limits_for_model("deepseek-v4-pro");
+
+        assert!(v4.input_max_chars > legacy.input_max_chars);
+        assert!(v4.tool_result_snippet_chars > legacy.tool_result_snippet_chars);
+        assert!(v4.max_tokens > legacy.max_tokens);
     }
 
     #[test]

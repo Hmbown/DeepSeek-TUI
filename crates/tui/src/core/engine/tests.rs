@@ -228,6 +228,20 @@ fn context_budget_reserves_output_and_headroom() {
 }
 
 #[test]
+fn v4_tool_outputs_keep_large_file_reads_in_context() {
+    let content = "0123456789abcdef\n".repeat(2_000);
+    let output = ToolResult::success(content.clone());
+
+    let v4_context = compact_tool_result_for_context("deepseek-v4-pro", "exec_shell", &output);
+    assert_eq!(v4_context, content.trim());
+
+    let legacy_context =
+        compact_tool_result_for_context("deepseek-v3.2-128k", "exec_shell", &output);
+    assert!(legacy_context.contains("output compacted to protect context"));
+    assert!(legacy_context.len() < v4_context.len());
+}
+
+#[test]
 fn refresh_system_prompt_places_working_set_after_stable_prefix() {
     let tmp = tempdir().expect("tempdir");
     fs::create_dir_all(tmp.path().join("src")).expect("mkdir");
@@ -293,6 +307,49 @@ fn compaction_summary_stays_before_volatile_working_set() {
 
     assert!(summary_index < working_set_index);
     assert_eq!(working_set_index, blocks.len() - 1);
+}
+
+#[tokio::test]
+async fn pre_request_refresh_skips_compaction_below_normal_threshold() {
+    let capacity = CapacityControllerConfig {
+        enabled: true,
+        low_risk_max: 0.0,
+        medium_risk_max: 1.0,
+        min_turns_before_guardrail: 0,
+        ..Default::default()
+    };
+
+    let mut engine = build_engine_with_capacity(capacity.clone());
+    engine.config.capacity = capacity.clone();
+    engine.capacity_controller = CapacityController::new(capacity);
+    engine.turn_counter = 5;
+    engine
+        .capacity_controller
+        .mark_turn_start(engine.turn_counter);
+    engine.session.model = "deepseek-v4-pro".to_string();
+    engine.config.model = "deepseek-v4-pro".to_string();
+
+    for i in 0..20 {
+        engine.session.messages.push(Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: format!("small message {i}"),
+                cache_control: None,
+            }],
+        });
+    }
+
+    let before = engine.estimated_input_tokens();
+    let before_len = engine.session.messages.len();
+    let turn = TurnContext::new(10);
+    let applied = engine
+        .run_capacity_pre_request_checkpoint(&turn, None, AppMode::Agent)
+        .await;
+    let after = engine.estimated_input_tokens();
+
+    assert!(!applied);
+    assert_eq!(after, before);
+    assert_eq!(engine.session.messages.len(), before_len);
 }
 
 #[tokio::test]

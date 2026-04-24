@@ -18,7 +18,10 @@ use ratatui::{
     prelude::Stylize,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Padding, Paragraph, Widget, Wrap},
+    widgets::{
+        Block, Borders, Clear, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+        StatefulWidget, Widget, Wrap,
+    },
 };
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -29,6 +32,14 @@ const COMPOSER_PANEL_HEIGHT: u16 = 2;
 pub struct ChatWidget {
     content_area: Rect,
     lines: Vec<Line<'static>>,
+    scrollbar: Option<TranscriptScrollbar>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TranscriptScrollbar {
+    top: usize,
+    visible: usize,
+    total: usize,
 }
 
 impl ChatWidget {
@@ -47,6 +58,7 @@ impl ChatWidget {
             return Self {
                 content_area,
                 lines,
+                scrollbar: None,
             };
         }
 
@@ -105,9 +117,18 @@ impl ChatWidget {
             pad_lines_to_bottom(&mut lines, visible_lines);
         }
 
+        let scrollbar = (total_lines > visible_lines && content_area.width > 1).then_some(
+            TranscriptScrollbar {
+                top,
+                visible: visible_lines,
+                total: total_lines,
+            },
+        );
+
         Self {
             content_area,
             lines,
+            scrollbar,
         }
     }
 }
@@ -116,6 +137,20 @@ impl Renderable for ChatWidget {
     fn render(&self, _area: Rect, buf: &mut Buffer) {
         let paragraph = Paragraph::new(self.lines.clone());
         paragraph.render(self.content_area, buf);
+
+        if let Some(scrollbar) = self.scrollbar {
+            let mut state = ScrollbarState::new(scrollbar.total)
+                .position(scrollbar.top)
+                .viewport_content_length(scrollbar.visible);
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None)
+                .track_symbol(Some("│"))
+                .track_style(Style::default().fg(palette::BORDER_COLOR))
+                .thumb_symbol("┃")
+                .thumb_style(Style::default().fg(palette::DEEPSEEK_SKY))
+                .render(self.content_area, buf, &mut state);
+        }
     }
 
     fn desired_height(&self, _width: u16) -> u16 {

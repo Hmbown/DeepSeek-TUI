@@ -112,8 +112,9 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     let mut stdout = io::stdout();
     if use_alt_screen {
         execute!(stdout, EnterAlternateScreen)?;
+        execute!(stdout, EnableMouseCapture)?;
     }
-    execute!(stdout, EnableBracketedPaste, EnableMouseCapture)?;
+    execute!(stdout, EnableBracketedPaste)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     let event_broker = EventBroker::new();
@@ -268,11 +269,10 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     if use_alt_screen {
         execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     }
-    execute!(
-        terminal.backend_mut(),
-        DisableBracketedPaste,
-        DisableMouseCapture
-    )?;
+    if use_alt_screen {
+        execute!(terminal.backend_mut(), DisableMouseCapture)?;
+    }
+    execute!(terminal.backend_mut(), DisableBracketedPaste)?;
     terminal.show_cursor()?;
 
     result
@@ -466,7 +466,7 @@ async fn run_event_loop(
                         let tool_content = match &result {
                             Ok(output) => sanitize_stream_chunk(
                                 &crate::core::engine::compact_tool_result_for_context(
-                                    &name, output,
+                                    &app.model, &name, output,
                                 ),
                             ),
                             Err(err) => sanitize_stream_chunk(&format!("Error: {err}")),
@@ -1857,6 +1857,7 @@ async fn dispatch_user_message(
     app.add_message(HistoryCell::User {
         content: message.display.clone(),
     });
+    app.scroll_to_bottom();
     app.api_messages.push(Message {
         role: "user".to_string(),
         content: vec![ContentBlock::Text {
@@ -3144,12 +3145,9 @@ fn resume_terminal(
     enable_raw_mode()?;
     if use_alt_screen {
         execute!(terminal.backend_mut(), EnterAlternateScreen)?;
+        execute!(terminal.backend_mut(), EnableMouseCapture)?;
     }
-    execute!(
-        terminal.backend_mut(),
-        EnableMouseCapture,
-        EnableBracketedPaste
-    )?;
+    execute!(terminal.backend_mut(), EnableBracketedPaste)?;
     terminal.clear()?;
     Ok(())
 }

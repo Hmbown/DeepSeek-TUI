@@ -357,6 +357,14 @@ const TOOL_RESULT_CONTEXT_HARD_LIMIT_CHARS: usize = 12_000;
 const TOOL_RESULT_CONTEXT_SOFT_LIMIT_CHARS: usize = 2_000;
 /// Snippet length kept when compacting tool output for model context.
 const TOOL_RESULT_CONTEXT_SNIPPET_CHARS: usize = 900;
+/// Hard cap for tool output inserted into a large-context model.
+const LARGE_CONTEXT_TOOL_RESULT_HARD_LIMIT_CHARS: usize = 180_000;
+/// Soft cap for known noisy tools inserted into a large-context model.
+const LARGE_CONTEXT_TOOL_RESULT_SOFT_LIMIT_CHARS: usize = 60_000;
+/// Snippet length kept when compacting large-context tool output.
+const LARGE_CONTEXT_TOOL_RESULT_SNIPPET_CHARS: usize = 40_000;
+/// Context window size at which tool output limits can be relaxed.
+const LARGE_CONTEXT_WINDOW_TOKENS: u32 = 500_000;
 /// Max chars to keep from metadata-provided output summaries.
 const TOOL_RESULT_METADATA_SUMMARY_CHARS: usize = 320;
 const COMPACTION_SUMMARY_MARKER: &str = "Conversation Summary (Auto-Generated)";
@@ -1052,6 +1060,30 @@ fn summarize_text(text: &str, limit: usize) -> String {
     out
 }
 
+fn summarize_text_head_tail(text: &str, limit: usize) -> String {
+    let total = text.chars().count();
+    if total <= limit {
+        return text.to_string();
+    }
+    if limit <= 20 {
+        return summarize_text(text, limit);
+    }
+
+    let marker = "\n\n[... output truncated for context ...]\n\n";
+    let marker_len = marker.chars().count();
+    if limit <= marker_len + 20 {
+        return summarize_text(text, limit);
+    }
+
+    let remaining = limit - marker_len;
+    let head_len = remaining.saturating_mul(2) / 3;
+    let tail_len = remaining.saturating_sub(head_len);
+    let head: String = text.chars().take(head_len).collect();
+    let tail_vec: Vec<char> = text.chars().rev().take(tail_len).collect();
+    let tail: String = tail_vec.into_iter().rev().collect();
+    format!("{head}{marker}{tail}")
+}
+
 fn tool_result_is_noisy(tool_name: &str) -> bool {
     matches!(
         tool_name,
@@ -1076,20 +1108,51 @@ fn tool_result_metadata_summary(metadata: Option<&serde_json::Value>) -> Option<
     None
 }
 
-pub(crate) fn compact_tool_result_for_context(tool_name: &str, output: &ToolResult) -> String {
+#[derive(Debug, Clone, Copy)]
+struct ToolResultContextLimits {
+    hard_limit_chars: usize,
+    noisy_soft_limit_chars: usize,
+    snippet_chars: usize,
+}
+
+fn tool_result_context_limits_for_model(model: &str) -> ToolResultContextLimits {
+    let is_large_context =
+        context_window_for_model(model).is_some_and(|window| window >= LARGE_CONTEXT_WINDOW_TOKENS);
+
+    if is_large_context {
+        ToolResultContextLimits {
+            hard_limit_chars: LARGE_CONTEXT_TOOL_RESULT_HARD_LIMIT_CHARS,
+            noisy_soft_limit_chars: LARGE_CONTEXT_TOOL_RESULT_SOFT_LIMIT_CHARS,
+            snippet_chars: LARGE_CONTEXT_TOOL_RESULT_SNIPPET_CHARS,
+        }
+    } else {
+        ToolResultContextLimits {
+            hard_limit_chars: TOOL_RESULT_CONTEXT_HARD_LIMIT_CHARS,
+            noisy_soft_limit_chars: TOOL_RESULT_CONTEXT_SOFT_LIMIT_CHARS,
+            snippet_chars: TOOL_RESULT_CONTEXT_SNIPPET_CHARS,
+        }
+    }
+}
+
+pub(crate) fn compact_tool_result_for_context(
+    model: &str,
+    tool_name: &str,
+    output: &ToolResult,
+) -> String {
     let raw = output.content.trim();
     if raw.is_empty() {
         return String::new();
     }
 
+    let limits = tool_result_context_limits_for_model(model);
     let raw_chars = raw.chars().count();
-    let should_compact = raw_chars > TOOL_RESULT_CONTEXT_HARD_LIMIT_CHARS
-        || (tool_result_is_noisy(tool_name) && raw_chars > TOOL_RESULT_CONTEXT_SOFT_LIMIT_CHARS);
+    let should_compact = raw_chars > limits.hard_limit_chars
+        || (tool_result_is_noisy(tool_name) && raw_chars > limits.noisy_soft_limit_chars);
     if !should_compact {
         return raw.to_string();
     }
 
-    let snippet = summarize_text(raw, TOOL_RESULT_CONTEXT_SNIPPET_CHARS);
+    let snippet = summarize_text_head_tail(raw, limits.snippet_chars);
     let omitted = raw_chars.saturating_sub(snippet.chars().count());
     let summary = tool_result_metadata_summary(output.metadata.as_ref());
 
@@ -3369,8 +3432,11 @@ impl Engine {
                             "tool_name": outcome.name.clone(),
                             "success": output.success,
                         }));
-                        let output_for_context =
-                            compact_tool_result_for_context(&outcome.name, &output);
+                        let output_for_context = compact_tool_result_for_context(
+                            &self.session.model,
+                            &outcome.name,
+                            &output,
+                        );
                         let output_content = output.content;
 
                         tool_call.set_result(output_content.clone(), duration);
@@ -3767,7 +3833,15 @@ impl Engine {
         let compaction_paths = self.session.working_set.top_paths(24);
 
         let mut refreshed = false;
-        if let Some(client) = client {
+        let should_run_summary_compaction = self.config.compaction.enabled
+            && should_compact(
+                &self.session.messages,
+                &self.config.compaction,
+                Some(&self.session.workspace),
+                Some(&compaction_pins),
+                Some(&compaction_paths),
+            );
+        if should_run_summary_compaction && let Some(client) = client {
             match compact_messages_safe(
                 client,
                 &self.session.messages,
@@ -3799,8 +3873,10 @@ impl Engine {
         if !refreshed {
             let target_budget = context_input_budget(&self.session.model, TURN_MAX_OUTPUT_TOKENS)
                 .unwrap_or(self.config.compaction.token_threshold.max(1));
-            let trimmed = self.trim_oldest_messages_to_budget(target_budget);
-            refreshed = trimmed > 0;
+            if self.estimated_input_tokens() > target_budget {
+                let trimmed = self.trim_oldest_messages_to_budget(target_budget);
+                refreshed = trimmed > 0;
+            }
         }
 
         if !refreshed {

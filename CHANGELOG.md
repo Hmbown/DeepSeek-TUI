@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-04-24
+
+### Fixed
+- DeepSeek V4 tool-result context now preserves large file reads and command outputs instead of compacting noisy tools to a 900-character snippet after 2k characters.
+- Capacity guardrail refresh no longer performs destructive summary compaction unless the normal model-aware compaction thresholds are actually crossed.
+- V4 compaction summaries retain larger tool-result excerpts and summary input when compaction is genuinely needed.
+- The transcript now follows the bottom again when sending a new message, shows an in-app scrollbar when internally scrolled, and leaves mouse capture off in `--no-alt-screen` mode so terminal-native scrolling can work.
+
 ## [0.4.0] - 2026-04-23
 
 ### Added
