@@ -132,7 +132,11 @@ release verification script both depend on that checksum manifest.
 
 1. Set the npm package version in [npm/deepseek-tui/package.json](../npm/deepseek-tui/package.json).
 2. Set `deepseekBinaryVersion` to the GitHub release tag that should supply binaries.
-3. Run:
+3. For GitHub Actions publishing, configure npm Trusted Publishing for:
+   - Publisher: GitHub Actions
+   - Repository: `Hmbown/DeepSeek-TUI`
+   - Workflow filename: `release.yml`
+4. Run:
 
 ```bash
 cd npm/deepseek-tui
@@ -141,6 +145,9 @@ npm publish
 ```
 
 `prepublishOnly` verifies that all expected release assets and the checksum manifest exist.
+The tag release workflow publishes through npm Trusted Publishing, so it does
+not use `NPM_TOKEN`. npm requires Node 22.14.0+ and npm 11.5.1+ for that OIDC
+path; the workflow uses Node 24.
 
 ## Recovery and Rollback
 

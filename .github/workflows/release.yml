@@ -119,8 +119,8 @@ jobs:
   publish-npm:
     needs: release
     runs-on: ubuntu-latest
-    # Trusted Publishing via OIDC — no NPM_TOKEN required.
-    # Configure the trusted publisher on the npm package settings page.
+    # Trusted Publishing via OIDC. Configure npm to trust this workflow
+    # filename (`release.yml`) for Hmbown/DeepSeek-TUI.
     permissions:
       contents: read
       id-token: write
@@ -128,10 +128,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           registry-url: 'https://registry.npmjs.org'
       - name: Publish wrapper to npm
         working-directory: npm/deepseek-tui
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --provenance --access public
+        run: npm publish --access public

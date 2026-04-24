@@ -21,7 +21,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           registry-url: 'https://registry.npmjs.org'
       - name: Verify package version
         working-directory: npm/deepseek-tui
@@ -34,6 +34,4 @@ jobs:
           fi
       - name: Publish wrapper to npm
         working-directory: npm/deepseek-tui
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --provenance --access public
+        run: npm publish --access public
