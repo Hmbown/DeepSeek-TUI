@@ -2130,7 +2130,7 @@ fn should_use_mouse_capture(cli: &Cli, config: &Config, use_alt_screen: bool) ->
         .tui
         .as_ref()
         .and_then(|tui| tui.mouse_capture)
-        .unwrap_or(false)
+        .unwrap_or(true)
 }
 
 fn is_zellij() -> bool {
@@ -2477,6 +2477,54 @@ async fn run_exec_agent(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod terminal_mode_tests {
+    use super::*;
+    use clap::Parser;
+
+    fn parse_cli(args: &[&str]) -> Cli {
+        Cli::try_parse_from(args).expect("CLI args should parse")
+    }
+
+    #[test]
+    fn mouse_capture_defaults_on_when_alternate_screen_is_active() {
+        let cli = parse_cli(&["deepseek"]);
+        let config = Config::default();
+
+        assert!(should_use_mouse_capture(&cli, &config, true));
+    }
+
+    #[test]
+    fn no_mouse_capture_flag_disables_mouse_capture() {
+        let cli = parse_cli(&["deepseek", "--no-mouse-capture"]);
+        let config = Config::default();
+
+        assert!(!should_use_mouse_capture(&cli, &config, true));
+    }
+
+    #[test]
+    fn config_can_disable_default_mouse_capture() {
+        let cli = parse_cli(&["deepseek"]);
+        let config = Config {
+            tui: Some(crate::config::TuiConfig {
+                alternate_screen: None,
+                mouse_capture: Some(false),
+            }),
+            ..Config::default()
+        };
+
+        assert!(!should_use_mouse_capture(&cli, &config, true));
+    }
+
+    #[test]
+    fn mouse_capture_is_off_without_alternate_screen() {
+        let cli = parse_cli(&["deepseek", "--mouse-capture"]);
+        let config = Config::default();
+
+        assert!(!should_use_mouse_capture(&cli, &config, false));
+    }
 }
 
 #[cfg(test)]

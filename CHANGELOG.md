@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-04-24
+
+### Fixed
+- Alternate-screen TUI sessions now capture mouse input by default so wheel scrolling moves the transcript instead of exposing terminal scrollback from before the TUI started. Use `--no-mouse-capture` or `tui.mouse_capture = false` when terminal-native drag selection is preferred.
+
 ## [0.4.2] - 2026-04-24
 
 ### Fixed

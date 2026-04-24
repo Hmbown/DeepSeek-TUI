@@ -68,7 +68,7 @@ max_subagents = 5 # optional (1-20)
 # ─────────────────────────────────────────────────────────────────────────────────
 [tui]
 alternate_screen = "auto"   # auto | always | never
-mouse_capture = false       # false keeps terminal-native drag selection/copy; true enables internal mouse scrolling/selection
+mouse_capture = true        # true keeps wheel scrolling inside the TUI; false allows terminal-native drag selection/copy
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Feature Flags

@@ -163,7 +163,7 @@ If you are upgrading from older releases:
   - `[capacity].deepseek_v3_2_reasoner_prior` (float, default `4.1`)
   - `[capacity].fallback_default_prior` (float, default `3.8`)
 - `tui.alternate_screen` (string, optional): `auto`, `always`, or `never`. `auto` disables the alternate screen in Zellij; `--no-alt-screen` forces inline mode. Set `never` or run with `--no-alt-screen` when you want real terminal scrollback.
-- `tui.mouse_capture` (bool, optional, default `false`): enable internal mouse scrolling/transcript selection. Leave this off for terminal-native drag selection and highlight-to-copy; `--mouse-capture` enables it for one run, and `--no-mouse-capture` forces it off.
+- `tui.mouse_capture` (bool, optional, default `true` when the alternate screen is active): enable internal mouse scrolling/transcript selection. Set this to `false` or run with `--no-mouse-capture` for terminal-native drag selection and highlight-to-copy.
 - `hooks` (optional): lifecycle hooks configuration (see `config.example.toml`).
 - `features.*` (optional): feature flag overrides (see below).
 
