@@ -127,6 +127,7 @@ mod tests {
             workspace: PathBuf::from("/tmp/test-workspace"),
             allow_shell: false,
             use_alt_screen: true,
+            use_mouse_capture: false,
             max_subagents: 1,
             skills_dir: PathBuf::from("/tmp/test-skills"),
             memory_path: PathBuf::from("memory.md"),

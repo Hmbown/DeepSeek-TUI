@@ -79,6 +79,7 @@ pub struct RetryConfig {
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct TuiConfig {
     pub alternate_screen: Option<String>,
+    pub mouse_capture: Option<bool>,
 }
 
 /// Resolved retry policy with defaults applied.

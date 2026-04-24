@@ -4,8 +4,7 @@
 //! for older prompts and configs that still reference `web_search`.
 
 use super::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
-    optional_u64, required_str,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, optional_u64,
 };
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose};
@@ -103,7 +102,23 @@ impl ToolSpec for WebSearchTool {
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Search query"
+                    "description": "Search query. Compatibility aliases: q, or search_query[0].q."
+                },
+                "q": {
+                    "type": "string",
+                    "description": "Search query alias accepted for compatibility with web.run-style calls."
+                },
+                "search_query": {
+                    "type": "array",
+                    "description": "Compatibility form from web.run: [{\"q\":\"...\", \"max_results\": 5}]",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "q": { "type": "string" },
+                            "query": { "type": "string" },
+                            "max_results": { "type": "integer" }
+                        }
+                    }
                 },
                 "max_results": {
                     "type": "integer",
@@ -113,8 +128,7 @@ impl ToolSpec for WebSearchTool {
                     "type": "integer",
                     "description": "Timeout in milliseconds (default: 15000, max: 60000)"
                 }
-            },
-            "required": ["query"]
+            }
         })
     }
 
@@ -127,17 +141,13 @@ impl ToolSpec for WebSearchTool {
     }
 
     async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let query = required_str(&input, "query")?.trim().to_string();
+        let query = extract_search_query(&input)?;
         if query.is_empty() {
             return Err(ToolError::invalid_input("Query cannot be empty"));
         }
-        let max_results = usize::try_from(optional_u64(
-            &input,
-            "max_results",
-            DEFAULT_MAX_RESULTS as u64,
-        ))
-        .unwrap_or(DEFAULT_MAX_RESULTS)
-        .clamp(1, MAX_RESULTS);
+        let max_results =
+            usize::try_from(optional_search_max_results(&input)).unwrap_or(DEFAULT_MAX_RESULTS);
+        let max_results = max_results.clamp(1, MAX_RESULTS);
         let timeout_ms = optional_u64(&input, "timeout_ms", DEFAULT_TIMEOUT_MS).min(60_000);
 
         let client = reqwest::Client::builder()
@@ -220,6 +230,58 @@ impl ToolSpec for WebSearchTool {
 
         ToolResult::json(&response).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
+}
+
+fn extract_search_query(input: &Value) -> Result<String, ToolError> {
+    for key in ["query", "q"] {
+        if let Some(value) = input.get(key) {
+            let Some(query) = value.as_str() else {
+                return Err(ToolError::invalid_input(format!(
+                    "Field '{key}' must be a string"
+                )));
+            };
+            let query = query.trim();
+            if !query.is_empty() {
+                return Ok(query.to_string());
+            }
+        }
+    }
+
+    for item in search_query_items(input) {
+        for key in ["q", "query"] {
+            if let Some(value) = item.get(key) {
+                let Some(query) = value.as_str() else {
+                    return Err(ToolError::invalid_input(format!(
+                        "Field 'search_query[].{key}' must be a string"
+                    )));
+                };
+                let query = query.trim();
+                if !query.is_empty() {
+                    return Ok(query.to_string());
+                }
+            }
+        }
+    }
+
+    Err(ToolError::missing_field("query"))
+}
+
+fn optional_search_max_results(input: &Value) -> u64 {
+    if let Some(value) = input.get("max_results").and_then(Value::as_u64) {
+        return value;
+    }
+    search_query_items(input)
+        .filter_map(|item| item.get("max_results").and_then(Value::as_u64))
+        .next()
+        .unwrap_or(DEFAULT_MAX_RESULTS as u64)
+}
+
+fn search_query_items(input: &Value) -> impl Iterator<Item = &Value> {
+    input
+        .get("search_query")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flat_map(|items| items.iter())
 }
 
 async fn run_bing_search(
@@ -426,4 +488,39 @@ fn extract_query_param(url: &str, key: &str) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{extract_search_query, optional_search_max_results};
+    use serde_json::json;
+
+    #[test]
+    fn extract_search_query_accepts_legacy_query() {
+        let query =
+            extract_search_query(&json!({"query": " deepseek v4 "})).expect("query should parse");
+        assert_eq!(query, "deepseek v4");
+    }
+
+    #[test]
+    fn extract_search_query_accepts_q_alias() {
+        let query =
+            extract_search_query(&json!({"q": "deepseek v4 pro"})).expect("q alias should parse");
+        assert_eq!(query, "deepseek v4 pro");
+    }
+
+    #[test]
+    fn extract_search_query_accepts_web_run_shape() {
+        let input = json!({"search_query": [{"q": "deepseek api", "max_results": 3}]});
+        let query = extract_search_query(&input).expect("web.run shape should parse");
+        assert_eq!(query, "deepseek api");
+        assert_eq!(optional_search_max_results(&input), 3);
+    }
+
+    #[test]
+    fn extract_search_query_rejects_missing_query() {
+        let err = extract_search_query(&json!({"max_results": 2}))
+            .expect_err("missing query should fail");
+        assert!(format!("{err}").contains("missing required field 'query'"));
+    }
 }

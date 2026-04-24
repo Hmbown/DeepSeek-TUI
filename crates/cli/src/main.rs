@@ -64,6 +64,12 @@ struct Cli {
     api_key: Option<String>,
     #[arg(long)]
     base_url: Option<String>,
+    #[arg(long = "no-alt-screen")]
+    no_alt_screen: bool,
+    #[arg(long = "mouse-capture", conflicts_with = "no_mouse_capture")]
+    mouse_capture: bool,
+    #[arg(long = "no-mouse-capture", conflicts_with = "mouse_capture")]
+    no_mouse_capture: bool,
     #[arg(value_name = "PROMPT")]
     prompt: Option<String>,
     #[command(subcommand)]
@@ -764,6 +770,15 @@ fn delegate_to_tui(
     if let Some(profile) = cli.profile.as_ref() {
         cmd.arg("--profile").arg(profile);
     }
+    if cli.no_alt_screen {
+        cmd.arg("--no-alt-screen");
+    }
+    if cli.mouse_capture {
+        cmd.arg("--mouse-capture");
+    }
+    if cli.no_mouse_capture {
+        cmd.arg("--no-mouse-capture");
+    }
     cmd.args(passthrough);
 
     if resolved_runtime.provider != ProviderKind::Deepseek {
@@ -1155,6 +1170,8 @@ mod tests {
             "https://api.openai.com/v1",
             "--api-key",
             "sk-test",
+            "--no-alt-screen",
+            "--no-mouse-capture",
             "model",
             "resolve",
             "gpt-4.1",
@@ -1171,6 +1188,9 @@ mod tests {
         assert_eq!(cli.sandbox_mode.as_deref(), Some("workspace-write"));
         assert_eq!(cli.base_url.as_deref(), Some("https://api.openai.com/v1"));
         assert_eq!(cli.api_key.as_deref(), Some("sk-test"));
+        assert!(cli.no_alt_screen);
+        assert!(cli.no_mouse_capture);
+        assert!(!cli.mouse_capture);
     }
 
     #[test]
@@ -1205,6 +1225,9 @@ mod tests {
             "--api-key",
             "--approval-policy",
             "--sandbox-mode",
+            "--no-alt-screen",
+            "--mouse-capture",
+            "--no-mouse-capture",
         ] {
             assert!(
                 rendered.contains(token),

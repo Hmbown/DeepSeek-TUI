@@ -54,6 +54,7 @@ mod tests {
                 workspace: PathBuf::from("."),
                 allow_shell: false,
                 use_alt_screen: false,
+                use_mouse_capture: false,
                 max_subagents: 2,
                 skills_dir: PathBuf::from("."),
                 memory_path: PathBuf::from("memory.md"),

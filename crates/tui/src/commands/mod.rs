@@ -3,6 +3,7 @@
 //! This module provides a modular command system inspired by Codex-rs.
 //! Commands are organized by category and dispatched through a central registry.
 
+mod attachment;
 mod config;
 mod core;
 mod debug;
@@ -161,6 +162,12 @@ pub const COMMANDS: &[CommandInfo] = &[
         aliases: &[],
         description: "Append note to persistent notes file (.deepseek/notes.md)",
         usage: "/note <text>",
+    },
+    CommandInfo {
+        name: "attach",
+        aliases: &["image", "media"],
+        description: "Attach a local image or video path to the next message",
+        usage: "/attach <path>",
     },
     CommandInfo {
         name: "task",
@@ -327,6 +334,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "links" | "dashboard" | "api" => core::deepseek_links(),
         "home" | "stats" | "overview" => core::home_dashboard(app),
         "note" => note::note(app, arg),
+        "attach" | "image" | "media" => attachment::attach(app, arg),
         "task" | "tasks" => task::task(app, arg),
 
         // Session commands
@@ -509,6 +517,7 @@ mod tests {
             workspace: PathBuf::from("."),
             allow_shell: false,
             use_alt_screen: true,
+            use_mouse_capture: false,
             max_subagents: 1,
             skills_dir: PathBuf::from("."),
             memory_path: PathBuf::from("memory.md"),

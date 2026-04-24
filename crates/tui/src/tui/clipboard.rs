@@ -91,7 +91,7 @@ fn save_image_to_workspace(workspace: &Path, image: &ImageData) -> Result<PathBu
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs();
+        .as_millis();
     let path = dir.join(format!("clipboard-{timestamp}.ppm"));
 
     let mut data = Vec::with_capacity((image.width * image.height * 3) + 64);

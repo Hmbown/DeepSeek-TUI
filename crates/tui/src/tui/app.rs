@@ -1,7 +1,7 @@
 //! Application state for the `DeepSeek` TUI.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use ratatui::layout::Rect;
@@ -316,6 +316,8 @@ pub struct TuiOptions {
     pub allow_shell: bool,
     /// Use the alternate screen buffer (fullscreen TUI).
     pub use_alt_screen: bool,
+    /// Capture mouse input for internal scrolling/selection.
+    pub use_mouse_capture: bool,
     /// Maximum number of concurrent sub-agents.
     pub max_subagents: usize,
     #[allow(dead_code)]
@@ -383,6 +385,7 @@ pub struct App {
     pub workspace: PathBuf,
     pub skills_dir: PathBuf,
     pub use_alt_screen: bool,
+    pub use_mouse_capture: bool,
     #[allow(dead_code)]
     pub system_prompt: Option<SystemPrompt>,
     pub input_history: Vec<String>,
@@ -581,6 +584,7 @@ impl App {
             workspace,
             allow_shell,
             use_alt_screen,
+            use_mouse_capture,
             max_subagents,
             skills_dir: global_skills_dir,
             memory_path: _,
@@ -683,6 +687,7 @@ impl App {
             workspace,
             skills_dir,
             use_alt_screen,
+            use_mouse_capture,
             system_prompt: None,
             input_history: Vec::new(),
             history_index: None,
@@ -1103,6 +1108,31 @@ impl App {
         self.paste_burst.clear_after_explicit_paste();
     }
 
+    pub fn insert_media_attachment(&mut self, kind: &str, path: &Path, description: Option<&str>) {
+        let reference = media_attachment_reference(kind, path, description);
+        let cursor = self.cursor_position.min(char_count(&self.input));
+        let byte_index = byte_index_at_char(&self.input, cursor);
+        let needs_prefix_newline = self.input[..byte_index]
+            .chars()
+            .last()
+            .is_some_and(|ch| !ch.is_whitespace());
+        let needs_suffix_newline = self.input[byte_index..]
+            .chars()
+            .next()
+            .is_some_and(|ch| !ch.is_whitespace());
+
+        let mut inserted = String::new();
+        if needs_prefix_newline {
+            inserted.push('\n');
+        }
+        inserted.push_str(&reference);
+        if needs_suffix_newline || self.input[byte_index..].is_empty() {
+            inserted.push('\n');
+        }
+        self.insert_str(&inserted);
+        self.paste_burst.clear_after_explicit_paste();
+    }
+
     pub fn flush_paste_burst_if_due(&mut self, now: Instant) -> bool {
         match self.paste_burst.flush_if_due(now) {
             FlushResult::Paste(text) => {
@@ -1156,11 +1186,8 @@ impl App {
                     self.insert_paste_text(&text);
                 }
                 ClipboardContent::Image { path, description } => {
-                    // Insert image path reference
-                    let reference = format!("[Image: {} at {}]", description, path.display());
-                    self.insert_str(&reference);
-                    self.paste_burst.clear_after_explicit_paste();
-                    self.status_message = Some(format!("Pasted image: {}", path.display()));
+                    self.insert_media_attachment("image", &path, Some(&description));
+                    self.status_message = Some(format!("Attached image: {}", path.display()));
                 }
             }
         }
@@ -1358,6 +1385,19 @@ impl App {
     }
 }
 
+pub fn media_attachment_reference(kind: &str, path: &Path, description: Option<&str>) -> String {
+    match description {
+        Some(description) if !description.trim().is_empty() => {
+            format!(
+                "[Attached {kind}: {} at {}]",
+                description.trim(),
+                path.display()
+            )
+        }
+        _ => format!("[Attached {kind}: {}]", path.display()),
+    }
+}
+
 // === Actions ===
 
 /// Actions emitted by the UI event loop.
@@ -1404,6 +1444,7 @@ mod tests {
             workspace: PathBuf::from("."),
             allow_shell: yolo,
             use_alt_screen: true,
+            use_mouse_capture: false,
             max_subagents: 1,
             skills_dir: PathBuf::from("."),
             memory_path: PathBuf::from("memory.md"),

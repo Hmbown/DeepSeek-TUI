@@ -116,6 +116,14 @@ struct Cli {
     #[arg(long = "no-alt-screen")]
     no_alt_screen: bool,
 
+    /// Enable TUI mouse capture for internal scrolling and transcript selection
+    #[arg(long = "mouse-capture", conflicts_with = "no_mouse_capture")]
+    mouse_capture: bool,
+
+    /// Disable TUI mouse capture so terminal-native text selection works
+    #[arg(long = "no-mouse-capture", conflicts_with = "mouse_capture")]
+    no_mouse_capture: bool,
+
     /// Skip onboarding screens
     #[arg(long)]
     skip_onboarding: bool,
@@ -2111,6 +2119,20 @@ fn should_use_alt_screen(cli: &Cli, config: &Config) -> bool {
     }
 }
 
+fn should_use_mouse_capture(cli: &Cli, config: &Config, use_alt_screen: bool) -> bool {
+    if !use_alt_screen || cli.no_mouse_capture {
+        return false;
+    }
+    if cli.mouse_capture {
+        return true;
+    }
+    config
+        .tui
+        .as_ref()
+        .and_then(|tui| tui.mouse_capture)
+        .unwrap_or(false)
+}
+
 fn is_zellij() -> bool {
     std::env::var_os("ZELLIJ").is_some()
 }
@@ -2133,6 +2155,7 @@ async fn run_interactive(
         |value| value.clamp(1, MAX_SUBAGENTS),
     );
     let use_alt_screen = should_use_alt_screen(cli, config);
+    let use_mouse_capture = should_use_mouse_capture(cli, config, use_alt_screen);
 
     tui::run_tui(
         config,
@@ -2141,6 +2164,7 @@ async fn run_interactive(
             workspace,
             allow_shell: cli.yolo || config.allow_shell(),
             use_alt_screen,
+            use_mouse_capture,
             skills_dir: config.skills_dir(),
             memory_path: config.memory_path(),
             notes_path: config.notes_path(),

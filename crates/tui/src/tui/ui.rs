@@ -108,10 +108,13 @@ const SIDEBAR_VISIBLE_MIN_WIDTH: u16 = 100;
 /// ```
 pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     let use_alt_screen = options.use_alt_screen;
+    let use_mouse_capture = options.use_mouse_capture;
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     if use_alt_screen {
         execute!(stdout, EnterAlternateScreen)?;
+    }
+    if use_mouse_capture {
         execute!(stdout, EnableMouseCapture)?;
     }
     execute!(stdout, EnableBracketedPaste)?;
@@ -269,7 +272,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     if use_alt_screen {
         execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     }
-    if use_alt_screen {
+    if use_mouse_capture {
         execute!(terminal.backend_mut(), DisableMouseCapture)?;
     }
     execute!(terminal.backend_mut(), DisableBracketedPaste)?;
@@ -350,6 +353,7 @@ async fn run_event_loop(
                         let committed = app.streaming_state.commit_text(0);
                         if !committed.is_empty() {
                             append_streaming_text(app, index, &committed);
+                            transcript_batch_updated = true;
                         }
                     }
                     EngineEvent::MessageComplete { .. } => {
@@ -425,6 +429,7 @@ async fn run_event_loop(
                         let committed = app.streaming_state.commit_text(0);
                         if !committed.is_empty() {
                             append_streaming_text(app, index, &committed);
+                            transcript_batch_updated = true;
                         }
                     }
                     EngineEvent::ThinkingComplete { .. } => {
@@ -623,13 +628,13 @@ async fn run_event_loop(
                     }
                     EngineEvent::PauseEvents => {
                         if !event_broker.is_paused() {
-                            pause_terminal(terminal, app.use_alt_screen)?;
+                            pause_terminal(terminal, app.use_alt_screen, app.use_mouse_capture)?;
                             event_broker.pause_events();
                         }
                     }
                     EngineEvent::ResumeEvents => {
                         if event_broker.is_paused() {
-                            resume_terminal(terminal, app.use_alt_screen)?;
+                            resume_terminal(terminal, app.use_alt_screen, app.use_mouse_capture)?;
                             event_broker.resume_events();
                         }
                     }
@@ -893,7 +898,9 @@ async fn run_event_loop(
                 continue;
             }
 
-            if let Event::Mouse(mouse) = evt {
+            if app.use_mouse_capture
+                && let Event::Mouse(mouse) = evt
+            {
                 handle_mouse_event(app, mouse);
                 continue;
             }
@@ -3140,26 +3147,29 @@ fn run_git_query(workspace: &Path, args: &[&str]) -> std::io::Result<String> {
 fn pause_terminal(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     use_alt_screen: bool,
+    use_mouse_capture: bool,
 ) -> Result<()> {
     disable_raw_mode()?;
     if use_alt_screen {
         execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     }
-    execute!(
-        terminal.backend_mut(),
-        DisableMouseCapture,
-        DisableBracketedPaste
-    )?;
+    if use_mouse_capture {
+        execute!(terminal.backend_mut(), DisableMouseCapture)?;
+    }
+    execute!(terminal.backend_mut(), DisableBracketedPaste)?;
     Ok(())
 }
 
 fn resume_terminal(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     use_alt_screen: bool,
+    use_mouse_capture: bool,
 ) -> Result<()> {
     enable_raw_mode()?;
     if use_alt_screen {
         execute!(terminal.backend_mut(), EnterAlternateScreen)?;
+    }
+    if use_mouse_capture {
         execute!(terminal.backend_mut(), EnableMouseCapture)?;
     }
     execute!(terminal.backend_mut(), EnableBracketedPaste)?;

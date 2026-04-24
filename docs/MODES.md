@@ -79,6 +79,8 @@ Run `deepseek --help` for the canonical list. Common flags:
 - `-r, --resume <ID|PREFIX|latest>`: resume a saved session
 - `-c, --continue`: resume the most recent session
 - `--max-subagents <N>`: clamp to `1..=20`
+- `--no-alt-screen`: run inline so native terminal scrollback works
+- `--mouse-capture` / `--no-mouse-capture`: opt in or out of internal mouse scrolling/selection
 - `--profile <NAME>`: select config profile
 - `--config <PATH>`: config file path
 - `-v, --verbose`: verbose logging

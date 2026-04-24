@@ -162,7 +162,8 @@ If you are upgrading from older releases:
   - `[capacity].deepseek_v3_2_chat_prior` (float, default `3.9`)
   - `[capacity].deepseek_v3_2_reasoner_prior` (float, default `4.1`)
   - `[capacity].fallback_default_prior` (float, default `3.8`)
-- `tui.alternate_screen` (string, optional): `auto`, `always`, or `never`. `auto` disables the alternate screen in Zellij; `--no-alt-screen` forces inline mode.
+- `tui.alternate_screen` (string, optional): `auto`, `always`, or `never`. `auto` disables the alternate screen in Zellij; `--no-alt-screen` forces inline mode. Set `never` or run with `--no-alt-screen` when you want real terminal scrollback.
+- `tui.mouse_capture` (bool, optional, default `false`): enable internal mouse scrolling/transcript selection. Leave this off for terminal-native drag selection and highlight-to-copy; `--mouse-capture` enables it for one run, and `--no-mouse-capture` forces it off.
 - `hooks` (optional): lifecycle hooks configuration (see `config.example.toml`).
 - `features.*` (optional): feature flag overrides (see below).
 
@@ -194,6 +195,10 @@ You can also override features for a single run:
 - `deepseek-tui --disable subagents`
 
 Use `deepseek-tui features list` to inspect known flags and their effective state.
+
+## Local Media Attachments
+
+`Ctrl+V` can attach an image from the clipboard, and `/attach <path>` can attach a local image or video file path to the next message. DeepSeek's public Chat Completions API currently accepts text message content, so attachments are sent as explicit local path references instead of native image/video payloads.
 
 ## Managed Configuration and Requirements
 

@@ -199,6 +199,7 @@ mod tests {
             workspace: tmpdir.path().to_path_buf(),
             allow_shell: false,
             use_alt_screen: true,
+            use_mouse_capture: false,
             max_subagents: 1,
             skills_dir: tmpdir.path().join("skills"),
             memory_path: tmpdir.path().join("memory.md"),
