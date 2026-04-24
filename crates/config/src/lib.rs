@@ -580,7 +580,10 @@ impl EnvRuntimeOverrides {
     fn api_key_for(&self, provider: ProviderKind) -> Option<String> {
         match provider {
             ProviderKind::Deepseek => self.deepseek_api_key.clone(),
-            ProviderKind::NvidiaNim => self.nvidia_api_key.clone(),
+            ProviderKind::NvidiaNim => self
+                .nvidia_api_key
+                .clone()
+                .or_else(|| self.deepseek_api_key.clone()),
             ProviderKind::Openai => self.openai_api_key.clone(),
         }
     }
@@ -778,6 +781,23 @@ mod tests {
         assert_eq!(resolved.api_key.as_deref(), Some("nim-env-key"));
         assert_eq!(resolved.base_url, "https://nim-env.example/v1");
         assert_eq!(resolved.model, DEFAULT_NVIDIA_NIM_MODEL);
+    }
+
+    #[test]
+    fn nvidia_nim_provider_can_fallback_to_deepseek_api_key_env() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        // Safety: test-only environment mutation guarded by a module mutex.
+        unsafe {
+            env::set_var("DEEPSEEK_PROVIDER", "nvidia-nim");
+            env::set_var("DEEPSEEK_API_KEY", "deepseek-compat-key");
+        }
+
+        let config = ConfigToml::default();
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::NvidiaNim);
+        assert_eq!(resolved.api_key.as_deref(), Some("deepseek-compat-key"));
     }
 
     #[test]

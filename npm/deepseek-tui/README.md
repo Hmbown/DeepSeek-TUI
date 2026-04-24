@@ -45,9 +45,9 @@ deepseek --provider nvidia-nim
 ```
 
 For a single process, set `DEEPSEEK_PROVIDER=nvidia-nim` and `NVIDIA_API_KEY`
-or `NVIDIA_NIM_API_KEY`. The NIM default model is
-`deepseek-ai/deepseek-v4-pro` and the default base URL is
-`https://integrate.api.nvidia.com/v1`. With `--provider nvidia-nim`,
+or `NVIDIA_NIM_API_KEY` (with `DEEPSEEK_API_KEY` as a compatibility fallback).
+The NIM default model is `deepseek-ai/deepseek-v4-pro` and the default base URL
+is `https://integrate.api.nvidia.com/v1`. With `--provider nvidia-nim`,
 `--model deepseek-v4-flash` maps to `deepseek-ai/deepseek-v4-flash`.
 
 ## Supported platforms

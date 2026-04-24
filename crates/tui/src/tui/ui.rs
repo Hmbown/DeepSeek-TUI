@@ -3531,6 +3531,11 @@ fn context_usage_snapshot(app: &App) -> Option<(i64, u32, f64)> {
             {
                 estimated
             }
+            (Some(reported), Some(estimated))
+                if is_reported_context_inflated(reported, estimated) =>
+            {
+                estimated
+            }
             (Some(reported), _) => reported,
             (None, Some(estimated)) => estimated,
             (None, None) => return None,
@@ -3541,6 +3546,16 @@ fn context_usage_snapshot(app: &App) -> Option<(i64, u32, f64)> {
     let used_f64 = used as f64;
     let percent = ((used_f64 / max_f64) * 100.0).clamp(0.0, 100.0);
     Some((used, max, percent))
+}
+
+fn is_reported_context_inflated(reported: i64, estimated: i64) -> bool {
+    const MIN_ABSOLUTE_GAP: i64 = 4_096;
+    if estimated <= 0 || reported <= estimated {
+        return false;
+    }
+
+    reported.saturating_sub(estimated) >= MIN_ABSOLUTE_GAP
+        && reported >= estimated.saturating_mul(4)
 }
 
 fn maybe_warn_context_pressure(app: &mut App) {

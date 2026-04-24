@@ -501,14 +501,15 @@ fn enforce_tool_call_pairs(messages: &[Message], pinned_indices: &mut BTreeSet<u
     }
 }
 
-fn estimate_tokens_for_message(message: &Message) -> usize {
+fn estimate_tokens_for_message(message: &Message, include_thinking: bool) -> usize {
     message
         .content
         .iter()
         .map(|c| match c {
             ContentBlock::Text { text, .. } => text.len() / 4,
             // Historical reasoning blocks are UI/session metadata for DeepSeek.
-            // They are only sent back during an in-progress tool-call round.
+            // Only current-turn tool-call reasoning is sent back to the API.
+            ContentBlock::Thinking { thinking } if include_thinking => thinking.len() / 4,
             ContentBlock::Thinking { .. } => 0,
             ContentBlock::ToolUse { input, .. } => serde_json::to_string(input)
                 .map(|s| s.len() / 4)
@@ -523,7 +524,51 @@ fn estimate_tokens_for_message(message: &Message) -> usize {
 
 pub fn estimate_tokens(messages: &[Message]) -> usize {
     // Rough estimate: ~4 chars per token
-    messages.iter().map(estimate_tokens_for_message).sum()
+    let current_turn_start = messages.iter().rposition(is_text_user_message);
+    messages
+        .iter()
+        .enumerate()
+        .map(|(index, message)| {
+            let include_thinking = current_turn_start.is_some_and(|start| index > start)
+                && message_has_tool_use(message)
+                && !has_later_assistant_text(messages, index);
+            estimate_tokens_for_message(message, include_thinking)
+        })
+        .sum()
+}
+
+fn is_text_user_message(message: &Message) -> bool {
+    message.role == "user"
+        && message.content.iter().any(|block| {
+            matches!(
+                block,
+                ContentBlock::Text { text, .. } if !text.trim().is_empty()
+            )
+        })
+}
+
+fn message_has_tool_use(message: &Message) -> bool {
+    message
+        .content
+        .iter()
+        .any(|block| matches!(block, ContentBlock::ToolUse { .. }))
+}
+
+fn has_later_assistant_text(messages: &[Message], message_index: usize) -> bool {
+    messages
+        .iter()
+        .skip(message_index.saturating_add(1))
+        .any(is_text_assistant_message)
+}
+
+fn is_text_assistant_message(message: &Message) -> bool {
+    message.role == "assistant"
+        && message.content.iter().any(|block| {
+            matches!(
+                block,
+                ContentBlock::Text { text, .. } if !text.trim().is_empty()
+            )
+        })
 }
 
 fn estimate_text_tokens_conservative(text: &str) -> usize {
@@ -576,14 +621,14 @@ pub fn should_compact(
     let pinned_tokens: usize = plan
         .pinned_indices
         .iter()
-        .map(|&idx| estimate_tokens_for_message(&messages[idx]))
+        .map(|&idx| estimate_tokens_for_message(&messages[idx], false))
         .sum();
     let pinned_count = plan.pinned_indices.len();
 
     let token_estimate: usize = plan
         .summarize_indices
         .iter()
-        .map(|&idx| estimate_tokens_for_message(&messages[idx]))
+        .map(|&idx| estimate_tokens_for_message(&messages[idx], false))
         .sum();
     let message_count = plan.summarize_indices.len();
 
@@ -1110,6 +1155,76 @@ mod tests {
         }];
         let tokens = estimate_tokens(&messages);
         assert!(tokens > 0 && tokens < 10);
+    }
+
+    #[test]
+    fn estimate_tokens_counts_current_tool_round_thinking_only() {
+        let thinking = "reasoning ".repeat(800);
+        let current_messages = vec![
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "Use a tool".to_string(),
+                    cache_control: None,
+                }],
+            },
+            Message {
+                role: "assistant".to_string(),
+                content: vec![
+                    ContentBlock::Thinking {
+                        thinking: thinking.clone(),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "tool-1".to_string(),
+                        name: "read_file".to_string(),
+                        input: serde_json::json!({"path": "Cargo.toml"}),
+                        caller: None,
+                    },
+                ],
+            },
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "tool-1".to_string(),
+                    content: "manifest".to_string(),
+                    is_error: None,
+                    content_blocks: None,
+                }],
+            },
+        ];
+        let historical_messages = {
+            let mut messages = current_messages.clone();
+            messages.push(Message {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "Done.".to_string(),
+                    cache_control: None,
+                }],
+            });
+            messages.push(Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "Next question.".to_string(),
+                    cache_control: None,
+                }],
+            });
+            messages
+        };
+        let completed_messages = {
+            let mut messages = current_messages.clone();
+            messages.push(Message {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "Done.".to_string(),
+                    cache_control: None,
+                }],
+            });
+            messages
+        };
+
+        assert!(estimate_tokens(&current_messages) > thinking.len() / 5);
+        assert!(estimate_tokens(&completed_messages) < thinking.len() / 8);
+        assert!(estimate_tokens(&historical_messages) < thinking.len() / 8);
     }
 
     #[test]

@@ -25,7 +25,9 @@ For NVIDIA NIM-hosted DeepSeek V4 Pro, set `provider = "nvidia-nim"` or pass
 `[providers.nvidia_nim]` and forwards the resolved key, base URL, provider, and
 model to the TUI process. Use
 `deepseek auth set --provider nvidia-nim --api-key "YOUR_NVIDIA_API_KEY"` to
-save the NIM key through the facade.
+save the NIM key through the facade. `DEEPSEEK_API_KEY` remains a compatibility
+fallback when `DEEPSEEK_PROVIDER=nvidia-nim`, but `NVIDIA_API_KEY` or
+`NVIDIA_NIM_API_KEY` is preferred.
 
 To bootstrap MCP and skills directories at their resolved paths, run `deepseek-tui setup`.
 To only scaffold MCP, run `deepseek-tui mcp init`.
@@ -70,7 +72,7 @@ These override config values:
 - `DEEPSEEK_BASE_URL`
 - `DEEPSEEK_PROVIDER` (`deepseek|nvidia-nim`)
 - `DEEPSEEK_MODEL` or `DEEPSEEK_DEFAULT_TEXT_MODEL`
-- `NVIDIA_API_KEY` or `NVIDIA_NIM_API_KEY` (used when provider is `nvidia-nim`)
+- `NVIDIA_API_KEY` or `NVIDIA_NIM_API_KEY` (preferred when provider is `nvidia-nim`; falls back to `DEEPSEEK_API_KEY`)
 - `NVIDIA_BASE_URL` or `NVIDIA_NIM_BASE_URL`
 - `NVIDIA_NIM_MODEL`
 - `DEEPSEEK_SKILLS_DIR`

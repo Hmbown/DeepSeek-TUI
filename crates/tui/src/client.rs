@@ -1351,6 +1351,7 @@ fn build_chat_messages_with_reasoning(
 ) -> Vec<Value> {
     let mut out = Vec::new();
     let mut pending_tool_calls: HashSet<String> = HashSet::new();
+    let current_turn_start = messages.iter().rposition(is_text_user_message);
 
     if let Some(instructions) = system_to_instructions(system.cloned())
         && !instructions.trim().is_empty()
@@ -1361,7 +1362,7 @@ fn build_chat_messages_with_reasoning(
         }));
     }
 
-    for message in messages {
+    for (message_index, message) in messages.iter().enumerate() {
         let role = message.role.as_str();
         let mut text_parts = Vec::new();
         let mut thinking_parts = Vec::new();
@@ -1423,16 +1424,22 @@ fn build_chat_messages_with_reasoning(
             let reasoning_content = thinking_parts.join("\n");
             let has_text = !content.trim().is_empty();
             let mut has_tool_calls = !tool_calls.is_empty();
-            let include_reasoning_for_turn = include_reasoning && has_tool_calls;
+            let include_reasoning_for_turn = include_reasoning
+                && has_tool_calls
+                && current_turn_start.is_some_and(|start| message_index > start)
+                && !has_later_assistant_text(messages, message_index);
             let has_reasoning = include_reasoning_for_turn && !reasoning_content.trim().is_empty();
 
             // DeepSeek thinking-mode tool turns are stateful within the
             // stateless Chat Completions transcript: if an assistant performed
-            // a tool call, its `reasoning_content` must be replayed in every
-            // later request. Older checkpoints could lose that field because
-            // the UI display stream had no visible text block. Do not forward
-            // those malformed tool calls; dropping the stale tool round is
-            // better than guaranteeing a provider-side 400.
+            // a tool call in the current user turn, its `reasoning_content`
+            // must be replayed while continuing that tool round. Once a new
+            // user text turn starts, DeepSeek recommends clearing historical
+            // reasoning content so the context is not dominated by old CoT.
+            // Older checkpoints could lose the current-round field because the
+            // UI display stream had no visible text block. Do not forward those
+            // malformed current tool calls; dropping that round is better than
+            // guaranteeing a provider-side 400.
             if include_reasoning_for_turn && !has_reasoning {
                 logging::warn(
                     "Dropping DeepSeek tool_calls with missing reasoning_content from assistant message",
@@ -1609,6 +1616,33 @@ fn build_chat_messages_with_reasoning(
     }
 
     out
+}
+
+fn is_text_user_message(message: &Message) -> bool {
+    message.role == "user"
+        && message.content.iter().any(|block| {
+            matches!(
+                block,
+                ContentBlock::Text { text, .. } if !text.trim().is_empty()
+            )
+        })
+}
+
+fn has_later_assistant_text(messages: &[Message], message_index: usize) -> bool {
+    messages
+        .iter()
+        .skip(message_index.saturating_add(1))
+        .any(is_text_assistant_message)
+}
+
+fn is_text_assistant_message(message: &Message) -> bool {
+    message.role == "assistant"
+        && message.content.iter().any(|block| {
+            matches!(
+                block,
+                ContentBlock::Text { text, .. } if !text.trim().is_empty()
+            )
+        })
 }
 
 fn tool_to_chat(tool: &Tool) -> Value {
@@ -2403,7 +2437,7 @@ mod tests {
     }
 
     #[test]
-    fn chat_messages_preserve_prior_tool_round_reasoning_after_new_user_turn() {
+    fn chat_messages_clear_prior_tool_round_reasoning_after_new_user_turn() {
         let messages = vec![
             Message {
                 role: "user".to_string(),
@@ -2455,14 +2489,62 @@ mod tests {
             .iter()
             .find(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
             .expect("assistant message");
-        assert_eq!(
-            assistant.get("reasoning_content").and_then(Value::as_str),
-            Some("Need to call a tool")
-        );
+        assert!(assistant.get("tool_calls").is_some());
+        assert!(assistant.get("reasoning_content").is_none());
     }
 
     #[test]
-    fn chat_messages_preserve_v4_tool_round_reasoning() {
+    fn chat_messages_clear_completed_tool_round_reasoning_after_final_answer() {
+        let messages = vec![
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "Need the date".to_string(),
+                    cache_control: None,
+                }],
+            },
+            Message {
+                role: "assistant".to_string(),
+                content: vec![
+                    ContentBlock::Thinking {
+                        thinking: "Need to call a tool".to_string(),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "tool-1".to_string(),
+                        name: "get_date".to_string(),
+                        input: json!({}),
+                        caller: None,
+                    },
+                ],
+            },
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "tool-1".to_string(),
+                    content: "2026-04-23".to_string(),
+                    is_error: None,
+                    content_blocks: None,
+                }],
+            },
+            Message {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "It is 2026-04-23.".to_string(),
+                    cache_control: None,
+                }],
+            },
+        ];
+        let out = build_chat_messages(None, &messages, "deepseek-v4-pro");
+        let assistant = out
+            .iter()
+            .find(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
+            .expect("assistant message");
+        assert!(assistant.get("tool_calls").is_some());
+        assert!(assistant.get("reasoning_content").is_none());
+    }
+
+    #[test]
+    fn chat_messages_clear_v4_tool_round_reasoning_after_new_user_turn() {
         let messages = vec![
             Message {
                 role: "user".to_string(),
@@ -2515,16 +2597,20 @@ mod tests {
             .iter()
             .find(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
             .expect("assistant message");
-        assert_eq!(
-            assistant.get("reasoning_content").and_then(Value::as_str),
-            Some("Need a tool for this")
-        );
         assert!(assistant.get("tool_calls").is_some());
+        assert!(assistant.get("reasoning_content").is_none());
     }
 
     #[test]
     fn chat_messages_drop_v4_tool_round_missing_reasoning() {
         let messages = vec![
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "Use a tool".to_string(),
+                    cache_control: None,
+                }],
+            },
             Message {
                 role: "assistant".to_string(),
                 content: vec![ContentBlock::ToolUse {
@@ -2541,13 +2627,6 @@ mod tests {
                     content: "workspace manifest".to_string(),
                     is_error: None,
                     content_blocks: None,
-                }],
-            },
-            Message {
-                role: "user".to_string(),
-                content: vec![ContentBlock::Text {
-                    text: "continue".to_string(),
-                    cache_control: None,
                 }],
             },
         ];

@@ -373,6 +373,25 @@ fn context_usage_snapshot_prefers_estimate_when_reported_exceeds_window() {
 }
 
 #[test]
+fn context_usage_snapshot_prefers_estimate_when_reported_is_inflated_by_old_reasoning() {
+    let mut app = create_test_app();
+    app.last_prompt_tokens = Some(980_000);
+    app.api_messages = vec![Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "small current context".to_string(),
+            cache_control: None,
+        }],
+    }];
+
+    let (used, max, percent) =
+        context_usage_snapshot(&app).expect("context usage should be available");
+    assert_eq!(max, 1_000_000);
+    assert!(used < 10_000);
+    assert!(percent < 2.0);
+}
+
+#[test]
 fn context_usage_snapshot_prefers_live_estimate_while_loading() {
     let mut app = create_test_app();
     app.is_loading = true;
@@ -397,7 +416,13 @@ fn context_usage_snapshot_prefers_live_estimate_while_loading() {
 #[test]
 fn should_auto_compact_before_send_respects_threshold_and_setting() {
     let mut app = create_test_app();
-    app.last_prompt_tokens = Some(950_000);
+    app.api_messages = vec![Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "context ".repeat(400_000),
+            cache_control: None,
+        }],
+    }];
     app.auto_compact = true;
     assert!(should_auto_compact_before_send(&app));
 

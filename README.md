@@ -118,10 +118,10 @@ Controls: `F1` help, `Esc` backs out of the current action, `Ctrl+K` command pal
 Key environment overrides: `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`,
 `DEEPSEEK_MODEL`, `DEEPSEEK_PROFILE`, `DEEPSEEK_PROVIDER`.
 For NVIDIA NIM, use `DEEPSEEK_PROVIDER=nvidia-nim` plus `NVIDIA_API_KEY`
-or `NVIDIA_NIM_API_KEY`; the default model is `deepseek-ai/deepseek-v4-pro`
-and the default base URL is `https://integrate.api.nvidia.com/v1`. With
-`--provider nvidia-nim`, `--model deepseek-v4-flash` maps to
-`deepseek-ai/deepseek-v4-flash`.
+or `NVIDIA_NIM_API_KEY` (with `DEEPSEEK_API_KEY` as a compatibility fallback);
+the default model is `deepseek-ai/deepseek-v4-pro` and the default base URL is
+`https://integrate.api.nvidia.com/v1`. With `--provider nvidia-nim`,
+`--model deepseek-v4-flash` maps to `deepseek-ai/deepseek-v4-flash`.
 
 The client targets DeepSeek's documented OpenAI-compatible Chat Completions API
 (`/chat/completions`). DeepSeek context caching is automatic; when the API
