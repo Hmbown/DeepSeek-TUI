@@ -1542,6 +1542,7 @@ impl Engine {
                     };
                     self.session.rebuild_working_set();
                     self.rehydrate_latest_canonical_state();
+                    self.emit_session_updated().await;
                     let _ = self
                         .tx_event
                         .send(Event::status("Session context synced".to_string()))
@@ -1555,6 +1556,23 @@ impl Engine {
                 }
             }
         }
+    }
+
+    async fn emit_session_updated(&self) {
+        let _ = self
+            .tx_event
+            .send(Event::SessionUpdated {
+                messages: self.session.messages.clone(),
+                system_prompt: self.session.system_prompt.clone(),
+                model: self.session.model.clone(),
+                workspace: self.session.workspace.clone(),
+            })
+            .await;
+    }
+
+    async fn add_session_message(&mut self, message: Message) {
+        self.session.add_message(message);
+        self.emit_session_updated().await;
     }
 
     /// Handle a send message operation
@@ -1636,6 +1654,7 @@ impl Engine {
 
         // Update system prompt to match current mode and include persisted compaction context.
         self.refresh_system_prompt(mode);
+        self.emit_session_updated().await;
 
         // Build tool registry and tool list for the current mode
         let todo_list = self.config.todos.clone();
@@ -1828,6 +1847,7 @@ impl Engine {
                     let messages_after = result.messages.len();
                     self.session.messages = result.messages;
                     self.merge_compaction_summary(result.summary_prompt);
+                    self.emit_session_updated().await;
                     let removed = messages_before.saturating_sub(messages_after);
                     let message = if result.retries_used > 0 {
                         format!(
@@ -1976,6 +1996,7 @@ impl Engine {
         self.merge_compaction_summary(summary_prompt);
 
         let trimmed = self.trim_oldest_messages_to_budget(target_budget);
+        self.emit_session_updated().await;
         let after_tokens = self.estimated_input_tokens();
         let after_count = self.session.messages.len();
         let recovered = after_tokens <= target_budget
@@ -2361,13 +2382,14 @@ impl Engine {
                 self.session
                     .working_set
                     .observe_user_message(&steer, &self.session.workspace);
-                self.session.add_message(Message {
+                self.add_session_message(Message {
                     role: "user".to_string(),
                     content: vec![ContentBlock::Text {
                         text: steer.clone(),
                         cache_control: None,
                     }],
-                });
+                })
+                .await;
                 let _ = self
                     .tx_event
                     .send(Event::status(format!(
@@ -2433,6 +2455,7 @@ impl Engine {
                             let auto_messages_after = result.messages.len();
                             self.session.messages = result.messages;
                             self.merge_compaction_summary(result.summary_prompt);
+                            self.emit_session_updated().await;
                             let removed = auto_messages_before.saturating_sub(auto_messages_after);
                             let status = if result.retries_used > 0 {
                                 format!(
@@ -2947,10 +2970,11 @@ impl Engine {
 
             // Add assistant message to session
             if has_sendable_assistant_content {
-                self.session.add_message(Message {
+                self.add_session_message(Message {
                     role: "assistant".to_string(),
                     content: content_blocks,
-                });
+                })
+                .await;
             }
 
             // If no tool uses, we're done
@@ -2960,13 +2984,14 @@ impl Engine {
                         self.session
                             .working_set
                             .observe_user_message(&steer, &self.session.workspace);
-                        self.session.add_message(Message {
+                        self.add_session_message(Message {
                             role: "user".to_string(),
                             content: vec![ContentBlock::Text {
                                 text: steer,
                                 cache_control: None,
                             }],
-                        });
+                        })
+                        .await;
                     }
                     turn.next_step();
                     continue;
@@ -3446,7 +3471,7 @@ impl Engine {
                             Some(&output_for_context),
                             &self.session.workspace,
                         );
-                        self.session.add_message(Message {
+                        self.add_session_message(Message {
                             role: "user".to_string(),
                             content: vec![ContentBlock::ToolResult {
                                 tool_use_id: outcome.id,
@@ -3454,7 +3479,8 @@ impl Engine {
                                 is_error: None,
                                 content_blocks: None,
                             }],
-                        });
+                        })
+                        .await;
                     }
                     Err(e) => {
                         emit_tool_audit(json!({
@@ -3473,7 +3499,7 @@ impl Engine {
                             Some(&error),
                             &self.session.workspace,
                         );
-                        self.session.add_message(Message {
+                        self.add_session_message(Message {
                             role: "user".to_string(),
                             content: vec![ContentBlock::ToolResult {
                                 tool_use_id: outcome.id,
@@ -3481,7 +3507,8 @@ impl Engine {
                                 is_error: Some(true),
                                 content_blocks: None,
                             }],
-                        });
+                        })
+                        .await;
                     }
                 }
 
@@ -3514,13 +3541,14 @@ impl Engine {
                     self.session
                         .working_set
                         .observe_user_message(&steer, &self.session.workspace);
-                    self.session.add_message(Message {
+                    self.add_session_message(Message {
                         role: "user".to_string(),
                         content: vec![ContentBlock::Text {
                             text: steer,
                             cache_control: None,
                         }],
-                    });
+                    })
+                    .await;
                 }
             }
 
@@ -3903,6 +3931,7 @@ impl Engine {
             None,
         )));
         self.refresh_system_prompt(mode);
+        self.emit_session_updated().await;
 
         let after_tokens = self.estimated_input_tokens();
         self.emit_capacity_intervention(
@@ -4005,7 +4034,7 @@ impl Engine {
             "[verification replay] tool={} pass={} details={}",
             candidate.name, pass, diff_summary
         );
-        self.session.add_message(Message {
+        self.add_session_message(Message {
             role: "user".to_string(),
             content: vec![ContentBlock::ToolResult {
                 tool_use_id: candidate.id.clone(),
@@ -4013,7 +4042,8 @@ impl Engine {
                 is_error: None,
                 content_blocks: None,
             }],
-        });
+        })
+        .await;
 
         if !pass {
             self.capacity_controller
@@ -4053,6 +4083,7 @@ impl Engine {
             Some(&verification_note),
         )));
         self.refresh_system_prompt(mode);
+        self.emit_session_updated().await;
 
         let after_tokens = self.estimated_input_tokens();
         self.emit_capacity_intervention(
@@ -4135,6 +4166,7 @@ impl Engine {
             Some("Replan now from canonical state. Keep steps minimal and verifiable."),
         )));
         self.refresh_system_prompt(mode);
+        self.emit_session_updated().await;
 
         let _ = self
             .tx_event

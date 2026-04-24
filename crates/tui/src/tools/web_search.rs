@@ -8,6 +8,7 @@ use super::spec::{
     optional_u64, required_str,
 };
 use async_trait::async_trait;
+use base64::{Engine as _, engine::general_purpose};
 use regex::Regex;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -18,6 +19,9 @@ use std::time::Duration;
 static TITLE_RE: OnceLock<Regex> = OnceLock::new();
 static SNIPPET_RE: OnceLock<Regex> = OnceLock::new();
 static TAG_RE: OnceLock<Regex> = OnceLock::new();
+static BING_RESULT_RE: OnceLock<Regex> = OnceLock::new();
+static BING_TITLE_RE: OnceLock<Regex> = OnceLock::new();
+static BING_SNIPPET_RE: OnceLock<Regex> = OnceLock::new();
 
 fn get_title_re() -> &'static Regex {
     TITLE_RE.get_or_init(|| {
@@ -37,6 +41,27 @@ fn get_snippet_re() -> &'static Regex {
 
 fn get_tag_re() -> &'static Regex {
     TAG_RE.get_or_init(|| Regex::new(r"<[^>]+>").expect("tag regex pattern is valid"))
+}
+
+fn get_bing_result_re() -> &'static Regex {
+    BING_RESULT_RE.get_or_init(|| {
+        Regex::new(r#"(?is)<li[^>]*class=\"[^\"]*\bb_algo\b[^\"]*\"[^>]*>(.*?)</li>"#)
+            .expect("bing result regex pattern is valid")
+    })
+}
+
+fn get_bing_title_re() -> &'static Regex {
+    BING_TITLE_RE.get_or_init(|| {
+        Regex::new(r#"(?is)<h2[^>]*>.*?<a[^>]*href=\"([^\"]+)\"[^>]*>(.*?)</a>"#)
+            .expect("bing title regex pattern is valid")
+    })
+}
+
+fn get_bing_snippet_re() -> &'static Regex {
+    BING_SNIPPET_RE.get_or_init(|| {
+        Regex::new(r#"(?is)<div[^>]*class=\"[^\"]*\bb_caption\b[^\"]*\"[^>]*>.*?<p[^>]*>(.*?)</p>"#)
+            .expect("bing snippet regex pattern is valid")
+    })
 }
 
 const DEFAULT_MAX_RESULTS: usize = 5;
@@ -149,16 +174,45 @@ impl ToolSpec for WebSearchTool {
             )));
         }
 
-        let results = parse_duckduckgo_results(&body, max_results);
+        let mut results = parse_duckduckgo_results(&body, max_results);
+        let mut source = "duckduckgo".to_string();
+        let mut message_suffix = None;
+        if results.is_empty() {
+            let duckduckgo_blocked = is_duckduckgo_challenge(&body);
+            match run_bing_search(&client, &query, max_results).await {
+                Ok(fallback_results) if !fallback_results.is_empty() => {
+                    results = fallback_results;
+                    source = "bing".to_string();
+                    message_suffix = Some(if duckduckgo_blocked {
+                        "DuckDuckGo returned a bot challenge; used Bing fallback"
+                    } else {
+                        "DuckDuckGo returned no parseable results; used Bing fallback"
+                    });
+                }
+                Ok(_) if duckduckgo_blocked => {
+                    return Err(ToolError::execution_failed(
+                        "DuckDuckGo returned a bot challenge and Bing fallback returned no results",
+                    ));
+                }
+                Err(err) if duckduckgo_blocked => {
+                    return Err(ToolError::execution_failed(format!(
+                        "DuckDuckGo returned a bot challenge and Bing fallback failed: {err}"
+                    )));
+                }
+                Ok(_) | Err(_) => {}
+            }
+        }
         let message = if results.is_empty() {
             "No results found".to_string()
+        } else if let Some(suffix) = message_suffix {
+            format!("Found {} result(s). {suffix}", results.len())
         } else {
             format!("Found {} result(s)", results.len())
         };
 
         let response = WebSearchResponse {
             query,
-            source: "duckduckgo".to_string(),
+            source,
             count: results.len(),
             message,
             results,
@@ -166,6 +220,39 @@ impl ToolSpec for WebSearchTool {
 
         ToolResult::json(&response).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
+}
+
+async fn run_bing_search(
+    client: &reqwest::Client,
+    query: &str,
+    max_results: usize,
+) -> Result<Vec<WebSearchEntry>, ToolError> {
+    let encoded = url_encode(query);
+    let url = format!("https://www.bing.com/search?q={encoded}");
+    let resp = client
+        .get(&url)
+        .header(
+            "Accept",
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        )
+        .header("Accept-Language", "en-US,en;q=0.9")
+        .send()
+        .await
+        .map_err(|e| ToolError::execution_failed(format!("Bing fallback request failed: {e}")))?;
+
+    let status = resp.status();
+    let body = resp.text().await.map_err(|e| {
+        ToolError::execution_failed(format!("Failed to read Bing fallback response: {e}"))
+    })?;
+
+    if !status.is_success() {
+        return Err(ToolError::execution_failed(format!(
+            "Bing fallback failed: HTTP {}",
+            status.as_u16()
+        )));
+    }
+
+    Ok(parse_bing_results(&body, max_results))
 }
 
 fn parse_duckduckgo_results(html: &str, max_results: usize) -> Vec<WebSearchEntry> {
@@ -204,6 +291,44 @@ fn parse_duckduckgo_results(html: &str, max_results: usize) -> Vec<WebSearchEntr
     results
 }
 
+fn is_duckduckgo_challenge(html: &str) -> bool {
+    html.contains("anomaly-modal") || html.contains("Unfortunately, bots use DuckDuckGo too")
+}
+
+fn parse_bing_results(html: &str, max_results: usize) -> Vec<WebSearchEntry> {
+    let mut results = Vec::new();
+    for cap in get_bing_result_re().captures_iter(html) {
+        if results.len() >= max_results {
+            break;
+        }
+        let Some(block) = cap.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(title_cap) = get_bing_title_re().captures(block) else {
+            continue;
+        };
+        let href = title_cap.get(1).map(|m| m.as_str()).unwrap_or("");
+        let title_raw = title_cap.get(2).map(|m| m.as_str()).unwrap_or("");
+        let title = normalize_text(title_raw);
+        if title.is_empty() {
+            continue;
+        }
+        let snippet = get_bing_snippet_re()
+            .captures(block)
+            .and_then(|snippet_cap| snippet_cap.get(1))
+            .map(|m| normalize_text(m.as_str()))
+            .filter(|s| !s.is_empty());
+
+        results.push(WebSearchEntry {
+            title,
+            url: normalize_bing_url(href),
+            snippet,
+        });
+    }
+
+    results
+}
+
 fn normalize_url(href: &str) -> String {
     if let Some(uddg) = extract_query_param(href, "uddg") {
         let decoded = percent_decode(&uddg);
@@ -216,6 +341,30 @@ fn normalize_url(href: &str) -> String {
     }
     if href.starts_with('/') {
         return format!("https://duckduckgo.com{href}");
+    }
+    href.to_string()
+}
+
+fn normalize_bing_url(href: &str) -> String {
+    if let Some(encoded) = extract_query_param(href, "u") {
+        let decoded = percent_decode(&encoded);
+        let token = decoded.strip_prefix("a1").unwrap_or(&decoded);
+        let mut padded = token.replace('-', "+").replace('_', "/");
+        while !padded.len().is_multiple_of(4) {
+            padded.push('=');
+        }
+        if let Ok(bytes) = general_purpose::STANDARD.decode(padded)
+            && let Ok(url) = String::from_utf8(bytes)
+            && (url.starts_with("http://") || url.starts_with("https://"))
+        {
+            return url;
+        }
+    }
+    if href.starts_with("//") {
+        return format!("https:{href}");
+    }
+    if href.starts_with('/') {
+        return format!("https://www.bing.com{href}");
     }
     href.to_string()
 }

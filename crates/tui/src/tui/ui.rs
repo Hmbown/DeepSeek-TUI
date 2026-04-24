@@ -575,6 +575,21 @@ async fn run_event_loop(
                     EngineEvent::Status { message } => {
                         app.status_message = Some(message);
                     }
+                    EngineEvent::SessionUpdated {
+                        messages,
+                        system_prompt,
+                        model,
+                        workspace,
+                    } => {
+                        app.api_messages = messages;
+                        app.system_prompt = system_prompt;
+                        app.model = model;
+                        app.update_model_compaction_budget();
+                        app.workspace = workspace;
+                        if app.is_loading || app.is_compacting {
+                            persist_checkpoint(app);
+                        }
+                    }
                     EngineEvent::CompactionStarted { message, .. } => {
                         app.is_compacting = true;
                         app.status_message = Some(message);

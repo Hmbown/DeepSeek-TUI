@@ -210,6 +210,37 @@ fn agent_mode_can_build_auto_approved_tool_context() {
     assert!(engine.build_tool_context(AppMode::Yolo, false).auto_approve);
 }
 
+#[tokio::test]
+async fn session_update_preserves_reasoning_tool_only_turn() {
+    let (mut engine, handle) = Engine::new(EngineConfig::default(), &Config::default());
+    let assistant = Message {
+        role: "assistant".to_string(),
+        content: vec![
+            ContentBlock::Thinking {
+                thinking: "Need a tool before answering.".to_string(),
+            },
+            ContentBlock::ToolUse {
+                id: "tool-1".to_string(),
+                name: "read_file".to_string(),
+                input: json!({"path": "Cargo.toml"}),
+                caller: None,
+            },
+        ],
+    };
+
+    engine.add_session_message(assistant.clone()).await;
+
+    let event = {
+        let mut rx = handle.rx_event.write().await;
+        rx.recv().await.expect("session update event")
+    };
+    let Event::SessionUpdated { messages, .. } = event else {
+        panic!("expected session update event");
+    };
+
+    assert_eq!(messages, vec![assistant]);
+}
+
 #[test]
 fn detects_context_length_errors_from_provider_payloads() {
     let msg = r#"SSE stream request failed: HTTP 400 Bad Request: {"error":{"message":"This model's maximum context length is 131072 tokens. However, you requested 153056 tokens (148960 in the messages, 4096 in the completion).","type":"invalid_request_error"}}"#;

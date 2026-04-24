@@ -3,9 +3,11 @@
 //! These events flow from the engine to the TUI via a channel,
 //! enabling non-blocking, real-time updates.
 
+use std::path::PathBuf;
+
 use serde_json::Value;
 
-use crate::models::Usage;
+use crate::models::{Message, SystemPrompt, Usage};
 use crate::tools::spec::{ToolError, ToolResult};
 use crate::tools::subagent::SubAgentResult;
 use crate::tools::user_input::UserInputRequest;
@@ -197,6 +199,20 @@ pub enum Event {
     UserInputRequired {
         id: String,
         request: UserInputRequest,
+    },
+
+    /// Authoritative API conversation state from the engine session.
+    ///
+    /// The UI receives granular display events, but those are not always a
+    /// lossless representation of the API transcript. DeepSeek can emit
+    /// reasoning directly followed by tool calls without a visible assistant
+    /// text block, and that assistant message still has to be persisted for
+    /// later `reasoning_content` replay.
+    SessionUpdated {
+        messages: Vec<Message>,
+        system_prompt: Option<SystemPrompt>,
+        model: String,
+        workspace: PathBuf,
     },
 
     /// Request user decision after sandbox denial

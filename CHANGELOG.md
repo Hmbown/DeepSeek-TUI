@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-04-24
+
+### Fixed
+- DeepSeek V4 thinking-mode tool turns now checkpoint the engine's authoritative API transcript, including assistant `reasoning_content` on reasoning-to-tool-call turns with no visible assistant text.
+- Chat Completions request building now drops stale V4 tool-call rounds that are missing required `reasoning_content`, preventing old corrupted checkpoints from triggering DeepSeek HTTP 400 replay errors.
+- Web search now falls back to Bing HTML results when DuckDuckGo returns a bot challenge or otherwise yields no parseable results.
+
 ## [0.4.1] - 2026-04-24
 
 ### Fixed

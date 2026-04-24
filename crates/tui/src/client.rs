@@ -638,8 +638,7 @@ impl DeepSeekClient {
     }
 
     async fn create_message_chat(&self, request: &MessageRequest) -> Result<MessageResponse> {
-        let messages =
-            build_chat_messages(request.system.as_ref(), &request.messages, &request.model);
+        let messages = build_chat_messages_for_request(request);
         let mut body = json!({
             "model": request.model,
             "messages": messages,
@@ -761,8 +760,7 @@ impl LlmClient for DeepSeekClient {
 
     async fn create_message_stream(&self, request: MessageRequest) -> Result<StreamEventBox> {
         // Try true SSE streaming via chat completions (widely supported)
-        let messages =
-            build_chat_messages(request.system.as_ref(), &request.messages, &request.model);
+        let messages = build_chat_messages_for_request(&request);
         let mut body = json!({
             "model": request.model,
             "messages": messages,
@@ -1308,13 +1306,36 @@ fn parse_responses_message(payload: &Value) -> Result<MessageResponse> {
 
 // === Chat Completions Helpers ===
 
+#[cfg(test)]
 fn build_chat_messages(
     system: Option<&SystemPrompt>,
     messages: &[Message],
     model: &str,
 ) -> Vec<Value> {
+    build_chat_messages_with_reasoning(
+        system,
+        messages,
+        model,
+        should_replay_reasoning_content(model, None),
+    )
+}
+
+fn build_chat_messages_for_request(request: &MessageRequest) -> Vec<Value> {
+    build_chat_messages_with_reasoning(
+        request.system.as_ref(),
+        &request.messages,
+        &request.model,
+        should_replay_reasoning_content(&request.model, request.reasoning_effort.as_deref()),
+    )
+}
+
+fn build_chat_messages_with_reasoning(
+    system: Option<&SystemPrompt>,
+    messages: &[Message],
+    _model: &str,
+    include_reasoning: bool,
+) -> Vec<Value> {
     let mut out = Vec::new();
-    let include_reasoning = requires_reasoning_content(model);
     let mut pending_tool_calls: HashSet<String> = HashSet::new();
 
     if let Some(instructions) = system_to_instructions(system.cloned())
@@ -1387,9 +1408,25 @@ fn build_chat_messages(
             let content = text_parts.join("\n");
             let reasoning_content = thinking_parts.join("\n");
             let has_text = !content.trim().is_empty();
-            let has_tool_calls = !tool_calls.is_empty();
+            let mut has_tool_calls = !tool_calls.is_empty();
             let include_reasoning_for_turn = include_reasoning && has_tool_calls;
             let has_reasoning = include_reasoning_for_turn && !reasoning_content.trim().is_empty();
+
+            // DeepSeek thinking-mode tool turns are stateful within the
+            // stateless Chat Completions transcript: if an assistant performed
+            // a tool call, its `reasoning_content` must be replayed in every
+            // later request. Older checkpoints could lose that field because
+            // the UI display stream had no visible text block. Do not forward
+            // those malformed tool calls; dropping the stale tool round is
+            // better than guaranteeing a provider-side 400.
+            if include_reasoning_for_turn && !has_reasoning {
+                logging::warn(
+                    "Dropping DeepSeek tool_calls with missing reasoning_content from assistant message",
+                );
+                tool_calls.clear();
+                tool_call_ids.clear();
+                has_tool_calls = false;
+            }
 
             // DeepSeek rejects assistant messages where both `content` and
             // `tool_calls` are missing/null. Skip such entries even if they
@@ -1615,6 +1652,22 @@ fn requires_reasoning_content(model: &str) -> bool {
         || lower.contains("-reasoning")
         || lower.contains("-thinking")
         || has_deepseek_r_series_marker(&lower)
+}
+
+fn should_replay_reasoning_content(model: &str, effort: Option<&str>) -> bool {
+    if effort
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "off" | "disabled" | "none" | "false"
+            )
+        })
+        .unwrap_or(false)
+    {
+        return false;
+    }
+
+    requires_reasoning_content(model)
 }
 
 /// Translate the TUI's effort-tier string into DeepSeek's request fields.
@@ -2425,6 +2478,101 @@ mod tests {
     }
 
     #[test]
+    fn chat_messages_drop_v4_tool_round_missing_reasoning() {
+        let messages = vec![
+            Message {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::ToolUse {
+                    id: "call-without-reasoning".to_string(),
+                    name: "read_file".to_string(),
+                    input: json!({"path": "Cargo.toml"}),
+                    caller: None,
+                }],
+            },
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "call-without-reasoning".to_string(),
+                    content: "workspace manifest".to_string(),
+                    is_error: None,
+                    content_blocks: None,
+                }],
+            },
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "continue".to_string(),
+                    cache_control: None,
+                }],
+            },
+        ];
+
+        let out = build_chat_messages(None, &messages, "deepseek-v4-pro");
+
+        assert!(
+            !out.iter()
+                .any(|value| value.get("role").and_then(Value::as_str) == Some("assistant")),
+            "malformed assistant tool round should be removed"
+        );
+        assert!(
+            !out.iter()
+                .any(|value| value.get("role").and_then(Value::as_str) == Some("tool")),
+            "tool result tied to missing reasoning should be removed"
+        );
+    }
+
+    #[test]
+    fn chat_messages_allow_tool_round_without_reasoning_when_thinking_disabled() {
+        let request = MessageRequest {
+            model: "deepseek-v4-pro".to_string(),
+            messages: vec![
+                Message {
+                    role: "assistant".to_string(),
+                    content: vec![ContentBlock::ToolUse {
+                        id: "call-no-thinking".to_string(),
+                        name: "read_file".to_string(),
+                        input: json!({"path": "Cargo.toml"}),
+                        caller: None,
+                    }],
+                },
+                Message {
+                    role: "user".to_string(),
+                    content: vec![ContentBlock::ToolResult {
+                        tool_use_id: "call-no-thinking".to_string(),
+                        content: "workspace manifest".to_string(),
+                        is_error: None,
+                        content_blocks: None,
+                    }],
+                },
+            ],
+            max_tokens: 1024,
+            system: None,
+            tools: None,
+            tool_choice: None,
+            metadata: None,
+            thinking: None,
+            reasoning_effort: Some("off".to_string()),
+            stream: None,
+            temperature: None,
+            top_p: None,
+        };
+
+        let out = build_chat_messages_for_request(&request);
+        assert!(
+            out.iter().any(
+                |value| value.get("role").and_then(Value::as_str) == Some("assistant")
+                    && value.get("tool_calls").is_some()
+            ),
+            "tool calls remain valid when thinking mode is disabled"
+        );
+        assert!(
+            out.iter()
+                .any(|value| value.get("role").and_then(Value::as_str) == Some("tool")),
+            "matching tool result should remain"
+        );
+    }
+
+    #[test]
     fn reasoning_effort_uses_deepseek_top_level_thinking_parameter() {
         let mut body = json!({});
         apply_reasoning_effort(&mut body, Some("max"));
@@ -2622,12 +2770,17 @@ mod tests {
         let messages = vec![
             Message {
                 role: "assistant".to_string(),
-                content: vec![ContentBlock::ToolUse {
-                    id: "tool-1".to_string(),
-                    name: "list_dir".to_string(),
-                    input: json!({}),
-                    caller: None,
-                }],
+                content: vec![
+                    ContentBlock::Thinking {
+                        thinking: "Need to inspect the directory".to_string(),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "tool-1".to_string(),
+                        name: "list_dir".to_string(),
+                        input: json!({}),
+                        caller: None,
+                    },
+                ],
             },
             Message {
                 role: "user".to_string(),
@@ -2657,12 +2810,17 @@ mod tests {
         let messages = vec![
             Message {
                 role: "assistant".to_string(),
-                content: vec![ContentBlock::ToolUse {
-                    id: "tool-1".to_string(),
-                    name: "web.run".to_string(),
-                    input: json!({}),
-                    caller: None,
-                }],
+                content: vec![
+                    ContentBlock::Thinking {
+                        thinking: "Need to search".to_string(),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "tool-1".to_string(),
+                        name: "web.run".to_string(),
+                        input: json!({}),
+                        caller: None,
+                    },
+                ],
             },
             Message {
                 role: "user".to_string(),
@@ -2741,12 +2899,17 @@ mod tests {
         let messages = vec![
             Message {
                 role: "assistant".to_string(),
-                content: vec![ContentBlock::ToolUse {
-                    id: "tool-ok".to_string(),
-                    name: "list_dir".to_string(),
-                    input: json!({}),
-                    caller: None,
-                }],
+                content: vec![
+                    ContentBlock::Thinking {
+                        thinking: "Need to list files".to_string(),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "tool-ok".to_string(),
+                        name: "list_dir".to_string(),
+                        input: json!({}),
+                        caller: None,
+                    },
+                ],
             },
             Message {
                 role: "user".to_string(),
