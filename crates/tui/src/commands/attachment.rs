@@ -101,7 +101,8 @@ mod tests {
 
         assert!(result.message.expect("message").contains("Attached image"));
         assert!(app.input.contains("[Attached image:"));
-        assert!(app.input.contains(image_path.to_str().expect("utf8 path")));
+        let canonical_path = image_path.canonicalize().expect("canonical image path");
+        assert!(app.input.contains(&canonical_path.display().to_string()));
     }
 
     #[test]
