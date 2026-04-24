@@ -3,6 +3,12 @@ name: Release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Package/release version to publish to npm, without the leading v'
+        required: true
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
@@ -10,6 +16,7 @@ env:
 
 jobs:
   parity:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -130,6 +137,42 @@ jobs:
         with:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
+      - name: Verify package version
+        working-directory: npm/deepseek-tui
+        run: |
+          actual="$(node -p "require('./package.json').version")"
+          expected="${GITHUB_REF_NAME#v}"
+          if [ "${actual}" != "${expected}" ]; then
+            echo "package.json version ${actual} does not match tag ${expected}" >&2
+            exit 1
+          fi
+      - name: Publish wrapper to npm
+        working-directory: npm/deepseek-tui
+        run: npm publish --access public
+
+  publish-npm-manual:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    # npm can trust only one workflow filename; keep npm-only retries here so
+    # the trusted publisher can remain `release.yml`.
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+      - name: Verify package version
+        working-directory: npm/deepseek-tui
+        run: |
+          actual="$(node -p "require('./package.json').version")"
+          expected="${{ inputs.version }}"
+          if [ "${actual}" != "${expected}" ]; then
+            echo "package.json version ${actual} does not match requested ${expected}" >&2
+            exit 1
+          fi
       - name: Publish wrapper to npm
         working-directory: npm/deepseek-tui
         run: npm publish --access public

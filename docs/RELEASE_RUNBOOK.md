@@ -136,7 +136,10 @@ release verification script both depend on that checksum manifest.
    - Publisher: GitHub Actions
    - Repository: `Hmbown/DeepSeek-TUI`
    - Workflow filename: `release.yml`
-4. Run:
+4. If the GitHub release succeeded but npm publishing failed, rerun only npm
+   publication from Actions → Release → Run workflow with the failed version.
+   This keeps npm's single trusted publisher pointed at `release.yml`.
+5. For local manual publication, run:
 
 ```bash
 cd npm/deepseek-tui

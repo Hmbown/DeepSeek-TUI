@@ -14,6 +14,9 @@ env:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    # Prefer the npm-only workflow_dispatch path in release.yml. This workflow
+    # works only if npm Trusted Publishing is explicitly configured for
+    # `publish-npm.yml` instead of `release.yml`.
     permissions:
       contents: read
       id-token: write
