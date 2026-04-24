@@ -37,6 +37,19 @@ The app talks to DeepSeek's documented OpenAI-compatible Chat Completions API.
 Set `DEEPSEEK_BASE_URL` only if you need the China endpoint or DeepSeek beta
 features such as strict tool mode, chat prefix completion, or FIM completion.
 
+NVIDIA NIM-hosted DeepSeek V4 Pro is also supported:
+
+```bash
+deepseek auth set --provider nvidia-nim --api-key "YOUR_NVIDIA_API_KEY"
+deepseek --provider nvidia-nim
+```
+
+For a single process, set `DEEPSEEK_PROVIDER=nvidia-nim` and `NVIDIA_API_KEY`
+or `NVIDIA_NIM_API_KEY`. The NIM default model is
+`deepseek-ai/deepseek-v4-pro` and the default base URL is
+`https://integrate.api.nvidia.com/v1`. With `--provider nvidia-nim`,
+`--model deepseek-v4-flash` maps to `deepseek-ai/deepseek-v4-flash`.
+
 ## Supported platforms
 
 - Linux x64

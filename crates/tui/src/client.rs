@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::Mutex as AsyncMutex;
 
-use crate::config::{Config, DEFAULT_TEXT_MODEL, RetryPolicy};
+use crate::config::{ApiProvider, Config, RetryPolicy};
 use crate::llm_client::{
     LlmClient, LlmError, RetryConfig as LlmRetryConfig, StreamEventBox, extract_retry_after,
     with_retry,
@@ -132,6 +132,7 @@ pub struct DeepSeekClient {
     http_client: reqwest::Client,
     api_key: String,
     base_url: String,
+    api_provider: ApiProvider,
     retry: RetryPolicy,
     default_model: String,
     use_chat_completions: AtomicBool,
@@ -307,6 +308,7 @@ impl Clone for DeepSeekClient {
             http_client: self.http_client.clone(),
             api_key: self.api_key.clone(),
             base_url: self.base_url.clone(),
+            api_provider: self.api_provider,
             retry: self.retry.clone(),
             default_model: self.default_model.clone(),
             use_chat_completions: AtomicBool::new(
@@ -409,14 +411,13 @@ impl DeepSeekClient {
     pub fn new(config: &Config) -> Result<Self> {
         let api_key = config.deepseek_api_key()?;
         let base_url = config.deepseek_base_url();
+        let api_provider = config.api_provider();
         validate_base_url_security(&base_url)?;
         let retry = config.retry_policy();
-        let default_model = config
-            .default_text_model
-            .clone()
-            .unwrap_or_else(|| DEFAULT_TEXT_MODEL.to_string());
+        let default_model = config.default_model();
 
-        logging::info(format!("DeepSeek base URL: {base_url}"));
+        logging::info(format!("API provider: {}", api_provider.as_str()));
+        logging::info(format!("API base URL: {base_url}"));
         logging::info(format!(
             "Retry policy: enabled={}, max_retries={}, initial_delay={}s, max_delay={}s",
             retry.enabled, retry.max_retries, retry.initial_delay, retry.max_delay
@@ -428,6 +429,7 @@ impl DeepSeekClient {
             http_client,
             api_key,
             base_url,
+            api_provider,
             retry,
             default_model,
             use_chat_completions: AtomicBool::new(false),
@@ -608,7 +610,11 @@ impl DeepSeekClient {
         if let Some(choice) = request.tool_choice.as_ref() {
             body["tool_choice"] = choice.clone();
         }
-        apply_reasoning_effort(&mut body, request.reasoning_effort.as_deref());
+        apply_reasoning_effort(
+            &mut body,
+            request.reasoning_effort.as_deref(),
+            self.api_provider,
+        );
 
         let url = api_url(&self.base_url, "responses");
         let response = self
@@ -659,7 +665,11 @@ impl DeepSeekClient {
         {
             body["tool_choice"] = mapped;
         }
-        apply_reasoning_effort(&mut body, request.reasoning_effort.as_deref());
+        apply_reasoning_effort(
+            &mut body,
+            request.reasoning_effort.as_deref(),
+            self.api_provider,
+        );
 
         let url = api_url(&self.base_url, "chat/completions");
         let response = self
@@ -683,7 +693,7 @@ impl DeepSeekClient {
 
 impl LlmClient for DeepSeekClient {
     fn provider_name(&self) -> &'static str {
-        "deepseek"
+        self.api_provider.as_str()
     }
 
     fn model(&self) -> &str {
@@ -785,7 +795,11 @@ impl LlmClient for DeepSeekClient {
         {
             body["tool_choice"] = mapped;
         }
-        apply_reasoning_effort(&mut body, request.reasoning_effort.as_deref());
+        apply_reasoning_effort(
+            &mut body,
+            request.reasoning_effort.as_deref(),
+            self.api_provider,
+        );
 
         let url = api_url(&self.base_url, "chat/completions");
         let response = self
@@ -1670,28 +1684,52 @@ fn should_replay_reasoning_content(model: &str, effort: Option<&str>) -> bool {
     requires_reasoning_content(model)
 }
 
-/// Translate the TUI's effort-tier string into DeepSeek's request fields.
+/// Translate the TUI's effort-tier string into provider-specific request fields.
 ///
 /// The config surface accepts `off | low | medium | high | max`. DeepSeek
 /// itself collapses `low`/`medium` → `"high"` and `xhigh` → `"max"` at the
-/// API boundary (per their docs); `off` emits the disable toggle.
-fn apply_reasoning_effort(body: &mut Value, effort: Option<&str>) {
+/// API boundary (per their docs); NVIDIA NIM takes equivalent controls through
+/// `chat_template_kwargs`.
+fn apply_reasoning_effort(body: &mut Value, effort: Option<&str>, provider: ApiProvider) {
     let Some(effort) = effort else {
         return;
     };
     let normalized = effort.trim().to_ascii_lowercase();
     match normalized.as_str() {
-        "off" | "disabled" | "none" | "false" => {
-            body["thinking"] = json!({ "type": "disabled" });
-        }
-        "max" | "maximum" | "xhigh" => {
-            body["reasoning_effort"] = json!("max");
-            body["thinking"] = json!({ "type": "enabled" });
-        }
+        "off" | "disabled" | "none" | "false" => match provider {
+            ApiProvider::Deepseek => body["thinking"] = json!({ "type": "disabled" }),
+            ApiProvider::NvidiaNim => {
+                body["chat_template_kwargs"] = json!({
+                    "thinking": false,
+                })
+            }
+        },
+        "max" | "maximum" | "xhigh" => match provider {
+            ApiProvider::Deepseek => {
+                body["reasoning_effort"] = json!("max");
+                body["thinking"] = json!({ "type": "enabled" });
+            }
+            ApiProvider::NvidiaNim => {
+                body["chat_template_kwargs"] = json!({
+                    "thinking": true,
+                    "reasoning_effort": "max",
+                });
+            }
+        },
         "low" | "minimal" | "medium" | "mid" | "high" | "" => {
-            // Per DeepSeek docs: low/medium compat-map to "high".
-            body["reasoning_effort"] = json!("high");
-            body["thinking"] = json!({ "type": "enabled" });
+            match provider {
+                ApiProvider::Deepseek => {
+                    // Per DeepSeek docs: low/medium compat-map to "high".
+                    body["reasoning_effort"] = json!("high");
+                    body["thinking"] = json!({ "type": "enabled" });
+                }
+                ApiProvider::NvidiaNim => {
+                    body["chat_template_kwargs"] = json!({
+                        "thinking": true,
+                        "reasoning_effort": "high",
+                    });
+                }
+            }
         }
         _ => {
             // Unknown value — do not mutate the request, let the provider
@@ -1708,6 +1746,13 @@ fn has_deepseek_r_series_marker(model_lower: &str) -> bool {
             .next()
             .is_some_and(|ch| ch.is_ascii_digit())
     })
+}
+
+fn reasoning_field(value: &Value) -> Option<&str> {
+    value
+        .get("reasoning_content")
+        .or_else(|| value.get("reasoning"))
+        .and_then(Value::as_str)
 }
 
 fn parse_chat_message(payload: &Value) -> Result<MessageResponse> {
@@ -1734,8 +1779,8 @@ fn parse_chat_message(payload: &Value) -> Result<MessageResponse> {
         .context("Chat API response missing message")?;
 
     let mut content_blocks = Vec::new();
-    if let Some(reasoning) = message.get("reasoning_content").and_then(Value::as_str)
-        && !reasoning.trim().is_empty()
+    if let Some(reasoning) =
+        reasoning_field(message).filter(|reasoning| !reasoning.trim().is_empty())
     {
         content_blocks.push(ContentBlock::Thinking {
             thinking: reasoning.to_string(),
@@ -1999,9 +2044,9 @@ fn parse_sse_chunk(
             .map(str::to_string);
 
         if let Some(delta) = delta {
-            // Handle reasoning_content (DeepSeek-Reasoner thinking)
+            // Handle reasoning_content / reasoning thinking deltas.
             if is_reasoning_model
-                && let Some(reasoning) = delta.get("reasoning_content").and_then(Value::as_str)
+                && let Some(reasoning) = reasoning_field(delta)
                 && !reasoning.is_empty()
             {
                 if !*thinking_started {
@@ -2575,7 +2620,7 @@ mod tests {
     #[test]
     fn reasoning_effort_uses_deepseek_top_level_thinking_parameter() {
         let mut body = json!({});
-        apply_reasoning_effort(&mut body, Some("max"));
+        apply_reasoning_effort(&mut body, Some("max"), ApiProvider::Deepseek);
 
         assert_eq!(
             body.get("reasoning_effort").and_then(Value::as_str),
@@ -2591,7 +2636,7 @@ mod tests {
     #[test]
     fn reasoning_effort_off_disables_top_level_thinking() {
         let mut body = json!({});
-        apply_reasoning_effort(&mut body, Some("off"));
+        apply_reasoning_effort(&mut body, Some("off"), ApiProvider::Deepseek);
 
         assert_eq!(
             body.pointer("/thinking/type").and_then(Value::as_str),
@@ -2599,6 +2644,101 @@ mod tests {
         );
         assert!(body.get("reasoning_effort").is_none());
         assert!(body.get("extra_body").is_none());
+    }
+
+    #[test]
+    fn reasoning_effort_uses_nvidia_nim_chat_template_kwargs() {
+        let mut body = json!({});
+        apply_reasoning_effort(&mut body, Some("max"), ApiProvider::NvidiaNim);
+
+        assert_eq!(
+            body.pointer("/chat_template_kwargs/thinking")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            body.pointer("/chat_template_kwargs/reasoning_effort")
+                .and_then(Value::as_str),
+            Some("max")
+        );
+        assert!(body.get("thinking").is_none());
+        assert!(body.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn reasoning_effort_off_disables_nvidia_nim_thinking() {
+        let mut body = json!({});
+        apply_reasoning_effort(&mut body, Some("off"), ApiProvider::NvidiaNim);
+
+        assert_eq!(
+            body.pointer("/chat_template_kwargs/thinking")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+        assert!(
+            body.pointer("/chat_template_kwargs/reasoning_effort")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn chat_parser_accepts_nvidia_nim_reasoning_field() -> Result<()> {
+        let response = parse_chat_message(&json!({
+            "id": "chatcmpl-test",
+            "model": "deepseek-ai/deepseek-v4-pro",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "reasoning": "thinking via NIM",
+                    "content": "final answer"
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 3
+            }
+        }))?;
+
+        assert!(matches!(
+            response.content.first(),
+            Some(ContentBlock::Thinking { thinking }) if thinking == "thinking via NIM"
+        ));
+        assert!(matches!(
+            response.content.get(1),
+            Some(ContentBlock::Text { text, .. }) if text == "final answer"
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn sse_parser_accepts_nvidia_nim_reasoning_delta() {
+        let mut content_index = 0;
+        let mut text_started = false;
+        let mut thinking_started = false;
+        let mut tool_indices = std::collections::HashMap::new();
+        let events = parse_sse_chunk(
+            &json!({
+                "choices": [{
+                    "delta": {
+                        "reasoning": "nim thought"
+                    }
+                }]
+            }),
+            &mut content_index,
+            &mut text_started,
+            &mut thinking_started,
+            &mut tool_indices,
+            true,
+        );
+
+        assert!(events.iter().any(|event| matches!(
+            event,
+            StreamEvent::ContentBlockDelta {
+                delta: Delta::ThinkingDelta { thinking },
+                ..
+            } if thinking == "nim thought"
+        )));
     }
 
     #[test]

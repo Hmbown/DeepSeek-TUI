@@ -405,6 +405,10 @@ mod tests {
             context_window_for_model("deepseek-v4-flash"),
             Some(DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS)
         );
+        assert_eq!(
+            context_window_for_model("deepseek-ai/deepseek-v4-pro"),
+            Some(DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS)
+        );
     }
 
     #[test]

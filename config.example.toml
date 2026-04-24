@@ -9,6 +9,7 @@
 # ─────────────────────────────────────────────────────────────────────────────────
 # API Keys
 # ─────────────────────────────────────────────────────────────────────────────────
+provider = "deepseek" # deepseek | nvidia-nim
 api_key = "YOUR_DEEPSEEK_API_KEY" # must be non-empty
 
 # ─────────────────────────────────────────────────────────────────────────────────
@@ -17,13 +18,19 @@ api_key = "YOUR_DEEPSEEK_API_KEY" # must be non-empty
 base_url = "https://api.deepseek.com"
 # base_url = "https://api.deepseeki.com"         # China users
 # base_url = "https://api.deepseek.com/beta"     # DeepSeek beta features such as strict tool mode
+# For NVIDIA NIM-hosted DeepSeek:
+# provider = "nvidia-nim"
+# api_key = "YOUR_NVIDIA_API_KEY"
+# base_url = "https://integrate.api.nvidia.com/v1"
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Default Models
 # ─────────────────────────────────────────────────────────────────────────────────
 # DeepSeek V4 family:
-#   deepseek-v4-pro    — flagship reasoning model
-#   deepseek-v4-flash  — fast, cost-efficient (legacy aliases: deepseek-chat, deepseek-reasoner)
+#   deepseek-v4-pro             — flagship reasoning model on DeepSeek Platform
+#   deepseek-v4-flash           — fast, cost-efficient (legacy aliases: deepseek-chat, deepseek-reasoner)
+#   deepseek-ai/deepseek-v4-pro   — NVIDIA NIM-hosted Pro model ID
+#   deepseek-ai/deepseek-v4-flash — NVIDIA NIM-hosted Flash model ID
 default_text_model = "deepseek-v4-pro"
 
 # ─────────────────────────────────────────────────────────────────────────────────
@@ -130,6 +137,12 @@ base_url = "https://api.deepseek.com"
 [profiles.dev]
 api_key = "DEV_DEEPSEEK_API_KEY"
 allow_shell = true
+
+[profiles.nvidia-nim]
+provider = "nvidia-nim"
+api_key = "YOUR_NVIDIA_API_KEY"
+base_url = "https://integrate.api.nvidia.com/v1"
+default_text_model = "deepseek-ai/deepseek-v4-pro"
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Hooks (optional)

@@ -18,6 +18,7 @@ use deepseek_state::{StateStore, ThreadListFilters};
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum ProviderArg {
     Deepseek,
+    NvidiaNim,
     Openai,
 }
 
@@ -25,6 +26,7 @@ impl From<ProviderArg> for ProviderKind {
     fn from(value: ProviderArg) -> Self {
         match value {
             ProviderArg::Deepseek => ProviderKind::Deepseek,
+            ProviderArg::NvidiaNim => ProviderKind::NvidiaNim,
             ProviderArg::Openai => ProviderKind::Openai,
         }
     }
@@ -475,6 +477,7 @@ fn run_login_command(store: &mut ConfigStore, args: LoginArgs) -> Result<()> {
 fn run_logout_command(store: &mut ConfigStore) -> Result<()> {
     store.config.api_key = None;
     store.config.providers.deepseek.api_key = None;
+    store.config.providers.nvidia_nim.api_key = None;
     store.config.providers.openai.api_key = None;
     store.config.auth_mode = None;
     store.config.chatgpt_access_token = None;
@@ -495,6 +498,11 @@ fn run_auth_command(store: &mut ConfigStore, command: AuthCommand) -> Result<()>
                 .ok()
                 .filter(|v| !v.trim().is_empty())
                 .is_some();
+            let nvidia_env = std::env::var("NVIDIA_API_KEY")
+                .or_else(|_| std::env::var("NVIDIA_NIM_API_KEY"))
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+                .is_some();
             let deepseek_file = store
                 .config
                 .providers
@@ -510,11 +518,22 @@ fn run_auth_command(store: &mut ConfigStore, command: AuthCommand) -> Result<()>
                 .api_key
                 .as_ref()
                 .is_some_and(|v| !v.trim().is_empty());
+            let nvidia_file = store
+                .config
+                .providers
+                .nvidia_nim
+                .api_key
+                .as_ref()
+                .is_some_and(|v| !v.trim().is_empty());
 
             println!("provider: {}", store.config.provider.as_str());
             println!(
                 "deepseek auth: env={}, config={}",
                 deepseek_env, deepseek_file
+            );
+            println!(
+                "nvidia-nim auth: env={}, config={}",
+                nvidia_env, nvidia_file
             );
             println!("openai auth: env={}, config={}", openai_env, openai_file);
             Ok(())
@@ -781,22 +800,23 @@ fn delegate_to_tui(
     }
     cmd.args(passthrough);
 
-    if resolved_runtime.provider != ProviderKind::Deepseek {
+    if !matches!(
+        resolved_runtime.provider,
+        ProviderKind::Deepseek | ProviderKind::NvidiaNim
+    ) {
         bail!(
-            "The interactive TUI only supports the DeepSeek API. Remove --provider {} or use `deepseek model ...` for provider registry inspection.",
+            "The interactive TUI supports DeepSeek and NVIDIA NIM providers. Remove --provider {} or use `deepseek model ...` for provider registry inspection.",
             resolved_runtime.provider.as_str()
         );
     }
 
     cmd.env("DEEPSEEK_MODEL", &resolved_runtime.model);
     cmd.env("DEEPSEEK_BASE_URL", &resolved_runtime.base_url);
+    cmd.env("DEEPSEEK_PROVIDER", resolved_runtime.provider.as_str());
     if let Some(api_key) = resolved_runtime.api_key.as_ref() {
         cmd.env("DEEPSEEK_API_KEY", api_key);
     }
 
-    if let Some(provider) = cli.provider {
-        cmd.env("DEEPSEEK_PROVIDER", ProviderKind::from(provider).as_str());
-    }
     if let Some(model) = cli.model.as_ref() {
         cmd.env("DEEPSEEK_MODEL", model);
     }

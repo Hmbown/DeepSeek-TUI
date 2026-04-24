@@ -50,6 +50,30 @@ impl Default for ModelRegistry {
                 supports_reasoning: true,
             },
             ModelInfo {
+                id: "deepseek-ai/deepseek-v4-pro".to_string(),
+                provider: ProviderKind::NvidiaNim,
+                aliases: vec![
+                    "deepseek-v4-pro".to_string(),
+                    "nvidia-deepseek-v4-pro".to_string(),
+                    "nim-deepseek-v4-pro".to_string(),
+                ],
+                supports_tools: true,
+                supports_reasoning: true,
+            },
+            ModelInfo {
+                id: "deepseek-ai/deepseek-v4-flash".to_string(),
+                provider: ProviderKind::NvidiaNim,
+                aliases: vec![
+                    "deepseek-v4-flash".to_string(),
+                    "deepseek-chat".to_string(),
+                    "deepseek-reasoner".to_string(),
+                    "nvidia-deepseek-v4-flash".to_string(),
+                    "nim-deepseek-v4-flash".to_string(),
+                ],
+                supports_tools: true,
+                supports_reasoning: true,
+            },
+            ModelInfo {
                 id: "gpt-4.1".to_string(),
                 provider: ProviderKind::Openai,
                 aliases: vec!["gpt4.1".to_string(), "gpt-4o".to_string()],
@@ -73,9 +97,9 @@ impl ModelRegistry {
     pub fn new(models: Vec<ModelInfo>) -> Self {
         let mut alias_map = HashMap::new();
         for (idx, model) in models.iter().enumerate() {
-            alias_map.insert(normalize(&model.id), idx);
+            alias_map.entry(normalize(&model.id)).or_insert(idx);
             for alias in &model.aliases {
-                alias_map.insert(normalize(alias), idx);
+                alias_map.entry(normalize(alias)).or_insert(idx);
             }
         }
         Self { models, alias_map }
@@ -96,6 +120,20 @@ impl ModelRegistry {
 
         if let Some(name) = requested {
             fallback_chain.push(format!("requested:{name}"));
+            if let Some(provider) = provider_hint
+                && let Some(model) = self
+                    .models
+                    .iter()
+                    .find(|m| m.provider == provider && model_matches(m, name))
+                    .cloned()
+            {
+                return ModelResolution {
+                    requested: Some(name.to_string()),
+                    resolved: model,
+                    used_fallback: false,
+                    fallback_chain,
+                };
+            }
             if let Some(idx) = self.alias_map.get(&normalize(name)) {
                 return ModelResolution {
                     requested: Some(name.to_string()),
@@ -136,4 +174,54 @@ impl ModelRegistry {
 
 fn normalize(value: &str) -> String {
     value.trim().to_ascii_lowercase()
+}
+
+fn model_matches(model: &ModelInfo, requested: &str) -> bool {
+    let requested = normalize(requested);
+    normalize(&model.id) == requested
+        || model
+            .aliases
+            .iter()
+            .any(|alias| normalize(alias) == requested)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deepseek_v4_pro_alias_stays_deepseek_by_default() {
+        let registry = ModelRegistry::default();
+        let resolved = registry.resolve(Some("deepseek-v4-pro"), None);
+
+        assert_eq!(resolved.resolved.provider, ProviderKind::Deepseek);
+        assert_eq!(resolved.resolved.id, "deepseek-v4-pro");
+    }
+
+    #[test]
+    fn deepseek_v4_pro_alias_resolves_to_nvidia_nim_when_provider_hinted() {
+        let registry = ModelRegistry::default();
+        let resolved = registry.resolve(Some("deepseek-v4-pro"), Some(ProviderKind::NvidiaNim));
+
+        assert_eq!(resolved.resolved.provider, ProviderKind::NvidiaNim);
+        assert_eq!(resolved.resolved.id, "deepseek-ai/deepseek-v4-pro");
+    }
+
+    #[test]
+    fn nvidia_nim_default_uses_catalog_model_id() {
+        let registry = ModelRegistry::default();
+        let resolved = registry.resolve(None, Some(ProviderKind::NvidiaNim));
+
+        assert_eq!(resolved.resolved.provider, ProviderKind::NvidiaNim);
+        assert_eq!(resolved.resolved.id, "deepseek-ai/deepseek-v4-pro");
+    }
+
+    #[test]
+    fn deepseek_v4_flash_alias_resolves_to_nvidia_nim_when_provider_hinted() {
+        let registry = ModelRegistry::default();
+        let resolved = registry.resolve(Some("deepseek-v4-flash"), Some(ProviderKind::NvidiaNim));
+
+        assert_eq!(resolved.resolved.provider, ProviderKind::NvidiaNim);
+        assert_eq!(resolved.resolved.id, "deepseek-ai/deepseek-v4-flash");
+    }
 }

@@ -20,6 +20,13 @@ DeepSeek auth and model defaults. `deepseek login --api-key ...` writes the
 root `api_key` field that `deepseek-tui` reads directly, and `deepseek --model
 deepseek-v4-flash` is forwarded to the TUI as `DEEPSEEK_MODEL`.
 
+For NVIDIA NIM-hosted DeepSeek V4 Pro, set `provider = "nvidia-nim"` or pass
+`deepseek --provider nvidia-nim`. The facade stores NIM credentials under
+`[providers.nvidia_nim]` and forwards the resolved key, base URL, provider, and
+model to the TUI process. Use
+`deepseek auth set --provider nvidia-nim --api-key "YOUR_NVIDIA_API_KEY"` to
+save the NIM key through the facade.
+
 To bootstrap MCP and skills directories at their resolved paths, run `deepseek-tui setup`.
 To only scaffold MCP, run `deepseek-tui mcp init`.
 
@@ -40,6 +47,12 @@ default_text_model = "deepseek-v4-pro"
 [profiles.work]
 api_key = "WORK_KEY"
 base_url = "https://api.deepseek.com"
+
+[profiles.nvidia-nim]
+provider = "nvidia-nim"
+api_key = "NVIDIA_KEY"
+base_url = "https://integrate.api.nvidia.com/v1"
+default_text_model = "deepseek-ai/deepseek-v4-pro"
 ```
 
 Select a profile with:
@@ -55,7 +68,11 @@ These override config values:
 
 - `DEEPSEEK_API_KEY`
 - `DEEPSEEK_BASE_URL`
+- `DEEPSEEK_PROVIDER` (`deepseek|nvidia-nim`)
 - `DEEPSEEK_MODEL` or `DEEPSEEK_DEFAULT_TEXT_MODEL`
+- `NVIDIA_API_KEY` or `NVIDIA_NIM_API_KEY` (used when provider is `nvidia-nim`)
+- `NVIDIA_BASE_URL` or `NVIDIA_NIM_BASE_URL`
+- `NVIDIA_NIM_MODEL`
 - `DEEPSEEK_SKILLS_DIR`
 - `DEEPSEEK_MCP_CONFIG`
 - `DEEPSEEK_NOTES_PATH`
@@ -128,10 +145,11 @@ If you are upgrading from older releases:
 
 ### Core keys (used by the TUI/engine)
 
+- `provider` (string, optional): `deepseek` (default) or `nvidia-nim`. `nvidia-nim` targets NVIDIA's NIM-hosted DeepSeek endpoints through `https://integrate.api.nvidia.com/v1`.
 - `api_key` (string, required): must be non-empty (or set `DEEPSEEK_API_KEY`).
-- `base_url` (string, optional): defaults to `https://api.deepseek.com` for DeepSeek's OpenAI-compatible Chat Completions API. `https://api.deepseek.com/v1` is also accepted for SDK compatibility; use `https://api.deepseek.com/beta` only for DeepSeek beta features such as strict tool mode, chat prefix completion, and FIM completion.
-- `default_text_model` (string, optional): defaults to `deepseek-v4-pro`. Current public DeepSeek IDs are `deepseek-v4-pro` and `deepseek-v4-flash`, both with 1M context windows and thinking mode enabled by default. Legacy `deepseek-chat` and `deepseek-reasoner` remain compatibility aliases for `deepseek-v4-flash`. Use `/models` or `deepseek models` to discover live IDs from your configured endpoint. `DEEPSEEK_MODEL` overrides this for a single process.
-- `reasoning_effort` (string, optional): `off`, `low`, `medium`, `high`, or `max`; defaults to the configured UI tier. `off` sends `thinking = {"type": "disabled"}`. `low` and `medium` are normalized to `high`; `max` sends `reasoning_effort = "max"`.
+- `base_url` (string, optional): defaults to `https://api.deepseek.com` for DeepSeek's OpenAI-compatible Chat Completions API, or `https://integrate.api.nvidia.com/v1` for `provider = "nvidia-nim"`. `https://api.deepseek.com/v1` is also accepted for SDK compatibility; use `https://api.deepseek.com/beta` only for DeepSeek beta features such as strict tool mode, chat prefix completion, and FIM completion.
+- `default_text_model` (string, optional): defaults to `deepseek-v4-pro` for DeepSeek or `deepseek-ai/deepseek-v4-pro` for NVIDIA NIM. Current public DeepSeek IDs are `deepseek-v4-pro` and `deepseek-v4-flash`, both with 1M context windows and thinking mode enabled by default. Legacy `deepseek-chat` and `deepseek-reasoner` remain compatibility aliases for `deepseek-v4-flash`. With `provider = "nvidia-nim"`, `deepseek-v4-pro` maps to `deepseek-ai/deepseek-v4-pro` and `deepseek-v4-flash` maps to `deepseek-ai/deepseek-v4-flash`. Use `/models` or `deepseek models` to discover live IDs from your configured endpoint. `DEEPSEEK_MODEL` overrides this for a single process.
+- `reasoning_effort` (string, optional): `off`, `low`, `medium`, `high`, or `max`; defaults to the configured UI tier. DeepSeek Platform receives top-level `thinking` / `reasoning_effort` fields. NVIDIA NIM receives equivalent settings through `chat_template_kwargs`.
 - `allow_shell` (bool, optional): defaults to `true` (sandboxed).
 - `approval_policy` (string, optional): `on-request`, `untrusted`, or `never`. Runtime `approval_mode` editing in `/config` also accepts `on-request` and `untrusted` aliases.
 - `sandbox_mode` (string, optional): `read-only`, `workspace-write`, `danger-full-access`, `external-sandbox`.

@@ -14,6 +14,11 @@ struct ModelPricing {
 /// Look up pricing for a model name.
 fn pricing_for_model(model: &str) -> Option<ModelPricing> {
     let lower = model.to_lowercase();
+    if lower.starts_with("deepseek-ai/") {
+        // NVIDIA NIM-hosted DeepSeek uses NVIDIA's catalog/account terms, not
+        // DeepSeek Platform pricing. Avoid showing misleading DeepSeek costs.
+        return None;
+    }
     if !lower.contains("deepseek") {
         return None;
     }
@@ -74,5 +79,15 @@ pub fn format_cost(cost: f64) -> String {
         format!("${:.3}", cost)
     } else {
         format!("${:.2}", cost)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nvidia_nim_deepseek_model_does_not_use_deepseek_platform_pricing() {
+        assert!(calculate_turn_cost("deepseek-ai/deepseek-v4-pro", 1_000, 1_000).is_none());
     }
 }

@@ -7,8 +7,11 @@ use serde::{Deserialize, Serialize};
 
 pub const CONFIG_FILE_NAME: &str = "config.toml";
 const DEFAULT_DEEPSEEK_MODEL: &str = "deepseek-v4-pro";
+const DEFAULT_NVIDIA_NIM_MODEL: &str = "deepseek-ai/deepseek-v4-pro";
+const DEFAULT_NVIDIA_NIM_FLASH_MODEL: &str = "deepseek-ai/deepseek-v4-flash";
 const DEFAULT_OPENAI_MODEL: &str = "gpt-4.1";
 const DEFAULT_DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com";
+const DEFAULT_NVIDIA_NIM_BASE_URL: &str = "https://integrate.api.nvidia.com/v1";
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -16,6 +19,7 @@ const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 pub enum ProviderKind {
     #[default]
     Deepseek,
+    NvidiaNim,
     Openai,
 }
 
@@ -24,6 +28,7 @@ impl ProviderKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Deepseek => "deepseek",
+            Self::NvidiaNim => "nvidia-nim",
             Self::Openai => "openai",
         }
     }
@@ -32,6 +37,7 @@ impl ProviderKind {
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "deepseek" | "deep-seek" => Some(Self::Deepseek),
+            "nvidia" | "nvidia-nim" | "nvidia_nim" | "nim" => Some(Self::NvidiaNim),
             "openai" | "open-ai" => Some(Self::Openai),
             _ => None,
         }
@@ -50,6 +56,8 @@ pub struct ProvidersToml {
     #[serde(default)]
     pub deepseek: ProviderConfigToml,
     #[serde(default)]
+    pub nvidia_nim: ProviderConfigToml,
+    #[serde(default)]
     pub openai: ProviderConfigToml,
 }
 
@@ -58,6 +66,7 @@ impl ProvidersToml {
     pub fn for_provider(&self, provider: ProviderKind) -> &ProviderConfigToml {
         match provider {
             ProviderKind::Deepseek => &self.deepseek,
+            ProviderKind::NvidiaNim => &self.nvidia_nim,
             ProviderKind::Openai => &self.openai,
         }
     }
@@ -65,6 +74,7 @@ impl ProvidersToml {
     pub fn for_provider_mut(&mut self, provider: ProviderKind) -> &mut ProviderConfigToml {
         match provider {
             ProviderKind::Deepseek => &mut self.deepseek,
+            ProviderKind::NvidiaNim => &mut self.nvidia_nim,
             ProviderKind::Openai => &mut self.openai,
         }
     }
@@ -116,6 +126,9 @@ impl ConfigToml {
             "providers.deepseek.api_key" => self.providers.deepseek.api_key.clone(),
             "providers.deepseek.base_url" => self.providers.deepseek.base_url.clone(),
             "providers.deepseek.model" => self.providers.deepseek.model.clone(),
+            "providers.nvidia_nim.api_key" => self.providers.nvidia_nim.api_key.clone(),
+            "providers.nvidia_nim.base_url" => self.providers.nvidia_nim.base_url.clone(),
+            "providers.nvidia_nim.model" => self.providers.nvidia_nim.model.clone(),
             "providers.openai.api_key" => self.providers.openai.api_key.clone(),
             "providers.openai.base_url" => self.providers.openai.base_url.clone(),
             "providers.openai.model" => self.providers.openai.model.clone(),
@@ -161,6 +174,15 @@ impl ConfigToml {
             "providers.openai.api_key" => self.providers.openai.api_key = Some(value.to_string()),
             "providers.openai.base_url" => self.providers.openai.base_url = Some(value.to_string()),
             "providers.openai.model" => self.providers.openai.model = Some(value.to_string()),
+            "providers.nvidia_nim.api_key" => {
+                self.providers.nvidia_nim.api_key = Some(value.to_string());
+            }
+            "providers.nvidia_nim.base_url" => {
+                self.providers.nvidia_nim.base_url = Some(value.to_string());
+            }
+            "providers.nvidia_nim.model" => {
+                self.providers.nvidia_nim.model = Some(value.to_string());
+            }
             _ => {
                 self.extras
                     .insert(key.to_string(), toml::Value::String(value.to_string()));
@@ -199,6 +221,9 @@ impl ConfigToml {
             "providers.openai.api_key" => self.providers.openai.api_key = None,
             "providers.openai.base_url" => self.providers.openai.base_url = None,
             "providers.openai.model" => self.providers.openai.model = None,
+            "providers.nvidia_nim.api_key" => self.providers.nvidia_nim.api_key = None,
+            "providers.nvidia_nim.base_url" => self.providers.nvidia_nim.base_url = None,
+            "providers.nvidia_nim.model" => self.providers.nvidia_nim.model = None,
             _ => {
                 self.extras.remove(key);
             }
@@ -265,6 +290,15 @@ impl ConfigToml {
         if let Some(v) = self.providers.openai.model.as_ref() {
             out.insert("providers.openai.model".to_string(), v.clone());
         }
+        if let Some(v) = self.providers.nvidia_nim.api_key.as_ref() {
+            out.insert("providers.nvidia_nim.api_key".to_string(), redact_secret(v));
+        }
+        if let Some(v) = self.providers.nvidia_nim.base_url.as_ref() {
+            out.insert("providers.nvidia_nim.base_url".to_string(), v.clone());
+        }
+        if let Some(v) = self.providers.nvidia_nim.model.as_ref() {
+            out.insert("providers.nvidia_nim.model".to_string(), v.clone());
+        }
 
         for (k, v) in &self.extras {
             out.insert(k.clone(), v.to_string());
@@ -302,6 +336,7 @@ impl ConfigToml {
             .or(root_deepseek_base_url)
             .unwrap_or_else(|| match provider {
                 ProviderKind::Deepseek => DEFAULT_DEEPSEEK_BASE_URL.to_string(),
+                ProviderKind::NvidiaNim => DEFAULT_NVIDIA_NIM_BASE_URL.to_string(),
                 ProviderKind::Openai => DEFAULT_OPENAI_BASE_URL.to_string(),
             });
 
@@ -314,8 +349,10 @@ impl ConfigToml {
             .or_else(|| self.model.clone())
             .unwrap_or_else(|| match provider {
                 ProviderKind::Deepseek => DEFAULT_DEEPSEEK_MODEL.to_string(),
+                ProviderKind::NvidiaNim => DEFAULT_NVIDIA_NIM_MODEL.to_string(),
                 ProviderKind::Openai => DEFAULT_OPENAI_MODEL.to_string(),
             });
+        let model = normalize_model_for_provider(provider, &model);
 
         let output_mode = cli
             .output_mode
@@ -360,6 +397,21 @@ impl ConfigToml {
             approval_policy,
             sandbox_mode,
         }
+    }
+}
+
+fn normalize_model_for_provider(provider: ProviderKind, model: &str) -> String {
+    let normalized = model.trim().to_ascii_lowercase();
+    match (provider, normalized.as_str()) {
+        (ProviderKind::NvidiaNim, "deepseek-v4-pro" | "deepseek-v4pro") => {
+            DEFAULT_NVIDIA_NIM_MODEL.to_string()
+        }
+        (
+            ProviderKind::NvidiaNim,
+            "deepseek-v4-flash" | "deepseek-v4flash" | "deepseek-chat" | "deepseek-reasoner"
+            | "deepseek-r1" | "deepseek-v3" | "deepseek-v3.2",
+        ) => DEFAULT_NVIDIA_NIM_FLASH_MODEL.to_string(),
+        _ => model.to_string(),
     }
 }
 
@@ -481,7 +533,9 @@ struct EnvRuntimeOverrides {
     sandbox_mode: Option<String>,
     deepseek_api_key: Option<String>,
     openai_api_key: Option<String>,
+    nvidia_api_key: Option<String>,
     deepseek_base_url: Option<String>,
+    nvidia_base_url: Option<String>,
     openai_base_url: Option<String>,
 }
 
@@ -506,7 +560,15 @@ impl EnvRuntimeOverrides {
             openai_api_key: std::env::var("OPENAI_API_KEY")
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
+            nvidia_api_key: std::env::var("NVIDIA_API_KEY")
+                .or_else(|_| std::env::var("NVIDIA_NIM_API_KEY"))
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
             deepseek_base_url: std::env::var("DEEPSEEK_BASE_URL")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+            nvidia_base_url: std::env::var("NVIDIA_NIM_BASE_URL")
+                .or_else(|_| std::env::var("NVIDIA_BASE_URL"))
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
             openai_base_url: std::env::var("OPENAI_BASE_URL")
@@ -518,6 +580,7 @@ impl EnvRuntimeOverrides {
     fn api_key_for(&self, provider: ProviderKind) -> Option<String> {
         match provider {
             ProviderKind::Deepseek => self.deepseek_api_key.clone(),
+            ProviderKind::NvidiaNim => self.nvidia_api_key.clone(),
             ProviderKind::Openai => self.openai_api_key.clone(),
         }
     }
@@ -525,6 +588,7 @@ impl EnvRuntimeOverrides {
     fn base_url_for(&self, provider: ProviderKind) -> Option<String> {
         match provider {
             ProviderKind::Deepseek => self.deepseek_base_url.clone(),
+            ProviderKind::NvidiaNim => self.nvidia_base_url.clone(),
             ProviderKind::Openai => self.openai_base_url.clone(),
         }
     }
@@ -547,6 +611,10 @@ mod tests {
         deepseek_base_url: Option<OsString>,
         deepseek_model: Option<OsString>,
         deepseek_provider: Option<OsString>,
+        nvidia_api_key: Option<OsString>,
+        nvidia_nim_api_key: Option<OsString>,
+        nvidia_base_url: Option<OsString>,
+        nvidia_nim_base_url: Option<OsString>,
     }
 
     impl EnvGuard {
@@ -556,6 +624,10 @@ mod tests {
                 deepseek_base_url: env::var_os("DEEPSEEK_BASE_URL"),
                 deepseek_model: env::var_os("DEEPSEEK_MODEL"),
                 deepseek_provider: env::var_os("DEEPSEEK_PROVIDER"),
+                nvidia_api_key: env::var_os("NVIDIA_API_KEY"),
+                nvidia_nim_api_key: env::var_os("NVIDIA_NIM_API_KEY"),
+                nvidia_base_url: env::var_os("NVIDIA_BASE_URL"),
+                nvidia_nim_base_url: env::var_os("NVIDIA_NIM_BASE_URL"),
             };
             // Safety: test-only environment mutation guarded by a module mutex.
             unsafe {
@@ -563,6 +635,10 @@ mod tests {
                 env::remove_var("DEEPSEEK_BASE_URL");
                 env::remove_var("DEEPSEEK_MODEL");
                 env::remove_var("DEEPSEEK_PROVIDER");
+                env::remove_var("NVIDIA_API_KEY");
+                env::remove_var("NVIDIA_NIM_API_KEY");
+                env::remove_var("NVIDIA_BASE_URL");
+                env::remove_var("NVIDIA_NIM_BASE_URL");
             }
             guard
         }
@@ -584,6 +660,10 @@ mod tests {
                 Self::restore_var("DEEPSEEK_BASE_URL", self.deepseek_base_url.take());
                 Self::restore_var("DEEPSEEK_MODEL", self.deepseek_model.take());
                 Self::restore_var("DEEPSEEK_PROVIDER", self.deepseek_provider.take());
+                Self::restore_var("NVIDIA_API_KEY", self.nvidia_api_key.take());
+                Self::restore_var("NVIDIA_NIM_API_KEY", self.nvidia_nim_api_key.take());
+                Self::restore_var("NVIDIA_BASE_URL", self.nvidia_base_url.take());
+                Self::restore_var("NVIDIA_NIM_BASE_URL", self.nvidia_nim_base_url.take());
             }
         }
     }
@@ -626,6 +706,78 @@ mod tests {
         assert_eq!(resolved.api_key.as_deref(), Some("provider-key"));
         assert_eq!(resolved.base_url, "https://api.deepseeki.com");
         assert_eq!(resolved.model, "deepseek-v4-flash");
+    }
+
+    #[test]
+    fn nvidia_nim_provider_defaults_to_catalog_endpoint_and_model() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let config = ConfigToml {
+            provider: ProviderKind::NvidiaNim,
+            ..ConfigToml::default()
+        };
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::NvidiaNim);
+        assert_eq!(resolved.base_url, DEFAULT_NVIDIA_NIM_BASE_URL);
+        assert_eq!(resolved.model, DEFAULT_NVIDIA_NIM_MODEL);
+    }
+
+    #[test]
+    fn nvidia_nim_provider_uses_provider_specific_credentials() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let mut config = ConfigToml {
+            provider: ProviderKind::NvidiaNim,
+            ..ConfigToml::default()
+        };
+        config.providers.nvidia_nim.api_key = Some("nim-key".to_string());
+        config.providers.nvidia_nim.base_url = Some("https://nim.example/v1".to_string());
+        config.providers.nvidia_nim.model = Some("deepseek-ai/deepseek-v4-pro".to_string());
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::NvidiaNim);
+        assert_eq!(resolved.api_key.as_deref(), Some("nim-key"));
+        assert_eq!(resolved.base_url, "https://nim.example/v1");
+        assert_eq!(resolved.model, "deepseek-ai/deepseek-v4-pro");
+    }
+
+    #[test]
+    fn nvidia_nim_provider_normalizes_flash_aliases() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let cli = CliRuntimeOverrides {
+            provider: Some(ProviderKind::NvidiaNim),
+            model: Some("deepseek-v4-flash".to_string()),
+            ..CliRuntimeOverrides::default()
+        };
+
+        let resolved = ConfigToml::default().resolve_runtime_options(&cli);
+
+        assert_eq!(resolved.provider, ProviderKind::NvidiaNim);
+        assert_eq!(resolved.model, DEFAULT_NVIDIA_NIM_FLASH_MODEL);
+    }
+
+    #[test]
+    fn nvidia_nim_provider_uses_nvidia_env_credentials() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        // Safety: test-only environment mutation guarded by a module mutex.
+        unsafe {
+            env::set_var("DEEPSEEK_PROVIDER", "nvidia-nim");
+            env::set_var("NVIDIA_API_KEY", "nim-env-key");
+            env::set_var("NVIDIA_NIM_BASE_URL", "https://nim-env.example/v1");
+        }
+
+        let config = ConfigToml::default();
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::NvidiaNim);
+        assert_eq!(resolved.api_key.as_deref(), Some("nim-env-key"));
+        assert_eq!(resolved.base_url, "https://nim-env.example/v1");
+        assert_eq!(resolved.model, DEFAULT_NVIDIA_NIM_MODEL);
     }
 
     #[test]

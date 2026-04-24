@@ -16,8 +16,41 @@ use crate::hooks::HooksConfig;
 pub const DEFAULT_MAX_SUBAGENTS: usize = 5;
 pub const MAX_SUBAGENTS: usize = 20;
 pub const DEFAULT_TEXT_MODEL: &str = "deepseek-v4-pro";
+pub const DEFAULT_NVIDIA_NIM_MODEL: &str = "deepseek-ai/deepseek-v4-pro";
+pub const DEFAULT_NVIDIA_NIM_FLASH_MODEL: &str = "deepseek-ai/deepseek-v4-flash";
+pub const DEFAULT_NVIDIA_NIM_BASE_URL: &str = "https://integrate.api.nvidia.com/v1";
 const API_KEYRING_SENTINEL: &str = "__KEYRING__";
-pub const COMMON_DEEPSEEK_MODELS: &[&str] = &["deepseek-v4-pro", "deepseek-v4-flash"];
+pub const COMMON_DEEPSEEK_MODELS: &[&str] = &[
+    "deepseek-v4-pro",
+    "deepseek-v4-flash",
+    "deepseek-ai/deepseek-v4-pro",
+    "deepseek-ai/deepseek-v4-flash",
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApiProvider {
+    Deepseek,
+    NvidiaNim,
+}
+
+impl ApiProvider {
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "deepseek" | "deep-seek" => Some(Self::Deepseek),
+            "nvidia" | "nvidia-nim" | "nvidia_nim" | "nim" => Some(Self::NvidiaNim),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Deepseek => "deepseek",
+            Self::NvidiaNim => "nvidia-nim",
+        }
+    }
+}
 
 /// Canonicalize common model aliases to stable DeepSeek IDs.
 ///
@@ -55,7 +88,7 @@ pub fn normalize_model_name(model: &str) -> Option<String> {
     }
 
     if normalized.chars().all(|ch| {
-        ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '-' | '_' | '.' | ':')
+        ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '-' | '_' | '.' | ':' | '/')
     }) {
         return Some(normalized);
     }
@@ -127,6 +160,7 @@ impl RetryPolicy {
 /// Resolved CLI configuration, including defaults and environment overrides.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Config {
+    pub provider: Option<String>,
     pub api_key: Option<String>,
     pub base_url: Option<String>,
     pub default_text_model: Option<String>,
@@ -154,6 +188,25 @@ pub struct Config {
     /// Lifecycle hooks configuration
     #[serde(default)]
     pub hooks: Option<HooksConfig>,
+
+    /// Provider-specific credentials and defaults shared with the `deepseek` facade.
+    #[serde(default)]
+    pub providers: Option<ProvidersConfig>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ProviderConfig {
+    pub api_key: Option<String>,
+    pub base_url: Option<String>,
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ProvidersConfig {
+    #[serde(default)]
+    pub deepseek: ProviderConfig,
+    #[serde(default)]
+    pub nvidia_nim: ProviderConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -209,6 +262,11 @@ impl Config {
 
     /// Validate that critical config fields are present.
     pub fn validate(&self) -> Result<()> {
+        if let Some(provider) = self.provider.as_deref()
+            && ApiProvider::parse(provider).is_none()
+        {
+            anyhow::bail!("Invalid provider '{provider}': expected deepseek or nvidia-nim.");
+        }
         if let Some(ref key) = self.api_key
             && key.trim().is_empty()
         {
@@ -225,7 +283,7 @@ impl Config {
             && normalize_model_name(model).is_none()
         {
             anyhow::bail!(
-                "Invalid default_text_model '{model}': expected a DeepSeek model ID (for example: deepseek-v4-pro, deepseek-v4-flash)."
+                "Invalid default_text_model '{model}': expected a DeepSeek model ID (for example: deepseek-v4-pro, deepseek-v4-flash, deepseek-ai/deepseek-v4-pro)."
             );
         }
         if let Some(policy) = self.approval_policy.as_deref() {
@@ -293,26 +351,112 @@ impl Config {
         Ok(())
     }
 
-    /// Return the `DeepSeek` base URL (normalized).
+    #[must_use]
+    pub fn api_provider(&self) -> ApiProvider {
+        self.provider
+            .as_deref()
+            .and_then(ApiProvider::parse)
+            .unwrap_or_else(|| {
+                self.base_url
+                    .as_deref()
+                    .filter(|base| base.contains("integrate.api.nvidia.com"))
+                    .map(|_| ApiProvider::NvidiaNim)
+                    .unwrap_or(ApiProvider::Deepseek)
+            })
+    }
+
+    fn provider_config_for(&self, provider: ApiProvider) -> Option<&ProviderConfig> {
+        let providers = self.providers.as_ref()?;
+        Some(match provider {
+            ApiProvider::Deepseek => &providers.deepseek,
+            ApiProvider::NvidiaNim => &providers.nvidia_nim,
+        })
+    }
+
+    fn provider_config(&self) -> Option<&ProviderConfig> {
+        self.provider_config_for(self.api_provider())
+    }
+
+    #[must_use]
+    pub fn default_model(&self) -> String {
+        let provider = self.api_provider();
+        if let Some(model) = self
+            .provider_config()
+            .and_then(|provider| provider.model.as_deref())
+            && let Some(normalized) = normalize_model_for_provider(provider, model)
+        {
+            return normalized;
+        }
+        if let Some(model) = self.default_text_model.as_deref()
+            && let Some(normalized) = normalize_model_name(model)
+        {
+            return model_for_provider(provider, normalized);
+        }
+
+        match provider {
+            ApiProvider::Deepseek => DEFAULT_TEXT_MODEL,
+            ApiProvider::NvidiaNim => DEFAULT_NVIDIA_NIM_MODEL,
+        }
+        .to_string()
+    }
+
+    /// Return the configured API base URL (normalized).
     #[must_use]
     pub fn deepseek_base_url(&self) -> String {
-        let base = self
-            .base_url
-            .clone()
-            .unwrap_or_else(|| "https://api.deepseek.com".to_string());
+        let provider = self.api_provider();
+        let provider_base = self
+            .provider_config_for(provider)
+            .and_then(|provider| provider.base_url.clone());
+        let root_base = match provider {
+            ApiProvider::Deepseek => self.base_url.clone(),
+            ApiProvider::NvidiaNim => self
+                .base_url
+                .as_ref()
+                .filter(|base| base.contains("integrate.api.nvidia.com"))
+                .cloned(),
+        };
+        let base = provider_base.or(root_base).unwrap_or_else(|| {
+            match provider {
+                ApiProvider::Deepseek => "https://api.deepseek.com",
+                ApiProvider::NvidiaNim => DEFAULT_NVIDIA_NIM_BASE_URL,
+            }
+            .to_string()
+        });
         normalize_base_url(&base)
     }
 
-    /// Read the `DeepSeek` API key from config/environment.
+    /// Read the API key from config/environment.
     pub fn deepseek_api_key(&self) -> Result<String> {
-        // First check environment variable (highest priority)
-        if let Ok(key) = std::env::var("DEEPSEEK_API_KEY")
-            && !key.trim().is_empty()
-        {
-            return Ok(key);
+        let provider = self.api_provider();
+
+        match provider {
+            ApiProvider::Deepseek => {
+                if let Ok(key) = std::env::var("DEEPSEEK_API_KEY")
+                    && !key.trim().is_empty()
+                {
+                    return Ok(key);
+                }
+            }
+            ApiProvider::NvidiaNim => {
+                for name in ["NVIDIA_API_KEY", "NVIDIA_NIM_API_KEY", "DEEPSEEK_API_KEY"] {
+                    if let Ok(key) = std::env::var(name)
+                        && !key.trim().is_empty()
+                    {
+                        return Ok(key);
+                    }
+                }
+            }
         }
 
         // Then check config file
+        if let Some(configured) = self
+            .provider_config_for(provider)
+            .and_then(|provider| provider.api_key.clone())
+            && !configured.trim().is_empty()
+        {
+            return Ok(configured);
+        }
+
         if let Some(configured) = self.api_key.clone()
             && !configured.trim().is_empty()
             && configured != API_KEYRING_SENTINEL
@@ -320,13 +464,18 @@ impl Config {
             return Ok(configured);
         }
 
-        // Provide helpful error message with alternatives
-        anyhow::bail!(
-            "DeepSeek API key not found. Set it using one of these methods:\n\
-             1. Set DEEPSEEK_API_KEY environment variable (recommended)\n\
-             2. Run 'deepseek login' to save to ~/.deepseek/config.toml\n\
-             3. Add 'api_key = \"your-key\"' to ~/.deepseek/config.toml"
-        )
+        match provider {
+            ApiProvider::Deepseek => anyhow::bail!(
+                "DeepSeek API key not found. Set it using one of these methods:\n\
+                 1. Set DEEPSEEK_API_KEY environment variable (recommended)\n\
+                 2. Run 'deepseek login' to save to ~/.deepseek/config.toml\n\
+                 3. Add 'api_key = \"your-key\"' to ~/.deepseek/config.toml"
+            ),
+            ApiProvider::NvidiaNim => anyhow::bail!(
+                "NVIDIA NIM API key not found. Set NVIDIA_API_KEY, NVIDIA_NIM_API_KEY, \
+                 or save api_key in ~/.deepseek/config.toml with provider = \"nvidia-nim\"."
+            ),
+        }
     }
 
     /// Resolve the skills directory path.
@@ -576,14 +725,28 @@ fn default_memory_path() -> Option<PathBuf> {
 // === Environment Overrides ===
 
 fn apply_env_overrides(config: &mut Config) {
+    if let Ok(value) = std::env::var("DEEPSEEK_PROVIDER") {
+        config.provider = Some(value);
+    }
     if let Ok(value) = std::env::var("DEEPSEEK_API_KEY") {
         config.api_key = Some(value);
     }
     if let Ok(value) = std::env::var("DEEPSEEK_BASE_URL") {
         config.base_url = Some(value);
     }
+    if matches!(config.api_provider(), ApiProvider::NvidiaNim)
+        && let Ok(value) =
+            std::env::var("NVIDIA_NIM_BASE_URL").or_else(|_| std::env::var("NVIDIA_BASE_URL"))
+    {
+        config.base_url = Some(value);
+    }
     if let Ok(value) =
         std::env::var("DEEPSEEK_MODEL").or_else(|_| std::env::var("DEEPSEEK_DEFAULT_TEXT_MODEL"))
+    {
+        config.default_text_model = Some(value);
+    }
+    if matches!(config.api_provider(), ApiProvider::NvidiaNim)
+        && let Ok(value) = std::env::var("NVIDIA_NIM_MODEL")
     {
         config.default_text_model = Some(value);
     }
@@ -722,9 +885,34 @@ fn apply_env_overrides(config: &mut Config) {
 
 fn normalize_model_config(config: &mut Config) {
     if let Some(model) = config.default_text_model.as_deref()
-        && let Some(normalized) = normalize_model_name(model)
+        && let Some(normalized) = normalize_model_for_provider(config.api_provider(), model)
     {
         config.default_text_model = Some(normalized);
+    }
+
+    if let Some(providers) = config.providers.as_mut() {
+        if let Some(model) = providers.deepseek.model.as_deref()
+            && let Some(normalized) = normalize_model_for_provider(ApiProvider::Deepseek, model)
+        {
+            providers.deepseek.model = Some(normalized);
+        }
+        if let Some(model) = providers.nvidia_nim.model.as_deref()
+            && let Some(normalized) = normalize_model_for_provider(ApiProvider::NvidiaNim, model)
+        {
+            providers.nvidia_nim.model = Some(normalized);
+        }
+    }
+}
+
+fn normalize_model_for_provider(provider: ApiProvider, model: &str) -> Option<String> {
+    normalize_model_name(model).map(|normalized| model_for_provider(provider, normalized))
+}
+
+fn model_for_provider(provider: ApiProvider, normalized: String) -> String {
+    match (provider, normalized.as_str()) {
+        (ApiProvider::NvidiaNim, "deepseek-v4-pro") => DEFAULT_NVIDIA_NIM_MODEL.to_string(),
+        (ApiProvider::NvidiaNim, "deepseek-v4-flash") => DEFAULT_NVIDIA_NIM_FLASH_MODEL.to_string(),
+        _ => normalized,
     }
 }
 
@@ -771,6 +959,7 @@ fn apply_profile(config: ConfigFile, profile: Option<&str>) -> Result<Config> {
 
 fn merge_config(base: Config, override_cfg: Config) -> Config {
     Config {
+        provider: override_cfg.provider.or(base.provider),
         api_key: override_cfg.api_key.or(base.api_key),
         base_url: override_cfg.base_url.or(base.base_url),
         default_text_model: override_cfg.default_text_model.or(base.default_text_model),
@@ -792,7 +981,31 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         capacity: override_cfg.capacity.or(base.capacity),
         tui: override_cfg.tui.or(base.tui),
         hooks: override_cfg.hooks.or(base.hooks),
+        providers: merge_providers(base.providers, override_cfg.providers),
         features: merge_features(base.features, override_cfg.features),
+    }
+}
+
+fn merge_provider_config(base: ProviderConfig, override_cfg: ProviderConfig) -> ProviderConfig {
+    ProviderConfig {
+        api_key: override_cfg.api_key.or(base.api_key),
+        base_url: override_cfg.base_url.or(base.base_url),
+        model: override_cfg.model.or(base.model),
+    }
+}
+
+fn merge_providers(
+    base: Option<ProvidersConfig>,
+    override_cfg: Option<ProvidersConfig>,
+) -> Option<ProvidersConfig> {
+    match (base, override_cfg) {
+        (None, None) => None,
+        (Some(base), None) => Some(base),
+        (None, Some(override_cfg)) => Some(override_cfg),
+        (Some(base), Some(override_cfg)) => Some(ProvidersConfig {
+            deepseek: merge_provider_config(base.deepseek, override_cfg.deepseek),
+            nvidia_nim: merge_provider_config(base.nvidia_nim, override_cfg.nvidia_nim),
+        }),
     }
 }
 
@@ -1033,9 +1246,16 @@ mod tests {
         home: Option<OsString>,
         userprofile: Option<OsString>,
         deepseek_config_path: Option<OsString>,
+        deepseek_provider: Option<OsString>,
         deepseek_api_key: Option<OsString>,
+        deepseek_base_url: Option<OsString>,
         deepseek_model: Option<OsString>,
         deepseek_default_text_model: Option<OsString>,
+        nvidia_api_key: Option<OsString>,
+        nvidia_nim_api_key: Option<OsString>,
+        nvidia_base_url: Option<OsString>,
+        nvidia_nim_base_url: Option<OsString>,
+        nvidia_nim_model: Option<OsString>,
     }
 
     impl EnvGuard {
@@ -1046,25 +1266,46 @@ mod tests {
             let home_prev = env::var_os("HOME");
             let userprofile_prev = env::var_os("USERPROFILE");
             let deepseek_config_prev = env::var_os("DEEPSEEK_CONFIG_PATH");
+            let deepseek_provider_prev = env::var_os("DEEPSEEK_PROVIDER");
             let api_key_prev = env::var_os("DEEPSEEK_API_KEY");
+            let base_url_prev = env::var_os("DEEPSEEK_BASE_URL");
             let model_prev = env::var_os("DEEPSEEK_MODEL");
             let default_text_model_prev = env::var_os("DEEPSEEK_DEFAULT_TEXT_MODEL");
+            let nvidia_api_key_prev = env::var_os("NVIDIA_API_KEY");
+            let nvidia_nim_api_key_prev = env::var_os("NVIDIA_NIM_API_KEY");
+            let nvidia_base_url_prev = env::var_os("NVIDIA_BASE_URL");
+            let nvidia_nim_base_url_prev = env::var_os("NVIDIA_NIM_BASE_URL");
+            let nvidia_nim_model_prev = env::var_os("NVIDIA_NIM_MODEL");
             // Safety: test-only environment mutation guarded by a global mutex.
             unsafe {
                 env::set_var("HOME", &home_str);
                 env::set_var("USERPROFILE", &home_str);
                 env::set_var("DEEPSEEK_CONFIG_PATH", &config_str);
+                env::remove_var("DEEPSEEK_PROVIDER");
                 env::remove_var("DEEPSEEK_API_KEY");
+                env::remove_var("DEEPSEEK_BASE_URL");
                 env::remove_var("DEEPSEEK_MODEL");
                 env::remove_var("DEEPSEEK_DEFAULT_TEXT_MODEL");
+                env::remove_var("NVIDIA_API_KEY");
+                env::remove_var("NVIDIA_NIM_API_KEY");
+                env::remove_var("NVIDIA_BASE_URL");
+                env::remove_var("NVIDIA_NIM_BASE_URL");
+                env::remove_var("NVIDIA_NIM_MODEL");
             }
             Self {
                 home: home_prev,
                 userprofile: userprofile_prev,
                 deepseek_config_path: deepseek_config_prev,
+                deepseek_provider: deepseek_provider_prev,
                 deepseek_api_key: api_key_prev,
+                deepseek_base_url: base_url_prev,
                 deepseek_model: model_prev,
                 deepseek_default_text_model: default_text_model_prev,
+                nvidia_api_key: nvidia_api_key_prev,
+                nvidia_nim_api_key: nvidia_nim_api_key_prev,
+                nvidia_base_url: nvidia_base_url_prev,
+                nvidia_nim_base_url: nvidia_nim_base_url_prev,
+                nvidia_nim_model: nvidia_nim_model_prev,
             }
         }
     }
@@ -1076,12 +1317,19 @@ mod tests {
                 Self::restore_var("HOME", self.home.take());
                 Self::restore_var("USERPROFILE", self.userprofile.take());
                 Self::restore_var("DEEPSEEK_CONFIG_PATH", self.deepseek_config_path.take());
+                Self::restore_var("DEEPSEEK_PROVIDER", self.deepseek_provider.take());
                 Self::restore_var("DEEPSEEK_API_KEY", self.deepseek_api_key.take());
+                Self::restore_var("DEEPSEEK_BASE_URL", self.deepseek_base_url.take());
                 Self::restore_var("DEEPSEEK_MODEL", self.deepseek_model.take());
                 Self::restore_var(
                     "DEEPSEEK_DEFAULT_TEXT_MODEL",
                     self.deepseek_default_text_model.take(),
                 );
+                Self::restore_var("NVIDIA_API_KEY", self.nvidia_api_key.take());
+                Self::restore_var("NVIDIA_NIM_API_KEY", self.nvidia_nim_api_key.take());
+                Self::restore_var("NVIDIA_BASE_URL", self.nvidia_base_url.take());
+                Self::restore_var("NVIDIA_NIM_BASE_URL", self.nvidia_nim_base_url.take());
+                Self::restore_var("NVIDIA_NIM_MODEL", self.nvidia_nim_model.take());
             }
         }
     }
@@ -1302,6 +1550,14 @@ mod tests {
             normalize_model_name("DeepSeek-V4").as_deref(),
             Some("deepseek-v4")
         );
+        assert_eq!(
+            normalize_model_name("deepseek-ai/deepseek-v4-pro").as_deref(),
+            Some("deepseek-ai/deepseek-v4-pro")
+        );
+        assert_eq!(
+            normalize_model_name("deepseek-ai/deepseek-v4-flash").as_deref(),
+            Some("deepseek-ai/deepseek-v4-flash")
+        );
     }
 
     #[test]
@@ -1346,6 +1602,130 @@ mod tests {
             config.default_text_model.as_deref(),
             Some("deepseek-v4-flash")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn nvidia_nim_provider_uses_nim_defaults() -> Result<()> {
+        let config = Config {
+            provider: Some("nvidia-nim".to_string()),
+            ..Default::default()
+        };
+
+        config.validate()?;
+        assert_eq!(config.api_provider(), ApiProvider::NvidiaNim);
+        assert_eq!(config.default_model(), DEFAULT_NVIDIA_NIM_MODEL);
+        assert_eq!(config.deepseek_base_url(), DEFAULT_NVIDIA_NIM_BASE_URL);
+        Ok(())
+    }
+
+    #[test]
+    fn nvidia_nim_provider_normalizes_deepseek_v4_pro_alias() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-nim-model-alias-test-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        let config_path = temp_root.join(".deepseek").join("config.toml");
+        ensure_parent_dir(&config_path)?;
+        fs::write(
+            &config_path,
+            "provider = \"nvidia-nim\"\ndefault_text_model = \"deepseek-v4-pro\"\napi_key = \"nim-key\"\n",
+        )?;
+
+        let config = Config::load(None, None)?;
+        assert_eq!(config.api_provider(), ApiProvider::NvidiaNim);
+        assert_eq!(
+            config.default_text_model.as_deref(),
+            Some(DEFAULT_NVIDIA_NIM_MODEL)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn nvidia_nim_provider_normalizes_deepseek_v4_flash_alias() -> Result<()> {
+        let config = Config {
+            provider: Some("nvidia-nim".to_string()),
+            default_text_model: Some("deepseek-v4-flash".to_string()),
+            ..Default::default()
+        };
+
+        config.validate()?;
+        assert_eq!(config.default_model(), DEFAULT_NVIDIA_NIM_FLASH_MODEL);
+        Ok(())
+    }
+
+    #[test]
+    fn nvidia_nim_env_overrides_provider_and_credentials() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-nim-env-test-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        // Safety: test-only environment mutation guarded by a global mutex.
+        unsafe {
+            env::set_var("DEEPSEEK_PROVIDER", "nvidia-nim");
+            env::set_var("NVIDIA_API_KEY", "nim-env-key");
+            env::set_var("NVIDIA_NIM_MODEL", "deepseek-ai/deepseek-v4-pro");
+        }
+
+        let config = Config::load(None, None)?;
+        assert_eq!(config.api_provider(), ApiProvider::NvidiaNim);
+        assert_eq!(config.deepseek_api_key()?, "nim-env-key");
+        assert_eq!(config.default_model(), DEFAULT_NVIDIA_NIM_MODEL);
+        Ok(())
+    }
+
+    #[test]
+    fn nvidia_nim_reads_facade_provider_table() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-nim-provider-table-test-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        let config_path = temp_root.join(".deepseek").join("config.toml");
+        ensure_parent_dir(&config_path)?;
+        fs::write(
+            &config_path,
+            r#"provider = "nvidia-nim"
+default_text_model = "deepseek-v4-flash"
+
+[providers.nvidia_nim]
+api_key = "nim-table-key"
+base_url = "https://nim-table.example/v1"
+model = "deepseek-v4-pro"
+"#,
+        )?;
+
+        let config = Config::load(None, None)?;
+        assert_eq!(config.api_provider(), ApiProvider::NvidiaNim);
+        assert_eq!(config.deepseek_api_key()?, "nim-table-key");
+        assert_eq!(config.deepseek_base_url(), "https://nim-table.example/v1");
+        assert_eq!(config.default_model(), DEFAULT_NVIDIA_NIM_MODEL);
         Ok(())
     }
 }

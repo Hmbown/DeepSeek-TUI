@@ -51,7 +51,7 @@ mod ui;
 mod utils;
 mod working_set;
 
-use crate::config::{Config, DEFAULT_TEXT_MODEL, MAX_SUBAGENTS};
+use crate::config::{Config, MAX_SUBAGENTS};
 use crate::eval::{EvalHarness, EvalHarnessConfig, ScenarioStepKind};
 use crate::features::Feature;
 use crate::llm_client::LlmClient;
@@ -507,7 +507,7 @@ async fn main() -> Result<()> {
                 let model = args
                     .model
                     .or_else(|| config.default_text_model.clone())
-                    .unwrap_or_else(|| DEFAULT_TEXT_MODEL.to_string());
+                    .unwrap_or_else(|| config.default_model());
                 if args.auto || cli.yolo {
                     let workspace = cli.workspace.clone().unwrap_or_else(|| {
                         std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
@@ -603,10 +603,7 @@ async fn main() -> Result<()> {
     // One-shot prompt mode
     let config = load_config_from_cli(&cli)?;
     if let Some(prompt) = cli.prompt {
-        let model = config
-            .default_text_model
-            .clone()
-            .unwrap_or_else(|| DEFAULT_TEXT_MODEL.to_string());
+        let model = config.default_model();
         return run_one_shot(&config, &model, &prompt).await;
     }
 
@@ -1230,10 +1227,7 @@ async fn run_models(config: &Config, args: ModelsArgs) -> Result<()> {
         return Ok(());
     }
 
-    let default_model = config
-        .default_text_model
-        .clone()
-        .unwrap_or_else(|| DEFAULT_TEXT_MODEL.to_string());
+    let default_model = config.default_model();
 
     println!("Available models (default: {default_model})");
     for model in models {
@@ -1531,7 +1525,7 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
     let model = args
         .model
         .or_else(|| config.default_text_model.clone())
-        .unwrap_or_else(|| DEFAULT_TEXT_MODEL.to_string());
+        .unwrap_or_else(|| config.default_model());
 
     let system = SystemPrompt::Text(
         "You are a senior code reviewer. Focus on bugs, risks, behavioral regressions, and missing tests. \
@@ -2146,10 +2140,7 @@ async fn run_interactive(
         .workspace
         .clone()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-    let model = config
-        .default_text_model
-        .clone()
-        .unwrap_or_else(|| DEFAULT_TEXT_MODEL.to_string());
+    let model = config.default_model();
     let max_subagents = cli.max_subagents.map_or_else(
         || config.max_subagents(),
         |value| value.clamp(1, MAX_SUBAGENTS),

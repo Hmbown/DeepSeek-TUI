@@ -32,6 +32,16 @@ deepseek-tui login --api-key "YOUR_DEEPSEEK_API_KEY"
 DEEPSEEK_API_KEY="YOUR_DEEPSEEK_API_KEY" deepseek-tui
 ```
 
+To use NVIDIA NIM-hosted DeepSeek V4 Pro instead:
+
+```bash
+deepseek auth set --provider nvidia-nim --api-key "YOUR_NVIDIA_API_KEY"
+deepseek --provider nvidia-nim
+
+# or for one process:
+DEEPSEEK_PROVIDER=nvidia-nim NVIDIA_API_KEY="YOUR_NVIDIA_API_KEY" deepseek
+```
+
 <details>
 <summary>Other install methods</summary>
 
@@ -77,6 +87,8 @@ Set a default in config with `reasoning_effort = "max"` (or `off` / `low` /
 |---|---|---|---|---|---|
 | `deepseek-v4-pro` | default | 1M | $0.145 / 1M | $1.74 / 1M | $3.48 / 1M |
 | `deepseek-v4-flash` | default | 1M | $0.028 / 1M | $0.14 / 1M | $0.28 / 1M |
+| `deepseek-ai/deepseek-v4-pro` via NVIDIA NIM | default | 1M | NVIDIA account terms | NVIDIA account terms | NVIDIA account terms |
+| `deepseek-ai/deepseek-v4-flash` via NVIDIA NIM | default | 1M | NVIDIA account terms | NVIDIA account terms | NVIDIA account terms |
 
 Legacy `deepseek-chat` and `deepseek-reasoner` remain as silent aliases for
 `deepseek-v4-flash` (priced identically). Pricing is per 1M tokens as published
@@ -104,7 +116,12 @@ Controls: `F1` help, `Esc` backs out of the current action, `Ctrl+K` command pal
 `~/.deepseek/config.toml` — see [config.example.toml](config.example.toml) for all options.
 
 Key environment overrides: `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`,
-`DEEPSEEK_MODEL`, `DEEPSEEK_PROFILE`.
+`DEEPSEEK_MODEL`, `DEEPSEEK_PROFILE`, `DEEPSEEK_PROVIDER`.
+For NVIDIA NIM, use `DEEPSEEK_PROVIDER=nvidia-nim` plus `NVIDIA_API_KEY`
+or `NVIDIA_NIM_API_KEY`; the default model is `deepseek-ai/deepseek-v4-pro`
+and the default base URL is `https://integrate.api.nvidia.com/v1`. With
+`--provider nvidia-nim`, `--model deepseek-v4-flash` maps to
+`deepseek-ai/deepseek-v4-flash`.
 
 The client targets DeepSeek's documented OpenAI-compatible Chat Completions API
 (`/chat/completions`). DeepSeek context caching is automatic; when the API
