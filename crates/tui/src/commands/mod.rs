@@ -505,7 +505,7 @@ mod tests {
 
     fn create_test_app() -> App {
         let options = TuiOptions {
-            model: "deepseek-reasoner".to_string(),
+            model: "deepseek-v4-pro".to_string(),
             workspace: PathBuf::from("."),
             allow_shell: false,
             use_alt_screen: true,
@@ -562,7 +562,7 @@ mod tests {
     #[test]
     fn removed_set_and_deepseek_commands_show_migration_hints() {
         let mut app = create_test_app();
-        let set_result = execute("/set model deepseek-reasoner", &mut app);
+        let set_result = execute("/set model deepseek-v4-pro", &mut app);
         let set_msg = set_result
             .message
             .expect("legacy command should return an error message");

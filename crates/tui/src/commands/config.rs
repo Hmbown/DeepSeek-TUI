@@ -400,11 +400,11 @@ mod tests {
     fn test_set_model_updates_app_state() {
         let mut app = create_test_app();
         let _old_model = app.model.clone();
-        let result = set_config(&mut app, Some("model deepseek-reasoner"));
+        let result = set_config(&mut app, Some("model deepseek-v4-flash"));
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
-        assert!(msg.contains("model = deepseek-reasoner"));
-        assert_eq!(app.model, "deepseek-reasoner");
+        assert!(msg.contains("model = deepseek-v4-flash"));
+        assert_eq!(app.model, "deepseek-v4-flash");
         assert!(matches!(
             result.action,
             Some(AppAction::UpdateCompaction(_))
@@ -424,10 +424,10 @@ mod tests {
     #[test]
     fn test_set_model_with_save_flag() {
         let mut app = create_test_app();
-        let _result = set_config(&mut app, Some("model deepseek-reasoner --save"));
+        let _result = set_config(&mut app, Some("model deepseek-v4-flash --save"));
         // Note: This test may fail in environments where settings can't be saved
         // The important thing is that the model is updated
-        assert_eq!(app.model, "deepseek-reasoner");
+        assert_eq!(app.model, "deepseek-v4-flash");
     }
 
     #[test]

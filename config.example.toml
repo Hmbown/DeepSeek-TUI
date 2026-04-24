@@ -97,7 +97,7 @@ exponential_base = 2.0
 # enabled = false                  # Enable auto-compaction
 # token_threshold = 50000          # Trigger compaction above this token estimate
 # message_threshold = 50           # Or above this message count
-# model = "deepseek-chat"           # Model to use for summarization
+# model = "deepseek-v4-flash"       # Model to use for summarization
 # cache_summary = true             # Keep summary blocks stable; DeepSeek context caching is automatic
 
 # ─────────────────────────────────────────────────────────────────────────────────

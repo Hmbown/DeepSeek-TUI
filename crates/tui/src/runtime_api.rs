@@ -2646,7 +2646,7 @@ mod tests {
                 "updated_at": "2025-01-01T00:10:00Z",
                 "message_count": 2,
                 "total_tokens": 100,
-                "model": "deepseek-chat",
+                "model": "deepseek-v4-pro",
                 "workspace": "/tmp/test",
                 "mode": "agent"
             },
@@ -2678,7 +2678,7 @@ mod tests {
             .post(format!(
                 "http://{addr}/v1/sessions/{session_id}/resume-thread"
             ))
-            .json(&json!({ "model": "deepseek-chat" }))
+            .json(&json!({ "model": "deepseek-v4-pro" }))
             .send()
             .await?;
         assert_eq!(resp.status(), StatusCode::CREATED);

@@ -7,12 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-- DeepSeek V4 thinking-mode tool calls now preserve prior assistant `reasoning_content` whenever a tool call is replayed, matching DeepSeek's multi-turn contract and avoiding HTTP 400 rejections on later turns.
-- Raw Chat Completions requests now send DeepSeek's top-level `thinking` parameter instead of the OpenAI SDK-only `extra_body` wrapper.
-- Context-window budgeting now treats legacy `deepseek-chat` / `deepseek-reasoner` aliases as V4 Flash's 1M-token context window.
-- npm wrapper first-run downloads now use process-unique temp files so concurrent `deepseek` / `deepseek-tui` invocations do not race on `*.download` files.
-
 ## [0.4.0] - 2026-04-23
 
 ### Added
@@ -24,12 +18,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - **Default model flipped to `deepseek-v4-pro`** (from `deepseek-reasoner`).
 - `deepseek-chat` / `deepseek-reasoner` remain as silent aliases of `deepseek-v4-flash` for API compatibility; priced identically.
-- **Context compaction**: raised `MAX_COMPACTION_MESSAGE_THRESHOLD` from 150 → 500 so 1M-context models can use proportionally more history before message-count compaction. Token-based compaction still triggers at 80% of the window and scales automatically.
+- **Context compaction**: 1M-context V4 models now compact at 800k input tokens or 2,000 messages, so short/tool-heavy sessions do not compact as if they were 128k-context runs.
 - Cycling modes is now Tab-only; Shift+Tab is repurposed for reasoning-effort (reverse-mode cycle was low-value with only three modes).
 - Updated help/hint strings, validator error messages, and the model picker to reference V4 IDs.
 
 ### Fixed
 - `requires_reasoning_content` now recognizes `deepseek-v4*` so thinking streams render correctly on V4 models.
+- DeepSeek V4 thinking-mode tool calls now preserve prior assistant `reasoning_content` whenever a tool call is replayed, matching DeepSeek's multi-turn contract and avoiding HTTP 400 rejections on later turns.
+- Raw Chat Completions requests now send DeepSeek's top-level `thinking` parameter instead of the OpenAI SDK-only `extra_body` wrapper.
+- Config, env, and UI model selection now normalize legacy DeepSeek aliases to `deepseek-v4-flash` instead of preserving old model labels.
+- npm wrapper first-run downloads now use process-unique temp files so concurrent `deepseek` / `deepseek-tui` invocations do not race on `*.download` files.
 
 ## [0.3.33] - 2026-04-11
 
@@ -218,7 +216,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Expanded reasoning-model detection for chat history reconstruction (supports R-series and reasoner-style naming without hardcoding single versions).
-- Aligned docs/config examples with actual runtime default model (`deepseek-v3.2`).
+- Aligned docs/config examples with the then-current runtime default model.
 
 ## [0.3.14] - 2026-02-05
 

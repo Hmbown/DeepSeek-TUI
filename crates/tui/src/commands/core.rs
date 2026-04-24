@@ -212,7 +212,7 @@ mod tests {
 
     fn create_test_app() -> App {
         let options = TuiOptions {
-            model: "deepseek-reasoner".to_string(),
+            model: "deepseek-v4-pro".to_string(),
             workspace: PathBuf::from("/tmp/test-workspace"),
             allow_shell: false,
             use_alt_screen: true,
@@ -328,16 +328,16 @@ mod tests {
     fn test_model_change_updates_state() {
         let mut app = create_test_app();
         let old_model = app.model.clone();
-        let result = model(&mut app, Some("deepseek-reasoner"));
+        let result = model(&mut app, Some("deepseek-v4-flash"));
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
         assert!(msg.contains(&old_model));
-        assert!(msg.contains("deepseek-reasoner"));
+        assert!(msg.contains("deepseek-v4-flash"));
         assert!(matches!(
             result.action,
             Some(AppAction::UpdateCompaction(_))
         ));
-        assert_eq!(app.model, "deepseek-reasoner");
+        assert_eq!(app.model, "deepseek-v4-flash");
         assert_eq!(app.last_prompt_tokens, None);
         assert_eq!(app.last_completion_tokens, None);
     }
@@ -364,8 +364,8 @@ mod tests {
         let msg = result.message.unwrap();
         assert!(msg.contains("Invalid model"));
         assert!(msg.contains("DeepSeek model ID"));
-        assert!(msg.contains("deepseek-chat"));
-        assert!(msg.contains("deepseek-reasoner"));
+        assert!(msg.contains("deepseek-v4-pro"));
+        assert!(msg.contains("deepseek-v4-flash"));
         assert!(result.action.is_none());
     }
 

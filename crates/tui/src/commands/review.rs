@@ -71,7 +71,7 @@ mod tests {
 
     fn create_test_app_with_tmpdir(tmpdir: &TempDir) -> App {
         let options = TuiOptions {
-            model: "deepseek-v3.2".to_string(),
+            model: "deepseek-v4-pro".to_string(),
             workspace: tmpdir.path().to_path_buf(),
             allow_shell: false,
             use_alt_screen: true,

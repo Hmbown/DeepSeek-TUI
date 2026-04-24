@@ -17,24 +17,20 @@ pub const DEFAULT_MAX_SUBAGENTS: usize = 5;
 pub const MAX_SUBAGENTS: usize = 20;
 pub const DEFAULT_TEXT_MODEL: &str = "deepseek-v4-pro";
 const API_KEYRING_SENTINEL: &str = "__KEYRING__";
-pub const COMMON_DEEPSEEK_MODELS: &[&str] = &[
-    "deepseek-v4-pro",
-    "deepseek-v4-flash",
-    "deepseek-chat",
-    "deepseek-reasoner",
-];
+pub const COMMON_DEEPSEEK_MODELS: &[&str] = &["deepseek-v4-pro", "deepseek-v4-flash"];
 
 /// Canonicalize common model aliases to stable DeepSeek IDs.
 ///
-/// Legacy `deepseek-chat` / `deepseek-reasoner` remain as silent aliases: they
-/// resolve to themselves for API compatibility and are priced as `deepseek-v4-flash`.
+/// Legacy `deepseek-chat` / `deepseek-reasoner` remain silent aliases for the
+/// current fast V4 model.
 #[must_use]
 pub fn canonical_model_name(model: &str) -> Option<&'static str> {
     match model.trim().to_ascii_lowercase().as_str() {
         "deepseek-v4-pro" | "deepseek-v4pro" => Some("deepseek-v4-pro"),
         "deepseek-v4-flash" | "deepseek-v4flash" => Some("deepseek-v4-flash"),
-        "deepseek-chat" | "deepseek-v3" | "deepseek-v3.2" => Some("deepseek-chat"),
-        "deepseek-reasoner" | "deepseek-r1" => Some("deepseek-reasoner"),
+        "deepseek-chat" | "deepseek-reasoner" | "deepseek-r1" | "deepseek-v3" | "deepseek-v3.2" => {
+            Some("deepseek-v4-flash")
+        }
         _ => None,
     }
 }
@@ -1295,11 +1291,11 @@ mod tests {
     fn normalize_model_name_handles_aliases_and_future_ids() {
         assert_eq!(
             normalize_model_name("deepseek-v3.2").as_deref(),
-            Some("deepseek-chat")
+            Some("deepseek-v4-flash")
         );
         assert_eq!(
             normalize_model_name("deepseek-r1").as_deref(),
-            Some("deepseek-reasoner")
+            Some("deepseek-v4-flash")
         );
         assert_eq!(
             normalize_model_name("DeepSeek-V4").as_deref(),
@@ -1345,7 +1341,10 @@ mod tests {
         }
 
         let config = Config::load(None, None)?;
-        assert_eq!(config.default_text_model.as_deref(), Some("deepseek-chat"));
+        assert_eq!(
+            config.default_text_model.as_deref(),
+            Some("deepseek-v4-flash")
+        );
         Ok(())
     }
 }

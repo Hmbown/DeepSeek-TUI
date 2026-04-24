@@ -448,7 +448,7 @@ mod tests {
         let rendered = render_header(
             HeaderData::new(
                 AppMode::Agent,
-                "deepseek-v3.2",
+                "deepseek-v4-pro",
                 "deepseek-tui",
                 false,
                 palette::DEEPSEEK_INK,
@@ -458,7 +458,7 @@ mod tests {
 
         assert!(rendered.contains("Agent"));
         assert!(rendered.contains("deepseek-tui"));
-        assert!(rendered.contains("deepseek-v3.2"));
+        assert!(rendered.contains("deepseek-v4-pro"));
         assert!(!rendered.contains("Plan"));
         assert!(!rendered.contains("Yolo"));
     }
@@ -468,7 +468,7 @@ mod tests {
         let rendered = render_header(
             HeaderData::new(
                 AppMode::Plan,
-                "deepseek-reasoner",
+                "deepseek-v4-pro",
                 "workspace",
                 true,
                 palette::DEEPSEEK_INK,
@@ -502,7 +502,7 @@ mod tests {
         let rendered = render_header(
             HeaderData::new(
                 AppMode::Yolo,
-                "deepseek-chat",
+                "deepseek-v4-flash",
                 "repo",
                 true,
                 palette::DEEPSEEK_INK,
@@ -521,7 +521,7 @@ mod tests {
         let rendered = render_header(
             HeaderData::new(
                 AppMode::Agent,
-                "deepseek-chat",
+                "deepseek-v4-flash",
                 "repo",
                 false,
                 palette::DEEPSEEK_INK,
@@ -538,7 +538,7 @@ mod tests {
         let rendered = render_header(
             HeaderData::new(
                 AppMode::Agent,
-                "deepseek-chat",
+                "deepseek-v4-flash",
                 "repo",
                 false,
                 palette::DEEPSEEK_INK,

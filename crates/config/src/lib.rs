@@ -595,7 +595,7 @@ mod tests {
         let config = ConfigToml {
             api_key: Some("root-key".to_string()),
             base_url: Some("https://api.deepseek.com".to_string()),
-            default_text_model: Some("deepseek-chat".to_string()),
+            default_text_model: Some("deepseek-v4-pro".to_string()),
             ..ConfigToml::default()
         };
 
@@ -604,7 +604,7 @@ mod tests {
         assert_eq!(resolved.provider, ProviderKind::Deepseek);
         assert_eq!(resolved.api_key.as_deref(), Some("root-key"));
         assert_eq!(resolved.base_url, "https://api.deepseek.com");
-        assert_eq!(resolved.model, "deepseek-chat");
+        assert_eq!(resolved.model, "deepseek-v4-pro");
     }
 
     #[test]
@@ -614,18 +614,18 @@ mod tests {
         let mut config = ConfigToml {
             api_key: Some("root-key".to_string()),
             base_url: Some("https://api.deepseek.com".to_string()),
-            default_text_model: Some("deepseek-chat".to_string()),
+            default_text_model: Some("deepseek-v4-pro".to_string()),
             ..ConfigToml::default()
         };
         config.providers.deepseek.api_key = Some("provider-key".to_string());
         config.providers.deepseek.base_url = Some("https://api.deepseeki.com".to_string());
-        config.providers.deepseek.model = Some("deepseek-reasoner".to_string());
+        config.providers.deepseek.model = Some("deepseek-v4-flash".to_string());
 
         let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
 
         assert_eq!(resolved.api_key.as_deref(), Some("provider-key"));
         assert_eq!(resolved.base_url, "https://api.deepseeki.com");
-        assert_eq!(resolved.model, "deepseek-reasoner");
+        assert_eq!(resolved.model, "deepseek-v4-flash");
     }
 
     #[test]

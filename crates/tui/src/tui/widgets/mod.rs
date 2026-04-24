@@ -1040,7 +1040,7 @@ mod tests {
 
     fn create_test_app() -> App {
         let options = TuiOptions {
-            model: "deepseek-chat".to_string(),
+            model: "deepseek-v4-flash".to_string(),
             workspace: PathBuf::from("."),
             allow_shell: false,
             use_alt_screen: true,

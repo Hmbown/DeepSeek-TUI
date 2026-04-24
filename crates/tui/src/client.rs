@@ -2201,7 +2201,7 @@ mod tests {
                 },
             ],
         };
-        let out = build_chat_messages(None, &[message], "deepseek-reasoner");
+        let out = build_chat_messages(None, &[message], "deepseek-v4-pro");
         let assistant = out
             .iter()
             .find(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
@@ -2221,7 +2221,7 @@ mod tests {
                 thinking: "plan".to_string(),
             }],
         };
-        let out = build_chat_messages(None, &[message], "deepseek-chat");
+        let out = build_chat_messages(None, &[message], "deepseek-v4-flash");
         assert!(
             !out.iter()
                 .any(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
@@ -2236,7 +2236,7 @@ mod tests {
                 thinking: "plan".to_string(),
             }],
         };
-        let out = build_chat_messages(None, &[message], "deepseek-reasoner");
+        let out = build_chat_messages(None, &[message], "deepseek-v4-pro");
         assert!(
             !out.iter()
                 .any(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
@@ -2292,7 +2292,7 @@ mod tests {
                 }],
             },
         ];
-        let out = build_chat_messages(None, &messages, "deepseek-reasoner");
+        let out = build_chat_messages(None, &messages, "deepseek-v4-pro");
         let assistant = out
             .iter()
             .find(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
@@ -2352,7 +2352,7 @@ mod tests {
                 }],
             },
         ];
-        let out = build_chat_messages(None, &messages, "deepseek-reasoner");
+        let out = build_chat_messages(None, &messages, "deepseek-v4-pro");
         let assistant = out
             .iter()
             .find(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
@@ -2610,7 +2610,7 @@ mod tests {
             }],
         }];
 
-        let out = build_chat_messages(None, &messages, "deepseek-chat");
+        let out = build_chat_messages(None, &messages, "deepseek-v4-flash");
         assert!(
             !out.iter()
                 .any(|value| { value.get("role").and_then(Value::as_str) == Some("tool") })
@@ -2640,7 +2640,7 @@ mod tests {
             },
         ];
 
-        let out = build_chat_messages(None, &messages, "deepseek-chat");
+        let out = build_chat_messages(None, &messages, "deepseek-v4-flash");
         assert!(
             out.iter()
                 .any(|value| { value.get("role").and_then(Value::as_str) == Some("tool") })
@@ -2675,7 +2675,7 @@ mod tests {
             },
         ];
 
-        let out = build_chat_messages(None, &messages, "deepseek-chat");
+        let out = build_chat_messages(None, &messages, "deepseek-v4-flash");
         let assistant = out
             .iter()
             .find(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
@@ -2718,7 +2718,7 @@ mod tests {
             },
         ];
 
-        let out = build_chat_messages(None, &messages, "deepseek-chat");
+        let out = build_chat_messages(None, &messages, "deepseek-v4-flash");
         let assistant = out
             .iter()
             .find(|value| value.get("role").and_then(Value::as_str) == Some("assistant"));
@@ -2759,7 +2759,7 @@ mod tests {
             },
         ];
 
-        let out = build_chat_messages(None, &messages, "deepseek-chat");
+        let out = build_chat_messages(None, &messages, "deepseek-v4-flash");
         let assistant = out
             .iter()
             .find(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
@@ -2829,7 +2829,7 @@ mod tests {
             },
         ];
 
-        let out = build_chat_messages(None, &messages, "deepseek-chat");
+        let out = build_chat_messages(None, &messages, "deepseek-v4-flash");
         let assistant = out
             .iter()
             .find(|v| v.get("role").and_then(Value::as_str) == Some("assistant"));
@@ -2849,9 +2849,9 @@ mod tests {
         let payload = r#"{
             "object": "list",
             "data": [
-                {"id": "deepseek-r1", "object": "model", "owned_by": "deepseek", "created": 1},
-                {"id": "deepseek-chat", "object": "model"},
-                {"id": "deepseek-r1", "object": "model", "owned_by": "deepseek", "created": 1}
+                {"id": "deepseek-v4-pro", "object": "model", "owned_by": "deepseek", "created": 1},
+                {"id": "deepseek-v4-flash", "object": "model"},
+                {"id": "deepseek-v4-pro", "object": "model", "owned_by": "deepseek", "created": 1}
             ]
         }"#;
 
@@ -2860,12 +2860,12 @@ mod tests {
             models,
             vec![
                 AvailableModel {
-                    id: "deepseek-chat".to_string(),
+                    id: "deepseek-v4-flash".to_string(),
                     owned_by: None,
                     created: None
                 },
                 AvailableModel {
-                    id: "deepseek-r1".to_string(),
+                    id: "deepseek-v4-pro".to_string(),
                     owned_by: Some("deepseek".to_string()),
                     created: Some(1)
                 }

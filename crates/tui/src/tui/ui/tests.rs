@@ -108,7 +108,7 @@ fn transcript_scroll_percent_is_clamped_and_relative() {
 
 fn create_test_app() -> App {
     let options = TuiOptions {
-        model: "deepseek-reasoner".to_string(),
+        model: "deepseek-v4-pro".to_string(),
         workspace: PathBuf::from("."),
         allow_shell: false,
         use_alt_screen: true,
@@ -291,25 +291,25 @@ fn footer_state_label_prefers_compacting_then_thinking() {
 #[test]
 fn footer_status_line_spans_show_mode_model_and_status() {
     let mut app = create_test_app();
-    app.model = "deepseek-chat".to_string();
+    app.model = "deepseek-v4-flash".to_string();
 
     let idle = spans_text(&footer_status_line_spans(&app, 60));
     assert!(idle.contains("agent"));
-    assert!(idle.contains("deepseek-chat"));
+    assert!(idle.contains("deepseek-v4-flash"));
     assert!(idle.contains("\u{00B7}"));
     assert!(!idle.contains("ready"));
 
     app.is_loading = true;
     let active = spans_text(&footer_status_line_spans(&app, 60));
     assert!(active.contains("agent"));
-    assert!(active.contains("deepseek-chat"));
+    assert!(active.contains("deepseek-v4-flash"));
     assert!(active.contains("thinking"));
 }
 
 #[test]
 fn footer_status_line_spans_truncate_long_model_names() {
     let mut app = create_test_app();
-    app.model = "deepseek-reasoner-with-an-extremely-long-model-name".to_string();
+    app.model = "deepseek-v4-pro-with-an-extremely-long-model-name".to_string();
     app.is_loading = true;
 
     let line = spans_text(&footer_status_line_spans(&app, 40));

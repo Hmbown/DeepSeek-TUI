@@ -7,8 +7,8 @@ pub const DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS: u32 = 1_000_000;
 pub const DEFAULT_COMPACTION_TOKEN_THRESHOLD: usize = 50_000;
 pub const DEFAULT_COMPACTION_MESSAGE_THRESHOLD: usize = 50;
 const COMPACTION_THRESHOLD_PERCENT: u32 = 80;
-const COMPACTION_MESSAGE_DIVISOR: u32 = 1200;
-const MAX_COMPACTION_MESSAGE_THRESHOLD: usize = 500;
+const COMPACTION_MESSAGE_DIVISOR: u32 = 500;
+const MAX_COMPACTION_MESSAGE_THRESHOLD: usize = 2_000;
 
 // === Core Message Types ===
 
@@ -433,21 +433,21 @@ mod tests {
     fn compaction_message_threshold_scales_with_context_window() {
         assert_eq!(
             compaction_message_threshold_for_model("deepseek-v3.2-128k"),
-            106
+            256
         );
         assert_eq!(compaction_message_threshold_for_model("unknown-model"), 50);
-        // 200k / 1200 = 166, within the raised cap of 500.
-        assert_eq!(compaction_message_threshold_for_model("claude-3"), 166);
+        // 200k / 500 = 400, within the 2k cap.
+        assert_eq!(compaction_message_threshold_for_model("claude-3"), 400);
     }
 
     #[test]
     fn compaction_scales_for_deepseek_v4_1m_context() {
         // 80% of 1M = 800k tokens before token-based compaction.
         assert_eq!(compaction_threshold_for_model("deepseek-v4-pro"), 800_000);
-        // 1M / 1200 = 833, clamped to the 500-message cap.
+        // 1M / 500 = 2k messages before message-count compaction.
         assert_eq!(
             compaction_message_threshold_for_model("deepseek-v4-pro"),
-            500
+            2_000
         );
     }
 }

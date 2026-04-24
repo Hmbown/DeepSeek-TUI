@@ -18,7 +18,7 @@ If both are set, `--config` wins. Environment variable overrides are applied aft
 The `deepseek` facade and `deepseek-tui` binary share the same config file for
 DeepSeek auth and model defaults. `deepseek login --api-key ...` writes the
 root `api_key` field that `deepseek-tui` reads directly, and `deepseek --model
-deepseek-chat` is forwarded to the TUI as `DEEPSEEK_MODEL`.
+deepseek-v4-flash` is forwarded to the TUI as `DEEPSEEK_MODEL`.
 
 To bootstrap MCP and skills directories at their resolved paths, run `deepseek-tui setup`.
 To only scaffold MCP, run `deepseek-tui mcp init`.
@@ -118,7 +118,7 @@ If you are upgrading from older releases:
 - Old: `/deepseek`
   New: `/links` (aliases: `/dashboard`, `/api`)
 - Old: `/set model deepseek-reasoner`
-  New: `/config` and edit the `model` row to `deepseek-reasoner`
+  New: `/config` and edit the `model` row to `deepseek-v4-pro` or `deepseek-v4-flash`
 - Old: visible `Normal` mode or `default_mode = "normal"`
   New: use `Agent` / `default_mode = "agent"`; legacy `normal` still maps to `agent`
 - Old: discover `/set` in slash UX/help

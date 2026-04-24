@@ -6,7 +6,7 @@ fn thread_resume_params_round_trip() {
         thread_id: "thread-123".to_string(),
         history: None,
         path: None,
-        model: Some("deepseek-reasoner".to_string()),
+        model: Some("deepseek-v4-pro".to_string()),
         model_provider: Some("deepseek".to_string()),
         cwd: None,
         approval_policy: Some("on-request".to_string()),
@@ -23,7 +23,7 @@ fn thread_resume_params_round_trip() {
     match decoded {
         ThreadRequest::Resume(params) => {
             assert_eq!(params.thread_id, "thread-123");
-            assert_eq!(params.model.as_deref(), Some("deepseek-reasoner"));
+            assert_eq!(params.model.as_deref(), Some("deepseek-v4-pro"));
             assert!(params.persist_extended_history);
         }
         other => panic!("unexpected request: {other:?}"),

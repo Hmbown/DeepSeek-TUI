@@ -69,7 +69,7 @@ Resume session request body (all fields optional):
 
 ```json
 {
-  "model": "deepseek-chat",
+  "model": "deepseek-v4-pro",
   "mode": "agent"
 }
 ```
@@ -96,7 +96,7 @@ Request body:
 ```json
 {
   "prompt": "Summarize recent commits",
-  "model": "deepseek-reasoner",
+  "model": "deepseek-v4-pro",
   "mode": "agent",
   "workspace": ".",
   "allow_shell": false,
@@ -132,7 +132,7 @@ Create thread request example:
 
 ```json
 {
-  "model": "deepseek-reasoner",
+  "model": "deepseek-v4-pro",
   "workspace": ".",
   "mode": "agent",
   "allow_shell": false,

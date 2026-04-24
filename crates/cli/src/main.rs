@@ -872,12 +872,12 @@ mod tests {
             })) if key == "provider"
         ));
 
-        let cli = parse_ok(&["deepseek", "config", "set", "model", "deepseek-chat"]);
+        let cli = parse_ok(&["deepseek", "config", "set", "model", "deepseek-v4-flash"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Config(ConfigArgs {
                 command: ConfigCommand::Set { ref key, ref value }
-            })) if key == "model" && value == "deepseek-chat"
+            })) if key == "model" && value == "deepseek-v4-flash"
         ));
 
         let cli = parse_ok(&["deepseek", "config", "unset", "model"]);
@@ -922,7 +922,7 @@ mod tests {
             }))
         ));
 
-        let cli = parse_ok(&["deepseek", "model", "resolve", "deepseek-chat"]);
+        let cli = parse_ok(&["deepseek", "model", "resolve", "deepseek-v4-flash"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Model(ModelArgs {
@@ -930,7 +930,7 @@ mod tests {
                     model: Some(ref model),
                     provider: None
                 }
-            })) if model == "deepseek-chat"
+            })) if model == "deepseek-v4-flash"
         ));
 
         let cli = parse_ok(&[
@@ -939,7 +939,7 @@ mod tests {
             "resolve",
             "--provider",
             "deepseek",
-            "deepseek-reasoner",
+            "deepseek-v4-pro",
         ]);
         assert!(matches!(
             cli.command,
@@ -948,7 +948,7 @@ mod tests {
                     model: Some(ref model),
                     provider: Some(ProviderArg::Deepseek)
                 }
-            })) if model == "deepseek-reasoner"
+            })) if model == "deepseek-v4-pro"
         ));
     }
 

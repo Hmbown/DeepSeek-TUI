@@ -311,7 +311,7 @@ impl Settings {
             ("max_history", "Max input history entries"),
             (
                 "default_model",
-                "Default model: any DeepSeek model ID (e.g. deepseek-chat)",
+                "Default model: any DeepSeek model ID (e.g. deepseek-v4-pro)",
             ),
         ]
     }

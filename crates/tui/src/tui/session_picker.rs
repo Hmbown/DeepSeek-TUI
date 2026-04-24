@@ -605,7 +605,7 @@ mod tests {
             updated_at: Utc::now(),
             message_count: idx + 1,
             total_tokens: 100,
-            model: "deepseek-reasoner".to_string(),
+            model: "deepseek-v4-pro".to_string(),
             workspace: std::path::PathBuf::from("/tmp"),
             mode: Some("agent".to_string()),
         }

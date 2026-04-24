@@ -579,9 +579,7 @@ impl ConfigView {
 
 fn config_hint_for_key(key: &str) -> &'static str {
     match key {
-        "model" => {
-            "deepseek-v4-pro | deepseek-v4-flash | deepseek-* (aliases: deepseek-chat, deepseek-reasoner, deepseek-v3, deepseek-v3.2, deepseek-r1)"
-        }
+        "model" => "deepseek-v4-pro | deepseek-v4-flash | deepseek-*",
         "approval_mode" => "auto | suggest | never",
         "auto_compact" | "calm_mode" | "low_motion" | "show_thinking" | "show_tool_details"
         | "composer_border" => "on/off, true/false, yes/no, 1/0",
@@ -1510,7 +1508,7 @@ mod tests {
 
     fn create_test_app() -> App {
         let options = TuiOptions {
-            model: "deepseek-reasoner".to_string(),
+            model: "deepseek-v4-pro".to_string(),
             workspace: PathBuf::from("."),
             allow_shell: false,
             use_alt_screen: true,
@@ -1571,7 +1569,7 @@ mod tests {
             .expect("editing should remain active after Ctrl+U");
         assert!(cleared.buffer.is_empty());
 
-        for ch in "deepseek-chat".chars() {
+        for ch in "deepseek-v4-flash".chars() {
             let action = view.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
             assert!(matches!(action, ViewAction::None));
         }
@@ -1584,7 +1582,7 @@ mod tests {
                 persist,
             }) => {
                 assert_eq!(key, "model");
-                assert_eq!(value, "deepseek-chat");
+                assert_eq!(value, "deepseek-v4-flash");
                 assert!(!persist);
             }
             other => panic!("expected config update emit, got {other:?}"),

@@ -50,7 +50,7 @@ mod tests {
     fn app() -> App {
         App::new(
             TuiOptions {
-                model: "deepseek-v3.2".to_string(),
+                model: "deepseek-v4-pro".to_string(),
                 workspace: PathBuf::from("."),
                 allow_shell: false,
                 use_alt_screen: false,
