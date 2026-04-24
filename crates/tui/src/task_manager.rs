@@ -1483,7 +1483,7 @@ mod tests {
             data_dir: root,
             worker_count: 1,
             default_workspace: PathBuf::from("."),
-            default_model: "deepseek-v3.2".to_string(),
+            default_model: "deepseek-v4-flash".to_string(),
             default_mode: "agent".to_string(),
             allow_shell: false,
             trust_mode: false,

@@ -821,6 +821,7 @@ async fn create_summary(
         tool_choice: None,
         metadata: None,
         thinking: None,
+        reasoning_effort: None,
         stream: Some(false),
         temperature: Some(0.3),
         top_p: None,

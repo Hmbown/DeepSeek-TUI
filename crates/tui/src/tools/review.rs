@@ -227,6 +227,7 @@ impl ToolSpec for ReviewTool {
             tool_choice: None,
             metadata: None,
             thinking: None,
+            reasoning_effort: None,
             stream: Some(false),
             temperature: Some(0.2),
             top_p: Some(0.9),

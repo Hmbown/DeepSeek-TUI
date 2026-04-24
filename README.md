@@ -62,7 +62,7 @@ surface immediately.
 
 A terminal coding agent for DeepSeek models with file editing, shell execution, `web.run` browsing, git operations, session resume, and [MCP](https://modelcontextprotocol.io) server integration.
 
-Three visible modes (**Tab** / **Shift+Tab** to cycle):
+Three visible modes (**Tab** to cycle):
 
 | Mode | Behavior |
 |------|----------|
@@ -70,12 +70,28 @@ Three visible modes (**Tab** / **Shift+Tab** to cycle):
 | **Agent** | Default interactive mode with multi-step tool use |
 | **YOLO** | Auto-approve tools in a trusted workspace |
 
+**Shift+Tab** cycles the reasoning-effort tier for DeepSeek thinking mode:
+`off` → `high` → `max`. The current tier is shown as a ⚡ chip in the header.
+Set a default in config with `reasoning_effort = "max"` (or `off` / `low` /
+`medium` / `high`).
+
+## Models & pricing
+
+| Model | Thinking | Context | Input cache hit | Input cache miss | Output |
+|---|---|---|---|---|---|
+| `deepseek-v4-pro` | default | 1M | $0.145 / 1M | $1.74 / 1M | $3.48 / 1M |
+| `deepseek-v4-flash` | default | 1M | $0.028 / 1M | $0.14 / 1M | $0.28 / 1M |
+
+Legacy `deepseek-chat` and `deepseek-reasoner` remain as silent aliases for
+`deepseek-v4-flash` (priced identically). Pricing is per 1M tokens as published
+by DeepSeek and is subject to change.
+
 ## Usage
 
 ```bash
 deepseek                                      # interactive TUI
 deepseek "explain this in 2 sentences"        # one-shot prompt
-deepseek --model deepseek-chat "summarize"    # one-shot with model override
+deepseek --model deepseek-v4-flash "summarize" # one-shot with model override
 deepseek --yolo                               # YOLO mode
 deepseek login --api-key "..."                # save API key to shared config
 deepseek doctor                               # check setup

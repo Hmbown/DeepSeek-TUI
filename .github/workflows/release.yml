@@ -115,3 +115,21 @@ jobs:
         with:
           files: artifacts/*/*
           prerelease: false
+
+  publish-npm:
+    needs: release
+    runs-on: ubuntu-latest
+    # Trusted Publishing via OIDC — no NPM_TOKEN required.
+    # Configure the trusted publisher on the npm package settings page.
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+      - name: Publish wrapper to npm
+        working-directory: npm/deepseek-tui
+        run: npm publish --provenance --access public

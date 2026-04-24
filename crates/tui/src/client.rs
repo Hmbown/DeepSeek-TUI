@@ -608,6 +608,7 @@ impl DeepSeekClient {
         if let Some(choice) = request.tool_choice.as_ref() {
             body["tool_choice"] = choice.clone();
         }
+        apply_reasoning_effort(&mut body, request.reasoning_effort.as_deref());
 
         let url = api_url(&self.base_url, "responses");
         let response = self
@@ -659,6 +660,7 @@ impl DeepSeekClient {
         {
             body["tool_choice"] = mapped;
         }
+        apply_reasoning_effort(&mut body, request.reasoning_effort.as_deref());
 
         let url = api_url(&self.base_url, "chat/completions");
         let response = self
@@ -785,6 +787,7 @@ impl LlmClient for DeepSeekClient {
         {
             body["tool_choice"] = mapped;
         }
+        apply_reasoning_effort(&mut body, request.reasoning_effort.as_deref());
 
         let url = api_url(&self.base_url, "chat/completions");
         let response = self
@@ -1628,10 +1631,41 @@ fn map_tool_choice_for_chat(choice: &Value) -> Option<Value> {
 fn requires_reasoning_content(model: &str) -> bool {
     let lower = model.to_lowercase();
     lower.contains("deepseek-v3.2")
+        || lower.contains("deepseek-v4")
         || lower.contains("reasoner")
         || lower.contains("-reasoning")
         || lower.contains("-thinking")
         || has_deepseek_r_series_marker(&lower)
+}
+
+/// Translate the TUI's effort-tier string into DeepSeek's request fields.
+///
+/// The config surface accepts `off | low | medium | high | max`. DeepSeek
+/// itself collapses `low`/`medium` → `"high"` and `xhigh` → `"max"` at the
+/// API boundary (per their docs); `off` emits the disable toggle.
+fn apply_reasoning_effort(body: &mut Value, effort: Option<&str>) {
+    let Some(effort) = effort else {
+        return;
+    };
+    let normalized = effort.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "off" | "disabled" | "none" | "false" => {
+            body["extra_body"] = json!({ "thinking": { "type": "disabled" } });
+        }
+        "max" | "maximum" | "xhigh" => {
+            body["reasoning_effort"] = json!("max");
+            body["extra_body"] = json!({ "thinking": { "type": "enabled" } });
+        }
+        "low" | "minimal" | "medium" | "mid" | "high" | "" => {
+            // Per DeepSeek docs: low/medium compat-map to "high".
+            body["reasoning_effort"] = json!("high");
+            body["extra_body"] = json!({ "thinking": { "type": "enabled" } });
+        }
+        _ => {
+            // Unknown value — do not mutate the request, let the provider
+            // apply its own defaults.
+        }
+    }
 }
 
 fn has_deepseek_r_series_marker(model_lower: &str) -> bool {

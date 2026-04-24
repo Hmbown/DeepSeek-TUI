@@ -1044,6 +1044,7 @@ impl RuntimeThreadManager {
                 prompt,
                 mode,
                 model.clone(),
+                None,
                 allow_shell,
                 trust_mode,
                 auto_approve,

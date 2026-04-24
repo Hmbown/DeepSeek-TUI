@@ -313,6 +313,11 @@ async fn pre_request_refresh_invoked_when_medium_risk() {
         .capacity_controller
         .mark_turn_start(engine.turn_counter);
 
+    // Pin the model to a 128k-context variant so the pressure ratio stays
+    // stable regardless of changes to the workspace-wide default model.
+    engine.session.model = "deepseek-reasoner".to_string();
+    engine.config.model = "deepseek-reasoner".to_string();
+
     let long = "x".repeat(5_000);
     for _ in 0..200 {
         engine.session.messages.push(Message {

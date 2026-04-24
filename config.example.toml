@@ -21,7 +21,23 @@ base_url = "https://api.deepseek.com"
 # ─────────────────────────────────────────────────────────────────────────────────
 # Default Models
 # ─────────────────────────────────────────────────────────────────────────────────
-default_text_model = "deepseek-reasoner" # current IDs: deepseek-reasoner (thinking), deepseek-chat (non-thinking)
+# DeepSeek V4 family:
+#   deepseek-v4-pro    — flagship reasoning model
+#   deepseek-v4-flash  — fast, cost-efficient (legacy aliases: deepseek-chat, deepseek-reasoner)
+default_text_model = "deepseek-v4-pro"
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Thinking Mode (DeepSeek V4 reasoning effort)
+# ─────────────────────────────────────────────────────────────────────────────────
+# "off"    — disables chain-of-thought (extra_body.thinking = disabled)
+# "low"    — compat-maps to "high" server-side
+# "medium" — compat-maps to "high" server-side
+# "high"   — reasoning_effort = high (DeepSeek default)
+# "max"    — reasoning_effort = max (deepest reasoning)
+#
+# Shift+Tab in the TUI cycles between off / high / max. The header shows the
+# current tier as a ⚡ chip.
+reasoning_effort = "max"
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Paths

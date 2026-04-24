@@ -235,7 +235,7 @@ impl Settings {
 
                 let Some(model) = normalize_model_name(trimmed) else {
                     anyhow::bail!(
-                        "Failed to update setting: invalid model '{value}'. Expected: a DeepSeek model ID (for example deepseek-chat, deepseek-reasoner, deepseek-v4), or none/default."
+                        "Failed to update setting: invalid model '{value}'. Expected: a DeepSeek model ID (for example deepseek-v4-pro, deepseek-v4-flash), or none/default."
                     );
                 };
                 self.default_model = Some(model);

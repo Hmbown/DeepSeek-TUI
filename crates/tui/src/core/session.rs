@@ -13,6 +13,11 @@ pub struct Session {
     /// Model being used
     pub model: String,
 
+    /// Reasoning-effort tier for DeepSeek thinking mode:
+    /// `"off" | "low" | "medium" | "high" | "max"`. `None` lets the provider
+    /// apply its own defaults.
+    pub reasoning_effort: Option<String>,
+
     /// Workspace directory
     pub workspace: PathBuf,
 
@@ -94,6 +99,7 @@ impl Session {
 
         Self {
             model,
+            reasoning_effort: None,
             workspace,
             system_prompt: None,
             compaction_summary_prompt: None,

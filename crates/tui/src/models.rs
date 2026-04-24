@@ -3,11 +3,12 @@
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_CONTEXT_WINDOW_TOKENS: u32 = 128_000;
+pub const DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS: u32 = 1_000_000;
 pub const DEFAULT_COMPACTION_TOKEN_THRESHOLD: usize = 50_000;
 pub const DEFAULT_COMPACTION_MESSAGE_THRESHOLD: usize = 50;
 const COMPACTION_THRESHOLD_PERCENT: u32 = 80;
 const COMPACTION_MESSAGE_DIVISOR: u32 = 1200;
-const MAX_COMPACTION_MESSAGE_THRESHOLD: usize = 150;
+const MAX_COMPACTION_MESSAGE_THRESHOLD: usize = 500;
 
 // === Core Message Types ===
 
@@ -27,6 +28,10 @@ pub struct MessageRequest {
     pub metadata: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<serde_json::Value>,
+    /// DeepSeek reasoning-effort tier: "off" | "low" | "medium" | "high" | "max".
+    /// Translated by the client into `reasoning_effort` + `extra_body.thinking`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -195,9 +200,13 @@ pub struct Usage {
 pub fn context_window_for_model(model: &str) -> Option<u32> {
     let lower = model.to_lowercase();
     // DeepSeek models default to 128k unless an explicit *k suffix is present.
+    // DeepSeek-V4 family (flash, pro) ships with a 1M context window.
     if lower.contains("deepseek") {
         if let Some(explicit_window) = deepseek_context_window_hint(&lower) {
             return Some(explicit_window);
+        }
+        if lower.contains("v4") {
+            return Some(DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS);
         }
         return Some(DEFAULT_CONTEXT_WINDOW_TOKENS);
     }
@@ -364,6 +373,18 @@ mod tests {
     }
 
     #[test]
+    fn deepseek_v4_models_map_to_1m_context_window() {
+        assert_eq!(
+            context_window_for_model("deepseek-v4-pro"),
+            Some(DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS)
+        );
+        assert_eq!(
+            context_window_for_model("deepseek-v4-flash"),
+            Some(DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS)
+        );
+    }
+
+    #[test]
     fn deepseek_models_with_k_suffix_use_hint() {
         assert_eq!(context_window_for_model("deepseek-v3.2-32k"), Some(32_000));
         assert_eq!(
@@ -389,6 +410,18 @@ mod tests {
             106
         );
         assert_eq!(compaction_message_threshold_for_model("unknown-model"), 50);
-        assert_eq!(compaction_message_threshold_for_model("claude-3"), 150);
+        // 200k / 1200 = 166, within the raised cap of 500.
+        assert_eq!(compaction_message_threshold_for_model("claude-3"), 166);
+    }
+
+    #[test]
+    fn compaction_scales_for_deepseek_v4_1m_context() {
+        // 80% of 1M = 800k tokens before token-based compaction.
+        assert_eq!(compaction_threshold_for_model("deepseek-v4-pro"), 800_000);
+        // 1M / 1200 = 833, clamped to the 500-message cap.
+        assert_eq!(
+            compaction_message_threshold_for_model("deepseek-v4-pro"),
+            500
+        );
     }
 }

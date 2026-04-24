@@ -2301,6 +2301,7 @@ async fn run_subagent(
             tool_choice: Some(json!({ "type": "auto" })),
             metadata: None,
             thinking: None,
+            reasoning_effort: None,
             stream: Some(false),
             temperature: None,
             top_p: None,

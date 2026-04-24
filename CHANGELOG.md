@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-04-23
+
+### Added
+- **DeepSeek V4 support**: `deepseek-v4-pro` (flagship) and `deepseek-v4-flash` (fast/cheap) are now first-class model IDs with 1M context windows.
+- **Reasoning-effort tier**: new `reasoning_effort` config field (`off | low | medium | high | max`) mapped to DeepSeek's `reasoning_effort` + `extra_body.thinking` request fields. Defaults to `max`.
+- **Shift+Tab cycles reasoning-effort** through the three behaviorally distinct tiers (`off → high → max`). The current tier is shown as a ⚡ chip in the header.
+- Per-model pricing table: `deepseek-v4-pro` priced at $0.145/$1.74/$3.48 per 1M tokens (cache-hit/miss/output); `deepseek-v4-flash` and legacy aliases at $0.028/$0.14/$0.28.
+
+### Changed
+- **Default model flipped to `deepseek-v4-pro`** (from `deepseek-reasoner`).
+- `deepseek-chat` / `deepseek-reasoner` remain as silent aliases of `deepseek-v4-flash` for API compatibility; priced identically.
+- **Context compaction**: raised `MAX_COMPACTION_MESSAGE_THRESHOLD` from 150 → 500 so 1M-context models can use proportionally more history before message-count compaction. Token-based compaction still triggers at 80% of the window and scales automatically.
+- Cycling modes is now Tab-only; Shift+Tab is repurposed for reasoning-effort (reverse-mode cycle was low-value with only three modes).
+- Updated help/hint strings, validator error messages, and the model picker to reference V4 IDs.
+
+### Fixed
+- `requires_reasoning_content` now recognizes `deepseek-v4*` so thinking streams render correctly on V4 models.
+
 ## [0.3.33] - 2026-04-11
 
 ### Changed

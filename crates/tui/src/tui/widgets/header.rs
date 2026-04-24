@@ -33,6 +33,9 @@ pub struct HeaderData<'a> {
     pub session_cost: f64,
     /// Input tokens from the most recent API call (current context utilization).
     pub last_prompt_tokens: Option<u32>,
+    /// Short label for the current reasoning-effort tier (e.g. "max", "high",
+    /// "off"). Rendered as a chip when space allows.
+    pub reasoning_effort_label: Option<&'a str>,
 }
 
 impl<'a> HeaderData<'a> {
@@ -55,7 +58,15 @@ impl<'a> HeaderData<'a> {
             context_window: None,
             session_cost: 0.0,
             last_prompt_tokens: None,
+            reasoning_effort_label: None,
         }
+    }
+
+    /// Attach a short reasoning-effort label for the header chip.
+    #[must_use]
+    pub fn with_reasoning_effort(mut self, label: Option<&'a str>) -> Self {
+        self.reasoning_effort_label = label;
+        self
     }
 
     /// Set token/cost fields.
@@ -191,6 +202,27 @@ impl<'a> HeaderWidget<'a> {
         )]
     }
 
+    fn effort_chip_spans(&self, include_prefix: bool) -> Vec<Span<'static>> {
+        let Some(label) = self.data.reasoning_effort_label else {
+            return Vec::new();
+        };
+        let trimmed = label.trim();
+        if trimmed.is_empty() {
+            return Vec::new();
+        }
+        let color = if trimmed.eq_ignore_ascii_case("off") {
+            palette::TEXT_HINT
+        } else {
+            palette::DEEPSEEK_SKY
+        };
+        let body = if include_prefix {
+            format!("⚡{trimmed}")
+        } else {
+            trimmed.to_string()
+        };
+        vec![Span::styled(body, Style::default().fg(color))]
+    }
+
     fn status_variant(
         &self,
         show_stream_label: bool,
@@ -199,7 +231,16 @@ impl<'a> HeaderWidget<'a> {
     ) -> Vec<Span<'static>> {
         let mut spans = Vec::new();
 
+        let effort_spans = self.effort_chip_spans(true);
+        let has_effort = !effort_spans.is_empty();
+        if has_effort {
+            spans.extend(effort_spans);
+        }
+
         if self.data.is_streaming {
+            if has_effort {
+                spans.push(Span::raw("  "));
+            }
             spans.push(Span::styled(
                 "●",
                 Style::default()

@@ -1232,7 +1232,7 @@ async fn run_event_loop(
                     app.cycle_mode();
                 }
                 KeyCode::BackTab => {
-                    app.cycle_mode_reverse();
+                    app.cycle_effort();
                 }
                 KeyCode::Char('g')
                     if key.modifiers.is_empty() && app.input.is_empty() && !slash_menu_open =>
@@ -1881,6 +1881,7 @@ async fn dispatch_user_message(
             content,
             mode: app.mode,
             model: app.model.clone(),
+            reasoning_effort: app.reasoning_effort.api_value().map(str::to_string),
             allow_shell: app.allow_shell,
             trust_mode: app.trust_mode,
             auto_approve: app.mode == AppMode::Yolo,
@@ -2336,6 +2337,7 @@ fn render(f: &mut Frame, app: &mut App) {
             .and_then(|value| value.to_str())
             .filter(|value| !value.is_empty())
             .unwrap_or("workspace");
+        let effort_label = app.reasoning_effort.short_label();
         let header_data = HeaderData::new(
             app.mode,
             &app.model,
@@ -2348,7 +2350,8 @@ fn render(f: &mut Frame, app: &mut App) {
             sanitized_context_window,
             app.session_cost,
             sanitized_prompt_tokens,
-        );
+        )
+        .with_reasoning_effort(Some(effort_label));
         let header_widget = HeaderWidget::new(header_data);
         let buf = f.buffer_mut();
         header_widget.render(chunks[0], buf);

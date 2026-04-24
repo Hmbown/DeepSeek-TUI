@@ -14,16 +14,23 @@ struct ModelPricing {
 /// Look up pricing for a model name.
 fn pricing_for_model(model: &str) -> Option<ModelPricing> {
     let lower = model.to_lowercase();
-    if lower.contains("deepseek") {
-        // DeepSeek-V3.2 public API pricing, April 2026:
-        // $0.028/M cache-hit input, $0.28/M cache-miss input, $0.42/M output.
+    if !lower.contains("deepseek") {
+        return None;
+    }
+    if lower.contains("v4-pro") || lower.contains("v4pro") {
         Some(ModelPricing {
-            input_cache_hit_per_million: 0.028,
-            input_cache_miss_per_million: 0.28,
-            output_per_million: 0.42,
+            input_cache_hit_per_million: 0.145,
+            input_cache_miss_per_million: 1.74,
+            output_per_million: 3.48,
         })
     } else {
-        None
+        // deepseek-v4-flash and legacy aliases (deepseek-chat, deepseek-reasoner,
+        // deepseek-v3*) all price as v4-flash.
+        Some(ModelPricing {
+            input_cache_hit_per_million: 0.028,
+            input_cache_miss_per_million: 0.14,
+            output_per_million: 0.28,
+        })
     }
 }
 

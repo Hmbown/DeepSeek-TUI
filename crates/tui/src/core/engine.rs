@@ -1334,6 +1334,7 @@ impl Engine {
                     content,
                     mode,
                     model,
+                    reasoning_effort,
                     allow_shell,
                     trust_mode,
                     auto_approve,
@@ -1342,6 +1343,7 @@ impl Engine {
                         content,
                         mode,
                         model,
+                        reasoning_effort,
                         allow_shell,
                         trust_mode,
                         auto_approve,
@@ -1493,11 +1495,13 @@ impl Engine {
     }
 
     /// Handle a send message operation
+    #[allow(clippy::too_many_arguments)]
     async fn handle_send_message(
         &mut self,
         content: String,
         mode: AppMode,
         model: String,
+        reasoning_effort: Option<String>,
         allow_shell: bool,
         trust_mode: bool,
         auto_approve: bool,
@@ -1560,6 +1564,7 @@ impl Engine {
 
         self.session.model = model;
         self.config.model.clone_from(&self.session.model);
+        self.session.reasoning_effort = reasoning_effort;
         self.session.allow_shell = allow_shell;
         self.config.allow_shell = allow_shell;
         self.session.trust_mode = trust_mode;
@@ -2477,6 +2482,7 @@ impl Engine {
                 },
                 metadata: None,
                 thinking: None,
+                reasoning_effort: self.session.reasoning_effort.clone(),
                 stream: Some(true),
                 temperature: None,
                 top_p: None,
