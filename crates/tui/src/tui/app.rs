@@ -107,7 +107,7 @@ impl ReasoningEffort {
 
     /// Value forwarded to the engine/client. `None` means "provider default"
     /// (for `Off` we still emit `"off"` so the client can inject
-    /// `extra_body.thinking = {"type": "disabled"}`).
+    /// `thinking = {"type": "disabled"}`).
     #[must_use]
     pub fn api_value(self) -> Option<&'static str> {
         Some(self.as_setting())
@@ -1640,10 +1640,10 @@ mod tests {
     fn test_update_model_compaction_budget() {
         let mut app = App::new(test_options(false), &Config::default());
         let initial_threshold = app.compact_threshold;
-        app.model = "deepseek-reasoner".to_string();
+        app.model = "deepseek-v3.2-128k".to_string();
         app.update_model_compaction_budget();
         // Threshold may have changed based on model
-        // deepseek-reasoner has 128k context, so threshold should be higher
+        // Explicit 128k DeepSeek model IDs have a higher threshold than unknown models.
         assert!(app.compact_threshold >= initial_threshold);
     }
 

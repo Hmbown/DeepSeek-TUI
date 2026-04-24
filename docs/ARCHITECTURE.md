@@ -93,8 +93,9 @@ DeepSeek exposes OpenAI-compatible endpoints. The CLI uses:
 
 `https://api.deepseek.com/v1` is accepted for OpenAI SDK compatibility, and
 `https://api.deepseek.com/beta` can be configured for beta-only features such as
-strict tool mode. The public DeepSeek docs do not document a Responses API path
-for this workflow; the engine drives turns through Chat Completions.
+strict tool mode, chat prefix completion, and FIM completion. The public
+DeepSeek docs do not document a Responses API path for this workflow; the engine
+drives turns through Chat Completions.
 
 ### Tool System
 

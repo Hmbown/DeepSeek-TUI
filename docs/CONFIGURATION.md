@@ -35,7 +35,7 @@ You can define multiple profiles in the same file:
 
 ```toml
 api_key = "PERSONAL_KEY"
-default_text_model = "deepseek-reasoner"
+default_text_model = "deepseek-v4-pro"
 
 [profiles.work]
 api_key = "WORK_KEY"
@@ -129,8 +129,9 @@ If you are upgrading from older releases:
 ### Core keys (used by the TUI/engine)
 
 - `api_key` (string, required): must be non-empty (or set `DEEPSEEK_API_KEY`).
-- `base_url` (string, optional): defaults to `https://api.deepseek.com` for DeepSeek's OpenAI-compatible Chat Completions API. `https://api.deepseek.com/v1` is also accepted for SDK compatibility; use `https://api.deepseek.com/beta` only for DeepSeek beta features such as strict tool mode.
-- `default_text_model` (string, optional): defaults to `deepseek-reasoner`. Current public DeepSeek IDs are `deepseek-reasoner` (DeepSeek-V3.2 thinking mode) and `deepseek-chat` (DeepSeek-V3.2 non-thinking mode), both with a 128K context limit. Use `/models` or `deepseek models` to discover live IDs from your configured endpoint. `DEEPSEEK_MODEL` overrides this for a single process.
+- `base_url` (string, optional): defaults to `https://api.deepseek.com` for DeepSeek's OpenAI-compatible Chat Completions API. `https://api.deepseek.com/v1` is also accepted for SDK compatibility; use `https://api.deepseek.com/beta` only for DeepSeek beta features such as strict tool mode, chat prefix completion, and FIM completion.
+- `default_text_model` (string, optional): defaults to `deepseek-v4-pro`. Current public DeepSeek IDs are `deepseek-v4-pro` and `deepseek-v4-flash`, both with 1M context windows and thinking mode enabled by default. Legacy `deepseek-chat` and `deepseek-reasoner` remain compatibility aliases for `deepseek-v4-flash`. Use `/models` or `deepseek models` to discover live IDs from your configured endpoint. `DEEPSEEK_MODEL` overrides this for a single process.
+- `reasoning_effort` (string, optional): `off`, `low`, `medium`, `high`, or `max`; defaults to the configured UI tier. `off` sends `thinking = {"type": "disabled"}`. `low` and `medium` are normalized to `high`; `max` sends `reasoning_effort = "max"`.
 - `allow_shell` (bool, optional): defaults to `true` (sandboxed).
 - `approval_policy` (string, optional): `on-request`, `untrusted`, or `never`. Runtime `approval_mode` editing in `/config` also accepts `on-request` and `untrusted` aliases.
 - `sandbox_mode` (string, optional): `read-only`, `workspace-write`, `danger-full-access`, `external-sandbox`.

@@ -29,7 +29,7 @@ default_text_model = "deepseek-v4-pro"
 # ─────────────────────────────────────────────────────────────────────────────────
 # Thinking Mode (DeepSeek V4 reasoning effort)
 # ─────────────────────────────────────────────────────────────────────────────────
-# "off"    — disables chain-of-thought (extra_body.thinking = disabled)
+# "off"    — disables chain-of-thought (thinking.type = disabled)
 # "low"    — compat-maps to "high" server-side
 # "medium" — compat-maps to "high" server-side
 # "high"   — reasoning_effort = high (DeepSeek default)

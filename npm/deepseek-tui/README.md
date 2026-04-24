@@ -35,7 +35,7 @@ directly through the facade, including `deepseek doctor`, `deepseek models`,
 
 The app talks to DeepSeek's documented OpenAI-compatible Chat Completions API.
 Set `DEEPSEEK_BASE_URL` only if you need the China endpoint or DeepSeek beta
-features.
+features such as strict tool mode, chat prefix completion, or FIM completion.
 
 ## Supported platforms
 

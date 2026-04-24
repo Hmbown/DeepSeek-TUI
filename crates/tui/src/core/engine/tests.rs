@@ -221,7 +221,7 @@ fn detects_context_length_errors_from_provider_payloads() {
 
 #[test]
 fn context_budget_reserves_output_and_headroom() {
-    let budget = context_input_budget("deepseek-reasoner", TURN_MAX_OUTPUT_TOKENS)
+    let budget = context_input_budget("deepseek-v3.2-128k", TURN_MAX_OUTPUT_TOKENS)
         .expect("deepseek models should have known context window");
     let expected = 128_000usize - 4_096usize - 1_024usize;
     assert_eq!(budget, expected);
@@ -313,10 +313,10 @@ async fn pre_request_refresh_invoked_when_medium_risk() {
         .capacity_controller
         .mark_turn_start(engine.turn_counter);
 
-    // Pin the model to a 128k-context variant so the pressure ratio stays
+    // Pin the model to an explicit 128k-context variant so the pressure ratio stays
     // stable regardless of changes to the workspace-wide default model.
-    engine.session.model = "deepseek-reasoner".to_string();
-    engine.config.model = "deepseek-reasoner".to_string();
+    engine.session.model = "deepseek-v3.2-128k".to_string();
+    engine.config.model = "deepseek-v3.2-128k".to_string();
 
     let long = "x".repeat(5_000);
     for _ in 0..200 {

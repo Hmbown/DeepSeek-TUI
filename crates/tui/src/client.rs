@@ -1315,7 +1315,6 @@ fn build_chat_messages(
 ) -> Vec<Value> {
     let mut out = Vec::new();
     let include_reasoning = requires_reasoning_content(model);
-    let current_user_turn_start = current_user_turn_start(messages);
     let mut pending_tool_calls: HashSet<String> = HashSet::new();
 
     if let Some(instructions) = system_to_instructions(system.cloned())
@@ -1327,7 +1326,7 @@ fn build_chat_messages(
         }));
     }
 
-    for (message_idx, message) in messages.iter().enumerate() {
+    for message in messages {
         let role = message.role.as_str();
         let mut text_parts = Vec::new();
         let mut thinking_parts = Vec::new();
@@ -1389,8 +1388,7 @@ fn build_chat_messages(
             let reasoning_content = thinking_parts.join("\n");
             let has_text = !content.trim().is_empty();
             let has_tool_calls = !tool_calls.is_empty();
-            let include_reasoning_for_turn =
-                include_reasoning && has_tool_calls && message_idx >= current_user_turn_start;
+            let include_reasoning_for_turn = include_reasoning && has_tool_calls;
             let has_reasoning = include_reasoning_for_turn && !reasoning_content.trim().is_empty();
 
             // DeepSeek rejects assistant messages where both `content` and
@@ -1588,25 +1586,6 @@ fn tool_to_chat(tool: &Tool) -> Value {
     value
 }
 
-fn message_has_user_text(message: &Message) -> bool {
-    message.role == "user"
-        && message.content.iter().any(|block| {
-            matches!(
-                block,
-                ContentBlock::Text { text, .. } if !text.trim().is_empty()
-            )
-        })
-}
-
-fn current_user_turn_start(messages: &[Message]) -> usize {
-    messages
-        .iter()
-        .enumerate()
-        .rev()
-        .find(|(_, message)| message_has_user_text(message))
-        .map_or(0, |(idx, _)| idx)
-}
-
 fn map_tool_choice_for_chat(choice: &Value) -> Option<Value> {
     if let Some(choice_str) = choice.as_str() {
         return Some(json!(choice_str));
@@ -1650,16 +1629,16 @@ fn apply_reasoning_effort(body: &mut Value, effort: Option<&str>) {
     let normalized = effort.trim().to_ascii_lowercase();
     match normalized.as_str() {
         "off" | "disabled" | "none" | "false" => {
-            body["extra_body"] = json!({ "thinking": { "type": "disabled" } });
+            body["thinking"] = json!({ "type": "disabled" });
         }
         "max" | "maximum" | "xhigh" => {
             body["reasoning_effort"] = json!("max");
-            body["extra_body"] = json!({ "thinking": { "type": "enabled" } });
+            body["thinking"] = json!({ "type": "enabled" });
         }
         "low" | "minimal" | "medium" | "mid" | "high" | "" => {
             // Per DeepSeek docs: low/medium compat-map to "high".
             body["reasoning_effort"] = json!("high");
-            body["extra_body"] = json!({ "thinking": { "type": "enabled" } });
+            body["thinking"] = json!({ "type": "enabled" });
         }
         _ => {
             // Unknown value — do not mutate the request, let the provider
@@ -2326,7 +2305,7 @@ mod tests {
     }
 
     #[test]
-    fn chat_messages_strip_old_tool_round_reasoning_after_new_user_turn() {
+    fn chat_messages_preserve_prior_tool_round_reasoning_after_new_user_turn() {
         let messages = vec![
             Message {
                 role: "user".to_string(),
@@ -2378,7 +2357,100 @@ mod tests {
             .iter()
             .find(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
             .expect("assistant message");
-        assert!(assistant.get("reasoning_content").is_none());
+        assert_eq!(
+            assistant.get("reasoning_content").and_then(Value::as_str),
+            Some("Need to call a tool")
+        );
+    }
+
+    #[test]
+    fn chat_messages_preserve_v4_tool_round_reasoning() {
+        let messages = vec![
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "Use a tool".to_string(),
+                    cache_control: None,
+                }],
+            },
+            Message {
+                role: "assistant".to_string(),
+                content: vec![
+                    ContentBlock::Thinking {
+                        thinking: "Need a tool for this".to_string(),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "call-1".to_string(),
+                        name: "read_file".to_string(),
+                        input: json!({"path": "Cargo.toml"}),
+                        caller: None,
+                    },
+                ],
+            },
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "call-1".to_string(),
+                    content: "workspace manifest".to_string(),
+                    is_error: None,
+                    content_blocks: None,
+                }],
+            },
+            Message {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "Read it.".to_string(),
+                    cache_control: None,
+                }],
+            },
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "Now continue.".to_string(),
+                    cache_control: None,
+                }],
+            },
+        ];
+
+        let out = build_chat_messages(None, &messages, "deepseek-v4-pro");
+        let assistant = out
+            .iter()
+            .find(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
+            .expect("assistant message");
+        assert_eq!(
+            assistant.get("reasoning_content").and_then(Value::as_str),
+            Some("Need a tool for this")
+        );
+        assert!(assistant.get("tool_calls").is_some());
+    }
+
+    #[test]
+    fn reasoning_effort_uses_deepseek_top_level_thinking_parameter() {
+        let mut body = json!({});
+        apply_reasoning_effort(&mut body, Some("max"));
+
+        assert_eq!(
+            body.get("reasoning_effort").and_then(Value::as_str),
+            Some("max")
+        );
+        assert_eq!(
+            body.pointer("/thinking/type").and_then(Value::as_str),
+            Some("enabled")
+        );
+        assert!(body.get("extra_body").is_none());
+    }
+
+    #[test]
+    fn reasoning_effort_off_disables_top_level_thinking() {
+        let mut body = json!({});
+        apply_reasoning_effort(&mut body, Some("off"));
+
+        assert_eq!(
+            body.pointer("/thinking/type").and_then(Value::as_str),
+            Some("disabled")
+        );
+        assert!(body.get("reasoning_effort").is_none());
+        assert!(body.get("extra_body").is_none());
     }
 
     #[test]

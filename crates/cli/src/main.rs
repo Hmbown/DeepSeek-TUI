@@ -451,7 +451,7 @@ fn run_login_command(store: &mut ConfigStore, args: LoginArgs) -> Result<()> {
                     .deepseek
                     .model
                     .clone()
-                    .unwrap_or_else(|| "deepseek-reasoner".to_string()),
+                    .unwrap_or_else(|| "deepseek-v4-pro".to_string()),
             );
         }
     }
@@ -1120,11 +1120,11 @@ mod tests {
         assert_eq!(store.config.api_key.as_deref(), Some("sk-test"));
         assert_eq!(
             store.config.default_text_model.as_deref(),
-            Some("deepseek-reasoner")
+            Some("deepseek-v4-pro")
         );
         let saved = std::fs::read_to_string(&path).expect("config should be written");
         assert!(saved.contains("api_key = \"sk-test\""));
-        assert!(saved.contains("default_text_model = \"deepseek-reasoner\""));
+        assert!(saved.contains("default_text_model = \"deepseek-v4-pro\""));
 
         let _ = std::fs::remove_file(path);
     }

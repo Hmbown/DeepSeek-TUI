@@ -29,7 +29,7 @@ pub struct MessageRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<serde_json::Value>,
     /// DeepSeek reasoning-effort tier: "off" | "low" | "medium" | "high" | "max".
-    /// Translated by the client into `reasoning_effort` + `extra_body.thinking`.
+    /// Translated by the client into DeepSeek's `reasoning_effort` + `thinking` fields.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -199,13 +199,13 @@ pub struct Usage {
 #[must_use]
 pub fn context_window_for_model(model: &str) -> Option<u32> {
     let lower = model.to_lowercase();
-    // DeepSeek models default to 128k unless an explicit *k suffix is present.
-    // DeepSeek-V4 family (flash, pro) ships with a 1M context window.
+    // Unknown DeepSeek model IDs default to 128k unless an explicit *k suffix is present.
+    // DeepSeek-V4 family and current legacy aliases ship with a 1M context window.
     if lower.contains("deepseek") {
         if let Some(explicit_window) = deepseek_context_window_hint(&lower) {
             return Some(explicit_window);
         }
-        if lower.contains("v4") {
+        if lower.contains("v4") || is_current_deepseek_v4_alias(&lower) {
             return Some(DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS);
         }
         return Some(DEFAULT_CONTEXT_WINDOW_TOKENS);
@@ -214,6 +214,13 @@ pub fn context_window_for_model(model: &str) -> Option<u32> {
         return Some(200_000);
     }
     None
+}
+
+fn is_current_deepseek_v4_alias(model_lower: &str) -> bool {
+    matches!(
+        model_lower,
+        "deepseek-chat" | "deepseek-reasoner" | "deepseek-r1" | "deepseek-v3" | "deepseek-v3.2"
+    )
 }
 
 fn deepseek_context_window_hint(model_lower: &str) -> Option<u32> {
@@ -357,13 +364,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn deepseek_models_map_to_128k_context_window() {
+    fn current_deepseek_aliases_map_to_v4_1m_context_window() {
         assert_eq!(
             context_window_for_model("deepseek-reasoner"),
-            Some(DEFAULT_CONTEXT_WINDOW_TOKENS)
+            Some(DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS)
+        );
+        assert_eq!(
+            context_window_for_model("deepseek-chat"),
+            Some(DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS)
+        );
+        assert_eq!(
+            context_window_for_model("deepseek-v3"),
+            Some(DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS)
         );
         assert_eq!(
             context_window_for_model("deepseek-v3.2"),
+            Some(DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS)
+        );
+    }
+
+    #[test]
+    fn unknown_deepseek_models_map_to_128k_context_window() {
+        assert_eq!(
+            context_window_for_model("deepseek-coder"),
             Some(DEFAULT_CONTEXT_WINDOW_TOKENS)
         );
         assert_eq!(
@@ -399,14 +422,17 @@ mod tests {
 
     #[test]
     fn compaction_threshold_scales_with_context_window() {
-        assert_eq!(compaction_threshold_for_model("deepseek-reasoner"), 102_400);
+        assert_eq!(
+            compaction_threshold_for_model("deepseek-v3.2-128k"),
+            102_400
+        );
         assert_eq!(compaction_threshold_for_model("unknown-model"), 50_000);
     }
 
     #[test]
     fn compaction_message_threshold_scales_with_context_window() {
         assert_eq!(
-            compaction_message_threshold_for_model("deepseek-reasoner"),
+            compaction_message_threshold_for_model("deepseek-v3.2-128k"),
             106
         );
         assert_eq!(compaction_message_threshold_for_model("unknown-model"), 50);
