@@ -69,6 +69,12 @@ impl SessionUsage {
     pub fn add(&mut self, usage: &Usage) {
         self.input_tokens += u64::from(usage.input_tokens);
         self.output_tokens += u64::from(usage.output_tokens);
+        if let Some(tokens) = usage.prompt_cache_miss_tokens {
+            self.cache_creation_input_tokens += u64::from(tokens);
+        }
+        if let Some(tokens) = usage.prompt_cache_hit_tokens {
+            self.cache_read_input_tokens += u64::from(tokens);
+        }
     }
 }
 

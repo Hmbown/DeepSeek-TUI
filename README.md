@@ -94,6 +94,11 @@ Controls: `F1` help, `Esc` backs out of the current action, `Ctrl+K` command pal
 Key environment overrides: `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`,
 `DEEPSEEK_MODEL`, `DEEPSEEK_PROFILE`.
 
+The client targets DeepSeek's documented OpenAI-compatible Chat Completions API
+(`/chat/completions`). DeepSeek context caching is automatic; when the API
+returns cache hit/miss token fields, the TUI includes them in usage and cost
+tracking.
+
 Full reference: [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
 ## Docs

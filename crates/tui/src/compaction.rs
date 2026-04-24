@@ -462,7 +462,9 @@ fn estimate_tokens_for_message(message: &Message) -> usize {
         .iter()
         .map(|c| match c {
             ContentBlock::Text { text, .. } => text.len() / 4,
-            ContentBlock::Thinking { thinking } => thinking.len() / 4,
+            // Historical reasoning blocks are UI/session metadata for DeepSeek.
+            // They are only sent back during an in-progress tool-call round.
+            ContentBlock::Thinking { .. } => 0,
             ContentBlock::ToolUse { input, .. } => serde_json::to_string(input)
                 .map(|s| s.len() / 4)
                 .unwrap_or(100),

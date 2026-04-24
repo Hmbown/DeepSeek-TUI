@@ -2014,7 +2014,7 @@ mod tests {
                                 usage: Usage {
                                     input_tokens: 10,
                                     output_tokens: 5,
-                                    server_tool_use: None,
+                                    ..Usage::default()
                                 },
                                 status: TurnOutcomeStatus::Completed,
                                 error: None,
@@ -2027,7 +2027,7 @@ mod tests {
                                 usage: Usage {
                                     input_tokens: 0,
                                     output_tokens: 0,
-                                    server_tool_use: None,
+                                    ..Usage::default()
                                 },
                                 status: TurnOutcomeStatus::Completed,
                                 error: None,
@@ -2159,7 +2159,7 @@ mod tests {
                     usage: Usage {
                         input_tokens: 5,
                         output_tokens: 3,
-                        server_tool_use: None,
+                        ..Usage::default()
                     },
                     status: TurnOutcomeStatus::Completed,
                     error: None,
@@ -2281,7 +2281,7 @@ mod tests {
                     usage: Usage {
                         input_tokens: 2,
                         output_tokens: 1,
-                        server_tool_use: None,
+                        ..Usage::default()
                     },
                     status: TurnOutcomeStatus::Completed,
                     error: None,
@@ -2500,7 +2500,7 @@ mod tests {
                     usage: Usage {
                         input_tokens: 4,
                         output_tokens: 2,
-                        server_tool_use: None,
+                        ..Usage::default()
                     },
                     status: TurnOutcomeStatus::Completed,
                     error: None,

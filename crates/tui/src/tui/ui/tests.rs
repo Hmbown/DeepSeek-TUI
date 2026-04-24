@@ -322,6 +322,8 @@ fn footer_auxiliary_spans_prioritize_context_when_busy() {
     let mut app = create_test_app();
     app.is_loading = true;
     app.last_prompt_tokens = Some(48_000);
+    app.last_prompt_cache_hit_tokens = Some(36_000);
+    app.last_prompt_cache_miss_tokens = Some(12_000);
     app.session_cost = 12.34;
 
     let compact = spans_text(&footer_auxiliary_spans(&app, 8));
@@ -332,6 +334,20 @@ fn footer_auxiliary_spans_prioritize_context_when_busy() {
     let roomy = spans_text(&footer_auxiliary_spans(&app, 20));
     assert!(roomy.contains("ctx"));
     assert!(roomy.contains('%'));
+    assert!(roomy.contains("cache"));
+}
+
+#[test]
+fn footer_auxiliary_spans_can_display_cache_and_cost_when_roomy() {
+    let mut app = create_test_app();
+    app.last_prompt_tokens = Some(48_000);
+    app.last_prompt_cache_hit_tokens = Some(36_000);
+    app.last_prompt_cache_miss_tokens = Some(12_000);
+    app.session_cost = 12.34;
+
+    let roomy = spans_text(&footer_auxiliary_spans(&app, 32));
+    assert!(roomy.contains("ctx"));
+    assert!(roomy.contains("cache 75%"));
     assert!(roomy.contains("$12.34"));
 }
 

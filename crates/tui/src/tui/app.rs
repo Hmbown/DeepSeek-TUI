@@ -415,6 +415,10 @@ pub struct App {
     pub last_prompt_tokens: Option<u32>,
     /// Last completion token usage
     pub last_completion_tokens: Option<u32>,
+    /// DeepSeek context-cache hit tokens from the last API call.
+    pub last_prompt_cache_hit_tokens: Option<u32>,
+    /// DeepSeek context-cache miss tokens from the last API call.
+    pub last_prompt_cache_miss_tokens: Option<u32>,
     /// Cached git context snapshot for the footer.
     pub workspace_context: Option<String>,
     /// Timestamp for cached workspace context.
@@ -673,6 +677,8 @@ impl App {
             runtime_turn_status: None,
             last_prompt_tokens: None,
             last_completion_tokens: None,
+            last_prompt_cache_hit_tokens: None,
+            last_prompt_cache_miss_tokens: None,
             workspace_context: None,
             workspace_context_refreshed_at: None,
             task_panel: Vec::new(),

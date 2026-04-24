@@ -17,9 +17,9 @@ See README.md for project overview, docs/ARCHITECTURE.md for internals.
 ## DeepSeek-Specific Notes
 
 - **Thinking Tokens**: DeepSeek models output thinking blocks (`ContentBlock::Thinking`) before final answers. The TUI streams and displays these with visual distinction.
-- **Reasoning Models**: `deepseek-reasoner` and `deepseek-r1` excel at step-by-step problem solving.
+- **Reasoning Models**: `deepseek-reasoner` is DeepSeek's documented thinking model; the TUI also accepts local aliases such as `deepseek-r1` and normalizes them before sending requests.
 - **Large Context Window**: 128k tokens. Use search tools to navigate efficiently.
-- **API**: OpenAI-compatible with Responses API preferred, chat completions as fallback. Base URL configurable for global (`api.deepseek.com`) or China (`api.deepseeki.com`).
+- **API**: OpenAI-compatible Chat Completions (`/chat/completions`) is the documented DeepSeek API path. Base URL configurable for global (`api.deepseek.com`) or China (`api.deepseeki.com`); `/v1` is accepted for OpenAI SDK compatibility, and `/beta` is only needed for beta features such as strict tool mode.
 
 ## Important Notes
 

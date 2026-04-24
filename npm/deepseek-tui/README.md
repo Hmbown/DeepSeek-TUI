@@ -33,6 +33,10 @@ for DeepSeek auth and default model settings. Common TUI commands are available
 directly through the facade, including `deepseek doctor`, `deepseek models`,
 `deepseek sessions`, and `deepseek resume --last`.
 
+The app talks to DeepSeek's documented OpenAI-compatible Chat Completions API.
+Set `DEEPSEEK_BASE_URL` only if you need the China endpoint or DeepSeek beta
+features.
+
 ## Supported platforms
 
 - Linux x64

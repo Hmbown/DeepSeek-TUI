@@ -227,6 +227,74 @@ fn context_budget_reserves_output_and_headroom() {
     assert_eq!(budget, expected);
 }
 
+#[test]
+fn refresh_system_prompt_places_working_set_after_stable_prefix() {
+    let tmp = tempdir().expect("tempdir");
+    fs::create_dir_all(tmp.path().join("src")).expect("mkdir");
+    fs::write(tmp.path().join("src/lib.rs"), "pub fn sample() {}").expect("write");
+
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(config, &Config::default());
+    engine
+        .session
+        .working_set
+        .observe_user_message("please inspect src/lib.rs", tmp.path());
+
+    engine.refresh_system_prompt(AppMode::Agent);
+
+    let Some(SystemPrompt::Blocks(blocks)) = &engine.session.system_prompt else {
+        panic!("expected structured prompt blocks");
+    };
+    let last = blocks.last().expect("working-set block");
+    assert!(last.text.contains(WORKING_SET_SUMMARY_MARKER));
+    assert!(
+        blocks[..blocks.len() - 1]
+            .iter()
+            .all(|block| !block.text.contains(WORKING_SET_SUMMARY_MARKER))
+    );
+}
+
+#[test]
+fn compaction_summary_stays_before_volatile_working_set() {
+    let tmp = tempdir().expect("tempdir");
+    fs::create_dir_all(tmp.path().join("src")).expect("mkdir");
+    fs::write(tmp.path().join("src/main.rs"), "fn main() {}").expect("write");
+
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(config, &Config::default());
+    engine
+        .session
+        .working_set
+        .observe_user_message("continue in src/main.rs", tmp.path());
+    engine.refresh_system_prompt(AppMode::Agent);
+    engine.merge_compaction_summary(Some(SystemPrompt::Blocks(vec![SystemBlock {
+        block_type: "text".to_string(),
+        text: format!("{COMPACTION_SUMMARY_MARKER}\nsummary"),
+        cache_control: None,
+    }])));
+
+    let Some(SystemPrompt::Blocks(blocks)) = &engine.session.system_prompt else {
+        panic!("expected structured prompt blocks");
+    };
+    let summary_index = blocks
+        .iter()
+        .position(|block| block.text.contains(COMPACTION_SUMMARY_MARKER))
+        .expect("summary block");
+    let working_set_index = blocks
+        .iter()
+        .position(|block| block.text.contains(WORKING_SET_SUMMARY_MARKER))
+        .expect("working-set block");
+
+    assert!(summary_index < working_set_index);
+    assert_eq!(working_set_index, blocks.len() - 1);
+}
+
 #[tokio::test]
 async fn pre_request_refresh_invoked_when_medium_risk() {
     let capacity = CapacityControllerConfig {

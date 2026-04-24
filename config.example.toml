@@ -16,11 +16,12 @@ api_key = "YOUR_DEEPSEEK_API_KEY" # must be non-empty
 # ─────────────────────────────────────────────────────────────────────────────────
 base_url = "https://api.deepseek.com"
 # base_url = "https://api.deepseeki.com"         # China users
+# base_url = "https://api.deepseek.com/beta"     # DeepSeek beta features such as strict tool mode
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Default Models
 # ─────────────────────────────────────────────────────────────────────────────────
-default_text_model = "deepseek-reasoner" # common IDs: deepseek-reasoner, deepseek-chat (any deepseek-* ID is valid)
+default_text_model = "deepseek-reasoner" # current IDs: deepseek-reasoner (thinking), deepseek-chat (non-thinking)
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Paths
@@ -81,7 +82,7 @@ exponential_base = 2.0
 # token_threshold = 50000          # Trigger compaction above this token estimate
 # message_threshold = 50           # Or above this message count
 # model = "deepseek-chat"           # Model to use for summarization
-# cache_summary = true             # Cache the summary block
+# cache_summary = true             # Keep summary blocks stable; DeepSeek context caching is automatic
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Capacity Controller (runtime pressure guardrails)
