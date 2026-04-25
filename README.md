@@ -85,14 +85,16 @@ Set a default in config with `reasoning_effort = "max"` (or `off` / `low` /
 
 | Model | Thinking | Context | Input cache hit | Input cache miss | Output |
 |---|---|---|---|---|---|
-| `deepseek-v4-pro` | default | 1M | $0.145 / 1M | $1.74 / 1M | $3.48 / 1M |
+| `deepseek-v4-pro` | default | 1M | $0.03625 / 1M* | $0.435 / 1M* | $0.87 / 1M* |
 | `deepseek-v4-flash` | default | 1M | $0.028 / 1M | $0.14 / 1M | $0.28 / 1M |
 | `deepseek-ai/deepseek-v4-pro` via NVIDIA NIM | default | 1M | NVIDIA account terms | NVIDIA account terms | NVIDIA account terms |
 | `deepseek-ai/deepseek-v4-flash` via NVIDIA NIM | default | 1M | NVIDIA account terms | NVIDIA account terms | NVIDIA account terms |
 
 Legacy `deepseek-chat` and `deepseek-reasoner` remain as silent aliases for
 `deepseek-v4-flash` (priced identically). Pricing is per 1M tokens as published
-by DeepSeek and is subject to change.
+by DeepSeek and is subject to change. *DeepSeek lists the Pro rates above as a
+limited-time 75% discount valid until 2026-05-05 15:59 UTC; the TUI estimator
+falls back to the base Pro rates after that timestamp.
 
 ## Usage
 
