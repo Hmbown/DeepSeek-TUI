@@ -1,4 +1,12 @@
 //! Tool wrapper for executing multiple tool calls in parallel.
+//!
+//! NOTE: this meta-tool is intentionally no longer registered with the
+//! agent (see `ToolRegistryBuilder::with_parallel_tool`). DeepSeek-V4
+//! supports native parallel `tool_calls` in a single assistant turn, and
+//! advertising the OpenAI-internal name `multi_tool_use.parallel` made
+//! the model hallucinate ChatGPT-style XML wrappers. The struct stays
+//! around so the engine compatibility dispatcher and historical sessions
+//! still resolve it cleanly.
 
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
@@ -6,6 +14,7 @@ use super::spec::{
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
+#[allow(dead_code)]
 pub struct MultiToolUseParallelTool;
 
 #[async_trait]

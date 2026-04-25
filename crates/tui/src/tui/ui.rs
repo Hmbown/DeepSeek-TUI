@@ -1,7 +1,7 @@
 //! TUI event loop and rendering logic for `DeepSeek` CLI.
 
 use std::fmt::Write;
-use std::io::{self, Stdout};
+use std::io::{self, Read, Stdout};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -27,9 +27,10 @@ use ratatui::{
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::audit::log_sensitive_event;
+use crate::client::DeepSeekClient;
 use crate::commands;
 use crate::compaction::estimate_input_tokens_conservative;
-use crate::config::Config;
+use crate::config::{ApiProvider, Config, DEFAULT_NVIDIA_NIM_BASE_URL};
 use crate::core::engine::{EngineConfig, EngineHandle, spawn_engine};
 use crate::core::events::Event as EngineEvent;
 use crate::core::ops::Op;
@@ -88,6 +89,9 @@ const SLASH_MENU_LIMIT: usize = 6;
 const MIN_CHAT_HEIGHT: u16 = 3;
 const MIN_COMPOSER_HEIGHT: u16 = 2;
 const CONTEXT_WARNING_THRESHOLD_PERCENT: f64 = 85.0;
+const MAX_FILE_MENTIONS_PER_MESSAGE: usize = 8;
+const MAX_MENTION_FILE_BYTES: u64 = 128 * 1024;
+const MAX_DIRECTORY_MENTION_ENTRIES: usize = 80;
 const CONTEXT_CRITICAL_THRESHOLD_PERCENT: f64 = 95.0;
 const UI_IDLE_POLL_MS: u64 = 48;
 const UI_ACTIVE_POLL_MS: u64 = 24;
@@ -122,6 +126,10 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
     let event_broker = EventBroker::new();
 
+    // Local mutable copy so runtime config flips (e.g. `/provider` switch)
+    // can rebuild the API client without restarting the process.
+    let mut config = config.clone();
+    let config = &mut config;
     let mut app = App::new(options.clone(), config);
 
     // Load existing session if resuming.
@@ -303,7 +311,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
 async fn run_event_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     app: &mut App,
-    config: &Config,
+    config: &mut Config,
     mut engine_handle: EngineHandle,
     task_manager: SharedTaskManager,
     event_broker: &EventBroker,
@@ -830,7 +838,7 @@ async fn run_event_loop(
             if !events.is_empty() {
                 app.needs_redraw = true;
             }
-            if handle_view_events(app, config, &task_manager, &engine_handle, events).await? {
+            if handle_view_events(app, config, &task_manager, &mut engine_handle, events).await? {
                 return Ok(());
             }
         }
@@ -1056,7 +1064,7 @@ async fn run_event_loop(
 
             if !app.view_stack.is_empty() {
                 let events = app.view_stack.handle_key(key);
-                if handle_view_events(app, config, &task_manager, &engine_handle, events).await? {
+                if handle_view_events(app, config, &task_manager, &mut engine_handle, events).await? {
                     return Ok(());
                 }
                 continue;
@@ -1303,7 +1311,7 @@ async fn run_event_loop(
                         if input.starts_with('/') {
                             if execute_command_input(
                                 app,
-                                &engine_handle,
+                                &mut engine_handle,
                                 &task_manager,
                                 config,
                                 &input,
@@ -1313,16 +1321,6 @@ async fn run_event_loop(
                                 return Ok(());
                             }
                         } else {
-                            // Global @ file completion - works in any mode
-                            if let Some(path) = input.trim().strip_prefix('@') {
-                                let command = format!("/load @{path}");
-                                let result = commands::execute(&command, app);
-                                if let Some(msg) = result.message {
-                                    app.add_message(HistoryCell::System { content: msg });
-                                }
-                                continue;
-                            }
-
                             let queued = if let Some(mut draft) = app.queued_draft.take() {
                                 draft.display = input;
                                 draft
@@ -1861,6 +1859,257 @@ fn build_queued_message(app: &mut App, input: String) -> QueuedMessage {
     QueuedMessage::new(input, skill_instruction)
 }
 
+fn queued_message_content_for_app(app: &App, message: &QueuedMessage) -> String {
+    let user_request = user_request_with_file_mentions(&message.display, &app.workspace);
+    if let Some(skill_instruction) = message.skill_instruction.as_ref() {
+        format!("{skill_instruction}\n\n---\n\nUser request: {user_request}")
+    } else {
+        user_request
+    }
+}
+
+fn user_request_with_file_mentions(input: &str, workspace: &Path) -> String {
+    let Some(context) = local_context_from_file_mentions(input, workspace) else {
+        return input.to_string();
+    };
+    format!("{input}\n\n---\n\nLocal context from @mentions:\n{context}")
+}
+
+fn local_context_from_file_mentions(input: &str, workspace: &Path) -> Option<String> {
+    let mentions = extract_file_mentions(input);
+    if mentions.is_empty() {
+        return None;
+    }
+
+    let mut blocks = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for mention in mentions.into_iter().take(MAX_FILE_MENTIONS_PER_MESSAGE) {
+        let path = resolve_mention_path(&mention, workspace);
+        let display_path = path
+            .canonicalize()
+            .unwrap_or_else(|_| path.clone())
+            .display()
+            .to_string();
+        if !seen.insert(display_path.clone()) {
+            continue;
+        }
+        blocks.push(render_file_mention_context(&mention, &path, &display_path));
+    }
+
+    if blocks.is_empty() {
+        None
+    } else {
+        Some(blocks.join("\n\n"))
+    }
+}
+
+fn extract_file_mentions(input: &str) -> Vec<String> {
+    let chars: Vec<char> = input.chars().collect();
+    let mut mentions = Vec::new();
+    let mut idx = 0;
+
+    while idx < chars.len() {
+        if chars[idx] != '@' || !is_file_mention_start(&chars, idx) {
+            idx += 1;
+            continue;
+        }
+
+        let Some(next) = chars.get(idx + 1).copied() else {
+            break;
+        };
+        if next.is_whitespace() {
+            idx += 1;
+            continue;
+        }
+
+        if matches!(next, '"' | '\'') {
+            let quote = next;
+            let mut end = idx + 2;
+            let mut raw = String::new();
+            while end < chars.len() && chars[end] != quote {
+                raw.push(chars[end]);
+                end += 1;
+            }
+            if !raw.trim().is_empty() {
+                mentions.push(raw.trim().to_string());
+            }
+            idx = end.saturating_add(1);
+            continue;
+        }
+
+        let mut end = idx + 1;
+        let mut raw = String::new();
+        while end < chars.len() && !chars[end].is_whitespace() {
+            raw.push(chars[end]);
+            end += 1;
+        }
+        let trimmed = trim_unquoted_mention(&raw);
+        if !trimmed.is_empty() {
+            mentions.push(trimmed.to_string());
+        }
+        idx = end;
+    }
+
+    mentions
+}
+
+fn is_file_mention_start(chars: &[char], idx: usize) -> bool {
+    if idx == 0 {
+        return true;
+    }
+    chars
+        .get(idx.saturating_sub(1))
+        .is_some_and(|ch| ch.is_whitespace() || matches!(ch, '(' | '[' | '{' | '<' | '"' | '\''))
+}
+
+fn trim_unquoted_mention(raw: &str) -> &str {
+    let mut trimmed = raw.trim();
+    while trimmed.chars().count() > 1
+        && trimmed
+            .chars()
+            .last()
+            .is_some_and(|ch| matches!(ch, ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}'))
+    {
+        trimmed = &trimmed[..trimmed.len() - trimmed.chars().last().unwrap().len_utf8()];
+    }
+    trimmed
+}
+
+fn resolve_mention_path(raw_path: &str, workspace: &Path) -> PathBuf {
+    let path = expand_mention_home(raw_path);
+    if path.is_absolute() {
+        path
+    } else {
+        workspace.join(path)
+    }
+}
+
+fn expand_mention_home(path: &str) -> PathBuf {
+    if path == "~" {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home);
+        }
+    } else if let Some(rest) = path.strip_prefix("~/")
+        && let Some(home) = std::env::var_os("HOME")
+    {
+        return PathBuf::from(home).join(rest);
+    }
+    PathBuf::from(path)
+}
+
+fn render_file_mention_context(raw: &str, path: &Path, display_path: &str) -> String {
+    if !path.exists() {
+        return format!("<missing-file mention=\"@{raw}\" path=\"{display_path}\" />");
+    }
+    if path.is_dir() {
+        return render_directory_mention_context(raw, path, display_path);
+    }
+    if !path.is_file() {
+        return format!("<unsupported-path mention=\"@{raw}\" path=\"{display_path}\" />");
+    }
+    if is_media_path(path) {
+        return format!(
+            "<media-file mention=\"@{raw}\" path=\"{display_path}\">\nUse /attach {raw} when the intent is to attach this image or video to the next message.\n</media-file>"
+        );
+    }
+
+    match read_text_prefix(path) {
+        Ok((text, truncated)) => {
+            let truncated_attr = if truncated { " truncated=\"true\"" } else { "" };
+            format!(
+                "<file mention=\"@{raw}\" path=\"{display_path}\"{truncated_attr}>\n{text}\n</file>"
+            )
+        }
+        Err(err) => {
+            format!(
+                "<unreadable-file mention=\"@{raw}\" path=\"{display_path}\">\n{err}\n</unreadable-file>"
+            )
+        }
+    }
+}
+
+fn render_directory_mention_context(raw: &str, path: &Path, display_path: &str) -> String {
+    let entries = match std::fs::read_dir(path) {
+        Ok(entries) => entries,
+        Err(err) => {
+            return format!(
+                "<unreadable-directory mention=\"@{raw}\" path=\"{display_path}\">\n{err}\n</unreadable-directory>"
+            );
+        }
+    };
+
+    let mut names = entries
+        .filter_map(|entry| entry.ok())
+        .map(|entry| {
+            let marker = entry
+                .file_type()
+                .ok()
+                .filter(|ty| ty.is_dir())
+                .map_or("", |_| "/");
+            format!("{}{}", entry.file_name().to_string_lossy(), marker)
+        })
+        .collect::<Vec<_>>();
+    names.sort();
+    let total = names.len();
+    names.truncate(MAX_DIRECTORY_MENTION_ENTRIES);
+    let mut body = names.join("\n");
+    if total > MAX_DIRECTORY_MENTION_ENTRIES {
+        let omitted = total - MAX_DIRECTORY_MENTION_ENTRIES;
+        let _ = write!(body, "\n... {omitted} more entries");
+    }
+    format!("<directory mention=\"@{raw}\" path=\"{display_path}\">\n{body}\n</directory>")
+}
+
+fn read_text_prefix(path: &Path) -> std::io::Result<(String, bool)> {
+    let mut file = std::fs::File::open(path)?;
+    let mut buffer = Vec::new();
+    file.by_ref()
+        .take(MAX_MENTION_FILE_BYTES + 1)
+        .read_to_end(&mut buffer)?;
+    let truncated = buffer.len() as u64 > MAX_MENTION_FILE_BYTES;
+    if truncated {
+        buffer.truncate(MAX_MENTION_FILE_BYTES as usize);
+    }
+    if buffer.contains(&0) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "file appears to be binary",
+        ));
+    }
+    let text = if truncated {
+        String::from_utf8_lossy(&buffer).to_string()
+    } else {
+        std::str::from_utf8(&buffer)
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "file is not UTF-8"))?
+            .to_string()
+    };
+    Ok((text, truncated))
+}
+
+fn is_media_path(path: &Path) -> bool {
+    let Some(ext) = path.extension().and_then(|ext| ext.to_str()) else {
+        return false;
+    };
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "png"
+            | "jpg"
+            | "jpeg"
+            | "gif"
+            | "webp"
+            | "bmp"
+            | "tif"
+            | "tiff"
+            | "ppm"
+            | "mp4"
+            | "mov"
+            | "m4v"
+            | "webm"
+            | "avi"
+            | "mkv"
+    )
+}
+
 async fn dispatch_user_message(
     app: &mut App,
     engine_handle: &EngineHandle,
@@ -1870,7 +2119,7 @@ async fn dispatch_user_message(
     app.is_loading = true;
     app.last_send_at = Some(Instant::now());
 
-    let content = message.content();
+    let content = queued_message_content_for_app(app, &message);
     app.system_prompt = Some(prompts::system_prompt_for_mode_with_context(
         app.mode,
         &app.workspace,
@@ -1914,6 +2163,114 @@ async fn dispatch_user_message(
     Ok(())
 }
 
+async fn apply_model_and_compaction_update(
+    engine_handle: &EngineHandle,
+    compaction: crate::compaction::CompactionConfig,
+) {
+    let _ = engine_handle
+        .send(Op::SetModel {
+            model: compaction.model.clone(),
+        })
+        .await;
+    let _ = engine_handle
+        .send(Op::SetCompaction { config: compaction })
+        .await;
+}
+
+/// Apply a `/provider` switch by mutating the in-memory config, validating
+/// that credentials exist for the new provider, then respawning the engine
+/// so the API client picks up the new base URL/key. When `model_override`
+/// is set, it replaces the active model post-switch (already normalized,
+/// will be provider-prefixed by `Config::default_model`).
+async fn switch_provider(
+    app: &mut App,
+    engine_handle: &mut EngineHandle,
+    config: &mut Config,
+    target: ApiProvider,
+    model_override: Option<String>,
+) {
+    let previous_provider = app.api_provider;
+    let previous_model = app.model.clone();
+    let previous_provider_str = config.provider.clone();
+    let previous_base_url = config.base_url.clone();
+    let previous_default_text_model = config.default_text_model.clone();
+
+    config.provider = Some(target.as_str().to_string());
+    if matches!(target, ApiProvider::NvidiaNim)
+        && config
+            .base_url
+            .as_deref()
+            .map(|base| !base.contains("integrate.api.nvidia.com"))
+            .unwrap_or(true)
+    {
+        config.base_url = Some(DEFAULT_NVIDIA_NIM_BASE_URL.to_string());
+    }
+    if matches!(target, ApiProvider::Deepseek)
+        && config
+            .base_url
+            .as_deref()
+            .map(|base| base.contains("integrate.api.nvidia.com"))
+            .unwrap_or(false)
+    {
+        config.base_url = None;
+    }
+    if let Some(ref model) = model_override {
+        config.default_text_model = Some(model.clone());
+    }
+
+    if let Err(err) = DeepSeekClient::new(config) {
+        config.provider = previous_provider_str;
+        config.base_url = previous_base_url;
+        config.default_text_model = previous_default_text_model;
+        app.add_message(HistoryCell::System {
+            content: format!(
+                "Failed to switch provider to {}: {err}\nProvider unchanged ({}).",
+                target.as_str(),
+                previous_provider.as_str()
+            ),
+        });
+        return;
+    }
+
+    let new_model = config.default_model();
+    app.api_provider = target;
+    app.model = new_model.clone();
+    app.update_model_compaction_budget();
+    app.last_prompt_tokens = None;
+    app.last_completion_tokens = None;
+
+    let _ = engine_handle.send(Op::Shutdown).await;
+    let engine_config = build_engine_config(app, config);
+    *engine_handle = spawn_engine(engine_config, config);
+
+    if !app.api_messages.is_empty() {
+        let _ = engine_handle
+            .send(Op::SyncSession {
+                messages: app.api_messages.clone(),
+                system_prompt: app.system_prompt.clone(),
+                model: app.model.clone(),
+                workspace: app.workspace.clone(),
+            })
+            .await;
+    }
+    let _ = engine_handle
+        .send(Op::SetCompaction {
+            config: app.compaction_config(),
+        })
+        .await;
+
+    app.add_message(HistoryCell::System {
+        content: format!(
+            "Provider switched: {} → {}\nModel: {} → {}",
+            previous_provider.as_str(),
+            target.as_str(),
+            previous_model,
+            new_model
+        ),
+    });
+    app.status_message = Some(format!("Provider: {}", target.as_str()));
+}
+
 fn open_text_pager(app: &mut App, title: String, content: String) {
     let width = app
         .last_transcript_area
@@ -1928,9 +2285,9 @@ fn open_text_pager(app: &mut App, title: String, content: String) {
 
 async fn apply_command_result(
     app: &mut App,
-    engine_handle: &EngineHandle,
+    engine_handle: &mut EngineHandle,
     task_manager: &SharedTaskManager,
-    config: &Config,
+    config: &mut Config,
     result: commands::CommandResult,
 ) -> Result<bool> {
     if let Some(msg) = result.message {
@@ -1997,10 +2354,11 @@ async fn apply_command_result(
                     }
                 }
             }
+            AppAction::SwitchProvider { provider, model } => {
+                switch_provider(app, engine_handle, config, provider, model).await;
+            }
             AppAction::UpdateCompaction(compaction) => {
-                let _ = engine_handle
-                    .send(Op::SetCompaction { config: compaction })
-                    .await;
+                apply_model_and_compaction_update(engine_handle, compaction).await;
             }
             AppAction::OpenConfigView => {
                 if app.view_stack.top_kind() != Some(ModalKind::Config) {
@@ -2092,9 +2450,9 @@ async fn apply_command_result(
 
 async fn execute_command_input(
     app: &mut App,
-    engine_handle: &EngineHandle,
+    engine_handle: &mut EngineHandle,
     task_manager: &SharedTaskManager,
-    config: &Config,
+    config: &mut Config,
     input: &str,
 ) -> Result<bool> {
     let result = commands::execute(input, app);
@@ -2106,7 +2464,7 @@ async fn steer_user_message(
     engine_handle: &EngineHandle,
     message: QueuedMessage,
 ) -> Result<()> {
-    let content = message.content();
+    let content = queued_message_content_for_app(app, &message);
 
     // Mirror steer input in local transcript/session state.
     app.add_message(HistoryCell::User {
@@ -2787,9 +3145,9 @@ fn render_sidebar_section(f: &mut Frame, area: Rect, title: &str, lines: Vec<Lin
 
 async fn handle_view_events(
     app: &mut App,
-    config: &Config,
+    config: &mut Config,
     task_manager: &SharedTaskManager,
-    engine_handle: &EngineHandle,
+    engine_handle: &mut EngineHandle,
     events: Vec<ViewEvent>,
 ) -> Result<bool> {
     for event in events {
@@ -2958,9 +3316,7 @@ async fn handle_view_events(
                 if let Some(action) = result.action {
                     match action {
                         AppAction::UpdateCompaction(compaction) => {
-                            let _ = engine_handle
-                                .send(Op::SetCompaction { config: compaction })
-                                .await;
+                            apply_model_and_compaction_update(engine_handle, compaction).await;
                         }
                         AppAction::OpenConfigView => {}
                         _ => {}

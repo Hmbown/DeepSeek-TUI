@@ -20,7 +20,7 @@ pub fn attach(app: &mut App, arg: Option<&str>) -> CommandResult {
 
     let Some(kind) = media_kind(&path) else {
         return CommandResult::error(
-            "Unsupported attachment type. Use an image or video file path.",
+            "Unsupported attachment type. /attach is for image/video paths; use @path for text files or directories.",
         );
     };
 

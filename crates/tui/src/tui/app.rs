@@ -9,7 +9,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::compaction::CompactionConfig;
-use crate::config::{Config, has_api_key, save_api_key};
+use crate::config::{ApiProvider, Config, has_api_key, save_api_key};
 use crate::hooks::{HookContext, HookEvent, HookExecutor, HookResult};
 use crate::models::{
     Message, SystemPrompt, compaction_message_threshold_for_model, compaction_threshold_for_model,
@@ -379,6 +379,10 @@ pub struct App {
     /// Last status text already promoted from `status_message` into toast state.
     pub last_status_message_seen: Option<String>,
     pub model: String,
+    /// Current API provider (mirrors `Config::api_provider`).
+    /// Updated by `/provider` switches so the UI/commands can read the
+    /// active backend without re-deriving it from the live config.
+    pub api_provider: ApiProvider,
     /// Current reasoning-effort tier for DeepSeek thinking mode.
     /// Cycled via Shift+Tab; initialized from config at startup.
     pub reasoning_effort: ReasoningEffort,
@@ -549,6 +553,7 @@ impl QueuedMessage {
         }
     }
 
+    #[allow(dead_code)] // Tests and queue helpers use the display-only form; send path resolves @mentions.
     pub fn content(&self) -> String {
         if let Some(skill_instruction) = self.skill_instruction.as_ref() {
             format!(
@@ -679,6 +684,7 @@ impl App {
             sticky_status: None,
             last_status_message_seen: None,
             model,
+            api_provider: config.api_provider(),
             reasoning_effort: config
                 .reasoning_effort()
                 .map_or_else(ReasoningEffort::default, |s| {
@@ -1418,6 +1424,14 @@ pub enum AppAction {
     SendMessage(String),
     ListSubAgents,
     FetchModels,
+    /// Switch the active LLM backend (DeepSeek vs NVIDIA NIM) without
+    /// restarting the process. The runtime rebuilds its API client from
+    /// the updated config. `model` overrides the post-switch model
+    /// (already normalized but not yet provider-prefixed).
+    SwitchProvider {
+        provider: ApiProvider,
+        model: Option<String>,
+    },
     UpdateCompaction(CompactionConfig),
     CompactContext,
     TaskAdd {

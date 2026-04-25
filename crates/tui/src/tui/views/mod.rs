@@ -1044,7 +1044,8 @@ impl ModalView for HelpView {
             )]),
             Line::from("  Ctrl+V            - Paste text or attach clipboard image"),
             Line::from("  Ctrl+Shift+C      - Copy selection (Cmd+C on macOS)"),
-            Line::from("  /attach <path>    - Attach local image/video path"),
+            Line::from("  @path             - Add local text file or directory context"),
+            Line::from("  /attach <path>    - Attach local image/video media path"),
             Line::from(""),
             Line::from(vec![Span::styled(
                 "=== Help ===",

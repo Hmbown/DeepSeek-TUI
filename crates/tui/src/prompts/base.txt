@@ -13,7 +13,7 @@ Tool selection guidance:
 - Prefer targeted edits (apply_patch/edit) over full rewrites when possible.
 - Use shell tools for build/test/format/lint and other objective verification.
 - Use web.run for time-sensitive or uncertain facts; include citations as [cite:ref_id].
-- Use multi_tool_use.parallel for multiple read-only tool calls that can run together.
+- Issue independent tool calls in parallel (emit multiple tool_calls in a single turn) instead of serializing them.
 - Use request_user_input to ask short multiple-choice questions when needed.
 
 
