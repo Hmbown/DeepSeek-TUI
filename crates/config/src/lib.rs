@@ -568,6 +568,7 @@ impl EnvRuntimeOverrides {
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
             nvidia_base_url: std::env::var("NVIDIA_NIM_BASE_URL")
+                .or_else(|_| std::env::var("NIM_BASE_URL"))
                 .or_else(|_| std::env::var("NVIDIA_BASE_URL"))
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
@@ -616,6 +617,7 @@ mod tests {
         deepseek_provider: Option<OsString>,
         nvidia_api_key: Option<OsString>,
         nvidia_nim_api_key: Option<OsString>,
+        nim_base_url: Option<OsString>,
         nvidia_base_url: Option<OsString>,
         nvidia_nim_base_url: Option<OsString>,
     }
@@ -629,6 +631,7 @@ mod tests {
                 deepseek_provider: env::var_os("DEEPSEEK_PROVIDER"),
                 nvidia_api_key: env::var_os("NVIDIA_API_KEY"),
                 nvidia_nim_api_key: env::var_os("NVIDIA_NIM_API_KEY"),
+                nim_base_url: env::var_os("NIM_BASE_URL"),
                 nvidia_base_url: env::var_os("NVIDIA_BASE_URL"),
                 nvidia_nim_base_url: env::var_os("NVIDIA_NIM_BASE_URL"),
             };
@@ -640,6 +643,7 @@ mod tests {
                 env::remove_var("DEEPSEEK_PROVIDER");
                 env::remove_var("NVIDIA_API_KEY");
                 env::remove_var("NVIDIA_NIM_API_KEY");
+                env::remove_var("NIM_BASE_URL");
                 env::remove_var("NVIDIA_BASE_URL");
                 env::remove_var("NVIDIA_NIM_BASE_URL");
             }
@@ -665,6 +669,7 @@ mod tests {
                 Self::restore_var("DEEPSEEK_PROVIDER", self.deepseek_provider.take());
                 Self::restore_var("NVIDIA_API_KEY", self.nvidia_api_key.take());
                 Self::restore_var("NVIDIA_NIM_API_KEY", self.nvidia_nim_api_key.take());
+                Self::restore_var("NIM_BASE_URL", self.nim_base_url.take());
                 Self::restore_var("NVIDIA_BASE_URL", self.nvidia_base_url.take());
                 Self::restore_var("NVIDIA_NIM_BASE_URL", self.nvidia_nim_base_url.take());
             }
@@ -781,6 +786,24 @@ mod tests {
         assert_eq!(resolved.api_key.as_deref(), Some("nim-env-key"));
         assert_eq!(resolved.base_url, "https://nim-env.example/v1");
         assert_eq!(resolved.model, DEFAULT_NVIDIA_NIM_MODEL);
+    }
+
+    #[test]
+    fn nvidia_nim_provider_accepts_short_nim_base_url_alias() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        // Safety: test-only environment mutation guarded by a module mutex.
+        unsafe {
+            env::set_var("DEEPSEEK_PROVIDER", "nvidia-nim");
+            env::set_var("NVIDIA_API_KEY", "nim-env-key");
+            env::set_var("NIM_BASE_URL", "https://short-nim.example/v1");
+        }
+
+        let config = ConfigToml::default();
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::NvidiaNim);
+        assert_eq!(resolved.base_url, "https://short-nim.example/v1");
     }
 
     #[test]

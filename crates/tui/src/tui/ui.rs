@@ -22,7 +22,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, Borders, Padding, Paragraph, Wrap},
+    widgets::{Block, Paragraph, Wrap},
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -31,9 +31,11 @@ use crate::client::DeepSeekClient;
 use crate::commands;
 use crate::compaction::estimate_input_tokens_conservative;
 use crate::config::{ApiProvider, Config, DEFAULT_NVIDIA_NIM_BASE_URL};
+use crate::core::coherence::CoherenceState;
 use crate::core::engine::{EngineConfig, EngineHandle, spawn_engine};
 use crate::core::events::Event as EngineEvent;
 use crate::core::ops::Op;
+use crate::deepseek_theme::active_theme;
 use crate::hooks::HookEvent;
 use crate::models::{ContentBlock, Message, SystemPrompt, context_window_for_model};
 use crate::palette;
@@ -615,6 +617,9 @@ async fn run_event_loop(
                         app.is_compacting = false;
                         app.status_message = Some(message);
                     }
+                    EngineEvent::CoherenceState { state, .. } => {
+                        app.coherence_state = state;
+                    }
                     EngineEvent::CapacityDecision { .. } => {
                         // Telemetry-only event. Surface actual interventions and failures
                         // instead of replacing the footer with no-op guardrail chatter.
@@ -1064,7 +1069,9 @@ async fn run_event_loop(
 
             if !app.view_stack.is_empty() {
                 let events = app.view_stack.handle_key(key);
-                if handle_view_events(app, config, &task_manager, &mut engine_handle, events).await? {
+                if handle_view_events(app, config, &task_manager, &mut engine_handle, events)
+                    .await?
+                {
                     return Ok(());
                 }
                 continue;
@@ -2823,6 +2830,7 @@ fn render_sidebar_plan(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
+    let theme = active_theme();
     let content_width = area.width.saturating_sub(4) as usize;
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(usize::from(area.height).max(4));
 
@@ -2831,7 +2839,7 @@ fn render_sidebar_plan(f: &mut Frame, area: Rect, app: &App) {
             if plan.is_empty() {
                 lines.push(Line::from(Span::styled(
                     "No active plan",
-                    Style::default().fg(palette::TEXT_MUTED),
+                    Style::default().fg(theme.plan_summary_color),
                 )));
             } else {
                 let (pending, in_progress, completed) = plan.counts();
@@ -2839,18 +2847,18 @@ fn render_sidebar_plan(f: &mut Frame, area: Rect, app: &App) {
                 lines.push(Line::from(vec![
                     Span::styled(
                         format!("{}%", plan.progress_percent()),
-                        Style::default().fg(palette::STATUS_SUCCESS).bold(),
+                        Style::default().fg(theme.plan_progress_color).bold(),
                     ),
                     Span::styled(
                         format!(" complete ({completed}/{total})"),
-                        Style::default().fg(palette::TEXT_MUTED),
+                        Style::default().fg(theme.plan_summary_color),
                     ),
                 ]));
 
                 if let Some(explanation) = plan.explanation() {
                     lines.push(Line::from(Span::styled(
                         truncate_line_to_width(explanation, content_width.max(1)),
-                        Style::default().fg(palette::TEXT_DIM),
+                        Style::default().fg(theme.plan_explanation_color),
                     )));
                 }
 
@@ -2858,9 +2866,9 @@ fn render_sidebar_plan(f: &mut Frame, area: Rect, app: &App) {
                 let max_steps = usable_rows.saturating_sub(lines.len());
                 for step in plan.steps().iter().take(max_steps) {
                     let (prefix, color) = match &step.status {
-                        StepStatus::Pending => ("[ ]", palette::TEXT_MUTED),
-                        StepStatus::InProgress => ("[~]", palette::STATUS_WARNING),
-                        StepStatus::Completed => ("[x]", palette::STATUS_SUCCESS),
+                        StepStatus::Pending => ("[ ]", theme.plan_pending_color),
+                        StepStatus::InProgress => ("[~]", theme.plan_in_progress_color),
+                        StepStatus::Completed => ("[x]", theme.plan_completed_color),
                     };
                     let mut text = format!("{prefix} {}", step.text);
                     let elapsed = step.elapsed_str();
@@ -2877,7 +2885,7 @@ fn render_sidebar_plan(f: &mut Frame, area: Rect, app: &App) {
                 if remaining > 0 {
                     lines.push(Line::from(Span::styled(
                         format!("+{remaining} more steps"),
-                        Style::default().fg(palette::TEXT_MUTED),
+                        Style::default().fg(theme.plan_summary_color),
                     )));
                 }
             }
@@ -2885,7 +2893,7 @@ fn render_sidebar_plan(f: &mut Frame, area: Rect, app: &App) {
         Err(_) => {
             lines.push(Line::from(Span::styled(
                 "Plan state updating...",
-                Style::default().fg(palette::TEXT_MUTED),
+                Style::default().fg(theme.plan_summary_color),
             )));
         }
     }
@@ -3128,16 +3136,18 @@ fn render_sidebar_section(f: &mut Frame, area: Rect, title: &str, lines: Vec<Lin
         return;
     }
 
+    let theme = active_theme();
     let section = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
         Block::default()
             .title(Line::from(vec![Span::styled(
                 format!(" {title} "),
-                Style::default().fg(palette::DEEPSEEK_BLUE).bold(),
+                Style::default().fg(theme.section_title_color).bold(),
             )]))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(palette::BORDER_COLOR))
-            .style(Style::default().bg(palette::DEEPSEEK_INK))
-            .padding(Padding::uniform(1)),
+            .borders(theme.section_borders)
+            .border_type(theme.section_border_type)
+            .border_style(Style::default().fg(theme.section_border_color))
+            .style(Style::default().bg(theme.section_bg))
+            .padding(theme.section_padding),
     );
 
     f.render_widget(section, area);
@@ -3575,6 +3585,7 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
 }
 
 fn footer_auxiliary_spans(app: &App, max_width: usize) -> Vec<Span<'static>> {
+    let coherence_spans = footer_coherence_spans(app);
     let context_spans = footer_context_spans(app);
     let cache_spans = footer_cache_spans(app);
     let cost_spans = if app.session_cost > 0.001 {
@@ -3587,6 +3598,20 @@ fn footer_auxiliary_spans(app: &App, max_width: usize) -> Vec<Span<'static>> {
     };
 
     let mut candidates = Vec::new();
+    if !coherence_spans.is_empty()
+        && !context_spans.is_empty()
+        && !cache_spans.is_empty()
+        && !cost_spans.is_empty()
+    {
+        let mut combined = coherence_spans.clone();
+        combined.push(Span::raw("  "));
+        combined.extend(context_spans.clone());
+        combined.push(Span::raw("  "));
+        combined.extend(cache_spans.clone());
+        combined.push(Span::raw("  "));
+        combined.extend(cost_spans.clone());
+        candidates.push(combined);
+    }
     if !context_spans.is_empty() && !cache_spans.is_empty() && !cost_spans.is_empty() {
         let mut combined = context_spans.clone();
         combined.push(Span::raw("  "));
@@ -3595,10 +3620,24 @@ fn footer_auxiliary_spans(app: &App, max_width: usize) -> Vec<Span<'static>> {
         combined.extend(cost_spans.clone());
         candidates.push(combined);
     }
+    if !coherence_spans.is_empty() && !context_spans.is_empty() && !cache_spans.is_empty() {
+        let mut combined = coherence_spans.clone();
+        combined.push(Span::raw("  "));
+        combined.extend(context_spans.clone());
+        combined.push(Span::raw("  "));
+        combined.extend(cache_spans.clone());
+        candidates.push(combined);
+    }
     if !context_spans.is_empty() && !cache_spans.is_empty() {
         let mut combined = context_spans.clone();
         combined.push(Span::raw("  "));
         combined.extend(cache_spans.clone());
+        candidates.push(combined);
+    }
+    if !coherence_spans.is_empty() && !context_spans.is_empty() {
+        let mut combined = coherence_spans.clone();
+        combined.push(Span::raw("  "));
+        combined.extend(context_spans.clone());
         candidates.push(combined);
     }
     if !context_spans.is_empty() && !cost_spans.is_empty() {
@@ -3606,6 +3645,21 @@ fn footer_auxiliary_spans(app: &App, max_width: usize) -> Vec<Span<'static>> {
         combined.push(Span::raw("  "));
         combined.extend(cost_spans.clone());
         candidates.push(combined);
+    }
+    if !coherence_spans.is_empty() && !cache_spans.is_empty() {
+        let mut combined = coherence_spans.clone();
+        combined.push(Span::raw("  "));
+        combined.extend(cache_spans.clone());
+        candidates.push(combined);
+    }
+    if !coherence_spans.is_empty() && !cost_spans.is_empty() {
+        let mut combined = coherence_spans.clone();
+        combined.push(Span::raw("  "));
+        combined.extend(cost_spans.clone());
+        candidates.push(combined);
+    }
+    if !coherence_spans.is_empty() {
+        candidates.push(coherence_spans);
     }
     if !context_spans.is_empty() {
         candidates.push(context_spans);
@@ -3622,6 +3676,18 @@ fn footer_auxiliary_spans(app: &App, max_width: usize) -> Vec<Span<'static>> {
         .into_iter()
         .find(|spans| spans_width(spans) <= max_width)
         .unwrap_or_default()
+}
+
+fn footer_coherence_spans(app: &App) -> Vec<Span<'static>> {
+    let (label, color) = match app.coherence_state {
+        CoherenceState::Healthy => ("coherence healthy", palette::DEEPSEEK_SKY),
+        CoherenceState::GettingCrowded => ("coherence crowded", palette::STATUS_WARNING),
+        CoherenceState::RefreshingContext => ("coherence refreshing", palette::STATUS_WARNING),
+        CoherenceState::VerifyingRecentWork => ("coherence verifying", palette::DEEPSEEK_SKY),
+        CoherenceState::ResettingPlan => ("coherence resetting", palette::STATUS_ERROR),
+    };
+
+    vec![Span::styled(label.to_string(), Style::default().fg(color))]
 }
 
 fn footer_cache_spans(app: &App) -> Vec<Span<'static>> {

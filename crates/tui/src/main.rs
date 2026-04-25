@@ -20,6 +20,7 @@ mod commands;
 mod compaction;
 mod config;
 mod core;
+mod deepseek_theme;
 mod error_taxonomy;
 mod eval;
 mod execpolicy;
@@ -493,7 +494,7 @@ enum SandboxCommand {
 async fn main() -> Result<()> {
     dotenv().ok();
     let cli = Cli::parse();
-    logging::set_verbose(cli.verbose);
+    logging::set_verbose(cli.verbose || logging::env_requests_verbose_logging());
 
     // Handle subcommands first
     if let Some(command) = cli.command.clone() {
@@ -1197,16 +1198,24 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
         ),
     }
 
-    let dotenv = workspace.join(".env");
-    if dotenv.exists() {
-        println!("  {} .env present at {}", "·".dimmed(), dotenv.display());
-    } else {
-        println!("  {} .env not present in workspace", "·".dimmed());
-    }
+    println!("  {} {}", "·".dimmed(), dotenv_status_line(workspace));
 
     println!();
     println!("Run `deepseek-tui doctor --json` for a machine-readable check.");
     Ok(())
+}
+
+fn dotenv_status_line(workspace: &Path) -> String {
+    let dotenv = workspace.join(".env");
+    if dotenv.exists() {
+        return format!(".env present at {}", dotenv.display());
+    }
+
+    if workspace.join(".env.example").exists() {
+        return ".env not present in workspace (run `cp .env.example .env` and edit)".to_string();
+    }
+
+    ".env not present in workspace".to_string()
 }
 
 fn run_setup_clean(checkpoints_dir: &Path, force: bool) -> Result<()> {
@@ -3167,6 +3176,7 @@ mod doctor_mcp_tests {
 #[cfg(test)]
 mod setup_helper_tests {
     use super::*;
+    use std::collections::BTreeSet;
     use tempfile::TempDir;
 
     #[test]
@@ -3298,6 +3308,81 @@ mod setup_helper_tests {
         // Should print and return Ok without error.
         run_setup_clean(&dir, true).unwrap();
         assert!(!dir.exists());
+    }
+
+    #[test]
+    fn dotenv_status_points_to_example_when_present() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join(".env.example"), "DEEPSEEK_API_KEY=\n").unwrap();
+
+        assert_eq!(
+            dotenv_status_line(tmp.path()),
+            ".env not present in workspace (run `cp .env.example .env` and edit)"
+        );
+
+        std::fs::write(tmp.path().join(".env"), "DEEPSEEK_API_KEY=test\n").unwrap();
+        assert!(dotenv_status_line(tmp.path()).contains(".env present at"));
+    }
+
+    #[test]
+    fn env_example_is_trackable_and_every_key_is_wired() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let env_example = std::fs::read_to_string(root.join(".env.example")).unwrap();
+        let gitignore = std::fs::read_to_string(root.join(".gitignore")).unwrap();
+
+        assert!(gitignore.contains("!.env.example"));
+
+        let keys = documented_env_keys(&env_example);
+        for required in [
+            "DEEPSEEK_API_KEY",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_MODEL",
+            "NVIDIA_API_KEY",
+            "NIM_BASE_URL",
+            "RUST_LOG",
+            "DEEPSEEK_APPROVAL_POLICY",
+            "DEEPSEEK_SANDBOX_MODE",
+        ] {
+            assert!(
+                keys.contains(required),
+                ".env.example is missing {required}"
+            );
+        }
+
+        let sources = [
+            include_str!("config.rs"),
+            include_str!("logging.rs"),
+            include_str!("../../config/src/lib.rs"),
+            include_str!("../../cli/src/main.rs"),
+        ]
+        .join("\n");
+
+        for key in keys {
+            assert!(
+                sources.contains(&key),
+                ".env.example documents {key}, but no source file references it"
+            );
+        }
+    }
+
+    fn documented_env_keys(content: &str) -> BTreeSet<String> {
+        content
+            .lines()
+            .filter_map(|line| {
+                let trimmed = line.trim();
+                let uncommented = trimmed
+                    .strip_prefix('#')
+                    .map(str::trim_start)
+                    .unwrap_or(trimmed);
+                let (key, _) = uncommented.split_once('=')?;
+                let key = key.trim();
+                let is_env_key = key
+                    .chars()
+                    .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_')
+                    && key.chars().any(|ch| ch == '_');
+                is_env_key.then(|| key.to_string())
+            })
+            .collect()
     }
 
     #[test]

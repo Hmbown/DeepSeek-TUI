@@ -732,13 +732,26 @@ fn apply_env_overrides(config: &mut Config) {
         config.api_key = Some(value);
     }
     if let Ok(value) = std::env::var("DEEPSEEK_BASE_URL") {
-        config.base_url = Some(value);
+        if matches!(config.api_provider(), ApiProvider::NvidiaNim) {
+            config
+                .providers
+                .get_or_insert_with(ProvidersConfig::default)
+                .nvidia_nim
+                .base_url = Some(value);
+        } else {
+            config.base_url = Some(value);
+        }
     }
     if matches!(config.api_provider(), ApiProvider::NvidiaNim)
-        && let Ok(value) =
-            std::env::var("NVIDIA_NIM_BASE_URL").or_else(|_| std::env::var("NVIDIA_BASE_URL"))
+        && let Ok(value) = std::env::var("NVIDIA_NIM_BASE_URL")
+            .or_else(|_| std::env::var("NIM_BASE_URL"))
+            .or_else(|_| std::env::var("NVIDIA_BASE_URL"))
     {
-        config.base_url = Some(value);
+        config
+            .providers
+            .get_or_insert_with(ProvidersConfig::default)
+            .nvidia_nim
+            .base_url = Some(value);
     }
     if let Ok(value) =
         std::env::var("DEEPSEEK_MODEL").or_else(|_| std::env::var("DEEPSEEK_DEFAULT_TEXT_MODEL"))
@@ -1253,6 +1266,7 @@ mod tests {
         deepseek_default_text_model: Option<OsString>,
         nvidia_api_key: Option<OsString>,
         nvidia_nim_api_key: Option<OsString>,
+        nim_base_url: Option<OsString>,
         nvidia_base_url: Option<OsString>,
         nvidia_nim_base_url: Option<OsString>,
         nvidia_nim_model: Option<OsString>,
@@ -1273,6 +1287,7 @@ mod tests {
             let default_text_model_prev = env::var_os("DEEPSEEK_DEFAULT_TEXT_MODEL");
             let nvidia_api_key_prev = env::var_os("NVIDIA_API_KEY");
             let nvidia_nim_api_key_prev = env::var_os("NVIDIA_NIM_API_KEY");
+            let nim_base_url_prev = env::var_os("NIM_BASE_URL");
             let nvidia_base_url_prev = env::var_os("NVIDIA_BASE_URL");
             let nvidia_nim_base_url_prev = env::var_os("NVIDIA_NIM_BASE_URL");
             let nvidia_nim_model_prev = env::var_os("NVIDIA_NIM_MODEL");
@@ -1288,6 +1303,7 @@ mod tests {
                 env::remove_var("DEEPSEEK_DEFAULT_TEXT_MODEL");
                 env::remove_var("NVIDIA_API_KEY");
                 env::remove_var("NVIDIA_NIM_API_KEY");
+                env::remove_var("NIM_BASE_URL");
                 env::remove_var("NVIDIA_BASE_URL");
                 env::remove_var("NVIDIA_NIM_BASE_URL");
                 env::remove_var("NVIDIA_NIM_MODEL");
@@ -1303,6 +1319,7 @@ mod tests {
                 deepseek_default_text_model: default_text_model_prev,
                 nvidia_api_key: nvidia_api_key_prev,
                 nvidia_nim_api_key: nvidia_nim_api_key_prev,
+                nim_base_url: nim_base_url_prev,
                 nvidia_base_url: nvidia_base_url_prev,
                 nvidia_nim_base_url: nvidia_nim_base_url_prev,
                 nvidia_nim_model: nvidia_nim_model_prev,
@@ -1327,6 +1344,7 @@ mod tests {
                 );
                 Self::restore_var("NVIDIA_API_KEY", self.nvidia_api_key.take());
                 Self::restore_var("NVIDIA_NIM_API_KEY", self.nvidia_nim_api_key.take());
+                Self::restore_var("NIM_BASE_URL", self.nim_base_url.take());
                 Self::restore_var("NVIDIA_BASE_URL", self.nvidia_base_url.take());
                 Self::restore_var("NVIDIA_NIM_BASE_URL", self.nvidia_nim_base_url.take());
                 Self::restore_var("NVIDIA_NIM_MODEL", self.nvidia_nim_model.take());
@@ -1689,6 +1707,63 @@ mod tests {
         assert_eq!(config.api_provider(), ApiProvider::NvidiaNim);
         assert_eq!(config.deepseek_api_key()?, "nim-env-key");
         assert_eq!(config.default_model(), DEFAULT_NVIDIA_NIM_MODEL);
+        Ok(())
+    }
+
+    #[test]
+    fn nvidia_nim_env_accepts_short_nim_base_url_alias() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-nim-base-url-alias-test-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        // Safety: test-only environment mutation guarded by a global mutex.
+        unsafe {
+            env::set_var("DEEPSEEK_PROVIDER", "nvidia-nim");
+            env::set_var("NIM_BASE_URL", "https://short-nim.example/v1");
+        }
+
+        let config = Config::load(None, None)?;
+        assert_eq!(config.api_provider(), ApiProvider::NvidiaNim);
+        assert_eq!(config.deepseek_base_url(), "https://short-nim.example/v1");
+        Ok(())
+    }
+
+    #[test]
+    fn nvidia_nim_env_accepts_facade_base_url_forwarding() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-nim-forwarded-base-url-test-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        // Safety: test-only environment mutation guarded by a global mutex.
+        unsafe {
+            env::set_var("DEEPSEEK_PROVIDER", "nvidia-nim");
+            env::set_var("DEEPSEEK_BASE_URL", "https://forwarded-nim.example/v1");
+        }
+
+        let config = Config::load(None, None)?;
+        assert_eq!(config.api_provider(), ApiProvider::NvidiaNim);
+        assert_eq!(
+            config.deepseek_base_url(),
+            "https://forwarded-nim.example/v1"
+        );
         Ok(())
     }
 

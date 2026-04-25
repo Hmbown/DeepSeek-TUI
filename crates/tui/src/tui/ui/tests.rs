@@ -386,6 +386,38 @@ fn footer_status_line_spans_truncate_long_model_names() {
 }
 
 #[test]
+fn footer_coherence_chip_snapshots_plain_language_ladder() {
+    let mut app = create_test_app();
+    let cases = [
+        (
+            crate::core::coherence::CoherenceState::Healthy,
+            "coherence healthy",
+        ),
+        (
+            crate::core::coherence::CoherenceState::GettingCrowded,
+            "coherence crowded",
+        ),
+        (
+            crate::core::coherence::CoherenceState::RefreshingContext,
+            "coherence refreshing",
+        ),
+        (
+            crate::core::coherence::CoherenceState::VerifyingRecentWork,
+            "coherence verifying",
+        ),
+        (
+            crate::core::coherence::CoherenceState::ResettingPlan,
+            "coherence resetting",
+        ),
+    ];
+
+    for (state, expected) in cases {
+        app.coherence_state = state;
+        assert_eq!(spans_text(&footer_coherence_spans(&app)), expected);
+    }
+}
+
+#[test]
 fn footer_auxiliary_spans_prioritize_context_when_busy() {
     let mut app = create_test_app();
     app.is_loading = true;

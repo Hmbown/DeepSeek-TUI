@@ -1,6 +1,9 @@
 # Configuration
 
 DeepSeek TUI reads configuration from a TOML file plus environment variables.
+At process startup it also loads a workspace-local `.env` file when present.
+Use the tracked `.env.example` as the template; copy it to `.env`, then edit
+only the provider and safety knobs you need.
 
 ## Where It Looks
 
@@ -73,8 +76,9 @@ These override config values:
 - `DEEPSEEK_PROVIDER` (`deepseek|nvidia-nim`)
 - `DEEPSEEK_MODEL` or `DEEPSEEK_DEFAULT_TEXT_MODEL`
 - `NVIDIA_API_KEY` or `NVIDIA_NIM_API_KEY` (preferred when provider is `nvidia-nim`; falls back to `DEEPSEEK_API_KEY`)
-- `NVIDIA_BASE_URL` or `NVIDIA_NIM_BASE_URL`
+- `NVIDIA_NIM_BASE_URL`, `NIM_BASE_URL`, or `NVIDIA_BASE_URL`
 - `NVIDIA_NIM_MODEL`
+- `DEEPSEEK_LOG_LEVEL` or `RUST_LOG` (`info`/`debug`/`trace` enables lightweight verbose logs)
 - `DEEPSEEK_SKILLS_DIR`
 - `DEEPSEEK_MCP_CONFIG`
 - `DEEPSEEK_NOTES_PATH`
@@ -129,6 +133,10 @@ Readability semantics:
 
 - Selection uses a unified style across transcript, composer menus, and modals.
 - Footer hints use a dedicated semantic role (`FOOTER_HINT`) so hint text stays readable across themes.
+- The footer includes a compact `coherence` chip that describes how stable and
+  focused the current session is right now. Possible states are `healthy`,
+  `crowded`, `refreshing`, `verifying`, and `resetting`; these are derived from
+  capacity and compaction events without exposing internal formulas in normal UI.
 
 ### Command Migration Notes
 
@@ -272,7 +280,8 @@ text.
 
 - `--status` — print a compact one-screen status (api key, base URL, model,
   MCP/skills/tools/plugins counts, sandbox, `.env` presence). Read-only and
-  network-free; safe to run in CI.
+  network-free; safe to run in CI. If `.env` is missing and `.env.example` is
+  present in the workspace, the status output points at `cp .env.example .env`.
 - `--tools` — scaffold `~/.deepseek/tools/` with a `README.md` describing the
   self-describing frontmatter convention (`# name:` / `# description:` /
   `# usage:`) and an `example.sh` that follows it. The directory is
