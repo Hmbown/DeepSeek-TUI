@@ -728,7 +728,9 @@ fn apply_env_overrides(config: &mut Config) {
     if let Ok(value) = std::env::var("DEEPSEEK_PROVIDER") {
         config.provider = Some(value);
     }
-    if let Ok(value) = std::env::var("DEEPSEEK_API_KEY") {
+    if let Ok(value) = std::env::var("DEEPSEEK_API_KEY")
+        && !value.trim().is_empty()
+    {
         config.api_key = Some(value);
     }
     if let Ok(value) = std::env::var("DEEPSEEK_BASE_URL") {
@@ -1550,6 +1552,39 @@ mod tests {
     #[test]
     fn test_missing_api_key_allowed() -> Result<()> {
         let config = Config::default();
+        config.validate()?;
+        Ok(())
+    }
+
+    #[test]
+    fn apply_env_overrides_ignores_empty_api_key() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-empty-key-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        // Simulate a fresh user who copied .env.example to .env without
+        // filling in DEEPSEEK_API_KEY: dotenv loads it as the empty string.
+        // Safety: test-only environment mutation guarded by a global mutex.
+        unsafe {
+            env::set_var("DEEPSEEK_API_KEY", "");
+        }
+
+        let mut config = Config {
+            api_key: Some("from-config-file".to_string()),
+            ..Default::default()
+        };
+        apply_env_overrides(&mut config);
+
+        assert_eq!(config.api_key.as_deref(), Some("from-config-file"));
         config.validate()?;
         Ok(())
     }
