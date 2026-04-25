@@ -370,7 +370,7 @@ const TOOL_RESULT_METADATA_SUMMARY_CHARS: usize = 320;
 const COMPACTION_SUMMARY_MARKER: &str = "Conversation Summary (Auto-Generated)";
 const WORKING_SET_SUMMARY_MARKER: &str = "## Repo Working Set";
 
-const TOOL_CALL_START_MARKERS: [&str; 5] = [
+pub(crate) const TOOL_CALL_START_MARKERS: [&str; 5] = [
     "[TOOL_CALL]",
     "<deepseek:tool_call",
     "<tool_call",
@@ -386,13 +386,26 @@ const TOOL_SEARCH_REGEX_NAME: &str = "tool_search_tool_regex";
 const TOOL_SEARCH_REGEX_TYPE: &str = "tool_search_tool_regex_20251119";
 const TOOL_SEARCH_BM25_NAME: &str = "tool_search_tool_bm25";
 const TOOL_SEARCH_BM25_TYPE: &str = "tool_search_tool_bm25_20251119";
-const TOOL_CALL_END_MARKERS: [&str; 5] = [
+pub(crate) const TOOL_CALL_END_MARKERS: [&str; 5] = [
     "[/TOOL_CALL]",
     "</deepseek:tool_call>",
     "</tool_call>",
     "</invoke>",
     "</function_calls>",
 ];
+
+/// Compact one-shot notice emitted when a model attempts to forge a tool-call
+/// wrapper in plain text instead of using the API tool channel. The visible
+/// content is still scrubbed; this exists so the user can see why their text
+/// shrank.
+pub(crate) const FAKE_WRAPPER_NOTICE: &str =
+    "Stripped non-API tool-call wrapper from model output (use the API tool channel)";
+
+/// True if `text` contains any of the known fake-wrapper start markers. Used by
+/// the streaming loop to decide whether to emit `FAKE_WRAPPER_NOTICE`.
+pub(crate) fn contains_fake_tool_wrapper(text: &str) -> bool {
+    TOOL_CALL_START_MARKERS.iter().any(|m| text.contains(m))
+}
 
 fn find_first_marker(text: &str, markers: &[&str]) -> Option<(usize, usize)> {
     markers
@@ -401,7 +414,7 @@ fn find_first_marker(text: &str, markers: &[&str]) -> Option<(usize, usize)> {
         .min_by_key(|(idx, _)| *idx)
 }
 
-fn filter_tool_call_delta(delta: &str, in_tool_call: &mut bool) -> String {
+pub(crate) fn filter_tool_call_delta(delta: &str, in_tool_call: &mut bool) -> String {
     if delta.is_empty() {
         return String::new();
     }
@@ -2617,6 +2630,7 @@ impl Engine {
             let mut current_block_kind: Option<ContentBlockKind> = None;
             let mut current_tool_index: Option<usize> = None;
             let mut in_tool_call_block = false;
+            let mut fake_wrapper_notice_emitted = false;
             let mut pending_message_complete = false;
             let mut last_text_index: Option<usize> = None;
             let mut stream_errors = 0u32;
@@ -2720,6 +2734,14 @@ impl Engine {
                             in_tool_call_block = false;
                             let filtered =
                                 filter_tool_call_delta(&current_text_raw, &mut in_tool_call_block);
+                            if !fake_wrapper_notice_emitted
+                                && filtered.len() < current_text_raw.len()
+                                && contains_fake_tool_wrapper(&current_text_raw)
+                            {
+                                let _ =
+                                    self.tx_event.send(Event::status(FAKE_WRAPPER_NOTICE)).await;
+                                fake_wrapper_notice_emitted = true;
+                            }
                             current_text_visible.push_str(&filtered);
                             current_block_kind = Some(ContentBlockKind::Text);
                             last_text_index = Some(index as usize);
@@ -2797,6 +2819,14 @@ impl Engine {
                             stream_content_bytes = stream_content_bytes.saturating_add(text.len());
                             current_text_raw.push_str(&text);
                             let filtered = filter_tool_call_delta(&text, &mut in_tool_call_block);
+                            if !fake_wrapper_notice_emitted
+                                && filtered.len() < text.len()
+                                && contains_fake_tool_wrapper(&text)
+                            {
+                                let _ =
+                                    self.tx_event.send(Event::status(FAKE_WRAPPER_NOTICE)).await;
+                                fake_wrapper_notice_emitted = true;
+                            }
                             if !filtered.is_empty() {
                                 current_text_visible.push_str(&filtered);
                                 let _ = self

@@ -106,6 +106,14 @@ Controls: `F1` help, `Esc` backs out of the current action, `Ctrl+K` command pal
 Key environment overrides: `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`,
 `DEEPSEEK_MODEL`, `DEEPSEEK_PROFILE`.
 
+Quick checks and scaffolding:
+
+- `deepseek-tui setup --status` — read-only, network-free status of API key,
+  MCP/skills/tools/plugins, sandbox, and `.env`.
+- `deepseek-tui setup --tools --plugins` — scaffold `~/.deepseek/tools/` and
+  `~/.deepseek/plugins/` with self-describing example templates.
+- `deepseek-tui doctor --json` — machine-readable doctor output for CI.
+
 The client targets DeepSeek's documented OpenAI-compatible Chat Completions API
 (`/chat/completions`). DeepSeek context caching is automatic; when the API
 returns cache hit/miss token fields, the TUI includes them in usage and cost
