@@ -386,28 +386,31 @@ fn footer_status_line_spans_truncate_long_model_names() {
 }
 
 #[test]
-fn footer_coherence_chip_snapshots_plain_language_ladder() {
+fn footer_coherence_chip_hides_healthy_and_uses_clear_labels() {
     let mut app = create_test_app();
+
+    app.coherence_state = crate::core::coherence::CoherenceState::Healthy;
+    assert!(
+        footer_coherence_spans(&app).is_empty(),
+        "healthy state should produce no footer chip"
+    );
+
     let cases = [
         (
-            crate::core::coherence::CoherenceState::Healthy,
-            "coherence healthy",
-        ),
-        (
             crate::core::coherence::CoherenceState::GettingCrowded,
-            "coherence crowded",
+            "high load",
         ),
         (
             crate::core::coherence::CoherenceState::RefreshingContext,
-            "coherence refreshing",
+            "refreshing context",
         ),
         (
             crate::core::coherence::CoherenceState::VerifyingRecentWork,
-            "coherence verifying",
+            "verifying",
         ),
         (
             crate::core::coherence::CoherenceState::ResettingPlan,
-            "coherence resetting",
+            "resetting plan",
         ),
     ];
 
@@ -418,7 +421,7 @@ fn footer_coherence_chip_snapshots_plain_language_ladder() {
 }
 
 #[test]
-fn footer_auxiliary_spans_prioritize_context_when_busy() {
+fn footer_auxiliary_spans_show_cache_when_compact() {
     let mut app = create_test_app();
     app.is_loading = true;
     app.last_prompt_tokens = Some(48_000);
@@ -426,19 +429,13 @@ fn footer_auxiliary_spans_prioritize_context_when_busy() {
     app.last_prompt_cache_miss_tokens = Some(12_000);
     app.session_cost = 12.34;
 
-    let compact = spans_text(&footer_auxiliary_spans(&app, 8));
-    assert!(compact.contains("ctx"));
-    assert!(compact.contains('%'));
+    let compact = spans_text(&footer_auxiliary_spans(&app, 12));
+    assert!(compact.contains("cache"));
     assert!(!compact.contains('$'));
-
-    let roomy = spans_text(&footer_auxiliary_spans(&app, 20));
-    assert!(roomy.contains("ctx"));
-    assert!(roomy.contains('%'));
-    assert!(roomy.contains("cache"));
 }
 
 #[test]
-fn footer_auxiliary_spans_can_display_cache_and_cost_when_roomy() {
+fn footer_auxiliary_spans_show_cache_and_cost_when_roomy() {
     let mut app = create_test_app();
     app.last_prompt_tokens = Some(48_000);
     app.last_prompt_cache_hit_tokens = Some(36_000);
@@ -446,9 +443,9 @@ fn footer_auxiliary_spans_can_display_cache_and_cost_when_roomy() {
     app.session_cost = 12.34;
 
     let roomy = spans_text(&footer_auxiliary_spans(&app, 32));
-    assert!(roomy.contains("ctx"));
     assert!(roomy.contains("cache 75%"));
     assert!(roomy.contains("$12.34"));
+    assert!(!roomy.contains("ctx"), "context % removed from footer — shown in header only");
 }
 
 #[test]

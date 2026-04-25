@@ -1073,9 +1073,18 @@ impl App {
         // Invalidate transcript cache (will be rebuilt on next render)
         self.transcript_cache = TranscriptViewCache::new();
 
-        // Reset scroll to bottom to avoid invalid anchors
-        // (anchored cell indices may be invalid at new width)
-        self.transcript_scroll = TranscriptScroll::ToBottom;
+        // Preserve cell-level anchor through resize: line_in_cell depends
+        // on the old width so reset it to 0 (start of the same cell).
+        // ToBottom stays ToBottom; SpacerBeforeCell keeps its cell_index.
+        match self.transcript_scroll {
+            TranscriptScroll::Scrolled { cell_index, .. } => {
+                self.transcript_scroll = TranscriptScroll::Scrolled {
+                    cell_index,
+                    line_in_cell: 0,
+                };
+            }
+            TranscriptScroll::ToBottom | TranscriptScroll::ScrolledSpacerBeforeCell { .. } => {}
+        }
 
         // Clear pending scroll delta
         self.pending_scroll_delta = 0;

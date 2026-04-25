@@ -139,8 +139,9 @@ impl Renderable for ChatWidget {
         paragraph.render(self.content_area, buf);
 
         if let Some(scrollbar) = self.scrollbar {
-            let mut state = ScrollbarState::new(scrollbar.total)
-                .position(scrollbar.top)
+            let scrollable_range = scrollbar.total.saturating_sub(scrollbar.visible);
+            let mut state = ScrollbarState::new(scrollable_range)
+                .position(scrollbar.top.min(scrollable_range))
                 .viewport_content_length(scrollbar.visible);
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(None)

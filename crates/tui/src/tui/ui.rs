@@ -3585,8 +3585,10 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
 }
 
 fn footer_auxiliary_spans(app: &App, max_width: usize) -> Vec<Span<'static>> {
+    // Context % is already shown in the header signal bar — don't
+    // duplicate it in the footer. The footer carries unique info only:
+    // coherence state, cache hit rate, and session cost.
     let coherence_spans = footer_coherence_spans(app);
-    let context_spans = footer_context_spans(app);
     let cache_spans = footer_cache_spans(app);
     let cost_spans = if app.session_cost > 0.001 {
         vec![Span::styled(
@@ -3597,94 +3599,40 @@ fn footer_auxiliary_spans(app: &App, max_width: usize) -> Vec<Span<'static>> {
         Vec::new()
     };
 
-    let mut candidates = Vec::new();
-    if !coherence_spans.is_empty()
-        && !context_spans.is_empty()
-        && !cache_spans.is_empty()
-        && !cost_spans.is_empty()
-    {
-        let mut combined = coherence_spans.clone();
-        combined.push(Span::raw("  "));
-        combined.extend(context_spans.clone());
-        combined.push(Span::raw("  "));
-        combined.extend(cache_spans.clone());
-        combined.push(Span::raw("  "));
-        combined.extend(cost_spans.clone());
-        candidates.push(combined);
-    }
-    if !context_spans.is_empty() && !cache_spans.is_empty() && !cost_spans.is_empty() {
-        let mut combined = context_spans.clone();
-        combined.push(Span::raw("  "));
-        combined.extend(cache_spans.clone());
-        combined.push(Span::raw("  "));
-        combined.extend(cost_spans.clone());
-        candidates.push(combined);
-    }
-    if !coherence_spans.is_empty() && !context_spans.is_empty() && !cache_spans.is_empty() {
-        let mut combined = coherence_spans.clone();
-        combined.push(Span::raw("  "));
-        combined.extend(context_spans.clone());
-        combined.push(Span::raw("  "));
-        combined.extend(cache_spans.clone());
-        candidates.push(combined);
-    }
-    if !context_spans.is_empty() && !cache_spans.is_empty() {
-        let mut combined = context_spans.clone();
-        combined.push(Span::raw("  "));
-        combined.extend(cache_spans.clone());
-        candidates.push(combined);
-    }
-    if !coherence_spans.is_empty() && !context_spans.is_empty() {
-        let mut combined = coherence_spans.clone();
-        combined.push(Span::raw("  "));
-        combined.extend(context_spans.clone());
-        candidates.push(combined);
-    }
-    if !context_spans.is_empty() && !cost_spans.is_empty() {
-        let mut combined = context_spans.clone();
-        combined.push(Span::raw("  "));
-        combined.extend(cost_spans.clone());
-        candidates.push(combined);
-    }
-    if !coherence_spans.is_empty() && !cache_spans.is_empty() {
-        let mut combined = coherence_spans.clone();
-        combined.push(Span::raw("  "));
-        combined.extend(cache_spans.clone());
-        candidates.push(combined);
-    }
-    if !coherence_spans.is_empty() && !cost_spans.is_empty() {
-        let mut combined = coherence_spans.clone();
-        combined.push(Span::raw("  "));
-        combined.extend(cost_spans.clone());
-        candidates.push(combined);
-    }
-    if !coherence_spans.is_empty() {
-        candidates.push(coherence_spans);
-    }
-    if !context_spans.is_empty() {
-        candidates.push(context_spans);
-    }
-    if !cache_spans.is_empty() {
-        candidates.push(cache_spans);
-    }
-    if !cost_spans.is_empty() {
-        candidates.push(cost_spans);
-    }
-    candidates.push(Vec::new());
+    let parts: Vec<&Vec<Span<'static>>> = [&coherence_spans, &cache_spans, &cost_spans]
+        .iter()
+        .filter(|spans| !spans.is_empty())
+        .copied()
+        .collect();
 
-    candidates
-        .into_iter()
-        .find(|spans| spans_width(spans) <= max_width)
-        .unwrap_or_default()
+    // Try to fit as many parts as possible, dropping from the end.
+    for end in (0..=parts.len()).rev() {
+        let mut combined = Vec::new();
+        for (i, part) in parts[..end].iter().enumerate() {
+            if i > 0 {
+                combined.push(Span::raw("  "));
+            }
+            combined.extend(part.iter().cloned());
+        }
+        if spans_width(&combined) <= max_width {
+            return combined;
+        }
+    }
+    Vec::new()
 }
 
 fn footer_coherence_spans(app: &App) -> Vec<Span<'static>> {
+    // Only show coherence when it's NOT healthy — normal operation
+    // needs no label; anomalies stand out. Renamed "crowded" to
+    // "high load" because the capacity model measures tool/action
+    // complexity, not context-window fullness, and "crowded" is
+    // confusing when the header shows 6% context.
     let (label, color) = match app.coherence_state {
-        CoherenceState::Healthy => ("coherence healthy", palette::DEEPSEEK_SKY),
-        CoherenceState::GettingCrowded => ("coherence crowded", palette::STATUS_WARNING),
-        CoherenceState::RefreshingContext => ("coherence refreshing", palette::STATUS_WARNING),
-        CoherenceState::VerifyingRecentWork => ("coherence verifying", palette::DEEPSEEK_SKY),
-        CoherenceState::ResettingPlan => ("coherence resetting", palette::STATUS_ERROR),
+        CoherenceState::Healthy => return Vec::new(),
+        CoherenceState::GettingCrowded => ("high load", palette::STATUS_WARNING),
+        CoherenceState::RefreshingContext => ("refreshing context", palette::STATUS_WARNING),
+        CoherenceState::VerifyingRecentWork => ("verifying", palette::DEEPSEEK_SKY),
+        CoherenceState::ResettingPlan => ("resetting plan", palette::STATUS_ERROR),
     };
 
     vec![Span::styled(label.to_string(), Style::default().fg(color))]
@@ -3704,26 +3652,6 @@ fn footer_cache_spans(app: &App) -> Vec<Span<'static>> {
     vec![Span::styled(
         format!("cache {:.0}%", percent),
         Style::default().fg(palette::TEXT_MUTED),
-    )]
-}
-
-fn footer_context_spans(app: &App) -> Vec<Span<'static>> {
-    let (_, _, percent) = match context_usage_snapshot(app) {
-        Some(snapshot) => snapshot,
-        None => return Vec::new(),
-    };
-
-    let color = if percent >= CONTEXT_CRITICAL_THRESHOLD_PERCENT {
-        palette::STATUS_ERROR
-    } else if percent >= CONTEXT_WARNING_THRESHOLD_PERCENT {
-        palette::STATUS_WARNING
-    } else {
-        palette::DEEPSEEK_SKY
-    };
-
-    vec![Span::styled(
-        format!("ctx {:.0}%", percent),
-        Style::default().fg(color),
     )]
 }
 

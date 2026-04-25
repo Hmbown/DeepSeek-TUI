@@ -210,15 +210,18 @@ impl<'a> HeaderWidget<'a> {
         if trimmed.is_empty() {
             return Vec::new();
         }
-        let color = if trimmed.eq_ignore_ascii_case("off") {
+        let is_off = trimmed.eq_ignore_ascii_case("off");
+        let color = if is_off {
             palette::TEXT_HINT
         } else {
             palette::DEEPSEEK_SKY
         };
-        let body = if include_prefix {
-            format!("⚡{trimmed}")
-        } else {
+        let body = if !include_prefix {
             trimmed.to_string()
+        } else if trimmed.eq_ignore_ascii_case("max") || trimmed.eq_ignore_ascii_case("maximum") {
+            format!("\u{1F433} {trimmed}")
+        } else {
+            format!("\u{00B7} {trimmed}")
         };
         vec![Span::styled(body, Style::default().fg(color))]
     }

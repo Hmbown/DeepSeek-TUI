@@ -801,6 +801,20 @@ impl LlmClient for DeepSeekClient {
             self.api_provider,
         );
 
+        // Bulletproof final sanitizer: walk the wire payload and force
+        // `reasoning_content` onto any assistant message that has tool_calls
+        // but no reasoning_content. DeepSeek's thinking-mode API rejects
+        // such messages with a 400. This is the last line of defense after
+        // engine-side and build-side substitution; if either upstream path
+        // misses a case (e.g. a session restored from disk, a sub-agent
+        // adding messages directly, or a cached prefix mismatch), this pass
+        // still produces a valid request.
+        sanitize_thinking_mode_messages(
+            &mut body,
+            &request.model,
+            request.reasoning_effort.as_deref(),
+        );
+
         let url = api_url(&self.base_url, "chat/completions");
         let response = self
             .send_with_retry(|| self.http_client.post(&url).json(&body))
@@ -809,6 +823,12 @@ impl LlmClient for DeepSeekClient {
         let status = response.status();
         if !status.is_success() {
             let error_text = bounded_error_text(response, ERROR_BODY_MAX_BYTES).await;
+            // If DeepSeek rejected for missing reasoning_content despite the
+            // sanitizer, dump the offending indices so we can diagnose where
+            // they came from on the next failure.
+            if error_text.contains("reasoning_content") {
+                log_thinking_mode_violations(&body);
+            }
             anyhow::bail!("SSE stream request failed: HTTP {status}: {error_text}");
         }
 
@@ -1423,17 +1443,16 @@ fn build_chat_messages_with_reasoning(
             let mut reasoning_content = thinking_parts.join("\n");
             let has_text = !content.trim().is_empty();
             let has_tool_calls = !tool_calls.is_empty();
-            // DeepSeek thinking-mode rule: any assistant message that performed
-            // a tool call must keep its `reasoning_content` and replay it in
-            // ALL subsequent requests, including across new user turns. Final
-            // text-only answers may drop reasoning_content (the API ignores
-            // it). If a tool-call round somehow lost its reasoning_content
-            // (e.g. a session checkpoint from before this rule was enforced,
-            // or a sub-turn where the model emitted no reasoning text),
+            // DeepSeek thinking-mode rule: every assistant message in the
+            // conversation must carry its `reasoning_content` when thinking
+            // is enabled. The docs say non-tool-call messages' reasoning is
+            // "ignored", but the API still validates presence and rejects
+            // with a 400 if any assistant message is missing it. If reasoning
+            // was lost (e.g. a session checkpoint from before this rule was
+            // enforced, or a sub-turn with no streamed reasoning text),
             // substitute a non-empty placeholder so the API accepts the
-            // request. Dropping tool_calls instead would orphan matching
-            // tool_results and fragment the conversation chain.
-            let include_reasoning_for_turn = include_reasoning && has_tool_calls;
+            // request.
+            let include_reasoning_for_turn = include_reasoning;
             let mut has_reasoning =
                 include_reasoning_for_turn && !reasoning_content.trim().is_empty();
             if include_reasoning_for_turn && !has_reasoning {
@@ -1657,6 +1676,81 @@ fn map_tool_choice_for_chat(choice: &Value) -> Option<Value> {
             })
         }),
         _ => Some(choice.clone()),
+    }
+}
+
+/// Final-pass sanitizer over the outgoing chat-completions JSON payload.
+/// Forces a non-empty `reasoning_content` onto every `assistant` message that
+/// carries `tool_calls`, when the model + effort combination requires it.
+/// DeepSeek's thinking-mode API rejects such messages with a 400 error;
+/// substituting a placeholder keeps the conversation chain intact.
+fn sanitize_thinking_mode_messages(body: &mut Value, model: &str, effort: Option<&str>) {
+    if !should_replay_reasoning_content(model, effort) {
+        return;
+    }
+    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
+        return;
+    };
+    let mut substitutions: u32 = 0;
+    for (idx, msg) in messages.iter_mut().enumerate() {
+        if msg.get("role").and_then(Value::as_str) != Some("assistant") {
+            continue;
+        }
+        let needs_placeholder = msg
+            .get("reasoning_content")
+            .and_then(Value::as_str)
+            .is_none_or(|s| s.trim().is_empty());
+        if needs_placeholder {
+            msg["reasoning_content"] = json!("(reasoning omitted)");
+            substitutions = substitutions.saturating_add(1);
+            logging::warn(format!(
+                "Final sanitizer: forced reasoning_content placeholder on assistant[{idx}]",
+            ));
+        }
+    }
+    if substitutions > 0 {
+        logging::warn(format!(
+            "Final sanitizer: {substitutions} assistant message(s) needed reasoning_content placeholder",
+        ));
+    }
+}
+
+/// Diagnostic logger fired when DeepSeek rejects the request despite the
+/// sanitizer. Walks the body and logs which assistant messages have tool_calls
+/// but no `reasoning_content` — useful to track down a code path that bypasses
+/// the sanitizer entirely.
+fn log_thinking_mode_violations(body: &Value) {
+    let Some(messages) = body.get("messages").and_then(Value::as_array) else {
+        logging::warn("400-after-sanitizer: body has no `messages` array");
+        return;
+    };
+    let mut violations: Vec<String> = Vec::new();
+    for (idx, msg) in messages.iter().enumerate() {
+        if msg.get("role").and_then(Value::as_str) != Some("assistant") {
+            continue;
+        }
+        let reasoning = msg
+            .get("reasoning_content")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let has_tc = msg.get("tool_calls").is_some();
+        if reasoning.trim().is_empty() {
+            violations.push(format!(
+                "assistant[{idx}] (reasoning_content missing, tool_calls={})",
+                has_tc
+            ));
+        }
+    }
+    if violations.is_empty() {
+        logging::warn(
+            "400-after-sanitizer: all assistant messages have reasoning_content — DeepSeek rejected for a different reason",
+        );
+    } else {
+        logging::warn(format!(
+            "400-after-sanitizer: {} assistant message(s) lack reasoning_content despite sanitizer: {}",
+            violations.len(),
+            violations.join(", ")
+        ));
     }
 }
 
@@ -2288,7 +2382,7 @@ mod tests {
     }
 
     #[test]
-    fn chat_messages_strip_reasoning_content_from_final_answer() {
+    fn chat_messages_keep_reasoning_content_on_all_assistant_messages() {
         let message = Message {
             role: "assistant".to_string(),
             content: vec![
@@ -2310,11 +2404,15 @@ mod tests {
             assistant.get("content").and_then(Value::as_str),
             Some("done")
         );
-        assert!(assistant.get("reasoning_content").is_none());
+        assert_eq!(
+            assistant.get("reasoning_content").and_then(Value::as_str),
+            Some("plan"),
+            "thinking-mode models must keep reasoning_content on ALL assistant messages"
+        );
     }
 
     #[test]
-    fn chat_messages_drop_thinking_only_assistant_for_chat_model() {
+    fn chat_messages_keep_thinking_only_assistant_for_v4_flash() {
         let message = Message {
             role: "assistant".to_string(),
             content: vec![ContentBlock::Thinking {
@@ -2322,14 +2420,18 @@ mod tests {
             }],
         };
         let out = build_chat_messages(None, &[message], "deepseek-v4-flash");
-        assert!(
-            !out.iter()
-                .any(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
+        let assistant = out
+            .iter()
+            .find(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
+            .expect("thinking-only assistant kept for V4 model");
+        assert_eq!(
+            assistant.get("reasoning_content").and_then(Value::as_str),
+            Some("plan")
         );
     }
 
     #[test]
-    fn chat_messages_drop_thinking_only_assistant_for_reasoner_model() {
+    fn chat_messages_keep_thinking_only_assistant_for_v4_pro() {
         let message = Message {
             role: "assistant".to_string(),
             content: vec![ContentBlock::Thinking {
@@ -2337,14 +2439,18 @@ mod tests {
             }],
         };
         let out = build_chat_messages(None, &[message], "deepseek-v4-pro");
-        assert!(
-            !out.iter()
-                .any(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
+        let assistant = out
+            .iter()
+            .find(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
+            .expect("thinking-only assistant kept for V4 model");
+        assert_eq!(
+            assistant.get("reasoning_content").and_then(Value::as_str),
+            Some("plan")
         );
     }
 
     #[test]
-    fn chat_messages_drop_thinking_only_assistant_for_r_series_model() {
+    fn chat_messages_keep_thinking_only_assistant_for_r_series_model() {
         let message = Message {
             role: "assistant".to_string(),
             content: vec![ContentBlock::Thinking {
@@ -2352,9 +2458,13 @@ mod tests {
             }],
         };
         let out = build_chat_messages(None, &[message], "deepseek-r2-lite-preview");
-        assert!(
-            !out.iter()
-                .any(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
+        let assistant = out
+            .iter()
+            .find(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
+            .expect("thinking-only assistant kept for R-series model");
+        assert_eq!(
+            assistant.get("reasoning_content").and_then(Value::as_str),
+            Some("plan")
         );
     }
 
@@ -2529,8 +2639,11 @@ mod tests {
             .rfind(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
             .expect("final assistant message");
         assert!(
-            final_assistant.get("reasoning_content").is_none(),
-            "final text answer can drop reasoning_content (API ignores it)"
+            final_assistant
+                .get("reasoning_content")
+                .and_then(Value::as_str)
+                .is_some_and(|s| !s.trim().is_empty()),
+            "all assistant messages must carry reasoning_content in thinking mode"
         );
     }
 
@@ -2859,10 +2972,11 @@ mod tests {
                 thinking: "plan".to_string(),
             }],
         };
-        let out = build_chat_messages(None, &[message], "deepseek-v4-mini");
+        let out = build_chat_messages(None, &[message], "some-non-deepseek-model");
         assert!(
             !out.iter()
-                .any(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
+                .any(|value| value.get("role").and_then(Value::as_str) == Some("assistant")),
+            "non-reasoning model should drop thinking-only assistant"
         );
     }
 
