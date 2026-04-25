@@ -1058,7 +1058,7 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        COMPOSER_PANEL_HEIGHT, ComposerWidget, Renderable, apply_selection_to_line,
+        COMPOSER_PANEL_HEIGHT, ChatWidget, ComposerWidget, Renderable, apply_selection_to_line,
         composer_height, composer_max_height, composer_min_input_rows, composer_top_padding,
         cursor_row_col, layout_input, pad_lines_to_bottom, placeholder_visual_lines,
         should_render_empty_state, slash_completion_hints, wrap_input_lines, wrap_text,
@@ -1066,7 +1066,9 @@ mod tests {
     use crate::config::Config;
     use crate::palette;
     use crate::tui::app::{App, ComposerDensity, TuiOptions};
+    use crate::tui::history::{GenericToolCell, HistoryCell, ToolCell, ToolStatus};
     use ratatui::{
+        buffer::Buffer,
         layout::Rect,
         style::Style,
         text::{Line, Span},
@@ -1434,5 +1436,141 @@ mod tests {
             content: "hello".to_string(),
         });
         assert!(!should_render_empty_state(&app));
+    }
+
+    /// Probe: confirm `cell.lines_with_motion` returns no Line whose total
+    /// visual width exceeds the requested area width, even for pathological
+    /// long single-line tool results.
+    #[test]
+    fn long_tool_result_lines_fit_requested_width() {
+        let cell = HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            name: "todo_write".to_string(),
+            status: ToolStatus::Success,
+            input_summary: Some("items: <2 items>".to_string()),
+            output: Some("hello world ".repeat(420)),
+        }));
+        for width in [40u16, 80, 111, 165] {
+            let lines = cell.lines(width);
+            for (idx, line) in lines.iter().enumerate() {
+                let visual: usize = line
+                    .spans
+                    .iter()
+                    .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+                    .sum();
+                assert!(
+                    visual <= usize::from(width),
+                    "line {idx} at width {width} has visual width {visual} > {width}"
+                );
+            }
+        }
+    }
+
+    /// Regression: a long single-line tool result must not write any cells
+    /// outside the chat content area (issue #36 — sidebar gutter bleed).
+    ///
+    /// We render `ChatWidget` into a buffer that is wider than the chat area
+    /// (simulating the sidebar split) and assert every cell to the right of
+    /// `chat_area` is still the default empty cell.
+    #[test]
+    fn chat_widget_does_not_bleed_into_sidebar_for_long_tool_result() {
+        // Reproduces the actual `todo_write` output shape: a status line,
+        // a newline, then a pretty-printed JSON payload with long string
+        // values. Run at several widths since the leak in the issue was
+        // observed at ~165 cols.
+        let cases: Vec<(u16, u16)> = vec![(80, 50), (120, 80), (165, 111), (200, 140)];
+        for (total_width, chat_width) in cases {
+            let mut app = create_test_app();
+            let long_value: String = "hello world ".repeat(420);
+            let json_payload = format!(
+                "{{\n  \"items\": [\n    {{ \"id\": 1, \"content\": \"{long_value}\", \"status\": \"pending\" }}\n  ]\n}}"
+            );
+            let output = format!("Todo list updated (1 items, 0% complete)\n{json_payload}");
+            app.add_message(HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+                name: "todo_write".to_string(),
+                status: ToolStatus::Success,
+                input_summary: Some("todos: <1 items>".to_string()),
+                output: Some(output),
+            })));
+
+            let height: u16 = 30;
+            let chat_area = Rect {
+                x: 0,
+                y: 0,
+                width: chat_width,
+                height,
+            };
+            let full_area = Rect {
+                x: 0,
+                y: 0,
+                width: total_width,
+                height,
+            };
+            let mut buf = Buffer::empty(full_area);
+
+            let widget = ChatWidget::new(&mut app, chat_area);
+            widget.render(chat_area, &mut buf);
+
+            // Every cell outside chat_area should remain at default. If the
+            // widget bled, we'll see leftover symbols.
+            let default_symbol = " ";
+            for y in 0..height {
+                for x in chat_width..total_width {
+                    let cell = &buf[(x, y)];
+                    let sym = cell.symbol();
+                    assert!(
+                        sym == default_symbol || sym.is_empty(),
+                        "[{total_width}x{height}, chat={chat_width}] cell ({x},{y}) leaked content {sym:?} outside chat_area"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Regression: when the transcript scrollbar is visible, the rightmost
+    /// content column must remain readable (the scrollbar gets its own
+    /// 1-column gutter rather than overdrawing chat content).
+    #[test]
+    fn chat_widget_reserves_scrollbar_gutter_when_scrollbar_visible() {
+        let mut app = create_test_app();
+        // Many short messages → forces the scrollbar to be visible.
+        for i in 0..200 {
+            app.add_message(HistoryCell::User {
+                content: format!("user message {i}"),
+            });
+        }
+
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 8,
+        };
+        let mut buf = Buffer::empty(area);
+        let widget = ChatWidget::new(&mut app, area);
+        widget.render(area, &mut buf);
+
+        // The rightmost column should host the scrollbar track/thumb.
+        // The penultimate column should still hold normal content (a digit,
+        // letter, or space — never the scrollbar glyph).
+        let scrollbar_track = "│";
+        let scrollbar_thumb = "┃";
+        let mut scrollbar_seen = false;
+        for y in 0..area.height {
+            let last = buf[(area.width - 1, y)].symbol();
+            let penult = buf[(area.width - 2, y)].symbol();
+            if last == scrollbar_track || last == scrollbar_thumb {
+                scrollbar_seen = true;
+            }
+            assert!(
+                penult != scrollbar_track && penult != scrollbar_thumb,
+                "scrollbar leaked into column {} (cell {:?}) at row {y}",
+                area.width - 2,
+                penult
+            );
+        }
+        assert!(
+            scrollbar_seen,
+            "scrollbar should be visible for a long history"
+        );
     }
 }
