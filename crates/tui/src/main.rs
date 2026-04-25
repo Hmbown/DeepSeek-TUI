@@ -51,7 +51,7 @@ mod ui;
 mod utils;
 mod working_set;
 
-use crate::config::{Config, MAX_SUBAGENTS};
+use crate::config::{Config, DEFAULT_TEXT_MODEL, MAX_SUBAGENTS};
 use crate::eval::{EvalHarness, EvalHarnessConfig, ScenarioStepKind};
 use crate::features::Feature;
 use crate::llm_client::LlmClient;
