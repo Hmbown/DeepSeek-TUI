@@ -95,7 +95,7 @@ pub fn model(app: &mut App, model_name: Option<&str>) -> CommandResult {
     } else {
         let common = COMMON_DEEPSEEK_MODELS.join(", ");
         CommandResult::message(format!(
-            "Current model: {}\nCommon models: {}\nTip: any valid DeepSeek model ID is accepted. Run /models to fetch live IDs from your API endpoint.",
+            "Current model: {}\nUsage: /model <name>\nCommon models: {}\nTip: any valid DeepSeek model ID is accepted. Run /models to fetch live IDs from your API endpoint.",
             app.model, common
         ))
     }

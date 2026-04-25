@@ -110,6 +110,8 @@ deepseek serve --http                         # HTTP/SSE API server
 ```
 
 Controls: `F1` help, `Esc` backs out of the current action, `Ctrl+K` command palette.
+In the composer, `@path/to/file` adds local text file or directory context to
+the next message. Use `/attach <path>` for local image/video media references.
 
 ## Configuration
 

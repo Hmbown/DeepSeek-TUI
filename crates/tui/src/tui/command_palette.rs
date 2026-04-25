@@ -207,7 +207,6 @@ fn command_runs_directly(name: &str) -> bool {
         "help"
             | "clear"
             | "exit"
-            | "model"
             | "models"
             | "queue"
             | "subagents"
@@ -722,6 +721,21 @@ mod tests {
         assert!(command_labels.contains(&"/links"));
         assert!(!command_labels.contains(&"/set"));
         assert!(!command_labels.contains(&"/deepseek"));
+    }
+
+    #[test]
+    fn command_palette_inserts_model_command_for_argument_entry() {
+        let entries = build_entries(Path::new("."), Path::new("."));
+        let model = entries
+            .iter()
+            .find(|entry| entry.section == PaletteSection::Command && entry.label == "/model")
+            .expect("model command entry");
+
+        assert_eq!(model.command, "/model ");
+        assert!(matches!(
+            &model.action,
+            CommandPaletteAction::InsertText { text } if text == "/model "
+        ));
     }
 
     #[test]

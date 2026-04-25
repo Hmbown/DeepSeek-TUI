@@ -9,6 +9,7 @@ mod core;
 mod debug;
 mod init;
 mod note;
+mod provider;
 mod queue;
 mod review;
 mod session;
@@ -134,6 +135,12 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "/models",
     },
     CommandInfo {
+        name: "provider",
+        aliases: &[],
+        description: "Switch or view the active LLM backend (deepseek | nvidia-nim)",
+        usage: "/provider [name]",
+    },
+    CommandInfo {
         name: "queue",
         aliases: &["queued"],
         description: "View or edit queued messages",
@@ -166,7 +173,7 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "attach",
         aliases: &["image", "media"],
-        description: "Attach a local image or video path to the next message",
+        description: "Attach image/video media; use @path for text files or directories",
         usage: "/attach <path>",
     },
     CommandInfo {
@@ -329,6 +336,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "exit" | "quit" | "q" => core::exit(),
         "model" => core::model(app, arg),
         "models" => core::models(app),
+        "provider" => provider::provider(app, arg),
         "queue" | "queued" => queue::queue(app, arg),
         "subagents" | "agents" => core::subagents(app),
         "links" | "dashboard" | "api" => core::deepseek_links(),

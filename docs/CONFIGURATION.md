@@ -218,7 +218,11 @@ Use `deepseek-tui features list` to inspect known flags and their effective stat
 
 ## Local Media Attachments
 
-`Ctrl+V` can attach an image from the clipboard, and `/attach <path>` can attach a local image or video file path to the next message. DeepSeek's public Chat Completions API currently accepts text message content, so attachments are sent as explicit local path references instead of native image/video payloads.
+Use `@path/to/file` in the composer to add local text file or directory context
+to the next message. Use `/attach <path>` for local image/video media paths, or
+`Ctrl+V` to attach an image from the clipboard. DeepSeek's public Chat
+Completions API currently accepts text message content, so media attachments are
+sent as explicit local path references instead of native image/video payloads.
 
 ## Managed Configuration and Requirements
 

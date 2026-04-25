@@ -127,6 +127,73 @@ fn create_test_app() -> App {
     App::new(options, &Config::default())
 }
 
+#[test]
+fn file_mentions_add_local_text_context_to_model_payload() {
+    let tmpdir = TempDir::new().expect("tempdir");
+    std::fs::write(
+        tmpdir.path().join("guide.md"),
+        "# Guide\nUse the fast path.\n",
+    )
+    .expect("write file");
+    let mut app = create_test_app();
+    app.workspace = tmpdir.path().to_path_buf();
+    let message = QueuedMessage::new("Summarize @guide.md".to_string(), None);
+
+    let content = queued_message_content_for_app(&app, &message);
+
+    assert!(content.starts_with("Summarize @guide.md"));
+    assert!(content.contains("Local context from @mentions:"));
+    assert!(content.contains("<file mention=\"@guide.md\""));
+    assert!(content.contains("# Guide\nUse the fast path."));
+    assert_eq!(message.display, "Summarize @guide.md");
+}
+
+#[test]
+fn file_mentions_do_not_trigger_inside_email_addresses() {
+    let tmpdir = TempDir::new().expect("tempdir");
+    std::fs::write(tmpdir.path().join("example.com"), "not a mention").expect("write file");
+
+    let content = user_request_with_file_mentions("email me@example.com", tmpdir.path());
+
+    assert_eq!(content, "email me@example.com");
+}
+
+#[test]
+fn media_file_mentions_point_to_attach_instead_of_inlining_bytes() {
+    let tmpdir = TempDir::new().expect("tempdir");
+    std::fs::write(tmpdir.path().join("photo.png"), b"\0png").expect("write image");
+
+    let content = user_request_with_file_mentions("inspect @photo.png", tmpdir.path());
+
+    assert!(content.contains("<media-file mention=\"@photo.png\""));
+    assert!(content.contains("Use /attach photo.png"));
+    assert!(!content.contains("\0png"));
+}
+
+#[tokio::test]
+async fn model_change_update_syncs_engine_model_before_compaction() {
+    let mut app = create_test_app();
+    app.model = "deepseek-v4-flash".to_string();
+    let compaction = app.compaction_config();
+    let mut engine = crate::core::engine::mock_engine_handle();
+
+    apply_model_and_compaction_update(&engine.handle, compaction).await;
+
+    match engine.rx_op.recv().await.expect("set model op") {
+        crate::core::ops::Op::SetModel { model } => {
+            assert_eq!(model, "deepseek-v4-flash");
+        }
+        other => panic!("expected SetModel, got {other:?}"),
+    }
+
+    match engine.rx_op.recv().await.expect("set compaction op") {
+        crate::core::ops::Op::SetCompaction { config } => {
+            assert_eq!(config.model, "deepseek-v4-flash");
+        }
+        other => panic!("expected SetCompaction, got {other:?}"),
+    }
+}
+
 fn init_git_repo() -> TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
 

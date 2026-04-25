@@ -99,14 +99,11 @@ max_delay = 60.0
 exponential_base = 2.0
 
 # ─────────────────────────────────────────────────────────────────────────────────
-# Context Compaction (config-level tuning not yet wired; use /set auto_compact on|off)
+# Context Compaction
 # ─────────────────────────────────────────────────────────────────────────────────
-# [compaction]
-# enabled = false                  # Enable auto-compaction
-# token_threshold = 50000          # Trigger compaction above this token estimate
-# message_threshold = 50           # Or above this message count
-# model = "deepseek-v4-flash"       # Model to use for summarization
-# cache_summary = true             # Keep summary blocks stable; DeepSeek context caching is automatic
+# Auto-compaction is a saved UI setting edited with `/config` (`auto_compact`).
+# There is no config-file `[compaction]` table yet; detailed thresholds are
+# chosen by the TUI from the active model/context budget.
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Capacity Controller (runtime pressure guardrails)

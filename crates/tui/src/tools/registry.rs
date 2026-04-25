@@ -353,11 +353,16 @@ impl ToolRegistryBuilder {
             .with_tool(Arc::new(WebRunTool))
     }
 
-    /// Include multi-tool parallel wrapper.
+    /// Previously registered the OpenAI-style `multi_tool_use.parallel`
+    /// meta-tool. DeepSeek-V4 has native parallel tool calls (multiple
+    /// `tool_calls` entries in one assistant turn) and the meta-tool name
+    /// triggered the model to hallucinate OpenAI-internal XML wrappers
+    /// (`<multi_tool_use.parallel><tool_name>…</tool_name>…`) instead of
+    /// emitting native calls. Kept as a no-op so existing callers compile;
+    /// the engine's compatibility dispatcher still handles legacy emissions.
     #[must_use]
     pub fn with_parallel_tool(self) -> Self {
-        use super::parallel::MultiToolUseParallelTool;
-        self.with_tool(Arc::new(MultiToolUseParallelTool))
+        self
     }
 
     /// Include request_user_input tool.
