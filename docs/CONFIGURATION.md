@@ -256,3 +256,48 @@ checks use the resolved `mcp_config_path` / `skills_dir` (including env override
 To bootstrap missing MCP/skills paths, run `deepseek-tui setup --all`. You can
 also run `deepseek-tui setup --skills --local` to create a workspace-local
 `./skills` dir.
+
+`deepseek-tui doctor --json` prints a machine-readable report that skips the
+live API connectivity probe. Top-level keys: `version`, `config_path`,
+`config_present`, `workspace`, `api_key.source`, `base_url`,
+`default_text_model`, `mcp`, `skills`, `tools`, `plugins`, `sandbox`,
+`platform`, `api_connectivity`. CI consumers should rely on `api_key.source`
+(`env`/`config`/`missing`) rather than parsing the human-readable `doctor`
+text.
+
+## Setup status, clean, and extension dirs
+
+`deepseek-tui setup` accepts a few flags beyond the existing `--mcp`,
+`--skills`, `--local`, `--all`, and `--force`:
+
+- `--status` — print a compact one-screen status (api key, base URL, model,
+  MCP/skills/tools/plugins counts, sandbox, `.env` presence). Read-only and
+  network-free; safe to run in CI.
+- `--tools` — scaffold `~/.deepseek/tools/` with a `README.md` describing the
+  self-describing frontmatter convention (`# name:` / `# description:` /
+  `# usage:`) and an `example.sh` that follows it. The directory is
+  intentionally not auto-loaded; wire individual scripts into the agent via
+  MCP, hooks, or skills.
+- `--plugins` — scaffold `~/.deepseek/plugins/` with a `README.md` and an
+  `example/PLUGIN.md` placeholder using the same frontmatter shape as
+  `SKILL.md`. Plugins are not loaded automatically either; reference them
+  from a skill or MCP wrapper when you want them active.
+- `--all` now scaffolds MCP + skills + tools + plugins together.
+- `--clean` — list `~/.deepseek/sessions/checkpoints/latest.json` and
+  `offline_queue.json` if they exist. Pass `--force` to actually remove them.
+  This never touches real session history or the task queue.
+
+`--status` and `--clean` are mutually exclusive with the scaffold flags.
+
+## Why the engine strips XML/`[TOOL_CALL]` text
+
+DeepSeek TUI sends and receives tool calls only over the API tool channel
+(structured `tool_use` / `tool_call` items). The streaming loop in
+`crates/tui/src/core/engine.rs` recognizes a fixed set of fake-wrapper start
+markers — `[TOOL_CALL]`, `<deepseek:tool_call`, `<tool_call`, `<invoke `,
+`<function_calls>` — and scrubs them from visible assistant text without ever
+turning them into structured tool calls. When a wrapper is stripped, the loop
+emits one compact `status` notice per turn so the user can see why their
+visible text shrank. Treat any change that re-enables text-based tool
+execution as a regression; the protocol-recovery tests in
+`crates/tui/tests/protocol_recovery.rs` lock the contract.

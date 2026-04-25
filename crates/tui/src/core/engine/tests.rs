@@ -746,3 +746,140 @@ fn missing_tool_error_message_includes_discovery_guidance_when_no_match() {
     assert!(message.contains("not available in the current tool catalog"));
     assert!(message.contains(TOOL_SEARCH_BM25_NAME));
 }
+
+#[test]
+fn filter_tool_call_delta_strips_bracket_marker() {
+    let mut in_block = false;
+    let visible = filter_tool_call_delta(
+        "intro [TOOL_CALL]\n{\"tool\":\"x\"}\n[/TOOL_CALL] outro",
+        &mut in_block,
+    );
+    assert!(!in_block);
+    assert!(!visible.contains("[TOOL_CALL]"));
+    assert!(!visible.contains("[/TOOL_CALL]"));
+    assert!(!visible.contains("\"tool\":\"x\""));
+    assert!(visible.contains("intro"));
+    assert!(visible.contains("outro"));
+}
+
+#[test]
+fn filter_tool_call_delta_strips_deepseek_xml_marker() {
+    let mut in_block = false;
+    let visible = filter_tool_call_delta(
+        "before <deepseek:tool_call name=\"x\">payload</deepseek:tool_call> after",
+        &mut in_block,
+    );
+    assert!(!in_block);
+    for marker in TOOL_CALL_START_MARKERS {
+        assert!(
+            !visible.contains(marker),
+            "visible text leaked start marker `{marker}`: {visible:?}"
+        );
+    }
+    assert!(visible.contains("before"));
+    assert!(visible.contains("after"));
+}
+
+#[test]
+fn filter_tool_call_delta_strips_generic_tool_call_marker() {
+    let mut in_block = false;
+    let visible = filter_tool_call_delta(
+        "lead <tool_call>\n{\"name\":\"do\"}\n</tool_call> tail",
+        &mut in_block,
+    );
+    assert!(!in_block);
+    assert!(!visible.contains("<tool_call"));
+    assert!(!visible.contains("</tool_call>"));
+    assert!(visible.contains("lead"));
+    assert!(visible.contains("tail"));
+}
+
+#[test]
+fn filter_tool_call_delta_strips_invoke_marker() {
+    let mut in_block = false;
+    let visible = filter_tool_call_delta(
+        "alpha <invoke name=\"x\"><parameter name=\"k\">v</parameter></invoke> beta",
+        &mut in_block,
+    );
+    assert!(!in_block);
+    assert!(!visible.contains("<invoke "));
+    assert!(!visible.contains("</invoke>"));
+    assert!(visible.contains("alpha"));
+    assert!(visible.contains("beta"));
+}
+
+#[test]
+fn filter_tool_call_delta_strips_function_calls_marker() {
+    let mut in_block = false;
+    let visible = filter_tool_call_delta(
+        "head <function_calls>\n{\"name\":\"x\"}\n</function_calls> tail",
+        &mut in_block,
+    );
+    assert!(!in_block);
+    assert!(!visible.contains("<function_calls>"));
+    assert!(!visible.contains("</function_calls>"));
+    assert!(visible.contains("head"));
+    assert!(visible.contains("tail"));
+}
+
+#[test]
+fn filter_tool_call_delta_handles_chunk_split_marker() {
+    let mut in_block = false;
+    // First chunk opens the wrapper but does not close it.
+    let visible_a = filter_tool_call_delta("hello <tool_call>partial", &mut in_block);
+    assert!(in_block, "filter must remember it is mid-wrapper");
+    assert_eq!(visible_a, "hello ");
+
+    // Second chunk continues inside the wrapper, then closes it and adds tail.
+    let visible_b = filter_tool_call_delta("payload</tool_call> tail", &mut in_block);
+    assert!(!in_block);
+    assert_eq!(visible_b, " tail");
+}
+
+#[test]
+fn filter_tool_call_delta_unmatched_open_suppresses_remainder() {
+    let mut in_block = false;
+    let visible = filter_tool_call_delta("ok [TOOL_CALL]rest of stream", &mut in_block);
+    assert_eq!(visible, "ok ");
+    assert!(
+        in_block,
+        "unmatched open must leave filter in tool-call mode"
+    );
+}
+
+#[test]
+fn filter_tool_call_delta_passes_through_clean_text() {
+    let mut in_block = false;
+    let input = "no markers here, just prose with code `<not a tag>`.";
+    let visible = filter_tool_call_delta(input, &mut in_block);
+    assert!(!in_block);
+    assert_eq!(visible, input);
+}
+
+#[test]
+fn contains_fake_tool_wrapper_detects_each_marker() {
+    for marker in TOOL_CALL_START_MARKERS {
+        let needle = format!("noise {marker} more noise");
+        assert!(
+            contains_fake_tool_wrapper(&needle),
+            "marker `{marker}` should be detected"
+        );
+    }
+}
+
+#[test]
+fn contains_fake_tool_wrapper_returns_false_on_clean_text() {
+    assert!(!contains_fake_tool_wrapper(
+        "plain assistant text without wrappers"
+    ));
+    assert!(!contains_fake_tool_wrapper(
+        "`<tool` lookalike but not a real start marker"
+    ));
+}
+
+#[test]
+fn fake_wrapper_notice_is_compact_and_actionable() {
+    // Keep this short so it fits cleanly in a single status line.
+    assert!(FAKE_WRAPPER_NOTICE.len() < 120);
+    assert!(FAKE_WRAPPER_NOTICE.contains("API tool channel"));
+}

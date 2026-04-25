@@ -133,7 +133,7 @@ struct Cli {
 #[allow(clippy::large_enum_variant)]
 enum Commands {
     /// Run system diagnostics and check configuration
-    Doctor,
+    Doctor(DoctorArgs),
     /// Bootstrap MCP config and/or skills directories
     Setup(SetupArgs),
     /// Generate shell completions
@@ -230,7 +230,13 @@ struct SetupArgs {
     /// Initialize skills directory and an example skill
     #[arg(long, default_value_t = false)]
     skills: bool,
-    /// Initialize both MCP config and skills (default when no flags provided)
+    /// Initialize tools directory with a self-describing example script
+    #[arg(long, default_value_t = false)]
+    tools: bool,
+    /// Initialize plugins directory with a self-describing example
+    #[arg(long, default_value_t = false)]
+    plugins: bool,
+    /// Initialize MCP config, skills, tools, and plugins
     #[arg(long, default_value_t = false)]
     all: bool,
     /// Create a local workspace skills directory (./skills)
@@ -239,6 +245,19 @@ struct SetupArgs {
     /// Overwrite existing template files
     #[arg(long, default_value_t = false)]
     force: bool,
+    /// Print a compact, read-only status report (no network calls)
+    #[arg(long, default_value_t = false, conflicts_with_all = ["mcp", "skills", "tools", "plugins", "all", "local", "clean"])]
+    status: bool,
+    /// Remove regenerable session checkpoints (latest + offline_queue)
+    #[arg(long, default_value_t = false, conflicts_with_all = ["mcp", "skills", "tools", "plugins", "all", "local", "status"])]
+    clean: bool,
+}
+
+#[derive(Args, Debug, Clone, Default)]
+struct DoctorArgs {
+    /// Emit machine-readable JSON output (skips live API connectivity check)
+    #[arg(long, default_value_t = false)]
+    json: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -479,11 +498,15 @@ async fn main() -> Result<()> {
     // Handle subcommands first
     if let Some(command) = cli.command.clone() {
         return match command {
-            Commands::Doctor => {
+            Commands::Doctor(args) => {
                 let config = load_config_from_cli(&cli)?;
                 let workspace = resolve_workspace(&cli);
-                run_doctor(&config, &workspace, cli.config.as_deref()).await;
-                Ok(())
+                if args.json {
+                    run_doctor_json(&config, &workspace, cli.config.as_deref())
+                } else {
+                    run_doctor(&config, &workspace, cli.config.as_deref()).await;
+                    Ok(())
+                }
             }
             Commands::Setup(args) => {
                 let config = load_config_from_cli(&cli)?;
@@ -790,19 +813,151 @@ fn init_skills_dir(skills_dir: &Path, force: bool) -> Result<(PathBuf, WriteStat
     Ok((skill_path, status))
 }
 
+fn tools_readme_template() -> &'static str {
+    "# Local tools\n\n\
+     Drop self-describing scripts here so they can be discovered by\n\
+     `deepseek-tui setup --status` and surfaced in `deepseek-tui doctor`.\n\n\
+     Each script should start with a frontmatter-style header so the\n\
+     description is visible without executing the file:\n\n\
+     ```\n\
+     # name: my-tool\n\
+     # description: One-line summary of what this tool does\n\
+     # usage: my-tool [args...]\n\
+     ```\n\n\
+     The directory is intentionally not auto-loaded into the agent's tool\n\
+     catalog. Wire individual tools through MCP, hooks, or skills when you\n\
+     want them available inside a session.\n"
+}
+
+fn tools_example_script() -> &'static str {
+    "#!/usr/bin/env sh\n\
+     # name: example\n\
+     # description: Print a confirmation that local tool discovery works\n\
+     # usage: example [name]\n\
+     printf 'deepseek-tui local tool ok: %s\\n' \"${1:-world}\"\n"
+}
+
+fn init_tools_dir(tools_dir: &Path, force: bool) -> Result<(PathBuf, WriteStatus, WriteStatus)> {
+    std::fs::create_dir_all(tools_dir)
+        .with_context(|| format!("Failed to create tools dir {}", tools_dir.display()))?;
+
+    let readme_path = tools_dir.join("README.md");
+    let readme_status = write_template_file(&readme_path, tools_readme_template(), force)?;
+
+    let example_path = tools_dir.join("example.sh");
+    let example_status = write_template_file(&example_path, tools_example_script(), force)?;
+
+    Ok((tools_dir.to_path_buf(), readme_status, example_status))
+}
+
+fn plugins_readme_template() -> &'static str {
+    "# Local plugins\n\n\
+     Plugins are richer than tools: each one lives in its own subdirectory\n\
+     with a `PLUGIN.md` describing what it does and how to enable it. The\n\
+     directory is created so users have a documented place to drop\n\
+     experiments without touching `~/.deepseek/skills/`.\n\n\
+     A plugin layout looks like:\n\n\
+     ```\n\
+     plugins/\n\
+       my-plugin/\n\
+         PLUGIN.md   # frontmatter + body, same shape as SKILL.md\n\
+         scripts/    # optional helpers invoked by the plugin\n\
+     ```\n\n\
+     Plugins are not loaded automatically. Wire them up through skills,\n\
+     hooks, or MCP servers when you want them active in a session.\n"
+}
+
+fn plugin_example_template() -> &'static str {
+    "---\n\
+     name: example\n\
+     description: Placeholder plugin so /skills and doctor have something to show\n\
+     status: example\n\
+     ---\n\n\
+     This is a starter plugin layout. Edit or replace it once you have a\n\
+     real plugin. The agent does not load this file directly; reference it\n\
+     from a skill or MCP wrapper if you want it active in a session.\n"
+}
+
+fn init_plugins_dir(
+    plugins_dir: &Path,
+    force: bool,
+) -> Result<(PathBuf, PathBuf, WriteStatus, WriteStatus)> {
+    std::fs::create_dir_all(plugins_dir)
+        .with_context(|| format!("Failed to create plugins dir {}", plugins_dir.display()))?;
+
+    let readme_path = plugins_dir.join("README.md");
+    let readme_status = write_template_file(&readme_path, plugins_readme_template(), force)?;
+
+    let example_path = plugins_dir.join("example").join("PLUGIN.md");
+    ensure_parent_dir(&example_path)?;
+    let example_status = write_template_file(&example_path, plugin_example_template(), force)?;
+
+    Ok((readme_path, example_path, readme_status, example_status))
+}
+
+fn deepseek_home_dir() -> PathBuf {
+    dirs::home_dir().map_or_else(|| PathBuf::from(".deepseek"), |h| h.join(".deepseek"))
+}
+
+/// Resolve the default tools directory. Mirrors `default_skills_dir` shape.
+fn default_tools_dir() -> PathBuf {
+    deepseek_home_dir().join("tools")
+}
+
+/// Resolve the default plugins directory.
+fn default_plugins_dir() -> PathBuf {
+    deepseek_home_dir().join("plugins")
+}
+
+/// Default location for crash/offline-queue checkpoints managed by the TUI.
+fn default_checkpoints_dir() -> PathBuf {
+    deepseek_home_dir().join("sessions").join("checkpoints")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CleanPlan {
+    targets: Vec<PathBuf>,
+}
+
+fn collect_clean_targets(checkpoints_dir: &Path) -> CleanPlan {
+    let candidates = ["latest.json", "offline_queue.json"];
+    let targets = candidates
+        .iter()
+        .map(|name| checkpoints_dir.join(name))
+        .filter(|p| p.exists())
+        .collect();
+    CleanPlan { targets }
+}
+
+fn execute_clean_plan(plan: &CleanPlan) -> Result<Vec<PathBuf>> {
+    let mut removed = Vec::with_capacity(plan.targets.len());
+    for path in &plan.targets {
+        std::fs::remove_file(path)
+            .with_context(|| format!("Failed to remove {}", path.display()))?;
+        removed.push(path.clone());
+    }
+    Ok(removed)
+}
+
 fn run_setup(config: &Config, workspace: &Path, args: SetupArgs) -> Result<()> {
+    if args.status {
+        return run_setup_status(config, workspace);
+    }
+    if args.clean {
+        return run_setup_clean(&default_checkpoints_dir(), args.force);
+    }
+
     use crate::palette;
     use colored::Colorize;
 
     let (aqua_r, aqua_g, aqua_b) = palette::DEEPSEEK_SKY_RGB;
     let (sky_r, sky_g, sky_b) = palette::DEEPSEEK_SKY_RGB;
 
-    let mut run_mcp = args.mcp || args.all;
-    let mut run_skills = args.skills || args.all;
-    if !run_mcp && !run_skills {
-        run_mcp = true;
-        run_skills = true;
-    }
+    let any_explicit = args.mcp || args.skills || args.tools || args.plugins;
+    let run_mcp = args.mcp || args.all || !any_explicit;
+    let run_skills = args.skills || args.all || !any_explicit;
+    let run_tools = args.tools || args.all;
+    let run_plugins = args.plugins || args.all;
 
     println!(
         "{}",
@@ -860,6 +1015,25 @@ fn run_setup(config: &Config, workspace: &Path, args: SetupArgs) -> Result<()> {
         println!("    Next: run the TUI and use `/skills` then `/skill getting-started`.");
     }
 
+    if run_tools {
+        let tools_dir = default_tools_dir();
+        let (dir, readme_status, example_status) = init_tools_dir(&tools_dir, args.force)?;
+        report_write_status("Tools README", &dir.join("README.md"), readme_status);
+        report_write_status("Example tool", &dir.join("example.sh"), example_status);
+        println!("    Tools dir: {}", dir.display());
+        println!("    Next: drop scripts here; surface them via skills/MCP when ready.");
+    }
+
+    if run_plugins {
+        let plugins_dir = default_plugins_dir();
+        let (readme_path, example_path, readme_status, example_status) =
+            init_plugins_dir(&plugins_dir, args.force)?;
+        report_write_status("Plugins README", &readme_path, readme_status);
+        report_write_status("Example plugin", &example_path, example_status);
+        println!("    Plugins dir: {}", plugins_dir.display());
+        println!("    Next: copy the example dir, edit PLUGIN.md, wire via skill/MCP.");
+    }
+
     let sandbox = crate::sandbox::get_platform_sandbox();
     if let Some(kind) = sandbox {
         println!("  ✓ Sandbox available: {kind}");
@@ -867,6 +1041,210 @@ fn run_setup(config: &Config, workspace: &Path, args: SetupArgs) -> Result<()> {
         println!("  · Sandbox not available on this platform (best-effort only).");
     }
 
+    Ok(())
+}
+
+fn report_write_status(label: &str, path: &Path, status: WriteStatus) {
+    match status {
+        WriteStatus::Created => {
+            println!("  ✓ Created {label} at {}", path.display());
+        }
+        WriteStatus::Overwritten => {
+            println!("  ✓ Overwrote {label} at {}", path.display());
+        }
+        WriteStatus::SkippedExists => {
+            println!("  · {label} already exists at {}", path.display());
+        }
+    }
+}
+
+/// Source of the resolved DeepSeek API key, used in status reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ApiKeySource {
+    Env,
+    Config,
+    Missing,
+}
+
+fn resolve_api_key_source(config: &Config) -> ApiKeySource {
+    if std::env::var("DEEPSEEK_API_KEY")
+        .ok()
+        .filter(|k| !k.trim().is_empty())
+        .is_some()
+    {
+        ApiKeySource::Env
+    } else if config.deepseek_api_key().is_ok() {
+        ApiKeySource::Config
+    } else {
+        ApiKeySource::Missing
+    }
+}
+
+fn count_dir_entries(dir: &Path) -> usize {
+    std::fs::read_dir(dir)
+        .map(|entries| entries.filter_map(std::result::Result::ok).count())
+        .unwrap_or(0)
+}
+
+fn skills_count_for(dir: &Path) -> usize {
+    if !dir.exists() {
+        return 0;
+    }
+    crate::skills::SkillRegistry::discover(dir).len()
+}
+
+fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
+    use crate::palette;
+    use colored::Colorize;
+
+    let (aqua_r, aqua_g, aqua_b) = palette::DEEPSEEK_SKY_RGB;
+    let (sky_r, sky_g, sky_b) = palette::DEEPSEEK_SKY_RGB;
+    let (red_r, red_g, red_b) = palette::DEEPSEEK_RED_RGB;
+
+    println!(
+        "{}",
+        "DeepSeek Status".truecolor(aqua_r, aqua_g, aqua_b).bold()
+    );
+    println!("{}", "===============".truecolor(sky_r, sky_g, sky_b));
+    println!("workspace: {}", workspace.display());
+
+    match resolve_api_key_source(config) {
+        ApiKeySource::Env => println!(
+            "  {} api_key: set via DEEPSEEK_API_KEY",
+            "✓".truecolor(aqua_r, aqua_g, aqua_b)
+        ),
+        ApiKeySource::Config => println!(
+            "  {} api_key: set via config",
+            "✓".truecolor(aqua_r, aqua_g, aqua_b)
+        ),
+        ApiKeySource::Missing => println!(
+            "  {} api_key: missing  (set DEEPSEEK_API_KEY or run `deepseek login`)",
+            "✗".truecolor(red_r, red_g, red_b)
+        ),
+    }
+    println!(
+        "  · base_url: {}",
+        config
+            .base_url
+            .as_deref()
+            .unwrap_or("https://api.deepseek.com")
+    );
+    let model = config
+        .default_text_model
+        .clone()
+        .unwrap_or_else(|| DEFAULT_TEXT_MODEL.to_string());
+    println!("  · default_text_model: {model}");
+
+    let mcp_path = config.mcp_config_path();
+    let mcp_count = match load_mcp_config(&mcp_path) {
+        Ok(cfg) => cfg.servers.len(),
+        Err(_) => 0,
+    };
+    let mcp_present = if mcp_path.exists() { "" } else { "  (missing)" };
+    println!(
+        "  · mcp servers: {mcp_count} at {}{mcp_present}",
+        mcp_path.display()
+    );
+
+    let skills_dir = config.skills_dir();
+    println!(
+        "  · skills: {} at {}",
+        skills_count_for(&skills_dir),
+        skills_dir.display()
+    );
+
+    let tools_dir = default_tools_dir();
+    let tools_present = if tools_dir.exists() {
+        ""
+    } else {
+        "  (missing — run `setup --tools`)"
+    };
+    println!(
+        "  · tools: {} entries at {}{tools_present}",
+        if tools_dir.exists() {
+            count_dir_entries(&tools_dir)
+        } else {
+            0
+        },
+        tools_dir.display()
+    );
+
+    let plugins_dir = default_plugins_dir();
+    let plugins_present = if plugins_dir.exists() {
+        ""
+    } else {
+        "  (missing — run `setup --plugins`)"
+    };
+    println!(
+        "  · plugins: {} entries at {}{plugins_present}",
+        if plugins_dir.exists() {
+            count_dir_entries(&plugins_dir)
+        } else {
+            0
+        },
+        plugins_dir.display()
+    );
+
+    let sandbox = crate::sandbox::get_platform_sandbox();
+    match sandbox {
+        Some(kind) => println!(
+            "  {} sandbox: {kind}",
+            "✓".truecolor(aqua_r, aqua_g, aqua_b)
+        ),
+        None => println!(
+            "  {} sandbox: unavailable (commands run best-effort)",
+            "!".truecolor(sky_r, sky_g, sky_b)
+        ),
+    }
+
+    let dotenv = workspace.join(".env");
+    if dotenv.exists() {
+        println!("  {} .env present at {}", "·".dimmed(), dotenv.display());
+    } else {
+        println!("  {} .env not present in workspace", "·".dimmed());
+    }
+
+    println!();
+    println!("Run `deepseek-tui doctor --json` for a machine-readable check.");
+    Ok(())
+}
+
+fn run_setup_clean(checkpoints_dir: &Path, force: bool) -> Result<()> {
+    use colored::Colorize;
+
+    if !checkpoints_dir.exists() {
+        println!(
+            "Nothing to clean — checkpoints dir does not exist: {}",
+            checkpoints_dir.display()
+        );
+        return Ok(());
+    }
+
+    let plan = collect_clean_targets(checkpoints_dir);
+    if plan.targets.is_empty() {
+        println!(
+            "Nothing to clean — no checkpoint files in {}",
+            checkpoints_dir.display()
+        );
+        return Ok(());
+    }
+
+    if !force {
+        println!(
+            "Would remove {} checkpoint file(s) (use --force to apply):",
+            plan.targets.len()
+        );
+        for path in &plan.targets {
+            println!("  · {}", path.display());
+        }
+        return Ok(());
+    }
+
+    let removed = execute_clean_plan(&plan)?;
+    println!("{}", "Cleaned checkpoints:".bold());
+    for path in &removed {
+        println!("  ✓ {}", path.display());
+    }
     Ok(())
 }
 
@@ -1149,6 +1527,48 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         println!("    Run `deepseek setup --skills` (or add --local for ./skills).");
     }
 
+    // Tools directory
+    println!();
+    println!("{}", "Tools:".bold());
+    let tools_dir = default_tools_dir();
+    if tools_dir.exists() {
+        let count = count_dir_entries(&tools_dir);
+        println!(
+            "  {} tools dir found at {} ({} items)",
+            "✓".truecolor(aqua_r, aqua_g, aqua_b),
+            tools_dir.display(),
+            count
+        );
+    } else {
+        println!(
+            "  {} tools dir not found at {}",
+            "·".dimmed(),
+            tools_dir.display()
+        );
+        println!("    Run `deepseek-tui setup --tools` to scaffold a starter dir.");
+    }
+
+    // Plugins directory
+    println!();
+    println!("{}", "Plugins:".bold());
+    let plugins_dir = default_plugins_dir();
+    if plugins_dir.exists() {
+        let count = count_dir_entries(&plugins_dir);
+        println!(
+            "  {} plugins dir found at {} ({} items)",
+            "✓".truecolor(aqua_r, aqua_g, aqua_b),
+            plugins_dir.display(),
+            count
+        );
+    } else {
+        println!(
+            "  {} plugins dir not found at {}",
+            "·".dimmed(),
+            plugins_dir.display()
+        );
+        println!("    Run `deepseek-tui setup --plugins` to scaffold a starter dir.");
+    }
+
     // Platform and sandbox checks
     println!();
     println!("{}", "Platform:".bold());
@@ -1176,6 +1596,145 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             .truecolor(aqua_r, aqua_g, aqua_b)
             .bold()
     );
+}
+
+/// Machine-readable counterpart to `run_doctor`. Skips the live API call so it
+/// is safe to run in CI and from non-interactive scripts.
+fn run_doctor_json(
+    config: &Config,
+    workspace: &Path,
+    config_path_override: Option<&Path>,
+) -> Result<()> {
+    use serde_json::json;
+
+    let default_config_dir =
+        dirs::home_dir().map_or_else(|| PathBuf::from(".deepseek"), |h| h.join(".deepseek"));
+    let config_path = config_path_override
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var("DEEPSEEK_CONFIG_PATH")
+                .ok()
+                .map(PathBuf::from)
+        })
+        .unwrap_or_else(|| default_config_dir.join("config.toml"));
+
+    let api_key_state = match resolve_api_key_source(config) {
+        ApiKeySource::Env => "env",
+        ApiKeySource::Config => "config",
+        ApiKeySource::Missing => "missing",
+    };
+
+    let mcp_config_path = config.mcp_config_path();
+    let mcp_present = mcp_config_path.exists();
+    let mcp_summary = match load_mcp_config(&mcp_config_path) {
+        Ok(cfg) => {
+            let servers: Vec<serde_json::Value> = cfg
+                .servers
+                .iter()
+                .map(|(name, server)| {
+                    let status = doctor_check_mcp_server(server);
+                    let (kind, detail) = match &status {
+                        McpServerDoctorStatus::Ok(d) => ("ok", d.clone()),
+                        McpServerDoctorStatus::Warning(d) => ("warning", d.clone()),
+                        McpServerDoctorStatus::Error(d) => ("error", d.clone()),
+                    };
+                    json!({
+                        "name": name,
+                        "enabled": server.enabled && !server.disabled,
+                        "status": kind,
+                        "detail": detail,
+                    })
+                })
+                .collect();
+            json!({
+                "config_path": mcp_config_path.display().to_string(),
+                "present": mcp_present,
+                "servers": servers,
+            })
+        }
+        Err(err) => json!({
+            "config_path": mcp_config_path.display().to_string(),
+            "present": mcp_present,
+            "servers": [],
+            "error": err.to_string(),
+        }),
+    };
+
+    let global_skills_dir = config.skills_dir();
+    let agents_skills_dir = workspace.join(".agents").join("skills");
+    let local_skills_dir = workspace.join("skills");
+    let selected_skills_dir = if agents_skills_dir.exists() {
+        agents_skills_dir.clone()
+    } else if local_skills_dir.exists() {
+        local_skills_dir.clone()
+    } else {
+        global_skills_dir.clone()
+    };
+
+    let tools_dir = default_tools_dir();
+    let plugins_dir = default_plugins_dir();
+
+    let report = json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "config_path": config_path.display().to_string(),
+        "config_present": config_path.exists(),
+        "workspace": workspace.display().to_string(),
+        "api_key": {
+            "source": api_key_state,
+        },
+        "base_url": config
+            .base_url
+            .clone()
+            .unwrap_or_else(|| "https://api.deepseek.com".to_string()),
+        "default_text_model": config
+            .default_text_model
+            .clone()
+            .unwrap_or_else(|| DEFAULT_TEXT_MODEL.to_string()),
+        "mcp": mcp_summary,
+        "skills": {
+            "selected": selected_skills_dir.display().to_string(),
+            "global": {
+                "path": global_skills_dir.display().to_string(),
+                "present": global_skills_dir.exists(),
+                "count": skills_count_for(&global_skills_dir),
+            },
+            "agents": {
+                "path": agents_skills_dir.display().to_string(),
+                "present": agents_skills_dir.exists(),
+                "count": skills_count_for(&agents_skills_dir),
+            },
+            "local": {
+                "path": local_skills_dir.display().to_string(),
+                "present": local_skills_dir.exists(),
+                "count": skills_count_for(&local_skills_dir),
+            },
+        },
+        "tools": {
+            "path": tools_dir.display().to_string(),
+            "present": tools_dir.exists(),
+            "count": if tools_dir.exists() { count_dir_entries(&tools_dir) } else { 0 },
+        },
+        "plugins": {
+            "path": plugins_dir.display().to_string(),
+            "present": plugins_dir.exists(),
+            "count": if plugins_dir.exists() { count_dir_entries(&plugins_dir) } else { 0 },
+        },
+        "sandbox": match crate::sandbox::get_platform_sandbox() {
+            Some(kind) => json!({"available": true, "kind": kind.to_string()}),
+            None => json!({"available": false, "kind": null}),
+        },
+        "platform": {
+            "os": std::env::consts::OS,
+            "arch": std::env::consts::ARCH,
+        },
+        "api_connectivity": {
+            "checked": false,
+            "note": "Skipped in --json mode; run `deepseek-tui doctor` for a live check.",
+        },
+    });
+
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
 }
 
 fn run_execpolicy_command(command: ExecpolicyCommand) -> Result<()> {
@@ -2602,5 +3161,182 @@ mod doctor_mcp_tests {
             doctor_check_mcp_server(&server),
             McpServerDoctorStatus::Error(_)
         ));
+    }
+}
+
+#[cfg(test)]
+mod setup_helper_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn init_tools_dir_creates_readme_and_example() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("tools");
+        let (returned_dir, readme_status, example_status) =
+            init_tools_dir(&dir, false).expect("init_tools_dir should succeed");
+
+        assert_eq!(returned_dir, dir);
+        assert!(matches!(readme_status, WriteStatus::Created));
+        assert!(matches!(example_status, WriteStatus::Created));
+        assert!(dir.join("README.md").exists());
+        assert!(dir.join("example.sh").exists());
+
+        let readme = std::fs::read_to_string(dir.join("README.md")).unwrap();
+        assert!(
+            readme.contains("# name:"),
+            "README must show frontmatter convention"
+        );
+
+        let example = std::fs::read_to_string(dir.join("example.sh")).unwrap();
+        assert!(example.starts_with("#!/usr/bin/env sh"));
+        assert!(example.contains("# name: example"));
+        assert!(example.contains("# description:"));
+    }
+
+    #[test]
+    fn init_tools_dir_skips_existing_without_force() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("tools");
+        let _ = init_tools_dir(&dir, false).unwrap();
+        let (_, readme_status, example_status) = init_tools_dir(&dir, false).unwrap();
+        assert!(matches!(readme_status, WriteStatus::SkippedExists));
+        assert!(matches!(example_status, WriteStatus::SkippedExists));
+    }
+
+    #[test]
+    fn init_tools_dir_force_overwrites() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("tools");
+        let _ = init_tools_dir(&dir, false).unwrap();
+        std::fs::write(dir.join("example.sh"), "stale").unwrap();
+        let (_, _, example_status) = init_tools_dir(&dir, true).unwrap();
+        assert!(matches!(example_status, WriteStatus::Overwritten));
+        let example = std::fs::read_to_string(dir.join("example.sh")).unwrap();
+        assert_ne!(example, "stale");
+    }
+
+    #[test]
+    fn init_plugins_dir_creates_readme_and_example_layout() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("plugins");
+        let (readme_path, example_path, readme_status, example_status) =
+            init_plugins_dir(&dir, false).unwrap();
+
+        assert_eq!(readme_path, dir.join("README.md"));
+        assert_eq!(example_path, dir.join("example").join("PLUGIN.md"));
+        assert!(matches!(readme_status, WriteStatus::Created));
+        assert!(matches!(example_status, WriteStatus::Created));
+        assert!(readme_path.exists());
+        assert!(example_path.exists());
+
+        let plugin_md = std::fs::read_to_string(&example_path).unwrap();
+        assert!(plugin_md.contains("---"));
+        assert!(plugin_md.contains("name: example"));
+    }
+
+    #[test]
+    fn collect_clean_targets_finds_only_known_files() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("latest.json"), "{}").unwrap();
+        std::fs::write(dir.join("offline_queue.json"), "[]").unwrap();
+        std::fs::write(dir.join("unrelated.json"), "{}").unwrap();
+
+        let plan = collect_clean_targets(dir);
+        assert_eq!(plan.targets.len(), 2);
+        assert!(plan.targets.iter().any(|p| p.ends_with("latest.json")));
+        assert!(
+            plan.targets
+                .iter()
+                .any(|p| p.ends_with("offline_queue.json"))
+        );
+        assert!(!plan.targets.iter().any(|p| p.ends_with("unrelated.json")));
+    }
+
+    #[test]
+    fn execute_clean_plan_removes_files_and_returns_them() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let latest = dir.join("latest.json");
+        let queue = dir.join("offline_queue.json");
+        std::fs::write(&latest, "{}").unwrap();
+        std::fs::write(&queue, "[]").unwrap();
+
+        let plan = collect_clean_targets(dir);
+        let removed = execute_clean_plan(&plan).unwrap();
+        assert_eq!(removed.len(), 2);
+        assert!(!latest.exists());
+        assert!(!queue.exists());
+    }
+
+    #[test]
+    fn run_setup_clean_dry_run_lists_targets_without_force() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("latest.json"), "{}").unwrap();
+        run_setup_clean(dir, false).unwrap();
+        // Without --force, files must remain on disk.
+        assert!(dir.join("latest.json").exists());
+    }
+
+    #[test]
+    fn run_setup_clean_force_removes_files() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("latest.json"), "{}").unwrap();
+        std::fs::write(dir.join("offline_queue.json"), "[]").unwrap();
+        run_setup_clean(dir, true).unwrap();
+        assert!(!dir.join("latest.json").exists());
+        assert!(!dir.join("offline_queue.json").exists());
+    }
+
+    #[test]
+    fn run_setup_clean_handles_missing_dir() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("does-not-exist");
+        // Should print and return Ok without error.
+        run_setup_clean(&dir, true).unwrap();
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn resolve_api_key_source_reports_env_when_set() {
+        // Snapshot env so we can restore it.
+        let prev = std::env::var("DEEPSEEK_API_KEY").ok();
+        // SAFETY: tests in this binary may run in parallel; use a marker that
+        // is unmistakably a test value so concurrent reads can detect it.
+        // To avoid clobbering CI keys we save/restore around the assertion.
+        unsafe {
+            std::env::set_var("DEEPSEEK_API_KEY", "test-helper-value");
+        }
+        let cfg = Config::default();
+        let source = resolve_api_key_source(&cfg);
+        match prev {
+            Some(value) => unsafe { std::env::set_var("DEEPSEEK_API_KEY", value) },
+            None => unsafe { std::env::remove_var("DEEPSEEK_API_KEY") },
+        }
+        assert_eq!(source, ApiKeySource::Env);
+    }
+
+    #[test]
+    fn skills_count_for_returns_zero_for_missing_dir() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("nope");
+        assert_eq!(skills_count_for(&dir), 0);
+    }
+
+    #[test]
+    fn skills_count_for_counts_valid_skill_dirs() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("skills");
+        let skill_dir = dir.join("getting-started");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: getting-started\ndescription: hi\n---\nbody",
+        )
+        .unwrap();
+        assert_eq!(skills_count_for(&dir), 1);
     }
 }
