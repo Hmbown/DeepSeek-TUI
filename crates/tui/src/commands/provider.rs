@@ -51,10 +51,7 @@ pub fn provider(app: &mut App, args: Option<&str>) -> CommandResult {
     };
 
     if target == app.api_provider && model.is_none() {
-        return CommandResult::message(format!(
-            "Already on provider: {}",
-            target.as_str()
-        ));
+        return CommandResult::message(format!("Already on provider: {}", target.as_str()));
     }
 
     CommandResult::action(AppAction::SwitchProvider {

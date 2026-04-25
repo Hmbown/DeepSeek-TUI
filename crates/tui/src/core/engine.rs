@@ -52,6 +52,7 @@ use super::capacity_memory::{
     CanonicalState, CapacityMemoryRecord, ReplayInfo, append_capacity_record,
     load_last_k_capacity_records, new_record_id, now_rfc3339,
 };
+use super::coherence::{CoherenceSignal, CoherenceState, next_coherence_state};
 use super::events::{Event, TurnOutcomeStatus};
 use super::ops::Op;
 use super::session::Session;
@@ -234,6 +235,7 @@ pub struct Engine {
     shared_cancel_token: Arc<StdMutex<CancellationToken>>,
     tool_exec_lock: Arc<RwLock<()>>,
     capacity_controller: CapacityController,
+    coherence_state: CoherenceState,
     turn_counter: u64,
 }
 
@@ -1385,6 +1387,7 @@ impl Engine {
             shared_cancel_token: shared_cancel_token.clone(),
             tool_exec_lock,
             capacity_controller,
+            coherence_state: CoherenceState::default(),
             turn_counter: 0,
         };
         engine.rehydrate_latest_canonical_state();
@@ -1803,13 +1806,7 @@ impl Engine {
         };
         let Some(client) = self.deepseek_client.clone() else {
             let message = "Manual compaction unavailable: API client not configured".to_string();
-            let _ = self
-                .tx_event
-                .send(Event::CompactionFailed {
-                    id,
-                    auto: false,
-                    message: message.clone(),
-                })
+            self.emit_compaction_failed(id, false, message.clone())
                 .await;
             let _ = self
                 .tx_event
@@ -1827,13 +1824,7 @@ impl Engine {
         };
 
         let start_message = "Manual context compaction started".to_string();
-        let _ = self
-            .tx_event
-            .send(Event::CompactionStarted {
-                id: id.clone(),
-                auto: false,
-                message: start_message,
-            })
+        self.emit_compaction_started(id.clone(), false, start_message)
             .await;
 
         let compaction_pins = self
@@ -1872,25 +1863,17 @@ impl Engine {
                             "Compaction complete: {messages_before} → {messages_after} messages ({removed} removed)"
                         )
                     };
-                    let _ = self
-                        .tx_event
-                        .send(Event::CompactionCompleted {
-                            id,
-                            auto: false,
-                            message,
-                            messages_before: Some(messages_before),
-                            messages_after: Some(messages_after),
-                        })
-                        .await;
+                    self.emit_compaction_completed(
+                        id,
+                        false,
+                        message,
+                        Some(messages_before),
+                        Some(messages_after),
+                    )
+                    .await;
                 } else {
                     let message = "Compaction skipped: produced empty result".to_string();
-                    let _ = self
-                        .tx_event
-                        .send(Event::CompactionFailed {
-                            id,
-                            auto: false,
-                            message: message.clone(),
-                        })
+                    self.emit_compaction_failed(id, false, message.clone())
                         .await;
                     turn_status = TurnOutcomeStatus::Failed;
                     turn_error = Some(message);
@@ -1898,13 +1881,7 @@ impl Engine {
             }
             Err(err) => {
                 let message = format!("Manual context compaction failed: {err}");
-                let _ = self
-                    .tx_event
-                    .send(Event::CompactionFailed {
-                        id,
-                        auto: false,
-                        message: message.clone(),
-                    })
+                self.emit_compaction_failed(id, false, message.clone())
                     .await;
                 let _ = self.tx_event.send(Event::status(message.clone())).await;
                 turn_status = TurnOutcomeStatus::Failed;
@@ -1954,13 +1931,7 @@ impl Engine {
 
         let id = format!("compact_{}", &uuid::Uuid::new_v4().to_string()[..8]);
         let start_message = format!("Emergency context compaction started ({reason})");
-        let _ = self
-            .tx_event
-            .send(Event::CompactionStarted {
-                id: id.clone(),
-                auto: true,
-                message: start_message,
-            })
+        self.emit_compaction_started(id.clone(), true, start_message)
             .await;
 
         let before_tokens = self.estimated_input_tokens();
@@ -2026,16 +1997,14 @@ impl Engine {
             if trimmed > 0 {
                 details.push_str(&format!(", trimmed {trimmed} oldest"));
             }
-            let _ = self
-                .tx_event
-                .send(Event::CompactionCompleted {
-                    id,
-                    auto: true,
-                    message: details.clone(),
-                    messages_before: Some(before_count),
-                    messages_after: Some(after_count),
-                })
-                .await;
+            self.emit_compaction_completed(
+                id,
+                true,
+                details.clone(),
+                Some(before_count),
+                Some(after_count),
+            )
+            .await;
             let _ = self.tx_event.send(Event::status(details)).await;
             return true;
         }
@@ -2045,14 +2014,7 @@ impl Engine {
              (estimate ~{} tokens, budget ~{}).",
             after_tokens, target_budget
         );
-        let _ = self
-            .tx_event
-            .send(Event::CompactionFailed {
-                id,
-                auto: true,
-                message: message.clone(),
-            })
-            .await;
+        self.emit_compaction_failed(id, true, message.clone()).await;
         let _ = self.tx_event.send(Event::status(message)).await;
         false
     }
@@ -2439,14 +2401,12 @@ impl Engine {
                 )
             {
                 let compaction_id = format!("compact_{}", &uuid::Uuid::new_v4().to_string()[..8]);
-                let _ = self
-                    .tx_event
-                    .send(Event::CompactionStarted {
-                        id: compaction_id.clone(),
-                        auto: true,
-                        message: "Auto context compaction started".to_string(),
-                    })
-                    .await;
+                self.emit_compaction_started(
+                    compaction_id.clone(),
+                    true,
+                    "Auto context compaction started".to_string(),
+                )
+                .await;
                 let _ = self
                     .tx_event
                     .send(Event::status("Auto-compacting context...".to_string()))
@@ -2480,40 +2440,30 @@ impl Engine {
                                     "Auto-compaction complete: {auto_messages_before} → {auto_messages_after} messages ({removed} removed)"
                                 )
                             };
-                            let _ = self
-                                .tx_event
-                                .send(Event::CompactionCompleted {
-                                    id: compaction_id.clone(),
-                                    auto: true,
-                                    message: status.clone(),
-                                    messages_before: Some(auto_messages_before),
-                                    messages_after: Some(auto_messages_after),
-                                })
-                                .await;
+                            self.emit_compaction_completed(
+                                compaction_id.clone(),
+                                true,
+                                status.clone(),
+                                Some(auto_messages_before),
+                                Some(auto_messages_after),
+                            )
+                            .await;
                             let _ = self.tx_event.send(Event::status(status)).await;
                         } else {
                             let message = "Auto-compaction skipped: empty result".to_string();
-                            let _ = self
-                                .tx_event
-                                .send(Event::CompactionFailed {
-                                    id: compaction_id.clone(),
-                                    auto: true,
-                                    message: message.clone(),
-                                })
-                                .await;
+                            self.emit_compaction_failed(
+                                compaction_id.clone(),
+                                true,
+                                message.clone(),
+                            )
+                            .await;
                             let _ = self.tx_event.send(Event::status(message)).await;
                         }
                     }
                     Err(err) => {
                         // Log error but continue with original messages (never corrupt)
                         let message = format!("Auto-compaction failed: {err}");
-                        let _ = self
-                            .tx_event
-                            .send(Event::CompactionFailed {
-                                id: compaction_id,
-                                auto: true,
-                                message: message.clone(),
-                            })
+                        self.emit_compaction_failed(compaction_id, true, message.clone())
                             .await;
                         let _ = self.tx_event.send(Event::status(message)).await;
                     }
@@ -3824,8 +3774,70 @@ impl Engine {
         refs.len()
     }
 
+    async fn emit_coherence_signal(&mut self, signal: CoherenceSignal, reason: impl Into<String>) {
+        let next = next_coherence_state(self.coherence_state, signal);
+        self.coherence_state = next;
+        let _ = self
+            .tx_event
+            .send(Event::CoherenceState {
+                state: next,
+                label: next.label().to_string(),
+                description: next.description().to_string(),
+                reason: reason.into(),
+            })
+            .await;
+    }
+
+    async fn emit_compaction_started(&mut self, id: String, auto: bool, message: String) {
+        let _ = self
+            .tx_event
+            .send(Event::CompactionStarted {
+                id,
+                auto,
+                message: message.clone(),
+            })
+            .await;
+        self.emit_coherence_signal(CoherenceSignal::CompactionStarted, message)
+            .await;
+    }
+
+    async fn emit_compaction_completed(
+        &mut self,
+        id: String,
+        auto: bool,
+        message: String,
+        messages_before: Option<usize>,
+        messages_after: Option<usize>,
+    ) {
+        let _ = self
+            .tx_event
+            .send(Event::CompactionCompleted {
+                id,
+                auto,
+                message: message.clone(),
+                messages_before,
+                messages_after,
+            })
+            .await;
+        self.emit_coherence_signal(CoherenceSignal::CompactionCompleted, message)
+            .await;
+    }
+
+    async fn emit_compaction_failed(&mut self, id: String, auto: bool, message: String) {
+        let _ = self
+            .tx_event
+            .send(Event::CompactionFailed {
+                id,
+                auto,
+                message: message.clone(),
+            })
+            .await;
+        self.emit_coherence_signal(CoherenceSignal::CompactionFailed, message)
+            .await;
+    }
+
     async fn emit_capacity_decision(
-        &self,
+        &mut self,
         turn: &TurnContext,
         snapshot: Option<&CapacitySnapshot>,
         decision: &CapacityDecision,
@@ -3850,10 +3862,24 @@ impl Engine {
                 reason: decision.reason.clone(),
             })
             .await;
+        self.emit_coherence_signal(
+            CoherenceSignal::CapacityDecision {
+                risk_band: snapshot.risk_band,
+                action: decision.action,
+                cooldown_blocked: decision.cooldown_blocked,
+            },
+            format!(
+                "capacity_decision: risk={} action={} reason={}",
+                snapshot.risk_band.as_str(),
+                decision.action.as_str(),
+                decision.reason
+            ),
+        )
+        .await;
     }
 
     async fn emit_capacity_intervention(
-        &self,
+        &mut self,
         turn: &TurnContext,
         action: GuardrailAction,
         before_prompt_tokens: usize,
@@ -3874,6 +3900,11 @@ impl Engine {
                 replan_performed,
             })
             .await;
+        self.emit_coherence_signal(
+            CoherenceSignal::CapacityIntervention { action },
+            format!("capacity_intervention: action={}", action.as_str()),
+        )
+        .await;
     }
 
     async fn apply_targeted_context_refresh(

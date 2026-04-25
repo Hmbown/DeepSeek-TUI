@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 
+use crate::core::coherence::CoherenceState;
 use crate::models::{Message, SystemPrompt, Usage};
 use crate::tools::spec::{ToolError, ToolResult};
 use crate::tools::subagent::SubAgentResult;
@@ -156,6 +157,14 @@ pub enum Event {
         turn_id: String,
         action: String,
         error: String,
+    },
+
+    /// Plain-language session coherence state.
+    CoherenceState {
+        state: CoherenceState,
+        label: String,
+        description: String,
+        reason: String,
     },
 
     // === Sub-Agent Events ===

@@ -28,6 +28,7 @@ The runtime uses a durable Thread/Turn/Item lifecycle.
 - `ThreadRecord`
   - `id`, `created_at`, `updated_at`
   - `model`, `workspace`, `mode`
+  - `coherence_state`: `healthy|getting_crowded|refreshing_context|verifying_recent_work|resetting_plan`
   - `system_prompt` (optional text)
   - `latest_turn_id`, `latest_response_bookmark`, `archived`
 - `TurnRecord`
@@ -194,10 +195,18 @@ Common event names:
 - `item.interrupted`
 - `approval.required`
 - `sandbox.denied`
+- `coherence.state`
 
 Compaction visibility:
 - auto compaction emits `item.started`/`item.completed` with item kind `context_compaction` and `auto=true`
 - manual compaction emits the same with `auto=false`
+
+Coherence visibility:
+- `coherence.state` is a machine-readable session-health signal derived from
+  existing capacity and compaction events. The payload includes `state`,
+  `label`, `description`, `reason`, and the updated `thread`.
+- Normal clients should show the `label` or `description`, not internal
+  capacity scores or formulas.
 
 ### Background Tasks
 

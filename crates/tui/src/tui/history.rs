@@ -8,6 +8,7 @@ use ratatui::text::{Line, Span};
 use serde_json::Value;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+use crate::deepseek_theme::active_theme;
 use crate::models::{ContentBlock, Message};
 use crate::palette;
 use crate::tools::review::ReviewOutput;
@@ -1538,29 +1539,19 @@ fn render_card_detail_line(
 }
 
 fn tool_title_style() -> Style {
-    Style::default()
-        .fg(palette::TEXT_SOFT)
-        .add_modifier(Modifier::BOLD)
+    active_theme().tool_title_style()
 }
 
 fn tool_status_style(status: ToolStatus) -> Style {
-    Style::default().fg(match status {
-        ToolStatus::Running => palette::ACCENT_TOOL_LIVE,
-        ToolStatus::Success => palette::TEXT_DIM,
-        ToolStatus::Failed => palette::ACCENT_TOOL_ISSUE,
-    })
+    active_theme().tool_status_style(status)
 }
 
 fn tool_detail_label_style() -> Style {
-    Style::default().fg(palette::TEXT_DIM)
+    active_theme().tool_label_style()
 }
 
 fn tool_state_color(status: ToolStatus) -> Color {
-    match status {
-        ToolStatus::Running => palette::ACCENT_TOOL_LIVE,
-        ToolStatus::Success => palette::TEXT_DIM,
-        ToolStatus::Failed => palette::ACCENT_TOOL_ISSUE,
-    }
+    active_theme().tool_status_color(status)
 }
 
 fn tool_status_label(status: ToolStatus) -> &'static str {
@@ -1572,7 +1563,7 @@ fn tool_status_label(status: ToolStatus) -> &'static str {
 }
 
 fn tool_value_style() -> Style {
-    Style::default().fg(palette::TEXT_MUTED)
+    active_theme().tool_value_style()
 }
 
 fn thinking_visual_state(streaming: bool, duration_secs: Option<f32>) -> ThinkingVisualState {
@@ -1630,9 +1621,12 @@ fn thinking_state_accent(state: ThinkingVisualState) -> Color {
 #[cfg(test)]
 mod tests {
     use super::{
-        ExecCell, ExecSource, HistoryCell, TOOL_RUNNING_SYMBOLS, TOOL_STATUS_SYMBOL_MS, ToolCell,
-        ToolStatus, TranscriptRenderOptions, extract_reasoning_summary, render_thinking,
+        ExecCell, ExecSource, HistoryCell, PlanStep, PlanUpdateCell, TOOL_RUNNING_SYMBOLS,
+        TOOL_STATUS_SYMBOL_MS, ToolCell, ToolStatus, TranscriptRenderOptions,
+        extract_reasoning_summary, render_thinking,
     };
+    use crate::deepseek_theme::Theme;
+    use ratatui::style::Modifier;
     use std::time::{Duration, Instant};
 
     #[test]
@@ -1701,5 +1695,130 @@ mod tests {
         assert_eq!(low_motion_symbol, TOOL_RUNNING_SYMBOLS[0]);
         // The animated path should be on a different frame (index 2).
         assert_ne!(animated_symbol, TOOL_RUNNING_SYMBOLS[0]);
+    }
+
+    // === Theme parity tests ===
+    //
+    // These lock the visible color/style choices for one plan cell and one
+    // tool cell against `deepseek_theme::Theme::dark()`. The render path is
+    // unchanged in shape; the assertions just guarantee a future skin swap
+    // (or accidental drift) is caught here instead of at runtime.
+
+    #[test]
+    fn plan_update_cell_renders_with_dark_theme_tokens() {
+        let theme = Theme::dark();
+        let cell = PlanUpdateCell {
+            explanation: None,
+            steps: vec![
+                PlanStep {
+                    step: "scan repo".to_string(),
+                    status: "completed".to_string(),
+                },
+                PlanStep {
+                    step: "extract theme".to_string(),
+                    status: "in_progress".to_string(),
+                },
+                PlanStep {
+                    step: "land tests".to_string(),
+                    status: "pending".to_string(),
+                },
+            ],
+            status: ToolStatus::Running,
+        };
+
+        let lines = cell.lines_with_motion(80, true);
+
+        // Header: "<symbol> Plan <state>"
+        let header = &lines[0];
+        let symbol_span = &header.spans[0];
+        let title_span = &header.spans[1];
+        let state_span = &header.spans[3];
+
+        assert_eq!(
+            symbol_span.style.fg,
+            Some(theme.tool_running_accent),
+            "running header symbol should use the dark theme running accent"
+        );
+        assert_eq!(
+            title_span.content.as_ref(),
+            "Plan",
+            "tool title text is locked"
+        );
+        assert_eq!(title_span.style.fg, Some(theme.tool_title_color));
+        assert!(
+            title_span.style.add_modifier.contains(Modifier::BOLD),
+            "tool title should be bold"
+        );
+        assert_eq!(
+            state_span.content.as_ref(),
+            "running",
+            "running PlanUpdate should label state as 'running'"
+        );
+        assert_eq!(state_span.style.fg, Some(theme.tool_running_accent));
+
+        // Each step row: ["▏ ", "<marker>:", " ", "<step>"]
+        let step_line = &lines[1];
+        let label_span = &step_line.spans[1];
+        let value_span = &step_line.spans[3];
+        assert_eq!(
+            label_span.style.fg,
+            Some(theme.tool_label_color),
+            "step label should use theme.tool_label_color"
+        );
+        assert_eq!(
+            value_span.style.fg,
+            Some(theme.tool_value_color),
+            "step value should use theme.tool_value_color"
+        );
+
+        // Plain content stays identical so visible output does not move.
+        let visible = lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(visible[1].trim_end(), "▏ done: scan repo");
+        assert_eq!(visible[2].trim_end(), "▏ live: extract theme");
+        assert_eq!(visible[3].trim_end(), "▏ next: land tests");
+    }
+
+    #[test]
+    fn exec_cell_failed_status_renders_with_dark_theme_tokens() {
+        let theme = Theme::dark();
+        let cell = ExecCell {
+            command: "false".to_string(),
+            status: ToolStatus::Failed,
+            output: Some("boom".to_string()),
+            started_at: None,
+            duration_ms: Some(42),
+            source: ExecSource::Assistant,
+            interaction: None,
+        };
+
+        let lines = cell.lines_with_motion(80, true);
+
+        let header = &lines[0];
+        let symbol_span = &header.spans[0];
+        let title_span = &header.spans[1];
+        let state_span = &header.spans[3];
+
+        assert_eq!(
+            symbol_span.style.fg,
+            Some(theme.tool_failed_accent),
+            "failed exec header symbol should use the dark theme failed accent"
+        );
+        assert_eq!(
+            title_span.content.as_ref(),
+            "Shell",
+            "exec title text is locked"
+        );
+        assert_eq!(title_span.style.fg, Some(theme.tool_title_color));
+        assert!(title_span.style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(state_span.content.as_ref(), "issue");
+        assert_eq!(state_span.style.fg, Some(theme.tool_failed_accent));
     }
 }

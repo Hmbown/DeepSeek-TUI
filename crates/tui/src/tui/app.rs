@@ -10,6 +10,7 @@ use thiserror::Error;
 
 use crate::compaction::CompactionConfig;
 use crate::config::{ApiProvider, Config, has_api_key, save_api_key};
+use crate::core::coherence::CoherenceState;
 use crate::hooks::{HookContext, HookEvent, HookExecutor, HookResult};
 use crate::models::{
     Message, SystemPrompt, compaction_message_threshold_for_model, compaction_threshold_for_model,
@@ -516,6 +517,8 @@ pub struct App {
     pub thinking_started_at: Option<Instant>,
     /// Whether context compaction is currently in progress.
     pub is_compacting: bool,
+    /// Plain-language session coherence state for the footer.
+    pub coherence_state: CoherenceState,
     /// Timestamp of the last user message send (for brief visual feedback).
     pub last_send_at: Option<Instant>,
 }
@@ -779,6 +782,7 @@ impl App {
             needs_redraw: true,
             thinking_started_at: None,
             is_compacting: false,
+            coherence_state: CoherenceState::default(),
             last_send_at: None,
         }
     }
@@ -1694,6 +1698,8 @@ mod tests {
     #[test]
     fn test_update_model_compaction_budget() {
         let mut app = App::new(test_options(false), &Config::default());
+        app.model = "unknown-test-model".to_string();
+        app.update_model_compaction_budget();
         let initial_threshold = app.compact_threshold;
         app.model = "deepseek-v3.2-128k".to_string();
         app.update_model_compaction_budget();

@@ -19,6 +19,7 @@ use uuid::Uuid;
 
 use crate::compaction::CompactionConfig;
 use crate::config::{Config, DEFAULT_TEXT_MODEL, MAX_SUBAGENTS};
+use crate::core::coherence::CoherenceState;
 use crate::core::engine::{EngineConfig, EngineHandle, spawn_engine};
 use crate::core::events::{Event as EngineEvent, TurnOutcomeStatus};
 use crate::core::ops::Op;
@@ -97,6 +98,8 @@ pub struct ThreadRecord {
     pub archived: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
+    #[serde(default)]
+    pub coherence_state: CoherenceState,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -677,6 +680,7 @@ impl RuntimeThreadManager {
             latest_response_bookmark: None,
             archived: req.archived,
             system_prompt: req.system_prompt,
+            coherence_state: CoherenceState::default(),
         };
         self.store.save_thread(&thread)?;
         self.emit_event(
@@ -1676,6 +1680,31 @@ impl RuntimeThreadManager {
                         .await?;
                     }
                 }
+                EngineEvent::CoherenceState {
+                    state,
+                    label,
+                    description,
+                    reason,
+                } => {
+                    let mut thread = self.store.load_thread(&thread_id)?;
+                    thread.coherence_state = state;
+                    thread.updated_at = Utc::now();
+                    self.store.save_thread(&thread)?;
+                    self.emit_event(
+                        &thread_id,
+                        Some(&turn_id),
+                        None,
+                        "coherence.state",
+                        json!({
+                            "state": state,
+                            "label": label,
+                            "description": description,
+                            "reason": reason,
+                            "thread": thread,
+                        }),
+                    )
+                    .await?;
+                }
                 EngineEvent::CapacityDecision {
                     risk_band,
                     action,
@@ -2378,6 +2407,7 @@ mod tests {
             latest_response_bookmark: None,
             archived: false,
             system_prompt: None,
+            coherence_state: CoherenceState::default(),
         }
     }
 
@@ -2635,6 +2665,14 @@ mod tests {
                     .send(EngineEvent::MessageComplete { index: 0 })
                     .await;
                 let _ = tx_event
+                    .send(EngineEvent::CoherenceState {
+                        state: CoherenceState::GettingCrowded,
+                        label: "getting crowded".to_string(),
+                        description: "The session is approaching context pressure.".to_string(),
+                        reason: "test capacity signal".to_string(),
+                    })
+                    .await;
+                let _ = tx_event
                     .send(EngineEvent::TurnComplete {
                         usage: Usage {
                             input_tokens: 10,
@@ -2670,6 +2708,10 @@ mod tests {
         let reopened = test_manager(runtime_dir)?;
         let detail = reopened.get_thread_detail(&thread.id).await?;
         assert_eq!(detail.thread.id, thread.id);
+        assert_eq!(
+            detail.thread.coherence_state,
+            CoherenceState::GettingCrowded
+        );
         assert_eq!(detail.turns.len(), 1);
         assert!(detail.latest_seq >= 1);
         assert!(!detail.items.is_empty());
@@ -2677,6 +2719,12 @@ mod tests {
         assert!(
             events.iter().any(|ev| ev.event == "turn.completed"),
             "expected turn.completed event after restart"
+        );
+        assert!(
+            events.iter().any(|ev| ev.event == "coherence.state"
+                && ev.payload.get("state").and_then(serde_json::Value::as_str)
+                    == Some("getting_crowded")),
+            "expected machine-readable coherence event after restart"
         );
         Ok(())
     }
@@ -2698,6 +2746,7 @@ mod tests {
             .await?;
 
         assert!(!thread.auto_approve);
+        assert_eq!(thread.coherence_state, CoherenceState::Healthy);
         Ok(())
     }
 
@@ -3557,6 +3606,7 @@ mod tests {
             latest_response_bookmark: None,
             archived: false,
             system_prompt: None,
+            coherence_state: CoherenceState::default(),
         };
         manager.store.save_thread(&thread)?;
 
