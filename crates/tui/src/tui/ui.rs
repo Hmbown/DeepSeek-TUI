@@ -1534,10 +1534,49 @@ async fn run_event_loop(
                 {
                     app.move_cursor_start();
                 }
-                KeyCode::End | KeyCode::Char('e')
-                    if key.modifiers.contains(KeyModifiers::CONTROL) =>
-                {
+                KeyCode::End => {
                     app.move_cursor_end();
+                }
+                KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    // Ctrl+E: spawn $EDITOR on the composer contents (#91).
+                    // Only fires when no modal is active (the !view_stack
+                    // branch above already returns early in that case) and
+                    // the composer is the focused input target. We accept the
+                    // shortcut whether or not a model turn is streaming —
+                    // editing the buffer never disturbs in-flight work.
+                    let seed = app.input.clone();
+                    match super::external_editor::spawn_editor_for_input(
+                        terminal,
+                        app.use_alt_screen,
+                        app.use_mouse_capture,
+                        app.use_bracketed_paste,
+                        &seed,
+                    ) {
+                        Ok(super::external_editor::EditorOutcome::Edited(new)) => {
+                            app.input = new;
+                            app.move_cursor_end();
+                            let editor = std::env::var("VISUAL")
+                                .ok()
+                                .filter(|s| !s.trim().is_empty())
+                                .or_else(|| {
+                                    std::env::var("EDITOR")
+                                        .ok()
+                                        .filter(|s| !s.trim().is_empty())
+                                })
+                                .unwrap_or_else(|| "vi".to_string());
+                            app.status_message = Some(format!("Edited in {editor}"));
+                        }
+                        Ok(super::external_editor::EditorOutcome::Unchanged) => {
+                            app.status_message = Some("Editor closed (no changes)".to_string());
+                        }
+                        Ok(super::external_editor::EditorOutcome::Cancelled) => {
+                            app.status_message = Some("Editor cancelled".to_string());
+                        }
+                        Err(err) => {
+                            app.status_message = Some(format!("Editor error: {err}"));
+                        }
+                    }
+                    app.needs_redraw = true;
                 }
                 KeyCode::Up => {
                     if key.modifiers.contains(KeyModifiers::CONTROL) {
