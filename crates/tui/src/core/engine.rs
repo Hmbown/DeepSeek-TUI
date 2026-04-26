@@ -2685,7 +2685,8 @@ impl Engine {
             }
 
             // RLM is a structured tool call (`rlm_query`) handled by the
-            // normal tool dispatch path; no content rewrite required.
+            // normal tool dispatch path; inline ```repl blocks (paper §2)
+            // are executed below when tool_uses is empty.
             // DeepSeek chat API rejects assistant messages that contain only
             // Keep thinking for UI stream events, but persist only sendable
             // assistant turns in the conversation state.
@@ -2705,7 +2706,8 @@ impl Engine {
                 .await;
             }
 
-            // If no tool uses, we're done
+            // If no tool uses, check for inline REPL blocks (paper §2) or
+            // finish the turn.
             if tool_uses.is_empty() {
                 if !pending_steers.is_empty() {
                     for steer in pending_steers.drain(..) {
@@ -2724,6 +2726,110 @@ impl Engine {
                     turn.next_step();
                     continue;
                 }
+
+                // Inline ```repl execution — paper-spec RLM integration.
+                if has_sendable_assistant_content
+                    && crate::repl::sandbox::has_repl_block(&current_text_visible)
+                {
+                    let repl_blocks =
+                        crate::repl::sandbox::extract_repl_blocks(&current_text_visible);
+                    let mut runtime = match crate::repl::runtime::PythonRuntime::new().await {
+                        Ok(rt) => rt,
+                        Err(e) => {
+                            let _ = self
+                                .tx_event
+                                .send(Event::status(format!("REPL init failed: {e}")))
+                                .await;
+                            break;
+                        }
+                    };
+
+                    let mut final_result: Option<String> = None;
+                    for (i, block) in repl_blocks.iter().enumerate() {
+                        let round_num = i + 1;
+                        let _ = self
+                            .tx_event
+                            .send(Event::status(format!(
+                                "REPL round {round_num}: executing..."
+                            )))
+                            .await;
+
+                        match runtime.execute(&block.code).await {
+                            Ok(round) => {
+                                if let Some(val) = &round.final_value {
+                                    let _ = self
+                                        .tx_event
+                                        .send(Event::status(format!(
+                                            "REPL round {round_num}: FINAL result obtained"
+                                        )))
+                                        .await;
+                                    final_result = Some(val.clone());
+                                    break;
+                                }
+
+                                // No FINAL — feed truncated stdout back as user metadata.
+                                let feedback = if round.has_error {
+                                    format!(
+                                        "[REPL round {round_num} error]\nstdout:\n{}\nstderr:\n{}",
+                                        round.stdout, round.stderr
+                                    )
+                                } else {
+                                    format!(
+                                        "[REPL round {round_num} output]\n{}",
+                                        round.stdout
+                                    )
+                                };
+                                self.add_session_message(Message {
+                                    role: "user".to_string(),
+                                    content: vec![ContentBlock::Text {
+                                        text: feedback,
+                                        cache_control: None,
+                                    }],
+                                })
+                                .await;
+                            }
+                            Err(e) => {
+                                let _ = self
+                                    .tx_event
+                                    .send(Event::status(format!(
+                                        "REPL round {round_num} failed: {e}"
+                                    )))
+                                    .await;
+                                self.add_session_message(Message {
+                                    role: "user".to_string(),
+                                    content: vec![ContentBlock::Text {
+                                        text: format!(
+                                            "[REPL round {round_num} execution failed]\n{e}"
+                                        ),
+                                        cache_control: None,
+                                    }],
+                                })
+                                .await;
+                            }
+                        }
+                    }
+
+                    if let Some(final_val) = final_result {
+                        // Replace the assistant's text with the FINAL answer.
+                        if let Some(last_msg) = self.session.messages.last_mut() {
+                            if last_msg.role == "assistant" {
+                                for block in &mut last_msg.content {
+                                    if let ContentBlock::Text { text, .. } = block {
+                                        *text = final_val;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        self.emit_session_updated().await;
+                        break;
+                    }
+
+                    // No FINAL — let the model iterate with the feedback.
+                    turn.next_step();
+                    continue;
+                }
+
                 break;
             }
 

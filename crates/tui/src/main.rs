@@ -36,6 +36,7 @@ mod pricing;
 mod project_context;
 mod project_doc;
 mod prompts;
+pub mod repl;
 mod responses_api_proxy;
 mod runtime_api;
 mod runtime_threads;
