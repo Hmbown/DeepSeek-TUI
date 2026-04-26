@@ -23,11 +23,12 @@
 
 use std::fmt::Write;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use ignore::WalkBuilder;
 
 use crate::tui::app::App;
+use crate::working_set::Workspace;
 
 /// Maximum number of `@`-mentions whose contents are inlined into one user
 /// message. Beyond this we stop appending blocks but the raw `@token` text
@@ -301,17 +302,39 @@ fn local_context_from_file_mentions(input: &str, workspace: &Path) -> Option<Str
 
     let mut blocks = Vec::new();
     let mut seen = std::collections::HashSet::new();
+    let ws = Workspace::new(workspace.to_path_buf());
+
     for mention in mentions.into_iter().take(MAX_FILE_MENTIONS_PER_MESSAGE) {
-        let path = resolve_mention_path(&mention, workspace);
-        let display_path = path
-            .canonicalize()
-            .unwrap_or_else(|_| path.clone())
-            .display()
-            .to_string();
+        // `Workspace::resolve` already returns absolute paths when the root
+        // is absolute (TUI always runs from an absolute workspace), so we
+        // skip `canonicalize()` here — it's per-mention I/O on the
+        // message-send hot path. Accept the rare symlink-aliasing dedup
+        // miss as the cost of avoiding a syscall (Gemini code-review).
+        let (path, display_path, exists) = match ws.resolve(&mention) {
+            Ok(p) => {
+                let d = p.display().to_string();
+                (p, d, true)
+            }
+            Err(p) => {
+                let d = p.display().to_string();
+                (p, d, false)
+            }
+        };
+
+        // Gate every block — including <missing-file> — through the dedup
+        // set so a user typing the same non-existent file twice doesn't
+        // waste tokens on duplicate missing-file blocks (Devin code-review).
         if !seen.insert(display_path.clone()) {
             continue;
         }
-        blocks.push(render_file_mention_context(&mention, &path, &display_path));
+
+        if exists {
+            blocks.push(render_file_mention_context(&mention, &path, &display_path));
+        } else {
+            blocks.push(format!(
+                "<missing-file mention=\"@{mention}\" path=\"{display_path}\" />"
+            ));
+        }
     }
 
     if blocks.is_empty() {
@@ -391,28 +414,6 @@ fn trim_unquoted_mention(raw: &str) -> &str {
         trimmed = &trimmed[..trimmed.len() - trimmed.chars().last().unwrap().len_utf8()];
     }
     trimmed
-}
-
-fn resolve_mention_path(raw_path: &str, workspace: &Path) -> PathBuf {
-    let path = expand_mention_home(raw_path);
-    if path.is_absolute() {
-        path
-    } else {
-        workspace.join(path)
-    }
-}
-
-fn expand_mention_home(path: &str) -> PathBuf {
-    if path == "~" {
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home);
-        }
-    } else if let Some(rest) = path.strip_prefix("~/")
-        && let Some(home) = std::env::var_os("HOME")
-    {
-        return PathBuf::from(home).join(rest);
-    }
-    PathBuf::from(path)
 }
 
 fn render_file_mention_context(raw: &str, path: &Path, display_path: &str) -> String {
