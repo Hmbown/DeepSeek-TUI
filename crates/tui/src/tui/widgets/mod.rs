@@ -1,5 +1,10 @@
 mod footer;
 mod header;
+// Some helpers (`shift`, `ctrl_alt`, `is_press`, etc.) are part of the
+// public surface for issue #93's help overlay and future call sites; allow
+// dead code rather than scattering `#[allow]` across every constructor.
+#[allow(dead_code)]
+pub mod key_hint;
 mod renderable;
 
 pub use footer::{
