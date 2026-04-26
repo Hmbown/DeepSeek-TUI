@@ -563,15 +563,13 @@ fn context_usage_does_not_drop_when_reported_shrinks_after_multi_round_turn() {
     // Simulate a multi-round turn that summed two rounds' input_tokens
     // (e.g., 200k + 210k from a long thinking + tool-call sequence).
     app.last_prompt_tokens = Some(410_000);
-    let (_, _, percent_after_multi_round) =
-        context_usage_snapshot(&app).expect("usage available");
+    let (_, _, percent_after_multi_round) = context_usage_snapshot(&app).expect("usage available");
 
     // Now the next turn is a single round on the same conversation —
     // reported drops to one round's worth even though the actual context
     // hasn't shrunk.
     app.last_prompt_tokens = Some(15_000);
-    let (_, _, percent_after_single_round) =
-        context_usage_snapshot(&app).expect("usage available");
+    let (_, _, percent_after_single_round) = context_usage_snapshot(&app).expect("usage available");
 
     // The displayed % should reflect the conversation size (estimated
     // from api_messages), NOT the wildly variable reported value.
