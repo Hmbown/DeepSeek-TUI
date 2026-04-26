@@ -257,6 +257,18 @@ impl FooterWidget {
         vec![Span::styled(truncated, Style::default().fg(toast.color))]
     }
 
+    /// Build the left status line with priority-ordered hint dropping.
+    ///
+    /// Priority order (highest to lowest — last to drop):
+    /// 1. Mode label (always visible at any width; truncated only as a last resort)
+    /// 2. Model name (always visible when width ≥ enough for "mode · model"; then truncated mid-word)
+    /// 3. Status label (e.g. "working", "draft") — drops first when space is tight
+    ///
+    /// At every width ≥40 cols the line never wraps mid-hint: the widget chooses
+    /// one of (`mode · model · status`, `mode · model`, `mode`) and renders
+    /// that single line within `max_width`. Below 40 cols the same fallback
+    /// applies; the model is allowed to truncate with an ellipsis only when
+    /// the status label has already been dropped.
     fn status_line_spans(&self, max_width: usize) -> Vec<Span<'static>> {
         if max_width == 0 {
             return Vec::new();
@@ -264,27 +276,62 @@ impl FooterWidget {
 
         let mode_label = self.props.mode_label;
         let sep = " \u{00B7} ";
+        let model = self.props.model.as_str();
         let show_status = self.props.state_label != "ready";
         let status_label = self.props.state_label.as_str();
 
-        let fixed_width = mode_label.width()
-            + sep.width()
-            + if show_status {
-                sep.width() + status_label.width()
-            } else {
-                0
-            };
+        let mode_w = mode_label.width();
+        let sep_w = sep.width();
+        let model_w = UnicodeWidthStr::width(model);
+        let status_w = status_label.width();
 
-        if max_width <= mode_label.width() {
+        // Tier 1: mode · model · status — full footer, no truncation.
+        let full_w = mode_w + sep_w + model_w + sep_w + status_w;
+        if show_status && full_w <= max_width {
+            return self.build_status_line_spans(mode_label, model.to_string(), Some(status_label));
+        }
+
+        // Tier 2: mode · model — drop status first.
+        let mode_model_w = mode_w + sep_w + model_w;
+        if mode_model_w <= max_width {
+            return self.build_status_line_spans(mode_label, model.to_string(), None);
+        }
+
+        // Tier 3: mode · <truncated model> — keep both labels visible by
+        // ellipsizing the model name. Only do this when there is enough room
+        // for at least the ellipsis ("..."). Below that we drop to mode-only.
+        let prefix_w = mode_w + sep_w;
+        if prefix_w < max_width {
+            let model_budget = max_width - prefix_w;
+            if model_budget >= 4 {
+                let truncated = truncate_to_width(model, model_budget);
+                if !truncated.is_empty() {
+                    return self.build_status_line_spans(mode_label, truncated, None);
+                }
+            }
+        }
+
+        // Tier 4: mode-only. If even the mode label cannot fit, truncate it
+        // so the footer never wraps to a second row.
+        if mode_w <= max_width {
             return vec![Span::styled(
-                truncate_to_width(mode_label, max_width),
+                mode_label.to_string(),
                 Style::default().fg(self.props.mode_color),
             )];
         }
+        vec![Span::styled(
+            truncate_to_width(mode_label, max_width),
+            Style::default().fg(self.props.mode_color),
+        )]
+    }
 
-        let model_budget = max_width.saturating_sub(fixed_width).max(1);
-        let model_label = truncate_to_width(&self.props.model, model_budget);
-
+    fn build_status_line_spans(
+        &self,
+        mode_label: &'static str,
+        model_label: String,
+        status: Option<&str>,
+    ) -> Vec<Span<'static>> {
+        let sep = " \u{00B7} ";
         let mut spans = vec![
             Span::styled(
                 mode_label.to_string(),
@@ -293,8 +340,7 @@ impl FooterWidget {
             Span::styled(sep.to_string(), Style::default().fg(palette::TEXT_DIM)),
             Span::styled(model_label, Style::default().fg(palette::TEXT_HINT)),
         ];
-
-        if show_status {
+        if let Some(status_label) = status {
             spans.push(Span::styled(
                 sep.to_string(),
                 Style::default().fg(palette::TEXT_DIM),
@@ -304,7 +350,6 @@ impl FooterWidget {
                 Style::default().fg(self.props.state_color),
             ));
         }
-
         spans
     }
 }
@@ -663,6 +708,116 @@ mod tests {
             "wraps back at frame 4",
         );
         assert_eq!(super::footer_working_label(7), "working...");
+    }
+
+    /// Render the footer at `width` and return the visible single-line text.
+    fn render_at_width(props: FooterProps, width: u16) -> String {
+        let area = ratatui::layout::Rect::new(0, 0, width, 1);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        FooterWidget::new(props).render(area, &mut buf);
+        (0..area.width)
+            .map(|x| buf[(x, 0)].symbol())
+            .collect::<String>()
+            .trim_end()
+            .to_string()
+    }
+
+    fn props_with_status(state: &str) -> FooterProps {
+        let app = make_app();
+        FooterProps::from_app(
+            &app,
+            None,
+            // Production state labels are `&'static str`; for tests we leak a
+            // copy to match that lifetime.
+            Box::leak(state.to_string().into_boxed_str()),
+            palette::DEEPSEEK_SKY,
+            Vec::<Span<'static>>::new(),
+            Vec::<Span<'static>>::new(),
+            Vec::<Span<'static>>::new(),
+            Vec::<Span<'static>>::new(),
+            Vec::<Span<'static>>::new(),
+        )
+    }
+
+    /// Issue #88 — at the widest tier the footer shows mode · model · status
+    /// without any truncation.
+    #[test]
+    fn footer_priority_drop_full_at_120_cols() {
+        let props = props_with_status("working");
+        let line = render_at_width(props, 120);
+        assert!(line.contains("agent"), "mode visible: {line:?}");
+        assert!(
+            line.contains("deepseek-v4-flash"),
+            "model visible: {line:?}"
+        );
+        assert!(line.contains("working"), "status visible: {line:?}");
+        assert!(!line.contains("..."), "no truncation expected: {line:?}");
+    }
+
+    #[test]
+    fn footer_priority_drop_full_at_100_cols() {
+        let props = props_with_status("working");
+        let line = render_at_width(props, 100);
+        assert!(line.contains("agent"));
+        assert!(line.contains("deepseek-v4-flash"));
+        assert!(line.contains("working"));
+    }
+
+    /// At 80 cols the short status label "working" still fits alongside mode +
+    /// model. The line never wraps mid-hint.
+    #[test]
+    fn footer_priority_drop_full_at_80_cols() {
+        let props = props_with_status("working");
+        let line = render_at_width(props, 80);
+        assert!(line.contains("agent"));
+        assert!(line.contains("deepseek-v4-flash"));
+        assert!(!line.contains("..."), "no mid-word truncation: {line:?}");
+        assert!(line.len() <= 80, "fits in 80 cols: {line:?}");
+    }
+
+    /// Status drops before the model is truncated. With a longer status label
+    /// at 40 cols the status segment is dropped to keep mode + model intact.
+    #[test]
+    fn footer_priority_drop_status_first_at_40_cols() {
+        let props = props_with_status("refreshing context");
+        // "agent · deepseek-v4-flash · refreshing context" = 46 cols. At 40
+        // the status label drops, keeping mode + model verbatim.
+        let line = render_at_width(props, 40);
+        assert!(line.contains("agent"), "mode kept: {line:?}");
+        assert!(
+            line.contains("deepseek-v4-flash"),
+            "model kept verbatim: {line:?}"
+        );
+        assert!(
+            !line.contains("refreshing"),
+            "status dropped before model truncated: {line:?}",
+        );
+        assert!(line.len() <= 40, "fits in 40 cols: {line:?}");
+    }
+
+    /// At 60 cols mode + model + a long status all just fit (49 cols), so the
+    /// whole line is preserved.
+    #[test]
+    fn footer_priority_drop_full_at_60_cols() {
+        let props = props_with_status("working");
+        let line = render_at_width(props, 60);
+        assert!(line.contains("agent"));
+        assert!(line.contains("deepseek-v4-flash"));
+        assert!(line.contains("working"));
+    }
+
+    /// Below 30 cols the model truncates with an ellipsis only after the
+    /// status label has already been dropped. Mode label always survives.
+    #[test]
+    fn footer_priority_drop_truncates_model_only_when_status_already_gone() {
+        let props = props_with_status("working");
+        let line = render_at_width(props, 20);
+        assert!(line.starts_with("agent"), "mode stays at front: {line:?}");
+        assert!(
+            line.contains("..."),
+            "model truncated as last resort: {line:?}"
+        );
+        assert!(!line.contains("working"), "status dropped: {line:?}");
     }
 
     #[test]
