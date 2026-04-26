@@ -444,7 +444,13 @@ impl DeepSeekClient {
         reqwest::Client::builder()
             .default_headers(headers)
             .connect_timeout(Duration::from_secs(30))
-            .timeout(Duration::from_secs(300))
+            // The blanket 300s request timeout was incompatible with V4-pro
+            // thinking turns that legitimately exceed that wall-clock window
+            // (see #103). Drop it; per-chunk and per-stream guards in
+            // engine.rs already bound how long we'll wait without progress.
+            .tcp_keepalive(Some(Duration::from_secs(30)))
+            .http2_keep_alive_interval(Some(Duration::from_secs(15)))
+            .http2_keep_alive_timeout(Duration::from_secs(20))
             .min_tls_version(reqwest::tls::Version::TLS_1_2)
             .build()
             .map_err(Into::into)
