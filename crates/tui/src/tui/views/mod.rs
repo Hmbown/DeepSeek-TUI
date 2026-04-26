@@ -838,6 +838,11 @@ impl ModalView for ConfigView {
 pub struct HelpView {
     scroll: usize,
     tool_sections: Vec<(String, Vec<String>)>,
+    /// Live filter typed by the user. Matched case-insensitively against
+    /// every help line — section headers stay visible only when they have at
+    /// least one matching child, mirroring how `fzf`/`ripgrep` collapse
+    /// non-matching context. Empty string disables filtering.
+    filter: String,
 }
 
 impl HelpView {
@@ -849,6 +854,7 @@ impl HelpView {
         Self {
             scroll: 0,
             tool_sections: build_help_tool_sections(&workspace),
+            filter: String::new(),
         }
     }
 }
@@ -944,14 +950,38 @@ impl ModalView for HelpView {
     fn handle_key(&mut self, key: KeyEvent) -> ViewAction {
         use crossterm::event::KeyCode;
 
+        // While the user is typing into the filter, every printable
+        // character (including `j`, `k`, `q`) feeds the filter buffer
+        // instead of triggering vim-style nav. `Esc` always closes the
+        // overlay. `?` toggles it (matches the open binding so re-pressing
+        // dismisses).
         match key.code {
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => ViewAction::Close,
-            KeyCode::Up | KeyCode::Char('k') => {
+            KeyCode::Esc => ViewAction::Close,
+            KeyCode::Char('?') if key.modifiers.is_empty() => ViewAction::Close,
+            KeyCode::Up => {
                 self.scroll = self.scroll.saturating_sub(1);
                 ViewAction::None
             }
-            KeyCode::Down | KeyCode::Char('j') => {
+            KeyCode::Down => {
                 self.scroll = self.scroll.saturating_add(1);
+                ViewAction::None
+            }
+            KeyCode::PageUp => {
+                self.scroll = self.scroll.saturating_sub(10);
+                ViewAction::None
+            }
+            KeyCode::PageDown => {
+                self.scroll = self.scroll.saturating_add(10);
+                ViewAction::None
+            }
+            KeyCode::Backspace => {
+                self.filter.pop();
+                self.scroll = 0;
+                ViewAction::None
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.filter.push(c);
+                self.scroll = 0;
                 ViewAction::None
             }
             _ => ViewAction::None,
@@ -1161,7 +1191,7 @@ impl ModalView for HelpView {
             )]),
             row(
                 format!(
-                    "{} / {}",
+                    "{} / {} / ?",
                     kb(plain(KeyCode::F(1))),
                     kb(ctrl(KeyCode::Char('/')))
                 ),
@@ -1226,8 +1256,18 @@ impl ModalView for HelpView {
         }
         help_lines.push(Line::from(""));
 
-        let total_lines = help_lines.len();
-        let visible_lines = (popup_height as usize).saturating_sub(3);
+        // Apply live filter. Section headers (the bold "=== Foo ===" lines
+        // and the bold sub-headers under Commands/Tools) are kept iff at
+        // least one row beneath them matches; rows match by case-insensitive
+        // substring against their plain-text content.
+        let display_lines: Vec<Line> = if self.filter.trim().is_empty() {
+            help_lines
+        } else {
+            filter_help_lines(&help_lines, &self.filter)
+        };
+
+        let total_lines = display_lines.len();
+        let visible_lines = (popup_height as usize).saturating_sub(4);
         let max_scroll = total_lines.saturating_sub(visible_lines);
         let scroll = self.scroll.min(max_scroll);
 
@@ -1237,7 +1277,16 @@ impl ModalView for HelpView {
             String::new()
         };
 
-        let help = Paragraph::new(help_lines)
+        // The filter prompt sits at the bottom of the modal as a footer
+        // line. Empty filter shows a hint; otherwise echo the buffered text
+        // so users can see what they've typed.
+        let filter_label = if self.filter.is_empty() {
+            " type to filter ".to_string()
+        } else {
+            format!(" filter: {} ", self.filter)
+        };
+
+        let help = Paragraph::new(display_lines)
             .block(
                 Block::default()
                     .title(Line::from(vec![Span::styled(
@@ -1245,7 +1294,11 @@ impl ModalView for HelpView {
                         Style::default().fg(palette::DEEPSEEK_BLUE).bold(),
                     )]))
                     .title_bottom(Line::from(vec![
-                        Span::styled(" Esc to close ", Style::default().fg(palette::TEXT_MUTED)),
+                        Span::styled(
+                            " Esc / ? to close ",
+                            Style::default().fg(palette::TEXT_MUTED),
+                        ),
+                        Span::styled(filter_label, Style::default().fg(palette::DEEPSEEK_BLUE)),
                         Span::styled(scroll_indicator, Style::default().fg(palette::DEEPSEEK_SKY)),
                     ]))
                     .borders(Borders::ALL)
@@ -1256,6 +1309,181 @@ impl ModalView for HelpView {
             .scroll((scroll as u16, 0));
 
         help.render(popup_area, buf);
+    }
+}
+
+/// Plain-text content of a [`ratatui::text::Line`] for filter matching.
+/// Walks every [`ratatui::text::Span`] and concatenates `content`,
+/// ignoring style.
+fn line_text(line: &ratatui::text::Line<'_>) -> String {
+    line.spans.iter().map(|s| s.content.as_ref()).collect()
+}
+
+/// Filter help lines by case-insensitive substring against `needle`.
+///
+/// Section headers (lines matching `=== ... ===` or the bold one-word labels
+/// like `Commands:` / `Tools:`) are retained iff they have at least one
+/// matching child below them — a child being any non-blank, non-header line
+/// that follows the header before the next header. Blank lines are kept
+/// only between retained sections so the output stays readable.
+fn filter_help_lines(
+    lines: &[ratatui::text::Line<'_>],
+    needle: &str,
+) -> Vec<ratatui::text::Line<'static>> {
+    use ratatui::style::Style;
+    use ratatui::text::{Line, Span};
+    let needle_lc = needle.to_lowercase();
+    // First pass: classify each line.
+    #[derive(Clone, Copy)]
+    enum Kind {
+        Header,
+        Body,
+        Blank,
+    }
+    let kinds: Vec<Kind> = lines
+        .iter()
+        .map(|l| {
+            let text = line_text(l);
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                Kind::Blank
+            } else if trimmed.starts_with("===") || trimmed.ends_with(':') {
+                Kind::Header
+            } else {
+                Kind::Body
+            }
+        })
+        .collect();
+
+    // For each header, mark whether any body line in its section matches.
+    let mut keep = vec![false; lines.len()];
+    let mut i = 0;
+    while i < lines.len() {
+        if matches!(kinds[i], Kind::Header) {
+            let mut j = i + 1;
+            let mut any_match = false;
+            while j < lines.len() && !matches!(kinds[j], Kind::Header) {
+                if matches!(kinds[j], Kind::Body)
+                    && line_text(&lines[j]).to_lowercase().contains(&needle_lc)
+                {
+                    any_match = true;
+                    keep[j] = true;
+                }
+                j += 1;
+            }
+            if any_match {
+                keep[i] = true;
+            }
+            i = j;
+        } else if matches!(kinds[i], Kind::Body)
+            && line_text(&lines[i]).to_lowercase().contains(&needle_lc)
+        {
+            // Stray body line not under a header — keep if it matches.
+            keep[i] = true;
+            i += 1;
+        } else {
+            i += 1;
+        }
+    }
+
+    // Second pass: emit kept lines, inserting a single blank between
+    // consecutive section blocks for readability.
+    let mut out: Vec<Line<'static>> = Vec::new();
+    let mut last_was_header_block = false;
+    for (idx, line) in lines.iter().enumerate() {
+        if !keep[idx] {
+            continue;
+        }
+        if matches!(kinds[idx], Kind::Header) && last_was_header_block {
+            out.push(Line::from(""));
+        }
+        out.push(clone_line_static(line));
+        last_was_header_block = matches!(kinds[idx], Kind::Header);
+    }
+
+    if out.is_empty() {
+        out.push(Line::from(Span::styled(
+            format!("  No matches for \"{}\"", needle),
+            Style::default().fg(palette::TEXT_MUTED),
+        )));
+    }
+
+    out
+}
+
+/// Deep-clone a [`ratatui::text::Line`] into the `'static` lifetime so it
+/// can be returned from the filter pass without borrowing the original
+/// `help_lines` vec.
+fn clone_line_static(line: &ratatui::text::Line<'_>) -> ratatui::text::Line<'static> {
+    use ratatui::text::{Line, Span};
+    let spans: Vec<Span<'static>> = line
+        .spans
+        .iter()
+        .map(|s| Span::styled(s.content.to_string(), s.style))
+        .collect();
+    let mut new_line = Line::from(spans);
+    new_line.style = line.style;
+    new_line.alignment = line.alignment;
+    new_line
+}
+
+#[cfg(test)]
+mod help_filter_tests {
+    use super::*;
+    use ratatui::text::{Line, Span};
+
+    fn lines(rows: &[&str]) -> Vec<Line<'static>> {
+        rows.iter()
+            .map(|r| Line::from(Span::raw(r.to_string())))
+            .collect()
+    }
+
+    #[test]
+    fn filter_keeps_header_when_child_matches() {
+        let input = lines(&[
+            "=== Navigation ===",
+            "  Up / Down  - Scroll",
+            "  Home / End - Jump",
+            "",
+            "=== Modes ===",
+            "  Tab        - Cycle modes",
+        ]);
+        let out = filter_help_lines(&input, "scroll");
+        let texts: Vec<String> = out.iter().map(line_text).collect();
+        assert!(texts.iter().any(|t| t.contains("=== Navigation ===")));
+        assert!(texts.iter().any(|t| t.contains("Scroll")));
+        assert!(!texts.iter().any(|t| t.contains("=== Modes ===")));
+        assert!(!texts.iter().any(|t| t.contains("Cycle modes")));
+    }
+
+    #[test]
+    fn filter_drops_section_with_no_matches() {
+        let input = lines(&[
+            "=== Navigation ===",
+            "  Up / Down  - Scroll",
+            "=== Modes ===",
+            "  Tab        - Cycle modes",
+        ]);
+        let out = filter_help_lines(&input, "modes");
+        let texts: Vec<String> = out.iter().map(line_text).collect();
+        assert!(texts.iter().any(|t| t.contains("=== Modes ===")));
+        assert!(texts.iter().any(|t| t.contains("Cycle modes")));
+        assert!(!texts.iter().any(|t| t.contains("=== Navigation ===")));
+    }
+
+    #[test]
+    fn filter_with_no_matches_returns_placeholder() {
+        let input = lines(&["=== Navigation ===", "  Up / Down - Scroll"]);
+        let out = filter_help_lines(&input, "zzznevermatches");
+        assert_eq!(out.len(), 1);
+        assert!(line_text(&out[0]).contains("No matches"));
+    }
+
+    #[test]
+    fn filter_is_case_insensitive() {
+        let input = lines(&["=== Modes ===", "  Tab - Cycle modes"]);
+        let out = filter_help_lines(&input, "TAB");
+        assert!(out.iter().any(|l| line_text(l).contains("Tab")));
     }
 }
 

@@ -1166,6 +1166,27 @@ async fn run_event_loop(
                 continue;
             }
 
+            // `?` opens / closes the help overlay (issue #93). Only fires
+            // when the composer is empty so users can still type a literal
+            // `?` mid-message; modals get first crack at the key via the
+            // `view_stack.handle_key` dispatch above (so re-pressing `?`
+            // inside Help closes via HelpView::handle_key, while pressing
+            // it from the empty composer opens). `Shift+?` arrives as
+            // `Char('?')` plus `KeyModifiers::SHIFT` from crossterm, so we
+            // accept either none or just shift.
+            if key.code == KeyCode::Char('?')
+                && app.input.is_empty()
+                && (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT)
+            {
+                if app.view_stack.top_kind() == Some(ModalKind::Help) {
+                    app.view_stack.pop();
+                } else {
+                    app.view_stack
+                        .push(HelpView::new_for_workspace(app.workspace.clone()));
+                }
+                continue;
+            }
+
             if key.code == KeyCode::Char('k') && key.modifiers.contains(KeyModifiers::CONTROL) {
                 // When the composer is the active input target (no modal/pager
                 // intercepting keys), Ctrl+K performs an emacs-style kill to
