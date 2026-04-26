@@ -936,6 +936,9 @@ async fn run_event_loop(
         let now = Instant::now();
         app.flush_paste_burst_if_due(now);
         app.sync_status_message_to_toasts();
+        // Expire the "Press Ctrl+C again to quit" prompt silently after its
+        // window. Triggers a redraw if the prompt was visible.
+        app.tick_quit_armed();
         let allow_workspace_context_refresh =
             !app.is_loading && !has_running_agents && !app.is_compacting;
         refresh_workspace_context_if_needed(app, now, allow_workspace_context_refresh);
@@ -952,6 +955,12 @@ async fn run_event_loop(
         };
         if let Some(until_flush) = app.paste_burst.next_flush_delay(now) {
             poll_timeout = poll_timeout.min(until_flush);
+        }
+        // While the quit-confirmation prompt is armed, ensure we wake up to
+        // expire it on time even if no input event arrives.
+        if let Some(deadline) = app.quit_armed_until {
+            let remaining = deadline.saturating_duration_since(now);
+            poll_timeout = poll_timeout.min(remaining.max(Duration::from_millis(50)));
         }
         if event::poll(poll_timeout)? {
             let evt = event::read()?;
@@ -1327,15 +1336,26 @@ async fn run_event_loop(
                     copy_active_selection(app);
                 }
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    // Cancel current request or exit
+                    // Three behaviors layered on Ctrl+C, in priority order:
+                    //   1. While a turn is in flight, cancel it (unchanged).
+                    //   2. Otherwise, on the first press, arm a 2-second
+                    //      "press Ctrl+C again to quit" prompt and stay
+                    //      running.
+                    //   3. On the second press while still armed, exit cleanly.
+                    // The prompt expires silently after the window so a
+                    // stray Ctrl+C three seconds later re-arms instead of
+                    // accidentally exiting.
                     if app.is_loading {
                         engine_handle.cancel();
                         app.is_loading = false;
                         app.streaming_state.reset();
                         app.status_message = Some("Request cancelled".to_string());
-                    } else {
+                        app.disarm_quit();
+                    } else if app.quit_is_armed() {
                         let _ = engine_handle.send(Op::Shutdown).await;
                         return Ok(());
+                    } else {
+                        app.arm_quit();
                     }
                 }
                 KeyCode::Char('d')
@@ -3217,9 +3237,23 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
     // Pull in the toast first so we don't re-borrow `app` mutably mid-build,
     // then build the FooterProps once. The widget itself is a pure render —
     // it owns no `App` knowledge; all width-aware layout lives in the widget.
-    let toast = app.active_status_toast().map(|toast| FooterToast {
-        text: toast.text,
-        color: status_color(toast.level),
+    //
+    // The quit-confirmation prompt takes precedence over normal status toasts
+    // because it represents a transient instruction the user must respond to
+    // within ~2s. Mirrors codex-rs's `FooterMode::QuitShortcutReminder`.
+    let quit_prompt = if app.quit_is_armed() {
+        Some(FooterToast {
+            text: "Press Ctrl+C again to quit".to_string(),
+            color: palette::STATUS_WARNING,
+        })
+    } else {
+        None
+    };
+    let toast = quit_prompt.or_else(|| {
+        app.active_status_toast().map(|toast| FooterToast {
+            text: toast.text,
+            color: status_color(toast.level),
+        })
     });
 
     let (state_label, state_color) = footer_state_label(app);
