@@ -240,12 +240,33 @@ impl ToolSpec for RlmQueryTool {
                 let response = timeout(DEFAULT_CHILD_TIMEOUT, client.complete(request)).await;
                 let elapsed_ms = started.elapsed().as_millis() as u64;
                 in_flight.fetch_sub(1, Ordering::Relaxed);
+
+                let mut text_len = 0;
+                let mut thinking_len = 0;
+                let mut finish_reason = None;
+
+                if let Ok(Ok(ref res)) = response {
+                    finish_reason = res.stop_reason.clone();
+                    for block in &res.content {
+                        match block {
+                            ContentBlock::Text { text, .. } => text_len += text.len(),
+                            ContentBlock::Thinking { thinking, .. } => {
+                                thinking_len += thinking.len()
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
                 debug!(
                     target: "deepseek_cli::tools",
                     tool = "rlm_query",
                     idx,
                     elapsed_ms,
                     ok = response.is_ok(),
+                    text_len,
+                    thinking_len,
+                    finish_reason = ?finish_reason,
                     "child request done"
                 );
                 (idx, response)
@@ -267,7 +288,9 @@ impl ToolSpec for RlmQueryTool {
             .into_iter()
             .map(|(idx, res)| {
                 let text = match res {
-                    Ok(Ok(response)) => extract_text(&response.content),
+                    Ok(Ok(response)) => {
+                        extract_text(&response.content, idx, response.stop_reason.as_deref())
+                    }
                     Ok(Err(e)) => format!("[error: {e}]"),
                     Err(_) => format!(
                         "[error: timed out after {}s]",
@@ -297,15 +320,38 @@ impl ToolSpec for RlmQueryTool {
     }
 }
 
-fn extract_text(blocks: &[ContentBlock]) -> String {
-    blocks
+fn extract_text(blocks: &[ContentBlock], idx: usize, finish_reason: Option<&str>) -> String {
+    let text = blocks
         .iter()
         .filter_map(|b| match b {
             ContentBlock::Text { text, .. } => Some(text.as_str()),
             _ => None,
         })
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n");
+
+    if !text.trim().is_empty() {
+        return text;
+    }
+
+    let thinking = blocks
+        .iter()
+        .filter_map(|b| match b {
+            ContentBlock::Thinking { thinking, .. } => Some(thinking.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if !thinking.trim().is_empty() {
+        return format!("[Child {} thinking fallback]\n{}", idx, thinking);
+    }
+
+    format!(
+        "[empty response from child idx {} — finish_reason={}, raise max_tokens]",
+        idx,
+        finish_reason.unwrap_or("unknown")
+    )
 }
 
 #[cfg(test)]
@@ -548,7 +594,7 @@ mod tests {
                 cache_control: None,
             },
         ];
-        assert_eq!(extract_text(&blocks), "first\nsecond");
+        assert_eq!(extract_text(&blocks, 0, None), "first\nsecond");
     }
 
     #[test]
@@ -556,7 +602,19 @@ mod tests {
         let blocks = vec![ContentBlock::Thinking {
             thinking: "no visible text".to_string(),
         }];
-        assert_eq!(extract_text(&blocks), "");
+        assert_eq!(
+            extract_text(&blocks, 0, None),
+            "[Child 0 thinking fallback]\nno visible text"
+        );
+    }
+
+    #[test]
+    fn extract_text_returns_sentinel_when_all_empty() {
+        let blocks = vec![];
+        assert_eq!(
+            extract_text(&blocks, 1, Some("length")),
+            "[empty response from child idx 1 — finish_reason=length, raise max_tokens]"
+        );
     }
 
     #[test]
