@@ -45,9 +45,7 @@ pub struct EditBinding {
 }
 
 impl EditBinding {
-    pub const ALT_UP: EditBinding = EditBinding {
-        label: "Alt+↑",
-    };
+    pub const ALT_UP: EditBinding = EditBinding { label: "Alt+↑" };
 }
 
 /// Widget showing pending steers + rejected steers + queued follow-up
@@ -125,10 +123,7 @@ impl PendingInputPreview {
             }
             push_section_header(
                 &mut lines,
-                Line::from(vec![
-                    Span::raw("• "),
-                    Span::raw("Queued follow-up inputs"),
-                ]),
+                Line::from(vec![Span::raw("• "), Span::raw("Queued follow-up inputs")]),
             );
             for message in &self.queued_messages {
                 push_truncated_item(&mut lines, message, width, dim_italic, "  ↳ ", "    ");
@@ -311,9 +306,7 @@ mod tests {
     #[test]
     fn pending_steer_shows_esc_hint_no_alt_up_hint() {
         let mut preview = PendingInputPreview::new();
-        preview
-            .pending_steers
-            .push("Please continue.".to_string());
+        preview.pending_steers.push("Please continue.".to_string());
         // Use a wide-enough column budget that the section header does not
         // wrap — keeps the assertions targeted at content rather than at
         // wrap boundaries.
