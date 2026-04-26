@@ -606,19 +606,35 @@ fn context_usage_snapshot_prefers_live_estimate_while_loading() {
 #[test]
 fn should_auto_compact_before_send_respects_threshold_and_setting() {
     let mut app = create_test_app();
-    app.api_messages = vec![Message {
+    let big_buffer = vec![Message {
         role: "user".to_string(),
         content: vec![ContentBlock::Text {
             text: "context ".repeat(400_000),
             cache_control: None,
         }],
     }];
+
+    // High estimated context + auto_compact ON → auto-compact triggers.
+    app.api_messages = big_buffer.clone();
     app.auto_compact = true;
     assert!(should_auto_compact_before_send(&app));
 
+    // Same high context but auto_compact OFF → never triggers.
     app.auto_compact = false;
     assert!(!should_auto_compact_before_send(&app));
 
+    // Small estimated context + auto_compact ON → does NOT trigger,
+    // regardless of what `last_prompt_tokens` reports. This matches the
+    // #115 fix: the estimate is the primary signal, not the engine's
+    // turn-cumulative reported value (which used to rule the displayed
+    // % and could spuriously trigger / suppress auto-compact).
+    app.api_messages = vec![Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "small".to_string(),
+            cache_control: None,
+        }],
+    }];
     app.auto_compact = true;
     app.last_prompt_tokens = Some(10_000);
     assert!(!should_auto_compact_before_send(&app));
