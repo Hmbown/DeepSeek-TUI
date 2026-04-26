@@ -196,6 +196,15 @@ impl DeepSeekClient {
             let mut byte_stream = std::pin::pin!(byte_stream);
             let idle = stream_idle_timeout();
 
+            // Telemetry for #103 stream-decode diagnostics: bytes received
+            // since the start of this stream and last successful event time.
+            // Surfaces in the error log when reqwest yields a chunk error so
+            // we can tell HTTP/2 RST_STREAM from chunk-decode-failure from
+            // gzip-corruption when investigating a flaky session.
+            let stream_start = std::time::Instant::now();
+            let mut last_event_at = std::time::Instant::now();
+            let mut bytes_received: usize = 0;
+
             loop {
                 let chunk_result = match tokio_timeout(idle, byte_stream.next()).await {
                     Ok(Some(result)) => result,
@@ -211,11 +220,31 @@ impl DeepSeekClient {
                 let chunk = match chunk_result {
                     Ok(bytes) => bytes,
                     Err(e) => {
+                        // Walk the error source chain so reqwest's underlying
+                        // hyper / h2 / io error is visible — without this the
+                        // outer "error decoding response body" message tells
+                        // us nothing about WHY the stream died.
+                        let mut error_chain = format!("{e}");
+                        let mut current: Option<&(dyn std::error::Error + 'static)> =
+                            std::error::Error::source(&e);
+                        while let Some(source) = current {
+                            error_chain.push_str(&format!(" -> {source}"));
+                            current = std::error::Error::source(source);
+                        }
+                        crate::logging::warn(format!(
+                            "Stream read error: {error_chain} \
+                             (elapsed: {}ms, bytes_received: {}, ms_since_last_event: {})",
+                            stream_start.elapsed().as_millis(),
+                            bytes_received,
+                            last_event_at.elapsed().as_millis(),
+                        ));
                         yield Err(anyhow::anyhow!("Stream read error: {e}"));
                         break;
                     }
                 };
 
+                bytes_received = bytes_received.saturating_add(chunk.len());
+                last_event_at = std::time::Instant::now();
                 byte_buf.extend_from_slice(&chunk);
 
                 // Guard against unbounded buffer growth (e.g., malformed stream without newlines)
