@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use ratatui::layout::Rect;
 use serde_json::Value;
@@ -586,6 +586,13 @@ pub struct App {
     pub coherence_state: CoherenceState,
     /// Timestamp of the last user message send (for brief visual feedback).
     pub last_send_at: Option<Instant>,
+    /// Two-tap quit confirmation. When set, a prior Ctrl+C in idle state has
+    /// armed the quit shortcut; a second Ctrl+C before this `Instant` exits
+    /// the app, while expiry silently re-arms the prompt for next time.
+    /// Stays `None` while a turn is in flight or a modal/picker is open so
+    /// Ctrl+C keeps its current "interrupt this turn" semantics in those
+    /// states. See [`App::arm_quit`] / [`App::quit_is_armed`].
+    pub quit_armed_until: Option<Instant>,
 }
 
 /// Message queued while the engine is busy.
@@ -865,6 +872,7 @@ impl App {
             user_scrolled_during_stream: false,
             coherence_state: CoherenceState::default(),
             last_send_at: None,
+            quit_armed_until: None,
         }
     }
 
@@ -1285,6 +1293,48 @@ impl App {
             self.status_toasts.pop_front();
         }
         self.needs_redraw = true;
+    }
+
+    /// How long the "press Ctrl+C again to quit" prompt stays armed before it
+    /// silently expires.
+    pub const QUIT_CONFIRMATION_WINDOW: Duration = Duration::from_secs(2);
+
+    /// Arm the quit confirmation timer. The next Ctrl+C within
+    /// [`QUIT_CONFIRMATION_WINDOW`] should exit the app cleanly. Call this only
+    /// from idle state — while a turn is in flight or a modal is open Ctrl+C
+    /// retains its existing "interrupt this turn" / "close modal" semantics.
+    pub fn arm_quit(&mut self) {
+        self.quit_armed_until = Some(Instant::now() + Self::QUIT_CONFIRMATION_WINDOW);
+        self.needs_redraw = true;
+    }
+
+    /// Whether the quit timer is currently armed (i.e. a prior Ctrl+C set it
+    /// and it hasn't expired yet).
+    pub fn quit_is_armed(&self) -> bool {
+        self.quit_armed_until
+            .map(|deadline| Instant::now() < deadline)
+            .unwrap_or(false)
+    }
+
+    /// Clear the quit-armed timer. Call when expiry is detected on a tick or
+    /// when the user takes any other action that should disarm the prompt
+    /// (typing, sending a message, etc.).
+    pub fn disarm_quit(&mut self) {
+        if self.quit_armed_until.is_some() {
+            self.quit_armed_until = None;
+            self.needs_redraw = true;
+        }
+    }
+
+    /// Tick called from the redraw loop. Lets time-based UI state (the
+    /// quit-armed prompt) expire even when no input event is delivered.
+    pub fn tick_quit_armed(&mut self) {
+        if let Some(deadline) = self.quit_armed_until
+            && Instant::now() >= deadline
+        {
+            self.quit_armed_until = None;
+            self.needs_redraw = true;
+        }
     }
 
     pub fn set_sticky_status(
@@ -2213,6 +2263,92 @@ mod tests {
         let mut empty = App::new(test_options(false), &Config::default());
         assert!(!empty.yank());
         assert!(empty.input.is_empty());
+    }
+
+    // ---- Issue #90: quit confirmation timeout ----
+
+    #[test]
+    fn quit_is_not_armed_by_default() {
+        let app = App::new(test_options(false), &Config::default());
+        assert!(!app.quit_is_armed());
+        assert!(app.quit_armed_until.is_none());
+    }
+
+    #[test]
+    fn arm_quit_sets_two_second_window() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.arm_quit();
+        assert!(app.quit_is_armed());
+        let deadline = app.quit_armed_until.expect("deadline set");
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        // Allow a generous margin for slow CI machines: 1.5s..=2.0s.
+        assert!(
+            remaining >= Duration::from_millis(1500) && remaining <= Duration::from_secs(2),
+            "expected ~2s window, got {remaining:?}",
+        );
+        assert!(app.needs_redraw, "armed prompt should request a redraw");
+    }
+
+    #[test]
+    fn disarm_quit_clears_the_timer() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.arm_quit();
+        app.needs_redraw = false;
+        app.disarm_quit();
+        assert!(!app.quit_is_armed());
+        assert!(app.quit_armed_until.is_none());
+        assert!(app.needs_redraw, "disarming should request a redraw");
+    }
+
+    #[test]
+    fn disarm_quit_when_not_armed_is_a_noop() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.needs_redraw = false;
+        app.disarm_quit();
+        assert!(!app.needs_redraw, "no redraw when nothing changed");
+    }
+
+    #[test]
+    fn quit_armed_expires_after_window() {
+        let mut app = App::new(test_options(false), &Config::default());
+        // Pin the deadline in the past to simulate a stale timer.
+        app.quit_armed_until = Some(Instant::now() - Duration::from_millis(10));
+        assert!(
+            !app.quit_is_armed(),
+            "expired timer must not count as armed"
+        );
+
+        app.needs_redraw = false;
+        app.tick_quit_armed();
+        assert!(app.quit_armed_until.is_none(), "tick clears expired timer");
+        assert!(
+            app.needs_redraw,
+            "expiry triggers a redraw to repaint footer"
+        );
+    }
+
+    #[test]
+    fn quit_armed_tick_is_noop_within_window() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.arm_quit();
+        app.needs_redraw = false;
+        app.tick_quit_armed();
+        assert!(
+            app.quit_is_armed(),
+            "tick within window keeps the timer armed"
+        );
+        assert!(!app.needs_redraw, "no redraw when nothing changed");
+    }
+
+    #[test]
+    fn re_arming_after_expiry_starts_a_fresh_window() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.quit_armed_until = Some(Instant::now() - Duration::from_secs(5));
+        app.tick_quit_armed();
+        assert!(app.quit_armed_until.is_none());
+        app.arm_quit();
+        let deadline = app.quit_armed_until.expect("re-armed");
+        assert!(deadline > Instant::now(), "fresh deadline in the future");
     }
 
     #[test]
