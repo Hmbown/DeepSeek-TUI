@@ -14,9 +14,11 @@ env:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    # Prefer the npm-only workflow_dispatch path in release.yml. This workflow
-    # works only if npm Trusted Publishing is explicitly configured for
-    # `publish-npm.yml` instead of `release.yml`.
+    # `release.yml` no longer publishes to npm — see CLAUDE.md "Releases" for
+    # the manual flow we actually use. This workflow remains as inert plumbing
+    # that only works if npm Trusted Publishing is configured for it; trigger
+    # via `gh workflow run publish-npm.yml -f version=X.Y.Z` if you've set
+    # that up on the npm side.
     permissions:
       contents: read
       id-token: write

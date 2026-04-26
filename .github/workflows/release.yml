@@ -123,59 +123,8 @@ jobs:
           files: artifacts/*/*
           prerelease: false
 
-  publish-npm:
-    needs: release
-    runs-on: ubuntu-latest
-    # Token-based publish (npm classic automation token). The OIDC
-    # Trusted Publisher path was unreliable across v0.5.1/v0.5.2/v0.6.1
-    # (npm returned 404 on PUT despite valid OIDC). Set the `NPM_TOKEN`
-    # repo secret to a granular access token scoped to `deepseek-tui`
-    # with publish permission.
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-          registry-url: 'https://registry.npmjs.org'
-      - name: Verify package version
-        working-directory: npm/deepseek-tui
-        run: |
-          actual="$(node -p "require('./package.json').version")"
-          expected="${GITHUB_REF_NAME#v}"
-          if [ "${actual}" != "${expected}" ]; then
-            echo "package.json version ${actual} does not match tag ${expected}" >&2
-            exit 1
-          fi
-      - name: Publish wrapper to npm
-        working-directory: npm/deepseek-tui
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --access public
-
-  publish-npm-manual:
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-          registry-url: 'https://registry.npmjs.org'
-      - name: Verify package version
-        working-directory: npm/deepseek-tui
-        run: |
-          actual="$(node -p "require('./package.json').version")"
-          expected="${{ inputs.version }}"
-          if [ "${actual}" != "${expected}" ]; then
-            echo "package.json version ${actual} does not match requested ${expected}" >&2
-            exit 1
-          fi
-      - name: Publish wrapper to npm
-        working-directory: npm/deepseek-tui
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --access public
+# npm publish is intentionally not automated. The npm account requires 2FA OTP
+# on every publish, and a granular automation token that bypasses 2FA has not
+# been provisioned. Release the npm wrapper manually from a developer machine
+# after the GitHub Release has been created — see CLAUDE.md "Releases" for the
+# exact commands.

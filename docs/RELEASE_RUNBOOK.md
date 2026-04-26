@@ -136,27 +136,34 @@ release verification script both depend on that checksum manifest.
 
 ## npm Wrapper Release
 
-1. Set the npm package version in [npm/deepseek-tui/package.json](../npm/deepseek-tui/package.json).
+**The npm publish step is manual.** `release.yml` no longer runs `npm publish`
+because the npm account requires 2FA OTP on every publish, and an automation
+token that bypasses 2FA has not been provisioned. The GitHub Release flow
+remains fully automated; only the npm wrapper publish requires a developer
+on a workstation with `npm login` and an authenticator app.
+
+### Steps
+
+1. Set the npm package version in [npm/deepseek-tui/package.json](../npm/deepseek-tui/package.json) to match the workspace `Cargo.toml`. CI's version-drift guard will catch mismatches before tag.
 2. Set `deepseekBinaryVersion` to the GitHub release tag that should supply binaries.
-3. For GitHub Actions publishing, configure npm Trusted Publishing for:
-   - Publisher: GitHub Actions
-   - Repository: `Hmbown/DeepSeek-TUI`
-   - Workflow filename: `release.yml`
-4. If the GitHub release succeeded but npm publishing failed, rerun only npm
-   publication from Actions → Release → Run workflow with the failed version.
-   This keeps npm's single trusted publisher pointed at `release.yml`.
-5. For local manual publication, run:
+3. Push the version bump to `main`. `auto-tag.yml` creates the matching `vX.Y.Z` tag, and `release.yml` builds the binary matrix and drafts the GitHub Release.
+4. **Wait for the GitHub Release to finalize** with all eight signed binaries plus `deepseek-artifacts-sha256.txt`. The npm `prepublishOnly` hook (`scripts/verify-release-assets.js`) requires every asset to be present.
+5. From a developer machine, publish the npm wrapper manually:
 
 ```bash
 cd npm/deepseek-tui
-npm pack
-npm publish
+npm publish --access public
+# (you will be prompted for the npm OTP from your authenticator)
 ```
 
-`prepublishOnly` verifies that all expected release assets and the checksum manifest exist.
-The tag release workflow publishes through npm Trusted Publishing, so it does
-not use `NPM_TOKEN`. npm requires Node 22.14.0+ and npm 11.5.1+ for that OIDC
-path; the workflow uses Node 24.
+### Why not automated?
+
+- `release.yml`'s old `publish-npm` job used `secrets.NPM_TOKEN`, but npm's 2FA-by-default policy means a publish token must be either an automation token with "Bypass 2FA for token authentication" enabled OR an account-level 2FA-disabled state. We don't have either configured.
+- The `publish-npm.yml` workflow remains as inert plumbing for a future move to npm Trusted Publishing (OIDC). It only fires on `workflow_dispatch` and only works once Trusted Publishing is configured for *that* workflow filename on the npm side.
+
+### If you fix the token later
+
+To re-enable automated publish: provision an npm automation token with "Bypass 2FA for token authentication" enabled, store it as repo secret `NPM_TOKEN`, and revert this section's "manual" framing along with re-adding the `publish-npm` job in `release.yml`.
 
 ## Recovery and Rollback
 

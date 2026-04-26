@@ -40,6 +40,10 @@ dist/
 outputs/
 tmp/
 
+# Reference papers / large research blobs (keep locally if needed, don't ship)
+docs/DeepSeek_V4.pdf
+docs/*.pdf
+
 # Note: Cargo.lock is intentionally NOT ignored for reproducible builds
 
 # Local dev scripts and temp files
