@@ -1191,6 +1191,19 @@ async fn run_event_loop(
                 continue;
             }
 
+            // Ctrl+P opens the fuzzy file-picker overlay. Bound only when the
+            // composer is focused (no other modal on top of the stack) and the
+            // engine is not actively streaming a turn.
+            if key.code == KeyCode::Char('p')
+                && key.modifiers.contains(KeyModifiers::CONTROL)
+                && app.view_stack.is_empty()
+                && !app.is_loading
+            {
+                app.view_stack
+                    .push(crate::tui::file_picker::FilePickerView::new(&app.workspace));
+                continue;
+            }
+
             if !app.view_stack.is_empty() {
                 let events = app.view_stack.handle_key(key);
                 if handle_view_events(app, config, &task_manager, &mut engine_handle, events)
@@ -2992,6 +3005,26 @@ async fn handle_view_events(
             ViewEvent::SubAgentsRefresh => {
                 app.status_message = Some("Refreshing sub-agents...".to_string());
                 let _ = engine_handle.send(Op::ListSubAgents).await;
+            }
+            ViewEvent::FilePickerSelected { path } => {
+                // Insert `@<path>` at the composer's cursor with surrounding
+                // whitespace so the existing `@`-mention parser picks it up.
+                let cursor = app.cursor_position;
+                let needs_leading_space = cursor > 0
+                    && !app
+                        .input
+                        .chars()
+                        .nth(cursor.saturating_sub(1))
+                        .is_some_and(|c| c.is_whitespace());
+                let mut insertion = String::new();
+                if needs_leading_space {
+                    insertion.push(' ');
+                }
+                insertion.push('@');
+                insertion.push_str(&path);
+                insertion.push(' ');
+                app.insert_str(&insertion);
+                app.status_message = Some(format!("Attached @{path}"));
             }
             ViewEvent::ModelPickerApplied {
                 model,

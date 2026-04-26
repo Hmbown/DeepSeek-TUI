@@ -27,6 +27,7 @@ pub enum ModalKind {
     SessionPicker,
     Config,
     ModelPicker,
+    FilePicker,
 }
 
 #[derive(Debug, Clone)]
@@ -73,6 +74,12 @@ pub enum ViewEvent {
     },
     PlanPromptDismissed,
     SubAgentsRefresh,
+    /// Emitted by the file picker (`Ctrl+P`) when the user presses Enter on a
+    /// candidate. The handler should insert `@<path>` at the composer's cursor
+    /// position.
+    FilePickerSelected {
+        path: String,
+    },
     SessionSelected {
         session_id: String,
     },
