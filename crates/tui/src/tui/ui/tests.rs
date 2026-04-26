@@ -1791,3 +1791,99 @@ fn second_thinking_block_appends_new_entry_in_same_active_cell() {
         "the group still hasn't flushed — no prose yet"
     );
 }
+
+// ---- rlm_query per-child prompt wiring ----
+//
+// When `handle_tool_call_started` receives an `rlm_query` call with a
+// `prompts` array, the resulting `GenericToolCell` must carry the parsed
+// prompts so the TUI can render one row per child (see
+// `GenericToolCell::lines_with_motion` and the `show_prompts` branch in
+// `history.rs`).
+
+#[test]
+fn rlm_query_tool_cell_wired_with_prompts_on_start() {
+    let mut app = create_test_app();
+
+    handle_tool_call_started(
+        &mut app,
+        "rlm-1",
+        "rlm_query",
+        &serde_json::json!({
+            "prompts": [
+                "What is the capital of France?",
+                "List all public types in client.rs",
+                "Summarize the README"
+            ]
+        }),
+    );
+
+    // The cell must be live in the active_cell slot (turn not yet complete).
+    let active = app.active_cell.as_ref().expect("active cell present");
+    let HistoryCell::Tool(ToolCell::Generic(generic)) = &active.entries()[0] else {
+        panic!("expected GenericToolCell for rlm_query");
+    };
+
+    assert_eq!(generic.name, "rlm_query");
+    assert_eq!(generic.status, ToolStatus::Running);
+
+    // Core assertion: prompts populated from the JSON input.
+    let prompts = generic
+        .prompts
+        .as_ref()
+        .expect("rlm_query cell must have prompts populated");
+    assert_eq!(prompts.len(), 3);
+    assert_eq!(prompts[0], "What is the capital of France?");
+    assert_eq!(prompts[1], "List all public types in client.rs");
+    assert_eq!(prompts[2], "Summarize the README");
+}
+
+#[test]
+fn rlm_query_singular_prompt_wired_as_single_element_vec() {
+    // When the model passes `prompt` (singular) instead of `prompts`,
+    // the cell should still populate a one-element prompts vec so the
+    // renderer shows the child's question.
+    let mut app = create_test_app();
+
+    handle_tool_call_started(
+        &mut app,
+        "rlm-2",
+        "rlm_query",
+        &serde_json::json!({ "prompt": "Explain the engine loop" }),
+    );
+
+    let active = app.active_cell.as_ref().expect("active cell present");
+    let HistoryCell::Tool(ToolCell::Generic(generic)) = &active.entries()[0] else {
+        panic!("expected GenericToolCell for rlm_query");
+    };
+
+    let prompts = generic
+        .prompts
+        .as_ref()
+        .expect("singular prompt must populate prompts vec");
+    assert_eq!(prompts.len(), 1);
+    assert_eq!(prompts[0], "Explain the engine loop");
+}
+
+#[test]
+fn non_fanout_tool_does_not_populate_prompts() {
+    // Tools other than rlm_query must not get a prompts vec — they use
+    // the standard `args:` summary rendering path.
+    let mut app = create_test_app();
+
+    handle_tool_call_started(
+        &mut app,
+        "fs-1",
+        "file_search",
+        &serde_json::json!({ "query": "client.rs" }),
+    );
+
+    let active = app.active_cell.as_ref().expect("active cell present");
+    let HistoryCell::Tool(ToolCell::Generic(generic)) = &active.entries()[0] else {
+        panic!("expected GenericToolCell for file_search");
+    };
+
+    assert!(
+        generic.prompts.is_none(),
+        "non-fan-out tool must not populate prompts"
+    );
+}
