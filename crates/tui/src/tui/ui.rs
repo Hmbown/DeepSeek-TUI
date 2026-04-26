@@ -3660,28 +3660,22 @@ fn context_usage_snapshot(app: &App) -> Option<(i64, u32, f64)> {
         .map(|tokens| tokens.max(0));
     let estimated = estimated_context_tokens(app).map(|tokens| tokens.max(0));
 
-    let used = if app.is_loading {
-        match (estimated, reported) {
-            (Some(estimated), _) => estimated,
-            (None, Some(reported)) => reported,
-            (None, None) => return None,
-        }
-    } else {
-        match (reported, estimated) {
-            (Some(reported), Some(estimated))
-                if reported > max_i64 && estimated > 0 && estimated <= max_i64 =>
-            {
-                estimated
-            }
-            (Some(reported), Some(estimated))
-                if is_reported_context_inflated(reported, estimated) =>
-            {
-                estimated
-            }
-            (Some(reported), _) => reported,
-            (None, Some(estimated)) => estimated,
-            (None, None) => return None,
-        }
+    // Always prefer the estimated current-context size (computed from
+    // `app.api_messages`) when we have it. Reported `last_prompt_tokens`
+    // comes from `Event::TurnComplete.usage`, which the engine builds with
+    // `turn.add_usage` — that SUMS input_tokens across every round in the
+    // turn, so a multi-round tool-call turn reports a value much larger
+    // than the actual context window state, then the next single-round
+    // turn drops back to a single round's input_tokens. User-visible %
+    // was bouncing 31% → 9% (#115) because of this. The estimate is
+    // monotonic wrt conversation growth, which is what a "context filling
+    // up" indicator should show. We still consult `reported` only as a
+    // fallback when no estimate is available (e.g., immediately after a
+    // session restore before the api_messages are populated).
+    let used = match (estimated, reported) {
+        (Some(estimated), _) => estimated.min(max_i64),
+        (None, Some(reported)) => reported.min(max_i64),
+        (None, None) => return None,
     };
 
     let max_f64 = f64::from(max);
@@ -3690,6 +3684,11 @@ fn context_usage_snapshot(app: &App) -> Option<(i64, u32, f64)> {
     Some((used, max, percent))
 }
 
+/// Retained as a callable utility — `context_usage_snapshot` no longer uses
+/// it directly (#115 makes the estimate the primary signal), but tests in
+/// `ui/tests.rs` still exercise it and a future heuristic may want to
+/// distinguish "obviously inflated reported tokens" from healthy reports.
+#[allow(dead_code)]
 fn is_reported_context_inflated(reported: i64, estimated: i64) -> bool {
     const MIN_ABSOLUTE_GAP: i64 = 4_096;
     if estimated <= 0 || reported <= estimated {

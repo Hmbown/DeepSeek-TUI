@@ -542,6 +542,47 @@ fn context_usage_snapshot_prefers_estimate_when_reported_is_inflated_by_old_reas
     assert!(percent < 2.0);
 }
 
+/// Regression for #115. The engine sums `input_tokens` across every round
+/// of a turn (`turn.add_usage` does `+=`), so a multi-round tool-call turn
+/// reports a value much larger than the actual context window state, then
+/// the next single-round turn drops back to a single round's input_tokens.
+/// User-visible % was bouncing 31% → 9% because of this. The fix is to
+/// prefer the estimated current-context size, which is monotonic wrt
+/// conversation growth.
+#[test]
+fn context_usage_does_not_drop_when_reported_shrinks_after_multi_round_turn() {
+    let mut app = create_test_app();
+    app.api_messages = vec![Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "context ".repeat(2_000), // ~14k tokens estimated
+            cache_control: None,
+        }],
+    }];
+
+    // Simulate a multi-round turn that summed two rounds' input_tokens
+    // (e.g., 200k + 210k from a long thinking + tool-call sequence).
+    app.last_prompt_tokens = Some(410_000);
+    let (_, _, percent_after_multi_round) =
+        context_usage_snapshot(&app).expect("usage available");
+
+    // Now the next turn is a single round on the same conversation —
+    // reported drops to one round's worth even though the actual context
+    // hasn't shrunk.
+    app.last_prompt_tokens = Some(15_000);
+    let (_, _, percent_after_single_round) =
+        context_usage_snapshot(&app).expect("usage available");
+
+    // The displayed % should reflect the conversation size (estimated
+    // from api_messages), NOT the wildly variable reported value.
+    let drift = (percent_after_multi_round - percent_after_single_round).abs();
+    assert!(
+        drift < 1.0,
+        "displayed % should not jump because reported tokens varied across rounds; \
+         after-multi-round={percent_after_multi_round:.2} after-single-round={percent_after_single_round:.2}"
+    );
+}
+
 #[test]
 fn context_usage_snapshot_prefers_live_estimate_while_loading() {
     let mut app = create_test_app();
