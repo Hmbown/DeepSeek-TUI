@@ -18,9 +18,11 @@ use crate::palette;
 
 pub mod chunking;
 pub mod commit_tick;
+pub mod line_buffer;
 
 pub use chunking::{AdaptiveChunkingPolicy, ChunkingMode};
 pub use commit_tick::{StreamChunker, run_commit_tick};
+pub use line_buffer::LineBuffer;
 /// Collects streaming text and commits complete lines.
 #[derive(Debug, Clone)]
 pub struct MarkdownStreamCollector {
@@ -220,10 +222,26 @@ fn wrap_line(line: &str, width: usize) -> Vec<String> {
     }
 }
 
-/// Per-block streaming substate: collector for newline-gating + chunker/policy
-/// for two-gear pacing.
+/// Per-block streaming substate: line-buffer (newline gate) feeding a
+/// collector + chunker/policy for two-gear pacing.
+///
+/// Pipeline:
+/// ```text
+/// raw delta -> LineBuffer.push -> take_committable -> collector + chunker -> commit tick
+/// ```
+///
+/// The [`LineBuffer`] is upstream of the collector and chunker. It guarantees
+/// that no partial multi-character markdown (e.g. an unfinished ``` fence)
+/// reaches downstream consumers between deltas. Thinking blocks bypass the
+/// gate because thinking is rendered live for responsiveness — its content
+/// often arrives without newlines until a full paragraph is composed.
 #[derive(Debug, Default)]
 struct BlockState {
+    /// Newline gate: holds back trailing partial-line text between deltas.
+    /// Bypassed when `bypass_gate` is true (thinking blocks).
+    line_buffer: LineBuffer,
+    /// Whether to bypass the [`LineBuffer`] (thinking blocks stream live).
+    bypass_gate: bool,
     collector: MarkdownStreamCollector,
     chunker: StreamChunker,
     policy: AdaptiveChunkingPolicy,
@@ -248,10 +266,14 @@ impl StreamingState {
         Self::default()
     }
 
-    /// Start a new text block
+    /// Start a new text block. Assistant text is subject to the newline gate
+    /// so partial code fences and other line-sensitive markdown can never
+    /// briefly appear between deltas.
     pub fn start_text(&mut self, index: usize, width: Option<usize>) {
         self.ensure_capacity(index);
         self.blocks[index] = Some(BlockState {
+            line_buffer: LineBuffer::new(),
+            bypass_gate: false,
             collector: MarkdownStreamCollector::new(width, false),
             chunker: StreamChunker::new(),
             policy: AdaptiveChunkingPolicy::new(),
@@ -259,10 +281,15 @@ impl StreamingState {
         self.is_active = true;
     }
 
-    /// Start a new thinking block
+    /// Start a new thinking block. Thinking deltas bypass the newline gate so
+    /// they remain visually live — long reasoning often arrives as a single
+    /// paragraph without intermediate newlines, and gating it would create
+    /// long pauses where the user sees nothing.
     pub fn start_thinking(&mut self, index: usize, width: Option<usize>) {
         self.ensure_capacity(index);
         self.blocks[index] = Some(BlockState {
+            line_buffer: LineBuffer::new(),
+            bypass_gate: true,
             collector: MarkdownStreamCollector::new(width, true),
             chunker: StreamChunker::new(),
             policy: AdaptiveChunkingPolicy::new(),
@@ -270,23 +297,48 @@ impl StreamingState {
         self.is_active = true;
     }
 
-    /// Push content to a block. The text is buffered in the collector and
-    /// any newline-complete portion is forwarded to the chunker, which decides
-    /// what (if anything) becomes visible on the next [`Self::commit_text`] tick.
+    /// Push content to a block. Routing depends on the block kind:
+    ///
+    /// - Assistant text blocks: incoming bytes go through [`LineBuffer`]
+    ///   first, so only newline-terminated prefixes reach the collector and
+    ///   chunker. This is what protects partial code fences and other
+    ///   line-sensitive markdown from briefly appearing between deltas.
+    /// - Thinking blocks: bytes bypass the gate and go straight to the
+    ///   collector/chunker so reasoning stays visually live (long thoughts
+    ///   often have no intermediate newlines).
+    ///
+    /// `accumulated_text` / `accumulated_thinking` always track the full raw
+    /// stream so callers building API messages or doing retries see exactly
+    /// what the model emitted, regardless of UI gating.
     pub fn push_content(&mut self, index: usize, content: &str) {
         if let Some(Some(block)) = self.blocks.get_mut(index) {
-            block.collector.push(content);
-            // Update accumulated text
+            // Always update the raw accumulator first — UI gating must not
+            // affect what we send back to the model on retry/continuation.
             if block.collector.is_thinking {
                 self.accumulated_thinking.push_str(content);
             } else {
                 self.accumulated_text.push_str(content);
             }
 
-            // Forward newline-complete bytes to the chunker. Partial trailing
-            // content stays in the collector buffer (this is what protects
-            // partial code fences and other line-sensitive markdown from
-            // becoming briefly visible).
+            // Determine what bytes are safe to expose downstream on this push.
+            let downstream: String = if block.bypass_gate {
+                // Thinking: forward verbatim to collector + chunker.
+                content.to_string()
+            } else {
+                // Assistant text: gate at the last-newline boundary.
+                block.line_buffer.push(content);
+                block.line_buffer.take_committable()
+            };
+
+            if downstream.is_empty() {
+                return;
+            }
+
+            block.collector.push(&downstream);
+            // The collector's own newline-gating is now redundant for gated
+            // blocks (LineBuffer already enforces it), but we keep the same
+            // call shape so the collector's bookkeeping (committed_line_count)
+            // stays consistent and the bypass path still benefits from it.
             let committed = block.collector.commit_complete_text();
             if !committed.is_empty() {
                 block.chunker.push_delta(&committed);
@@ -384,12 +436,34 @@ impl StreamingState {
         lines
     }
 
-    /// Finalize a block and get remaining raw text. Drains any chunker
-    /// backlog plus any unterminated partial line in the collector.
+    /// Finalize a block and get remaining raw text. Drains the full pipeline
+    /// in upstream-to-downstream order:
+    ///
+    /// 1. [`LineBuffer::flush`] returns any post-newline tail held by the gate.
+    ///    For gated blocks this is critical — without it, a final partial
+    ///    line (e.g. text the model emitted without a trailing newline before
+    ///    the turn ended) would otherwise be stranded in the gate.
+    /// 2. The collector's `finalize_text` releases any partial line it still
+    ///    holds (relevant for the bypass path where the collector receives
+    ///    raw deltas directly).
+    /// 3. The chunker's `drain_remaining` releases queued whole-line text
+    ///    that the policy hadn't yet committed.
     pub fn finalize_block_text(&mut self, index: usize) -> String {
         if let Some(Some(block)) = self.blocks.get_mut(index) {
-            // First, push any tail buffered in the collector through (it may
-            // not be newline-terminated; finalize_text returns it raw).
+            // Flush the gate first so any held tail rejoins the stream
+            // before the collector/chunker drain. For thinking blocks the
+            // gate is unused, so this is a no-op.
+            let gate_tail = block.line_buffer.flush();
+            if !gate_tail.is_empty() {
+                block.collector.push(&gate_tail);
+            }
+            // Any newly committable text after the gate flush feeds the
+            // chunker so drain order remains "queued-lines, then partial-tail".
+            let post_flush = block.collector.commit_complete_text();
+            if !post_flush.is_empty() {
+                block.chunker.push_delta(&post_flush);
+            }
+            // Any unterminated tail still in the collector is returned raw.
             let tail = block.collector.finalize_text();
             // Any whole-line text held by the chunker is safe to emit now.
             let mut out = block.chunker.drain_remaining();

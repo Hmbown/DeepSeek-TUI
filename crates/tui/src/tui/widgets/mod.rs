@@ -1,6 +1,8 @@
+mod footer;
 mod header;
 mod renderable;
 
+pub use footer::{FooterProps, FooterToast, FooterWidget};
 pub use header::{HeaderData, HeaderWidget};
 pub use renderable::Renderable;
 

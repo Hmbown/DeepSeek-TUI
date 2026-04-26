@@ -82,7 +82,8 @@ use super::history::{
 };
 use super::views::{ConfigView, HelpView, ModalKind, ViewEvent};
 use super::widgets::{
-    ChatWidget, ComposerWidget, HeaderData, HeaderWidget, Renderable, slash_completion_hints,
+    ChatWidget, ComposerWidget, FooterProps, FooterToast, FooterWidget, HeaderData, HeaderWidget,
+    Renderable, slash_completion_hints,
 };
 
 // === Constants ===
@@ -3445,37 +3446,51 @@ fn status_color(level: StatusToastLevel) -> ratatui::style::Color {
 }
 
 fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
-    let available_width = area.width as usize;
-    if available_width == 0 {
+    if area.width == 0 || area.height == 0 {
         return;
     }
 
-    let right_spans = footer_auxiliary_spans(app, available_width);
-    let right_width = spans_width(&right_spans);
-    let active_status = app.active_status_toast();
-    let min_gap = if right_width > 0 { 2 } else { 0 };
-    let max_left_width = available_width
-        .saturating_sub(right_width)
-        .saturating_sub(min_gap)
-        .max(1);
+    // Pull in the toast first so we don't re-borrow `app` mutably mid-build,
+    // then build the FooterProps once. The widget itself is a pure render —
+    // it owns no `App` knowledge; all width-aware layout lives in the widget.
+    let toast = app.active_status_toast().map(|toast| FooterToast {
+        text: toast.text,
+        color: status_color(toast.level),
+    });
 
-    let left_spans = if let Some(toast) = active_status.as_ref() {
-        footer_toast_spans(toast, max_left_width)
+    let (state_label, state_color) = footer_state_label(app);
+    let coherence = footer_coherence_spans(app);
+    let reasoning_replay = footer_reasoning_replay_spans(app);
+    let cache = footer_cache_spans(app);
+    let cost = if app.session_cost > 0.001 {
+        vec![Span::styled(
+            format!("${:.2}", app.session_cost),
+            Style::default().fg(palette::TEXT_MUTED),
+        )]
     } else {
-        footer_status_line_spans(app, max_left_width)
+        Vec::new()
     };
 
-    let left_width = spans_width(&left_spans);
-    let spacer_width = available_width.saturating_sub(left_width + right_width);
-
-    let mut all_spans = left_spans;
-    all_spans.push(Span::raw(" ".repeat(spacer_width)));
-    all_spans.extend(right_spans);
-
-    let footer = Paragraph::new(Line::from(all_spans));
-    f.render_widget(footer, area);
+    let props = FooterProps::from_app(
+        app,
+        toast,
+        state_label,
+        state_color,
+        coherence,
+        reasoning_replay,
+        cache,
+        cost,
+    );
+    let widget = FooterWidget::new(props);
+    let buf = f.buffer_mut();
+    widget.render(area, buf);
 }
 
+/// Test-only helper retained as a parity reference for `FooterWidget`'s
+/// auxiliary-span composition. Production rendering is performed by the
+/// widget itself; the existing footer parity tests still exercise this
+/// function directly to guard against drift.
+#[allow(dead_code)]
 fn footer_auxiliary_spans(app: &App, max_width: usize) -> Vec<Span<'static>> {
     // Context % is already shown in the header signal bar — don't
     // duplicate it in the footer. The footer carries unique info only:
@@ -3572,6 +3587,7 @@ fn footer_reasoning_replay_spans(app: &App) -> Vec<Span<'static>> {
     vec![Span::styled(label, Style::default().fg(color))]
 }
 
+#[allow(dead_code)]
 fn footer_toast_spans(
     toast: &crate::tui::app::StatusToast,
     max_width: usize,
@@ -3583,6 +3599,7 @@ fn footer_toast_spans(
     )]
 }
 
+#[allow(dead_code)]
 fn footer_status_line_spans(app: &App, max_width: usize) -> Vec<Span<'static>> {
     if max_width == 0 {
         return Vec::new();
@@ -3656,6 +3673,7 @@ fn footer_state_label(app: &App) -> (&'static str, ratatui::style::Color) {
     ("ready", palette::TEXT_MUTED)
 }
 
+#[allow(dead_code)]
 fn footer_mode_style(app: &App) -> (&'static str, ratatui::style::Color) {
     let label = app.mode.as_setting();
     let color = match app.mode {
@@ -3697,6 +3715,7 @@ fn format_context_budget(used: i64, max: u32) -> String {
     )
 }
 
+#[allow(dead_code)]
 fn spans_width(spans: &[Span<'_>]) -> usize {
     spans.iter().map(|span| span.content.width()).sum()
 }
