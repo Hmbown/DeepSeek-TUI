@@ -2022,6 +2022,16 @@ impl Engine {
         }
         let mut active_tool_names = initial_active_tools(&tool_catalog);
 
+        // Transparent stream-retry counter: when the chunked-transfer
+        // connection dies mid-stream and we got nothing useful out of it
+        // (no tool calls, no completed text), we silently re-issue the
+        // SAME request up to MAX_STREAM_RETRIES times before surfacing
+        // the failure to the user. This is the #103 Phase 3 retry that
+        // keeps long V4 thinking turns from being killed by transient
+        // proxy disconnects.
+        const MAX_STREAM_RETRIES: u32 = 3;
+        let mut stream_retry_attempts: u32 = 0;
+
         loop {
             if self.cancel_token.is_cancelled() {
                 let _ = self.tx_event.send(Event::status("Request cancelled")).await;
@@ -2564,6 +2574,49 @@ impl Engine {
                     }
                     StreamEvent::MessageStop | StreamEvent::Ping => {}
                 }
+            }
+
+            // #103 Phase 3 — transparent retry. The inner loop above bails
+            // when reqwest yields chunk decode errors three times in a row;
+            // most of the time those are recoverable proxy / HTTP/2 issues
+            // and the request can simply be re-issued. Re-issue silently up
+            // to MAX_STREAM_RETRIES, but only when the stream produced
+            // nothing actionable — if any tool call landed or text was
+            // streamed, ship the partial state to the rest of the turn
+            // pipeline so we don't double-bill the user by re-running it.
+            let stream_died_with_nothing = stream_errors > 0
+                && tool_uses.is_empty()
+                && current_text_visible.trim().is_empty()
+                && current_thinking.trim().is_empty()
+                && !pending_message_complete;
+            if stream_died_with_nothing {
+                if stream_retry_attempts < MAX_STREAM_RETRIES {
+                    stream_retry_attempts = stream_retry_attempts.saturating_add(1);
+                    crate::logging::warn(format!(
+                        "Stream died with no content (attempt {}/{}); retrying request",
+                        stream_retry_attempts, MAX_STREAM_RETRIES
+                    ));
+                    let _ = self
+                        .tx_event
+                        .send(Event::status(format!(
+                            "Connection interrupted; retrying ({}/{})",
+                            stream_retry_attempts, MAX_STREAM_RETRIES
+                        )))
+                        .await;
+                    // Don't preserve the per-stream `turn_error` — we're
+                    // about to retry, and a successful retry should not
+                    // surface the transient error as the turn outcome.
+                    turn_error = None;
+                    continue;
+                }
+                crate::logging::warn(format!(
+                    "Stream retry budget exhausted ({} attempts); failing turn",
+                    stream_retry_attempts
+                ));
+            } else if stream_errors == 0 {
+                // Healthy round → reset retry budget so we don't carry over
+                // state from a previous bad round.
+                stream_retry_attempts = 0;
             }
 
             // Update turn usage
