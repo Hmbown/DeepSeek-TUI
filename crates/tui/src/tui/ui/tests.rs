@@ -1127,7 +1127,10 @@ fn apply_mention_menu_selection_splices_selected_entry() {
     // workspace setup. Apply it.
     app.mention_menu_selected = 0;
     let applied = apply_mention_menu_selection(&mut app, &entries);
-    assert!(applied, "apply_mention_menu_selection should report success");
+    assert!(
+        applied,
+        "apply_mention_menu_selection should report success"
+    );
     assert!(
         app.input.starts_with("open @"),
         "input should still start with `open @`, got: {input}",

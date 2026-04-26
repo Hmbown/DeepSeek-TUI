@@ -973,9 +973,7 @@ pub fn new_shared_subagent_manager(workspace: PathBuf, max_agents: usize) -> Sha
     Arc::new(Mutex::new(manager))
 }
 
-
 // === Tool Implementations ===
-
 
 /// Tool to spawn a background sub-agent.
 pub struct AgentSpawnTool {
@@ -3569,7 +3567,6 @@ Otherwise return concise sections: SUMMARY, EVIDENCE, CHANGES, RISKS.
 
 Complete the task and provide your final result.
 ";
-
 
 // === Tests ===
 

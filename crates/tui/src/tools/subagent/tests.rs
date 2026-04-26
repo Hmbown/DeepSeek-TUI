@@ -154,9 +154,11 @@ fn test_parse_assign_request_requires_update_fields() {
         "agent_id": "agent_1234"
     });
     let err = parse_assign_request(&input).expect_err("missing update fields should fail");
-    assert!(err.to_string().contains(
-        "Provide at least one of objective, role/agent_role, message/input, or items"
-    ));
+    assert!(
+        err.to_string().contains(
+            "Provide at least one of objective, role/agent_role, message/input, or items"
+        )
+    );
 }
 
 #[test]

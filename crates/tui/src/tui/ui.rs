@@ -2621,9 +2621,7 @@ fn render(f: &mut Frame, app: &mut App) {
     let slash_menu_entries = visible_slash_menu_entries(app, SLASH_MENU_LIMIT);
     let mention_menu_entries =
         crate::tui::file_mention::visible_mention_menu_entries(app, MENTION_MENU_LIMIT);
-    if !mention_menu_entries.is_empty()
-        && app.mention_menu_selected >= mention_menu_entries.len()
-    {
+    if !mention_menu_entries.is_empty() && app.mention_menu_selected >= mention_menu_entries.len() {
         app.mention_menu_selected = mention_menu_entries.len().saturating_sub(1);
     }
     let context_usage = context_usage_snapshot(app);

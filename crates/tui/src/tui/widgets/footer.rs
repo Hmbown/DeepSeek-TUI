@@ -64,7 +64,10 @@ pub fn footer_agents_chip(running: usize) -> Vec<Span<'static>> {
     } else {
         format!("{running} agents")
     };
-    vec![Span::styled(text, Style::default().fg(palette::DEEPSEEK_SKY))]
+    vec![Span::styled(
+        text,
+        Style::default().fg(palette::DEEPSEEK_SKY),
+    )]
 }
 
 /// A status toast routed to the footer's left segment for a short time.
