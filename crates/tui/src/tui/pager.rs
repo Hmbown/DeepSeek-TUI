@@ -18,7 +18,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Padding, Paragraph, Widget, Wrap},
 };
@@ -190,7 +190,14 @@ impl ModalView for PagerView {
                     return ViewAction::None;
                 }
                 KeyCode::Esc => {
+                    // Bail out of search mode AND drop the current match list
+                    // so the user gets back to the un-highlighted view —
+                    // codex-style behavior. To resume from where they left
+                    // off they re-enter `/` and re-type.
                     self.search_mode = false;
+                    self.search_input.clear();
+                    self.search_matches.clear();
+                    self.search_index = 0;
                     return ViewAction::None;
                 }
                 KeyCode::Backspace => {
@@ -326,8 +333,17 @@ impl ModalView for PagerView {
 
         Clear.render(popup_area, buf);
 
-        let mut visible_height = popup_area.height.saturating_sub(2) as usize;
+        // Borders eat 1 row top + 1 row bottom; the block's `Padding::uniform(1)`
+        // eats 1 more on each side. Net: 4 rows of overhead to subtract from
+        // `popup_area.height` before we know how many lines fit.
+        let mut visible_height = popup_area.height.saturating_sub(4) as usize;
         if self.search_mode {
+            // Reserve a row for the search prompt that gets pushed below.
+            visible_height = visible_height.saturating_sub(1);
+        } else if !self.search_matches.is_empty() {
+            // Reserve a row for the "match X/Y (n/N)" status; without this
+            // the status line gets clipped on small popup heights and the
+            // user can't see how many matches there are.
             visible_height = visible_height.saturating_sub(1);
         }
         // Cache for paging keys; the value is treated as advisory and
@@ -341,6 +357,43 @@ impl ModalView for PagerView {
         } else {
             self.lines[scroll..end].to_vec()
         };
+
+        // Highlight matched lines while the search prompt is closed and the
+        // user is navigating with `n` / `N`. Other matches get a subtle
+        // background; the current match gets a louder one. Per-substring
+        // highlighting is deferred to a follow-up — preserving the pre-styled
+        // spans (assistant / system colors) through a substring re-style is
+        // a separate concern.
+        if !self.search_mode && !self.search_matches.is_empty() {
+            let current_match_line = self.search_matches.get(self.search_index).copied();
+            for (visible_idx, line) in visible_lines.iter_mut().enumerate() {
+                let absolute_idx = scroll + visible_idx;
+                if absolute_idx >= self.lines.len() {
+                    break;
+                }
+                if !self.search_matches.contains(&absolute_idx) {
+                    continue;
+                }
+                let is_current = current_match_line == Some(absolute_idx);
+                let bg = if is_current {
+                    Color::Yellow
+                } else {
+                    Color::DarkGray
+                };
+                let fg = if is_current {
+                    Color::Black
+                } else {
+                    Color::Yellow
+                };
+                let highlight = Style::default()
+                    .bg(bg)
+                    .fg(fg)
+                    .add_modifier(Modifier::BOLD);
+                for span in line.spans.iter_mut() {
+                    span.style = highlight;
+                }
+            }
+        }
 
         if self.search_mode {
             let prompt = format!("/{}", self.search_input);
@@ -630,6 +683,126 @@ mod tests {
         assert!(
             bottom.contains("j/k") || bottom.contains("scroll"),
             "expected footer hint on bottom border row {popup_bottom_y}, got: {bottom:?}"
+        );
+    }
+
+    /// `/` opens the search prompt; typing chars accumulates them; Enter
+    /// commits and jumps to the first match. The matches index/count line
+    /// must surface in the rendered buffer afterwards.
+    #[test]
+    fn search_finds_matches_and_renders_match_counter() {
+        let mut p = make_pager(20);
+        prime_layout(&mut p, 16);
+
+        // Open search.
+        let _ = p.handle_key(key(KeyCode::Char('/')));
+        // Type "5" to match line-005, line-015 (any line whose number contains
+        // a 5 — make_pager produced "line-NNN" with three-digit indices).
+        for ch in "5".chars() {
+            let _ = p.handle_key(key(KeyCode::Char(ch)));
+        }
+        // Commit.
+        let _ = p.handle_key(key(KeyCode::Enter));
+
+        // Render and look for the "match X/Y" status line.
+        let area = Rect::new(0, 0, 60, 16);
+        let mut buf = Buffer::empty(area);
+        p.render(area, &mut buf);
+        let mut full = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                full.push_str(buf[(x, y)].symbol());
+            }
+            full.push('\n');
+        }
+        assert!(
+            full.contains("match 1/2") || full.contains("match 1/3"),
+            "expected match counter; got buffer:\n{full}"
+        );
+    }
+
+    /// Esc while in search mode bails out AND clears the highlighted matches
+    /// so the un-highlighted view returns. (Codex parity.)
+    #[test]
+    fn esc_in_search_mode_clears_matches() {
+        let mut p = make_pager(20);
+        prime_layout(&mut p, 16);
+
+        let _ = p.handle_key(key(KeyCode::Char('/')));
+        let _ = p.handle_key(key(KeyCode::Char('5')));
+        let _ = p.handle_key(key(KeyCode::Enter));
+        assert!(!p.search_matches.is_empty());
+
+        // Re-enter search mode and Esc out — matches must clear.
+        let _ = p.handle_key(key(KeyCode::Char('/')));
+        let _ = p.handle_key(key(KeyCode::Esc));
+        assert!(p.search_matches.is_empty());
+        assert_eq!(p.search_input, "");
+        assert!(!p.search_mode);
+    }
+
+    /// `n` and `N` cycle forward and backward through matches, wrapping at
+    /// the ends without panicking on out-of-bounds index.
+    #[test]
+    fn n_and_capital_n_cycle_matches_with_wrap() {
+        let mut p = make_pager(50);
+        prime_layout(&mut p, 16);
+
+        // Search "1" — matches every line whose printed index contains a 1.
+        let _ = p.handle_key(key(KeyCode::Char('/')));
+        let _ = p.handle_key(key(KeyCode::Char('1')));
+        let _ = p.handle_key(key(KeyCode::Enter));
+        let total = p.search_matches.len();
+        assert!(total > 1, "test needs multiple matches, got {total}");
+
+        let start = p.search_index;
+        let _ = p.handle_key(key(KeyCode::Char('n')));
+        assert_eq!(p.search_index, (start + 1) % total);
+        let _ = p.handle_key(key(KeyCode::Char('N')));
+        assert_eq!(p.search_index, start);
+
+        // Wrap backwards from 0 → last.
+        let _ = p.handle_key(key(KeyCode::Char('N')));
+        assert_eq!(p.search_index, total - 1);
+        let _ = p.handle_key(key(KeyCode::Char('n')));
+        assert_eq!(p.search_index, 0);
+    }
+
+    /// While search matches exist and the prompt is closed, the matched
+    /// lines are visually distinguished in the rendered buffer by their
+    /// background color. We sample directly across the matched-line text
+    /// columns rather than the whole row width because Paragraph leaves
+    /// the trailing-area cells at the default style.
+    #[test]
+    fn matched_lines_get_highlight_background() {
+        let mut p = make_pager(20);
+        prime_layout(&mut p, 16);
+
+        let _ = p.handle_key(key(KeyCode::Char('/')));
+        let _ = p.handle_key(key(KeyCode::Char('5')));
+        let _ = p.handle_key(key(KeyCode::Enter));
+        assert!(!p.search_matches.is_empty());
+
+        let area = Rect::new(0, 0, 40, 16);
+        let mut buf = Buffer::empty(area);
+        p.render(area, &mut buf);
+
+        // Text starts at popup_area.x + block_border_left + padding_left
+        // = 1 + 1 + 1 = 3. The fixture text is "line-NNN" (8 chars) so we
+        // sample 3..11. The current-match row is the top of the visible
+        // window because `jump_to_match` set scroll = match_line.
+        let popup_top_y = 1 /* outer popup */ + 1 /* block top border */ + 1 /* padding top */;
+        let mut found_highlight = false;
+        for x in 3..11 {
+            let bg = buf[(x, popup_top_y)].style().bg;
+            if matches!(bg, Some(Color::Yellow) | Some(Color::DarkGray)) {
+                found_highlight = true;
+                break;
+            }
+        }
+        assert!(
+            found_highlight,
+            "expected a Yellow/DarkGray highlight cell on the matched-line text columns"
         );
     }
 }
