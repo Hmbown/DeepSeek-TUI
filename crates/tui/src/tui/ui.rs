@@ -1204,8 +1204,11 @@ async fn run_event_loop(
             let now = Instant::now();
             app.flush_paste_burst_if_due(now);
 
-            let has_ctrl_alt_or_super = key.modifiers.contains(KeyModifiers::CONTROL)
-                || key.modifiers.contains(KeyModifiers::ALT)
+            // On Windows, AltGr is delivered as `Ctrl+Alt`; treat
+            // AltGr-typed chars (e.g. European layouts producing `@`, `\`,
+            // `|`) as plain text rather than swallowing them as a modified
+            // shortcut. `key_hint::has_ctrl_or_alt` filters AltGr out.
+            let has_ctrl_alt_or_super = super::widgets::key_hint::has_ctrl_or_alt(key.modifiers)
                 || key.modifiers.contains(KeyModifiers::SUPER);
             let is_plain_char = matches!(key.code, KeyCode::Char(_)) && !has_ctrl_alt_or_super;
             let is_enter = matches!(key.code, KeyCode::Enter);

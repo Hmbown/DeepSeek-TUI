@@ -978,6 +978,16 @@ impl ModalView for HelpView {
 
         Clear.render(popup_area, buf);
 
+        // Render keybinding hints through `key_hint::KeyBinding` so they pick
+        // up the host-platform notation (`⌥` on macOS, `alt+X` on Linux /
+        // Windows). See `crates/tui/src/tui/widgets/key_hint.rs`.
+        use crate::tui::widgets::key_hint::{alt, ctrl, plain, shift};
+        let kb = |b: crate::tui::widgets::key_hint::KeyBinding| b.to_string();
+
+        let row = |label: String, desc: &str| -> Line<'static> {
+            Line::from(format!("  {:<22} - {}", label, desc))
+        };
+
         let mut help_lines: Vec<Line> = vec![
             Line::from(vec![Span::styled(
                 "DeepSeek TUI Help",
@@ -988,75 +998,175 @@ impl ModalView for HelpView {
                 "=== Navigation ===",
                 Style::default().fg(palette::DEEPSEEK_SKY).bold(),
             )]),
-            Line::from("  Up / Down         - Scroll transcript (or navigate history)"),
-            Line::from("  Ctrl+Up / Ctrl+Down - Navigate input history"),
-            Line::from("  Alt+Up / Alt+Down - Scroll transcript"),
-            Line::from("  PageUp / PageDown - Scroll transcript by page"),
-            Line::from("  Home / End        - Jump to top / bottom of transcript"),
-            Line::from("  g / G             - Jump to top / bottom (when input empty)"),
-            Line::from("  [ / ]             - Jump between tool output blocks"),
+            row(
+                format!("{} / {}", kb(plain(KeyCode::Up)), kb(plain(KeyCode::Down))),
+                "Scroll transcript (or navigate history)",
+            ),
+            row(
+                format!("{} / {}", kb(ctrl(KeyCode::Up)), kb(ctrl(KeyCode::Down))),
+                "Navigate input history",
+            ),
+            row(
+                format!("{} / {}", kb(alt(KeyCode::Up)), kb(alt(KeyCode::Down))),
+                "Scroll transcript",
+            ),
+            row(
+                format!(
+                    "{} / {}",
+                    kb(plain(KeyCode::PageUp)),
+                    kb(plain(KeyCode::PageDown))
+                ),
+                "Scroll transcript by page",
+            ),
+            row(
+                format!("{} / {}", kb(plain(KeyCode::Home)), kb(plain(KeyCode::End))),
+                "Jump to top / bottom of transcript",
+            ),
+            row(
+                format!("{} / {}", kb(plain(KeyCode::Char('g'))), "G"),
+                "Jump to top / bottom (when input empty)",
+            ),
+            row("[ / ]".to_string(), "Jump between tool output blocks"),
             Line::from(""),
             Line::from(vec![Span::styled(
                 "=== Input Editing ===",
                 Style::default().fg(palette::DEEPSEEK_SKY).bold(),
             )]),
-            Line::from("  Left / Right      - Move cursor"),
-            Line::from("  Ctrl+A / Ctrl+E   - Jump to start / end of line"),
-            Line::from("  Backspace / Delete - Delete character before / after cursor"),
-            Line::from("  Ctrl+U            - Clear the current draft"),
+            row(
+                format!(
+                    "{} / {}",
+                    kb(plain(KeyCode::Left)),
+                    kb(plain(KeyCode::Right))
+                ),
+                "Move cursor",
+            ),
+            row(
+                format!(
+                    "{} / {}",
+                    kb(ctrl(KeyCode::Char('a'))),
+                    kb(ctrl(KeyCode::Char('e')))
+                ),
+                "Jump to start / end of line",
+            ),
+            row(
+                format!(
+                    "{} / {}",
+                    kb(plain(KeyCode::Backspace)),
+                    kb(plain(KeyCode::Delete))
+                ),
+                "Delete character before / after cursor",
+            ),
+            row(kb(ctrl(KeyCode::Char('u'))), "Clear the current draft"),
             Line::from(""),
             Line::from(vec![Span::styled(
                 "=== Multi-line Input ===",
                 Style::default().fg(palette::DEEPSEEK_SKY).bold(),
             )]),
-            Line::from("  Ctrl+J / Alt+Enter - Insert a new line in the composer"),
+            row(
+                format!(
+                    "{} / {}",
+                    kb(ctrl(KeyCode::Char('j'))),
+                    kb(alt(KeyCode::Enter))
+                ),
+                "Insert a new line in the composer",
+            ),
             Line::from(""),
             Line::from(vec![Span::styled(
                 "=== Actions ===",
                 Style::default().fg(palette::DEEPSEEK_SKY).bold(),
             )]),
-            Line::from("  Enter             - Send the current draft"),
-            Line::from(
-                "  Esc               - Close menu, cancel request, discard draft, or clear input",
+            row(kb(plain(KeyCode::Enter)), "Send the current draft"),
+            row(
+                kb(plain(KeyCode::Esc)),
+                "Close menu, cancel request, discard draft, or clear input",
             ),
-            Line::from("  Ctrl+C            - Cancel request or exit application"),
-            Line::from("  Ctrl+D            - Exit when input is empty"),
-            Line::from("  Ctrl+K            - Open command palette"),
-            Line::from("  l                 - Open pager for last message (when input empty)"),
-            Line::from("  v                 - Open details for the selected tool or message"),
-            Line::from("  Enter (selection) - Open pager for selected text"),
+            row(
+                kb(ctrl(KeyCode::Char('c'))),
+                "Cancel request or exit application",
+            ),
+            row(kb(ctrl(KeyCode::Char('d'))), "Exit when input is empty"),
+            row(kb(ctrl(KeyCode::Char('k'))), "Open command palette"),
+            row(
+                kb(plain(KeyCode::Char('l'))),
+                "Open pager for last message (when input empty)",
+            ),
+            row(
+                kb(plain(KeyCode::Char('v'))),
+                "Open details for the selected tool or message",
+            ),
+            row(
+                format!("{} (selection)", kb(plain(KeyCode::Enter))),
+                "Open pager for selected text",
+            ),
             Line::from(""),
             Line::from(vec![Span::styled(
                 "=== Modes ===",
                 Style::default().fg(palette::DEEPSEEK_SKY).bold(),
             )]),
-            Line::from("  Tab / Shift+Tab  - Complete /command or cycle modes"),
-            Line::from("  Alt+1/2/3         - Directly jump to Plan/Agent/YOLO"),
-            Line::from("  Alt+P/A/Y         - Alternative jump to Plan/Agent/YOLO"),
-            Line::from("  Alt+!/@/#/$/+)     - Focus Plan/Todos/Tasks/Agents/Auto sidebar"),
-            Line::from("  /agent /yolo /plan - Set mode directly"),
-            Line::from("  Ctrl+X            - Toggle between Plan and Agent modes"),
+            row(
+                format!("{} / {}", kb(plain(KeyCode::Tab)), kb(shift(KeyCode::Tab))),
+                "Complete /command or cycle modes",
+            ),
+            row(
+                format!("{}/2/3", kb(alt(KeyCode::Char('1')))),
+                "Directly jump to Plan/Agent/YOLO",
+            ),
+            row(
+                format!("{}/A/Y", kb(alt(KeyCode::Char('p')))),
+                "Alternative jump to Plan/Agent/YOLO",
+            ),
+            row(
+                format!("{}/@/#/$/)", kb(alt(KeyCode::Char('!')))),
+                "Focus Plan/Todos/Tasks/Agents/Auto sidebar",
+            ),
+            row("/agent /yolo /plan".to_string(), "Set mode directly"),
+            row(
+                kb(ctrl(KeyCode::Char('x'))),
+                "Toggle between Plan and Agent modes",
+            ),
             Line::from(""),
             Line::from(vec![Span::styled(
                 "=== Sessions ===",
                 Style::default().fg(palette::DEEPSEEK_SKY).bold(),
             )]),
-            Line::from("  Ctrl+R            - Open session picker"),
+            row(kb(ctrl(KeyCode::Char('r'))), "Open session picker"),
             Line::from(""),
             Line::from(vec![Span::styled(
                 "=== Clipboard ===",
                 Style::default().fg(palette::DEEPSEEK_SKY).bold(),
             )]),
-            Line::from("  Ctrl+V            - Paste text or attach clipboard image"),
-            Line::from("  Ctrl+Shift+C      - Copy selection (Cmd+C on macOS)"),
-            Line::from("  @path             - Add local text file or directory context"),
-            Line::from("  /attach <path>    - Attach local image/video media path"),
+            row(
+                kb(ctrl(KeyCode::Char('v'))),
+                "Paste text or attach clipboard image",
+            ),
+            row(
+                kb(crate::tui::widgets::key_hint::KeyBinding::new(
+                    KeyCode::Char('c'),
+                    crossterm::event::KeyModifiers::CONTROL | crossterm::event::KeyModifiers::SHIFT,
+                )),
+                "Copy selection (Cmd+C on macOS)",
+            ),
+            row(
+                "@path".to_string(),
+                "Add local text file or directory context",
+            ),
+            row(
+                "/attach <path>".to_string(),
+                "Attach local image/video media path",
+            ),
             Line::from(""),
             Line::from(vec![Span::styled(
                 "=== Help ===",
                 Style::default().fg(palette::DEEPSEEK_SKY).bold(),
             )]),
-            Line::from("  F1 / Ctrl+/       - Toggle this help view"),
+            row(
+                format!(
+                    "{} / {}",
+                    kb(plain(KeyCode::F(1))),
+                    kb(ctrl(KeyCode::Char('/')))
+                ),
+                "Toggle this help view",
+            ),
             Line::from(""),
             Line::from(vec![Span::styled(
                 "=== Mouse ===",
