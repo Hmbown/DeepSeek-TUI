@@ -952,6 +952,7 @@ dependencies = [
  "dotenvy",
  "futures-util",
  "ignore",
+ "image",
  "indicatif",
  "libc",
  "multimap",

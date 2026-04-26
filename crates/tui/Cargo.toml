@@ -54,6 +54,7 @@ tiny_http = "0.12"
 portable-pty = "0.8"
 zeroize = "1.8.2"
 ignore = "0.4"
+image = { version = "0.25", default-features = false, features = ["png"] }
 pdf-extract = "0.7"
 
 [dev-dependencies]

@@ -1603,9 +1603,15 @@ impl App {
                 ClipboardContent::Text(text) => {
                     self.insert_paste_text(&text);
                 }
-                ClipboardContent::Image { path, description } => {
-                    self.insert_media_attachment("image", &path, Some(&description));
-                    self.status_message = Some(format!("Attached image: {}", path.display()));
+                ClipboardContent::Image(pasted) => {
+                    let description = format!("{} ({})", pasted.short_label(), pasted.size_label());
+                    self.insert_media_attachment("image", &pasted.path, Some(&description));
+                    self.status_message = Some(format!(
+                        "Pasted {} image ({}) -> {}",
+                        pasted.short_label(),
+                        pasted.size_label(),
+                        pasted.path.display()
+                    ));
                 }
             }
         }
