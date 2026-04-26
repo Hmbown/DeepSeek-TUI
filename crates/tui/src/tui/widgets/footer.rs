@@ -19,6 +19,7 @@ use crate::palette;
 use crate::tui::app::{App, AppMode};
 
 use super::Renderable;
+use super::StatusItem;
 
 /// Pre-computed data the footer needs to render.
 ///
@@ -47,6 +48,21 @@ pub struct FooterProps {
     pub cache: Vec<Span<'static>>,
     /// Session-cost chip spans (empty when below the display threshold).
     pub cost: Vec<Span<'static>>,
+    /// Last-prompt token count chip (#95 — opt-in via `/statusline`).
+    pub last_prompt_tokens: Vec<Span<'static>>,
+    /// Context-window utilisation chip (#95 — opt-in).
+    pub context_percent: Vec<Span<'static>>,
+    /// Git branch chip (#95 — opt-in).
+    pub git_branch: Vec<Span<'static>>,
+    /// Workspace path chip (#95 — opt-in).
+    pub workspace_path: Vec<Span<'static>>,
+    /// Rate-limit remaining chip (#95 — opt-in; stub today).
+    pub rate_limit_remaining: Vec<Span<'static>>,
+    /// Items the user has enabled via `/statusline`. The footer renders
+    /// matching chips in this order; unselected chips are dropped even if
+    /// their span vec was populated. `Mode` and `Model` are honoured by
+    /// the left status line only — they're not part of the chip cluster.
+    pub enabled_items: Vec<StatusItem>,
     /// Optional toast that, when present, replaces the left status line.
     pub toast: Option<FooterToast>,
     /// When `Some(frame_idx)`, the gap between the left status line and the
@@ -193,9 +209,61 @@ impl FooterProps {
             reasoning_replay,
             cache,
             cost,
+            last_prompt_tokens: Vec::new(),
+            context_percent: Vec::new(),
+            git_branch: Vec::new(),
+            workspace_path: Vec::new(),
+            rate_limit_remaining: Vec::new(),
+            // Default to the pre-#95 chip set so existing call sites (and
+            // tests) get the legacy footer until they wire in
+            // `Settings::status_items`. Mode/Model live in the left status
+            // line and are honoured separately.
+            enabled_items: StatusItem::defaults(),
             toast,
             working_strip_frame: None,
         }
+    }
+
+    /// Replace the configurable status item set (from `/statusline`).
+    #[must_use]
+    pub fn with_enabled_items(mut self, items: Vec<StatusItem>) -> Self {
+        self.enabled_items = items;
+        self
+    }
+
+    /// Attach the optional chip for `last_prompt_tokens`.
+    #[must_use]
+    pub fn with_last_prompt_tokens(mut self, spans: Vec<Span<'static>>) -> Self {
+        self.last_prompt_tokens = spans;
+        self
+    }
+
+    /// Attach the optional chip for `context_percent`.
+    #[must_use]
+    pub fn with_context_percent(mut self, spans: Vec<Span<'static>>) -> Self {
+        self.context_percent = spans;
+        self
+    }
+
+    /// Attach the optional chip for `git_branch`.
+    #[must_use]
+    pub fn with_git_branch(mut self, spans: Vec<Span<'static>>) -> Self {
+        self.git_branch = spans;
+        self
+    }
+
+    /// Attach the optional chip for `workspace_path`.
+    #[must_use]
+    pub fn with_workspace_path(mut self, spans: Vec<Span<'static>>) -> Self {
+        self.workspace_path = spans;
+        self
+    }
+
+    /// Attach the optional chip for `rate_limit_remaining`.
+    #[must_use]
+    pub fn with_rate_limit_remaining(mut self, spans: Vec<Span<'static>>) -> Self {
+        self.rate_limit_remaining = spans;
+        self
     }
 }
 
@@ -225,16 +293,31 @@ impl FooterWidget {
     }
 
     fn auxiliary_spans(&self, max_width: usize) -> Vec<Span<'static>> {
-        let parts: Vec<&Vec<Span<'static>>> = [
-            &self.props.coherence,
-            &self.props.agents,
-            &self.props.reasoning_replay,
-            &self.props.cache,
-            &self.props.cost,
-        ]
-        .into_iter()
-        .filter(|spans| !spans.is_empty())
-        .collect();
+        // Walk `enabled_items` in user-chosen order so the picker doubles
+        // as a chip-ordering tool. Mode/Model live in the left status line
+        // and are intentionally skipped here. Each variant maps to its
+        // pre-built span vec; empty vecs (chip "doesn't apply" — e.g. zero
+        // agents in flight, no usage, no git branch) drop out automatically
+        // so configuring an item never adds blank space.
+        let parts: Vec<&Vec<Span<'static>>> = self
+            .props
+            .enabled_items
+            .iter()
+            .filter_map(|item| match item {
+                StatusItem::Mode | StatusItem::Model => None,
+                StatusItem::Coherence => Some(&self.props.coherence),
+                StatusItem::Agents => Some(&self.props.agents),
+                StatusItem::ReasoningReplay => Some(&self.props.reasoning_replay),
+                StatusItem::CacheHitRate => Some(&self.props.cache),
+                StatusItem::SessionCost => Some(&self.props.cost),
+                StatusItem::LastPromptTokens => Some(&self.props.last_prompt_tokens),
+                StatusItem::ContextPercent => Some(&self.props.context_percent),
+                StatusItem::GitBranch => Some(&self.props.git_branch),
+                StatusItem::WorkspacePath => Some(&self.props.workspace_path),
+                StatusItem::RateLimitRemaining => Some(&self.props.rate_limit_remaining),
+            })
+            .filter(|spans| !spans.is_empty())
+            .collect();
 
         // Try to fit as many parts as possible, dropping from the end.
         for end in (0..=parts.len()).rev() {
@@ -495,6 +578,99 @@ mod tests {
         let chip = super::footer_agents_chip(3);
         assert_eq!(chip.len(), 1);
         assert_eq!(chip[0].content.as_ref(), "3 agents");
+    }
+
+    #[test]
+    fn enabled_items_filters_chip_cluster_in_render() {
+        // The footer must honour the `enabled_items` selection: chips
+        // whose StatusItem variant isn't enabled drop out even when their
+        // span vec carries content, matching the `/statusline` contract.
+        let app = make_app();
+        let agents = super::footer_agents_chip(2);
+        let cost = vec![Span::styled(
+            "$1.23".to_string(),
+            ratatui::style::Style::default(),
+        )];
+        // Selection deliberately excludes Agents but includes SessionCost.
+        let props = FooterProps::from_app(
+            &app,
+            None,
+            "ready",
+            palette::TEXT_MUTED,
+            Vec::<Span<'static>>::new(),
+            agents,
+            Vec::<Span<'static>>::new(),
+            Vec::<Span<'static>>::new(),
+            cost,
+        )
+        .with_enabled_items(vec![
+            super::StatusItem::Mode,
+            super::StatusItem::Model,
+            super::StatusItem::SessionCost,
+        ]);
+
+        let widget = FooterWidget::new(props);
+        let area = ratatui::layout::Rect::new(0, 0, 80, 1);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        widget.render(area, &mut buf);
+        let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
+        assert!(
+            rendered.contains("$1.23"),
+            "session cost chip must render when enabled: {rendered:?}",
+        );
+        assert!(
+            !rendered.contains("2 agents"),
+            "agents chip must NOT render when toggled off: {rendered:?}",
+        );
+    }
+
+    #[test]
+    fn enabled_items_renders_optional_chips_when_present() {
+        // Items added in #95 (context %, git branch, workspace path,
+        // last-prompt tokens) must surface in the chip cluster when
+        // listed in `enabled_items` and given non-empty span vecs.
+        let app = make_app();
+        let ctx = vec![Span::styled(
+            "ctx 42%".to_string(),
+            ratatui::style::Style::default(),
+        )];
+        let branch = vec![Span::styled(
+            "\u{2387} main".to_string(),
+            ratatui::style::Style::default(),
+        )];
+        let props = FooterProps::from_app(
+            &app,
+            None,
+            "ready",
+            palette::TEXT_MUTED,
+            Vec::<Span<'static>>::new(),
+            Vec::<Span<'static>>::new(),
+            Vec::<Span<'static>>::new(),
+            Vec::<Span<'static>>::new(),
+            Vec::<Span<'static>>::new(),
+        )
+        .with_context_percent(ctx)
+        .with_git_branch(branch)
+        .with_enabled_items(vec![
+            super::StatusItem::Mode,
+            super::StatusItem::Model,
+            super::StatusItem::ContextPercent,
+            super::StatusItem::GitBranch,
+        ]);
+
+        let widget = FooterWidget::new(props);
+        let area = ratatui::layout::Rect::new(0, 0, 80, 1);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        widget.render(area, &mut buf);
+        let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
+        assert!(
+            rendered.contains("ctx 42%"),
+            "context chip must render when enabled: {rendered:?}",
+        );
+        assert!(
+            rendered.contains("main"),
+            "git branch chip must render when enabled: {rendered:?}",
+        );
     }
 
     #[test]

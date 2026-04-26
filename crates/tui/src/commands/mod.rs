@@ -221,6 +221,12 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "/config",
     },
     CommandInfo {
+        name: "statusline",
+        aliases: &["status-line", "footer"],
+        description: "Pick which items appear in the footer status line",
+        usage: "/statusline",
+    },
+    CommandInfo {
         name: "yolo",
         aliases: &[],
         description: "Enable YOLO mode (shell + trust + auto-approve)",
@@ -354,6 +360,9 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
 
         // Config commands
         "config" => config::show_config(app),
+        "statusline" | "status-line" | "footer" => {
+            CommandResult::action(AppAction::OpenStatusPicker)
+        }
         "settings" => config::show_settings(app),
         "yolo" => config::yolo(app),
         "agent" => config::agent_mode(app),

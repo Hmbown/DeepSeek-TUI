@@ -2298,6 +2298,12 @@ async fn apply_command_result(
                         .push(crate::tui::model_picker::ModelPickerView::new(app));
                 }
             }
+            AppAction::OpenStatusPicker => {
+                if app.view_stack.top_kind() != Some(ModalKind::StatusPicker) {
+                    let view = crate::tui::status_picker::StatusPickerView::new(&app.status_items);
+                    app.view_stack.push(view);
+                }
+            }
             AppAction::CompactContext => {
                 app.status_message = Some("Compacting context...".to_string());
                 let _ = engine_handle.send(Op::CompactContext).await;
@@ -2947,6 +2953,30 @@ async fn handle_view_events(
                 )
                 .await;
             }
+            ViewEvent::StatusItemsApplied { items } => {
+                // Update App state immediately so the next frame reflects
+                // the new chip set. Persist via Settings so the choice
+                // sticks across sessions; surface a toast on persist
+                // failure so the user knows the chosen footer is
+                // session-only (#95).
+                app.status_items = items.clone();
+                let ids: Vec<String> = items.iter().map(|item| item.id().to_string()).collect();
+                match crate::settings::Settings::load() {
+                    Ok(mut settings) => {
+                        settings.status_items = ids;
+                        if let Err(err) = settings.save() {
+                            app.status_message =
+                                Some(format!("Status line saved (session only): {err}"));
+                        } else {
+                            app.status_message = Some("Status line saved.".to_string());
+                        }
+                    }
+                    Err(err) => {
+                        app.status_message =
+                            Some(format!("Status line saved (session only): {err}"));
+                    }
+                }
+            }
         }
     }
 
@@ -3197,6 +3227,15 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
         Vec::new()
     };
 
+    // Optional chips opt-in via `/statusline` (#95). Each helper returns
+    // an empty Vec when its source data isn't available so the
+    // configurable footer never displays an empty placeholder.
+    let last_prompt_tokens_spans = footer_last_prompt_tokens_spans(app);
+    let context_percent_spans = footer_context_percent_spans(app);
+    let git_branch_spans = footer_git_branch_spans(app);
+    let workspace_path_spans = footer_workspace_path_spans(app);
+    let rate_limit_spans = footer_rate_limit_spans(app);
+
     let mut props = FooterProps::from_app(
         app,
         toast,
@@ -3207,7 +3246,13 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
         reasoning_replay,
         cache,
         cost,
-    );
+    )
+    .with_enabled_items(app.status_items.clone())
+    .with_last_prompt_tokens(last_prompt_tokens_spans)
+    .with_context_percent(context_percent_spans)
+    .with_git_branch(git_branch_spans)
+    .with_workspace_path(workspace_path_spans)
+    .with_rate_limit_remaining(rate_limit_spans);
 
     // Animate the spacer between the left status line and the right-hand
     // chips whenever a turn is live: model loading/streaming, compacting, or
@@ -3304,6 +3349,93 @@ fn footer_auxiliary_spans(app: &App, max_width: usize) -> Vec<Span<'static>> {
             return combined;
         }
     }
+    Vec::new()
+}
+
+/// `in <N>` chip for the most recent prompt's input-token count. Empty when
+/// the engine hasn't reported usage yet (first turn) so the configurable
+/// footer doesn't show stale zeros (#95).
+fn footer_last_prompt_tokens_spans(app: &App) -> Vec<Span<'static>> {
+    let Some(tokens) = app.last_prompt_tokens else {
+        return Vec::new();
+    };
+    if tokens == 0 {
+        return Vec::new();
+    }
+    vec![Span::styled(
+        format!("in {}", format_token_count_compact(u64::from(tokens))),
+        Style::default().fg(palette::TEXT_MUTED),
+    )]
+}
+
+/// `<N>%` chip for context-window utilisation. Reuses the same helper the
+/// header uses so the two stay in sync (#95).
+fn footer_context_percent_spans(app: &App) -> Vec<Span<'static>> {
+    let Some((_used, _max, percent)) = context_usage_snapshot(app) else {
+        return Vec::new();
+    };
+    let color = if percent >= 90.0 {
+        palette::STATUS_ERROR
+    } else if percent >= 75.0 {
+        palette::STATUS_WARNING
+    } else {
+        palette::TEXT_MUTED
+    };
+    vec![Span::styled(
+        format!("ctx {percent:.0}%"),
+        Style::default().fg(color),
+    )]
+}
+
+/// `⎇ <branch>` chip for the workspace's current git branch. Reads
+/// `.git/HEAD` directly (cheaper than spawning a subprocess on every
+/// redraw) and falls back to empty when the workspace isn't a git repo or
+/// HEAD is in a detached state we can't resolve cheaply (#95).
+fn footer_git_branch_spans(app: &App) -> Vec<Span<'static>> {
+    let head = app.workspace.join(".git").join("HEAD");
+    let Ok(contents) = std::fs::read_to_string(&head) else {
+        return Vec::new();
+    };
+    let trimmed = contents.trim();
+    let branch = trimmed
+        .strip_prefix("ref: refs/heads/")
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            // Detached HEAD — surface a short SHA so the footer still
+            // tells the user something useful.
+            let short = trimmed.chars().take(7).collect::<String>();
+            format!("({short})")
+        });
+    if branch.is_empty() {
+        return Vec::new();
+    }
+    vec![Span::styled(
+        format!("\u{2387} {branch}"),
+        Style::default().fg(palette::TEXT_MUTED),
+    )]
+}
+
+/// `<dirname>` chip for the workspace path. Truncates to the basename so
+/// it fits next to the other chips (#95).
+fn footer_workspace_path_spans(app: &App) -> Vec<Span<'static>> {
+    let label = app
+        .workspace
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| app.workspace.display().to_string());
+    if label.is_empty() {
+        return Vec::new();
+    }
+    vec![Span::styled(
+        label,
+        Style::default().fg(palette::TEXT_MUTED),
+    )]
+}
+
+/// Rate-limit budget chip. Stub today — DeepSeek's API doesn't expose
+/// `X-RateLimit-Remaining` to the client, so this is wired through but
+/// returns nothing until the engine surfaces a real value (#95).
+fn footer_rate_limit_spans(_app: &App) -> Vec<Span<'static>> {
     Vec::new()
 }
 

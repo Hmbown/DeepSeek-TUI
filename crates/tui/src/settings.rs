@@ -45,6 +45,14 @@ pub struct Settings {
     pub max_input_history: usize,
     /// Default model to use
     pub default_model: Option<String>,
+    /// Footer/header status items to render, ordered.
+    ///
+    /// Each entry is a stable id from [`crate::tui::widgets::StatusItem`]
+    /// (see `status_items.rs`). Toggle the set via the `/statusline`
+    /// picker. `mode` and `model` are forced on at resolve time so the
+    /// footer can never drop the always-on items even if the file is
+    /// hand-edited.
+    pub status_items: Vec<String>,
 }
 
 impl Default for Settings {
@@ -65,6 +73,7 @@ impl Default for Settings {
             sidebar_focus: "auto".to_string(),
             max_input_history: 100,
             default_model: None,
+            status_items: crate::tui::widgets::status_items::StatusItem::default_ids(),
         }
     }
 }

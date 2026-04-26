@@ -1,12 +1,14 @@
 mod footer;
 mod header;
 mod renderable;
+pub mod status_items;
 
 pub use footer::{
     FooterProps, FooterToast, FooterWidget, footer_agents_chip, footer_working_label,
 };
 pub use header::{HeaderData, HeaderWidget};
 pub use renderable::Renderable;
+pub use status_items::{StatusItem, resolve_ids as resolve_status_item_ids};
 
 use std::time::Duration;
 

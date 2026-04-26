@@ -428,6 +428,10 @@ pub struct App {
     /// until the footer widget consumes it.
     #[allow(dead_code)]
     pub fancy_animations: bool,
+    /// Configurable footer/header items resolved from `Settings::status_items`
+    /// (#95). The `/statusline` picker mutates this in place; the footer
+    /// renderer reads it on every redraw.
+    pub status_items: Vec<crate::tui::widgets::StatusItem>,
     pub show_thinking: bool,
     pub show_tool_details: bool,
     pub composer_density: ComposerDensity,
@@ -679,6 +683,7 @@ impl App {
         let calm_mode = settings.calm_mode;
         let low_motion = settings.low_motion;
         let fancy_animations = settings.fancy_animations;
+        let status_items = crate::tui::widgets::resolve_status_item_ids(&settings.status_items);
         let show_thinking = settings.show_thinking;
         let show_tool_details = settings.show_tool_details;
         let composer_density = ComposerDensity::from_setting(&settings.composer_density);
@@ -776,6 +781,7 @@ impl App {
             calm_mode,
             low_motion,
             fancy_animations,
+            status_items,
             show_thinking,
             show_tool_details,
             composer_density,
@@ -1866,6 +1872,8 @@ pub enum AppAction {
     OpenConfigView,
     /// Open the `/model` two-pane picker (Pro/Flash + Off/High/Max).
     OpenModelPicker,
+    /// Open the `/statusline` configurable footer picker (#95).
+    OpenStatusPicker,
     SendMessage(String),
     ListSubAgents,
     FetchModels,

@@ -27,6 +27,8 @@ pub enum ModalKind {
     SessionPicker,
     Config,
     ModelPicker,
+    /// `/statusline` configurable footer picker (#95).
+    StatusPicker,
 }
 
 #[derive(Debug, Clone)]
@@ -90,6 +92,12 @@ pub enum ViewEvent {
         effort: crate::tui::app::ReasoningEffort,
         previous_model: String,
         previous_effort: crate::tui::app::ReasoningEffort,
+    },
+    /// Emitted by the `/statusline` picker on Enter — carries the new
+    /// ordered list of enabled footer/header items. The UI handler
+    /// updates `App.status_items` and persists via `Settings` (#95).
+    StatusItemsApplied {
+        items: Vec<crate::tui::widgets::StatusItem>,
     },
 }
 
