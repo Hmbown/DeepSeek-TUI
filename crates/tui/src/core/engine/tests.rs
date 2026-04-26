@@ -262,7 +262,7 @@ fn detects_context_length_errors_from_provider_payloads() {
 fn context_budget_reserves_output_and_headroom() {
     let budget = context_input_budget("deepseek-v3.2-128k", TURN_MAX_OUTPUT_TOKENS)
         .expect("deepseek models should have known context window");
-    let expected = 128_000usize - 4_096usize - 1_024usize;
+    let expected = 128_000usize - (TURN_MAX_OUTPUT_TOKENS as usize) - 1_024usize;
     assert_eq!(budget, expected);
 }
 

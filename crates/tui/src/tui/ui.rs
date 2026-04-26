@@ -314,7 +314,15 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         trust_mode: app.trust_mode,
         notes_path: config.notes_path(),
         mcp_config_path: config.mcp_config_path(),
-        max_steps: 100,
+        // Effectively unlimited. V4 has a 1M context window and the user
+        // wants the model running until it's actually done. The previous cap
+        // of 100 hit the ceiling on long multi-step plans (wide refactors,
+        // sub-agent orchestration) and presented as the agent "giving up
+        // mid-task". `u32::MAX` is the type ceiling; users can still
+        // interrupt with Ctrl+C / Esc, and a turn naturally ends when the
+        // model stops emitting tool calls. A real runaway is rare and
+        // human-noticeable; we trust the operator over a hard step cap.
+        max_steps: u32::MAX,
         max_subagents: app.max_subagents,
         features: config.features(),
         compaction: app.compaction_config(),
