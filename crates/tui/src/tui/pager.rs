@@ -385,10 +385,7 @@ impl ModalView for PagerView {
                 } else {
                     Color::Yellow
                 };
-                let highlight = Style::default()
-                    .bg(bg)
-                    .fg(fg)
-                    .add_modifier(Modifier::BOLD);
+                let highlight = Style::default().bg(bg).fg(fg).add_modifier(Modifier::BOLD);
                 for span in line.spans.iter_mut() {
                     span.style = highlight;
                 }
