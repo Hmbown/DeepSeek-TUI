@@ -2229,7 +2229,7 @@ mod tests {
         // its own row instead of the inline `args:` summary so the user can
         // read what each child was asked.
         let cell = HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
-            name: "rlm_query".to_string(),
+            name: "parallel_fanout".to_string(),
             status: ToolStatus::Running,
             input_summary: Some("prompts: <3 items>".to_string()),
             output: None,

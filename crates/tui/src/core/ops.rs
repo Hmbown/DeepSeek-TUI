@@ -67,8 +67,8 @@ pub enum Op {
 
     /// Run a Recursive Language Model (RLM) turn per Algorithm 1 of
     /// Zhang et al. (arXiv:2512.24601). The prompt is stored in the REPL
-    /// as the `PROMPT` variable; the root LLM only sees metadata.
-    RlmQuery {
+    /// as `context`; the root LLM only sees metadata.
+    Rlm {
         /// The user's prompt — stored in REPL, NOT in the LLM context.
         content: String,
         /// The model to use for root LLM calls.

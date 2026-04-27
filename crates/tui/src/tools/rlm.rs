@@ -31,7 +31,7 @@ const DEFAULT_MAX_DEPTH: u32 = 1;
 /// context in the first place.
 const MAX_INLINE_CONTENT_CHARS: usize = 200_000;
 
-pub struct RlmProcessTool {
+pub struct RlmTool {
     /// Production HTTP client. `None` when no API key is configured.
     client: Option<DeepSeekClient>,
     /// Root model to drive the RLM loop. Set at registration time; matches
@@ -39,7 +39,7 @@ pub struct RlmProcessTool {
     root_model: String,
 }
 
-impl RlmProcessTool {
+impl RlmTool {
     #[must_use]
     pub fn new(client: Option<DeepSeekClient>, root_model: String) -> Self {
         Self { client, root_model }
@@ -47,9 +47,9 @@ impl RlmProcessTool {
 }
 
 #[async_trait]
-impl ToolSpec for RlmProcessTool {
+impl ToolSpec for RlmTool {
     fn name(&self) -> &'static str {
-        "rlm_process"
+        "rlm"
     }
 
     fn description(&self) -> &'static str {
@@ -101,7 +101,7 @@ impl ToolSpec for RlmProcessTool {
     }
 
     fn approval_requirement(&self) -> ApprovalRequirement {
-        // Same level as rlm_query: the model decided to invoke this, the
+        // Same level as parallel_fanout: the model decided to invoke this, the
         // user already enabled tools by being in Agent/YOLO mode, and
         // every concrete side-effect (file read, LLM call) is bounded.
         ApprovalRequirement::Auto
@@ -128,7 +128,7 @@ impl ToolSpec for RlmProcessTool {
             })?
             .trim();
         if task.is_empty() {
-            return Err(ToolError::invalid_input("rlm_process: `task` is empty"));
+            return Err(ToolError::invalid_input("rlm: `task` is empty"));
         }
 
         let file_path = input.get("file_path").and_then(|v| v.as_str());
@@ -137,12 +137,12 @@ impl ToolSpec for RlmProcessTool {
         let body = match (file_path, content) {
             (Some(_), Some(_)) => {
                 return Err(ToolError::invalid_input(
-                    "rlm_process: pass `file_path` OR `content`, not both",
+                    "rlm: pass `file_path` OR `content`, not both",
                 ));
             }
             (None, None) => {
                 return Err(ToolError::invalid_input(
-                    "rlm_process: requires `file_path` (preferred) or `content`",
+                    "rlm: requires `file_path` (preferred) or `content`",
                 ));
             }
             (Some(path), None) => {
@@ -156,7 +156,7 @@ impl ToolSpec for RlmProcessTool {
             (None, Some(c)) => {
                 if c.chars().count() > MAX_INLINE_CONTENT_CHARS {
                     return Err(ToolError::invalid_input(format!(
-                        "rlm_process: inline `content` is {} chars (cap {MAX_INLINE_CONTENT_CHARS}). Pass `file_path` for larger inputs.",
+                        "rlm: inline `content` is {} chars (cap {MAX_INLINE_CONTENT_CHARS}). Pass `file_path` for larger inputs.",
                         c.chars().count()
                     )));
                 }
@@ -166,7 +166,7 @@ impl ToolSpec for RlmProcessTool {
 
         if body.trim().is_empty() {
             return Err(ToolError::invalid_input(
-                "rlm_process: input is empty after loading",
+                "rlm: input is empty after loading",
             ));
         }
 
@@ -208,7 +208,7 @@ impl ToolSpec for RlmProcessTool {
         if let Some(err) = result.error {
             return Err(ToolError::ExecutionFailed {
                 message: format!(
-                    "rlm_process: {err} (iterations={}, termination={:?})",
+                    "rlm: {err} (iterations={}, termination={:?})",
                     result.iterations, result.termination
                 ),
             });
@@ -217,7 +217,7 @@ impl ToolSpec for RlmProcessTool {
         if result.answer.trim().is_empty() {
             return Err(ToolError::ExecutionFailed {
                 message: format!(
-                    "rlm_process: empty answer (termination={:?}, iterations={})",
+                    "rlm: empty answer (termination={:?}, iterations={})",
                     result.termination, result.iterations
                 ),
             });
@@ -303,8 +303,8 @@ impl ToolSpec for RlmProcessTool {
 mod tests {
     use super::*;
 
-    fn tool() -> RlmProcessTool {
-        RlmProcessTool::new(None, "deepseek-v4-pro".to_string())
+    fn tool() -> RlmTool {
+        RlmTool::new(None, "deepseek-v4-pro".to_string())
     }
 
     fn ctx() -> ToolContext {
@@ -321,7 +321,7 @@ mod tests {
     #[test]
     fn name_and_schema() {
         let t = tool();
-        assert_eq!(t.name(), "rlm_process");
+        assert_eq!(t.name(), "rlm");
         let schema = t.input_schema();
         assert!(schema["properties"]["task"].is_object());
         assert!(schema["properties"]["file_path"].is_object());
@@ -362,7 +362,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_missing_task() {
-        let t = RlmProcessTool::new(None, "x".into());
+        let t = RlmTool::new(None, "x".into());
         let ctx = ctx();
         let res = t
             .execute(json!({"content": "abc"}), &ctx)

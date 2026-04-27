@@ -412,8 +412,8 @@ fn should_default_defer_tool(name: &str, mode: AppMode) -> bool {
             | "grep_files"
             | "file_search"
             | "diagnostics"
-            | "rlm_query"
-            | "rlm_process"
+            | "parallel_fanout"
+            | "rlm"
             | MULTI_TOOL_PARALLEL_NAME
             | "update_plan"
             | "todo_write"
@@ -1312,13 +1312,13 @@ impl Engine {
                 Op::CompactContext => {
                     self.handle_manual_compaction().await;
                 }
-                Op::RlmQuery {
+                Op::Rlm {
                     content,
                     model,
                     child_model,
                     max_depth,
                 } => {
-                    self.handle_rlm_query(content, model, child_model, max_depth)
+                    self.handle_rlm(content, model, child_model, max_depth)
                         .await;
                 }
                 Op::Shutdown => {
@@ -1450,8 +1450,8 @@ impl Engine {
 
         builder = builder
             .with_review_tool(self.deepseek_client.clone(), self.session.model.clone())
-            .with_rlm_query_tool(self.deepseek_client.clone())
-            .with_rlm_process_tool(self.deepseek_client.clone(), self.session.model.clone())
+            .with_parallel_fanout_tool(self.deepseek_client.clone())
+            .with_rlm_tool(self.deepseek_client.clone(), self.session.model.clone())
             .with_user_input_tool()
             .with_parallel_tool();
 
@@ -1663,7 +1663,7 @@ impl Engine {
     /// only sees metadata about the REPL state, never the prompt text
     /// directly. The model generates Python code, which is executed by
     /// the REPL. When FINAL() is called, the loop ends.
-    async fn handle_rlm_query(
+    async fn handle_rlm(
         &mut self,
         content: String,
         model: String,

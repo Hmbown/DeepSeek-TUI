@@ -34,7 +34,7 @@ const MAX_PARALLEL: usize = 16;
 const DEFAULT_CHILD_TIMEOUT: Duration = Duration::from_secs(120);
 
 // ---------------------------------------------------------------------------
-// RlmChildClient — dyn-compatible wrapper around LLM completion.
+// FanoutChildClient — dyn-compatible wrapper around LLM completion.
 //
 // The workspace's `LlmClient` trait uses native `async fn`, which is not dyn
 // compatible in stable Rust (RPITIT vtable limitations). We define a small
@@ -47,13 +47,13 @@ const DEFAULT_CHILD_TIMEOUT: Duration = Duration::from_secs(120);
 /// operation. `#[async_trait]` desugars the async method into a boxed future
 /// so the trait is object-safe.
 #[async_trait]
-pub(crate) trait RlmChildClient: Send + Sync {
+pub(crate) trait FanoutChildClient: Send + Sync {
     async fn complete(&self, request: MessageRequest) -> anyhow::Result<MessageResponse>;
 }
 
 /// Blanket impl: any `DeepSeekClient` is a valid child client.
 #[async_trait]
-impl RlmChildClient for DeepSeekClient {
+impl FanoutChildClient for DeepSeekClient {
     async fn complete(&self, request: MessageRequest) -> anyhow::Result<MessageResponse> {
         self.create_message(request).await
     }
@@ -61,28 +61,28 @@ impl RlmChildClient for DeepSeekClient {
 
 /// Tool: `rlm_query`. Runs one or more prompts in parallel and joins the
 /// results. Structured tool call so the model can trigger fan-out reliably.
-pub struct RlmQueryTool {
-    /// Boxed child client — `Arc<dyn RlmChildClient>` lets tests inject a
+pub struct ParallelFanoutTool {
+    /// Boxed child client — `Arc<dyn FanoutChildClient>` lets tests inject a
     /// mock without going through a real HTTP connection. `None` when no API
     /// key is configured.
-    client: Option<Arc<dyn RlmChildClient>>,
+    client: Option<Arc<dyn FanoutChildClient>>,
     default_model: String,
 }
 
-impl RlmQueryTool {
+impl ParallelFanoutTool {
     /// Construct with a concrete `DeepSeekClient` (production path).
     #[must_use]
     pub fn new(client: Option<DeepSeekClient>) -> Self {
         Self {
-            client: client.map(|c| Arc::new(c) as Arc<dyn RlmChildClient>),
+            client: client.map(|c| Arc::new(c) as Arc<dyn FanoutChildClient>),
             default_model: DEFAULT_CHILD_MODEL.to_string(),
         }
     }
 
-    /// Construct with a pre-boxed `RlmChildClient` — used by tests to inject
+    /// Construct with a pre-boxed `FanoutChildClient` — used by tests to inject
     /// a `MockRlmClient` without an active API connection.
     #[cfg(test)]
-    pub(crate) fn new_with_arc(client: Option<Arc<dyn RlmChildClient>>) -> Self {
+    pub(crate) fn new_with_arc(client: Option<Arc<dyn FanoutChildClient>>) -> Self {
         Self {
             client,
             default_model: DEFAULT_CHILD_MODEL.to_string(),
@@ -91,9 +91,9 @@ impl RlmQueryTool {
 }
 
 #[async_trait]
-impl ToolSpec for RlmQueryTool {
+impl ToolSpec for ParallelFanoutTool {
     fn name(&self) -> &'static str {
-        "rlm_query"
+        "parallel_fanout"
     }
 
     fn description(&self) -> &'static str {
@@ -178,16 +178,16 @@ impl ToolSpec for RlmQueryTool {
             };
 
         if prompts.is_empty() {
-            return Err(ToolError::invalid_input("rlm_query: prompts list is empty"));
+            return Err(ToolError::invalid_input("parallel_fanout: prompts list is empty"));
         }
         if prompts.len() > MAX_PARALLEL {
             return Err(ToolError::invalid_input(format!(
-                "rlm_query: too many prompts ({}, max {MAX_PARALLEL})",
+                "parallel_fanout: too many prompts ({}, max {MAX_PARALLEL})",
                 prompts.len(),
             )));
         }
 
-        // client is already Arc<dyn RlmChildClient> — clone the Arc, not the client.
+        // client is already Arc<dyn FanoutChildClient> — clone the Arc, not the client.
         let model = Arc::new(model);
         let system = Arc::new(system);
         let total = prompts.len();
@@ -211,7 +211,7 @@ impl ToolSpec for RlmQueryTool {
                 peak.fetch_max(now, Ordering::Relaxed);
                 debug!(
                     target: "deepseek_cli::tools",
-                    tool = "rlm_query",
+                    tool = "parallel_fanout",
                     idx,
                     in_flight = now,
                     "child request start"
@@ -260,7 +260,7 @@ impl ToolSpec for RlmQueryTool {
 
                 debug!(
                     target: "deepseek_cli::tools",
-                    tool = "rlm_query",
+                    tool = "parallel_fanout",
                     idx,
                     elapsed_ms,
                     ok = response.is_ok(),
@@ -277,7 +277,7 @@ impl ToolSpec for RlmQueryTool {
         let dispatch_elapsed_ms = dispatch_started.elapsed().as_millis() as u64;
         debug!(
             target: "deepseek_cli::tools",
-            tool = "rlm_query",
+            tool = "parallel_fanout",
             total,
             peak = peak.load(Ordering::Relaxed),
             dispatch_elapsed_ms,
@@ -372,8 +372,8 @@ mod tests {
         )
     }
 
-    fn tool_without_client() -> RlmQueryTool {
-        RlmQueryTool::new(None)
+    fn tool_without_client() -> ParallelFanoutTool {
+        ParallelFanoutTool::new(None)
     }
 
     // -----------------------------------------------------------------------
@@ -402,7 +402,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl RlmChildClient for MockRlmClient {
+    impl FanoutChildClient for MockRlmClient {
         async fn complete(&self, request: MessageRequest) -> anyhow::Result<MessageResponse> {
             // Record start time before sleeping.
             self.start_times.lock().unwrap().push(Instant::now());
@@ -459,7 +459,7 @@ mod tests {
         let mock = Arc::new(MockRlmClient::new(delay));
         let start_times_ref = Arc::clone(&mock.start_times);
 
-        let tool = RlmQueryTool::new_with_arc(Some(mock as Arc<dyn RlmChildClient>));
+        let tool = ParallelFanoutTool::new_with_arc(Some(mock as Arc<dyn FanoutChildClient>));
         let prompts: Vec<&str> = vec!["a", "b", "c", "d"];
 
         let overall_start = Instant::now();
@@ -511,7 +511,7 @@ mod tests {
     #[tokio::test]
     async fn rlm_single_prompt_returns_plain_text() {
         let mock = Arc::new(MockRlmClient::new(std::time::Duration::from_millis(1)));
-        let tool = RlmQueryTool::new_with_arc(Some(mock as Arc<dyn RlmChildClient>));
+        let tool = ParallelFanoutTool::new_with_arc(Some(mock as Arc<dyn FanoutChildClient>));
 
         let result = tool
             .execute(json!({ "prompt": "hello" }), &ctx())
@@ -527,7 +527,7 @@ mod tests {
     #[tokio::test]
     async fn rlm_multi_prompt_returns_indexed_blocks() {
         let mock = Arc::new(MockRlmClient::new(std::time::Duration::from_millis(1)));
-        let tool = RlmQueryTool::new_with_arc(Some(mock as Arc<dyn RlmChildClient>));
+        let tool = ParallelFanoutTool::new_with_arc(Some(mock as Arc<dyn FanoutChildClient>));
 
         let result = tool
             .execute(json!({ "prompts": ["alpha", "beta"] }), &ctx())
