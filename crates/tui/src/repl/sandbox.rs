@@ -1,8 +1,6 @@
 //! REPL sandbox utilities: FINAL/FINAL_VAR parsing, llm_query injection,
 //! and the ReplOutput type.
 
-use serde_json::Value as JsonValue;
-
 /// Output from a REPL execution round.
 #[derive(Debug, Clone)]
 pub struct ReplOutput {

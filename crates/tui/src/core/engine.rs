@@ -2774,10 +2774,7 @@ impl Engine {
                                         round.stdout, round.stderr
                                     )
                                 } else {
-                                    format!(
-                                        "[REPL round {round_num} output]\n{}",
-                                        round.stdout
-                                    )
+                                    format!("[REPL round {round_num} output]\n{}", round.stdout)
                                 };
                                 self.add_session_message(Message {
                                     role: "user".to_string(),
@@ -2811,13 +2808,13 @@ impl Engine {
 
                     if let Some(final_val) = final_result {
                         // Replace the assistant's text with the FINAL answer.
-                        if let Some(last_msg) = self.session.messages.last_mut() {
-                            if last_msg.role == "assistant" {
-                                for block in &mut last_msg.content {
-                                    if let ContentBlock::Text { text, .. } = block {
-                                        *text = final_val;
-                                        break;
-                                    }
+                        if let Some(last_msg) = self.session.messages.last_mut()
+                            && last_msg.role == "assistant"
+                        {
+                            for block in &mut last_msg.content {
+                                if let ContentBlock::Text { text, .. } = block {
+                                    *text = final_val;
+                                    break;
                                 }
                             }
                         }

@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use tokio::process::Command;
 
-use super::sandbox::{ReplOutput, parse_final};
+use super::sandbox::parse_final;
 
 /// Python REPL runtime — executes code blocks in isolated processes
 /// with persistent variable state via a JSON state file.
@@ -127,10 +127,7 @@ impl PythonRuntime {
         std::fs::create_dir_all(&dir)
             .map_err(|e| format!("Failed to create REPL temp dir: {e}"))?;
 
-        let state_path = dir.join(format!(
-            "state_{}.json",
-            std::process::id()
-        ));
+        let state_path = dir.join(format!("state_{}.json", std::process::id()));
 
         Ok(Self {
             state_path,
@@ -173,14 +170,21 @@ impl PythonRuntime {
                 .arg("-u") // unbuffered
                 .arg("-c")
                 .arg(&full_script)
-                .env("REPL_STATE_FILE", self.state_path.to_string_lossy().as_ref())
+                .env(
+                    "REPL_STATE_FILE",
+                    self.state_path.to_string_lossy().as_ref(),
+                )
                 .output()
                 .await
                 .map_err(|e| format!("Failed to execute python3: {e}"))
         })
         .await
-        .map_err(|_| format!("Python REPL round timed out after {}s", ROUND_TIMEOUT.as_secs()))?
-        .map_err(|e| e)?;
+        .map_err(|_| {
+            format!(
+                "Python REPL round timed out after {}s",
+                ROUND_TIMEOUT.as_secs()
+            )
+        })??;
 
         let full_stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -260,7 +264,10 @@ mod tests {
     #[tokio::test]
     async fn repl_executes_simple_code() {
         let mut rt = PythonRuntime::new().await.expect("create runtime");
-        let round = rt.execute("print('hello from repl')").await.expect("execute");
+        let round = rt
+            .execute("print('hello from repl')")
+            .await
+            .expect("execute");
         assert!(round.stdout.contains("hello from repl"));
         assert!(!round.has_error);
         assert!(round.final_value.is_none());
@@ -289,16 +296,15 @@ mod tests {
         rt.execute("repl_set('count', 41)").await.expect("round 1");
         // Round 2: read it back and increment.
         let round = rt
-            .execute("val = repl_get('count', 0); repl_set('count', val + 1); print(f'count={val+1}')")
+            .execute(
+                "val = repl_get('count', 0); repl_set('count', val + 1); print(f'count={val+1}')",
+            )
             .await
             .expect("round 2");
         assert!(round.stdout.contains("count=42"));
 
         // Round 3: verify via FINAL_VAR.
-        let round = rt
-            .execute("FINAL_VAR('count')")
-            .await
-            .expect("round 3");
+        let round = rt.execute("FINAL_VAR('count')").await.expect("round 3");
         assert_eq!(round.final_value.as_deref(), Some("42"));
 
         let _ = std::fs::remove_file(&state_path);
