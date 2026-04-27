@@ -1685,7 +1685,7 @@ impl Engine {
 
         let _ = self
             .tx_event
-            .send(Event::status("RLM turn started (Algorithm 1)".to_string()))
+            .send(Event::status("RLM turn started".to_string()))
             .await;
 
         let result = run_rlm_turn(

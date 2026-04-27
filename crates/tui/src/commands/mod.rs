@@ -316,7 +316,7 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "rlm",
         aliases: &["recursive"],
-        description: "Recursive Language Model (RLM) — process a prompt via Algorithm 1 from Zhang et al. (arXiv:2512.24601). The prompt is stored in a REPL; the model writes code to process it.",
+        description: "Recursive Language Model (RLM) turn — store the prompt in a Python REPL and let the model write code to process it, with `llm_query()` / `sub_rlm()` for sub-LLM calls.",
         usage: "/rlm <prompt>",
     },
     // Debug/cost command
@@ -458,7 +458,7 @@ pub fn rlm(app: &mut App, arg: Option<&str>) -> CommandResult {
 
     CommandResult::with_message_and_action(
         format!(
-            "Starting RLM turn (Algorithm 1) for {} chars of prompt using {} (child={}, depth={})...",
+            "Starting RLM turn for {} chars of prompt using {} (child={}, depth={})...",
             prompt.len(),
             model,
             child_model,

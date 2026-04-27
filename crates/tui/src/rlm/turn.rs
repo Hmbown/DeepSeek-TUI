@@ -200,7 +200,7 @@ async fn run_rlm_turn_inner_impl(
 
     let _ = tx_event
         .send(Event::status(format!(
-            "RLM turn started (Algorithm 1) — root={model}, child={child_model}, max_depth={max_depth}"
+            "RLM turn started — root={model}, child={child_model}, max_depth={max_depth}"
         )))
         .await;
 
