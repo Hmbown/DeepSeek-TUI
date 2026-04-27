@@ -28,9 +28,7 @@ use tokio::sync::mpsc;
 use crate::client::DeepSeekClient;
 use crate::core::events::Event;
 use crate::llm_client::LlmClient;
-use crate::models::{
-    ContentBlock, Message, MessageRequest, Usage,
-};
+use crate::models::{ContentBlock, Message, MessageRequest, Usage};
 use crate::repl::runtime::PythonRuntime;
 use crate::repl::sandbox::parse_final;
 
@@ -117,7 +115,9 @@ pub async fn run_rlm_turn(
     let mut repl = PythonRuntime::with_state_path(state_path.clone());
 
     let _ = tx_event
-        .send(Event::status("RLM: REPL initialised with PROMPT variable".to_string()))
+        .send(Event::status(
+            "RLM: REPL initialised with PROMPT variable".to_string(),
+        ))
         .await;
 
     // ------------------------------------------------------------------
@@ -141,13 +141,20 @@ pub async fn run_rlm_turn(
                 answer: String::new(),
                 iterations: iteration,
                 duration: start.elapsed(),
-                error: Some(format!("RLM turn timed out after {}s", ROUND_TIMEOUT.as_secs())),
+                error: Some(format!(
+                    "RLM turn timed out after {}s",
+                    ROUND_TIMEOUT.as_secs()
+                )),
                 usage: total_usage,
             };
         }
 
         let _ = tx_event
-            .send(Event::status(format!("RLM iteration {}/{}", iteration + 1, MAX_RLM_ITERATIONS)))
+            .send(Event::status(format!(
+                "RLM iteration {}/{}",
+                iteration + 1,
+                MAX_RLM_ITERATIONS
+            )))
             .await;
 
         // 3a. LLM generates code from metadata-only context
@@ -180,8 +187,12 @@ pub async fn run_rlm_turn(
         };
 
         // Accumulate usage
-        total_usage.input_tokens = total_usage.input_tokens.saturating_add(response.usage.input_tokens);
-        total_usage.output_tokens = total_usage.output_tokens.saturating_add(response.usage.output_tokens);
+        total_usage.input_tokens = total_usage
+            .input_tokens
+            .saturating_add(response.usage.input_tokens);
+        total_usage.output_tokens = total_usage
+            .output_tokens
+            .saturating_add(response.usage.output_tokens);
 
         // Extract text from response
         let response_text = extract_text_blocks(&response.content);
@@ -245,7 +256,9 @@ pub async fn run_rlm_turn(
         // 3d. Check for FINAL
         if let Some(final_val) = &round.final_value {
             let _ = tx_event
-                .send(Event::status("RLM: FINAL detected, ending loop".to_string()))
+                .send(Event::status(
+                    "RLM: FINAL detected, ending loop".to_string(),
+                ))
                 .await;
             return RlmTurnResult {
                 answer: final_val.clone(),
@@ -260,7 +273,9 @@ pub async fn run_rlm_turn(
         let (_cleaned, raw_final) = parse_final(&round.full_stdout);
         if let Some(final_val) = raw_final {
             let _ = tx_event
-                .send(Event::status("RLM: FINAL detected (raw parse), ending loop".to_string()))
+                .send(Event::status(
+                    "RLM: FINAL detected (raw parse), ending loop".to_string(),
+                ))
                 .await;
             return RlmTurnResult {
                 answer: final_val,
@@ -274,7 +289,10 @@ pub async fn run_rlm_turn(
         // 3e. Build metadata for next iteration and append to history
         //     hist ← hist ∥ code ∥ Metadata(stdout)
         let stdout_display = if round.stdout.is_empty() && !round.stderr.is_empty() {
-            format!("[stderr]\n{}", truncate_text(&round.stderr, STDOUT_METADATA_PREVIEW_LEN))
+            format!(
+                "[stderr]\n{}",
+                truncate_text(&round.stderr, STDOUT_METADATA_PREVIEW_LEN)
+            )
         } else {
             truncate_text(&round.stdout, STDOUT_METADATA_PREVIEW_LEN)
         };
@@ -289,7 +307,12 @@ pub async fn run_rlm_turn(
         });
 
         // User message: metadata about stdout + current REPL state
-        let next_metadata = build_metadata_message(&prompt, iteration + 1, Some(&code_to_run), Some(&stdout_display));
+        let next_metadata = build_metadata_message(
+            &prompt,
+            iteration + 1,
+            Some(&code_to_run),
+            Some(&stdout_display),
+        );
         messages.push(next_metadata);
 
         // Emit stdout preview as a status update
@@ -353,7 +376,7 @@ fn build_metadata_message(
 
     parts.push(format!("## REPL State (Round {iteration})"));
     parts.push(String::new());
-    parts.push(format!("**PROMPT** — stored as REPL variable `PROMPT`"));
+    parts.push("**PROMPT** — stored as REPL variable `PROMPT`".to_string());
     parts.push(format!("- Length: {prompt_len} characters"));
     parts.push(format!("- Preview: \"{prompt_preview}\""));
     parts.push(String::new());
@@ -389,7 +412,9 @@ fn build_metadata_message(
         parts.push(String::new());
     }
 
-    parts.push("**Available functions**: `repl_get()`, `repl_set()`, `llm_query(prompt)`".to_string());
+    parts.push(
+        "**Available functions**: `repl_get()`, `repl_set()`, `llm_query(prompt)`".to_string(),
+    );
     parts.push("**End the loop with**: `FINAL(value)`".to_string());
 
     let text = parts.join("\n");
@@ -440,7 +465,9 @@ fn extract_python_code(text: &str) -> Option<String> {
     let after_fence = best_start.map(|(_, rest)| rest)?;
 
     // Find the closing ```
-    let end_idx = after_fence.find("\n```").or_else(|| after_fence.find("```"))?;
+    let end_idx = after_fence
+        .find("\n```")
+        .or_else(|| after_fence.find("```"))?;
 
     let code = after_fence[..end_idx].trim().to_string();
     if code.is_empty() {
@@ -578,7 +605,12 @@ mod tests {
 
     #[test]
     fn metadata_with_previous_code_shows_code_summary() {
-        let msg = build_metadata_message("test", 2, Some("for i in range(10):\n    print(i)"), Some("0\n1\n2"));
+        let msg = build_metadata_message(
+            "test",
+            2,
+            Some("for i in range(10):\n    print(i)"),
+            Some("0\n1\n2"),
+        );
         let text = extract_text_blocks(&msg.content);
         assert!(text.contains("Round 2"));
         assert!(text.contains("for i"));
