@@ -1934,6 +1934,8 @@ pub enum AppAction {
         model: String,
         /// Model for sub-LLM (llm_query) calls.
         child_model: String,
+        /// Recursion budget for `sub_rlm()` calls.
+        max_depth: u32,
     },
     ListSubAgents,
     FetchModels,

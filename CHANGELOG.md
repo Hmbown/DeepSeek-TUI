@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-04-27
+
+### Fixed
+- **`/rlm` actually recurses now (Algorithm 1 substrate, paper-faithful).** The v0.6.3 RLM loop had the right *shape* but its recursive substrate was non-functional: `llm_query()` was a Python stub that returned a hardcoded string, and `child_model` was bound with an underscore prefix and silently dropped. The loop ran but the sub-LLM never fired. v0.6.4 fixes this end-to-end:
+  - **HTTP sidecar.** Each RLM turn spins up a localhost-only axum server on a kernel-assigned port for the duration of the turn. Python's `llm_query()` and `sub_rlm()` are real `urllib.request.urlopen` POSTs; Rust services them via the existing DeepSeek client and returns the completion text. No long-lived python process, no FIFOs, no two-pass replay — Python blocks on HTTP, Rust answers it. (`crates/tui/src/rlm/sidecar.rs`)
+  - **`child_model` is plumbed through.** `Op::RlmQuery` and `AppAction::RlmQuery` carry the configured child model (default `deepseek-v4-flash`) all the way to the sidecar, where every `llm_query()` call uses it. Token usage is folded into `RlmTurnResult.usage` so cost tracking works.
+  - **`sub_rlm()` is exposed as a paper-faithful recursive RLM call.** The Python REPL gets a real `sub_rlm(prompt)` function that runs another full Algorithm-1 turn at depth-1 inside the same process (different sidecar route, decremented recursion budget). Default `max_depth = 2` from the `/rlm` command — the model can recurse twice before the budget hits zero. The recursive opaque-future cycle (`run_rlm_turn_inner` → `start_sidecar` → `sub_rlm_handler` → `run_rlm_turn_inner`) is broken by returning a concrete `Pin<Box<dyn Future + Send>>` from `run_rlm_turn_inner`.
+  - **Strict termination.** The loop only ends via `FINAL(value)` (or the iteration cap). The previous "no fence = direct answer, end loop" early-exit deviated from the paper and could short-circuit on iteration 1 with a chatty model that never saw `PROMPT`. The new behavior tolerates one fence-less round (with a reminder appended), then falls back to a `RlmTermination::DirectAnswer` exit. `RlmTurnResult` now carries a `termination: RlmTermination` enum (`Final | DirectAnswer | Exhausted | Error`) so callers can tell what happened.
+  - **Richer `Metadata(state)`.** The metadata message the root LLM sees now includes paper-required *access patterns* (`repl_get`, slicing, `splitlines`, `repl_set`, `llm_query`, `sub_rlm`, `FINAL`) and a live list of variable keys currently in the REPL state file — so the model can see what it's accumulated across rounds without us shipping the values themselves.
+  - **Unicode-safe truncation.** `truncate_text` now counts Unicode codepoints (was mixing `text.len()` bytes with `chars().take(n)`), so multi-byte previews can no longer mis-count. Per-turn temp state files are cleaned up on completion. `ROOM_TEMPERATURE` typo → `ROOT_TEMPERATURE`.
+  - **End-to-end smoke test.** `rlm::turn::tests::sidecar_url_is_exported_to_python_env` stands up a stand-in axum server that always replies `{"text":"pong-from-sidecar"}`, runs `print(llm_query('hello'))` in the real `PythonRuntime`, and asserts the reply round-trips. This catches future regressions in the sidecar URL passthrough.
+
+### Reference
+- Zhang, Kraska, Khattab. "Recursive Language Models." arXiv:2512.24601 (Algorithm 1).
+
+
 ### Added
 - **Sub-agents surface in the footer status strip.** When N > 0 sub-agents are in flight, the footer grows a "1 agent" / "N agents" chip in DeepSeek-sky color matching the model badge. Hides entirely at zero. (`footer_agents_chip` in `widgets/footer.rs`)
 - **`@`-mention popup is fully wired in the composer.** Previously only the App state fields existed (`mention_menu_selected`, `mention_menu_hidden`). The popup now renders below the input mirror-style with the slash menu, with `@`-prefixed entries; Up/Down navigates, Enter / Tab apply the selection, Esc hides until the next input edit. Mention takes precedence over slash because the positional check is stricter. (`visible_mention_menu_entries` + `apply_mention_menu_selection` in `file_mention.rs`)

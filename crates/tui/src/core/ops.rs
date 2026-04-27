@@ -75,6 +75,9 @@ pub enum Op {
         model: String,
         /// The model to use for sub-LLM (llm_query) calls.
         child_model: String,
+        /// Recursion budget for `sub_rlm()` calls. Paper experiments use
+        /// depth=1; defaults set by the `/rlm` command.
+        max_depth: u32,
     },
 
     /// Shutdown the engine

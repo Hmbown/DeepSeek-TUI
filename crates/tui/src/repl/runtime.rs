@@ -29,6 +29,10 @@ pub struct PythonRuntime {
     round_count: u64,
     /// When the runtime was created.
     started: Instant,
+    /// Extra env vars passed to every spawned `python3` invocation. The RLM
+    /// loop uses this to inject `REPL_LLM_URL` / `REPL_RLM_URL` so that
+    /// `llm_query()` / `sub_rlm()` inside Python can reach the local sidecar.
+    extra_env: Vec<(String, String)>,
 }
 
 /// Result of executing one code block.
@@ -52,10 +56,17 @@ const DEFAULT_STDOUT_LIMIT: usize = 8_192;
 const ROUND_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Python bootstrap — loaded at the top of every execution round.
-/// Provides `llm_query()`, `FINAL()`, `FINAL_VAR()`, `repl_get/set`,
-/// and loads/saves the persistent variable state.
+/// Provides `llm_query()`, `sub_rlm()`, `FINAL()`, `FINAL_VAR()`,
+/// `repl_get/set`, and loads/saves the persistent variable state.
+///
+/// `llm_query()` and `sub_rlm()` work by POSTing to a localhost HTTP
+/// sidecar started by the RLM driver in Rust. The URLs are passed via
+/// the `REPL_LLM_URL` and `REPL_RLM_URL` environment variables. When
+/// the REPL is used outside an RLM turn (or the sidecar isn't running)
+/// the functions return a clear "unavailable" sentinel rather than
+/// silently lying about a fake response.
 const PYTHON_BOOTSTRAP: &str = r#"
-import sys, json, os
+import sys, json, os, urllib.request, urllib.error
 
 # --- Persistent variable store ---
 _repl_vars = {}
@@ -67,22 +78,56 @@ if _STATE_FILE and os.path.exists(_STATE_FILE):
     except:
         pass
 
-# --- llm_query function ---
-# This is a stub that calls back to Rust via a side-channel.
-# The Rust side writes a _llm_query_result to the state file
-# after this process writes its request.
-def llm_query(prompt, model=None, max_tokens=None):
-    """Query a sub-LLM. Writes request to stdout; Rust reads it and
-    writes result to a result file."""
-    request = {
-        'prompt': str(prompt),
-        'model': model,
-        'max_tokens': max_tokens,
-    }
-    # Signal to Rust that we want an LLM query.
-    print(f'__REPL_LLM_QUERY__::{json.dumps(request)}', flush=True)
-    # Rust will inject the result. For now, return a stub.
-    return f'[llm_query stub: {str(prompt)[:100]}...]'
+# --- HTTP sidecar URLs (set by the RLM driver) ---
+_LLM_URL = os.environ.get('REPL_LLM_URL', '')
+_RLM_URL = os.environ.get('REPL_RLM_URL', '')
+
+def _post_json(url, body, timeout):
+    data = json.dumps(body).encode('utf-8')
+    req = urllib.request.Request(
+        url, data=data,
+        headers={'Content-Type': 'application/json'},
+        method='POST',
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode('utf-8'))
+
+def llm_query(prompt, model=None, max_tokens=None, system=None):
+    """One-shot sub-LLM call. Returns the completion text as a string.
+
+    Routed through the local Rust sidecar; uses the configured child_model
+    by default, or whatever `model` you pass.
+    """
+    if not _LLM_URL:
+        return '[llm_query unavailable: no sidecar URL — RLM not active]'
+    body = {'prompt': str(prompt), 'model': model,
+            'max_tokens': max_tokens, 'system': system}
+    try:
+        data = _post_json(_LLM_URL, body, timeout=180)
+    except urllib.error.URLError as e:
+        return f'[llm_query transport error: {e}]'
+    except Exception as e:
+        return f'[llm_query error: {e}]'
+    if data.get('error'):
+        return f'[llm_query: {data["error"]}]'
+    return data.get('text', '')
+
+def sub_rlm(prompt):
+    """Recursive sub-RLM call (paper's `sub_RLM`). Runs a full RLM turn on
+    `prompt` at depth-1 and returns its final answer string. Bounded by the
+    parent turn's recursion budget.
+    """
+    if not _RLM_URL:
+        return '[sub_rlm unavailable: no sidecar URL — RLM not active]'
+    try:
+        data = _post_json(_RLM_URL, {'prompt': str(prompt)}, timeout=600)
+    except urllib.error.URLError as e:
+        return f'[sub_rlm transport error: {e}]'
+    except Exception as e:
+        return f'[sub_rlm error: {e}]'
+    if data.get('error'):
+        return f'[sub_rlm: {data["error"]}]'
+    return data.get('text', '')
 
 # --- FINAL / FINAL_VAR ---
 def FINAL(value):
@@ -109,9 +154,6 @@ def _save_state():
                 json.dump(_repl_vars, f)
         except:
             pass
-
-# Import commonly needed modules
-import re as _re
 "#;
 
 /// Code suffix — appended after user code to save state.
@@ -134,6 +176,7 @@ impl PythonRuntime {
             stdout_limit: DEFAULT_STDOUT_LIMIT,
             round_count: 0,
             started: Instant::now(),
+            extra_env: Vec::new(),
         })
     }
 
@@ -144,7 +187,17 @@ impl PythonRuntime {
             stdout_limit: DEFAULT_STDOUT_LIMIT,
             round_count: 0,
             started: Instant::now(),
+            extra_env: Vec::new(),
         }
+    }
+
+    /// Set an env var that will be passed to every subsequent `python3`
+    /// invocation. Used by the RLM driver to inject sidecar URLs.
+    pub fn set_env(&mut self, key: impl Into<String>, value: impl Into<String>) {
+        let key = key.into();
+        let value = value.into();
+        self.extra_env.retain(|(k, _)| k != &key);
+        self.extra_env.push((key, value));
     }
 
     /// Execute a block of Python code.
@@ -165,15 +218,18 @@ impl PythonRuntime {
         );
 
         let output = tokio::time::timeout(ROUND_TIMEOUT, async {
-            Command::new("python3")
-                .arg("-u") // unbuffered
+            let mut cmd = Command::new("python3");
+            cmd.arg("-u") // unbuffered
                 .arg("-c")
                 .arg(&full_script)
                 .env(
                     "REPL_STATE_FILE",
                     self.state_path.to_string_lossy().as_ref(),
-                )
-                .output()
+                );
+            for (k, v) in &self.extra_env {
+                cmd.env(k, v);
+            }
+            cmd.output()
                 .await
                 .map_err(|e| format!("Failed to execute python3: {e}"))
         })

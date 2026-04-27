@@ -1315,8 +1315,10 @@ impl Engine {
                     content,
                     model,
                     child_model,
+                    max_depth,
                 } => {
-                    self.handle_rlm_query(content, model, child_model).await;
+                    self.handle_rlm_query(content, model, child_model, max_depth)
+                        .await;
                 }
                 Op::Shutdown => {
                     break;
@@ -1659,7 +1661,13 @@ impl Engine {
     /// only sees metadata about the REPL state, never the prompt text
     /// directly. The model generates Python code, which is executed by
     /// the REPL. When FINAL() is called, the loop ends.
-    async fn handle_rlm_query(&mut self, content: String, model: String, child_model: String) {
+    async fn handle_rlm_query(
+        &mut self,
+        content: String,
+        model: String,
+        child_model: String,
+        max_depth: u32,
+    ) {
         use crate::rlm::turn::run_rlm_turn;
 
         let Some(ref client) = self.deepseek_client else {
@@ -1680,7 +1688,15 @@ impl Engine {
             .send(Event::status("RLM turn started (Algorithm 1)".to_string()))
             .await;
 
-        let result = run_rlm_turn(client, model, content, child_model, self.tx_event.clone()).await;
+        let result = run_rlm_turn(
+            client,
+            model,
+            content,
+            child_model,
+            self.tx_event.clone(),
+            max_depth,
+        )
+        .await;
 
         let has_error = result.error.is_some();
         if let Some(ref err) = result.error {

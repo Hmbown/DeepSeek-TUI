@@ -452,17 +452,23 @@ pub fn rlm(app: &mut App, arg: Option<&str>) -> CommandResult {
 
     let model = app.model.clone();
     let child_model = "deepseek-v4-flash".to_string();
+    // Paper experiments use depth=1 (one level of `sub_rlm`); we default to
+    // depth=2 so the model can recurse twice if it chooses to.
+    let max_depth: u32 = 2;
 
     CommandResult::with_message_and_action(
         format!(
-            "Starting RLM turn (Algorithm 1) for {} chars of prompt using {}...",
+            "Starting RLM turn (Algorithm 1) for {} chars of prompt using {} (child={}, depth={})...",
             prompt.len(),
-            model
+            model,
+            child_model,
+            max_depth,
         ),
         AppAction::RlmQuery {
             prompt,
             model,
             child_model,
+            max_depth,
         },
     )
 }

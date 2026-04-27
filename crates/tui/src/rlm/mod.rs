@@ -15,25 +15,17 @@
 //!         return state[Final]
 //! ```
 //!
-//! Key departure from our previous "RLM-inspired" approach:
-//! - P is stored as a REPL variable, NEVER in the LLM's context window
-//! - Only metadata about state/stdout goes to the LLM — constant-size context
-//! - The LLM generates Python code, not free text
-//! - Recursion happens via llm_query() inside the code, not as tool calls
-//!
-//! ## Architecture
-//!
-//! The RLM loop is a standalone async function that the engine calls from
-//! its event loop when it receives an `Op::RlmQuery`. It:
-//! 1. Initialises a PythonRuntime with the prompt stored as `PROMPT`
-//! 2. Builds a metadata-only context describing REPL state
-//! 3. Calls the root LLM to generate code
-//! 4. Executes the code in the REPL
-//! 5. Checks for FINAL — if found, returns it
-//! 6. Otherwise, feeds code + truncated stdout metadata back, loops
+//! Key invariants:
+//! - P is stored as a REPL variable, NEVER in the LLM's context window.
+//! - Only metadata about state/stdout goes to the LLM — constant-size context.
+//! - The LLM generates Python code, not free text.
+//! - The REPL exposes `llm_query()` (one-shot child) and `sub_rlm()` (recursive
+//!   RLM call); both are serviced by an in-process HTTP sidecar so Python can
+//!   call them synchronously via `urllib`.
 
 pub mod prompt;
+pub mod sidecar;
 pub mod turn;
 
 pub use prompt::rlm_system_prompt;
-pub use turn::run_rlm_turn;
+pub use turn::{RlmTurnResult, run_rlm_turn};

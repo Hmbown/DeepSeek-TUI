@@ -2341,6 +2341,7 @@ async fn apply_command_result(
                 prompt,
                 model,
                 child_model,
+                max_depth,
             } => {
                 app.status_message = Some("RLM turn starting (Algorithm 1)...".to_string());
                 let _ = engine_handle
@@ -2348,6 +2349,7 @@ async fn apply_command_result(
                         content: prompt,
                         model,
                         child_model,
+                        max_depth,
                     })
                     .await;
             }
