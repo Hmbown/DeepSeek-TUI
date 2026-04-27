@@ -7,7 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.6.4] - 2026-04-27
+## [0.6.5] - 2026-04-27
+
+### Added
+- **`rlm_process` tool — recursive language model as a tool call.** The previous `/rlm` slash command had a UI rendering gap (the answer never made it back to the model's view) and required the user to remember to invoke it manually. `rlm_process` exposes the full RLM loop as a structured tool the model itself can choose, the same way it reaches for `agent_spawn` or `rlm_query`. Inputs: `task` (small instruction, shown to the root LLM each iteration) plus exactly one of `file_path` (workspace-relative, preferred — keeps the long input out of the model's context entirely) or `content` (inline, capped at 200k chars). Optional `child_model` (default `deepseek-v4-flash`) and `max_depth` (default 1, paper experiments). Returns the synthesized answer with metadata (iterations, duration, tokens, termination reason). Loaded across Plan / Agent / YOLO; never deferred via ToolSearch. (`crates/tui/src/tools/rlm_process.rs`)
+- **Reference-aligned REPL surface.** Aligned the in-REPL Python helpers with the canonical reference RLM (alexzhang13/rlm). The sub-agent now sees `context` (the full input, not `PROMPT`), `llm_query`, `llm_query_batched`, `rlm_query` (was `sub_rlm`), `rlm_query_batched`, `SHOW_VARS()`, `FINAL(...)`, `FINAL_VAR(...)`, plus `repl_get`/`repl_set`. Same prompt patterns and decomposition strategies from the paper now apply verbatim. (`crates/tui/src/repl/runtime.rs`)
+- **Concurrent fanout from inside the REPL.** `llm_query_batched(prompts, model=None)` runs up to 16 child completions in parallel via a new `POST /llm_batch` sidecar endpoint — much faster than serial `[llm_query(p) for p in prompts]`. `rlm_query_batched(prompts)` does the same for recursive RLM sub-calls via `POST /rlm_batch`. (`crates/tui/src/rlm/sidecar.rs`)
+- **`SHOW_VARS()`** — returns `{name: type-name}` for every user variable in the REPL. Lets the model inspect what it has accumulated across rounds before deciding whether to call `FINAL_VAR(name)`.
+- **Auto-persistence of REPL variables across rounds.** Any top-level JSON-serializable variable the sub-agent creates in a `repl` block now persists to the next round automatically — no `repl_set` ceremony needed unless you want explicit control. Matches the in-process reference REPL semantics.
+
+### Changed
+- **Code fence is `repl`, not `python`.** Matches the reference RLM language identifier so the same prompts and few-shot examples work here. Backward-compat fallback to `python` / `py` retained for older model behaviors.
+- **`FINAL` / `FINAL_VAR` parseable from raw response text.** The reference RLM lets the model write `FINAL(value)` on its own line outside any code block to terminate the loop. Added `parse_text_final()` so that path works alongside the existing in-REPL Python sentinel mechanism. Code-fenced occurrences of `FINAL(...)` are correctly ignored to avoid false positives.
+- **Strict termination loop.** The sub-agent must emit a ```repl block (or text-level FINAL) to make progress. One fence-less round triggers a reminder; two consecutive trigger a `RlmTermination::DirectAnswer` exit so we don't loop forever.
+- **`rlm_process` separates `task` (root_prompt) from `file_path`/`content` (context).** The `task` rides along as `root_prompt` and is shown to the root LLM each iteration; the big input lives only in the REPL as `context`. Mirrors the reference's `completion(prompt, root_prompt=...)` API.
+- **System prompt rewritten** with the reference's strategy patterns (PREVIEW → CHUNK + map-reduce via `llm_query_batched` → RECURSIVE decomposition via `rlm_query` → programmatic computation + LLM interpretation).
+- The `/rlm` slash command stays for manual experimentation but is no longer the recommended path; the description in `commands/mod.rs` now points the model toward `rlm_process` for the in-agent flow.
+
+### Reference
+- Zhang, Kraska, Khattab. "Recursive Language Models." arXiv:2512.24601.
+- alexzhang13/rlm — reference implementation by the paper authors. Variable names, helper surface, and code-fence convention align with that repo so prompts and patterns transfer.
+
 
 ### Fixed
 - **`/rlm` actually recurses now (Algorithm 1 substrate, paper-faithful).** The v0.6.3 RLM loop had the right *shape* but its recursive substrate was non-functional: `llm_query()` was a Python stub that returned a hardcoded string, and `child_model` was bound with an underscore prefix and silently dropped. The loop ran but the sub-LLM never fired. v0.6.4 fixes this end-to-end:

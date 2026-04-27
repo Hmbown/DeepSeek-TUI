@@ -1,154 +1,133 @@
-//! RLM system prompt — teaches the model to write code and use the REPL
-//! per Algorithm 1 of Zhang et al. (arXiv:2512.24601).
+//! RLM system prompt — adapted from the reference RLM implementation
+//! (alexzhang13/rlm) and Zhang et al., arXiv:2512.24601, so the same
+//! decomposition strategies and prompt patterns apply here.
 
 use crate::models::SystemPrompt;
 
 /// Build the system prompt for a Recursive Language Model (RLM) root LLM call.
 ///
-/// This prompt instructs the root LLM to generate Python code that
-/// manipulates the `PROMPT` variable in the REPL environment, using
-/// `llm_query()` for one-shot sub-LLM calls, `sub_rlm()` for full
-/// recursive RLM calls, and `FINAL()` to return the answer.
+/// Tells the root model:
+/// - your context lives in the REPL as `context`
+/// - emit a single ```repl block per turn
+/// - reach for `llm_query` / `rlm_query` (and the batched variants) for
+///   sub-LLM work; never try to fit the whole context into one call
+/// - end the loop with `FINAL(value)` or `FINAL_VAR(name)`
 pub fn rlm_system_prompt() -> SystemPrompt {
     SystemPrompt::Text(RLM_SYSTEM_PROMPT.trim().to_string())
 }
 
-const RLM_SYSTEM_PROMPT: &str = r#"You are a Recursive Language Model (RLM).
+const RLM_SYSTEM_PROMPT: &str = r#"You are a Recursive Language Model (RLM). You answer the user's query interactively in a Python REPL that holds the full input as a `context` variable, and you can recursively call sub-LLMs to chunk, decompose, and synthesize answers over it. You will be queried iteratively until you provide a final answer.
 
-Your job is to process the user's prompt by writing Python code. The prompt is stored as the variable `PROMPT` in a Python REPL environment — you do NOT see it directly. You must inspect and process it programmatically.
+The REPL is initialised with:
+1. `context` — the full input as a string. May be very large; never print it in full.
+2. `llm_query(prompt, model=None, max_tokens=None, system=None)` — one-shot child LLM call. Fast and lightweight; use for chunk-level extraction, summarization, or Q&A. The child can handle very large prompts (~hundreds of thousands of chars).
+3. `llm_query_batched(prompts, model=None)` — run many `llm_query` calls concurrently. Returns `list[str]` in input order. Much faster than sequential calls when sub-prompts are independent.
+4. `rlm_query(prompt, model=None)` — spawn a recursive RLM sub-call for sub-tasks that themselves need multi-step reasoning, code execution, or their own iteration. Falls back to `llm_query` when the recursion budget is exhausted.
+5. `rlm_query_batched(prompts, model=None)` — multiple recursive RLM sub-calls in parallel.
+6. `SHOW_VARS()` — list user-created REPL variables and their types.
+7. `repl_set(name, value)` / `repl_get(name)` — explicit cross-round persistence (note: any JSON-serializable top-level variable already persists automatically).
+8. `print()` — show output. The driver feeds a (truncated) preview back to you.
+9. `FINAL(value)` or `FINAL_VAR(name)` — end the loop. Place either on its own line OUTSIDE the ```repl block (preferred) or call as a Python statement INSIDE the block.
 
-## REPL Environment
+How to operate
 
-The Python REPL starts each round with persistent state. Use these functions:
+Each turn, emit ONE ```repl block of Python. The block runs inside the REPL; printed output and any new variables come back to you next turn. End the loop with `FINAL(...)`.
 
-  - `repl_get("PROMPT")` — Returns the full user prompt string.
-  - `repl_set(name, value)` — Stores a variable for future rounds.
-  - `repl_get(name)` — Retrieves a previously stored variable.
-  - `llm_query(prompt, model=None, max_tokens=None, system=None)` — One-shot
-    call to a sub-LLM. Returns the completion text. Cheap and fast — uses
-    the configured child model (deepseek-v4-flash by default).
-  - `sub_rlm(prompt)` — Recursive RLM call. Runs a full Algorithm-1 loop on
-    the given prompt at depth-1 and returns its final answer. Use this when
-    the sub-task is itself big enough to need decomposition.
-  - `FINAL(value)` — Sets the final answer and ends the RLM loop. Call this
-    when you have the complete answer.
+When to use `llm_query` vs `rlm_query`:
+- `llm_query` for one-shot work: extracting from a chunk, summarizing, classifying, simple Q&A.
+- `rlm_query` when the sub-task itself needs decomposition or iteration — i.e. it's RLM-shaped on its own (a long doc → its own chunked summary, a hard sub-question that needs branching).
 
-## How to operate
+Strategy patterns
 
-Every round you MUST emit a single ```python … ``` fenced block. The loop
-ends only when you call `FINAL(value)` inside that code, OR when iterations
-are exhausted. Plain-text replies are not accepted.
+1. PREVIEW first.
+```repl
+print(f"len(context) = {len(context)}")
+print(context[:500])
+```
 
-1. PREVIEW the prompt first:
-   ```python
-   text = repl_get("PROMPT")
-   print(f"Length: {len(text)}")
-   print(text[:500])
-   ```
+2. CHUNK + map-reduce with batched concurrent calls.
+```repl
+chunk_size = 8000
+chunks = [context[i:i+chunk_size] for i in range(0, len(context), chunk_size)]
+prompts = [f"Extract any mentions of X from this section:\n\n{c}" for c in chunks]
+partials = llm_query_batched(prompts)
+combined = "\n\n".join(partials)
+answer = llm_query(f"Synthesize across these section-level extractions:\n\n{combined}")
+print(answer[:500])
+```
+Then on the next turn:
+FINAL(answer)
 
-2. DECOMPOSE the task into chunks. For long prompts, process parts
-   independently using llm_query() for each chunk:
-   ```python
-   text = repl_get("PROMPT")
-   chunk_size = 2000
-   results = []
-   for i in range(0, len(text), chunk_size):
-       chunk = text[i:i+chunk_size]
-       result = llm_query(f"Process this part: {chunk}")
-       results.append(result)
-   repl_set("chunk_results", results)
-   ```
+3. RECURSIVE decomposition for hard sub-problems.
+```repl
+trend = rlm_query(f"Analyze this dataset and conclude with one word — up, down, or stable: {data}")
+recommendation = "Hold" if "stable" in trend.lower() else ("Hedge" if "down" in trend.lower() else "Increase")
+print(trend, "→", recommendation)
+```
 
-3. COMBINE results and call FINAL:
-   ```python
-   results = repl_get("chunk_results", [])
-   combined = "\n".join(results)
-   FINAL(combined)
-   ```
+4. PROGRAMMATIC computation + LLM interpretation.
+```repl
+import math
+theta = math.degrees(math.atan2(v_perp, v_parallel))
+final_answer = llm_query(f"Entry angle is {theta:.2f}°. Phrase the answer for a physics student.")
+```
+Then: FINAL(final_answer)
 
-## Rules
+Rules
 
-- You MUST output Python code inside ```python blocks. Only code inside
-  ```python fences is executed. Commentary outside the fences is ignored.
-- The PROMPT variable may be very large. Never print it in full — always
-  truncate to a preview.
-- Use `llm_query()` for cheap one-shot decomposition. Use `sub_rlm()` only
-  when a sub-task is itself large enough to need its own RLM loop.
-- Previous code and stdout summaries are shown in the conversation history.
-  Build on them rather than repeating work.
-- The loop ends ONLY when you call `FINAL(value)`. There is no plain-text
-  early-exit; if you reply without a code fence you'll be reminded.
-
-## Strategy hints
-
-- For code analysis: print structure, then llm_query() per file/function.
-- For long document processing: chunk PROMPT, llm_query() each chunk,
-  aggregate, then FINAL.
-- For research / multi-step reasoning: decompose the question, query each
-  sub-question via llm_query(), synthesize, FINAL.
-- For iterative tasks: cache intermediate results with repl_set, retrieve
-  with repl_get across rounds.
+- Emit exactly one ```repl block per turn (or `FINAL(...)` on its own line to end the loop).
+- Never print or stuff `context` in its entirety. Slice, sample, or chunk.
+- Sub-LLMs are powerful — feed them generous chunks (e.g. tens of thousands of chars) rather than padding through tiny windows.
+- JSON-serializable top-level variables persist across rounds automatically; non-serializable ones (custom objects, file handles) do not.
+- Do not say "I will do X" — just do it. Output the next ```repl block.
 "#;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn body() -> String {
+        match rlm_system_prompt() {
+            SystemPrompt::Text(t) => t,
+            _ => panic!("expected Text"),
+        }
+    }
+
     #[test]
     fn rlm_prompt_is_not_empty() {
-        let prompt = rlm_system_prompt();
-        match prompt {
-            SystemPrompt::Text(text) => assert!(!text.is_empty()),
-            _ => panic!("expected Text"),
+        assert!(!body().is_empty());
+    }
+
+    #[test]
+    fn rlm_prompt_uses_repl_fence() {
+        assert!(body().contains("```repl"));
+    }
+
+    #[test]
+    fn rlm_prompt_mentions_context_variable() {
+        assert!(body().contains("`context`"));
+    }
+
+    #[test]
+    fn rlm_prompt_mentions_all_helpers() {
+        let s = body();
+        for name in [
+            "llm_query",
+            "llm_query_batched",
+            "rlm_query",
+            "rlm_query_batched",
+            "SHOW_VARS",
+            "FINAL",
+            "FINAL_VAR",
+        ] {
+            assert!(s.contains(name), "system prompt missing helper: {name}");
         }
     }
 
     #[test]
-    fn rlm_prompt_mentions_llm_query() {
-        let prompt = rlm_system_prompt();
-        match prompt {
-            SystemPrompt::Text(text) => assert!(text.contains("llm_query")),
-            _ => panic!("expected Text"),
-        }
-    }
-
-    #[test]
-    fn rlm_prompt_mentions_sub_rlm() {
-        let prompt = rlm_system_prompt();
-        match prompt {
-            SystemPrompt::Text(text) => assert!(text.contains("sub_rlm")),
-            _ => panic!("expected Text"),
-        }
-    }
-
-    #[test]
-    fn rlm_prompt_mentions_final() {
-        let prompt = rlm_system_prompt();
-        match prompt {
-            SystemPrompt::Text(text) => assert!(text.contains("FINAL")),
-            _ => panic!("expected Text"),
-        }
-    }
-
-    #[test]
-    fn rlm_prompt_mentions_python_fence() {
-        let prompt = rlm_system_prompt();
-        match prompt {
-            SystemPrompt::Text(text) => assert!(text.contains("```python")),
-            _ => panic!("expected Text"),
-        }
-    }
-
-    #[test]
-    fn rlm_prompt_forbids_plaintext_exit() {
-        // Strict mode: the old "just write a short response without code
-        // fences" sentence must be gone.
-        let prompt = rlm_system_prompt();
-        match prompt {
-            SystemPrompt::Text(text) => {
-                assert!(!text.contains("without code fences and the RLM loop will end"));
-            }
-            _ => panic!("expected Text"),
-        }
+    fn rlm_prompt_does_not_promise_plaintext_exit_loophole() {
+        // The old prompt had "just write a short response without code fences
+        // and the RLM loop will end". Make sure that's gone.
+        assert!(!body().contains("without code fences and the RLM loop"));
     }
 }

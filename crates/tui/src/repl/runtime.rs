@@ -56,55 +56,62 @@ const DEFAULT_STDOUT_LIMIT: usize = 8_192;
 const ROUND_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Python bootstrap — loaded at the top of every execution round.
-/// Provides `llm_query()`, `sub_rlm()`, `FINAL()`, `FINAL_VAR()`,
-/// `repl_get/set`, and loads/saves the persistent variable state.
 ///
-/// `llm_query()` and `sub_rlm()` work by POSTing to a localhost HTTP
-/// sidecar started by the RLM driver in Rust. The URLs are passed via
-/// the `REPL_LLM_URL` and `REPL_RLM_URL` environment variables. When
-/// the REPL is used outside an RLM turn (or the sidecar isn't running)
-/// the functions return a clear "unavailable" sentinel rather than
-/// silently lying about a fake response.
+/// Conforms to the reference RLM runtime (alexzhang13/rlm) so the same
+/// strategies and prompt patterns work here. Helpers exposed:
+///
+/// - `context` — the user's input (loaded from the persistent state file)
+/// - `llm_query(prompt, model=None, max_tokens=None, system=None)`
+/// - `llm_query_batched(prompts, model=None)` — concurrent fanout
+/// - `rlm_query(prompt, model=None)` — recursive sub-RLM (paper's `sub_RLM`)
+/// - `rlm_query_batched(prompts, model=None)` — concurrent recursive sub-RLMs
+/// - `SHOW_VARS()` — list user-created REPL variables
+/// - `FINAL(value)` / `FINAL_VAR(name)` — terminate the loop
+/// - `repl_get(name, default=None)` / `repl_set(name, value)` — explicit store
+///
+/// Sub-LLM and sub-RLM calls are routed through a localhost HTTP sidecar
+/// started by the RLM driver. URLs are injected via env vars
+/// (`REPL_LLM_URL`, `REPL_LLM_BATCH_URL`, `REPL_RLM_URL`,
+/// `REPL_RLM_BATCH_URL`). When the REPL is used outside an active RLM
+/// turn the functions return a clear "unavailable" sentinel.
+///
+/// Persistent state: every round, all top-level user variables that are
+/// JSON-serializable are saved to the state file so the next round can
+/// access them as ordinary Python locals (no `repl_get` ceremony needed).
 const PYTHON_BOOTSTRAP: &str = r#"
-import sys, json, os, urllib.request, urllib.error
+import json as _json
+import os as _os
+import urllib.request as _urlreq
+import urllib.error as _urlerr
 
-# --- Persistent variable store ---
-_repl_vars = {}
-_STATE_FILE = os.environ.get('REPL_STATE_FILE', '')
-if _STATE_FILE and os.path.exists(_STATE_FILE):
-    try:
-        with open(_STATE_FILE, 'r') as f:
-            _repl_vars = json.load(f)
-    except:
-        pass
-
-# --- HTTP sidecar URLs (set by the RLM driver) ---
-_LLM_URL = os.environ.get('REPL_LLM_URL', '')
-_RLM_URL = os.environ.get('REPL_RLM_URL', '')
+# --- Sidecar URLs (set by the RLM driver) ---
+_LLM_URL = _os.environ.get('REPL_LLM_URL', '')
+_LLM_BATCH_URL = _os.environ.get('REPL_LLM_BATCH_URL', '')
+_RLM_URL = _os.environ.get('REPL_RLM_URL', '')
+_RLM_BATCH_URL = _os.environ.get('REPL_RLM_BATCH_URL', '')
+_STATE_FILE = _os.environ.get('REPL_STATE_FILE', '')
 
 def _post_json(url, body, timeout):
-    data = json.dumps(body).encode('utf-8')
-    req = urllib.request.Request(
+    data = _json.dumps(body).encode('utf-8')
+    req = _urlreq.Request(
         url, data=data,
         headers={'Content-Type': 'application/json'},
         method='POST',
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode('utf-8'))
+    with _urlreq.urlopen(req, timeout=timeout) as resp:
+        return _json.loads(resp.read().decode('utf-8'))
 
 def llm_query(prompt, model=None, max_tokens=None, system=None):
     """One-shot sub-LLM call. Returns the completion text as a string.
-
-    Routed through the local Rust sidecar; uses the configured child_model
-    by default, or whatever `model` you pass.
-    """
+    Cheap and fast — use for chunk extraction / summarization / Q&A.
+    The sub-LLM uses the configured child_model by default."""
     if not _LLM_URL:
-        return '[llm_query unavailable: no sidecar URL — RLM not active]'
+        return '[llm_query unavailable: no sidecar URL]'
     body = {'prompt': str(prompt), 'model': model,
             'max_tokens': max_tokens, 'system': system}
     try:
         data = _post_json(_LLM_URL, body, timeout=180)
-    except urllib.error.URLError as e:
+    except _urlerr.URLError as e:
         return f'[llm_query transport error: {e}]'
     except Exception as e:
         return f'[llm_query error: {e}]'
@@ -112,48 +119,134 @@ def llm_query(prompt, model=None, max_tokens=None, system=None):
         return f'[llm_query: {data["error"]}]'
     return data.get('text', '')
 
-def sub_rlm(prompt):
-    """Recursive sub-RLM call (paper's `sub_RLM`). Runs a full RLM turn on
-    `prompt` at depth-1 and returns its final answer string. Bounded by the
-    parent turn's recursion budget.
-    """
-    if not _RLM_URL:
-        return '[sub_rlm unavailable: no sidecar URL — RLM not active]'
+def llm_query_batched(prompts, model=None):
+    """Run multiple llm_query calls concurrently. Returns a list of strings
+    in the same order as the input prompts. Much faster than sequential
+    calls when the sub-prompts are independent."""
+    if not isinstance(prompts, (list, tuple)):
+        return [f'[llm_query_batched error: prompts must be a list]']
+    if not _LLM_BATCH_URL:
+        # Fall back to serial llm_query if no batch endpoint is configured.
+        return [llm_query(p, model=model) for p in prompts]
+    body = {'prompts': [str(p) for p in prompts], 'model': model}
     try:
-        data = _post_json(_RLM_URL, {'prompt': str(prompt)}, timeout=600)
-    except urllib.error.URLError as e:
-        return f'[sub_rlm transport error: {e}]'
+        data = _post_json(_LLM_BATCH_URL, body, timeout=300)
+    except _urlerr.URLError as e:
+        return [f'[llm_query_batched transport error: {e}]'] * len(prompts)
     except Exception as e:
-        return f'[sub_rlm error: {e}]'
+        return [f'[llm_query_batched error: {e}]'] * len(prompts)
+    results = data.get('results', [])
+    if len(results) != len(prompts):
+        return [f'[llm_query_batched mismatch: got {len(results)} for {len(prompts)} prompts]'] * len(prompts)
+    return [r.get('text', f'[llm_query_batched: {r.get("error","")}]') for r in results]
+
+def rlm_query(prompt, model=None):
+    """Spawn a recursive RLM sub-call (paper's `sub_RLM`). The child gets
+    its own REPL and can iterate, query further sub-LLMs, etc. Use when a
+    sub-task itself requires multi-step reasoning. Bounded by the parent's
+    recursion budget; falls back to llm_query when at depth=0."""
+    if not _RLM_URL:
+        return '[rlm_query unavailable: no sidecar URL]'
+    try:
+        data = _post_json(_RLM_URL, {'prompt': str(prompt), 'model': model}, timeout=600)
+    except _urlerr.URLError as e:
+        return f'[rlm_query transport error: {e}]'
+    except Exception as e:
+        return f'[rlm_query error: {e}]'
     if data.get('error'):
-        return f'[sub_rlm: {data["error"]}]'
+        return f'[rlm_query: {data["error"]}]'
     return data.get('text', '')
 
-# --- FINAL / FINAL_VAR ---
+def rlm_query_batched(prompts, model=None):
+    """Spawn multiple recursive RLM sub-calls in parallel. Each prompt
+    gets its own child RLM. Returns a list in input order."""
+    if not isinstance(prompts, (list, tuple)):
+        return [f'[rlm_query_batched error: prompts must be a list]']
+    if not _RLM_BATCH_URL:
+        return [rlm_query(p, model=model) for p in prompts]
+    body = {'prompts': [str(p) for p in prompts], 'model': model}
+    try:
+        data = _post_json(_RLM_BATCH_URL, body, timeout=900)
+    except _urlerr.URLError as e:
+        return [f'[rlm_query_batched transport error: {e}]'] * len(prompts)
+    except Exception as e:
+        return [f'[rlm_query_batched error: {e}]'] * len(prompts)
+    results = data.get('results', [])
+    if len(results) != len(prompts):
+        return [f'[rlm_query_batched mismatch: got {len(results)} for {len(prompts)} prompts]'] * len(prompts)
+    return [r.get('text', f'[rlm_query_batched: {r.get("error","")}]') for r in results]
+
 def FINAL(value):
-    """Signal the REPL to stop with this final answer."""
-    print(f'__REPL_FINAL__::{json.dumps(str(value))}', flush=True)
+    """Signal the RLM loop to stop with this final answer."""
+    print(f'__REPL_FINAL__::{_json.dumps(str(value))}', flush=True)
 
 def FINAL_VAR(name):
-    """Signal the REPL to stop, returning the named variable."""
-    val = _repl_vars.get(str(name), f'<variable {name!r} not found>')
-    print(f'__REPL_FINAL__::{json.dumps(str(val))}', flush=True)
+    """Signal the RLM loop to stop, returning a named variable as the answer."""
+    name_str = str(name).strip().strip("'\"")
+    if name_str in globals():
+        val = globals()[name_str]
+        print(f'__REPL_FINAL__::{_json.dumps(str(val))}', flush=True)
+    else:
+        print(f"FINAL_VAR error: variable '{name_str}' not found. "
+              f"Use SHOW_VARS() to list available variables.", flush=True)
 
-# --- State helpers ---
+def SHOW_VARS():
+    """Return a dict of {name: type-name} for all user variables in the REPL."""
+    out = {}
+    for k, v in list(globals().items()):
+        if k.startswith('_') or k in _BOOTSTRAP_NAMES:
+            continue
+        out[k] = type(v).__name__
+    return out
+
 def repl_get(name, default=None):
-    return _repl_vars.get(str(name), default)
+    return globals().get(str(name), default)
 
 def repl_set(name, value):
-    _repl_vars[str(name)] = value
+    globals()[str(name)] = value
 
-# --- Save state after execution ---
+# Names defined by the bootstrap that should NOT be persisted as user vars.
+_BOOTSTRAP_NAMES = {
+    'llm_query', 'llm_query_batched', 'rlm_query', 'rlm_query_batched',
+    'SHOW_VARS', 'FINAL', 'FINAL_VAR', 'repl_get', 'repl_set',
+}
+
+# Restore user variables from the previous round's state file. Any
+# JSON-serializable value persists as a regular Python local.
+def _load_state():
+    if not _STATE_FILE or not _os.path.exists(_STATE_FILE):
+        return
+    try:
+        with open(_STATE_FILE, 'r') as f:
+            data = _json.load(f)
+        if isinstance(data, dict):
+            for k, v in data.items():
+                if not k.startswith('_'):
+                    globals()[k] = v
+    except Exception:
+        pass
+
+# Save user variables (everything that's JSON-serializable and not a
+# bootstrap helper) to the state file for the next round.
 def _save_state():
-    if _STATE_FILE:
+    if not _STATE_FILE:
+        return
+    out = {}
+    for k, v in list(globals().items()):
+        if k.startswith('_') or k in _BOOTSTRAP_NAMES:
+            continue
         try:
-            with open(_STATE_FILE, 'w') as f:
-                json.dump(_repl_vars, f)
-        except:
-            pass
+            _json.dumps(v)
+        except (TypeError, ValueError):
+            continue
+        out[k] = v
+    try:
+        with open(_STATE_FILE, 'w') as f:
+            _json.dump(out, f)
+    except Exception:
+        pass
+
+_load_state()
 "#;
 
 /// Code suffix — appended after user code to save state.

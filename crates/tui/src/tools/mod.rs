@@ -14,6 +14,7 @@ pub mod plan;
 pub mod project;
 pub mod registry;
 pub mod review;
+pub mod rlm_process;
 pub mod rlm_query;
 pub mod search;
 pub mod shell;

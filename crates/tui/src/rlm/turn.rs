@@ -101,11 +101,13 @@ pub struct RlmTurnResult {
     pub termination: RlmTermination,
 }
 
-/// Run a full RLM turn per Algorithm 1 with a default recursion depth.
+/// Run a full RLM turn (paper Algorithm 1).
 ///
-/// `max_depth` controls how many levels of `sub_rlm()` recursion are allowed
-/// inside the REPL. Paper experiments use depth=1; we default to that and
-/// expose it via `Op::RlmQuery` so the caller can tune it.
+/// `prompt` is loaded into the REPL as the `context` variable and never
+/// enters the root LLM's window. `root_prompt` (optional) is a small
+/// instruction shown to the root LLM each iteration — typically the
+/// model's task ("summarize the security model"). `max_depth` controls
+/// how many levels of `rlm_query()` recursion the sub-agent may use.
 pub async fn run_rlm_turn(
     client: &DeepSeekClient,
     model: String,
@@ -114,7 +116,39 @@ pub async fn run_rlm_turn(
     tx_event: mpsc::Sender<Event>,
     max_depth: u32,
 ) -> RlmTurnResult {
-    run_rlm_turn_inner(client, model, prompt, child_model, tx_event, max_depth).await
+    run_rlm_turn_inner(
+        client,
+        model,
+        prompt,
+        None,
+        child_model,
+        tx_event,
+        max_depth,
+    )
+    .await
+}
+
+/// Variant that lets the caller pass a small `root_prompt` shown to the
+/// root LLM each iteration. The big `prompt` still lives only in the REPL.
+pub async fn run_rlm_turn_with_root(
+    client: &DeepSeekClient,
+    model: String,
+    prompt: String,
+    root_prompt: Option<String>,
+    child_model: String,
+    tx_event: mpsc::Sender<Event>,
+    max_depth: u32,
+) -> RlmTurnResult {
+    run_rlm_turn_inner(
+        client,
+        model,
+        prompt,
+        root_prompt,
+        child_model,
+        tx_event,
+        max_depth,
+    )
+    .await
 }
 
 /// Inner entry point — also used by the sidecar's `/rlm` handler when it
@@ -127,6 +161,7 @@ pub(crate) fn run_rlm_turn_inner<'a>(
     client: &'a DeepSeekClient,
     model: String,
     prompt: String,
+    root_prompt: Option<String>,
     child_model: String,
     tx_event: mpsc::Sender<Event>,
     max_depth: u32,
@@ -135,6 +170,7 @@ pub(crate) fn run_rlm_turn_inner<'a>(
         client,
         model,
         prompt,
+        root_prompt,
         child_model,
         tx_event,
         max_depth,
@@ -145,6 +181,7 @@ async fn run_rlm_turn_inner_impl(
     client: &DeepSeekClient,
     model: String,
     prompt: String,
+    root_prompt: Option<String>,
     child_model: String,
     tx_event: mpsc::Sender<Event>,
     max_depth: u32,
@@ -171,17 +208,20 @@ async fn run_rlm_turn_inner_impl(
         }
     };
     let llm_url = sidecar.llm_url();
+    let llm_batch_url = sidecar.llm_batch_url();
     let rlm_url = sidecar.rlm_url();
+    let rlm_batch_url = sidecar.rlm_batch_url();
 
     // ------------------------------------------------------------------
-    // 1. Initialise REPL with PROMPT variable
+    // 1. Initialise REPL with `context` variable
     // ------------------------------------------------------------------
     let state_dir = std::env::temp_dir().join("deepseek_rlm");
     let _ = std::fs::create_dir_all(&state_dir);
     let state_path = state_dir.join(format!("rlm_{}.json", uuid::Uuid::new_v4()));
 
-    // Write PROMPT into the REPL state before the REPL even starts.
-    let initial_vars = json!({"PROMPT": &prompt});
+    // Write `context` into the REPL state before the REPL even starts.
+    // Matches the reference (alexzhang13/rlm) variable name.
+    let initial_vars = json!({"context": &prompt});
     if let Err(e) = std::fs::write(&state_path, serde_json::to_string(&initial_vars).unwrap()) {
         sidecar.shutdown();
         return RlmTurnResult {
@@ -196,7 +236,9 @@ async fn run_rlm_turn_inner_impl(
 
     let mut repl = PythonRuntime::with_state_path(state_path.clone());
     repl.set_env("REPL_LLM_URL", &llm_url);
+    repl.set_env("REPL_LLM_BATCH_URL", &llm_batch_url);
     repl.set_env("REPL_RLM_URL", &rlm_url);
+    repl.set_env("REPL_RLM_BATCH_URL", &rlm_batch_url);
 
     let _ = tx_event
         .send(Event::status(format!(
@@ -208,7 +250,8 @@ async fn run_rlm_turn_inner_impl(
     // 2. Build metadata-only conversation history
     // ------------------------------------------------------------------
     let system = rlm_system_prompt();
-    let metadata_msg = build_metadata_message(&prompt, 0, None, None, &state_path);
+    let metadata_msg =
+        build_metadata_message(&prompt, root_prompt.as_deref(), 0, None, None, &state_path);
 
     let mut messages: Vec<Message> = vec![metadata_msg];
 
@@ -289,8 +332,29 @@ async fn run_rlm_turn_inner_impl(
                 })
                 .await;
 
-            // 3b. Extract Python code from the response — strict mode.
-            let code = extract_python_code(&response_text);
+            // 3b. Check for a text-level FINAL(...) / FINAL_VAR(...) in the
+            // model's raw response. The reference RLM allows the model to
+            // close out by writing `FINAL(my answer)` directly in its
+            // message, without going through a ```repl block.
+            if let Some(final_val) = parse_text_final(&response_text) {
+                let _ = tx_event
+                    .send(Event::status(
+                        "RLM: FINAL detected in response text".to_string(),
+                    ))
+                    .await;
+                break 'turn RlmTurnResult {
+                    answer: final_val,
+                    iterations: iteration + 1,
+                    duration: start.elapsed(),
+                    error: None,
+                    usage: total_usage,
+                    termination: RlmTermination::Final,
+                };
+            }
+
+            // 3c. Extract a ```repl block. Match the reference RLM's
+            // language identifier so the same prompts/examples work here.
+            let code = extract_repl_code(&response_text);
 
             let code_to_run = match code {
                 Some(c) => {
@@ -300,11 +364,8 @@ async fn run_rlm_turn_inner_impl(
                 None => {
                     consecutive_no_code = consecutive_no_code.saturating_add(1);
                     if consecutive_no_code >= MAX_CONSECUTIVE_NO_CODE {
-                        // Give up — emit what the model said and exit as
-                        // a (degraded) direct answer. This matches the
-                        // paper's expectation that the loop ends only via
-                        // FINAL, but we prefer to surface the model's
-                        // text rather than throw the whole turn away.
+                        // Give up — surface the model's text as a degraded
+                        // direct answer rather than throwing the turn away.
                         let _ = tx_event
                             .send(Event::MessageDelta {
                                 index: iteration as usize,
@@ -331,7 +392,7 @@ async fn run_rlm_turn_inner_impl(
                     messages.push(Message {
                         role: "user".to_string(),
                         content: vec![ContentBlock::Text {
-                            text: "Reminder: you MUST emit Python inside a ```python … ``` fence and call FINAL(value) when you have the answer. Reply with one ```python block now.".to_string(),
+                            text: "Reminder: emit Python inside a ```repl … ``` fence (or write FINAL(value) on its own line) when you have the answer. Reply with a ```repl block now.".to_string(),
                             cache_control: None,
                         }],
                     });
@@ -342,7 +403,7 @@ async fn run_rlm_turn_inner_impl(
             let _ = tx_event
                 .send(Event::MessageDelta {
                     index: iteration as usize,
-                    content: format!("```python\n{code_to_run}\n```\n"),
+                    content: format!("```repl\n{code_to_run}\n```\n"),
                 })
                 .await;
 
@@ -401,7 +462,7 @@ async fn run_rlm_turn_inner_impl(
             messages.push(Message {
                 role: "assistant".to_string(),
                 content: vec![ContentBlock::Text {
-                    text: format!("```python\n{code_to_run}\n```"),
+                    text: format!("```repl\n{code_to_run}\n```"),
                     cache_control: None,
                 }],
             });
@@ -409,6 +470,7 @@ async fn run_rlm_turn_inner_impl(
             // User message: metadata about stdout + current REPL state
             let next_metadata = build_metadata_message(
                 &prompt,
+                root_prompt.as_deref(),
                 iteration + 1,
                 Some(&code_to_run),
                 Some(&stdout_display),
@@ -474,13 +536,15 @@ async fn run_rlm_turn_inner_impl(
 
 /// Build a metadata message describing the current REPL state.
 ///
-/// This is what the paper calls `Metadata(state)`. We surface:
-/// - PROMPT length (chars) and a short preview
-/// - access patterns the model can use to slice / index PROMPT
+/// This is `Metadata(state)` from the paper. We surface:
+/// - `context` length (chars) and a short preview
+/// - the small `root_prompt` (if any) — repeated each iteration
+/// - REPL helpers the sub-agent can call
 /// - keys currently present in the REPL variable store
-/// - the previous round's code summary and stdout preview (when applicable)
+/// - the previous round's code summary and stdout preview
 fn build_metadata_message(
     prompt: &str,
+    root_prompt: Option<&str>,
     iteration: u32,
     previous_code: Option<&str>,
     previous_stdout: Option<&str>,
@@ -493,20 +557,34 @@ fn build_metadata_message(
 
     parts.push(format!("## REPL State (Round {iteration})"));
     parts.push(String::new());
-    parts.push("**PROMPT** — stored as REPL variable `PROMPT`".to_string());
+    if let Some(rp) = root_prompt
+        && !rp.trim().is_empty()
+    {
+        parts.push("**Original task** (re-shown every round)".to_string());
+        parts.push(format!("> {}", truncate_text(rp.trim(), 600)));
+        parts.push(String::new());
+    }
+    parts.push("**`context`** — REPL variable holding the full input".to_string());
     parts.push(format!("- Length: {prompt_len} chars"));
     parts.push(format!("- Preview: \"{prompt_preview}\""));
     parts.push(String::new());
 
-    parts.push("**Access patterns** (use inside ```python blocks)".to_string());
-    parts.push("- `text = repl_get(\"PROMPT\")`             — full string".to_string());
-    parts.push("- `len(repl_get(\"PROMPT\"))`               — char count".to_string());
-    parts.push("- `repl_get(\"PROMPT\")[a:b]`               — slice".to_string());
-    parts.push("- `repl_get(\"PROMPT\").splitlines()[i]`    — by line".to_string());
-    parts.push("- `repl_set(\"name\", value)`               — cache across rounds".to_string());
-    parts.push("- `result = llm_query(prompt, ...)`       — one-shot child LLM".to_string());
-    parts.push("- `result = sub_rlm(prompt)`              — full recursive RLM call".to_string());
-    parts.push("- `FINAL(value)`                          — end the loop".to_string());
+    parts.push("**REPL helpers** (use inside ```repl blocks)".to_string());
+    parts.push("- `context`                              — the full input string".to_string());
+    parts.push("- `len(context)` / `context[a:b]` / `context.splitlines()` — slice it".to_string());
+    parts.push("- `llm_query(prompt, model=None)`        — one-shot child LLM".to_string());
+    parts.push("- `llm_query_batched([p1, p2, ...])`     — concurrent fanout".to_string());
+    parts.push("- `rlm_query(prompt, model=None)`        — recursive sub-RLM".to_string());
+    parts.push("- `rlm_query_batched([p1, p2, ...])`     — concurrent recursive RLMs".to_string());
+    parts.push("- `SHOW_VARS()`                          — list user variables".to_string());
+    parts.push("- `repl_set(name, value)` / `repl_get(name)` — explicit store".to_string());
+    parts.push(
+        "- `FINAL(value)`                         — end the loop with this answer".to_string(),
+    );
+    parts.push(
+        "- `FINAL_VAR(name)`                      — end the loop with a variable's value"
+            .to_string(),
+    );
     parts.push(String::new());
 
     // Variables currently in the persistent store.
@@ -576,10 +654,21 @@ fn extract_text_blocks(blocks: &[ContentBlock]) -> String {
         .join("\n")
 }
 
-/// Extract the first ```python code block from text.
-/// Returns `None` if no python fence is found.
-fn extract_python_code(text: &str) -> Option<String> {
-    let start_markers = ["```python\n", "```py\n", "```python\r\n", "```py\r\n"];
+/// Extract the first ```repl code block from the model's response.
+///
+/// Matches the reference RLM (alexzhang13/rlm) language identifier so the
+/// same prompts and examples work here. Falls back to ```python /
+/// ```py for backward compatibility with text the model may have learned
+/// from earlier prompt versions.
+fn extract_repl_code(text: &str) -> Option<String> {
+    let start_markers = [
+        "```repl\n",
+        "```repl\r\n",
+        "```python\n",
+        "```py\n",
+        "```python\r\n",
+        "```py\r\n",
+    ];
     let mut best_start: Option<(usize, &str)> = None;
 
     for marker in &start_markers {
@@ -608,6 +697,72 @@ fn extract_python_code(text: &str) -> Option<String> {
         return None;
     }
     Some(code)
+}
+
+/// Parse a `FINAL(...)` or `FINAL_VAR(...)` directive from the model's raw
+/// response text. Mirrors `find_final_answer` from the reference RLM:
+/// the directive must appear at the start of a line. For `FINAL_VAR`,
+/// returns `None` (we can't resolve the variable from text alone — the
+/// REPL-level `FINAL_VAR()` Python helper handles that path).
+fn parse_text_final(text: &str) -> Option<String> {
+    // Skip if the FINAL appears inside a code fence — we already handle
+    // those via the REPL's `__REPL_FINAL__::` sentinel.
+    let outside_fence = strip_code_fences(text);
+
+    for line in outside_fence.lines() {
+        let trimmed = line.trim_start();
+        if let Some(rest) = trimmed.strip_prefix("FINAL_VAR(") {
+            // Heuristic: if a single quoted/bareword ident, defer to the
+            // REPL path. Otherwise treat the inner literal as the answer.
+            let inner = rest.trim_end_matches(')').trim();
+            // Treat as "use REPL FINAL_VAR" — return None and let the next
+            // round's REPL evaluation resolve it. Currently we just skip;
+            // the model can use FINAL(value) for direct text-level exit.
+            let _ = inner;
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("FINAL(") {
+            let inner = rest.trim_end();
+            // Take everything up to the LAST closing paren on this line.
+            if let Some(end) = inner.rfind(')') {
+                let value = inner[..end].trim();
+                if !value.is_empty() {
+                    return Some(strip_quotes(value));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Drop content inside ``` … ``` fenced blocks so we don't read FINAL()
+/// out of code the model wrote (that path is handled by the REPL sentinel).
+fn strip_code_fences(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_fence = false;
+    for line in text.lines() {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if !in_fence {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Strip one layer of matching surrounding quotes (`"…"` or `'…'`).
+fn strip_quotes(s: &str) -> String {
+    let bytes = s.as_bytes();
+    if bytes.len() >= 2
+        && ((bytes[0] == b'"' && bytes[bytes.len() - 1] == b'"')
+            || (bytes[0] == b'\'' && bytes[bytes.len() - 1] == b'\''))
+    {
+        return s[1..s.len() - 1].to_string();
+    }
+    s.to_string()
 }
 
 /// Truncate text to `max_chars` (counted by Unicode chars), adding an
@@ -643,57 +798,58 @@ mod tests {
     }
 
     #[test]
-    fn extract_python_code_finds_simple_block() {
-        let text = "Here's some code:\n```python\nprint('hello')\n```\nEnd.";
-        let code = extract_python_code(text).unwrap();
+    fn extract_repl_code_finds_simple_block() {
+        let text = "Here's some code:\n```repl\nprint('hello')\n```\nEnd.";
+        let code = extract_repl_code(text).unwrap();
         assert_eq!(code, "print('hello')");
     }
 
     #[test]
-    fn extract_python_code_finds_short_marker() {
-        let text = "Code:\n```py\nx = 1 + 2\n```";
-        let code = extract_python_code(text).unwrap();
+    fn extract_repl_code_falls_back_to_python_marker() {
+        // Backward compat: if the model still emits ```python we accept it.
+        let text = "Code:\n```python\nx = 1 + 2\n```";
+        let code = extract_repl_code(text).unwrap();
         assert_eq!(code, "x = 1 + 2");
     }
 
     #[test]
-    fn extract_python_code_returns_none_when_missing() {
+    fn extract_repl_code_returns_none_when_missing() {
         let text = "Just some text without code fences.";
-        assert!(extract_python_code(text).is_none());
+        assert!(extract_repl_code(text).is_none());
     }
 
     #[test]
-    fn extract_python_code_returns_none_on_empty_block() {
-        let text = "Code:\n```python\n\n```";
-        assert!(extract_python_code(text).is_none());
+    fn extract_repl_code_returns_none_on_empty_block() {
+        let text = "Code:\n```repl\n\n```";
+        assert!(extract_repl_code(text).is_none());
     }
 
     #[test]
-    fn extract_python_code_handles_multiple_blocks() {
-        let text = "First:\n```python\na=1\n```\nSecond:\n```python\nb=2\n```";
-        let code = extract_python_code(text).unwrap();
+    fn extract_repl_code_handles_multiple_blocks() {
+        let text = "First:\n```repl\na=1\n```\nSecond:\n```repl\nb=2\n```";
+        let code = extract_repl_code(text).unwrap();
         assert_eq!(code, "a=1");
     }
 
     #[test]
-    fn extract_python_code_ignores_other_fences() {
-        let text = "```\nsome text\n```\nActual:\n```python\nreal_code()\n```";
-        let code = extract_python_code(text).unwrap();
+    fn extract_repl_code_ignores_other_fences() {
+        let text = "```\nsome text\n```\nActual:\n```repl\nreal_code()\n```";
+        let code = extract_repl_code(text).unwrap();
         assert_eq!(code, "real_code()");
     }
 
     #[test]
     fn build_metadata_contains_key_information() {
         let path = tmp_state_path("meta_basic");
-        std::fs::write(&path, "{\"PROMPT\":\"Hello, world!\"}").unwrap();
+        std::fs::write(&path, "{\"context\":\"Hello, world!\"}").unwrap();
         let prompt = "Hello, world!";
-        let msg = build_metadata_message(prompt, 0, None, None, &path);
+        let msg = build_metadata_message(prompt, None, 0, None, None, &path);
         let text = extract_text_blocks(&msg.content);
-        assert!(text.contains("PROMPT"));
+        assert!(text.contains("context"));
         assert!(text.contains("Hello, world!"));
         assert!(text.contains("Round 0"));
         assert!(text.contains("llm_query"));
-        assert!(text.contains("sub_rlm"));
+        assert!(text.contains("rlm_query"));
         assert!(text.contains("FINAL"));
         let _ = std::fs::remove_file(&path);
     }
@@ -703,13 +859,13 @@ mod tests {
         let path = tmp_state_path("meta_vars");
         std::fs::write(
             &path,
-            "{\"PROMPT\":\"x\",\"chunk_summaries\":[\"a\"],\"counter\":1}",
+            "{\"context\":\"x\",\"chunk_summaries\":[\"a\"],\"counter\":1}",
         )
         .unwrap();
-        let msg = build_metadata_message("x", 1, Some("noop"), Some("ok"), &path);
+        let msg = build_metadata_message("x", None, 1, Some("noop"), Some("ok"), &path);
         let text = extract_text_blocks(&msg.content);
         assert!(text.contains("Variables in REPL state"));
-        assert!(text.contains("\"PROMPT\""));
+        assert!(text.contains("\"context\""));
         assert!(text.contains("\"chunk_summaries\""));
         assert!(text.contains("\"counter\""));
         let _ = std::fs::remove_file(&path);
@@ -719,12 +875,61 @@ mod tests {
     fn build_metadata_with_iteration_shows_previous_code() {
         let path = tmp_state_path("meta_prev");
         std::fs::write(&path, "{}").unwrap();
-        let msg = build_metadata_message("Test prompt", 3, Some("print('hi')"), Some("hi"), &path);
+        let msg = build_metadata_message(
+            "Test prompt",
+            None,
+            3,
+            Some("print('hi')"),
+            Some("hi"),
+            &path,
+        );
         let text = extract_text_blocks(&msg.content);
         assert!(text.contains("Round 3"));
         assert!(text.contains("print('hi')"));
         assert!(text.contains("hi"));
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn build_metadata_includes_root_prompt_when_provided() {
+        let path = tmp_state_path("meta_root");
+        std::fs::write(&path, "{}").unwrap();
+        let msg = build_metadata_message(
+            "long context text",
+            Some("Summarize the security model"),
+            1,
+            Some("# noop"),
+            Some("ok"),
+            &path,
+        );
+        let text = extract_text_blocks(&msg.content);
+        assert!(text.contains("Original task"));
+        assert!(text.contains("Summarize the security model"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn parse_text_final_extracts_simple_value() {
+        let text = "OK here's the answer.\nFINAL(42)\nThanks.";
+        assert_eq!(parse_text_final(text).as_deref(), Some("42"));
+    }
+
+    #[test]
+    fn parse_text_final_strips_quotes() {
+        let text = "FINAL(\"the answer is yes\")";
+        assert_eq!(parse_text_final(text).as_deref(), Some("the answer is yes"));
+    }
+
+    #[test]
+    fn parse_text_final_ignores_inside_code_fence() {
+        let text =
+            "Some prose.\n```repl\n# Note: when ready, call FINAL(value)\nx = 1\n```\nMore prose.";
+        assert!(parse_text_final(text).is_none());
+    }
+
+    #[test]
+    fn parse_text_final_returns_none_when_absent() {
+        assert!(parse_text_final("just talking, no final.").is_none());
     }
 
     #[test]
@@ -782,7 +987,7 @@ mod tests {
     fn metadata_msg_role_is_user() {
         let path = tmp_state_path("meta_role");
         std::fs::write(&path, "{}").unwrap();
-        let msg = build_metadata_message("test", 0, None, None, &path);
+        let msg = build_metadata_message("test", None, 0, None, None, &path);
         assert_eq!(msg.role, "user");
         let _ = std::fs::remove_file(&path);
     }

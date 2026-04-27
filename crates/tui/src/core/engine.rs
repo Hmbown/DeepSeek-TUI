@@ -413,6 +413,7 @@ fn should_default_defer_tool(name: &str, mode: AppMode) -> bool {
             | "file_search"
             | "diagnostics"
             | "rlm_query"
+            | "rlm_process"
             | MULTI_TOOL_PARALLEL_NAME
             | "update_plan"
             | "todo_write"
@@ -1450,6 +1451,7 @@ impl Engine {
         builder = builder
             .with_review_tool(self.deepseek_client.clone(), self.session.model.clone())
             .with_rlm_query_tool(self.deepseek_client.clone())
+            .with_rlm_process_tool(self.deepseek_client.clone(), self.session.model.clone())
             .with_user_input_tool()
             .with_parallel_tool();
 

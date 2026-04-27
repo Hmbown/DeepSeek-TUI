@@ -178,6 +178,7 @@ async fn sub_rlm_handler(
         &ctx.client,
         ctx.child_model.clone(),
         req.prompt,
+        None,
         ctx.child_model.clone(),
         tx,
         ctx.depth_remaining.saturating_sub(1),
@@ -198,6 +199,223 @@ async fn sub_rlm_handler(
     })
 }
 
+// ---------------------------------------------------------------------------
+// Batch endpoints
+// ---------------------------------------------------------------------------
+
+/// Hard cap on prompts per batch request. Mirrors `tools/rlm_query.rs`.
+const MAX_BATCH: usize = 16;
+
+#[derive(Deserialize)]
+struct BatchReq {
+    prompts: Vec<String>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    max_tokens: Option<u32>,
+    #[serde(default)]
+    system: Option<String>,
+}
+
+#[derive(Serialize)]
+struct BatchResp {
+    results: Vec<LlmResp>,
+}
+
+async fn llm_batch_handler(
+    State(ctx): State<Arc<SidecarCtx>>,
+    Json(req): Json<BatchReq>,
+) -> Json<BatchResp> {
+    if req.prompts.is_empty() {
+        return Json(BatchResp { results: vec![] });
+    }
+    if req.prompts.len() > MAX_BATCH {
+        return Json(BatchResp {
+            results: req
+                .prompts
+                .iter()
+                .map(|_| LlmResp {
+                    text: String::new(),
+                    error: Some(format!(
+                        "batch too large: {} > {MAX_BATCH}",
+                        req.prompts.len()
+                    )),
+                })
+                .collect(),
+        });
+    }
+
+    let model = req
+        .model
+        .filter(|m| !m.is_empty())
+        .unwrap_or_else(|| ctx.child_model.clone());
+    let max_tokens = req.max_tokens.unwrap_or(DEFAULT_CHILD_MAX_TOKENS);
+    let system = req.system;
+
+    let futures = req.prompts.into_iter().map(|prompt| {
+        let client = ctx.client.clone();
+        let model = model.clone();
+        let system = system.clone();
+        async move {
+            let request = MessageRequest {
+                model,
+                messages: vec![Message {
+                    role: "user".to_string(),
+                    content: vec![ContentBlock::Text {
+                        text: prompt,
+                        cache_control: None,
+                    }],
+                }],
+                max_tokens,
+                system: system.map(crate::models::SystemPrompt::Text),
+                tools: None,
+                tool_choice: None,
+                metadata: None,
+                thinking: None,
+                reasoning_effort: None,
+                stream: Some(false),
+                temperature: Some(0.4_f32),
+                top_p: Some(0.9_f32),
+            };
+            let fut = client.create_message(request);
+            tokio::time::timeout(std::time::Duration::from_secs(CHILD_TIMEOUT_SECS), fut).await
+        }
+    });
+
+    let outcomes = futures_util::future::join_all(futures).await;
+
+    let mut results = Vec::with_capacity(outcomes.len());
+    let mut total_input = 0_u32;
+    let mut total_output = 0_u32;
+
+    for outcome in outcomes {
+        match outcome {
+            Ok(Ok(resp)) => {
+                let text = resp
+                    .content
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::Text { text, .. } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                total_input = total_input.saturating_add(resp.usage.input_tokens);
+                total_output = total_output.saturating_add(resp.usage.output_tokens);
+                results.push(LlmResp { text, error: None });
+            }
+            Ok(Err(e)) => results.push(LlmResp {
+                text: String::new(),
+                error: Some(format!("{e}")),
+            }),
+            Err(_) => results.push(LlmResp {
+                text: String::new(),
+                error: Some(format!("timed out after {CHILD_TIMEOUT_SECS}s")),
+            }),
+        }
+    }
+
+    {
+        let mut u = ctx.usage.lock().await;
+        u.input_tokens = u.input_tokens.saturating_add(total_input);
+        u.output_tokens = u.output_tokens.saturating_add(total_output);
+    }
+
+    Json(BatchResp { results })
+}
+
+#[derive(Deserialize)]
+struct RlmBatchReq {
+    prompts: Vec<String>,
+}
+
+async fn rlm_batch_handler(
+    State(ctx): State<Arc<SidecarCtx>>,
+    Json(req): Json<RlmBatchReq>,
+) -> Json<BatchResp> {
+    if req.prompts.is_empty() {
+        return Json(BatchResp { results: vec![] });
+    }
+    if req.prompts.len() > MAX_BATCH {
+        return Json(BatchResp {
+            results: req
+                .prompts
+                .iter()
+                .map(|_| LlmResp {
+                    text: String::new(),
+                    error: Some(format!(
+                        "batch too large: {} > {MAX_BATCH}",
+                        req.prompts.len()
+                    )),
+                })
+                .collect(),
+        });
+    }
+    if ctx.depth_remaining == 0 {
+        return Json(BatchResp {
+            results: req
+                .prompts
+                .iter()
+                .map(|_| LlmResp {
+                    text: String::new(),
+                    error: Some("rlm_query_batched: recursion budget exhausted".to_string()),
+                })
+                .collect(),
+        });
+    }
+
+    let futures = req.prompts.into_iter().map(|prompt| {
+        let client = ctx.client.clone();
+        let child_model = ctx.child_model.clone();
+        let depth = ctx.depth_remaining.saturating_sub(1);
+        async move {
+            let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+            let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+            // Same dyn-erasure pattern as sub_rlm_handler — break the recursive
+            // future-type cycle through the boxed dyn return of run_rlm_turn_inner.
+            let result = super::turn::run_rlm_turn_inner(
+                &client,
+                child_model.clone(),
+                prompt,
+                None,
+                child_model,
+                tx,
+                depth,
+            )
+            .await;
+            drain.abort();
+            result
+        }
+    });
+
+    let results_raw = futures_util::future::join_all(futures).await;
+
+    let mut results = Vec::with_capacity(results_raw.len());
+    let mut total_input = 0_u32;
+    let mut total_output = 0_u32;
+
+    for result in results_raw {
+        total_input = total_input.saturating_add(result.usage.input_tokens);
+        total_output = total_output.saturating_add(result.usage.output_tokens);
+        results.push(LlmResp {
+            text: result.answer,
+            error: result.error,
+        });
+    }
+
+    {
+        let mut u = ctx.usage.lock().await;
+        u.input_tokens = u.input_tokens.saturating_add(total_input);
+        u.output_tokens = u.output_tokens.saturating_add(total_output);
+    }
+
+    Json(BatchResp { results })
+}
+
+// ---------------------------------------------------------------------------
+// Handle / start
+// ---------------------------------------------------------------------------
+
 /// Result of starting the sidecar — the bound socket address and the task
 /// handle. Drop or abort the handle to stop the server.
 pub struct SidecarHandle {
@@ -209,8 +427,14 @@ impl SidecarHandle {
     pub fn llm_url(&self) -> String {
         format!("http://{}/llm", self.addr)
     }
+    pub fn llm_batch_url(&self) -> String {
+        format!("http://{}/llm_batch", self.addr)
+    }
     pub fn rlm_url(&self) -> String {
         format!("http://{}/rlm", self.addr)
+    }
+    pub fn rlm_batch_url(&self) -> String {
+        format!("http://{}/rlm_batch", self.addr)
     }
     pub fn shutdown(self) {
         self.task.abort();
@@ -224,7 +448,9 @@ pub async fn start_sidecar(ctx: Arc<SidecarCtx>) -> std::io::Result<SidecarHandl
     let addr = listener.local_addr()?;
     let app = Router::new()
         .route("/llm", post(llm_handler))
+        .route("/llm_batch", post(llm_batch_handler))
         .route("/rlm", post(sub_rlm_handler))
+        .route("/rlm_batch", post(rlm_batch_handler))
         .with_state(ctx);
     let task = tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;

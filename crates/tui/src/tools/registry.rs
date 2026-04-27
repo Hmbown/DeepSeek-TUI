@@ -389,6 +389,15 @@ impl ToolRegistryBuilder {
         self.with_tool(Arc::new(RlmQueryTool::new(client)))
     }
 
+    /// Include the heavy-lift RLM tool (`rlm_process`). Runs the full
+    /// recursive language-model loop on a long input (file or inline
+    /// content); the long input never enters the calling model's context.
+    #[must_use]
+    pub fn with_rlm_process_tool(self, client: Option<DeepSeekClient>, root_model: String) -> Self {
+        use super::rlm_process::RlmProcessTool;
+        self.with_tool(Arc::new(RlmProcessTool::new(client, root_model)))
+    }
+
     /// Include the review tool.
     #[must_use]
     pub fn with_review_tool(self, client: Option<DeepSeekClient>, model: String) -> Self {
