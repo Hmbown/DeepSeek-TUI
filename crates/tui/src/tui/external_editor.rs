@@ -36,7 +36,7 @@ pub enum EditorOutcome {
 }
 
 /// Resolve the editor command, preferring `$VISUAL` over `$EDITOR`, falling
-/// back to `vi`. Returns the raw string for the test path; [`spawn_editor`]
+/// back to `vi`. Returns the raw string for the test path; `spawn_editor`
 /// splits it via `shlex` (Unix) so users can set `EDITOR="code --wait"`.
 fn resolve_editor() -> String {
     env::var("VISUAL")

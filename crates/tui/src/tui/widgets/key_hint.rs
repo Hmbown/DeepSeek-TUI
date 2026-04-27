@@ -9,9 +9,10 @@
 //! recognise.
 //!
 //! See `codex-rs/tui/src/key_hint.rs` for the original design; this is a
-//! ratatui-compatible port that exposes a [`Display`] impl plus a
+//! ratatui-compatible port that exposes a [`std::fmt::Display`] impl plus a
 //! `KeyBinding -> Span` conversion so call sites can use it equally well in
-//! plain `format!` calls and inside ratatui [`Line`] / [`Span`] builders.
+//! plain `format!` calls and inside ratatui [`ratatui::text::Line`] /
+//! [`ratatui::text::Span`] builders.
 //!
 //! Windows AltGr disambiguation: many European keyboard layouts produce
 //! `Ctrl+Alt` events when AltGr is pressed alone (to type `@`, `\`, etc.).

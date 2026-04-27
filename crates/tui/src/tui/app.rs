@@ -1300,7 +1300,7 @@ impl App {
     pub const QUIT_CONFIRMATION_WINDOW: Duration = Duration::from_secs(2);
 
     /// Arm the quit confirmation timer. The next Ctrl+C within
-    /// [`QUIT_CONFIRMATION_WINDOW`] should exit the app cleanly. Call this only
+    /// [`Self::QUIT_CONFIRMATION_WINDOW`] should exit the app cleanly. Call this only
     /// from idle state — while a turn is in flight or a modal is open Ctrl+C
     /// retains its existing "interrupt this turn" / "close modal" semantics.
     pub fn arm_quit(&mut self) {
