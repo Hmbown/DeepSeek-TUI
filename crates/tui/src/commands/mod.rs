@@ -464,7 +464,7 @@ pub fn rlm(app: &mut App, arg: Option<&str>) -> CommandResult {
             child_model,
             max_depth,
         ),
-        AppAction::RlmQuery {
+        AppAction::Rlm {
             prompt,
             model,
             child_model,

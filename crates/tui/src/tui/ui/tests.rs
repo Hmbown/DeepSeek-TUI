@@ -1862,7 +1862,7 @@ fn rlm_query_tool_cell_wired_with_prompts_on_start() {
     handle_tool_call_started(
         &mut app,
         "rlm-1",
-        "rlm_query",
+        "parallel_fanout",
         &serde_json::json!({
             "prompts": [
                 "What is the capital of France?",
@@ -1878,7 +1878,7 @@ fn rlm_query_tool_cell_wired_with_prompts_on_start() {
         panic!("expected GenericToolCell for rlm_query");
     };
 
-    assert_eq!(generic.name, "rlm_query");
+    assert_eq!(generic.name, "parallel_fanout");
     assert_eq!(generic.status, ToolStatus::Running);
 
     // Core assertion: prompts populated from the JSON input.
@@ -1902,7 +1902,7 @@ fn rlm_query_singular_prompt_wired_as_single_element_vec() {
     handle_tool_call_started(
         &mut app,
         "rlm-2",
-        "rlm_query",
+        "parallel_fanout",
         &serde_json::json!({ "prompt": "Explain the engine loop" }),
     );
 

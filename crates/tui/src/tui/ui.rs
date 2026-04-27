@@ -2337,7 +2337,7 @@ async fn apply_command_result(
                 let queued = build_queued_message(app, content);
                 submit_or_steer_message(app, engine_handle, queued).await?;
             }
-            AppAction::RlmQuery {
+            AppAction::Rlm {
                 prompt,
                 model,
                 child_model,
@@ -2345,7 +2345,7 @@ async fn apply_command_result(
             } => {
                 app.status_message = Some("RLM turn starting...".to_string());
                 let _ = engine_handle
-                    .send(Op::RlmQuery {
+                    .send(Op::Rlm {
                         content: prompt,
                         model,
                         child_model,
@@ -4610,7 +4610,7 @@ fn handle_tool_call_started(app: &mut App, id: &str, name: &str, input: &serde_j
 /// user can read what each child was asked. Returns `None` for tools that
 /// don't expose a prompt list.
 fn extract_fanout_prompts(name: &str, input: &serde_json::Value) -> Option<Vec<String>> {
-    if name != "rlm_query" {
+    if name != "parallel_fanout" {
         return None;
     }
     if let Some(arr) = input.get("prompts").and_then(|v| v.as_array()) {
