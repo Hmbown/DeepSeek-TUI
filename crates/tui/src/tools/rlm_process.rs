@@ -223,19 +223,62 @@ impl ToolSpec for RlmProcessTool {
             });
         }
 
-        // Surface the termination reason so the model can tell whether the
-        // sub-agent finished cleanly via FINAL or fell out of the loop.
+        // Surface the termination reason and a brief per-round trace so the
+        // user can verify the sub-agent actually engaged with `context`
+        // through sub-LLM calls — not just inferred an answer from the
+        // preview.
         let footer = match result.termination {
             RlmTermination::Final => String::new(),
-            RlmTermination::DirectAnswer => {
-                "\n\n[note: sub-agent emitted a direct answer instead of FINAL()]".to_string()
-            }
+            RlmTermination::NoCode => format!(
+                "\n\n[warning: sub-agent failed to engage the REPL after {} iterations — answer is the model's last raw response]",
+                result.iterations
+            ),
             RlmTermination::Exhausted => format!(
                 "\n\n[warning: sub-agent hit the {}-iteration cap without FINAL()]",
                 result.iterations
             ),
             RlmTermination::Error => String::new(),
         };
+
+        let trace_summary = if result.trace.is_empty() {
+            String::from("\n\n[trace: no REPL rounds executed]")
+        } else {
+            let mut s = String::from("\n\n[RLM trace]");
+            for r in &result.trace {
+                let head = r
+                    .code_summary
+                    .lines()
+                    .next()
+                    .unwrap_or(r.code_summary.as_str())
+                    .chars()
+                    .take(80)
+                    .collect::<String>();
+                s.push_str(&format!(
+                    "\n  round {}: {} sub-LLM call(s), {}ms{} — {}",
+                    r.round,
+                    r.rpc_count,
+                    r.elapsed_ms,
+                    if r.had_error { " (error)" } else { "" },
+                    head
+                ));
+            }
+            s
+        };
+
+        let trace_json: Vec<_> = result
+            .trace
+            .iter()
+            .map(|r| {
+                json!({
+                    "round": r.round,
+                    "rpc_count": r.rpc_count,
+                    "elapsed_ms": r.elapsed_ms,
+                    "had_error": r.had_error,
+                    "code_summary": r.code_summary,
+                    "stdout_preview": r.stdout_preview,
+                })
+            })
+            .collect();
 
         let metadata = json!({
             "iterations": result.iterations,
@@ -245,9 +288,14 @@ impl ToolSpec for RlmProcessTool {
             "termination": format!("{:?}", result.termination).to_lowercase(),
             "child_model": child_model,
             "max_depth": max_depth,
+            "total_rpcs": result.total_rpcs,
+            "trace": trace_json,
         });
 
-        Ok(ToolResult::success(format!("{}{}", result.answer, footer)).with_metadata(metadata))
+        Ok(
+            ToolResult::success(format!("{}{}{}", result.answer, footer, trace_summary))
+                .with_metadata(metadata),
+        )
     }
 }
 

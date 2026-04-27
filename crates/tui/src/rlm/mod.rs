@@ -1,7 +1,6 @@
-//! True Recursive Language Model (RLM) loop — paper-spec Algorithm 1.
+//! Recursive Language Model (RLM) loop — paper-spec Algorithm 1.
 //!
-//! Implements the RLM inference paradigm from Zhang, Kraska, Khattab
-//! (arXiv:2512.24601, §2 Algorithm 1):
+//! Implements Zhang, Kraska & Khattab (arXiv:2512.24601, §2 Algorithm 1):
 //!
 //! ```text
 //! state ← InitREPL(prompt=P)
@@ -15,17 +14,18 @@
 //!         return state[Final]
 //! ```
 //!
-//! Key invariants:
-//! - P is stored as a REPL variable, NEVER in the LLM's context window.
-//! - Only metadata about state/stdout goes to the LLM — constant-size context.
-//! - The LLM generates Python code, not free text.
-//! - The REPL exposes `llm_query()` (one-shot child) and `sub_rlm()` (recursive
-//!   RLM call); both are serviced by an in-process HTTP sidecar so Python can
-//!   call them synchronously via `urllib`.
+//! Invariants:
+//! - `P` is held only as a REPL variable (`context` / `ctx`); never
+//!   appears in the root LLM's window.
+//! - The root LLM receives small metadata messages — length, preview,
+//!   helper list, prior-round summary.
+//! - Code rounds and sub-LLM calls travel over a single stdin/stdout
+//!   pipe to a long-lived `python3 -u` subprocess. No HTTP sidecar.
 
+pub mod bridge;
 pub mod prompt;
-pub mod sidecar;
 pub mod turn;
 
+pub use bridge::RlmBridge;
 pub use prompt::rlm_system_prompt;
-pub use turn::{RlmTurnResult, run_rlm_turn};
+pub use turn::{RlmTermination, RlmTurnResult, run_rlm_turn, run_rlm_turn_with_root};

@@ -1,191 +1,561 @@
-//! Python sandbox runtime for the REPL.
+//! Long-lived Python REPL runtime.
 //!
-//! Each code-execution round spawns a fresh `python3` process with all
-//! state loaded from / saved to a JSON file. This is simpler and more
-//! robust than trying to manage a long-lived subprocess with async
-//! stdout re-attachment.
+//! One `python3 -u` subprocess lives for the duration of an RLM turn (or an
+//! inline `repl` block sequence in the agent loop). Code blocks are sent
+//! over stdin framed by `__RLM_RUN__`/`__RLM_END__` sentinels; the bootstrap
+//! `exec()`s them into the same global namespace so variables, imports,
+//! and even open file handles persist naturally across rounds.
 //!
-//! State persistence across rounds:
-//!   - `_repl_vars` dict is serialized to a JSON file after each round
-//!   - The next round reads it back before executing new code
-//!   - This matches the paper's "persistent variable store" design
+//! Sub-LLM helpers (`llm_query`, `llm_query_batched`, `rlm_query`,
+//! `rlm_query_batched`) are wired through a stdin/stdout RPC protocol:
+//! Python emits `__RLM_REQ_<sid>__::{json}` on stdout, Rust dispatches the
+//! request and writes `__RLM_RESP_<sid>__::{json}` back on stdin. No HTTP
+//! sidecar, no temp ports — the same pipes carry both control and data.
+//!
+//! The session id (`<sid>`) is a UUID generated per spawn, so user output
+//! that happens to contain "REQ" or "FINAL" can't be confused with control
+//! messages.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-use tokio::process::Command;
+use serde::{Deserialize, Serialize};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use uuid::Uuid;
 
-use super::sandbox::parse_final;
-
-/// Python REPL runtime — executes code blocks in isolated processes
-/// with persistent variable state via a JSON state file.
-#[derive(Debug, Clone)]
-pub struct PythonRuntime {
-    /// Path to the state file for variable persistence.
-    state_path: PathBuf,
-    /// Max bytes of stdout to return per round.
-    stdout_limit: usize,
-    /// Total rounds executed.
-    round_count: u64,
-    /// When the runtime was created.
-    started: Instant,
-    /// Extra env vars passed to every spawned `python3` invocation. The RLM
-    /// loop uses this to inject `REPL_LLM_URL` / `REPL_RLM_URL` so that
-    /// `llm_query()` / `sub_rlm()` inside Python can reach the local sidecar.
-    extra_env: Vec<(String, String)>,
-}
+// ---------------------------------------------------------------------------
+// Public types
+// ---------------------------------------------------------------------------
 
 /// Result of executing one code block.
 #[derive(Debug, Clone)]
 pub struct ReplRound {
-    /// Truncated stdout (for LLM feedback — paper's "metadata only").
+    /// Stdout shown to the model as metadata next round.
     pub stdout: String,
-    /// Full stdout (for debugging).
+    /// Full stdout (with sentinels stripped, but otherwise raw).
     pub full_stdout: String,
-    /// Stderr from this round.
+    /// Stderr from this round (if any).
     pub stderr: String,
-    /// Whether the code raised an unhandled Python exception.
+    /// `True` if the user code raised an unhandled Python exception.
     pub has_error: bool,
-    /// If a FINAL(answer) or FINAL_VAR(var) was detected.
+    /// Captured `FINAL(value)` payload, if any.
     pub final_value: Option<String>,
-    /// Wall-clock duration.
+    /// Number of `llm_query`/`rlm_query` RPCs the round issued.
+    pub rpc_count: u32,
+    /// Wall-clock duration of the round.
     pub elapsed: Duration,
 }
 
-const DEFAULT_STDOUT_LIMIT: usize = 8_192;
-const ROUND_TIMEOUT: Duration = Duration::from_secs(120);
+/// One RPC request emitted by Python during a round.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum RpcRequest {
+    /// `llm_query(prompt, model=None, max_tokens=None, system=None)`
+    Llm {
+        prompt: String,
+        #[serde(default)]
+        model: Option<String>,
+        #[serde(default)]
+        max_tokens: Option<u32>,
+        #[serde(default)]
+        system: Option<String>,
+    },
+    /// `llm_query_batched(prompts, model=None)`
+    LlmBatch {
+        prompts: Vec<String>,
+        #[serde(default)]
+        model: Option<String>,
+    },
+    /// `rlm_query(prompt, model=None)` — recursive sub-RLM (paper's `sub_RLM`).
+    Rlm {
+        prompt: String,
+        #[serde(default)]
+        model: Option<String>,
+    },
+    /// `rlm_query_batched(prompts, model=None)`
+    RlmBatch {
+        prompts: Vec<String>,
+        #[serde(default)]
+        model: Option<String>,
+    },
+}
 
-/// Python bootstrap — loaded at the top of every execution round.
+/// Response for one RPC request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum RpcResponse {
+    /// Single-text reply (Llm / Rlm).
+    Single(SingleResp),
+    /// Batch reply (LlmBatch / RlmBatch).
+    Batch(BatchResp),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SingleResp {
+    #[serde(default)]
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchResp {
+    pub results: Vec<SingleResp>,
+}
+
+/// Trait-object handle for dispatching Python RPCs back into Rust.
 ///
-/// Conforms to the reference RLM runtime (alexzhang13/rlm) so the same
-/// strategies and prompt patterns work here. Helpers exposed:
-///
-/// - `context` — the user's input (loaded from the persistent state file)
-/// - `llm_query(prompt, model=None, max_tokens=None, system=None)`
-/// - `llm_query_batched(prompts, model=None)` — concurrent fanout
-/// - `rlm_query(prompt, model=None)` — recursive sub-RLM (paper's `sub_RLM`)
-/// - `rlm_query_batched(prompts, model=None)` — concurrent recursive sub-RLMs
-/// - `SHOW_VARS()` — list user-created REPL variables
-/// - `FINAL(value)` / `FINAL_VAR(name)` — terminate the loop
-/// - `repl_get(name, default=None)` / `repl_set(name, value)` — explicit store
-///
-/// Sub-LLM and sub-RLM calls are routed through a localhost HTTP sidecar
-/// started by the RLM driver. URLs are injected via env vars
-/// (`REPL_LLM_URL`, `REPL_LLM_BATCH_URL`, `REPL_RLM_URL`,
-/// `REPL_RLM_BATCH_URL`). When the REPL is used outside an active RLM
-/// turn the functions return a clear "unavailable" sentinel.
-///
-/// Persistent state: every round, all top-level user variables that are
-/// JSON-serializable are saved to the state file so the next round can
-/// access them as ordinary Python locals (no `repl_get` ceremony needed).
-const PYTHON_BOOTSTRAP: &str = r#"
+/// Each RLM turn supplies one. Implementations forward to the LLM client
+/// (and recursively into `run_rlm_turn_inner` for `Rlm` / `RlmBatch`).
+pub trait RpcDispatcher: Send + Sync {
+    fn dispatch<'a>(
+        &'a self,
+        req: RpcRequest,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = RpcResponse> + Send + 'a>>;
+}
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const DEFAULT_STDOUT_LIMIT: usize = 8_192;
+const ROUND_TIMEOUT: Duration = Duration::from_secs(180);
+const SPAWN_READY_TIMEOUT: Duration = Duration::from_secs(10);
+
+// ---------------------------------------------------------------------------
+// PythonRuntime
+// ---------------------------------------------------------------------------
+
+/// Long-lived Python REPL.
+#[derive(Debug)]
+pub struct PythonRuntime {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+    /// Per-spawn session id used in protocol sentinels.
+    session_id: String,
+    /// Path to the file holding `context` (kept around for cleanup).
+    context_path: Option<PathBuf>,
+    stdout_limit: usize,
+    round_count: u64,
+    started: Instant,
+}
+
+impl PythonRuntime {
+    /// Spawn a REPL with no `context` variable and no LLM helpers wired up.
+    /// Used by the agent loop for inline `repl` blocks the model emits in
+    /// regular conversation.
+    pub async fn new() -> Result<Self, String> {
+        Self::spawn_inner(None).await
+    }
+
+    /// Compatibility shim — older RLM code path used to pass a state file.
+    /// The state file is no longer used, but the path doubles as an extra
+    /// scratch location callers can rely on for cleanup symmetry.
+    pub fn with_state_path(_path: PathBuf) -> Self {
+        // Synchronous constructor is no longer meaningful: spawning Python
+        // is async. Callers in turn.rs already use `spawn_with_context` —
+        // this stub is kept only so the public surface compiles for any
+        // out-of-tree user. It returns a deliberately broken runtime that
+        // panics on first use, which is preferable to silently lying.
+        unreachable!(
+            "PythonRuntime::with_state_path is deprecated — \
+             use PythonRuntime::new() or PythonRuntime::spawn_with_context()"
+        )
+    }
+
+    /// Spawn a REPL with `context` (and `ctx`) preloaded from a file. Used
+    /// by the RLM turn loop.
+    pub async fn spawn_with_context(context_path: &Path) -> Result<Self, String> {
+        Self::spawn_inner(Some(context_path)).await
+    }
+
+    async fn spawn_inner(context_path: Option<&Path>) -> Result<Self, String> {
+        let session_id = Uuid::new_v4().simple().to_string();
+        let bootstrap = render_bootstrap(&session_id);
+
+        let mut cmd = Command::new("python3");
+        cmd.arg("-u")
+            .arg("-c")
+            .arg(&bootstrap)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+
+        if let Some(path) = context_path {
+            cmd.env("RLM_CONTEXT_FILE", path);
+        }
+
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("failed to spawn python3: {e}"))?;
+
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| "python3 stdin pipe missing".to_string())?;
+        let raw_stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "python3 stdout pipe missing".to_string())?;
+        let stdout = BufReader::new(raw_stdout);
+
+        let mut rt = Self {
+            child,
+            stdin,
+            stdout,
+            session_id: session_id.clone(),
+            context_path: context_path.map(Path::to_path_buf),
+            stdout_limit: DEFAULT_STDOUT_LIMIT,
+            round_count: 0,
+            started: Instant::now(),
+        };
+
+        // Wait for `__RLM_READY_<sid>__` before handing control back. If
+        // Python failed to start (missing module, syntax error in the
+        // bootstrap, etc.), this is where we'll find out.
+        let ready_sentinel = format!("__RLM_READY_{session_id}__");
+        match tokio::time::timeout(SPAWN_READY_TIMEOUT, rt.read_until_ready(&ready_sentinel)).await
+        {
+            Ok(Ok(())) => Ok(rt),
+            Ok(Err(e)) => {
+                let _ = rt.child.kill().await;
+                Err(format!("python3 bootstrap failed: {e}"))
+            }
+            Err(_) => {
+                let _ = rt.child.kill().await;
+                Err(format!(
+                    "python3 bootstrap did not signal ready within {}s",
+                    SPAWN_READY_TIMEOUT.as_secs()
+                ))
+            }
+        }
+    }
+
+    async fn read_until_ready(&mut self, ready_sentinel: &str) -> Result<(), String> {
+        loop {
+            let mut line = String::new();
+            let n = self
+                .stdout
+                .read_line(&mut line)
+                .await
+                .map_err(|e| format!("stdout read: {e}"))?;
+            if n == 0 {
+                return Err("python3 closed stdout before ready signal".to_string());
+            }
+            let trimmed = line.trim_end_matches(['\n', '\r']);
+            if trimmed == ready_sentinel {
+                return Ok(());
+            }
+            // Pre-ready output is rare; ignore it.
+        }
+    }
+
+    /// Execute a Python code block with no RPC dispatcher. Used for inline
+    /// `repl` blocks where `llm_query()` should fall back to a sentinel.
+    pub async fn execute(&mut self, code: &str) -> Result<ReplRound, String> {
+        self.run(code, None::<&dyn RpcDispatcher>).await
+    }
+
+    /// Execute a code block, dispatching any sub-LLM RPCs through `bridge`.
+    ///
+    /// Returns once Python emits `__RLM_DONE_<sid>__` or the round timeout
+    /// elapses (whichever happens first).
+    pub async fn run<D>(&mut self, code: &str, bridge: Option<&D>) -> Result<ReplRound, String>
+    where
+        D: RpcDispatcher + ?Sized,
+    {
+        let started = Instant::now();
+        self.round_count += 1;
+        let round_id = self.round_count;
+
+        // Send the code header + body + end marker in one write.
+        let header = format!("__RLM_RUN_{}__::{round_id}\n", self.session_id);
+        let footer = format!("__RLM_END_{}__\n", self.session_id);
+        let payload = format!("{header}{code}\n{footer}");
+        self.stdin
+            .write_all(payload.as_bytes())
+            .await
+            .map_err(|e| format!("stdin write: {e}"))?;
+        self.stdin
+            .flush()
+            .await
+            .map_err(|e| format!("stdin flush: {e}"))?;
+
+        // Sentinels for this session.
+        let req_prefix = format!("__RLM_REQ_{}__::", self.session_id);
+        let final_prefix = format!("__RLM_FINAL_{}__::", self.session_id);
+        let err_prefix = format!("__RLM_ERR_{}__::", self.session_id);
+        let done_prefix = format!("__RLM_DONE_{}__::", self.session_id);
+
+        let mut stdout_buf = String::new();
+        let mut final_value: Option<String> = None;
+        let mut had_error = false;
+        let mut rpc_count: u32 = 0;
+
+        let read_loop = async {
+            loop {
+                let mut line = String::new();
+                let n = self
+                    .stdout
+                    .read_line(&mut line)
+                    .await
+                    .map_err(|e| format!("stdout read: {e}"))?;
+                if n == 0 {
+                    return Err("python3 closed stdout mid-round".to_string());
+                }
+                let trimmed = line.trim_end_matches(['\n', '\r']);
+
+                if let Some(rest) = trimmed.strip_prefix(&done_prefix) {
+                    let _ = rest;
+                    break;
+                }
+                if let Some(rest) = trimmed.strip_prefix(&final_prefix) {
+                    // Stored as a JSON-encoded string.
+                    let v =
+                        serde_json::from_str::<String>(rest).unwrap_or_else(|_| rest.to_string());
+                    final_value = Some(v);
+                    continue;
+                }
+                if let Some(rest) = trimmed.strip_prefix(&err_prefix) {
+                    let traceback =
+                        serde_json::from_str::<String>(rest).unwrap_or_else(|_| rest.to_string());
+                    had_error = true;
+                    stdout_buf.push_str(&format!("[traceback]\n{traceback}\n"));
+                    continue;
+                }
+                if let Some(rest) = trimmed.strip_prefix(&req_prefix) {
+                    rpc_count = rpc_count.saturating_add(1);
+                    let req: RpcRequest = match serde_json::from_str(rest) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            // Send an error response so Python isn't blocked.
+                            self.send_resp(&RpcResponse::Single(SingleResp {
+                                text: String::new(),
+                                error: Some(format!("malformed RPC: {e}")),
+                            }))
+                            .await?;
+                            continue;
+                        }
+                    };
+                    let resp = match bridge {
+                        Some(b) => b.dispatch(req).await,
+                        None => RpcResponse::Single(SingleResp {
+                            text: String::new(),
+                            error: Some("no LLM bridge bound to this REPL".to_string()),
+                        }),
+                    };
+                    self.send_resp(&resp).await?;
+                    continue;
+                }
+
+                stdout_buf.push_str(&line);
+            }
+            Ok::<_, String>(())
+        };
+
+        match tokio::time::timeout(ROUND_TIMEOUT, read_loop).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => return Err(e),
+            Err(_) => {
+                return Err(format!(
+                    "REPL round timed out after {}s",
+                    ROUND_TIMEOUT.as_secs()
+                ));
+            }
+        }
+
+        let stderr = self.drain_stderr().await;
+        let display = truncate_stdout(stdout_buf.trim_end_matches('\n'), self.stdout_limit);
+
+        Ok(ReplRound {
+            stdout: display,
+            full_stdout: stdout_buf,
+            stderr,
+            has_error: had_error,
+            final_value,
+            rpc_count,
+            elapsed: started.elapsed(),
+        })
+    }
+
+    async fn send_resp(&mut self, resp: &RpcResponse) -> Result<(), String> {
+        let body = serde_json::to_string(resp).map_err(|e| format!("encode rpc resp: {e}"))?;
+        let line = format!("__RLM_RESP_{}__::{body}\n", self.session_id);
+        self.stdin
+            .write_all(line.as_bytes())
+            .await
+            .map_err(|e| format!("stdin write resp: {e}"))?;
+        self.stdin
+            .flush()
+            .await
+            .map_err(|e| format!("stdin flush resp: {e}"))?;
+        Ok(())
+    }
+
+    async fn drain_stderr(&mut self) -> String {
+        // We don't continuously read stderr — drain whatever's pending after
+        // a round so it can show up in error reports without deadlocking
+        // anything during normal operation.
+        let Some(stderr) = self.child.stderr.as_mut() else {
+            return String::new();
+        };
+        use tokio::io::AsyncReadExt;
+        let mut buf = Vec::new();
+        // Best-effort read with a tight deadline; we don't want to block.
+        let fut = async {
+            let mut chunk = [0u8; 4096];
+            loop {
+                match tokio::time::timeout(Duration::from_millis(20), stderr.read(&mut chunk)).await
+                {
+                    Ok(Ok(0)) => break,
+                    Ok(Ok(n)) => buf.extend_from_slice(&chunk[..n]),
+                    _ => break,
+                }
+            }
+        };
+        let _ = fut.await;
+        String::from_utf8_lossy(&buf).to_string()
+    }
+
+    /// Total rounds executed.
+    pub fn round_count(&self) -> u64 {
+        self.round_count
+    }
+
+    /// Wall-clock uptime since spawn.
+    pub fn uptime(&self) -> Duration {
+        self.started.elapsed()
+    }
+
+    /// Cleanly tear down the subprocess.
+    pub async fn shutdown(mut self) {
+        let _ = self.stdin.shutdown().await;
+        let _ = self.child.kill().await;
+        if let Some(path) = self.context_path.take() {
+            let _ = tokio::fs::remove_file(path).await;
+        }
+    }
+}
+
+impl Drop for PythonRuntime {
+    fn drop(&mut self) {
+        // tokio sets `kill_on_drop(true)` on the child; the context file
+        // (if any) is removed on `shutdown()` — drop is best-effort.
+        if let Some(path) = self.context_path.take() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bootstrap script
+// ---------------------------------------------------------------------------
+
+/// Render the Python bootstrap with session-specific sentinels baked in.
+/// The sentinels include a UUID to prevent user prints from being mistaken
+/// for control messages.
+fn render_bootstrap(session_id: &str) -> String {
+    BOOTSTRAP_TEMPLATE.replace("__SID__", session_id)
+}
+
+const BOOTSTRAP_TEMPLATE: &str = r#"
 import json as _json
 import os as _os
-import urllib.request as _urlreq
-import urllib.error as _urlerr
+import sys as _sys
+import traceback as _traceback
 
-# --- Sidecar URLs (set by the RLM driver) ---
-_LLM_URL = _os.environ.get('REPL_LLM_URL', '')
-_LLM_BATCH_URL = _os.environ.get('REPL_LLM_BATCH_URL', '')
-_RLM_URL = _os.environ.get('REPL_RLM_URL', '')
-_RLM_BATCH_URL = _os.environ.get('REPL_RLM_BATCH_URL', '')
-_STATE_FILE = _os.environ.get('REPL_STATE_FILE', '')
+_SID = "__SID__"
+_REQ = f"__RLM_REQ_{_SID}__::"
+_RESP = f"__RLM_RESP_{_SID}__::"
+_FINAL = f"__RLM_FINAL_{_SID}__::"
+_ERR = f"__RLM_ERR_{_SID}__::"
+_RUN = f"__RLM_RUN_{_SID}__::"
+_END = f"__RLM_END_{_SID}__"
+_DONE = f"__RLM_DONE_{_SID}__::"
+_READY = f"__RLM_READY_{_SID}__"
 
-def _post_json(url, body, timeout):
-    data = _json.dumps(body).encode('utf-8')
-    req = _urlreq.Request(
-        url, data=data,
-        headers={'Content-Type': 'application/json'},
-        method='POST',
-    )
-    with _urlreq.urlopen(req, timeout=timeout) as resp:
-        return _json.loads(resp.read().decode('utf-8'))
+def _rpc(req):
+    _sys.stdout.write(_REQ + _json.dumps(req) + "\n")
+    _sys.stdout.flush()
+    line = _sys.stdin.readline()
+    if not line:
+        return {"error": "rust driver closed stdin"}
+    if line.startswith(_RESP):
+        try:
+            return _json.loads(line[len(_RESP):])
+        except Exception as e:
+            return {"error": f"malformed rpc resp: {e}"}
+    return {"error": f"unexpected protocol line: {line[:120]!r}"}
 
 def llm_query(prompt, model=None, max_tokens=None, system=None):
-    """One-shot sub-LLM call. Returns the completion text as a string.
-    Cheap and fast — use for chunk extraction / summarization / Q&A.
-    The sub-LLM uses the configured child_model by default."""
-    if not _LLM_URL:
-        return '[llm_query unavailable: no sidecar URL]'
-    body = {'prompt': str(prompt), 'model': model,
-            'max_tokens': max_tokens, 'system': system}
-    try:
-        data = _post_json(_LLM_URL, body, timeout=180)
-    except _urlerr.URLError as e:
-        return f'[llm_query transport error: {e}]'
-    except Exception as e:
-        return f'[llm_query error: {e}]'
-    if data.get('error'):
-        return f'[llm_query: {data["error"]}]'
-    return data.get('text', '')
+    """One-shot sub-LLM call. Returns the completion text as a string."""
+    resp = _rpc({"type":"llm","prompt":str(prompt),"model":model,
+                 "max_tokens":max_tokens,"system":system})
+    if isinstance(resp, dict) and resp.get("error"):
+        return f"[llm_query error: {resp['error']}]"
+    if isinstance(resp, dict):
+        return resp.get("text","")
+    return str(resp)
 
 def llm_query_batched(prompts, model=None):
-    """Run multiple llm_query calls concurrently. Returns a list of strings
-    in the same order as the input prompts. Much faster than sequential
-    calls when the sub-prompts are independent."""
+    """Run multiple sub-LLM calls concurrently. Returns a list of strings."""
     if not isinstance(prompts, (list, tuple)):
-        return [f'[llm_query_batched error: prompts must be a list]']
-    if not _LLM_BATCH_URL:
-        # Fall back to serial llm_query if no batch endpoint is configured.
-        return [llm_query(p, model=model) for p in prompts]
-    body = {'prompts': [str(p) for p in prompts], 'model': model}
-    try:
-        data = _post_json(_LLM_BATCH_URL, body, timeout=300)
-    except _urlerr.URLError as e:
-        return [f'[llm_query_batched transport error: {e}]'] * len(prompts)
-    except Exception as e:
-        return [f'[llm_query_batched error: {e}]'] * len(prompts)
-    results = data.get('results', [])
+        return ["[llm_query_batched: prompts must be a list]"]
+    resp = _rpc({"type":"llm_batch","prompts":[str(p) for p in prompts],"model":model})
+    if isinstance(resp, dict) and resp.get("error"):
+        return [f"[llm_query_batched: {resp['error']}]" for _ in prompts]
+    results = (resp or {}).get("results", []) if isinstance(resp, dict) else []
     if len(results) != len(prompts):
-        return [f'[llm_query_batched mismatch: got {len(results)} for {len(prompts)} prompts]'] * len(prompts)
-    return [r.get('text', f'[llm_query_batched: {r.get("error","")}]') for r in results]
+        return [f"[llm_query_batched: size mismatch ({len(results)}/{len(prompts)})]" for _ in prompts]
+    out = []
+    for r in results:
+        if r.get("error"):
+            out.append(f"[child err: {r['error']}]")
+        else:
+            out.append(r.get("text",""))
+    return out
 
 def rlm_query(prompt, model=None):
-    """Spawn a recursive RLM sub-call (paper's `sub_RLM`). The child gets
-    its own REPL and can iterate, query further sub-LLMs, etc. Use when a
-    sub-task itself requires multi-step reasoning. Bounded by the parent's
-    recursion budget; falls back to llm_query when at depth=0."""
-    if not _RLM_URL:
-        return '[rlm_query unavailable: no sidecar URL]'
-    try:
-        data = _post_json(_RLM_URL, {'prompt': str(prompt), 'model': model}, timeout=600)
-    except _urlerr.URLError as e:
-        return f'[rlm_query transport error: {e}]'
-    except Exception as e:
-        return f'[rlm_query error: {e}]'
-    if data.get('error'):
-        return f'[rlm_query: {data["error"]}]'
-    return data.get('text', '')
+    """Recursive sub-RLM (paper's `sub_RLM`). Each call gets its own REPL."""
+    resp = _rpc({"type":"rlm","prompt":str(prompt),"model":model})
+    if isinstance(resp, dict) and resp.get("error"):
+        return f"[rlm_query error: {resp['error']}]"
+    if isinstance(resp, dict):
+        return resp.get("text","")
+    return str(resp)
 
 def rlm_query_batched(prompts, model=None):
-    """Spawn multiple recursive RLM sub-calls in parallel. Each prompt
-    gets its own child RLM. Returns a list in input order."""
+    """Run multiple recursive sub-RLMs in parallel."""
     if not isinstance(prompts, (list, tuple)):
-        return [f'[rlm_query_batched error: prompts must be a list]']
-    if not _RLM_BATCH_URL:
-        return [rlm_query(p, model=model) for p in prompts]
-    body = {'prompts': [str(p) for p in prompts], 'model': model}
-    try:
-        data = _post_json(_RLM_BATCH_URL, body, timeout=900)
-    except _urlerr.URLError as e:
-        return [f'[rlm_query_batched transport error: {e}]'] * len(prompts)
-    except Exception as e:
-        return [f'[rlm_query_batched error: {e}]'] * len(prompts)
-    results = data.get('results', [])
+        return ["[rlm_query_batched: prompts must be a list]"]
+    resp = _rpc({"type":"rlm_batch","prompts":[str(p) for p in prompts],"model":model})
+    if isinstance(resp, dict) and resp.get("error"):
+        return [f"[rlm_query_batched: {resp['error']}]" for _ in prompts]
+    results = (resp or {}).get("results", []) if isinstance(resp, dict) else []
     if len(results) != len(prompts):
-        return [f'[rlm_query_batched mismatch: got {len(results)} for {len(prompts)} prompts]'] * len(prompts)
-    return [r.get('text', f'[rlm_query_batched: {r.get("error","")}]') for r in results]
+        return [f"[rlm_query_batched: size mismatch ({len(results)}/{len(prompts)})]" for _ in prompts]
+    out = []
+    for r in results:
+        if r.get("error"):
+            out.append(f"[child err: {r['error']}]")
+        else:
+            out.append(r.get("text",""))
+    return out
 
 def FINAL(value):
-    """Signal the RLM loop to stop with this final answer."""
-    print(f'__REPL_FINAL__::{_json.dumps(str(value))}', flush=True)
+    """Signal the loop to stop with this final answer."""
+    _sys.stdout.write(_FINAL + _json.dumps(str(value)) + "\n")
+    _sys.stdout.flush()
 
 def FINAL_VAR(name):
-    """Signal the RLM loop to stop, returning a named variable as the answer."""
+    """Signal the loop to stop, returning the value of a named variable."""
     name_str = str(name).strip().strip("'\"")
     if name_str in globals():
-        val = globals()[name_str]
-        print(f'__REPL_FINAL__::{_json.dumps(str(val))}', flush=True)
+        FINAL(globals()[name_str])
     else:
         print(f"FINAL_VAR error: variable '{name_str}' not found. "
               f"Use SHOW_VARS() to list available variables.", flush=True)
@@ -205,192 +575,65 @@ def repl_get(name, default=None):
 def repl_set(name, value):
     globals()[str(name)] = value
 
-# Names defined by the bootstrap that should NOT be persisted as user vars.
+# Load the long input as `context` (and `ctx`) from a file. This keeps the
+# big string out of the process command-line and out of the LLM's window.
+_ctx_file = _os.environ.get("RLM_CONTEXT_FILE","")
+context = ""
+if _ctx_file:
+    try:
+        with open(_ctx_file, "r", encoding="utf-8", errors="replace") as f:
+            context = f.read()
+    except Exception as e:
+        _sys.stderr.write(f"[bootstrap] failed to load context: {e}\n")
+ctx = context  # short alias matching aleph
+
 _BOOTSTRAP_NAMES = {
-    'llm_query', 'llm_query_batched', 'rlm_query', 'rlm_query_batched',
-    'SHOW_VARS', 'FINAL', 'FINAL_VAR', 'repl_get', 'repl_set',
+    "_SID","_REQ","_RESP","_FINAL","_ERR","_RUN","_END","_DONE","_READY",
+    "_rpc","_ctx_file","_BOOTSTRAP_NAMES","_main_loop",
+    "llm_query","llm_query_batched","rlm_query","rlm_query_batched",
+    "FINAL","FINAL_VAR","SHOW_VARS","repl_get","repl_set",
+    "context","ctx",
+    "_json","_os","_sys","_traceback",
 }
 
-# Restore user variables from the previous round's state file. Any
-# JSON-serializable value persists as a regular Python local.
-def _load_state():
-    if not _STATE_FILE or not _os.path.exists(_STATE_FILE):
-        return
-    try:
-        with open(_STATE_FILE, 'r') as f:
-            data = _json.load(f)
-        if isinstance(data, dict):
-            for k, v in data.items():
-                if not k.startswith('_'):
-                    globals()[k] = v
-    except Exception:
-        pass
-
-# Save user variables (everything that's JSON-serializable and not a
-# bootstrap helper) to the state file for the next round.
-def _save_state():
-    if not _STATE_FILE:
-        return
-    out = {}
-    for k, v in list(globals().items()):
-        if k.startswith('_') or k in _BOOTSTRAP_NAMES:
+def _main_loop():
+    _sys.stdout.write(_READY + "\n")
+    _sys.stdout.flush()
+    while True:
+        header = _sys.stdin.readline()
+        if not header:
+            return
+        if not header.startswith(_RUN):
             continue
+        round_id = header.rstrip("\n")[len(_RUN):]
+        code_lines = []
+        while True:
+            line = _sys.stdin.readline()
+            if not line:
+                return
+            if line.rstrip("\n") == _END:
+                break
+            code_lines.append(line)
+        code = "".join(code_lines)
         try:
-            _json.dumps(v)
-        except (TypeError, ValueError):
-            continue
-        out[k] = v
-    try:
-        with open(_STATE_FILE, 'w') as f:
-            _json.dump(out, f)
-    except Exception:
-        pass
+            exec(compile(code, f"<repl-{round_id}>", "exec"), globals())
+        except SystemExit:
+            _sys.stdout.write(_DONE + round_id + "\n")
+            _sys.stdout.flush()
+            return
+        except BaseException:
+            tb = _traceback.format_exc()
+            _sys.stdout.write(_ERR + _json.dumps(tb) + "\n")
+            _sys.stdout.flush()
+        _sys.stdout.write(_DONE + round_id + "\n")
+        _sys.stdout.flush()
 
-_load_state()
+_main_loop()
 "#;
 
-/// Code suffix — appended after user code to save state.
-const PYTHON_SUFFIX: &str = r#"
-# --- Save state after execution ---
-_save_state()
-"#;
-
-impl PythonRuntime {
-    /// Create a new Python REPL runtime.
-    pub async fn new() -> Result<Self, String> {
-        let dir = std::env::temp_dir().join("deepseek_repl");
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| format!("Failed to create REPL temp dir: {e}"))?;
-
-        let state_path = dir.join(format!("state_{}.json", std::process::id()));
-
-        Ok(Self {
-            state_path,
-            stdout_limit: DEFAULT_STDOUT_LIMIT,
-            round_count: 0,
-            started: Instant::now(),
-            extra_env: Vec::new(),
-        })
-    }
-
-    /// Create with a specific state path (for testing / RLM integration).
-    pub fn with_state_path(path: PathBuf) -> Self {
-        Self {
-            state_path: path,
-            stdout_limit: DEFAULT_STDOUT_LIMIT,
-            round_count: 0,
-            started: Instant::now(),
-            extra_env: Vec::new(),
-        }
-    }
-
-    /// Set an env var that will be passed to every subsequent `python3`
-    /// invocation. Used by the RLM driver to inject sidecar URLs.
-    pub fn set_env(&mut self, key: impl Into<String>, value: impl Into<String>) {
-        let key = key.into();
-        let value = value.into();
-        self.extra_env.retain(|(k, _)| k != &key);
-        self.extra_env.push((key, value));
-    }
-
-    /// Execute a block of Python code.
-    ///
-    /// Spawns a `python3 -u` process with the bootstrap, the user code,
-    /// and the suffix, then collects stdout/stderr.
-    pub async fn execute(&mut self, code: &str) -> Result<ReplRound, String> {
-        let round_start = Instant::now();
-        self.round_count += 1;
-
-        // Build the full script: bootstrap + user code + suffix.
-        let full_script = format!(
-            "{}\n\n# --- User code (round {}) ---\ntry:\n{}\nexcept Exception as _repl_err:\n    print(f'__REPL_ERROR__::{{_repl_err}}', flush=True)\n\n{}",
-            PYTHON_BOOTSTRAP,
-            self.round_count,
-            indent_code(code, 4),
-            PYTHON_SUFFIX,
-        );
-
-        let output = tokio::time::timeout(ROUND_TIMEOUT, async {
-            let mut cmd = Command::new("python3");
-            cmd.arg("-u") // unbuffered
-                .arg("-c")
-                .arg(&full_script)
-                .env(
-                    "REPL_STATE_FILE",
-                    self.state_path.to_string_lossy().as_ref(),
-                );
-            for (k, v) in &self.extra_env {
-                cmd.env(k, v);
-            }
-            cmd.output()
-                .await
-                .map_err(|e| format!("Failed to execute python3: {e}"))
-        })
-        .await
-        .map_err(|_| {
-            format!(
-                "Python REPL round timed out after {}s",
-                ROUND_TIMEOUT.as_secs()
-            )
-        })??;
-
-        let full_stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        let has_error = !output.status.success() || full_stdout.contains("__REPL_ERROR__::");
-
-        // Parse FINAL markers and clean up protocol lines.
-        let (display_stdout, final_value) = parse_final(&full_stdout);
-        let display_stdout = clean_repl_output(&display_stdout);
-        let display_stdout = truncate_stdout(&display_stdout, self.stdout_limit);
-
-        Ok(ReplRound {
-            stdout: display_stdout,
-            full_stdout,
-            stderr,
-            has_error,
-            final_value,
-            elapsed: round_start.elapsed(),
-        })
-    }
-
-    /// Total rounds executed.
-    pub fn round_count(&self) -> u64 {
-        self.round_count
-    }
-
-    /// Wall-clock uptime.
-    pub fn uptime(&self) -> Duration {
-        self.started.elapsed()
-    }
-}
-
-/// Clean protocol lines (__REPL_LLM_QUERY__, etc.) from stdout.
-fn clean_repl_output(raw: &str) -> String {
-    raw.lines()
-        .filter(|line| {
-            !line.starts_with("__REPL_LLM_QUERY__::")
-                && !line.starts_with("__REPL_FINAL__::")
-                && !line.starts_with("__REPL_ERROR__::")
-                && !line.starts_with("__REPL_DONE__")
-                && !line.starts_with("__REPL_READY__")
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn indent_code(code: &str, spaces: usize) -> String {
-    let indent = " ".repeat(spaces);
-    code.lines()
-        .map(|line| {
-            if line.is_empty() {
-                String::new()
-            } else {
-                format!("{indent}{line}")
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 fn truncate_stdout(stdout: &str, limit: usize) -> String {
     if stdout.len() <= limit {
@@ -398,80 +641,234 @@ fn truncate_stdout(stdout: &str, limit: usize) -> String {
     }
     let take = limit.saturating_sub(80);
     let mut out: String = stdout.chars().take(take).collect();
-    let omitted = stdout.len().saturating_sub(take);
+    let omitted = stdout.len().saturating_sub(out.len());
     out.push_str(&format!(
         "\n\n[... REPL output truncated: {omitted} bytes omitted ...]\n"
     ));
     out
 }
 
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use tokio::sync::Mutex;
 
-    #[tokio::test]
-    async fn repl_executes_simple_code() {
-        let mut rt = PythonRuntime::new().await.expect("create runtime");
-        let round = rt
-            .execute("print('hello from repl')")
-            .await
-            .expect("execute");
-        assert!(round.stdout.contains("hello from repl"));
-        assert!(!round.has_error);
-        assert!(round.final_value.is_none());
+    /// In-process dispatcher that records what was asked and replies with
+    /// canned text. Lets tests verify the round-trip without real network.
+    struct StubBridge {
+        calls: Arc<Mutex<Vec<RpcRequest>>>,
+        canned: Arc<AtomicU32>,
+    }
+
+    impl StubBridge {
+        fn new() -> Self {
+            Self {
+                calls: Arc::new(Mutex::new(Vec::new())),
+                canned: Arc::new(AtomicU32::new(0)),
+            }
+        }
+    }
+
+    impl RpcDispatcher for StubBridge {
+        fn dispatch<'a>(
+            &'a self,
+            req: RpcRequest,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = RpcResponse> + Send + 'a>> {
+            Box::pin(async move {
+                self.calls.lock().await.push(req.clone());
+                let n = self.canned.fetch_add(1, Ordering::Relaxed);
+                match req {
+                    RpcRequest::Llm { prompt, .. } | RpcRequest::Rlm { prompt, .. } => {
+                        RpcResponse::Single(SingleResp {
+                            text: format!("stub#{n}: {prompt}"),
+                            error: None,
+                        })
+                    }
+                    RpcRequest::LlmBatch { prompts, .. } | RpcRequest::RlmBatch { prompts, .. } => {
+                        let results = prompts
+                            .into_iter()
+                            .enumerate()
+                            .map(|(i, p)| SingleResp {
+                                text: format!("stub#{n}.{i}: {p}"),
+                                error: None,
+                            })
+                            .collect();
+                        RpcResponse::Batch(BatchResp { results })
+                    }
+                }
+            })
+        }
+    }
+
+    fn write_temp_context(body: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join("deepseek_repl_runtime_tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("ctx_{}_{}.txt", std::process::id(), Uuid::new_v4()));
+        std::fs::write(&path, body).unwrap();
+        path
     }
 
     #[tokio::test]
-    async fn repl_handles_final() {
-        let mut rt = PythonRuntime::new().await.expect("create runtime");
+    async fn spawns_and_executes_simple_print() {
+        let mut rt = PythonRuntime::new().await.expect("spawn");
+        let round = rt.execute("print('hello world')").await.expect("execute");
+        assert!(round.stdout.contains("hello world"));
+        assert!(!round.has_error);
+        assert!(round.final_value.is_none());
+        assert_eq!(round.rpc_count, 0);
+        rt.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn variables_persist_across_rounds() {
+        let mut rt = PythonRuntime::new().await.expect("spawn");
+        rt.execute("x = [1, 2, 3]").await.expect("r1");
+        rt.execute("x.append(99)").await.expect("r2");
+        let round = rt.execute("print(x)").await.expect("r3");
+        assert!(round.stdout.contains("[1, 2, 3, 99]"));
+        rt.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn imports_persist_across_rounds() {
+        let mut rt = PythonRuntime::new().await.expect("spawn");
+        rt.execute("import math").await.expect("r1");
+        let round = rt.execute("print(math.pi)").await.expect("r2");
+        assert!(round.stdout.contains("3.14"));
+        rt.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn context_loads_from_file() {
+        let path = write_temp_context("the quick brown fox");
+        let mut rt = PythonRuntime::spawn_with_context(&path)
+            .await
+            .expect("spawn");
+        let round = rt
+            .execute("print(len(context), context[:5])")
+            .await
+            .expect("execute");
+        assert!(round.stdout.contains("19"));
+        assert!(round.stdout.contains("the q"));
+        rt.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn ctx_alias_works() {
+        let path = write_temp_context("aleph-style");
+        let mut rt = PythonRuntime::spawn_with_context(&path)
+            .await
+            .expect("spawn");
+        let round = rt.execute("print(ctx)").await.expect("execute");
+        assert!(round.stdout.contains("aleph-style"));
+        rt.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn final_is_captured() {
+        let mut rt = PythonRuntime::new().await.expect("spawn");
         let round = rt
             .execute("FINAL('the answer is 42')")
             .await
             .expect("execute");
         assert_eq!(round.final_value.as_deref(), Some("the answer is 42"));
+        rt.shutdown().await;
     }
 
     #[tokio::test]
-    async fn repl_persists_variables_across_rounds() {
-        let dir = std::env::temp_dir().join("deepseek_repl_test");
-        std::fs::create_dir_all(&dir).ok();
-        let state_path = dir.join(format!("test_state_{}.json", std::process::id()));
-        let _ = std::fs::remove_file(&state_path);
+    async fn final_var_is_captured() {
+        let mut rt = PythonRuntime::new().await.expect("spawn");
+        rt.execute("answer = 'computed'").await.expect("r1");
+        let round = rt.execute("FINAL_VAR('answer')").await.expect("r2");
+        assert_eq!(round.final_value.as_deref(), Some("computed"));
+        rt.shutdown().await;
+    }
 
-        let mut rt = PythonRuntime::with_state_path(state_path.clone());
+    #[tokio::test]
+    async fn errors_are_reported_without_killing_runtime() {
+        let mut rt = PythonRuntime::new().await.expect("spawn");
+        let r1 = rt.execute("raise ValueError('boom')").await.expect("r1");
+        assert!(r1.has_error);
+        assert!(r1.full_stdout.contains("boom") || r1.stdout.contains("boom"));
+        // The runtime is still alive — next round should work.
+        let r2 = rt.execute("print('still here')").await.expect("r2");
+        assert!(r2.stdout.contains("still here"));
+        rt.shutdown().await;
+    }
 
-        // Round 1: set a variable.
-        rt.execute("repl_set('count', 41)").await.expect("round 1");
-        // Round 2: read it back and increment.
+    #[tokio::test]
+    async fn rpc_dispatcher_round_trips_llm_query() {
+        let bridge = StubBridge::new();
+        let calls = Arc::clone(&bridge.calls);
+
+        let mut rt = PythonRuntime::new().await.expect("spawn");
         let round = rt
-            .execute(
-                "val = repl_get('count', 0); repl_set('count', val + 1); print(f'count={val+1}')",
+            .run("print(llm_query('hello'))", Some(&bridge))
+            .await
+            .expect("execute");
+        assert!(
+            round.stdout.contains("stub#0: hello"),
+            "stdout: {:?}",
+            round.stdout
+        );
+        assert_eq!(round.rpc_count, 1);
+
+        let recorded = calls.lock().await;
+        assert_eq!(recorded.len(), 1);
+        match &recorded[0] {
+            RpcRequest::Llm { prompt, .. } => assert_eq!(prompt, "hello"),
+            other => panic!("expected Llm request, got {other:?}"),
+        }
+        drop(recorded);
+        rt.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn rpc_dispatcher_round_trips_batch() {
+        let bridge = StubBridge::new();
+        let mut rt = PythonRuntime::new().await.expect("spawn");
+        let round = rt
+            .run(
+                "outs = llm_query_batched(['a','b','c']); print('|'.join(outs))",
+                Some(&bridge),
             )
             .await
-            .expect("round 2");
-        assert!(round.stdout.contains("count=42"));
+            .expect("execute");
+        assert!(round.stdout.contains("stub#0.0: a"));
+        assert!(round.stdout.contains("stub#0.1: b"));
+        assert!(round.stdout.contains("stub#0.2: c"));
+        assert_eq!(round.rpc_count, 1);
+        rt.shutdown().await;
+    }
 
-        // Round 3: verify via FINAL_VAR.
-        let round = rt.execute("FINAL_VAR('count')").await.expect("round 3");
-        assert_eq!(round.final_value.as_deref(), Some("42"));
-
-        let _ = std::fs::remove_file(&state_path);
+    #[tokio::test]
+    async fn no_dispatcher_returns_unavailable_sentinel() {
+        let mut rt = PythonRuntime::new().await.expect("spawn");
+        let round = rt.execute("print(llm_query('hi'))").await.expect("execute");
+        assert!(
+            round.stdout.contains("[llm_query error:") || round.stdout.contains("no LLM bridge"),
+            "stdout: {:?}",
+            round.stdout
+        );
+        rt.shutdown().await;
     }
 
     #[test]
-    fn clean_output_removes_protocol_lines() {
-        let raw = "hello\n__REPL_FINAL__::\"done\"\nworld\n__REPL_LLM_QUERY__::{}";
-        let cleaned = clean_repl_output(raw);
-        assert!(cleaned.contains("hello"));
-        assert!(cleaned.contains("world"));
-        assert!(!cleaned.contains("__REPL_FINAL__"));
-        assert!(!cleaned.contains("__REPL_LLM_QUERY__"));
+    fn truncate_keeps_short_unchanged() {
+        assert_eq!(truncate_stdout("hello", 100), "hello");
     }
 
     #[test]
-    fn indent_preserves_empty_lines() {
-        let code = "print(1)\n\nprint(2)";
-        let result = indent_code(code, 4);
-        assert_eq!(result, "    print(1)\n\n    print(2)");
+    fn truncate_clips_long() {
+        let long = "a".repeat(10_000);
+        let out = truncate_stdout(&long, 1024);
+        assert!(out.len() < 1500);
+        assert!(out.contains("truncated"));
     }
 }

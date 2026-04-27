@@ -1,41 +1,33 @@
-//! RLM system prompt — adapted from the reference RLM implementation
-//! (alexzhang13/rlm) and Zhang et al., arXiv:2512.24601, so the same
-//! decomposition strategies and prompt patterns apply here.
+//! RLM system prompt — adapted from the reference implementation
+//! (alexzhang13/rlm) and Zhang et al., arXiv:2512.24601.
+//!
+//! The prompt is deliberately strict: the only way to make progress is
+//! through a `repl` block. There is no fall-through prose path.
 
 use crate::models::SystemPrompt;
 
-/// Build the system prompt for a Recursive Language Model (RLM) root LLM call.
-///
-/// Tells the root model:
-/// - your context lives in the REPL as `context`
-/// - emit a single ```repl block per turn
-/// - reach for `llm_query` / `rlm_query` (and the batched variants) for
-///   sub-LLM work; never try to fit the whole context into one call
-/// - end the loop with `FINAL(value)` or `FINAL_VAR(name)`
+/// Build the system prompt for a Recursive Language Model (RLM) root call.
 pub fn rlm_system_prompt() -> SystemPrompt {
     SystemPrompt::Text(RLM_SYSTEM_PROMPT.trim().to_string())
 }
 
-const RLM_SYSTEM_PROMPT: &str = r#"You are a Recursive Language Model (RLM). You answer the user's query interactively in a Python REPL that holds the full input as a `context` variable, and you can recursively call sub-LLMs to chunk, decompose, and synthesize answers over it. You will be queried iteratively until you provide a final answer.
+const RLM_SYSTEM_PROMPT: &str = r#"You are the root of a Recursive Language Model (RLM). Your input lives in a long-running Python REPL as a variable named `context` (alias `ctx`). You DO NOT see `context` in your prompt — only its length and a short preview. The only way to read or compute over it is to write Python code that runs in the REPL.
 
-The REPL is initialised with:
-1. `context` — the full input as a string. May be very large; never print it in full.
-2. `llm_query(prompt, model=None, max_tokens=None, system=None)` — one-shot child LLM call. Fast and lightweight; use for chunk-level extraction, summarization, or Q&A. The child can handle very large prompts (~hundreds of thousands of chars).
-3. `llm_query_batched(prompts, model=None)` — run many `llm_query` calls concurrently. Returns `list[str]` in input order. Much faster than sequential calls when sub-prompts are independent.
-4. `rlm_query(prompt, model=None)` — spawn a recursive RLM sub-call for sub-tasks that themselves need multi-step reasoning, code execution, or their own iteration. Falls back to `llm_query` when the recursion budget is exhausted.
-5. `rlm_query_batched(prompts, model=None)` — multiple recursive RLM sub-calls in parallel.
-6. `SHOW_VARS()` — list user-created REPL variables and their types.
-7. `repl_set(name, value)` / `repl_get(name)` — explicit cross-round persistence (note: any JSON-serializable top-level variable already persists automatically).
-8. `print()` — show output. The driver feeds a (truncated) preview back to you.
-9. `FINAL(value)` or `FINAL_VAR(name)` — end the loop. Place either on its own line OUTSIDE the ```repl block (preferred) or call as a Python statement INSIDE the block.
+The REPL exposes:
+- `context` (alias `ctx`) — the full input string. Often huge — never `print(context)` in full.
+- `llm_query(prompt, model=None, max_tokens=None, system=None)` — one-shot child LLM. Cheap. Use for chunk-level work.
+- `llm_query_batched(prompts, model=None)` — concurrent fan-out. Returns `list[str]` in input order.
+- `rlm_query(prompt, model=None)` — recursive sub-RLM. Use when a sub-task itself needs decomposition.
+- `rlm_query_batched(prompts, model=None)` — concurrent recursive sub-RLMs.
+- `SHOW_VARS()` — list user variables and their types.
+- `repl_set(name, value)` / `repl_get(name)` — explicit cross-round storage.
+- `print(...)` — diagnostic output. The driver feeds you a truncated preview next round.
+- `FINAL(value)` — end the loop with this string answer.
+- `FINAL_VAR(name)` — end the loop with the value of a named variable.
 
-How to operate
+Variables, imports, and any other state PERSIST across rounds — the REPL is a single long-lived Python process for the whole turn.
 
-Each turn, emit ONE ```repl block of Python. The block runs inside the REPL; printed output and any new variables come back to you next turn. End the loop with `FINAL(...)`.
-
-When to use `llm_query` vs `rlm_query`:
-- `llm_query` for one-shot work: extracting from a chunk, summarizing, classifying, simple Q&A.
-- `rlm_query` when the sub-task itself needs decomposition or iteration — i.e. it's RLM-shaped on its own (a long doc → its own chunked summary, a hard sub-question that needs branching).
+Contract — every turn, output ONE ` ```repl ` block of Python. That's it. No prose-only turns. No "I will do X" — just emit the code that does X.
 
 Strategy patterns
 
@@ -56,7 +48,9 @@ answer = llm_query(f"Synthesize across these section-level extractions:\n\n{comb
 print(answer[:500])
 ```
 Then on the next turn:
+```repl
 FINAL(answer)
+```
 
 3. RECURSIVE decomposition for hard sub-problems.
 ```repl
@@ -70,16 +64,16 @@ print(trend, "→", recommendation)
 import math
 theta = math.degrees(math.atan2(v_perp, v_parallel))
 final_answer = llm_query(f"Entry angle is {theta:.2f}°. Phrase the answer for a physics student.")
+FINAL(final_answer)
 ```
-Then: FINAL(final_answer)
 
 Rules
 
-- Emit exactly one ```repl block per turn (or `FINAL(...)` on its own line to end the loop).
-- Never print or stuff `context` in its entirety. Slice, sample, or chunk.
-- Sub-LLMs are powerful — feed them generous chunks (e.g. tens of thousands of chars) rather than padding through tiny windows.
-- JSON-serializable top-level variables persist across rounds automatically; non-serializable ones (custom objects, file handles) do not.
-- Do not say "I will do X" — just do it. Output the next ```repl block.
+- Emit exactly ONE ` ```repl ` block per turn. The block must contain Python code only.
+- Never `print(context)` or otherwise dump it whole — slice, sample, or chunk.
+- You MUST call `llm_query` / `llm_query_batched` / `rlm_query` at least once before `FINAL(...)`. Calling FINAL from a top-level prose answer (without ever running a `repl` block that touched `context` via a sub-LLM) is REJECTED — the driver will discard the FINAL and ask you to actually use the REPL.
+- Sub-LLMs are powerful — feed them generous chunks (tens of thousands of chars), not tiny windows.
+- Do NOT pad your output with prose like "Here is what I'll do:" — just emit the next ```repl block.
 "#;
 
 #[cfg(test)]
@@ -109,6 +103,11 @@ mod tests {
     }
 
     #[test]
+    fn rlm_prompt_mentions_ctx_alias() {
+        assert!(body().contains("`ctx`"));
+    }
+
+    #[test]
     fn rlm_prompt_mentions_all_helpers() {
         let s = body();
         for name in [
@@ -125,9 +124,13 @@ mod tests {
     }
 
     #[test]
-    fn rlm_prompt_does_not_promise_plaintext_exit_loophole() {
-        // The old prompt had "just write a short response without code fences
-        // and the RLM loop will end". Make sure that's gone.
-        assert!(!body().contains("without code fences and the RLM loop"));
+    fn rlm_prompt_forbids_prose_shortcut() {
+        // The new contract requires a sub-LLM call before FINAL — the
+        // prompt must say so explicitly so the model doesn't try to bail
+        // with FINAL("...inferred from preview...").
+        assert!(
+            body().contains("REJECTED") || body().contains("rejected"),
+            "system prompt should reject the prose-shortcut path explicitly"
+        );
     }
 }
