@@ -2337,6 +2337,20 @@ async fn apply_command_result(
                 let queued = build_queued_message(app, content);
                 submit_or_steer_message(app, engine_handle, queued).await?;
             }
+            AppAction::RlmQuery {
+                prompt,
+                model,
+                child_model,
+            } => {
+                app.status_message = Some("RLM turn starting (Algorithm 1)...".to_string());
+                let _ = engine_handle
+                    .send(Op::RlmQuery {
+                        content: prompt,
+                        model,
+                        child_model,
+                    })
+                    .await;
+            }
             AppAction::ListSubAgents => {
                 let _ = engine_handle.send(Op::ListSubAgents).await;
             }

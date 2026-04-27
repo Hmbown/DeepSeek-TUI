@@ -37,6 +37,7 @@ mod project_context;
 mod project_doc;
 mod prompts;
 pub mod repl;
+pub mod rlm;
 mod responses_api_proxy;
 mod runtime_api;
 mod runtime_threads;

@@ -1922,7 +1922,19 @@ pub enum AppAction {
     OpenConfigView,
     /// Open the `/model` two-pane picker (Pro/Flash + Off/High/Max).
     OpenModelPicker,
+    /// Send a message to the AI (normal chat mode).
     SendMessage(String),
+    /// Run a Recursive Language Model (RLM) turn — Algorithm 1 from
+    /// Zhang et al. (arXiv:2512.24601). The prompt is stored in the REPL;
+    /// the root LLM only sees metadata.
+    RlmQuery {
+        /// The user's prompt — stored in REPL, NOT in LLM context.
+        prompt: String,
+        /// Model for the root LLM.
+        model: String,
+        /// Model for sub-LLM (llm_query) calls.
+        child_model: String,
+    },
     ListSubAgents,
     FetchModels,
     /// Switch the active LLM backend (DeepSeek vs NVIDIA NIM) without

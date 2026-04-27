@@ -312,6 +312,13 @@ pub const COMMANDS: &[CommandInfo] = &[
         description: "Run a structured code review on a file, diff, or PR",
         usage: "/review <target>",
     },
+    // RLM command
+    CommandInfo {
+        name: "rlm",
+        aliases: &["recursive"],
+        description: "Recursive Language Model (RLM) — process a prompt via Algorithm 1 from Zhang et al. (arXiv:2512.24601). The prompt is stored in a REPL; the model writes code to process it.",
+        usage: "/rlm <prompt>",
+    },
     // Debug/cost command
     CommandInfo {
         name: "cost",
@@ -377,6 +384,9 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "skill" => skills::run_skill(app, arg),
         "review" => review::review(app, arg),
 
+        // RLM command
+        "rlm" | "recursive" => rlm(app, arg),
+
         // Legacy command migrations (kept out of registry/autocomplete intentionally).
         "set" => CommandResult::error(
             "The /set command was retired. Use /config to edit settings and /settings to inspect current values.",
@@ -409,6 +419,52 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
 /// Update a configuration value programmatically (used by interactive UI views).
 pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) -> CommandResult {
     config::set_config_value(app, key, value, persist)
+}
+
+/// Execute a Recursive Language Model (RLM) turn — Algorithm 1 from
+/// Zhang et al. (arXiv:2512.24601).
+///
+/// The user's prompt text is passed as the argument. It will be stored
+/// in the REPL as the `PROMPT` variable. The root LLM will only see
+/// metadata about the REPL state, never the prompt text directly.
+pub fn rlm(app: &mut App, arg: Option<&str>) -> CommandResult {
+    let prompt = match arg {
+        Some(p) if !p.trim().is_empty() => p.trim().to_string(),
+        _ => {
+            return CommandResult::error(
+                "Usage: /rlm <prompt>\n\n\
+                 Process a prompt using a Recursive Language Model (RLM).\n\
+                 The prompt is stored in a REPL and the model writes code\n\
+                 to decompose and process it recursively."
+                    .to_string(),
+            );
+        }
+    };
+
+    // Sanity-check: RLM is most useful for longer prompts.
+    if prompt.len() < 50 {
+        return CommandResult::message(
+            "Tip: RLM is designed for processing LONG prompts (>100 chars). \
+             For short queries, just type the message directly."
+                .to_string(),
+        );
+    }
+
+    let model = app.model.clone();
+    let child_model = "deepseek-v4-flash".to_string();
+
+    CommandResult::with_message_and_action(
+        format!(
+            "Starting RLM turn (Algorithm 1) for {} chars of prompt using {}...",
+            prompt.len(),
+            model
+        ),
+        AppAction::RlmQuery {
+            prompt,
+            model,
+            child_model,
+        },
+    )
 }
 
 /// Get command info by name or alias

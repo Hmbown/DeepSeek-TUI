@@ -137,9 +137,8 @@ impl PythonRuntime {
         })
     }
 
-    /// Create with a specific state path (for testing).
-    #[cfg(test)]
-    pub(crate) fn with_state_path(path: PathBuf) -> Self {
+    /// Create with a specific state path (for testing / RLM integration).
+    pub fn with_state_path(path: PathBuf) -> Self {
         Self {
             state_path: path,
             stdout_limit: DEFAULT_STDOUT_LIMIT,

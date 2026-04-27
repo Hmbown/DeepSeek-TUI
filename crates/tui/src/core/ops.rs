@@ -65,6 +65,18 @@ pub enum Op {
     /// Run context compaction immediately.
     CompactContext,
 
+    /// Run a Recursive Language Model (RLM) turn per Algorithm 1 of
+    /// Zhang et al. (arXiv:2512.24601). The prompt is stored in the REPL
+    /// as the `PROMPT` variable; the root LLM only sees metadata.
+    RlmQuery {
+        /// The user's prompt — stored in REPL, NOT in the LLM context.
+        content: String,
+        /// The model to use for root LLM calls.
+        model: String,
+        /// The model to use for sub-LLM (llm_query) calls.
+        child_model: String,
+    },
+
     /// Shutdown the engine
     Shutdown,
 }
