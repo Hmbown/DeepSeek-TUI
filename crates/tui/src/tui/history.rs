@@ -898,9 +898,9 @@ pub struct GenericToolCell {
     pub status: ToolStatus,
     pub input_summary: Option<String>,
     pub output: Option<String>,
-    /// When the tool is `rlm_query` (or any future fan-out tool that exposes a
-    /// list of child prompts), each prompt is shown on its own indented row
-    /// instead of the inline `args:` summary. `None` for ordinary tools.
+    /// Optional list of per-child prompts. When populated (by any future
+    /// fan-out tool), each prompt is shown on its own indented row instead
+    /// of the inline `args:` summary. `None` for ordinary tools.
     pub prompts: Option<Vec<String>>,
 }
 
@@ -932,8 +932,8 @@ impl GenericToolCell {
         ));
 
         // Prefer per-prompt rows over the generic args summary when the tool
-        // exposes a list of child prompts (rlm_query). One row per child with
-        // a `[i]` index makes the fan-out legible without expanding JSON.
+        // exposes a list of child prompts. One row per child with a `[i]`
+        // index makes the fan-out legible without expanding JSON.
         let show_prompts = matches!(self.status, ToolStatus::Running) || self.output.is_none();
         if show_prompts
             && let Some(prompts) = self.prompts.as_ref()
@@ -2224,12 +2224,12 @@ mod tests {
     }
 
     #[test]
-    fn generic_tool_cell_renders_rlm_prompts_as_indexed_rows() {
-        // When prompts are populated (rlm_query fan-out), each child shows on
+    fn generic_tool_cell_renders_prompts_as_indexed_rows() {
+        // When prompts are populated by a fan-out tool, each child shows on
         // its own row instead of the inline `args:` summary so the user can
         // read what each child was asked.
         let cell = HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
-            name: "parallel_fanout".to_string(),
+            name: "future_fanout_tool".to_string(),
             status: ToolStatus::Running,
             input_summary: Some("prompts: <3 items>".to_string()),
             output: None,
