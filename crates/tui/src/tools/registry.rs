@@ -381,17 +381,11 @@ impl ToolRegistryBuilder {
         self.with_tool(Arc::new(ApplyPatchTool))
     }
 
-    /// Include the native RLM tool (`rlm_query`). Parallel/batched LLM
-    /// fan-out runs through the existing DeepSeek client.
-    #[must_use]
-    pub fn with_parallel_fanout_tool(self, client: Option<DeepSeekClient>) -> Self {
-        use super::parallel_fanout::ParallelFanoutTool;
-        self.with_tool(Arc::new(ParallelFanoutTool::new(client)))
-    }
-
-    /// Include the heavy-lift RLM tool (`rlm_process`). Runs the full
-    /// recursive language-model loop on a long input (file or inline
-    /// content); the long input never enters the calling model's context.
+    /// Include the RLM tool (`rlm`). Runs the full recursive language-model
+    /// loop on a long input (file or inline content); the long input never
+    /// enters the calling model's context window. The Python REPL exposes
+    /// `llm_query` / `llm_query_batched` / `rlm_query` / `rlm_query_batched`
+    /// helpers for sub-LLM work — that's where parallel fan-out belongs.
     #[must_use]
     pub fn with_rlm_tool(self, client: Option<DeepSeekClient>, root_model: String) -> Self {
         use super::rlm::RlmTool;

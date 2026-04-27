@@ -15,7 +15,6 @@ pub mod project;
 pub mod registry;
 pub mod review;
 pub mod rlm;
-pub mod parallel_fanout;
 pub mod search;
 pub mod shell;
 mod shell_output;

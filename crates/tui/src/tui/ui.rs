@@ -4605,27 +4605,11 @@ fn handle_tool_call_started(app: &mut App, id: &str, name: &str, input: &serde_j
     );
 }
 
-/// Extract per-child prompts from a fan-out tool's input. For `rlm_query` the
-/// renderer shows one row per child instead of an inline JSON summary so the
-/// user can read what each child was asked. Returns `None` for tools that
-/// don't expose a prompt list.
-fn extract_fanout_prompts(name: &str, input: &serde_json::Value) -> Option<Vec<String>> {
-    if name != "parallel_fanout" {
-        return None;
-    }
-    if let Some(arr) = input.get("prompts").and_then(|v| v.as_array()) {
-        let prompts: Vec<String> = arr
-            .iter()
-            .filter_map(|v| v.as_str().map(str::to_string))
-            .collect();
-        if prompts.is_empty() {
-            return None;
-        }
-        return Some(prompts);
-    }
-    if let Some(s) = input.get("prompt").and_then(|v| v.as_str()) {
-        return Some(vec![s.to_string()]);
-    }
+/// Extract per-child prompts from a fan-out tool's input. Currently no
+/// top-level tool exposes a prompt list — fan-out lives inside the RLM
+/// REPL via `llm_query_batched`. Kept as a stable hook for any future
+/// fan-out tool we add.
+fn extract_fanout_prompts(_name: &str, _input: &serde_json::Value) -> Option<Vec<String>> {
     None
 }
 
