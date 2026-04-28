@@ -80,10 +80,18 @@ pub struct ApprovalRequest {
     pub impacts: Vec<String>,
     /// Tool parameters (for display)
     pub params: Value,
+    /// Fingerprint key for per‑call approval caching (§5.A).
+    pub approval_key: String,
 }
 
 impl ApprovalRequest {
-    pub fn new(id: &str, tool_name: &str, description: &str, params: &Value) -> Self {
+    pub fn new(
+        id: &str,
+        tool_name: &str,
+        description: &str,
+        params: &Value,
+        approval_key: &str,
+    ) -> Self {
         let category = get_tool_category(tool_name);
 
         Self {
@@ -93,6 +101,7 @@ impl ApprovalRequest {
             category,
             impacts: build_impact_summary(tool_name, category, params),
             params: params.clone(),
+            approval_key: approval_key.to_string(),
         }
     }
 
@@ -292,6 +301,7 @@ impl ApprovalView {
             tool_name: self.request.tool_name.clone(),
             decision,
             timed_out,
+            approval_key: self.request.approval_key.clone(),
         })
     }
 
@@ -659,7 +669,7 @@ mod tests {
     fn test_approval_request_new() {
         let params = json!({"path": "src/main.rs", "content": "test"});
         let request =
-            ApprovalRequest::new("test-id", "write_file", "Write a file to disk", &params);
+            ApprovalRequest::new("test-id", "write_file", "Write a file to disk", &params, "test_key");
 
         assert_eq!(request.id, "test-id");
         assert_eq!(request.tool_name, "write_file");
@@ -673,7 +683,7 @@ mod tests {
         let long_content = "x".repeat(300);
         let params = json!({"path": "src/main.rs", "content": long_content});
         let request =
-            ApprovalRequest::new("test-id", "write_file", "Write a file to disk", &params);
+            ApprovalRequest::new("test-id", "write_file", "Write a file to disk", &params, "test_key");
 
         let display = request.params_display();
         // Should be truncated to around 200 chars
@@ -685,7 +695,7 @@ mod tests {
     fn test_approval_request_params_display_short() {
         let params = json!({"path": "src/main.rs"});
         let request =
-            ApprovalRequest::new("test-id", "read_file", "Read a file from disk", &params);
+            ApprovalRequest::new("test-id", "read_file", "Read a file from disk", &params, "test_key");
 
         let display = request.params_display();
         assert!(display.contains("src/main.rs"));
@@ -694,7 +704,7 @@ mod tests {
     #[test]
     fn test_approval_request_derives_impact_summary() {
         let params = json!({"cmd": "cargo test", "workdir": "/tmp/project"});
-        let request = ApprovalRequest::new("test-id", "exec_shell", "Run a shell command", &params);
+        let request = ApprovalRequest::new("test-id", "exec_shell", "Run a shell command", &params, "test_key");
 
         assert_eq!(request.category, ToolCategory::Shell);
         assert!(
@@ -719,7 +729,7 @@ mod tests {
     fn test_approval_view_initial_state() {
         let params = json!({"path": "src/main.rs"});
         let request =
-            ApprovalRequest::new("test-id", "read_file", "Read a file from disk", &params);
+            ApprovalRequest::new("test-id", "read_file", "Read a file from disk", &params, "test_key");
         let view = ApprovalView::new(request.clone());
 
         assert_eq!(view.selected, 0);
@@ -730,7 +740,7 @@ mod tests {
     fn test_approval_view_navigation() {
         let params = json!({"path": "src/main.rs"});
         let request =
-            ApprovalRequest::new("test-id", "read_file", "Read a file from disk", &params);
+            ApprovalRequest::new("test-id", "read_file", "Read a file from disk", &params, "test_key");
         let mut view = ApprovalView::new(request);
 
         // Initially at 0
@@ -759,7 +769,7 @@ mod tests {
     fn test_approval_view_keybindings_decisions() {
         let params = json!({"path": "src/main.rs"});
         let request =
-            ApprovalRequest::new("test-id", "read_file", "Read a file from disk", &params);
+            ApprovalRequest::new("test-id", "read_file", "Read a file from disk", &params, "test_key");
         let mut view = ApprovalView::new(request.clone());
 
         // Test 'y' -> Approved
@@ -810,7 +820,7 @@ mod tests {
     fn test_approval_view_enter_uses_selected_option() {
         let params = json!({"path": "src/main.rs"});
         let request =
-            ApprovalRequest::new("test-id", "read_file", "Read a file from disk", &params);
+            ApprovalRequest::new("test-id", "read_file", "Read a file from disk", &params, "test_key");
         let mut view = ApprovalView::new(request);
 
         // Navigate to index 2 (Denied)
@@ -833,7 +843,7 @@ mod tests {
     fn test_approval_view_navigation_keys() {
         let params = json!({"path": "src/main.rs"});
         let request =
-            ApprovalRequest::new("test-id", "read_file", "Read a file from disk", &params);
+            ApprovalRequest::new("test-id", "read_file", "Read a file from disk", &params, "test_key");
         let mut view = ApprovalView::new(request);
 
         // Test Up arrow
@@ -857,7 +867,7 @@ mod tests {
     fn test_approval_view_view_params() {
         let params = json!({"path": "src/main.rs", "content": "test"});
         let request =
-            ApprovalRequest::new("test-id", "read_file", "Read a file from disk", &params);
+            ApprovalRequest::new("test-id", "read_file", "Read a file from disk", &params, "test_key");
         let mut view = ApprovalView::new(request.clone());
 
         // Test 'v' to view params
@@ -880,7 +890,7 @@ mod tests {
     fn test_approval_view_current_decision_mapping() {
         let params = json!({"path": "src/main.rs"});
         let request =
-            ApprovalRequest::new("test-id", "read_file", "Read a file from disk", &params);
+            ApprovalRequest::new("test-id", "read_file", "Read a file from disk", &params, "test_key");
         let mut view = ApprovalView::new(request);
 
         // Index 0 -> Approved

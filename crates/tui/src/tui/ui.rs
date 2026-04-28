@@ -647,10 +647,10 @@ async fn run_event_loop(
                         }
                     }
                     EngineEvent::Error {
-                        message,
+                        envelope,
                         recoverable,
                     } => {
-                        apply_engine_error_to_app(app, message, recoverable);
+                        apply_engine_error_to_app(app, envelope.message.clone(), recoverable);
                     }
                     EngineEvent::Status { message } => {
                         app.status_message = Some(message);
@@ -769,13 +769,16 @@ async fn run_event_loop(
                         id,
                         tool_name,
                         description,
+                        approval_key,
                     } => {
-                        let session_approved = app.approval_session_approved.contains(&tool_name);
+                        let session_approved = app.approval_session_approved.contains(&approval_key)
+                            || app.approval_session_approved.contains(&tool_name);
                         if session_approved || app.approval_mode == ApprovalMode::Auto {
                             log_sensitive_event(
                                 "tool.approval.auto_approve",
                                 serde_json::json!({
                                     "tool_name": tool_name,
+                                    "approval_key": approval_key,
                                     "session_id": app.current_session_id,
                                     "mode": app.mode.label(),
                                 }),
@@ -807,7 +810,7 @@ async fn run_event_loop(
 
                             // Create approval request and show overlay
                             let request =
-                                ApprovalRequest::new(&id, &tool_name, &description, &tool_input);
+                                ApprovalRequest::new(&id, &tool_name, &description, &tool_input, &approval_key);
                             log_sensitive_event(
                                 "tool.approval.prompted",
                                 serde_json::json!({
@@ -2937,9 +2940,13 @@ async fn handle_view_events(
                 tool_name,
                 decision,
                 timed_out,
+                approval_key,
             } => {
                 if decision == ReviewDecision::ApprovedForSession {
-                    app.approval_session_approved.insert(tool_name);
+                    // Store both the tool name (backward compat) and the
+                    // approval key (fingerprint-based).
+                    app.approval_session_approved.insert(tool_name.clone());
+                    app.approval_session_approved.insert(approval_key);
                 }
 
                 match decision {

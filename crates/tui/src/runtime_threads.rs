@@ -1924,6 +1924,7 @@ impl RuntimeThreadManager {
                     id,
                     tool_name,
                     description,
+                    ..
                 } => {
                     self.emit_event(
                         &thread_id,
@@ -2013,9 +2014,10 @@ impl RuntimeThreadManager {
                     )
                     .await?;
                 }
-                EngineEvent::Error { message, .. } => {
+                EngineEvent::Error { envelope, .. } => {
                     turn_status = RuntimeTurnStatus::Failed;
-                    turn_error = Some(message.clone());
+                    turn_error = Some(envelope.message.clone());
+                    let message = envelope.message.clone();
                     let item = TurnItemRecord {
                         schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
                         id: format!("item_{}", &Uuid::new_v4().to_string()[..8]),
@@ -3175,7 +3177,7 @@ mod tests {
 
         harness
             .tx_event
-            .send(EngineEvent::ApprovalRequired {
+            .send(EngineEvent::ApprovalRequired { approval_key: "test_key".to_string(),
                 id: "tool_stale".to_string(),
                 tool_name: "exec_command".to_string(),
                 description: "stale approval".to_string(),

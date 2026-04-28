@@ -170,7 +170,13 @@ const WORKSPACE_SAFE_COMMANDS: &[&str] = &[
     "ninja",
 ];
 
-/// Dangerous command patterns that should be blocked or warned
+/// Dangerous command patterns that should be blocked or warned.
+///
+/// Codex flags only explicit `rm -f*` / `rm -rf` patterns. We match
+/// that restraint — aggressive patterns for shutdown, reboot, killall,
+/// docker rm, chown, etc. have been removed because they generate
+/// unnecessary approval prompts for routine operations the user can
+/// still veto via the approval dialog.
 const DANGEROUS_PATTERNS: &[(&str, &str)] = &[
     ("rm -rf /", "Attempts to recursively delete root filesystem"),
     (
@@ -182,37 +188,7 @@ const DANGEROUS_PATTERNS: &[(&str, &str)] = &[
         "rm -rf $HOME",
         "Attempts to recursively delete home directory",
     ),
-    (":(){ :|:& };:", "Fork bomb - will crash the system"),
-    ("dd if=/dev/zero of=/dev/", "Will overwrite disk device"),
-    ("mkfs.", "Will format a filesystem"),
-    ("> /dev/sd", "Will overwrite disk device"),
-    ("chmod -R 777 /", "Dangerous permission change on root"),
-    (
-        "chown -R",
-        "Recursive ownership change - potentially dangerous",
-    ),
-    ("curl | sh", "Piping remote script directly to shell"),
-    ("curl | bash", "Piping remote script directly to shell"),
-    ("wget -O - | sh", "Piping remote script directly to shell"),
-    ("sudo rm -rf", "Privileged recursive deletion"),
-    ("sudo dd", "Privileged disk operation"),
-    ("shutdown", "System shutdown command"),
-    ("reboot", "System reboot command"),
-    ("halt", "System halt command"),
-    ("poweroff", "System poweroff command"),
-    ("init 0", "System shutdown via init"),
-    ("init 6", "System reboot via init"),
-    ("kill -9 1", "Killing init process"),
-    ("killall", "Killing processes by name"),
-    ("pkill", "Killing processes by pattern"),
-    (
-        "docker rm -f $(docker ps -aq)",
-        "Removing all Docker containers",
-    ),
-    ("docker system prune -a", "Removing all Docker data"),
-    (":(){:|:&};:", "Fork bomb variant"),
-    ("mv /* ", "Moving root filesystem contents"),
-    ("cat /dev/urandom > /dev/", "Writing random data to device"),
+    (":(){ :|:& };:", "Fork bomb — will crash the system"),
 ];
 
 /// Commands that require elevated privileges
@@ -256,28 +232,34 @@ pub fn analyze_command(command: &str) -> SafetyAnalysis {
     }
 
     if command.contains("&&") || command.contains("||") || command.contains(';') {
-        // Chains of known-safe commands (cargo/git/zig/npm/etc.) are routine
-        // for build+test workflows and should not be hard-blocked. Escalate to
-        // RequiresApproval so the user still has the chance to deny in
-        // non-trusted modes; YOLO/auto-approve passes through.
+        // Chains of known-safe commands (cargo/git/zig/npm/etc.) are
+        // routine for build+test workflows. Instead of hard-blocking,
+        // escalate to RequiresApproval so the user can still deny in
+        // non-trusted modes. YOLO/auto-approve flows pass through.
         if all_segments_known_safe(command) {
             return SafetyAnalysis::requires_approval(
                 command,
                 vec!["Command chains known-safe segments (cargo/git/etc.)".to_string()],
             );
         }
-        return SafetyAnalysis::dangerous(
+        // Unknown chains escalate to RequiresApproval instead of
+        // Dangerous — the user can still deny them. Codex only blocks
+        // explicit `rm -rf` patterns (above) and lets the user decide
+        // on everything else.
+        return SafetyAnalysis::requires_approval(
             command,
             vec!["Command chaining detected".to_string()],
-            vec!["Run commands separately to reduce risk".to_string()],
         );
     }
 
     if command.contains("`") || command.contains("$(") {
-        return SafetyAnalysis::dangerous(
+        // Substitution is a common shell pattern (e.g., `cargo test
+        // $(cargo test --list | head -1)` or `echo $(date)`). Codex
+        // doesn't block it; escalate to approval so the user can
+        // inspect, but don't hard-block.
+        return SafetyAnalysis::requires_approval(
             command,
             vec!["Command substitution detected".to_string()],
-            vec!["Avoid shell substitutions in exec_shell".to_string()],
         );
     }
 

@@ -143,7 +143,7 @@ impl ToolRegistry {
                 description: tool.description().to_string(),
                 input_schema: tool.input_schema(),
                 allowed_callers: Some(vec!["direct".to_string()]),
-                defer_loading: Some(false),
+                defer_loading: Some(tool.defer_loading()),
                 input_examples: None,
                 strict: None,
                 cache_control: None,
@@ -406,6 +406,33 @@ impl ToolRegistryBuilder {
         self.with_tool(Arc::new(NoteTool))
     }
 
+    /// Include MCP tools from a connected pool as first-class registry
+    /// citizens. Each MCP tool is wrapped in a lightweight adapter that
+    /// implements `ToolSpec`, so the unified `ToolRegistryBuilder` flow
+    /// handles them alongside native tools.
+    ///
+    /// MCP tools are marked `defer_loading` by default (except discovery
+    /// helpers) to keep the model-visible catalog compact.
+    #[must_use]
+    pub fn with_mcp_tools(
+        mut self,
+        mcp_pool: std::sync::Arc<tokio::sync::Mutex<crate::mcp::McpPool>>,
+    ) -> Self {
+        // Snapshot the current tool list from the pool (non-blocking).
+        // The adapter lazily resolves at execution time via the pool.
+        if let Ok(pool) = mcp_pool.try_lock() {
+            for (name, tool) in pool.all_tools() {
+                let adapter = Arc::new(McpToolAdapter {
+                    name: name.clone(),
+                    tool: tool.clone(),
+                    pool: mcp_pool.clone(),
+                });
+                self.tools.push(adapter);
+            }
+        }
+        self
+    }
+
     /// Include all agent tools (file tools + shell + note + search + patch).
     #[must_use]
     pub fn with_agent_tools(self, allow_shell: bool) -> Self {
@@ -560,6 +587,77 @@ impl ToolRegistryBuilder {
 impl Default for ToolRegistryBuilder {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Adapter that wraps an MCP tool definition so it can live in the
+/// unified `ToolRegistry` alongside native tools (§5.B).
+struct McpToolAdapter {
+    name: String,
+    tool: crate::mcp::McpTool,
+    pool: std::sync::Arc<tokio::sync::Mutex<crate::mcp::McpPool>>,
+}
+
+#[async_trait::async_trait]
+impl ToolSpec for McpToolAdapter {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn description(&self) -> &str {
+        // McpTool.description is Option<String>; fall back to the
+        // prefixed name when absent.
+        self.tool
+            .description
+            .as_deref()
+            .unwrap_or(&self.name)
+    }
+
+    fn input_schema(&self) -> Value {
+        self.tool.input_schema.clone()
+    }
+
+    fn capabilities(&self) -> Vec<ToolCapability> {
+        // Conservatively treat MCP tools as requiring approval and
+        // network access unless they're known discovery helpers.
+        let name_lower = self.name.to_lowercase();
+        if name_lower.contains("list_mcp")
+            || name_lower.contains("read_mcp")
+            || name_lower.contains("mcp_read")
+            || name_lower.contains("mcp_get_prompt")
+        {
+            vec![ToolCapability::ReadOnly]
+        } else {
+            vec![ToolCapability::Network, ToolCapability::RequiresApproval]
+        }
+    }
+
+    fn defer_loading(&self) -> bool {
+        // Discovery helpers stay loaded; everything else is deferred.
+        let keep_loaded = matches!(
+            self.name.as_str(),
+            "list_mcp_resources"
+                | "list_mcp_resource_templates"
+                | "mcp_read_resource"
+                | "read_mcp_resource"
+                | "mcp_get_prompt"
+        );
+        !keep_loaded
+    }
+
+    async fn execute(
+        &self,
+        input: Value,
+        _context: &ToolContext,
+    ) -> Result<ToolResult, ToolError> {
+        let mut pool = self.pool.lock().await;
+        let result = pool
+            .call_tool(&self.name, input)
+            .await
+            .map_err(|e| ToolError::execution_failed(format!("MCP tool failed: {e}")))?;
+        let content =
+            serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string());
+        Ok(ToolResult::success(content))
     }
 }
 

@@ -3036,12 +3036,12 @@ async fn run_exec_agent(
                 }
             }
             Event::Error {
-                message,
+                envelope,
                 recoverable: _,
             } => {
-                summary.error = Some(message.clone());
+                summary.error = Some(envelope.message.clone());
                 if !json_output {
-                    eprintln!("error: {message}");
+                    eprintln!("error: {}", envelope.message);
                 }
             }
             Event::TurnComplete { status, error, .. } => {
