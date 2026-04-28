@@ -114,6 +114,56 @@ fn transcript_scroll_percent_is_clamped_and_relative() {
     assert_eq!(transcript_scroll_percent(0, 20, 20), None);
 }
 
+#[test]
+fn parse_git_status_path_handles_simple_and_renamed_entries() {
+    assert_eq!(
+        parse_git_status_path(" M crates/tui/src/tui/ui.rs"),
+        Some("crates/tui/src/tui/ui.rs".to_string())
+    );
+    assert_eq!(
+        parse_git_status_path("R  old name.rs -> crates/tui/src/tui/file_picker.rs"),
+        Some("crates/tui/src/tui/file_picker.rs".to_string())
+    );
+}
+
+#[test]
+fn workspace_file_candidate_normalizes_absolute_and_line_suffixed_paths() {
+    let dir = TempDir::new().expect("tempdir");
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let path = root.join("src/lib.rs");
+    std::fs::write(&path, "").unwrap();
+
+    let raw = format!("\"{}:42\",", path.display());
+    assert_eq!(
+        workspace_file_candidate(&raw, root),
+        Some("src/lib.rs".to_string())
+    );
+}
+
+#[test]
+fn tool_path_relevance_extracts_paths_from_command_text() {
+    let dir = TempDir::new().expect("tempdir");
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/alpha.rs"), "").unwrap();
+    std::fs::write(root.join("src/zeta.rs"), "").unwrap();
+
+    let mut relevance = crate::tui::file_picker::FilePickerRelevance::default();
+    let mut seen = HashSet::new();
+    let mut budget = 16;
+    mark_tool_paths_from_text(
+        "sed -n '1,20p' src/zeta.rs",
+        root,
+        &mut seen,
+        &mut relevance,
+        &mut budget,
+    );
+
+    let view = crate::tui::file_picker::FilePickerView::new_with_relevance(root, relevance);
+    assert_eq!(view.selected_for_test(), Some("src/zeta.rs"));
+}
+
 fn create_test_app() -> App {
     let options = TuiOptions {
         model: "deepseek-v4-pro".to_string(),

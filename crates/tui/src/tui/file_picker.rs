@@ -9,6 +9,7 @@
 //! Enter emits a [`ViewEvent::FilePickerSelected`] which the UI handler turns
 //! into an `@<path>` insertion at the composer cursor.
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -36,9 +37,79 @@ const WALK_DEPTH: usize = 6;
 /// Visible candidate rows in the overlay.
 const VISIBLE_ROWS: usize = 14;
 
+const MODIFIED_BOOST: i32 = 360;
+const MENTIONED_BOOST: i32 = 240;
+const TOOL_BOOST: i32 = 160;
+
+/// Working-set hints captured when the picker opens.
+///
+/// The picker keeps this as plain path strings so filtering stays in-memory and
+/// per-keystroke work remains the same shape as the original fuzzy search.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FilePickerRelevance {
+    modified: HashSet<String>,
+    mentioned: HashSet<String>,
+    tool: HashSet<String>,
+}
+
+impl FilePickerRelevance {
+    pub fn mark_modified(&mut self, path: impl Into<String>) {
+        let path = path.into();
+        if !path.is_empty() {
+            self.modified.insert(path);
+        }
+    }
+
+    pub fn mark_mentioned(&mut self, path: impl Into<String>) {
+        let path = path.into();
+        if !path.is_empty() {
+            self.mentioned.insert(path);
+        }
+    }
+
+    pub fn mark_tool(&mut self, path: impl Into<String>) {
+        let path = path.into();
+        if !path.is_empty() {
+            self.tool.insert(path);
+        }
+    }
+
+    fn boost_for(&self, path: &str) -> i32 {
+        let mut boost = 0;
+        if self.modified.contains(path) {
+            boost += MODIFIED_BOOST;
+        }
+        if self.mentioned.contains(path) {
+            boost += MENTIONED_BOOST;
+        }
+        if self.tool.contains(path) {
+            boost += TOOL_BOOST;
+        }
+        boost
+    }
+
+    fn markers_for(&self, path: &str) -> String {
+        let mut markers = String::with_capacity(3);
+        markers.push(if self.modified.contains(path) {
+            'M'
+        } else {
+            ' '
+        });
+        markers.push(if self.mentioned.contains(path) {
+            '@'
+        } else {
+            ' '
+        });
+        markers.push(if self.tool.contains(path) { 'T' } else { ' ' });
+        markers
+    }
+}
+
 pub struct FilePickerView {
     /// All workspace-relative candidate paths, captured once at construction.
     candidates: Vec<String>,
+    /// Working-set relevance hints, captured once at construction.
+    relevance: FilePickerRelevance,
     /// Filtered indices into `candidates`, sorted by descending score.
     filtered: Vec<usize>,
     /// User's typed query (lowercased on each refilter).
@@ -50,12 +121,12 @@ pub struct FilePickerView {
 }
 
 impl FilePickerView {
-    /// Build a picker rooted at `workspace_root`. Performs the directory walk
-    /// eagerly so per-keystroke filtering stays in memory.
-    pub fn new(workspace_root: &Path) -> Self {
+    /// Build a picker with working-set relevance hints.
+    pub fn new_with_relevance(workspace_root: &Path, relevance: FilePickerRelevance) -> Self {
         let candidates = collect_candidates(workspace_root);
         let mut view = Self {
             candidates,
+            relevance,
             filtered: Vec::new(),
             query: String::new(),
             selected: 0,
@@ -67,17 +138,25 @@ impl FilePickerView {
 
     fn refilter(&mut self) {
         let query = self.query.trim().to_lowercase();
-        let mut scored: Vec<(usize, i32)> = if query.is_empty() {
+        let mut scored: Vec<(usize, i32, i32, i32)> = if query.is_empty() {
             self.candidates
                 .iter()
                 .enumerate()
-                .map(|(idx, _)| (idx, 0))
+                .map(|(idx, path)| {
+                    let boost = self.relevance.boost_for(path);
+                    (idx, boost, 0, boost)
+                })
                 .collect()
         } else {
             self.candidates
                 .iter()
                 .enumerate()
-                .filter_map(|(idx, path)| score(&query, path).map(|s| (idx, s)))
+                .filter_map(|(idx, path)| {
+                    score(&query, path).map(|fuzzy| {
+                        let boost = self.relevance.boost_for(path);
+                        (idx, fuzzy + boost, fuzzy, boost)
+                    })
+                })
                 .collect()
         };
 
@@ -85,11 +164,13 @@ impl FilePickerView {
         // so shorter / more central matches surface above deep nested ones.
         scored.sort_by(|a, b| {
             b.1.cmp(&a.1)
+                .then_with(|| b.2.cmp(&a.2))
+                .then_with(|| b.3.cmp(&a.3))
                 .then_with(|| self.candidates[a.0].len().cmp(&self.candidates[b.0].len()))
                 .then_with(|| self.candidates[a.0].cmp(&self.candidates[b.0]))
         });
 
-        self.filtered = scored.into_iter().map(|(idx, _)| idx).collect();
+        self.filtered = scored.into_iter().map(|(idx, _, _, _)| idx).collect();
         if self.filtered.is_empty() {
             self.selected = 0;
             self.scroll = 0;
@@ -144,6 +225,11 @@ impl FilePickerView {
     #[cfg(test)]
     pub fn selected_for_test(&self) -> Option<&str> {
         self.selected_path()
+    }
+
+    #[cfg(test)]
+    pub fn markers_for_test(&self, path: &str) -> String {
+        self.relevance.markers_for(path)
     }
 }
 
@@ -282,8 +368,14 @@ impl ModalView for FilePickerView {
                     Style::default().fg(palette::TEXT_PRIMARY)
                 };
                 let prefix = if selected { "▶ " } else { "  " };
-                let display = truncate_path(path, inner.width.saturating_sub(2) as usize);
-                let mut line = Line::from(format!("{prefix}{display}"));
+                let marker_field = if inner.width >= 18 {
+                    format!("{} ", self.relevance.markers_for(path))
+                } else {
+                    String::new()
+                };
+                let reserved = prefix.chars().count() + marker_field.chars().count();
+                let display = truncate_path(path, (inner.width as usize).saturating_sub(reserved));
+                let mut line = Line::from(format!("{prefix}{marker_field}{display}"));
                 line.style = style;
                 lines.push(line);
             }
@@ -490,7 +582,7 @@ mod tests {
         fs::write(root.join("README.md"), "").unwrap();
         fs::write(root.join("Cargo.toml"), "").unwrap();
 
-        let mut view = FilePickerView::new(root);
+        let mut view = FilePickerView::new_with_relevance(root, FilePickerRelevance::default());
         // Empty query -> all 4 files visible.
         assert_eq!(view.visible_count(), 4, "expected all 4 candidates");
 
@@ -506,13 +598,50 @@ mod tests {
     }
 
     #[test]
+    fn picker_empty_query_prioritizes_working_set_files() {
+        let dir = TempDir::new().expect("tempdir");
+        let root = dir.path();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/main.rs"), "").unwrap();
+        fs::write(root.join("src/lib.rs"), "").unwrap();
+        fs::write(root.join("README.md"), "").unwrap();
+
+        let mut relevance = FilePickerRelevance::default();
+        relevance.mark_modified("src/lib.rs");
+        let view = FilePickerView::new_with_relevance(root, relevance);
+
+        assert_eq!(view.selected_for_test(), Some("src/lib.rs"));
+        assert_eq!(view.markers_for_test("src/lib.rs"), "M  ");
+    }
+
+    #[test]
+    fn picker_fuzzy_query_keeps_working_set_boosts() {
+        let dir = TempDir::new().expect("tempdir");
+        let root = dir.path();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/alpha.rs"), "").unwrap();
+        fs::write(root.join("src/zeta.rs"), "").unwrap();
+
+        let mut relevance = FilePickerRelevance::default();
+        relevance.mark_mentioned("src/zeta.rs");
+        relevance.mark_tool("src/zeta.rs");
+        let mut view = FilePickerView::new_with_relevance(root, relevance);
+        for ch in "rs".chars() {
+            view.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+        }
+
+        assert_eq!(view.selected_for_test(), Some("src/zeta.rs"));
+        assert_eq!(view.markers_for_test("src/zeta.rs"), " @T");
+    }
+
+    #[test]
     fn picker_backspace_widens_candidates() {
         let dir = TempDir::new().expect("tempdir");
         let root = dir.path();
         fs::write(root.join("a.txt"), "").unwrap();
         fs::write(root.join("b.txt"), "").unwrap();
 
-        let mut view = FilePickerView::new(root);
+        let mut view = FilePickerView::new_with_relevance(root, FilePickerRelevance::default());
         view.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
         assert_eq!(view.visible_count(), 1);
         view.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
@@ -525,7 +654,7 @@ mod tests {
         let root = dir.path();
         fs::write(root.join("only.txt"), "").unwrap();
 
-        let mut view = FilePickerView::new(root);
+        let mut view = FilePickerView::new_with_relevance(root, FilePickerRelevance::default());
         let action = view.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         match action {
             ViewAction::EmitAndClose(ViewEvent::FilePickerSelected { path }) => {
@@ -541,7 +670,7 @@ mod tests {
         let root = dir.path();
         fs::write(root.join("only.txt"), "").unwrap();
 
-        let mut view = FilePickerView::new(root);
+        let mut view = FilePickerView::new_with_relevance(root, FilePickerRelevance::default());
         let action = view.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(matches!(action, ViewAction::Close));
     }
@@ -557,7 +686,7 @@ mod tests {
         fs::write(root.join("keepme.txt"), "").unwrap();
         fs::write(root.join("skipme.txt"), "").unwrap();
 
-        let view = FilePickerView::new(root);
+        let view = FilePickerView::new_with_relevance(root, FilePickerRelevance::default());
         let visible: Vec<_> = view
             .filtered
             .iter()
