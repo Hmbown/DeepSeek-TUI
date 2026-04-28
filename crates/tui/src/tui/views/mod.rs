@@ -122,6 +122,23 @@ pub enum ViewEvent {
         items: Vec<crate::config::StatusItem>,
         final_save: bool,
     },
+    /// Emitted by the live-transcript overlay while in backtrack preview
+    /// mode (#133) when the user steps the highlighted user message with
+    /// Left or Right. The handler advances `app.backtrack`, refreshes the
+    /// overlay's `selected_idx`, and pins scroll near the new highlight.
+    BacktrackStep {
+        direction: crate::tui::backtrack::Direction,
+    },
+    /// Emitted by the live-transcript overlay when the user presses Enter
+    /// in backtrack preview mode (#133). The handler calls
+    /// `app.backtrack.confirm()`, trims `app.history`/`api_messages` to
+    /// the selected user message, populates the composer with the
+    /// dropped user text, and closes the overlay.
+    BacktrackConfirm,
+    /// Emitted by the live-transcript overlay when the user presses Esc
+    /// in backtrack preview mode (#133). The handler resets
+    /// `app.backtrack` and closes the overlay without trimming.
+    BacktrackCancel,
 }
 
 #[derive(Debug, Clone)]

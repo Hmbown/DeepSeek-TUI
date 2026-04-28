@@ -193,6 +193,11 @@ pub const KEYBINDINGS: &[KeybindingEntry] = &[
         description: "Open live transcript overlay (sticky-tail auto-scroll)",
         section: KeybindingSection::Submission,
     },
+    KeybindingEntry {
+        chord: "Esc Esc",
+        description: "Backtrack to a previous user message (Left/Right step, Enter to rewind)",
+        section: KeybindingSection::Submission,
+    },
     // --- Modes ---
     KeybindingEntry {
         chord: "Tab / Shift+Tab",

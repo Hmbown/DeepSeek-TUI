@@ -1392,6 +1392,19 @@ async fn run_event_loop(
                 app.mention_menu_selected = mention_menu_entries.len().saturating_sub(1);
             }
 
+            // Cancel a pending Esc-Esc prime as soon as any non-Esc key
+            // arrives. Without this the prime would hang around for the
+            // rest of the session and the user's next genuine Esc would
+            // suddenly skip straight into the backtrack overlay.
+            if !matches!(key.code, KeyCode::Esc)
+                && matches!(
+                    app.backtrack.phase,
+                    crate::tui::backtrack::BacktrackPhase::Primed
+                )
+            {
+                app.backtrack.reset();
+            }
+
             // Global keybindings
             match key.code {
                 KeyCode::Enter
@@ -1541,8 +1554,15 @@ async fn run_event_loop(
                     app.mention_menu_selected = 0;
                 }
                 KeyCode::Esc => match next_escape_action(app, slash_menu_open) {
-                    EscapeAction::CloseSlashMenu => app.close_slash_menu(),
+                    EscapeAction::CloseSlashMenu => {
+                        // A popup-style action wins over backtrack — clear
+                        // any prime so a stale Primed state can't jump us
+                        // straight into Selecting on the next Esc.
+                        app.backtrack.reset();
+                        app.close_slash_menu();
+                    }
                     EscapeAction::CancelRequest => {
+                        app.backtrack.reset();
                         engine_handle.cancel();
                         app.is_loading = false;
                         app.streaming_state.reset();
@@ -1554,6 +1574,7 @@ async fn run_event_loop(
                         app.status_message = Some("Request cancelled".to_string());
                     }
                     EscapeAction::SteerAndAbort => {
+                        app.backtrack.reset();
                         if let Some(input) = app.submit_input() {
                             let queued = build_queued_message(app, input);
                             app.push_pending_steer(queued);
@@ -1571,11 +1592,42 @@ async fn run_event_loop(
                         }
                     }
                     EscapeAction::DiscardQueuedDraft => {
+                        app.backtrack.reset();
                         app.queued_draft = None;
                         app.status_message = Some("Stopped editing queued message".to_string());
                     }
-                    EscapeAction::ClearInput => app.clear_input(),
-                    EscapeAction::Noop => {}
+                    EscapeAction::ClearInput => {
+                        app.backtrack.reset();
+                        app.clear_input();
+                    }
+                    EscapeAction::Noop => {
+                        // Nothing else cares about this Esc — route it
+                        // through the backtrack state machine. While
+                        // streaming or with the live transcript already
+                        // open, fall through silently (#133 acceptance:
+                        // "during streaming Esc-Esc is a silent no-op").
+                        if app.is_loading
+                            || app.view_stack.top_kind() == Some(ModalKind::LiveTranscript)
+                        {
+                            continue;
+                        }
+                        let total = count_user_history_cells(app);
+                        match app.backtrack.handle_esc(total) {
+                            crate::tui::backtrack::EscEffect::None => {}
+                            crate::tui::backtrack::EscEffect::Prime => {
+                                app.status_message =
+                                    Some("Press Esc again to backtrack".to_string());
+                                app.needs_redraw = true;
+                            }
+                            crate::tui::backtrack::EscEffect::Cancel => {
+                                app.status_message = Some("Backtrack canceled".to_string());
+                                app.needs_redraw = true;
+                            }
+                            crate::tui::backtrack::EscEffect::OpenOverlay => {
+                                open_backtrack_overlay(app);
+                            }
+                        }
+                    }
                 },
                 // #85: Alt+↑ pops the most-recent queued message back into the
                 // composer for editing when the preview's affordance is visible
@@ -3172,6 +3224,21 @@ fn refresh_live_transcript_overlay(app: &mut App) {
     app.view_stack.push_boxed(overlay);
 }
 
+/// Open the live transcript overlay in backtrack-preview mode (#133).
+/// The overlay starts highlighting the most recent user message
+/// (`selected_idx = 0`) and routes Left/Right/Enter/Esc through
+/// `ViewEvent::Backtrack*` so the main key dispatcher can advance the
+/// `BacktrackState` and apply the rewind on confirm.
+fn open_backtrack_overlay(app: &mut App) {
+    let mut overlay = LiveTranscriptOverlay::new();
+    overlay.refresh_from_app(app);
+    overlay.set_backtrack_preview(0);
+    app.view_stack.push(overlay);
+    app.status_message =
+        Some("Backtrack: \u{2190}/\u{2192} step  Enter rewind  Esc cancel".to_string());
+    app.needs_redraw = true;
+}
+
 /// Toggle the live transcript overlay on `Ctrl+T`. Closes the overlay if it's
 /// already on top; otherwise pushes a fresh one in sticky-tail mode.
 fn toggle_live_transcript_overlay(app: &mut App) {
@@ -3441,10 +3508,129 @@ async fn handle_view_events(
             ViewEvent::ProviderPickerApiKeySubmitted { provider, api_key } => {
                 apply_provider_picker_api_key(app, engine_handle, config, provider, api_key).await;
             }
+            ViewEvent::BacktrackStep { direction } => {
+                app.backtrack.step(direction);
+                if let Some(idx) = app.backtrack.selected_idx() {
+                    update_backtrack_overlay_selection(app, idx);
+                }
+            }
+            ViewEvent::BacktrackConfirm => {
+                if let Some(depth) = app.backtrack.confirm() {
+                    apply_backtrack(app, depth);
+                }
+            }
+            ViewEvent::BacktrackCancel => {
+                app.backtrack.reset();
+                app.status_message = Some("Backtrack canceled".to_string());
+                app.needs_redraw = true;
+            }
         }
     }
 
     Ok(false)
+}
+
+/// Push the new `selected_idx` into the live transcript overlay so the
+/// highlight follows the user's Left/Right input. No-op if the overlay is
+/// no longer on top (e.g. it was closed underneath us).
+fn update_backtrack_overlay_selection(app: &mut App, selected_idx: usize) {
+    if app.view_stack.top_kind() != Some(ModalKind::LiveTranscript) {
+        return;
+    }
+    let Some(mut overlay) = app.view_stack.pop() else {
+        return;
+    };
+    if let Some(typed) = overlay.as_any_mut().downcast_mut::<LiveTranscriptOverlay>() {
+        typed.set_backtrack_preview(selected_idx);
+    }
+    app.view_stack.push_boxed(overlay);
+    app.needs_redraw = true;
+}
+
+/// Count how many `HistoryCell::User` entries currently live in the
+/// transcript. Used by the backtrack state machine to decide whether
+/// there's anything to rewind to. Walks `app.history` directly so it
+/// stays accurate even mid-stream (the streaming Assistant cell never
+/// counts as a user turn).
+fn count_user_history_cells(app: &App) -> usize {
+    app.history
+        .iter()
+        .filter(|cell| matches!(cell, HistoryCell::User { .. }))
+        .count()
+}
+
+/// Find the absolute index of the Nth-from-tail `HistoryCell::User` in
+/// `app.history`. `depth` of 0 selects the most recent user cell.
+/// Returns `None` if `depth` is out of range.
+fn find_user_cell_index_from_tail(app: &App, depth: usize) -> Option<usize> {
+    let mut count = 0usize;
+    for (idx, cell) in app.history.iter().enumerate().rev() {
+        if matches!(cell, HistoryCell::User { .. }) {
+            if count == depth {
+                return Some(idx);
+            }
+            count += 1;
+        }
+    }
+    None
+}
+
+/// Apply the user's backtrack selection: trim `app.history` and
+/// `app.api_messages` so everything from the chosen user message onward
+/// is dropped, populate the composer with the dropped user text, close
+/// the overlay, and surface a status hint. The cycle counter is bumped
+/// so any persistent indices clear; the engine's in-flight context is
+/// re-synced via `Op::SyncSession` so the next turn starts fresh.
+fn apply_backtrack(app: &mut App, depth: usize) {
+    let Some(history_idx) = find_user_cell_index_from_tail(app, depth) else {
+        app.status_message = Some("Backtrack target no longer present".to_string());
+        return;
+    };
+
+    // Snapshot the user text before truncating so we can refill the
+    // composer.
+    let user_text = match app.history.get(history_idx) {
+        Some(HistoryCell::User { content }) => content.clone(),
+        _ => String::new(),
+    };
+
+    // Trim the visible transcript at the chosen user cell. Per-cell
+    // revisions and tool-cell maps are kept consistent through
+    // `App::truncate_history_to`.
+    app.truncate_history_to(history_idx);
+
+    // Trim the API-message log at the matching user message. We
+    // re-walk `api_messages` from the tail, counting role=="user"
+    // boundaries so the depth aligns with what the model sees on the
+    // next turn.
+    let mut user_seen = 0usize;
+    let mut cut = None;
+    for (idx, msg) in app.api_messages.iter().enumerate().rev() {
+        if msg.role == "user" {
+            if user_seen == depth {
+                cut = Some(idx);
+                break;
+            }
+            user_seen += 1;
+        }
+    }
+    if let Some(idx) = cut {
+        app.api_messages.truncate(idx);
+    }
+
+    // Hand the dropped text back to the user so they can edit + resend.
+    app.input = user_text;
+    app.cursor_position = app.input.chars().count();
+
+    // Close the overlay, refresh sticky-tail flag, and surface a hint.
+    if app.view_stack.top_kind() == Some(ModalKind::LiveTranscript) {
+        app.view_stack.pop();
+    }
+    app.status_message =
+        Some("Rewound to previous user message — edit and Enter to resend".to_string());
+    app.scroll_to_bottom();
+    app.mark_history_updated();
+    app.needs_redraw = true;
 }
 
 /// Persist the typed API key to `~/.deepseek/config.toml`, refresh the
