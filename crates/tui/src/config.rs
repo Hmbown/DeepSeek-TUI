@@ -424,6 +424,66 @@ pub struct Config {
     /// Desktop notification settings (OSC 9 / BEL on long turn completion).
     #[serde(default)]
     pub notifications: Option<NotificationsConfig>,
+
+    /// Per-domain network policy (#135). When absent, network tools fall back
+    /// to a permissive default that mirrors pre-v0.7.0 behavior.
+    #[serde(default)]
+    pub network: Option<NetworkPolicyToml>,
+}
+
+/// `[network]` table — mirrors `deepseek_config::NetworkPolicyToml` so the live
+/// TUI runtime can construct a [`crate::network_policy::NetworkPolicy`]
+/// without reaching into the workspace config crate. See `config.example.toml`
+/// for documentation.
+#[derive(Debug, Clone, Deserialize)]
+pub struct NetworkPolicyToml {
+    /// Decision for hosts that are not in `allow` or `deny`. One of
+    /// `"allow" | "deny" | "prompt"`. Defaults to `"prompt"`.
+    #[serde(default = "default_network_decision")]
+    pub default: String,
+    /// Hosts that are always allowed. Subdomain rules: a leading dot
+    /// (`.example.com`) matches subdomains but not the apex.
+    #[serde(default)]
+    pub allow: Vec<String>,
+    /// Hosts that are always denied. Deny entries win over allow entries.
+    #[serde(default)]
+    pub deny: Vec<String>,
+    /// Whether to record one audit-log line per outbound network call.
+    #[serde(default = "default_network_audit")]
+    pub audit: bool,
+}
+
+fn default_network_decision() -> String {
+    "prompt".to_string()
+}
+
+fn default_network_audit() -> bool {
+    true
+}
+
+impl Default for NetworkPolicyToml {
+    fn default() -> Self {
+        Self {
+            default: default_network_decision(),
+            allow: Vec::new(),
+            deny: Vec::new(),
+            audit: default_network_audit(),
+        }
+    }
+}
+
+impl NetworkPolicyToml {
+    /// Build a runtime [`crate::network_policy::NetworkPolicy`] from the
+    /// on-disk schema.
+    #[must_use]
+    pub fn into_runtime(self) -> crate::network_policy::NetworkPolicy {
+        crate::network_policy::NetworkPolicy {
+            default: crate::network_policy::Decision::parse(&self.default).into(),
+            allow: self.allow,
+            deny: self.deny,
+            audit: self.audit,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -1323,6 +1383,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         providers: merge_providers(base.providers, override_cfg.providers),
         features: merge_features(base.features, override_cfg.features),
         notifications: override_cfg.notifications.or(base.notifications),
+        network: override_cfg.network.or(base.network),
     }
 }
 

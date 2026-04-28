@@ -14,6 +14,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::features::Features;
+use crate::network_policy::NetworkPolicyDecider;
 use crate::tools::shell::{SharedShellManager, new_shared_shell_manager};
 
 /// Capabilities that a tool may have or require.
@@ -203,6 +204,10 @@ pub struct ToolContext {
     /// and refreshed when the user runs `/trust add <path>`. Distinct from
     /// `trust_mode`, which is the all-or-nothing legacy switch (#29).
     pub trusted_external_paths: Vec<PathBuf>,
+    /// Per-domain network policy (#135). When `None`, network tools fall back
+    /// to a permissive default that mirrors pre-v0.7.0 behavior so tests and
+    /// other contexts that don't construct a real policy keep working.
+    pub network_policy: Option<NetworkPolicyDecider>,
 }
 
 impl ToolContext {
@@ -225,6 +230,7 @@ impl ToolContext {
             features: Features::with_defaults(),
             state_namespace: "workspace".to_string(),
             trusted_external_paths: Vec::new(),
+            network_policy: None,
         }
     }
 
@@ -250,6 +256,7 @@ impl ToolContext {
             features: Features::with_defaults(),
             state_namespace: "workspace".to_string(),
             trusted_external_paths: Vec::new(),
+            network_policy: None,
         }
     }
 
@@ -275,7 +282,15 @@ impl ToolContext {
             features: Features::with_defaults(),
             state_namespace: "workspace".to_string(),
             trusted_external_paths: Vec::new(),
+            network_policy: None,
         }
+    }
+
+    /// Attach a per-domain network policy to this context (#135).
+    #[must_use]
+    pub fn with_network_policy(mut self, policy: NetworkPolicyDecider) -> Self {
+        self.network_policy = Some(policy);
+        self
     }
 
     /// Set the user's trusted external paths (loaded from
