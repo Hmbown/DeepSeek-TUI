@@ -27,6 +27,7 @@ pub enum ModalKind {
     SessionPicker,
     Config,
     ModelPicker,
+    ProviderPicker,
     FilePicker,
 }
 
@@ -99,6 +100,19 @@ pub enum ViewEvent {
         effort: crate::tui::app::ReasoningEffort,
         previous_model: String,
         previous_effort: crate::tui::app::ReasoningEffort,
+    },
+    /// Emitted by the `/provider` picker when the user selects a provider
+    /// that already has credentials — the handler should perform the same
+    /// switch as `AppAction::SwitchProvider`.
+    ProviderPickerApplied {
+        provider: crate::config::ApiProvider,
+    },
+    /// Emitted by the `/provider` picker after the user types an API key
+    /// inline for a provider that lacked one. The handler should persist
+    /// the key via `save_api_key_for` and then perform the provider switch.
+    ProviderPickerApiKeySubmitted {
+        provider: crate::config::ApiProvider,
+        api_key: String,
     },
 }
 

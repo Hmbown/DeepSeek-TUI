@@ -696,18 +696,14 @@ impl EnvRuntimeOverrides {
     }
 
     fn base_url_for(&self, provider: ProviderKind) -> Option<String> {
+        // Defaults belong in the resolver's final fallback so config-file
+        // values (`providers.<name>.base_url`) still win when env is unset.
         match provider {
             ProviderKind::Deepseek => self.deepseek_base_url.clone(),
             ProviderKind::NvidiaNim => self.nvidia_base_url.clone(),
             ProviderKind::Openai => self.openai_base_url.clone(),
-            ProviderKind::Openrouter => self
-                .openrouter_base_url
-                .clone()
-                .or_else(|| Some("https://openrouter.ai/api/v1".to_string())),
-            ProviderKind::Novita => self
-                .novita_base_url
-                .clone()
-                .or_else(|| Some("https://api.novita.ai/v1".to_string())),
+            ProviderKind::Openrouter => self.openrouter_base_url.clone(),
+            ProviderKind::Novita => self.novita_base_url.clone(),
         }
     }
 }
@@ -734,6 +730,10 @@ mod tests {
         nim_base_url: Option<OsString>,
         nvidia_base_url: Option<OsString>,
         nvidia_nim_base_url: Option<OsString>,
+        openrouter_api_key: Option<OsString>,
+        openrouter_base_url: Option<OsString>,
+        novita_api_key: Option<OsString>,
+        novita_base_url: Option<OsString>,
     }
 
     impl EnvGuard {
@@ -748,6 +748,10 @@ mod tests {
                 nim_base_url: env::var_os("NIM_BASE_URL"),
                 nvidia_base_url: env::var_os("NVIDIA_BASE_URL"),
                 nvidia_nim_base_url: env::var_os("NVIDIA_NIM_BASE_URL"),
+                openrouter_api_key: env::var_os("OPENROUTER_API_KEY"),
+                openrouter_base_url: env::var_os("OPENROUTER_BASE_URL"),
+                novita_api_key: env::var_os("NOVITA_API_KEY"),
+                novita_base_url: env::var_os("NOVITA_BASE_URL"),
             };
             // Safety: test-only environment mutation guarded by a module mutex.
             unsafe {
@@ -760,6 +764,10 @@ mod tests {
                 env::remove_var("NIM_BASE_URL");
                 env::remove_var("NVIDIA_BASE_URL");
                 env::remove_var("NVIDIA_NIM_BASE_URL");
+                env::remove_var("OPENROUTER_API_KEY");
+                env::remove_var("OPENROUTER_BASE_URL");
+                env::remove_var("NOVITA_API_KEY");
+                env::remove_var("NOVITA_BASE_URL");
             }
             guard
         }
@@ -786,6 +794,10 @@ mod tests {
                 Self::restore_var("NIM_BASE_URL", self.nim_base_url.take());
                 Self::restore_var("NVIDIA_BASE_URL", self.nvidia_base_url.take());
                 Self::restore_var("NVIDIA_NIM_BASE_URL", self.nvidia_nim_base_url.take());
+                Self::restore_var("OPENROUTER_API_KEY", self.openrouter_api_key.take());
+                Self::restore_var("OPENROUTER_BASE_URL", self.openrouter_base_url.take());
+                Self::restore_var("NOVITA_API_KEY", self.novita_api_key.take());
+                Self::restore_var("NOVITA_BASE_URL", self.novita_base_url.take());
             }
         }
     }
@@ -950,5 +962,136 @@ mod tests {
             values.get("api_key").map(String::as_str),
             Some("sk-d***cret")
         );
+    }
+
+    #[test]
+    fn provider_kind_parses_openrouter_and_novita_aliases() {
+        assert_eq!(
+            ProviderKind::parse("openrouter"),
+            Some(ProviderKind::Openrouter)
+        );
+        assert_eq!(
+            ProviderKind::parse("OPEN_ROUTER"),
+            Some(ProviderKind::Openrouter)
+        );
+        assert_eq!(ProviderKind::parse("novita"), Some(ProviderKind::Novita));
+        assert_eq!(ProviderKind::parse("Novita"), Some(ProviderKind::Novita));
+    }
+
+    #[test]
+    fn openrouter_provider_defaults_to_canonical_endpoint_and_model() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let config = ConfigToml {
+            provider: ProviderKind::Openrouter,
+            ..ConfigToml::default()
+        };
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Openrouter);
+        assert_eq!(resolved.base_url, DEFAULT_OPENROUTER_BASE_URL);
+        assert_eq!(resolved.model, DEFAULT_OPENROUTER_MODEL);
+    }
+
+    #[test]
+    fn novita_provider_defaults_to_canonical_endpoint_and_model() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let config = ConfigToml {
+            provider: ProviderKind::Novita,
+            ..ConfigToml::default()
+        };
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Novita);
+        assert_eq!(resolved.base_url, DEFAULT_NOVITA_BASE_URL);
+        assert_eq!(resolved.model, DEFAULT_NOVITA_MODEL);
+    }
+
+    #[test]
+    fn openrouter_env_api_key_falls_back_when_config_missing() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        // Safety: test-only environment mutation guarded by a module mutex.
+        unsafe {
+            env::set_var("DEEPSEEK_PROVIDER", "openrouter");
+            env::set_var("OPENROUTER_API_KEY", "or-env-key");
+        }
+
+        let resolved =
+            ConfigToml::default().resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Openrouter);
+        assert_eq!(resolved.api_key.as_deref(), Some("or-env-key"));
+        assert_eq!(resolved.base_url, DEFAULT_OPENROUTER_BASE_URL);
+    }
+
+    #[test]
+    fn novita_env_api_key_falls_back_when_config_missing() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        // Safety: test-only environment mutation guarded by a module mutex.
+        unsafe {
+            env::set_var("DEEPSEEK_PROVIDER", "novita");
+            env::set_var("NOVITA_API_KEY", "novita-env-key");
+        }
+
+        let resolved =
+            ConfigToml::default().resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Novita);
+        assert_eq!(resolved.api_key.as_deref(), Some("novita-env-key"));
+        assert_eq!(resolved.base_url, DEFAULT_NOVITA_BASE_URL);
+    }
+
+    #[test]
+    fn openrouter_provider_normalizes_flash_aliases() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let cli = CliRuntimeOverrides {
+            provider: Some(ProviderKind::Openrouter),
+            model: Some("deepseek-v4-flash".to_string()),
+            ..CliRuntimeOverrides::default()
+        };
+
+        let resolved = ConfigToml::default().resolve_runtime_options(&cli);
+
+        assert_eq!(resolved.provider, ProviderKind::Openrouter);
+        assert_eq!(resolved.model, DEFAULT_OPENROUTER_FLASH_MODEL);
+    }
+
+    #[test]
+    fn novita_provider_normalizes_flash_aliases() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let cli = CliRuntimeOverrides {
+            provider: Some(ProviderKind::Novita),
+            model: Some("deepseek-v4-flash".to_string()),
+            ..CliRuntimeOverrides::default()
+        };
+
+        let resolved = ConfigToml::default().resolve_runtime_options(&cli);
+
+        assert_eq!(resolved.provider, ProviderKind::Novita);
+        assert_eq!(resolved.model, DEFAULT_NOVITA_FLASH_MODEL);
+    }
+
+    #[test]
+    fn openrouter_provider_specific_config_overrides_env() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let mut config = ConfigToml {
+            provider: ProviderKind::Openrouter,
+            ..ConfigToml::default()
+        };
+        config.providers.openrouter.api_key = Some("file-key".to_string());
+        config.providers.openrouter.base_url = Some("https://or-mirror.example/v1".to_string());
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.api_key.as_deref(), Some("file-key"));
+        assert_eq!(resolved.base_url, "https://or-mirror.example/v1");
     }
 }

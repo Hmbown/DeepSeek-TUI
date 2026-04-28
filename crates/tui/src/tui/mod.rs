@@ -21,6 +21,7 @@ pub mod pager;
 pub mod paste;
 pub mod paste_burst;
 pub mod plan_prompt;
+pub mod provider_picker;
 pub mod scrolling;
 pub mod selection;
 pub mod session_picker;

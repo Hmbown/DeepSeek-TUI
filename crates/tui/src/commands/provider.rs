@@ -1,4 +1,8 @@
-//! Provider switching: flip between DeepSeek and NVIDIA NIM at runtime.
+//! Provider switching: flip between DeepSeek, NVIDIA NIM, OpenRouter, and
+//! Novita AI at runtime.
+//!
+//! `/provider` with no args opens the picker modal (#52). `/provider <name>`
+//! keeps the v0.6.6 CLI form for muscle-memory + scripted use.
 
 use crate::config::{ApiProvider, normalize_model_name};
 use crate::tui::app::{App, AppAction};
@@ -7,25 +11,14 @@ use super::CommandResult;
 
 /// Switch or view the current LLM backend.
 ///
-/// Accepts `<provider> [model]` so you can flip backend and model in one
-/// shot, e.g. `/provider nim flash` lands you on
-/// `deepseek-ai/deepseek-v4-flash`. The optional model accepts shorthand
+/// With no args, opens the picker modal. With `<provider> [model]`, performs
+/// the switch directly (e.g. `/provider nim flash` lands on
+/// `deepseek-ai/deepseek-v4-flash`). The optional model accepts shorthand
 /// (`flash`, `pro`, `v4-flash`, `v4-pro`) or any normal DeepSeek model ID.
 pub fn provider(app: &mut App, args: Option<&str>) -> CommandResult {
     let trimmed = args.map(str::trim).filter(|s| !s.is_empty());
     let Some(args) = trimmed else {
-        return CommandResult::message(format!(
-            "Current provider: {}\n\
-             Active model:     {}\n\
-             Available:        deepseek, nvidia-nim\n\
-             Usage:            /provider <name> [model]\n\
-             Examples:         /provider nim flash      → NIM v4-flash (recommended)\n\
-                               /provider nim pro        → NIM v4-pro (currently DEGRADED)\n\
-                               /provider deepseek       → DeepSeek native, default model\n\
-             Tip: NIM needs NVIDIA_API_KEY (or [providers.nvidia_nim].api_key in config.toml).",
-            app.api_provider.as_str(),
-            app.model
-        ));
+        return CommandResult::action(AppAction::OpenProviderPicker);
     };
 
     let mut parts = args.split_whitespace();
@@ -34,7 +27,7 @@ pub fn provider(app: &mut App, args: Option<&str>) -> CommandResult {
 
     let Some(target) = ApiProvider::parse(name) else {
         return CommandResult::error(format!(
-            "Unknown provider '{name}'. Expected: deepseek, nvidia-nim."
+            "Unknown provider '{name}'. Expected: deepseek, nvidia-nim, openrouter, novita."
         ));
     };
 
@@ -98,25 +91,48 @@ mod tests {
     }
 
     #[test]
-    fn no_args_shows_current_provider_and_usage() {
+    fn no_args_opens_picker_modal() {
         let mut app = create_test_app();
         let result = provider(&mut app, None);
-        let msg = result.message.expect("expected info message");
-        assert!(msg.contains("Current provider:"));
-        assert!(msg.contains("deepseek"));
-        assert!(msg.contains("Available:"));
-        assert!(msg.contains("nvidia-nim"));
-        assert!(msg.contains("/provider nim flash"));
-        assert!(result.action.is_none());
+        assert!(result.message.is_none());
+        assert_eq!(result.action, Some(AppAction::OpenProviderPicker));
     }
 
     #[test]
     fn unknown_provider_returns_error() {
         let mut app = create_test_app();
-        let result = provider(&mut app, Some("openai"));
+        let result = provider(&mut app, Some("anthropic"));
         let msg = result.message.expect("expected error message");
         assert!(msg.contains("Unknown provider"));
+        assert!(msg.contains("openrouter"));
+        assert!(msg.contains("novita"));
         assert!(result.action.is_none());
+    }
+
+    #[test]
+    fn switch_to_openrouter_emits_action() {
+        let mut app = create_test_app();
+        let result = provider(&mut app, Some("openrouter"));
+        match result.action {
+            Some(AppAction::SwitchProvider { provider, model }) => {
+                assert_eq!(provider, ApiProvider::Openrouter);
+                assert_eq!(model, None);
+            }
+            other => panic!("expected SwitchProvider, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn switch_to_novita_emits_action() {
+        let mut app = create_test_app();
+        let result = provider(&mut app, Some("novita"));
+        match result.action {
+            Some(AppAction::SwitchProvider { provider, model }) => {
+                assert_eq!(provider, ApiProvider::Novita);
+                assert_eq!(model, None);
+            }
+            other => panic!("expected SwitchProvider, got {other:?}"),
+        }
     }
 
     #[test]

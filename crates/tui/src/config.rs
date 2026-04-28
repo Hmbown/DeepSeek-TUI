@@ -19,18 +19,28 @@ pub const DEFAULT_TEXT_MODEL: &str = "deepseek-v4-pro";
 pub const DEFAULT_NVIDIA_NIM_MODEL: &str = "deepseek-ai/deepseek-v4-pro";
 pub const DEFAULT_NVIDIA_NIM_FLASH_MODEL: &str = "deepseek-ai/deepseek-v4-flash";
 pub const DEFAULT_NVIDIA_NIM_BASE_URL: &str = "https://integrate.api.nvidia.com/v1";
+pub const DEFAULT_OPENROUTER_MODEL: &str = "deepseek/deepseek-v4-pro";
+pub const DEFAULT_OPENROUTER_FLASH_MODEL: &str = "deepseek/deepseek-v4-flash";
+pub const DEFAULT_OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
+pub const DEFAULT_NOVITA_MODEL: &str = "deepseek/deepseek-v4-pro";
+pub const DEFAULT_NOVITA_FLASH_MODEL: &str = "deepseek/deepseek-v4-flash";
+pub const DEFAULT_NOVITA_BASE_URL: &str = "https://api.novita.ai/v1";
 const API_KEYRING_SENTINEL: &str = "__KEYRING__";
 pub const COMMON_DEEPSEEK_MODELS: &[&str] = &[
     "deepseek-v4-pro",
     "deepseek-v4-flash",
     "deepseek-ai/deepseek-v4-pro",
     "deepseek-ai/deepseek-v4-flash",
+    "deepseek/deepseek-v4-pro",
+    "deepseek/deepseek-v4-flash",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApiProvider {
     Deepseek,
     NvidiaNim,
+    Openrouter,
+    Novita,
 }
 
 impl ApiProvider {
@@ -39,6 +49,8 @@ impl ApiProvider {
         match value.trim().to_ascii_lowercase().as_str() {
             "deepseek" | "deep-seek" => Some(Self::Deepseek),
             "nvidia" | "nvidia-nim" | "nvidia_nim" | "nim" => Some(Self::NvidiaNim),
+            "openrouter" | "open_router" => Some(Self::Openrouter),
+            "novita" => Some(Self::Novita),
             _ => None,
         }
     }
@@ -48,7 +60,31 @@ impl ApiProvider {
         match self {
             Self::Deepseek => "deepseek",
             Self::NvidiaNim => "nvidia-nim",
+            Self::Openrouter => "openrouter",
+            Self::Novita => "novita",
         }
+    }
+
+    /// Human-friendly label for picker UIs / status chips.
+    #[must_use]
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::Deepseek => "DeepSeek",
+            Self::NvidiaNim => "NVIDIA NIM",
+            Self::Openrouter => "OpenRouter",
+            Self::Novita => "Novita AI",
+        }
+    }
+
+    /// All providers, in the order shown in the picker.
+    #[must_use]
+    pub fn all() -> &'static [Self] {
+        &[
+            Self::Deepseek,
+            Self::NvidiaNim,
+            Self::Openrouter,
+            Self::Novita,
+        ]
     }
 }
 
@@ -209,6 +245,10 @@ pub struct ProvidersConfig {
     pub deepseek: ProviderConfig,
     #[serde(default)]
     pub nvidia_nim: ProviderConfig,
+    #[serde(default)]
+    pub openrouter: ProviderConfig,
+    #[serde(default)]
+    pub novita: ProviderConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -267,7 +307,9 @@ impl Config {
         if let Some(provider) = self.provider.as_deref()
             && ApiProvider::parse(provider).is_none()
         {
-            anyhow::bail!("Invalid provider '{provider}': expected deepseek or nvidia-nim.");
+            anyhow::bail!(
+                "Invalid provider '{provider}': expected deepseek, nvidia-nim, openrouter, or novita."
+            );
         }
         if let Some(ref key) = self.api_key
             && key.trim().is_empty()
@@ -372,6 +414,8 @@ impl Config {
         Some(match provider {
             ApiProvider::Deepseek => &providers.deepseek,
             ApiProvider::NvidiaNim => &providers.nvidia_nim,
+            ApiProvider::Openrouter => &providers.openrouter,
+            ApiProvider::Novita => &providers.novita,
         })
     }
 
@@ -398,6 +442,8 @@ impl Config {
         match provider {
             ApiProvider::Deepseek => DEFAULT_TEXT_MODEL,
             ApiProvider::NvidiaNim => DEFAULT_NVIDIA_NIM_MODEL,
+            ApiProvider::Openrouter => DEFAULT_OPENROUTER_MODEL,
+            ApiProvider::Novita => DEFAULT_NOVITA_MODEL,
         }
         .to_string()
     }
@@ -409,6 +455,10 @@ impl Config {
         let provider_base = self
             .provider_config_for(provider)
             .and_then(|provider| provider.base_url.clone());
+        // Root `base_url` is the legacy DeepSeek field; only NvidiaNim has a
+        // back-compat sniff (integrate.api.nvidia.com). OpenRouter / Novita
+        // were added in v0.6.7 and require explicit `[providers.<name>]`
+        // entries or the corresponding `*_BASE_URL` env var.
         let root_base = match provider {
             ApiProvider::Deepseek => self.base_url.clone(),
             ApiProvider::NvidiaNim => self
@@ -416,11 +466,14 @@ impl Config {
                 .as_ref()
                 .filter(|base| base.contains("integrate.api.nvidia.com"))
                 .cloned(),
+            ApiProvider::Openrouter | ApiProvider::Novita => None,
         };
         let base = provider_base.or(root_base).unwrap_or_else(|| {
             match provider {
                 ApiProvider::Deepseek => "https://api.deepseek.com",
                 ApiProvider::NvidiaNim => DEFAULT_NVIDIA_NIM_BASE_URL,
+                ApiProvider::Openrouter => DEFAULT_OPENROUTER_BASE_URL,
+                ApiProvider::Novita => DEFAULT_NOVITA_BASE_URL,
             }
             .to_string()
         });
@@ -446,6 +499,20 @@ impl Config {
                     {
                         return Ok(key);
                     }
+                }
+            }
+            ApiProvider::Openrouter => {
+                if let Ok(key) = std::env::var("OPENROUTER_API_KEY")
+                    && !key.trim().is_empty()
+                {
+                    return Ok(key);
+                }
+            }
+            ApiProvider::Novita => {
+                if let Ok(key) = std::env::var("NOVITA_API_KEY")
+                    && !key.trim().is_empty()
+                {
+                    return Ok(key);
                 }
             }
         }
@@ -476,6 +543,14 @@ impl Config {
             ApiProvider::NvidiaNim => anyhow::bail!(
                 "NVIDIA NIM API key not found. Set NVIDIA_API_KEY, NVIDIA_NIM_API_KEY, \
                  or save api_key in ~/.deepseek/config.toml with provider = \"nvidia-nim\"."
+            ),
+            ApiProvider::Openrouter => anyhow::bail!(
+                "OpenRouter API key not found. Set OPENROUTER_API_KEY \
+                 or add [providers.openrouter] api_key in ~/.deepseek/config.toml."
+            ),
+            ApiProvider::Novita => anyhow::bail!(
+                "Novita API key not found. Set NOVITA_API_KEY \
+                 or add [providers.novita] api_key in ~/.deepseek/config.toml."
             ),
         }
     }
@@ -757,6 +832,28 @@ fn apply_env_overrides(config: &mut Config) {
             .nvidia_nim
             .base_url = Some(value);
     }
+    // OpenRouter / Novita are scoped only on their own provider entry — the
+    // legacy root `base_url` keeps DeepSeek-only semantics.
+    if matches!(config.api_provider(), ApiProvider::Openrouter)
+        && let Ok(value) = std::env::var("OPENROUTER_BASE_URL")
+        && !value.trim().is_empty()
+    {
+        config
+            .providers
+            .get_or_insert_with(ProvidersConfig::default)
+            .openrouter
+            .base_url = Some(value);
+    }
+    if matches!(config.api_provider(), ApiProvider::Novita)
+        && let Ok(value) = std::env::var("NOVITA_BASE_URL")
+        && !value.trim().is_empty()
+    {
+        config
+            .providers
+            .get_or_insert_with(ProvidersConfig::default)
+            .novita
+            .base_url = Some(value);
+    }
     if let Ok(value) =
         std::env::var("DEEPSEEK_MODEL").or_else(|_| std::env::var("DEEPSEEK_DEFAULT_TEXT_MODEL"))
     {
@@ -932,6 +1029,16 @@ fn normalize_model_config(config: &mut Config) {
         {
             providers.nvidia_nim.model = Some(normalized);
         }
+        if let Some(model) = providers.openrouter.model.as_deref()
+            && let Some(normalized) = normalize_model_for_provider(ApiProvider::Openrouter, model)
+        {
+            providers.openrouter.model = Some(normalized);
+        }
+        if let Some(model) = providers.novita.model.as_deref()
+            && let Some(normalized) = normalize_model_for_provider(ApiProvider::Novita, model)
+        {
+            providers.novita.model = Some(normalized);
+        }
     }
 }
 
@@ -943,6 +1050,12 @@ fn model_for_provider(provider: ApiProvider, normalized: String) -> String {
     match (provider, normalized.as_str()) {
         (ApiProvider::NvidiaNim, "deepseek-v4-pro") => DEFAULT_NVIDIA_NIM_MODEL.to_string(),
         (ApiProvider::NvidiaNim, "deepseek-v4-flash") => DEFAULT_NVIDIA_NIM_FLASH_MODEL.to_string(),
+        (ApiProvider::Openrouter, "deepseek-v4-pro") => DEFAULT_OPENROUTER_MODEL.to_string(),
+        (ApiProvider::Openrouter, "deepseek-v4-flash") => {
+            DEFAULT_OPENROUTER_FLASH_MODEL.to_string()
+        }
+        (ApiProvider::Novita, "deepseek-v4-pro") => DEFAULT_NOVITA_MODEL.to_string(),
+        (ApiProvider::Novita, "deepseek-v4-flash") => DEFAULT_NOVITA_FLASH_MODEL.to_string(),
         _ => normalized,
     }
 }
@@ -1036,6 +1149,8 @@ fn merge_providers(
         (Some(base), Some(override_cfg)) => Some(ProvidersConfig {
             deepseek: merge_provider_config(base.deepseek, override_cfg.deepseek),
             nvidia_nim: merge_provider_config(base.nvidia_nim, override_cfg.nvidia_nim),
+            openrouter: merge_provider_config(base.openrouter, override_cfg.openrouter),
+            novita: merge_provider_config(base.novita, override_cfg.novita),
         }),
     }
 }
@@ -1229,6 +1344,119 @@ pub fn has_api_key(config: &Config) -> bool {
         .is_some_and(|k| !k.trim().is_empty() && k != API_KEYRING_SENTINEL)
 }
 
+/// Check whether the given provider has any usable API key — either via env
+/// var or the corresponding `[providers.<name>]` config entry. Used by the
+/// `/provider` picker to decide whether to prompt for a key inline.
+#[must_use]
+pub fn has_api_key_for(config: &Config, provider: ApiProvider) -> bool {
+    let env_var = match provider {
+        ApiProvider::Deepseek => "DEEPSEEK_API_KEY",
+        ApiProvider::NvidiaNim => "NVIDIA_API_KEY",
+        ApiProvider::Openrouter => "OPENROUTER_API_KEY",
+        ApiProvider::Novita => "NOVITA_API_KEY",
+    };
+    if std::env::var(env_var).is_ok_and(|k| !k.trim().is_empty()) {
+        return true;
+    }
+    if matches!(provider, ApiProvider::NvidiaNim)
+        && std::env::var("NVIDIA_NIM_API_KEY").is_ok_and(|k| !k.trim().is_empty())
+    {
+        return true;
+    }
+
+    if let Some(providers) = config.providers.as_ref() {
+        let entry = match provider {
+            ApiProvider::Deepseek => &providers.deepseek,
+            ApiProvider::NvidiaNim => &providers.nvidia_nim,
+            ApiProvider::Openrouter => &providers.openrouter,
+            ApiProvider::Novita => &providers.novita,
+        };
+        if entry
+            .api_key
+            .as_ref()
+            .is_some_and(|k| !k.trim().is_empty() && k != API_KEYRING_SENTINEL)
+        {
+            return true;
+        }
+    }
+
+    // Legacy root field is DeepSeek-only.
+    matches!(provider, ApiProvider::Deepseek)
+        && config
+            .api_key
+            .as_ref()
+            .is_some_and(|k| !k.trim().is_empty() && k != API_KEYRING_SENTINEL)
+}
+
+/// Save an API key to the appropriate place in `~/.deepseek/config.toml` for
+/// the given provider. DeepSeek writes the legacy root `api_key`; other
+/// providers write `[providers.<name>] api_key = "..."` (creating the table
+/// if needed). Returns the config file path.
+pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf> {
+    if matches!(provider, ApiProvider::Deepseek) {
+        return save_api_key(api_key);
+    }
+
+    let config_path = default_config_path()
+        .context("Failed to resolve config path: home directory not found.")?;
+    ensure_parent_dir(&config_path)?;
+
+    let table_name = match provider {
+        ApiProvider::Deepseek => unreachable!(),
+        ApiProvider::NvidiaNim => "providers.nvidia_nim",
+        ApiProvider::Openrouter => "providers.openrouter",
+        ApiProvider::Novita => "providers.novita",
+    };
+
+    // Parse existing TOML (or start fresh) so we can edit the right table
+    // without disturbing other sections.
+    let mut doc: toml::Value = if config_path.exists() {
+        let raw = fs::read_to_string(&config_path)?;
+        toml::from_str(&raw)
+            .with_context(|| format!("Failed to parse config at {}", config_path.display()))?
+    } else {
+        toml::Value::Table(toml::value::Table::new())
+    };
+
+    let table = doc
+        .as_table_mut()
+        .context("Config root must be a TOML table.")?;
+    let providers = table
+        .entry("providers".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::value::Table::new()))
+        .as_table_mut()
+        .context("`providers` must be a table.")?;
+    let key_inside = match provider {
+        ApiProvider::Deepseek => unreachable!(),
+        ApiProvider::NvidiaNim => "nvidia_nim",
+        ApiProvider::Openrouter => "openrouter",
+        ApiProvider::Novita => "novita",
+    };
+    let entry = providers
+        .entry(key_inside.to_string())
+        .or_insert_with(|| toml::Value::Table(toml::value::Table::new()))
+        .as_table_mut()
+        .with_context(|| format!("`{table_name}` must be a table."))?;
+    entry.insert(
+        "api_key".to_string(),
+        toml::Value::String(api_key.to_string()),
+    );
+
+    let serialized = toml::to_string_pretty(&doc).context("failed to serialize updated config")?;
+    fs::write(&config_path, serialized)
+        .with_context(|| format!("Failed to write config to {}", config_path.display()))?;
+    log_sensitive_event(
+        "credential.save",
+        json!({
+            "backend": "config_file",
+            "provider": provider.as_str(),
+            "config_path": config_path.display().to_string(),
+        }),
+    );
+
+    Ok(config_path)
+}
+
 /// Clear the API key from the config file
 pub fn clear_api_key() -> Result<()> {
     // Don't clear keychain - we're not using it anymore
@@ -1288,6 +1516,10 @@ mod tests {
         nvidia_base_url: Option<OsString>,
         nvidia_nim_base_url: Option<OsString>,
         nvidia_nim_model: Option<OsString>,
+        openrouter_api_key: Option<OsString>,
+        openrouter_base_url: Option<OsString>,
+        novita_api_key: Option<OsString>,
+        novita_base_url: Option<OsString>,
     }
 
     impl EnvGuard {
@@ -1309,6 +1541,10 @@ mod tests {
             let nvidia_base_url_prev = env::var_os("NVIDIA_BASE_URL");
             let nvidia_nim_base_url_prev = env::var_os("NVIDIA_NIM_BASE_URL");
             let nvidia_nim_model_prev = env::var_os("NVIDIA_NIM_MODEL");
+            let openrouter_api_key_prev = env::var_os("OPENROUTER_API_KEY");
+            let openrouter_base_url_prev = env::var_os("OPENROUTER_BASE_URL");
+            let novita_api_key_prev = env::var_os("NOVITA_API_KEY");
+            let novita_base_url_prev = env::var_os("NOVITA_BASE_URL");
             // Safety: test-only environment mutation guarded by a global mutex.
             unsafe {
                 env::set_var("HOME", &home_str);
@@ -1325,6 +1561,10 @@ mod tests {
                 env::remove_var("NVIDIA_BASE_URL");
                 env::remove_var("NVIDIA_NIM_BASE_URL");
                 env::remove_var("NVIDIA_NIM_MODEL");
+                env::remove_var("OPENROUTER_API_KEY");
+                env::remove_var("OPENROUTER_BASE_URL");
+                env::remove_var("NOVITA_API_KEY");
+                env::remove_var("NOVITA_BASE_URL");
             }
             Self {
                 home: home_prev,
@@ -1341,6 +1581,10 @@ mod tests {
                 nvidia_base_url: nvidia_base_url_prev,
                 nvidia_nim_base_url: nvidia_nim_base_url_prev,
                 nvidia_nim_model: nvidia_nim_model_prev,
+                openrouter_api_key: openrouter_api_key_prev,
+                openrouter_base_url: openrouter_base_url_prev,
+                novita_api_key: novita_api_key_prev,
+                novita_base_url: novita_base_url_prev,
             }
         }
     }
@@ -1366,6 +1610,10 @@ mod tests {
                 Self::restore_var("NVIDIA_BASE_URL", self.nvidia_base_url.take());
                 Self::restore_var("NVIDIA_NIM_BASE_URL", self.nvidia_nim_base_url.take());
                 Self::restore_var("NVIDIA_NIM_MODEL", self.nvidia_nim_model.take());
+                Self::restore_var("OPENROUTER_API_KEY", self.openrouter_api_key.take());
+                Self::restore_var("OPENROUTER_BASE_URL", self.openrouter_base_url.take());
+                Self::restore_var("NOVITA_API_KEY", self.novita_api_key.take());
+                Self::restore_var("NOVITA_BASE_URL", self.novita_base_url.take());
             }
         }
     }
@@ -1814,6 +2062,292 @@ mod tests {
         assert_eq!(
             config.deepseek_base_url(),
             "https://forwarded-nim.example/v1"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn openrouter_provider_uses_canonical_defaults() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-or-defaults-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        let config = Config {
+            provider: Some("openrouter".to_string()),
+            ..Default::default()
+        };
+        config.validate()?;
+        assert_eq!(config.api_provider(), ApiProvider::Openrouter);
+        assert_eq!(config.default_model(), DEFAULT_OPENROUTER_MODEL);
+        assert_eq!(config.deepseek_base_url(), DEFAULT_OPENROUTER_BASE_URL);
+        Ok(())
+    }
+
+    #[test]
+    fn novita_provider_uses_canonical_defaults() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-novita-defaults-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        let config = Config {
+            provider: Some("novita".to_string()),
+            ..Default::default()
+        };
+        config.validate()?;
+        assert_eq!(config.api_provider(), ApiProvider::Novita);
+        assert_eq!(config.default_model(), DEFAULT_NOVITA_MODEL);
+        assert_eq!(config.deepseek_base_url(), DEFAULT_NOVITA_BASE_URL);
+        Ok(())
+    }
+
+    #[test]
+    fn openrouter_env_api_key_resolves_via_deepseek_api_key() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-or-env-key-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        // Safety: test-only environment mutation guarded by a global mutex.
+        unsafe {
+            env::set_var("DEEPSEEK_PROVIDER", "openrouter");
+            env::set_var("OPENROUTER_API_KEY", "or-env-key");
+        }
+
+        let config = Config::load(None, None)?;
+        assert_eq!(config.api_provider(), ApiProvider::Openrouter);
+        assert_eq!(config.deepseek_api_key()?, "or-env-key");
+        Ok(())
+    }
+
+    #[test]
+    fn novita_env_api_key_resolves_via_deepseek_api_key() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-novita-env-key-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        // Safety: test-only environment mutation guarded by a global mutex.
+        unsafe {
+            env::set_var("DEEPSEEK_PROVIDER", "novita");
+            env::set_var("NOVITA_API_KEY", "novita-env-key");
+        }
+
+        let config = Config::load(None, None)?;
+        assert_eq!(config.api_provider(), ApiProvider::Novita);
+        assert_eq!(config.deepseek_api_key()?, "novita-env-key");
+        Ok(())
+    }
+
+    #[test]
+    fn openrouter_base_url_env_overrides_default() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-or-base-url-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        // Safety: test-only environment mutation guarded by a global mutex.
+        unsafe {
+            env::set_var("DEEPSEEK_PROVIDER", "openrouter");
+            env::set_var("OPENROUTER_BASE_URL", "https://or-mirror.example/v1");
+        }
+
+        let config = Config::load(None, None)?;
+        assert_eq!(config.api_provider(), ApiProvider::Openrouter);
+        assert_eq!(config.deepseek_base_url(), "https://or-mirror.example/v1");
+        Ok(())
+    }
+
+    #[test]
+    fn openrouter_reads_provider_table_from_config_file() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-or-table-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        let config_path = temp_root.join(".deepseek").join("config.toml");
+        ensure_parent_dir(&config_path)?;
+        fs::write(
+            &config_path,
+            r#"provider = "openrouter"
+
+[providers.openrouter]
+api_key = "or-table-key"
+base_url = "https://or-table.example/v1"
+"#,
+        )?;
+
+        let config = Config::load(None, None)?;
+        assert_eq!(config.api_provider(), ApiProvider::Openrouter);
+        assert_eq!(config.deepseek_api_key()?, "or-table-key");
+        assert_eq!(config.deepseek_base_url(), "https://or-table.example/v1");
+        Ok(())
+    }
+
+    #[test]
+    fn novita_reads_provider_table_from_config_file() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-novita-table-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        let config_path = temp_root.join(".deepseek").join("config.toml");
+        ensure_parent_dir(&config_path)?;
+        fs::write(
+            &config_path,
+            r#"provider = "novita"
+
+[providers.novita]
+api_key = "novita-table-key"
+"#,
+        )?;
+
+        let config = Config::load(None, None)?;
+        assert_eq!(config.api_provider(), ApiProvider::Novita);
+        assert_eq!(config.deepseek_api_key()?, "novita-table-key");
+        assert_eq!(config.deepseek_base_url(), DEFAULT_NOVITA_BASE_URL);
+        Ok(())
+    }
+
+    #[test]
+    fn has_api_key_for_detects_env_and_config_per_provider() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-has-key-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        let mut config = Config::default();
+        assert!(!has_api_key_for(&config, ApiProvider::Openrouter));
+
+        // Safety: test-only environment mutation guarded by a global mutex.
+        unsafe {
+            env::set_var("OPENROUTER_API_KEY", "or-env");
+        }
+        assert!(has_api_key_for(&config, ApiProvider::Openrouter));
+        assert!(!has_api_key_for(&config, ApiProvider::Novita));
+
+        // Safety: test-only environment mutation guarded by a global mutex.
+        unsafe {
+            env::remove_var("OPENROUTER_API_KEY");
+        }
+        let mut providers = ProvidersConfig::default();
+        providers.novita.api_key = Some("file-novita".to_string());
+        config.providers = Some(providers);
+        assert!(has_api_key_for(&config, ApiProvider::Novita));
+        assert!(!has_api_key_for(&config, ApiProvider::Openrouter));
+        Ok(())
+    }
+
+    #[test]
+    fn save_api_key_for_openrouter_writes_provider_table() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-save-key-or-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        let path = save_api_key_for(ApiProvider::Openrouter, "or-saved-key")?;
+        let contents = fs::read_to_string(&path)?;
+        let parsed: toml::Value = toml::from_str(&contents)?;
+        assert_eq!(
+            parsed
+                .get("providers")
+                .and_then(|p| p.get("openrouter"))
+                .and_then(|t| t.get("api_key"))
+                .and_then(toml::Value::as_str),
+            Some("or-saved-key")
+        );
+        // Re-saving must not duplicate or wipe sibling tables.
+        save_api_key_for(ApiProvider::Novita, "novita-saved-key")?;
+        let contents = fs::read_to_string(&path)?;
+        let parsed: toml::Value = toml::from_str(&contents)?;
+        assert_eq!(
+            parsed
+                .get("providers")
+                .and_then(|p| p.get("openrouter"))
+                .and_then(|t| t.get("api_key"))
+                .and_then(toml::Value::as_str),
+            Some("or-saved-key")
+        );
+        assert_eq!(
+            parsed
+                .get("providers")
+                .and_then(|p| p.get("novita"))
+                .and_then(|t| t.get("api_key"))
+                .and_then(toml::Value::as_str),
+            Some("novita-saved-key")
         );
         Ok(())
     }
