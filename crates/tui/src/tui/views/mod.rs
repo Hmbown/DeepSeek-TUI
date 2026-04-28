@@ -22,6 +22,7 @@ pub enum ModalKind {
     Help,
     SubAgents,
     Pager,
+    LiveTranscript,
     SessionPicker,
     Config,
     ModelPicker,
@@ -131,7 +132,7 @@ pub enum ViewAction {
     EmitAndClose(ViewEvent),
 }
 
-pub trait ModalView {
+pub trait ModalView: std::any::Any {
     fn kind(&self) -> ModalKind;
     fn handle_key(&mut self, key: KeyEvent) -> ViewAction;
     fn render(&self, area: Rect, buf: &mut Buffer);
@@ -141,6 +142,11 @@ pub trait ModalView {
     fn tick(&mut self) -> ViewAction {
         ViewAction::None
     }
+    /// Erased downcast hook for views that need a typed reference back from
+    /// the boxed trait object (e.g. the live transcript overlay needs `&mut`
+    /// access from outside the trait so it can refresh its snapshot of the
+    /// app's transcript state right before render).
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }
 
 #[derive(Default)]
@@ -163,6 +169,13 @@ impl ViewStack {
 
     pub fn push<V: ModalView + 'static>(&mut self, view: V) {
         self.views.push(Box::new(view));
+    }
+
+    /// Push an already-boxed view back onto the stack. Used by call sites
+    /// that pop a view, mutate it externally, and need to restore it without
+    /// the generic `push` re-boxing dance.
+    pub fn push_boxed(&mut self, view: Box<dyn ModalView>) {
+        self.views.push(view);
     }
 
     pub fn pop(&mut self) -> Option<Box<dyn ModalView>> {
@@ -631,6 +644,10 @@ impl ModalView for ConfigView {
         ModalKind::Config
     }
 
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
     fn handle_key(&mut self, key: KeyEvent) -> ViewAction {
         if self.editing.is_some() {
             return self.handle_editing_key(key);
@@ -834,6 +851,10 @@ impl SubAgentsView {
 impl ModalView for SubAgentsView {
     fn kind(&self) -> ModalKind {
         ModalKind::SubAgents
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> ViewAction {
