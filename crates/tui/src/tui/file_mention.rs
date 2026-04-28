@@ -41,6 +41,16 @@ pub const MAX_DIRECTORY_MENTION_ENTRIES: usize = 80;
 /// the cost of walking large workspaces; subsequent keystrokes narrow further.
 const FILE_MENTION_COMPLETION_LIMIT: usize = 64;
 
+/// Compact composer preview row for local context that will be included or
+/// skipped when the user submits the current input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileMentionPreview {
+    pub kind: String,
+    pub label: String,
+    pub detail: Option<String>,
+    pub included: bool,
+}
+
 // ---------------------------------------------------------------------------
 //  Tab-completion
 // ---------------------------------------------------------------------------
@@ -271,6 +281,139 @@ pub fn user_request_with_file_mentions(
         return input.to_string();
     };
     format!("{input}\n\n---\n\nLocal context from @mentions:\n{context}")
+}
+
+#[must_use]
+pub fn pending_context_previews(
+    input: &str,
+    workspace: &Path,
+    cwd: Option<PathBuf>,
+) -> Vec<FileMentionPreview> {
+    let mut previews = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let ws = Workspace::with_cwd(workspace.to_path_buf(), cwd);
+
+    for mention in extract_file_mentions(input)
+        .into_iter()
+        .take(MAX_FILE_MENTIONS_PER_MESSAGE)
+    {
+        let (path, display_path, exists) = match ws.resolve(&mention) {
+            Ok(path) => {
+                let display = path.display().to_string();
+                (path, display, true)
+            }
+            Err(path) => {
+                let display = path.display().to_string();
+                (path, display, false)
+            }
+        };
+        if !seen.insert(format!("mention:{display_path}")) {
+            continue;
+        }
+        previews.push(preview_for_mention(&mention, &path, &display_path, exists));
+    }
+
+    for reference in extract_media_attachment_references(input) {
+        if !seen.insert(format!("media:{}", reference.path)) {
+            continue;
+        }
+        previews.push(FileMentionPreview {
+            kind: reference.kind,
+            label: reference.path,
+            detail: Some("attached media".to_string()),
+            included: true,
+        });
+    }
+
+    previews
+}
+
+fn preview_for_mention(
+    raw: &str,
+    path: &Path,
+    display_path: &str,
+    exists: bool,
+) -> FileMentionPreview {
+    if !exists {
+        return FileMentionPreview {
+            kind: "missing".to_string(),
+            label: raw.to_string(),
+            detail: Some("not found".to_string()),
+            included: false,
+        };
+    }
+    if path.is_dir() {
+        return FileMentionPreview {
+            kind: "dir".to_string(),
+            label: raw.to_string(),
+            detail: Some("directory listing".to_string()),
+            included: true,
+        };
+    }
+    if !path.is_file() {
+        return FileMentionPreview {
+            kind: "skipped".to_string(),
+            label: raw.to_string(),
+            detail: Some("unsupported path".to_string()),
+            included: false,
+        };
+    }
+    if is_media_path(path) {
+        return FileMentionPreview {
+            kind: "media".to_string(),
+            label: raw.to_string(),
+            detail: Some("use /attach for media bytes".to_string()),
+            included: false,
+        };
+    }
+
+    let detail = match std::fs::metadata(path) {
+        Ok(metadata) if metadata.len() > MAX_MENTION_FILE_BYTES => {
+            Some("included truncated".to_string())
+        }
+        Ok(_) => Some("included".to_string()),
+        Err(err) => Some(format!("metadata: {err}")),
+    };
+
+    FileMentionPreview {
+        kind: "file".to_string(),
+        label: raw.to_string(),
+        detail: detail.or_else(|| Some(display_path.to_string())),
+        included: true,
+    }
+}
+
+#[derive(Debug, Clone)]
+struct MediaAttachmentReference {
+    kind: String,
+    path: String,
+}
+
+fn extract_media_attachment_references(input: &str) -> Vec<MediaAttachmentReference> {
+    let mut out = Vec::new();
+    for line in input.lines() {
+        let trimmed = line.trim();
+        let Some(body) = trimmed
+            .strip_prefix("[Attached ")
+            .and_then(|value| value.strip_suffix(']'))
+        else {
+            continue;
+        };
+        let Some((kind, rest)) = body.split_once(": ") else {
+            continue;
+        };
+        let path = rest
+            .rsplit_once(" at ")
+            .map_or(rest, |(_, path)| path)
+            .trim();
+        if !path.is_empty() {
+            out.push(MediaAttachmentReference {
+                kind: kind.trim().to_string(),
+                path: path.to_string(),
+            });
+        }
+    }
+    out
 }
 
 fn local_context_from_file_mentions(
@@ -636,6 +779,49 @@ mod tests {
         assert!(
             content.contains("<missing-file mention=\"@does/not/exist.txt\""),
             "got: {content}",
+        );
+    }
+
+    #[test]
+    fn pending_context_preview_marks_included_and_missing_mentions() {
+        let tmp = TempDir::new().expect("tempdir");
+        std::fs::write(tmp.path().join("guide.md"), "hello").expect("write");
+
+        let previews = pending_context_previews(
+            "read @guide.md and @missing.md",
+            tmp.path(),
+            Some(tmp.path().to_path_buf()),
+        );
+
+        assert_eq!(previews.len(), 2);
+        assert_eq!(previews[0].kind, "file");
+        assert_eq!(previews[0].label, "guide.md");
+        assert!(previews[0].included);
+        assert_eq!(previews[1].kind, "missing");
+        assert_eq!(previews[1].label, "missing.md");
+        assert!(!previews[1].included);
+    }
+
+    #[test]
+    fn pending_context_preview_distinguishes_attach_media_from_at_media() {
+        let tmp = TempDir::new().expect("tempdir");
+        std::fs::write(tmp.path().join("photo.png"), b"png").expect("write");
+        let attached = tmp.path().join("photo.png").display().to_string();
+        let input = format!("inspect @photo.png\n[Attached image: {attached}]");
+
+        let previews = pending_context_previews(&input, tmp.path(), Some(tmp.path().to_path_buf()));
+
+        assert!(
+            previews
+                .iter()
+                .any(|item| item.kind == "media" && !item.included),
+            "at-mention media should be hint-only: {previews:?}"
+        );
+        assert!(
+            previews
+                .iter()
+                .any(|item| item.kind == "image" && item.included),
+            "/attach media should be included: {previews:?}"
         );
     }
 }
