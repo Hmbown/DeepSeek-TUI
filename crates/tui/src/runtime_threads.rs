@@ -1368,6 +1368,9 @@ impl RuntimeThreadManager {
             message_threshold: compaction_message_threshold_for_model(&thread.model),
             ..Default::default()
         };
+        let network_policy = self.config.network.clone().map(|toml_cfg| {
+            crate::network_policy::NetworkPolicyDecider::with_default_audit(toml_cfg.into_runtime())
+        });
         let engine_cfg = EngineConfig {
             model: thread.model.clone(),
             workspace: thread.workspace.clone(),
@@ -1386,6 +1389,7 @@ impl RuntimeThreadManager {
             todos: new_shared_todo_list(),
             plan_state: new_shared_plan_state(),
             max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
+            network_policy,
         };
 
         let engine = spawn_engine(engine_cfg, &self.config);

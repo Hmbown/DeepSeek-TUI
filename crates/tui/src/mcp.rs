@@ -20,6 +20,8 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 
+use crate::network_policy::{Decision, NetworkPolicyDecider, host_from_url};
+
 // === Error diagnostics helpers (#71) ===
 
 /// Bytes of a non-2xx response body to surface in connection errors.
@@ -489,16 +491,42 @@ pub struct McpConnection {
 }
 
 impl McpConnection {
-    /// Connect to an MCP server and initialize it
-    pub async fn connect(
+    /// Connect to an MCP server and initialize it.
+    ///
+    /// `network_policy` (added in v0.7.0 for #135) is consulted for HTTP/SSE
+    /// transports only — STDIO transports are unaffected. Pass `None` to
+    /// match pre-v0.7.0 permissive behavior.
+    pub async fn connect_with_policy(
         name: String,
         config: McpServerConfig,
         global_timeouts: &McpTimeouts,
+        network_policy: Option<&NetworkPolicyDecider>,
     ) -> Result<Self> {
         let connect_timeout_secs = config.effective_connect_timeout(global_timeouts);
         let cancel_token = tokio_util::sync::CancellationToken::new();
 
         let transport: Box<dyn McpTransport> = if let Some(url) = &config.url {
+            // Per-domain network policy gate (#135). Only the HTTP/SSE transport
+            // is gated; STDIO MCP servers run as local subprocesses and never
+            // touch the network from this code path.
+            if let Some(decider) = network_policy
+                && let Some(host) = host_from_url(url)
+            {
+                match decider.evaluate(&host, "mcp") {
+                    Decision::Allow => {}
+                    Decision::Deny => {
+                        anyhow::bail!(
+                            "MCP server '{name}' connection to '{host}' blocked by network policy"
+                        );
+                    }
+                    Decision::Prompt => {
+                        anyhow::bail!(
+                            "MCP server '{name}' connection to '{host}' requires approval; \
+                             re-run after `/network allow {host}` or set network.default = \"allow\" in config"
+                        );
+                    }
+                }
+            }
             let client = reqwest::Client::builder()
                 .timeout(Duration::from_secs(connect_timeout_secs))
                 .build()?;
@@ -889,6 +917,7 @@ impl Drop for McpConnection {
 pub struct McpPool {
     connections: HashMap<String, McpConnection>,
     config: McpConfig,
+    network_policy: Option<NetworkPolicyDecider>,
 }
 
 impl McpPool {
@@ -897,6 +926,7 @@ impl McpPool {
         Self {
             connections: HashMap::new(),
             config,
+            network_policy: None,
         }
     }
 
@@ -911,6 +941,13 @@ impl McpPool {
             McpConfig::default()
         };
         Ok(Self::new(config))
+    }
+
+    /// Attach a per-domain network policy (#135). When set, HTTP/SSE
+    /// transports are gated through it; STDIO transports are unaffected.
+    pub fn with_network_policy(mut self, policy: NetworkPolicyDecider) -> Self {
+        self.network_policy = Some(policy);
+        self
     }
 
     /// Get or create a connection to a server
@@ -940,10 +977,11 @@ impl McpPool {
             anyhow::bail!("Failed to connect MCP server '{server_name}': server is disabled");
         }
 
-        let connection = McpConnection::connect(
+        let connection = McpConnection::connect_with_policy(
             server_name.to_string(),
             server_config,
             &self.config.timeouts,
+            self.network_policy.as_ref(),
         )
         .await?;
 

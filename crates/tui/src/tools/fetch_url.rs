@@ -10,6 +10,7 @@
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, optional_u64,
 };
+use crate::network_policy::{Decision, host_from_url};
 use async_trait::async_trait;
 use regex::Regex;
 use serde::Serialize;
@@ -123,7 +124,7 @@ impl ToolSpec for FetchUrlTool {
         ApprovalRequirement::Auto
     }
 
-    async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let url = input
             .get("url")
             .and_then(Value::as_str)
@@ -139,6 +140,27 @@ impl ToolSpec for FetchUrlTool {
             return Err(ToolError::invalid_input(
                 "only http:// and https:// URLs are supported",
             ));
+        }
+
+        // Per-domain network policy gate (#135). If no policy is attached
+        // (e.g. ad-hoc tests), behavior is permissive — match pre-v0.7.0.
+        if let Some(decider) = context.network_policy.as_ref()
+            && let Some(host) = host_from_url(&url)
+        {
+            match decider.evaluate(&host, "fetch_url") {
+                Decision::Allow => {}
+                Decision::Deny => {
+                    return Err(ToolError::permission_denied(format!(
+                        "network call to '{host}' blocked by network policy"
+                    )));
+                }
+                Decision::Prompt => {
+                    return Err(ToolError::permission_denied(format!(
+                        "network call to '{host}' requires approval; \
+                         re-run after `/network allow {host}` or set network.default = \"allow\" in config"
+                    )));
+                }
+            }
         }
 
         let format = Format::parse(input.get("format").and_then(Value::as_str))?;
@@ -311,5 +333,24 @@ mod tests {
         let tool = FetchUrlTool;
         let res = tool.execute(json!({}), &ctx()).await;
         assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn network_policy_denies_blocked_host() {
+        use crate::network_policy::{Decision, NetworkPolicy, NetworkPolicyDecider};
+        let policy = NetworkPolicy {
+            default: Decision::Deny.into(),
+            allow: vec!["api.deepseek.com".to_string()],
+            deny: vec![],
+            audit: false,
+        };
+        let decider = NetworkPolicyDecider::new(policy, None);
+        let ctx = ToolContext::new(PathBuf::from(".")).with_network_policy(decider);
+        let tool = FetchUrlTool;
+        let res = tool
+            .execute(json!({"url": "https://example.com/foo"}), &ctx)
+            .await;
+        let err = res.expect_err("blocked host should fail");
+        assert!(format!("{err}").contains("blocked"));
     }
 }

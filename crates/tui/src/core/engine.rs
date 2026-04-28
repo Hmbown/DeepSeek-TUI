@@ -106,6 +106,10 @@ pub struct EngineConfig {
     /// `SubAgentRuntime::max_spawn_depth`. Override via
     /// `[runtime] max_spawn_depth = N` in `~/.deepseek/config.toml`.
     pub max_spawn_depth: u32,
+    /// Per-domain network policy decider (#135). Shared across the session so
+    /// session-scoped approvals (`/network allow <host>`) persist for the
+    /// remainder of the run.
+    pub network_policy: Option<crate::network_policy::NetworkPolicyDecider>,
 }
 
 impl Default for EngineConfig {
@@ -126,6 +130,7 @@ impl Default for EngineConfig {
             todos: new_shared_todo_list(),
             plan_state: new_shared_plan_state(),
             max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
+            network_policy: None,
         }
     }
 }
@@ -1984,7 +1989,7 @@ impl Engine {
         // `/trust add` / `/trust remove` mutations without an explicit cache
         // refresh hook.
         let trusted = crate::workspace_trust::WorkspaceTrust::load_for(&self.session.workspace);
-        let ctx = ToolContext::with_auto_approve(
+        let mut ctx = ToolContext::with_auto_approve(
             self.session.workspace.clone(),
             self.session.trust_mode,
             self.session.notes_path.clone(),
@@ -1995,6 +2000,10 @@ impl Engine {
         .with_features(self.config.features.clone())
         .with_shell_manager(self.shell_manager.clone())
         .with_trusted_external_paths(trusted.paths().to_vec());
+
+        if let Some(decider) = self.config.network_policy.as_ref() {
+            ctx = ctx.with_network_policy(decider.clone());
+        }
 
         if mode == AppMode::Yolo {
             ctx.with_elevated_sandbox_policy(crate::sandbox::SandboxPolicy::WorkspaceWrite {
@@ -2012,8 +2021,11 @@ impl Engine {
         if let Some(pool) = self.mcp_pool.as_ref() {
             return Ok(Arc::clone(pool));
         }
-        let pool = McpPool::from_config_path(&self.session.mcp_config_path)
+        let mut pool = McpPool::from_config_path(&self.session.mcp_config_path)
             .map_err(|e| ToolError::execution_failed(format!("Failed to load MCP config: {e}")))?;
+        if let Some(decider) = self.config.network_policy.as_ref() {
+            pool = pool.with_network_policy(decider.clone());
+        }
         let pool = Arc::new(AsyncMutex::new(pool));
         self.mcp_pool = Some(Arc::clone(&pool));
         Ok(pool)

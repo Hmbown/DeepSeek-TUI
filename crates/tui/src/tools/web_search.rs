@@ -6,6 +6,7 @@
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, optional_u64,
 };
+use crate::network_policy::{Decision, NetworkPolicyDecider};
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose};
 use regex::Regex;
@@ -13,6 +14,27 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use std::sync::OnceLock;
 use std::time::Duration;
+
+const DUCKDUCKGO_HOST: &str = "html.duckduckgo.com";
+const BING_HOST: &str = "www.bing.com";
+
+/// Returns `Ok(())` if the policy allows the call, or a `ToolError` otherwise.
+/// Falls through silently when no policy is attached (back-compat).
+fn check_policy(decider: Option<&NetworkPolicyDecider>, host: &str) -> Result<(), ToolError> {
+    let Some(decider) = decider else {
+        return Ok(());
+    };
+    match decider.evaluate(host, "web_search") {
+        Decision::Allow => Ok(()),
+        Decision::Deny => Err(ToolError::permission_denied(format!(
+            "web search to '{host}' blocked by network policy"
+        ))),
+        Decision::Prompt => Err(ToolError::permission_denied(format!(
+            "web search to '{host}' requires approval; \
+             re-run after `/network allow {host}` or set network.default = \"allow\" in config"
+        ))),
+    }
+}
 
 // Cached regex patterns for HTML parsing
 static TITLE_RE: OnceLock<Regex> = OnceLock::new();
@@ -140,7 +162,7 @@ impl ToolSpec for WebSearchTool {
         ApprovalRequirement::Auto
     }
 
-    async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let query = extract_search_query(&input)?;
         if query.is_empty() {
             return Err(ToolError::invalid_input("Query cannot be empty"));
@@ -149,6 +171,13 @@ impl ToolSpec for WebSearchTool {
             usize::try_from(optional_search_max_results(&input)).unwrap_or(DEFAULT_MAX_RESULTS);
         let max_results = max_results.clamp(1, MAX_RESULTS);
         let timeout_ms = optional_u64(&input, "timeout_ms", DEFAULT_TIMEOUT_MS).min(60_000);
+
+        // Per-domain network policy gate (#135). The "host" for web search is
+        // the upstream search engine domain — DuckDuckGo first, Bing on
+        // fallback. We gate DuckDuckGo here; Bing is gated separately inside
+        // `run_bing_search` so a deny on one engine doesn't block the other.
+        let decider = context.network_policy.as_ref();
+        check_policy(decider, DUCKDUCKGO_HOST)?;
 
         let client = reqwest::Client::builder()
             .timeout(Duration::from_millis(timeout_ms))
@@ -189,6 +218,9 @@ impl ToolSpec for WebSearchTool {
         let mut message_suffix = None;
         if results.is_empty() {
             let duckduckgo_blocked = is_duckduckgo_challenge(&body);
+            // Bing is a separate host — gate it independently so a deny on
+            // DuckDuckGo doesn't silently let Bing through (and vice versa).
+            check_policy(decider, BING_HOST)?;
             match run_bing_search(&client, &query, max_results).await {
                 Ok(fallback_results) if !fallback_results.is_empty() => {
                     results = fallback_results;
