@@ -370,6 +370,32 @@ pub fn default_sessions_dir() -> std::io::Result<PathBuf> {
     Ok(home.join(".deepseek").join("sessions"))
 }
 
+/// Boot-time hook: prune workspace snapshots older than the configured
+/// retention window for `workspace`. Failure is logged but never fatal —
+/// the session boot must not block on a flaky disk or missing `git`.
+///
+/// Called once per `run_interactive` invocation. The default retention
+/// (7 days) is governed by `crate::snapshot::DEFAULT_MAX_AGE`.
+pub fn prune_workspace_snapshots_at_boot(workspace: &Path) {
+    prune_workspace_snapshots(workspace, crate::snapshot::DEFAULT_MAX_AGE);
+}
+
+/// Prune snapshots older than `max_age` for `workspace`.
+///
+/// Always non-fatal. Returns silently — callers don't need the count
+/// (the underlying repo logs at WARN if anything blew up).
+pub fn prune_workspace_snapshots(workspace: &Path, max_age: std::time::Duration) {
+    match crate::snapshot::prune_older_than(workspace, max_age) {
+        Ok(0) => {}
+        Ok(n) => {
+            tracing::debug!(target: "snapshot", "boot prune removed {n} snapshot(s)");
+        }
+        Err(e) => {
+            tracing::warn!(target: "snapshot", "boot prune failed: {e}");
+        }
+    }
+}
+
 /// Create a new `SavedSession` from conversation state
 pub fn create_saved_session(
     messages: &[Message],

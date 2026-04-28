@@ -214,6 +214,27 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 # include_summary = false
 
 # ─────────────────────────────────────────────────────────────────────────────────
+# Workspace Snapshots (#137)
+# ─────────────────────────────────────────────────────────────────────────────────
+# Each turn the TUI takes a `pre-turn:<seq>` and `post-turn:<seq>` snapshot of
+# your workspace into a side-git repo at:
+#
+#     ~/.deepseek/snapshots/<project_hash>/<worktree_hash>/.git
+#
+# Your own `.git` is never touched — `--git-dir` and `--work-tree` are always
+# set together when shelling out to git. Use `/restore N` (slash command) or
+# the `revert_turn` tool to roll the working tree back. Conversation history
+# is unaffected.
+#
+# Disk footprint: ~1-2 GB worst case for a 100 MB workspace × 12 turns/day,
+# typically far less thanks to git's content-addressed storage. The session
+# boot prunes anything older than `max_age_days` (default 7).
+#
+# [snapshots]
+# enabled = true        # Snapshot workspace pre/post each turn for /restore
+# max_age_days = 7      # Older snapshots pruned at session start
+
+# ─────────────────────────────────────────────────────────────────────────────────
 # Hooks (optional)
 # ─────────────────────────────────────────────────────────────────────────────────
 # Hooks run shell commands on lifecycle events (session start/end, tool calls, etc.).

@@ -2788,6 +2788,11 @@ async fn run_interactive(
         logging::warn(format!("Failed to install system skills: {e}"));
     }
 
+    // Prune stale workspace snapshots from prior sessions (7-day default).
+    // Non-fatal: a flaky disk, missing `git`, or read-only home should
+    // never block the TUI from starting.
+    session_manager::prune_workspace_snapshots_at_boot(&workspace);
+
     tui::run_tui(
         config,
         tui::TuiOptions {
