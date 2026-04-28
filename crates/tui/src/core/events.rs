@@ -192,6 +192,14 @@ pub enum Event {
     /// Sub-agent listing
     AgentList { agents: Vec<SubAgentResult> },
 
+    /// Structured sub-agent mailbox envelope (issue #128). Carries the
+    /// monotonic seq + the typed `MailboxMessage` so the UI can route each
+    /// envelope to the correct in-transcript card.
+    SubAgentMailbox {
+        seq: u64,
+        message: crate::tools::subagent::MailboxMessage,
+    },
+
     // === System Events ===
     /// An error occurred
     Error {

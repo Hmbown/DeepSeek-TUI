@@ -157,6 +157,7 @@ pub fn export(app: &mut App, path: Option<&str>) -> CommandResult {
             HistoryCell::System { content } => ("*System:*", content.clone()),
             HistoryCell::Thinking { content, .. } => ("*Thinking:*", content.clone()),
             HistoryCell::Tool(tool) => ("**Tool:**", render_tool_cell(tool, 80)),
+            HistoryCell::SubAgent(sub) => ("**Sub-agent:**", render_subagent_cell(sub, 80)),
         };
 
         let _ = write!(content, "{}\n\n{}\n\n---\n\n", role, body.trim());
@@ -176,6 +177,14 @@ pub fn sessions(app: &mut App) -> CommandResult {
 
 fn render_tool_cell(tool: &crate::tui::history::ToolCell, width: u16) -> String {
     tool.lines(width)
+        .into_iter()
+        .map(line_to_string)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn render_subagent_cell(cell: &crate::tui::history::SubAgentCell, width: u16) -> String {
+    cell.lines(width)
         .into_iter()
         .map(line_to_string)
         .collect::<Vec<_>>()

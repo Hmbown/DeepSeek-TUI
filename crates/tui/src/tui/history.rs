@@ -88,6 +88,27 @@ pub enum HistoryCell {
         duration_secs: Option<f32>,
     },
     Tool(ToolCell),
+    /// Live in-transcript card for sub-agent activity (issue #128). Owns
+    /// either a single `DelegateCard` or a multi-worker `FanoutCard`; the
+    /// UI re-binds it from the mailbox stream as envelopes arrive.
+    SubAgent(SubAgentCell),
+}
+
+/// In-transcript sub-agent cell — either a single delegate or a fanout.
+/// State mutates over the turn as mailbox envelopes are drained.
+#[derive(Debug, Clone)]
+pub enum SubAgentCell {
+    Delegate(crate::tui::widgets::agent_card::DelegateCard),
+    Fanout(crate::tui::widgets::agent_card::FanoutCard),
+}
+
+impl SubAgentCell {
+    pub fn lines(&self, width: u16) -> Vec<Line<'static>> {
+        match self {
+            SubAgentCell::Delegate(card) => card.render_lines(width),
+            SubAgentCell::Fanout(card) => card.render_lines(width),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,6 +170,7 @@ impl HistoryCell {
                 duration_secs,
             } => render_thinking(content, width, *streaming, *duration_secs, false, false),
             HistoryCell::Tool(cell) => cell.lines_with_motion(width, false),
+            HistoryCell::SubAgent(cell) => cell.lines(width),
         }
     }
 
@@ -209,6 +231,7 @@ impl HistoryCell {
                 width,
             ),
             HistoryCell::System { .. } => self.lines(width),
+            HistoryCell::SubAgent(cell) => cell.lines(width),
         }
     }
 
@@ -252,6 +275,7 @@ impl HistoryCell {
                 /*low_motion*/ false,
             ),
             HistoryCell::Tool(cell) => cell.transcript_lines(width),
+            HistoryCell::SubAgent(cell) => cell.lines(width),
         }
     }
 

@@ -779,6 +779,23 @@ impl RuntimeThreadManager {
         Ok(thread)
     }
 
+    /// Resume a thread and recover the sub-agent rebind hints needed to
+    /// reconstruct in-transcript cards (issue #128). Drains the persisted
+    /// `agent.*` event stream and collapses it into the latest known
+    /// status per `agent_id` — the UI consumes this to seed empty
+    /// `DelegateCard` / `FanoutCard` placeholders so subsequent live
+    /// mailbox envelopes mutate them in place.
+    #[allow(dead_code)] // exposed for the runtime API resume flow; consumed by #128 follow-up.
+    pub async fn resume_thread_with_agent_rebind(
+        &self,
+        id: &str,
+    ) -> Result<(ThreadRecord, Vec<AgentRebindHint>)> {
+        let thread = self.resume_thread(id).await?;
+        let events = self.store.events_since(&thread.id, None)?;
+        let hints = collect_agent_rebind_hints(&events);
+        Ok((thread, hints))
+    }
+
     pub async fn fork_thread(&self, id: &str) -> Result<ThreadRecord> {
         let source = self.get_thread(id).await?;
         let mut forked = source.clone();
@@ -2340,6 +2357,66 @@ fn tool_kind_for_name(name: &str) -> TurnItemKind {
     TurnItemKind::ToolCall
 }
 
+/// One sub-agent rebind hint extracted from a thread's persisted event
+/// timeline (issue #128). When the TUI resumes a session that was
+/// mid-fanout, the in-transcript card stack is empty — these hints let the
+/// UI know which agent_ids were live (or recently terminal) so it can
+/// reconstruct the matching `DelegateCard` / `FanoutCard` placeholders
+/// before fresh mailbox envelopes arrive on a re-attached engine.
+///
+/// The helper is the testable contract here — actual TUI wire-up to the
+/// resume flow is a follow-up; the runtime API consumer (`runtime_api.rs`)
+/// can already call `resume_thread_with_agent_rebind` to drive it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)] // consumed by #128 follow-up TUI resume wiring; tested here.
+pub struct AgentRebindHint {
+    pub agent_id: String,
+    pub status: AgentRebindStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum AgentRebindStatus {
+    Spawned,
+    InProgress,
+    Completed,
+}
+
+/// Collapse a chronologically ordered slice of `RuntimeEventRecord` into
+/// the latest known status per `agent_id`. Drops entries that aren't in
+/// the `agent.*` family. Cards built from these hints are immediately
+/// open to mutation by subsequent live mailbox envelopes (each envelope's
+/// `agent_id` matches one already in the rebind map).
+#[must_use]
+#[allow(dead_code)]
+pub fn collect_agent_rebind_hints(events: &[RuntimeEventRecord]) -> Vec<AgentRebindHint> {
+    use std::collections::BTreeMap;
+    let mut latest: BTreeMap<String, AgentRebindStatus> = BTreeMap::new();
+    for event in events {
+        let id = match event.payload.get("agent_id").and_then(|v| v.as_str()) {
+            Some(id) => id.to_string(),
+            None => continue,
+        };
+        let next_status = match event.event.as_str() {
+            "agent.spawned" => Some(AgentRebindStatus::Spawned),
+            "agent.progress" => Some(AgentRebindStatus::InProgress),
+            "agent.completed" => Some(AgentRebindStatus::Completed),
+            _ => None,
+        };
+        if let Some(status) = next_status {
+            // Don't downgrade Completed → InProgress on out-of-order events.
+            let entry = latest.entry(id).or_insert(status);
+            if !matches!(*entry, AgentRebindStatus::Completed) {
+                *entry = status;
+            }
+        }
+    }
+    latest
+        .into_iter()
+        .map(|(agent_id, status)| AgentRebindHint { agent_id, status })
+        .collect()
+}
+
 pub fn summarize_text(text: &str, limit: usize) -> String {
     let take = limit.saturating_sub(3);
     let mut count = 0;
@@ -3804,5 +3881,97 @@ mod tests {
     fn parse_mode_defaults_to_agent() {
         assert_eq!(parse_mode("unknown"), AppMode::Agent);
         assert_eq!(parse_mode("plan"), AppMode::Plan);
+    }
+
+    fn rebind_event(event: &str, agent_id: &str, seq: u64) -> RuntimeEventRecord {
+        RuntimeEventRecord {
+            schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
+            seq,
+            timestamp: Utc::now(),
+            thread_id: "thr_test".to_string(),
+            turn_id: Some("turn_test".to_string()),
+            item_id: None,
+            event: event.to_string(),
+            payload: json!({ "agent_id": agent_id }),
+        }
+    }
+
+    #[test]
+    fn collect_agent_rebind_hints_resumes_a_mid_fanout_session() {
+        // Mirror what runtime_threads persists during a real fanout: three
+        // workers spawned, two finished, one still running when the session
+        // was killed. The TUI re-attach must rebuild placeholders for the
+        // running worker AND the two completed workers (the fanout card
+        // tracks all of them so the dot-grid stays accurate post-resume).
+        let events = vec![
+            rebind_event("agent.spawned", "agent_a", 1),
+            rebind_event("agent.spawned", "agent_b", 2),
+            rebind_event("agent.spawned", "agent_c", 3),
+            rebind_event("agent.progress", "agent_a", 4),
+            rebind_event("agent.completed", "agent_a", 5),
+            rebind_event("agent.progress", "agent_b", 6),
+            rebind_event("agent.completed", "agent_b", 7),
+            rebind_event("agent.progress", "agent_c", 8),
+        ];
+        let hints = collect_agent_rebind_hints(&events);
+        assert_eq!(hints.len(), 3, "every fanout worker must be rebound");
+        let by_id: std::collections::BTreeMap<&str, AgentRebindStatus> = hints
+            .iter()
+            .map(|h| (h.agent_id.as_str(), h.status))
+            .collect();
+        assert_eq!(by_id.get("agent_a"), Some(&AgentRebindStatus::Completed));
+        assert_eq!(by_id.get("agent_b"), Some(&AgentRebindStatus::Completed));
+        assert_eq!(
+            by_id.get("agent_c"),
+            Some(&AgentRebindStatus::InProgress),
+            "in-flight worker must rebind in InProgress, not downgrade"
+        );
+    }
+
+    #[test]
+    fn collect_agent_rebind_hints_ignores_unrelated_events() {
+        // Status / tool events should not produce phantom hints — only the
+        // agent.* family carries the contract we re-bind from.
+        let events = vec![
+            RuntimeEventRecord {
+                schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
+                seq: 1,
+                timestamp: Utc::now(),
+                thread_id: "thr".to_string(),
+                turn_id: None,
+                item_id: None,
+                event: "tool.completed".to_string(),
+                payload: json!({"name": "read_file"}),
+            },
+            rebind_event("agent.spawned", "agent_x", 2),
+            RuntimeEventRecord {
+                schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
+                seq: 3,
+                timestamp: Utc::now(),
+                thread_id: "thr".to_string(),
+                turn_id: None,
+                item_id: None,
+                event: "compaction.completed".to_string(),
+                payload: json!({"messages_after": 12}),
+            },
+        ];
+        let hints = collect_agent_rebind_hints(&events);
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].agent_id, "agent_x");
+    }
+
+    #[test]
+    fn collect_agent_rebind_hints_does_not_downgrade_completed_to_in_progress() {
+        // Out-of-order replay: a stale `agent.progress` arriving after the
+        // completed event must NOT clobber the terminal status. This matters
+        // when an event log is concatenated from interrupted segments.
+        let events = vec![
+            rebind_event("agent.spawned", "agent_y", 1),
+            rebind_event("agent.completed", "agent_y", 2),
+            rebind_event("agent.progress", "agent_y", 3),
+        ];
+        let hints = collect_agent_rebind_hints(&events);
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].status, AgentRebindStatus::Completed);
     }
 }
