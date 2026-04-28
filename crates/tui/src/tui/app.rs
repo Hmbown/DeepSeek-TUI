@@ -489,6 +489,10 @@ pub struct App {
     pub approval_mode: ApprovalMode,
     // Modal view stack (approval/help/etc.)
     pub view_stack: ViewStack,
+    /// Esc-Esc backtrack state machine (#133). `Inactive` by default; first
+    /// Esc primes, second Esc opens the live-transcript overlay scoped to
+    /// previous user messages so the user can rewind a turn.
+    pub backtrack: crate::tui::backtrack::BacktrackState,
     /// Current session ID for auto-save updates
     pub current_session_id: Option<String>,
     /// Trust mode - allow access outside workspace
@@ -893,6 +897,7 @@ impl App {
                 ApprovalMode::Suggest
             },
             view_stack: ViewStack::new(),
+            backtrack: crate::tui::backtrack::BacktrackState::new(),
             current_session_id: None,
             trust_mode: initial_mode == AppMode::Yolo,
             // Honour `tui.status_items` from config; fall back to the v0.6.6
@@ -1197,6 +1202,36 @@ impl App {
             self.needs_redraw = true;
         }
         cell
+    }
+
+    /// Truncate `history` (and the parallel `history_revisions` + auxiliary
+    /// per-cell maps) so that only cells with index `< new_len` remain.
+    /// Used by Esc-Esc backtrack (#133) to roll the visible transcript
+    /// back to a chosen user message. Cells dropped here are gone — the
+    /// caller is expected to also trim the matching `api_messages` so the
+    /// next turn matches what the user sees.
+    pub fn truncate_history_to(&mut self, new_len: usize) {
+        if new_len >= self.history.len() {
+            return;
+        }
+        self.history.truncate(new_len);
+        if self.history_revisions.len() > new_len {
+            self.history_revisions.truncate(new_len);
+        }
+        // Drop any auxiliary maps keyed on history indices that now point
+        // past the new tail. We keep the rest intact so unaffected tool
+        // cells continue to render correctly.
+        self.tool_cells.retain(|_, idx| *idx < new_len);
+        self.tool_details_by_cell.retain(|idx, _| *idx < new_len);
+        self.subagent_card_index.retain(|_, idx| *idx < new_len);
+        if self
+            .last_fanout_card_index
+            .is_some_and(|idx| idx >= new_len)
+        {
+            self.last_fanout_card_index = None;
+        }
+        self.history_version = self.history_version.wrapping_add(1);
+        self.needs_redraw = true;
     }
 
     /// Bump the active-cell revision counter and request a redraw.

@@ -5,6 +5,7 @@
 pub mod active_cell;
 pub mod app;
 pub mod approval;
+pub mod backtrack;
 pub mod clipboard;
 pub mod command_palette;
 pub mod diff_render;
