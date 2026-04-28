@@ -224,7 +224,6 @@ pub fn reasoning_surface_tint(depth: ColorDepth) -> Option<Color> {
 }
 
 /// Pulse `color` between 30% and 100% brightness on a 2s cycle keyed off
-#[allow(dead_code)]
 /// `now_ms` (epoch ms). The minimum keeps the glyph readable at trough; the
 /// maximum is the source color verbatim. Linear interpolation between them
 /// reads as a slow heartbeat.

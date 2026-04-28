@@ -27,6 +27,12 @@ const TOOL_RUNNING_SYMBOLS: [&str; 4] = ["·", "◦", "•", "◦"];
 // ~2.88 s — fast enough that the user sees motion within a few hundred ms of
 // starting a tool, slow enough to read as a pulse rather than a strobe.
 const TOOL_STATUS_SYMBOL_MS: u64 = 720;
+/// Visual marker for the user role at the start of their message line. Solid
+/// vertical bar — no animation; user input is a finished thing.
+const USER_GLYPH: &str = "\u{258E}"; // ▎
+/// Visual marker for the assistant role. Solid bullet that pulses at 2s
+/// cycle while the response is streaming, holds full brightness when idle.
+const ASSISTANT_GLYPH: &str = "\u{25CF}"; // ●
 const TOOL_CARD_SUMMARY_LINES: usize = 4;
 const THINKING_SUMMARY_LINE_LIMIT: usize = 4;
 const TOOL_DONE_SYMBOL: &str = "•";
@@ -108,15 +114,15 @@ impl HistoryCell {
     pub fn lines(&self, width: u16) -> Vec<Line<'static>> {
         match self {
             HistoryCell::User { content } => render_message(
-                "You",
+                USER_GLYPH,
                 user_label_style(),
                 message_body_style(),
                 content,
                 width,
             ),
-            HistoryCell::Assistant { content, .. } => render_message(
-                "Assistant",
-                assistant_label_style(),
+            HistoryCell::Assistant { content, streaming } => render_message(
+                ASSISTANT_GLYPH,
+                assistant_label_style_for(*streaming, /*low_motion*/ false),
                 message_body_style(),
                 content,
                 width,
@@ -179,9 +185,21 @@ impl HistoryCell {
                 lines
             }
             HistoryCell::Tool(cell) => cell.lines_with_motion(width, options.low_motion),
-            HistoryCell::User { .. }
-            | HistoryCell::Assistant { .. }
-            | HistoryCell::System { .. } => self.lines(width),
+            HistoryCell::User { content } => render_message(
+                USER_GLYPH,
+                user_label_style(),
+                message_body_style(),
+                content,
+                width,
+            ),
+            HistoryCell::Assistant { content, streaming } => render_message(
+                ASSISTANT_GLYPH,
+                assistant_label_style_for(*streaming, options.low_motion),
+                message_body_style(),
+                content,
+                width,
+            ),
+            HistoryCell::System { .. } => self.lines(width),
         }
     }
 
@@ -195,9 +213,23 @@ impl HistoryCell {
     /// diverge.
     pub fn transcript_lines(&self, width: u16) -> Vec<Line<'static>> {
         match self {
-            HistoryCell::User { .. }
-            | HistoryCell::Assistant { .. }
-            | HistoryCell::System { .. } => self.lines(width),
+            HistoryCell::User { content } => render_message(
+                USER_GLYPH,
+                user_label_style(),
+                message_body_style(),
+                content,
+                width,
+            ),
+            HistoryCell::Assistant { content, streaming } => render_message(
+                ASSISTANT_GLYPH,
+                // Pager / clipboard surface — pin the glyph at full
+                // brightness so a screenshot reads the same as a live frame.
+                assistant_label_style_for(*streaming, /*low_motion*/ true),
+                message_body_style(),
+                content,
+                width,
+            ),
+            HistoryCell::System { .. } => self.lines(width),
             HistoryCell::Thinking {
                 content,
                 streaming,
@@ -1647,8 +1679,22 @@ fn user_label_style() -> Style {
     Style::default().fg(palette::TEXT_MUTED)
 }
 
-fn assistant_label_style() -> Style {
-    Style::default().fg(palette::DEEPSEEK_SKY)
+/// Style for the assistant glyph (`●`). When the cell is streaming and
+/// motion is allowed, the foreground pulses on a 2s cycle between 30% and
+/// 100% brightness — the only deliberately animated element in a calm
+/// transcript. When idle (or low_motion is on) it sits at the full DeepSeek
+/// sky color so finished turns read as solid rather than dim.
+fn assistant_label_style_for(streaming: bool, low_motion: bool) -> Style {
+    let color = if streaming && !low_motion {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        palette::pulse_brightness(palette::DEEPSEEK_SKY, now_ms)
+    } else {
+        palette::DEEPSEEK_SKY
+    };
+    Style::default().fg(color)
 }
 
 fn system_label_style() -> Style {
@@ -1826,10 +1872,12 @@ fn thinking_state_accent(state: ThinkingVisualState) -> Color {
 #[cfg(test)]
 mod tests {
     use super::{
-        ExecCell, ExecSource, GenericToolCell, HistoryCell, PlanStep, PlanUpdateCell,
-        TOOL_RUNNING_SYMBOLS, TOOL_STATUS_SYMBOL_MS, ToolCell, ToolStatus, TranscriptRenderOptions,
-        extract_reasoning_summary, render_thinking, running_status_label_with_elapsed,
+        ASSISTANT_GLYPH, ExecCell, ExecSource, GenericToolCell, HistoryCell, PlanStep,
+        PlanUpdateCell, TOOL_RUNNING_SYMBOLS, TOOL_STATUS_SYMBOL_MS, ToolCell, ToolStatus,
+        TranscriptRenderOptions, USER_GLYPH, assistant_label_style_for, extract_reasoning_summary,
+        render_thinking, running_status_label_with_elapsed,
     };
+    use crate::palette;
     use crate::deepseek_theme::Theme;
     use ratatui::style::Modifier;
     use std::time::{Duration, Instant};
@@ -1919,6 +1967,91 @@ mod tests {
         assert_eq!(low_motion_symbol, TOOL_RUNNING_SYMBOLS[0]);
         // The animated path should be on a different frame (index 2).
         assert_ne!(animated_symbol, TOOL_RUNNING_SYMBOLS[0]);
+    }
+
+    // === Speaker glyph tests (v0.6.6 UI redesign) ===
+    //
+    // The literal "Assistant" / "You" labels are replaced by the calmer
+    // bullet/bar glyphs (`●` / `▎`). Only the assistant glyph pulses, and
+    // only while the cell is streaming — finished turns sit at the source
+    // sky color so the transcript reads as solid history.
+
+    #[test]
+    fn user_cell_renders_with_bar_glyph_not_literal_label() {
+        let cell = HistoryCell::User {
+            content: "hello".to_string(),
+        };
+        let lines = cell.lines(80);
+        let head = &lines[0];
+        assert_eq!(head.spans[0].content.as_ref(), USER_GLYPH);
+        // No "You" literal anywhere in the rendered head line.
+        let visible: String = head
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>();
+        assert!(!visible.contains("You"), "user label dropped: {visible:?}");
+        assert!(visible.contains("hello"));
+    }
+
+    #[test]
+    fn assistant_cell_renders_with_bullet_glyph_not_literal_label() {
+        let cell = HistoryCell::Assistant {
+            content: "ready".to_string(),
+            streaming: false,
+        };
+        let lines = cell.lines(80);
+        let head = &lines[0];
+        assert_eq!(head.spans[0].content.as_ref(), ASSISTANT_GLYPH);
+        let visible: String = head
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>();
+        assert!(
+            !visible.contains("Assistant"),
+            "assistant label dropped: {visible:?}"
+        );
+        assert!(visible.contains("ready"));
+    }
+
+    #[test]
+    fn assistant_glyph_holds_full_brightness_when_idle() {
+        // Idle (streaming=false) and low_motion both pin the colour to the
+        // source sky — pulse only fires when actively streaming.
+        let idle = assistant_label_style_for(false, false);
+        let low_motion = assistant_label_style_for(true, true);
+        assert_eq!(idle.fg, Some(palette::DEEPSEEK_SKY));
+        assert_eq!(low_motion.fg, Some(palette::DEEPSEEK_SKY));
+    }
+
+    #[test]
+    fn assistant_glyph_pulses_when_streaming_and_motion_allowed() {
+        // The streaming path runs through `pulse_brightness`, which yields
+        // an RGB colour scaled within 30%..100% of the source. Sample twice
+        // — at least one of the samples must fall below 100% brightness, or
+        // the test wouldn't be exercising the pulse at all. (We can't pin
+        // the value because the function reads SystemTime::now().)
+        use ratatui::style::Color;
+        let mut saw_dimmed = false;
+        for _ in 0..50 {
+            if let Some(Color::Rgb(_, _, b)) =
+                assistant_label_style_for(true, false).fg
+            {
+                let Color::Rgb(_, _, src_b) = palette::DEEPSEEK_SKY else {
+                    panic!("DEEPSEEK_SKY must be RGB");
+                };
+                if b < src_b {
+                    saw_dimmed = true;
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(
+            saw_dimmed,
+            "expected the streaming pulse to dip below source brightness at least once",
+        );
     }
 
     // === Theme parity tests ===
