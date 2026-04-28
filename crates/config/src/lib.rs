@@ -128,6 +128,10 @@ pub struct ConfigToml {
     /// to a permissive default that mirrors pre-v0.7.0 behavior.
     #[serde(default)]
     pub network: Option<NetworkPolicyToml>,
+    /// Post-edit LSP diagnostics injection (#136). When absent, the engine
+    /// applies the defaults documented in [`LspConfigToml`].
+    #[serde(default)]
+    pub lsp: Option<LspConfigToml>,
     #[serde(flatten)]
     pub extras: BTreeMap<String, toml::Value>,
 }
@@ -169,6 +173,23 @@ impl Default for NetworkPolicyToml {
             audit: default_network_audit(),
         }
     }
+}
+
+/// On-disk schema for the `[lsp]` table (#136). See `config.example.toml`
+/// for documentation. All fields are optional so the TUI runtime can fall
+/// back to its own defaults when keys are absent.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LspConfigToml {
+    /// Master switch.
+    pub enabled: Option<bool>,
+    /// Maximum time to wait for diagnostics after an edit, in milliseconds.
+    pub poll_after_edit_ms: Option<u64>,
+    /// Cap on diagnostics surfaced per file.
+    pub max_diagnostics_per_file: Option<usize>,
+    /// When `true`, warnings (severity 2) are surfaced in addition to errors.
+    pub include_warnings: Option<bool>,
+    /// Optional override for the `language -> [cmd, ...args]` table.
+    pub servers: Option<BTreeMap<String, Vec<String>>>,
 }
 
 impl ConfigToml {

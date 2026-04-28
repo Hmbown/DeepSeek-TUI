@@ -429,6 +429,11 @@ pub struct Config {
     /// to a permissive default that mirrors pre-v0.7.0 behavior.
     #[serde(default)]
     pub network: Option<NetworkPolicyToml>,
+
+    /// Post-edit LSP diagnostics injection (#136). When absent, the engine
+    /// applies the defaults documented in [`LspConfigToml`].
+    #[serde(default)]
+    pub lsp: Option<LspConfigToml>,
 }
 
 /// `[network]` table — mirrors `deepseek_config::NetworkPolicyToml` so the live
@@ -482,6 +487,50 @@ impl NetworkPolicyToml {
             allow: self.allow,
             deny: self.deny,
             audit: self.audit,
+        }
+    }
+}
+
+/// `[lsp]` table — mirrors [`crate::lsp::LspConfig`]. Documented in
+/// `config.example.toml`. When omitted, defaults from `LspConfig::default()`
+/// apply (enabled, 5 s poll, 20 diagnostics/file, errors only, no overrides).
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct LspConfigToml {
+    /// Master switch. Defaults to `true`.
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    /// How long to wait for the LSP server to publish diagnostics after a
+    /// `didOpen`/`didChange`. Defaults to 5000 ms.
+    #[serde(default)]
+    pub poll_after_edit_ms: Option<u64>,
+    /// Cap on diagnostics surfaced per file. Defaults to 20.
+    #[serde(default)]
+    pub max_diagnostics_per_file: Option<usize>,
+    /// Whether to surface warnings in addition to errors. Defaults to `false`.
+    #[serde(default)]
+    pub include_warnings: Option<bool>,
+    /// Optional override for the `Language -> [cmd, ...args]` table. Keys
+    /// are language slugs (`"rust"`, `"go"`, etc.).
+    #[serde(default)]
+    pub servers: Option<HashMap<String, Vec<String>>>,
+}
+
+impl LspConfigToml {
+    /// Build a runtime [`crate::lsp::LspConfig`] from the on-disk schema,
+    /// falling back to defaults for any unset fields.
+    #[must_use]
+    pub fn into_runtime(self) -> crate::lsp::LspConfig {
+        let defaults = crate::lsp::LspConfig::default();
+        crate::lsp::LspConfig {
+            enabled: self.enabled.unwrap_or(defaults.enabled),
+            poll_after_edit_ms: self
+                .poll_after_edit_ms
+                .unwrap_or(defaults.poll_after_edit_ms),
+            max_diagnostics_per_file: self
+                .max_diagnostics_per_file
+                .unwrap_or(defaults.max_diagnostics_per_file),
+            include_warnings: self.include_warnings.unwrap_or(defaults.include_warnings),
+            servers: self.servers.unwrap_or_default(),
         }
     }
 }
@@ -1384,6 +1433,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         features: merge_features(base.features, override_cfg.features),
         notifications: override_cfg.notifications.or(base.notifications),
         network: override_cfg.network.or(base.network),
+        lsp: override_cfg.lsp.or(base.lsp),
     }
 }
 

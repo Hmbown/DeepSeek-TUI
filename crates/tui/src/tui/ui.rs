@@ -336,6 +336,10 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         network_policy: config.network.clone().map(|toml_cfg| {
             crate::network_policy::NetworkPolicyDecider::with_default_audit(toml_cfg.into_runtime())
         }),
+        lsp_config: config
+            .lsp
+            .clone()
+            .map(crate::config::LspConfigToml::into_runtime),
     }
 }
 

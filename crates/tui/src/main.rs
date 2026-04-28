@@ -29,6 +29,7 @@ mod features;
 mod hooks;
 mod llm_client;
 mod logging;
+mod lsp;
 mod mcp;
 mod mcp_server;
 mod models;
@@ -2933,6 +2934,11 @@ async fn run_exec_agent(
         crate::network_policy::NetworkPolicyDecider::with_default_audit(toml_cfg.into_runtime())
     });
 
+    let lsp_config = config
+        .lsp
+        .clone()
+        .map(crate::config::LspConfigToml::into_runtime);
+
     let engine_config = EngineConfig {
         model: model.to_string(),
         workspace: workspace.clone(),
@@ -2950,6 +2956,7 @@ async fn run_exec_agent(
         plan_state: new_shared_plan_state(),
         max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
         network_policy,
+        lsp_config,
     };
 
     let engine_handle = spawn_engine(engine_config, config);
