@@ -431,6 +431,36 @@ impl ToolRegistryBuilder {
         }
     }
 
+    /// Include the full agent tool surface: every tool family the parent gets
+    /// in Agent mode, including review, RLM, and the sub-agent management
+    /// family (so children can recurse). Used by both the parent's Agent-mode
+    /// registry build (`core/engine.rs`) and by every sub-agent
+    /// (`subagent::SubAgentToolRegistry`) — keeping them in lockstep.
+    ///
+    /// `allow_shell` mirrors the session's shell permission. `manager` and
+    /// `runtime` are the sub-agent runtime — children pass through their own
+    /// runtime so grandchildren can spawn within the same depth/cancellation
+    /// envelope.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_full_agent_surface(
+        self,
+        client: Option<DeepSeekClient>,
+        model: String,
+        manager: super::subagent::SharedSubAgentManager,
+        runtime: super::subagent::SubAgentRuntime,
+        allow_shell: bool,
+        todo_list: super::todo::SharedTodoList,
+        plan_state: super::plan::SharedPlanState,
+    ) -> Self {
+        self.with_agent_tools(allow_shell)
+            .with_todo_tool(todo_list)
+            .with_plan_tool(plan_state)
+            .with_review_tool(client.clone(), model.clone())
+            .with_rlm_tool(client, model)
+            .with_subagent_tools(manager, runtime)
+    }
+
     /// Include the todo tool with a shared `TodoList`.
     #[must_use]
     pub fn with_todo_tool(self, todo_list: super::todo::SharedTodoList) -> Self {

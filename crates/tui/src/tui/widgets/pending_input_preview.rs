@@ -1,17 +1,9 @@
 //! Pending-input preview widget for the composer area.
 //!
-//! Mirrors `codex-rs/tui/src/bottom_pane/pending_input_preview.rs` (port for
-//! issue #85). When a turn is in flight and the user has typed follow-up
-//! input, this widget shows the queued items grouped by submission semantics:
-//!
-//! Phase 1 of #85 ships the widget + tests in isolation. Phase 2 wires it
-//! into the composer area in `ui.rs` and threads `pending_steers` /
-//! `rejected_steers` fields onto `App`. The dead-code allow below covers
-//! the gap between phases — the items below are exercised by the in-module
-//! test suite but no production caller yet.
-
-#![allow(dead_code)]
-
+//! Port of `codex-rs/tui/src/bottom_pane/pending_input_preview.rs` for
+//! issue #85. Renders queued/steered messages above the composer when a
+//! turn is in flight, so user input typed during a running turn doesn't
+//! disappear silently. Three buckets:
 //!
 //! 1. **Pending steers** — messages submitted *during* a tool call boundary
 //!    (next round-trip), with hint that Esc force-sends them now.
@@ -21,6 +13,11 @@
 //!
 //! Empty state renders zero rows so the composer doesn't gain wasted height
 //! when there's nothing to show.
+//!
+//! Wired into `ui.rs::render` between the chat area and the composer in
+//! v0.6.6 (Phase 2 of #85). The full Esc-to-steer flow is a follow-up
+//! (TODO_BACKEND.md §4); v0.6.6 ships the visibility half (`queued_messages`)
+//! which is the larger UX win — the user can see their input was captured.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;

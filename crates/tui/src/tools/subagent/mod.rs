@@ -18,6 +18,7 @@ use futures_util::stream::{FuturesUnordered, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::{sync::mpsc, task::JoinHandle};
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::client::DeepSeekClient;
@@ -189,7 +190,15 @@ impl SubAgentType {
     }
 
     /// Get the default allowed tools for this agent type.
+    ///
+    /// **Deprecated since v0.6.6.** Default sub-agents now inherit the full
+    /// parent registry; the per-type allowlist is advisory only. Pass an explicit
+    /// `allowed_tools` array for narrow Custom roles instead.
     #[must_use]
+    #[deprecated(
+        since = "0.6.6",
+        note = "Default sub-agents inherit the full parent registry; pass an explicit allowed_tools list only for narrow Custom roles."
+    )]
     pub fn allowed_tools(&self) -> Vec<&'static str> {
         match self {
             Self::General => vec![
@@ -315,6 +324,11 @@ struct SpawnRequest {
     agent_type: SubAgentType,
     assignment: SubAgentAssignment,
     allowed_tools: Option<Vec<String>>,
+    /// Optional working directory for the child. Must canonicalize to a
+    /// path inside the parent's workspace. Used to dispatch parallel work
+    /// into separate git worktrees: parent runs `git worktree add` first,
+    /// then spawns children with the worktree path as `cwd`.
+    cwd: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -397,7 +411,15 @@ impl Default for PersistedSubAgentState {
     }
 }
 
+/// Default cap on sub-agent recursion depth. Override via
+/// `[runtime] max_spawn_depth = N` in `~/.deepseek/config.toml`.
+pub const DEFAULT_MAX_SPAWN_DEPTH: u32 = 3;
+
 /// Runtime configuration for spawning sub-agents.
+///
+/// Carries everything a child needs to (a) build its own tool registry —
+/// including the manager so grandchildren can spawn — and (b) cooperate
+/// with the rest of the spawn tree on cancellation and depth cap.
 #[derive(Clone)]
 pub struct SubAgentRuntime {
     pub client: DeepSeekClient,
@@ -405,10 +427,26 @@ pub struct SubAgentRuntime {
     pub context: ToolContext,
     pub allow_shell: bool,
     pub event_tx: Option<mpsc::Sender<Event>>,
+    /// Manager handle so children can recurse via `agent_spawn`. All agents
+    /// at every depth share the same manager.
+    pub manager: SharedSubAgentManager,
+    /// Depth in the spawn tree. 0 = top-level user turn; 1 = direct child;
+    /// etc. Children clone the parent runtime and increment this on spawn.
+    pub spawn_depth: u32,
+    /// Hard cap on recursion depth. A child whose `spawn_depth + 1` would
+    /// exceed this is rejected at the spawn entry. Use `>` (strictly
+    /// greater than) so equality is allowed — matches codex's pattern.
+    pub max_spawn_depth: u32,
+    /// Cooperative cancellation token. Children derive a child_token() from
+    /// the parent so cancelling the root cascades down.
+    pub cancel_token: CancellationToken,
 }
 
 impl SubAgentRuntime {
-    /// Create a runtime configuration for sub-agent execution.
+    /// Create a top-level runtime configuration for sub-agent execution.
+    /// Use this from the engine when constructing the runtime that the
+    /// parent's tool registry passes through. Children should derive their
+    /// runtime via `Self::child_runtime` instead.
     #[must_use]
     pub fn new(
         client: DeepSeekClient,
@@ -416,6 +454,7 @@ impl SubAgentRuntime {
         context: ToolContext,
         allow_shell: bool,
         event_tx: Option<mpsc::Sender<Event>>,
+        manager: SharedSubAgentManager,
     ) -> Self {
         Self {
             client,
@@ -423,7 +462,52 @@ impl SubAgentRuntime {
             context,
             allow_shell,
             event_tx,
+            manager,
+            spawn_depth: 0,
+            max_spawn_depth: DEFAULT_MAX_SPAWN_DEPTH,
+            cancel_token: CancellationToken::new(),
         }
+    }
+
+    /// Override the maximum spawn depth (default `DEFAULT_MAX_SPAWN_DEPTH`).
+    /// Used by config wiring (`[runtime] max_spawn_depth = N`) and tests.
+    #[must_use]
+    #[allow(dead_code)]
+    pub fn with_max_spawn_depth(mut self, max: u32) -> Self {
+        self.max_spawn_depth = max;
+        self
+    }
+
+    /// Build a child runtime cloning this one, incrementing `spawn_depth`,
+    /// deriving a child cancellation token, and forcing `auto_approve` on
+    /// the child's `ToolContext`. Used at spawn entry to construct the
+    /// runtime the new sub-agent will see.
+    ///
+    /// The `auto_approve` override is deliberate: spawning IS the approval.
+    /// Per-tool prompts inside a child would break delegation, so children
+    /// inherit a YOLO-equivalent context regardless of the parent's mode.
+    /// The workspace boundary + sandbox profile still apply.
+    #[must_use]
+    pub fn child_runtime(&self) -> Self {
+        let mut child_context = self.context.clone();
+        child_context.auto_approve = true;
+        Self {
+            client: self.client.clone(),
+            model: self.model.clone(),
+            context: child_context,
+            allow_shell: self.allow_shell,
+            event_tx: self.event_tx.clone(),
+            manager: self.manager.clone(),
+            spawn_depth: self.spawn_depth + 1,
+            max_spawn_depth: self.max_spawn_depth,
+            cancel_token: self.cancel_token.child_token(),
+        }
+    }
+
+    /// Whether the next spawn would exceed the depth cap.
+    #[must_use]
+    pub fn would_exceed_depth(&self) -> bool {
+        self.spawn_depth + 1 > self.max_spawn_depth
     }
 }
 
@@ -437,7 +521,9 @@ pub struct SubAgent {
     pub result: Option<String>,
     pub steps_taken: u32,
     pub started_at: Instant,
-    pub allowed_tools: Vec<String>,
+    /// `None` = full registry inheritance (v0.6.6 default).
+    /// `Some(list)` = explicit narrow allowlist (Custom agents, legacy).
+    pub allowed_tools: Option<Vec<String>>,
     input_tx: Option<mpsc::UnboundedSender<SubAgentInput>>,
     task_handle: Option<JoinHandle<()>>,
 }
@@ -448,7 +534,7 @@ impl SubAgent {
         agent_type: SubAgentType,
         prompt: String,
         assignment: SubAgentAssignment,
-        allowed_tools: Vec<String>,
+        allowed_tools: Option<Vec<String>>,
         input_tx: mpsc::UnboundedSender<SubAgentInput>,
     ) -> Self {
         let id = format!("agent_{}", &Uuid::new_v4().to_string()[..8]);
@@ -529,7 +615,9 @@ impl SubAgentManager {
                 steps_taken: agent.steps_taken,
                 duration_ms: u64::try_from(agent.started_at.elapsed().as_millis())
                     .unwrap_or(u64::MAX),
-                allowed_tools: agent.allowed_tools.clone(),
+                // Backward-compat: Vec on disk. None → empty vec; Some(list) → list.
+                // Reload converts empty vec back to None (full inheritance).
+                allowed_tools: agent.allowed_tools.clone().unwrap_or_default(),
                 updated_at_ms: now_ms,
             });
         }
@@ -573,6 +661,13 @@ impl SubAgentManager {
             }
 
             let started_at = instant_from_duration(Duration::from_millis(persisted.duration_ms));
+            // Empty vec on disk → None (full inheritance, v0.6.6 default).
+            // Non-empty vec → Some(list) (preserves narrow scope from older sessions).
+            let allowed_tools = if persisted.allowed_tools.is_empty() {
+                None
+            } else {
+                Some(persisted.allowed_tools)
+            };
             let agent = SubAgent {
                 id: persisted.id.clone(),
                 agent_type: persisted.agent_type,
@@ -582,7 +677,7 @@ impl SubAgentManager {
                 result: persisted.result,
                 steps_taken: persisted.steps_taken,
                 started_at,
-                allowed_tools: persisted.allowed_tools,
+                allowed_tools,
                 input_tx: None,
                 task_handle: None,
             };
@@ -1122,7 +1217,11 @@ impl ToolSpec for AgentSpawnTool {
                 "allowed_tools": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Explicit tool allowlist (required for custom type)"
+                    "description": "Explicit tool allowlist (required for custom type). Default behavior is full registry inheritance from the parent."
+                },
+                "cwd": {
+                    "type": "string",
+                    "description": "Optional working directory for the child. Must be inside the parent's workspace (use a relative path or an absolute path under the workspace root). Used for the parallel-worktree pattern: parent runs `git worktree add .worktrees/feature-x ...` then spawns the child with `cwd: \".worktrees/feature-x\"`."
                 }
             }
         })
@@ -1142,12 +1241,62 @@ impl ToolSpec for AgentSpawnTool {
     async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
         let spawn_request = parse_spawn_request(&input)?;
 
+        // Depth cap: reject before locking the manager so we don't introduce
+        // unnecessary contention. Mirrors codex's pattern (allow-equal at the
+        // boundary; reject when `next > max`).
+        if self.runtime.would_exceed_depth() {
+            return Err(ToolError::execution_failed(format!(
+                "Sub-agent depth limit reached (current depth {}, max {}). \
+                 Increase via [runtime] max_spawn_depth in config.toml.",
+                self.runtime.spawn_depth, self.runtime.max_spawn_depth
+            )));
+        }
+
+        // Validate cwd if supplied: must canonicalize inside the parent
+        // workspace. Catches accidents like `cwd: "/etc"`.
+        let validated_cwd = if let Some(requested_cwd) = spawn_request.cwd.as_ref() {
+            let parent_workspace = &self.runtime.context.workspace;
+            let resolved = if requested_cwd.is_absolute() {
+                requested_cwd.clone()
+            } else {
+                parent_workspace.join(requested_cwd)
+            };
+            let canonical = resolved.canonicalize().map_err(|e| {
+                ToolError::invalid_input(format!(
+                    "Invalid cwd '{}': {e} (path may not exist yet — create the worktree first)",
+                    requested_cwd.display()
+                ))
+            })?;
+            let workspace_canonical = parent_workspace
+                .canonicalize()
+                .unwrap_or_else(|_| parent_workspace.clone());
+            if !canonical.starts_with(&workspace_canonical) {
+                return Err(ToolError::invalid_input(format!(
+                    "cwd must be inside the parent workspace: {} is not under {}",
+                    canonical.display(),
+                    workspace_canonical.display()
+                )));
+            }
+            Some(canonical)
+        } else {
+            None
+        };
+
+        // Derive the child's runtime: increments depth, forces auto_approve,
+        // derives a cancellation token from the parent so cancelling the
+        // root cascades down. Optionally overrides cwd if the caller passed
+        // one (used for the parallel-worktree pattern).
+        let mut child_runtime = self.runtime.child_runtime();
+        if let Some(cwd) = validated_cwd {
+            child_runtime.context.workspace = cwd;
+        }
+
         let mut manager = self.manager.lock().await;
 
         let result = manager
             .spawn_background_with_assignment(
                 Arc::clone(&self.manager),
-                self.runtime.clone(),
+                child_runtime,
                 spawn_request.agent_type,
                 spawn_request.prompt,
                 spawn_request.assignment,
@@ -2268,6 +2417,31 @@ impl ToolSpec for ReportAgentJobResultTool {
 
 // === Sub-agent Execution ===
 
+/// Build the system prompt for a sub-agent.
+///
+/// Starts with the per-type prompt (`SubAgentType::system_prompt`) and
+/// appends a one-line role overlay when `assignment.role` is set. The
+/// full role library — TOML overlays from `~/.deepseek/roles/`, the
+/// `/roles` slash command, model overrides per role — lands in 0.6.7.
+/// For 0.6.6 we just don't drop the role on the floor: the model sees
+/// "You are operating in the role of `{name}`." as a final line so its
+/// behavior reflects the user's choice.
+fn build_subagent_system_prompt(
+    agent_type: &SubAgentType,
+    assignment: &SubAgentAssignment,
+) -> String {
+    let base = agent_type.system_prompt();
+    match assignment.role.as_deref() {
+        Some(role) if !role.trim().is_empty() => {
+            format!(
+                "{base}\n\nYou are operating in the role of `{}`.",
+                role.trim()
+            )
+        }
+        _ => base,
+    }
+}
+
 struct SubAgentTask {
     manager_handle: SharedSubAgentManager,
     runtime: SubAgentRuntime,
@@ -2275,7 +2449,8 @@ struct SubAgentTask {
     agent_type: SubAgentType,
     prompt: String,
     assignment: SubAgentAssignment,
-    allowed_tools: Vec<String>,
+    /// `None` = full registry inheritance. `Some(list)` = explicit narrow.
+    allowed_tools: Option<Vec<String>>,
     started_at: Instant,
     max_steps: u32,
     input_rx: mpsc::UnboundedReceiver<SubAgentInput>,
@@ -2303,15 +2478,54 @@ async fn run_subagent_task(task: SubAgentTask) {
     }
 
     if let Some(event_tx) = task.runtime.event_tx {
-        let status = match &result {
-            Ok(res) => summarize_subagent_result(res),
-            Err(err) => format!("Failed: {err}"),
+        // Emit BOTH a human-friendly summary (rendered in the parent's
+        // sidebar / cell) AND a structured sentinel the model can recognize
+        // on its next turn. Format: human summary on the first line,
+        // sentinel on the second. The sentinel uses an opaque tag
+        // (`deepseek:subagent.done`) to avoid collision with normal user
+        // text.
+        let (summary, sentinel) = match &result {
+            Ok(res) => (
+                summarize_subagent_result(res),
+                subagent_done_sentinel(&task.agent_id, res),
+            ),
+            Err(err) => (
+                format!("Failed: {err}"),
+                subagent_failed_sentinel(&task.agent_id, &err.to_string()),
+            ),
         };
+        let payload = format!("{summary}\n{sentinel}");
         let _ = event_tx.try_send(Event::AgentComplete {
             id: task.agent_id,
-            result: status,
+            result: payload,
         });
     }
+}
+
+/// Build a `<deepseek:subagent.done>` JSON sentinel for a successful child.
+/// Intended to surface in the parent's transcript so the model recognizes
+/// child completion and can decide whether to read the full result via
+/// `agent_result`.
+fn subagent_done_sentinel(agent_id: &str, res: &SubAgentResult) -> String {
+    let payload = json!({
+        "agent_id": agent_id,
+        "agent_type": res.agent_type.as_str(),
+        "status": subagent_status_name(&res.status),
+        "duration_ms": res.duration_ms,
+        "steps": res.steps_taken,
+        "summary": summarize_subagent_result(res),
+    });
+    format!("<deepseek:subagent.done>{payload}</deepseek:subagent.done>")
+}
+
+/// Build a `<deepseek:subagent.done>` sentinel for a failed child.
+fn subagent_failed_sentinel(agent_id: &str, err: &str) -> String {
+    let payload = json!({
+        "agent_id": agent_id,
+        "status": "failed",
+        "error": err,
+    });
+    format!("<deepseek:subagent.done>{payload}</deepseek:subagent.done>")
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
@@ -2321,16 +2535,15 @@ async fn run_subagent(
     agent_type: SubAgentType,
     prompt: String,
     assignment: SubAgentAssignment,
-    allowed_tools: Vec<String>,
+    allowed_tools: Option<Vec<String>>,
     started_at: Instant,
     max_steps: u32,
     mut input_rx: mpsc::UnboundedReceiver<SubAgentInput>,
 ) -> Result<SubAgentResult> {
-    let system_prompt = agent_type.system_prompt();
+    let system_prompt = build_subagent_system_prompt(&agent_type, &assignment);
     let tool_registry = SubAgentToolRegistry::new(
-        runtime.context.clone(),
+        runtime.clone(),
         allowed_tools.clone(),
-        runtime.allow_shell,
         Arc::new(Mutex::new(TodoList::new())),
         Arc::new(Mutex::new(PlanState::default())),
     );
@@ -2361,6 +2574,26 @@ async fn run_subagent(
     let mut pending_inputs: VecDeque<SubAgentInput> = VecDeque::new();
 
     for _step in 0..max_steps {
+        // Cooperative cancellation: bail if the parent (or root) cancelled
+        // us while we were between steps. Children derive their token from
+        // the parent's via `child_token()` so this propagates the whole tree.
+        if runtime.cancel_token.is_cancelled() {
+            emit_agent_progress(
+                runtime.event_tx.as_ref(),
+                &agent_id,
+                format!("step {steps}/{max_steps}: cancelled"),
+            );
+            return Ok(SubAgentResult {
+                agent_id: agent_id.clone(),
+                agent_type: agent_type.clone(),
+                assignment: assignment.clone(),
+                status: SubAgentStatus::Cancelled,
+                result: None,
+                steps_taken: steps,
+                duration_ms: u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+            });
+        }
+
         steps += 1;
         emit_agent_progress(
             runtime.event_tx.as_ref(),
@@ -2402,12 +2635,32 @@ async fn run_subagent(
             top_p: None,
         };
 
-        let response =
-            tokio::time::timeout(STEP_API_TIMEOUT, runtime.client.create_message(request))
-                .await
-                .map_err(|_| {
-                    anyhow!("API call timed out after {}s", STEP_API_TIMEOUT.as_secs())
-                })??;
+        // Race the API call against the cancellation token so a parent
+        // cancel during a long thinking turn doesn't have to wait for the
+        // step timeout.
+        let response = tokio::select! {
+            biased;
+            () = runtime.cancel_token.cancelled() => {
+                emit_agent_progress(
+                    runtime.event_tx.as_ref(),
+                    &agent_id,
+                    format!("step {steps}/{max_steps}: cancelled mid-request"),
+                );
+                return Ok(SubAgentResult {
+                    agent_id: agent_id.clone(),
+                    agent_type: agent_type.clone(),
+                    assignment: assignment.clone(),
+                    status: SubAgentStatus::Cancelled,
+                    result: None,
+                    steps_taken: steps,
+                    duration_ms: u64::try_from(started_at.elapsed().as_millis())
+                        .unwrap_or(u64::MAX),
+                });
+            }
+            api = tokio::time::timeout(STEP_API_TIMEOUT, runtime.client.create_message(request)) => {
+                api.map_err(|_| anyhow!("API call timed out after {}s", STEP_API_TIMEOUT.as_secs()))??
+            }
+        };
 
         let mut tool_uses = Vec::new();
         for block in &response.content {
@@ -2806,12 +3059,26 @@ fn parse_spawn_request(input: &Value) -> Result<SpawnRequest, ToolError> {
             tools
         });
 
+    let cwd = parse_optional_cwd(input)?;
+
     Ok(SpawnRequest {
         prompt: prompt.clone(),
         agent_type,
         assignment: SubAgentAssignment::new(prompt, role),
         allowed_tools,
+        cwd,
     })
+}
+
+/// Extract an optional `cwd: String` from spawn input and convert to a
+/// `PathBuf`. Empty / absent → `None`. Workspace-boundary check happens
+/// at spawn time (the parent's workspace is known there, not here).
+fn parse_optional_cwd(input: &Value) -> Result<Option<PathBuf>, ToolError> {
+    let raw = input.get("cwd").and_then(|v| v.as_str()).map(str::trim);
+    match raw {
+        None | Some("") => Ok(None),
+        Some(s) => Ok(Some(PathBuf::from(s))),
+    }
 }
 
 fn parse_assign_request(input: &Value) -> Result<AssignRequest, ToolError> {
@@ -3446,60 +3713,86 @@ fn emit_agent_progress(event_tx: Option<&mpsc::Sender<Event>>, agent_id: &str, s
 
 // === Tool Registry Helpers ===
 
+/// Per-sub-agent tool registry.
+///
+/// Two modes:
+/// - **Full inheritance** (`allowed_tools = None`): the child sees the same
+///   tool surface as the parent's Agent mode — every tool family including
+///   `with_subagent_tools` (so it can recurse). This is the v0.6.6 default.
+/// - **Explicit narrow** (`allowed_tools = Some(list)`): legacy / Custom
+///   path. The registry still builds the full surface, but only the listed
+///   tool names are visible to the model and callable.
 struct SubAgentToolRegistry {
-    allowed_tools: Vec<String>,
+    /// `None` → full inheritance (no filter applied). `Some(list)` →
+    /// only the listed tools are visible to the model and callable.
+    allowed_tools: Option<Vec<String>>,
     registry: ToolRegistry,
 }
 
 impl SubAgentToolRegistry {
     fn new(
-        context: ToolContext,
-        allowed_tools: Vec<String>,
-        allow_shell: bool,
+        runtime: SubAgentRuntime,
+        explicit_allowed_tools: Option<Vec<String>>,
         todo_list: SharedTodoList,
         plan_state: SharedPlanState,
     ) -> Self {
-        let mut builder = ToolRegistryBuilder::new()
-            .with_file_tools()
-            .with_search_tools()
-            .with_note_tool()
-            .with_patch_tools()
-            .with_web_tools()
-            .with_parallel_tool()
-            .with_todo_tool(todo_list)
-            .with_plan_tool(plan_state)
-            .with_tool(Arc::new(ReportAgentJobResultTool));
-
-        if allow_shell {
-            builder = builder.with_shell_tools();
-        }
-
-        let registry = builder.build(context);
+        // Build the full agent surface — same as the parent's Agent mode.
+        // Children inherit shell, file, patch, search, web, git, diagnostics,
+        // review, RLM, sub-agent management (so grandchildren can spawn),
+        // plus per-child fresh todo/plan state.
+        let context = runtime.context.clone();
+        let registry = ToolRegistryBuilder::new()
+            .with_full_agent_surface(
+                Some(runtime.client.clone()),
+                runtime.model.clone(),
+                runtime.manager.clone(),
+                runtime.clone(),
+                runtime.allow_shell,
+                todo_list,
+                plan_state,
+            )
+            .with_tool(Arc::new(ReportAgentJobResultTool))
+            .build(context);
 
         Self {
-            allowed_tools,
+            allowed_tools: explicit_allowed_tools,
             registry,
         }
     }
 
+    /// Whether a given tool name is permitted under this child's filter.
+    /// `None` filter = everything permitted.
+    fn is_tool_allowed(&self, name: &str) -> bool {
+        match &self.allowed_tools {
+            None => true,
+            Some(list) => list.iter().any(|t| t == name),
+        }
+    }
+
     fn tools_for_model(&self) -> Vec<Tool> {
-        self.registry
-            .to_api_tools()
-            .into_iter()
-            .filter(|tool| self.allowed_tools.contains(&tool.name))
-            .collect()
+        let api_tools = self.registry.to_api_tools();
+        match &self.allowed_tools {
+            None => api_tools,
+            Some(list) => api_tools
+                .into_iter()
+                .filter(|tool| list.contains(&tool.name))
+                .collect(),
+        }
     }
 
     fn unavailable_allowed_tools(&self) -> Vec<String> {
-        self.allowed_tools
-            .iter()
-            .filter(|name| !self.registry.contains(name))
-            .cloned()
-            .collect()
+        match &self.allowed_tools {
+            None => Vec::new(),
+            Some(list) => list
+                .iter()
+                .filter(|name| !self.registry.contains(name))
+                .cloned()
+                .collect(),
+        }
     }
 
     async fn execute(&self, agent_id: &str, name: &str, mut input: Value) -> Result<String> {
-        if !self.allowed_tools.iter().any(|tool| tool == name) {
+        if !self.is_tool_allowed(name) {
             return Err(anyhow!("Tool {name} not allowed for this sub-agent"));
         }
         if name == "report_agent_job_result"
@@ -3518,47 +3811,50 @@ impl SubAgentToolRegistry {
     }
 }
 
+/// Resolve the effective allowed-tools list for a child.
+///
+/// **v0.6.6 default: full inheritance.** Returning `Ok(None)` means the
+/// child sees the same tool surface as the parent's Agent mode — every
+/// family including `with_subagent_tools` so it can recurse. The narrowing
+/// path (`Ok(Some(list))`) is only used by:
+/// - `Custom` agent types (which require an explicit list).
+/// - Callers that pass `explicit_tools` (advanced / legacy use).
+///
+/// `allow_shell = false` no longer narrows the tool LIST — the child's
+/// registry simply doesn't register shell tools, which has the same
+/// effect without papering over the parent's choice with a deny-list.
 fn build_allowed_tools(
     agent_type: &SubAgentType,
     explicit_tools: Option<Vec<String>>,
-    allow_shell: bool,
-) -> Result<Vec<String>> {
-    let mut tools = explicit_tools.unwrap_or_else(|| {
-        agent_type
-            .allowed_tools()
-            .iter()
-            .map(|tool| (*tool).to_string())
-            .collect()
-    });
+    _allow_shell: bool,
+) -> Result<Option<Vec<String>>> {
+    if let Some(tools) = explicit_tools {
+        let mut deduped = Vec::new();
+        for tool in tools {
+            let name = tool.trim();
+            if !name.is_empty() && !deduped.iter().any(|existing: &String| existing == name) {
+                deduped.push(name.to_string());
+            }
+        }
+        if matches!(agent_type, SubAgentType::Custom) && deduped.is_empty() {
+            return Err(anyhow!(
+                "Custom sub-agent requires a non-empty allowed_tools list"
+            ));
+        }
+        return Ok(Some(deduped));
+    }
 
-    if matches!(agent_type, SubAgentType::Custom) && tools.is_empty() {
+    if matches!(agent_type, SubAgentType::Custom) {
         return Err(anyhow!(
             "Custom sub-agent requires a non-empty allowed_tools list"
         ));
     }
 
-    if !allow_shell {
-        tools.retain(|tool| {
-            !matches!(
-                tool.as_str(),
-                "exec_shell"
-                    | "exec_shell_wait"
-                    | "exec_shell_interact"
-                    | "exec_wait"
-                    | "exec_interact"
-            )
-        });
-    }
-
-    let mut deduped = Vec::new();
-    for tool in tools {
-        let name = tool.trim();
-        if !name.is_empty() && !deduped.iter().any(|existing: &String| existing == name) {
-            deduped.push(name.to_string());
-        }
-    }
-
-    Ok(deduped)
+    // Default: full registry inheritance from the parent. The child sees
+    // every tool the parent has, including the sub-agent management family
+    // (so it can recurse). Sandbox + workspace + depth cap remain the
+    // safety net.
+    Ok(None)
 }
 
 fn summarize_subagent_result(result: &SubAgentResult) -> String {

@@ -90,6 +90,10 @@ pub struct EngineConfig {
     pub todos: SharedTodoList,
     /// Shared Plan state.
     pub plan_state: SharedPlanState,
+    /// Maximum sub-agent recursion depth (default 3). See
+    /// `SubAgentRuntime::max_spawn_depth`. Override via
+    /// `[runtime] max_spawn_depth = N` in `~/.deepseek/config.toml`.
+    pub max_spawn_depth: u32,
 }
 
 impl Default for EngineConfig {
@@ -108,6 +112,7 @@ impl Default for EngineConfig {
             capacity: CapacityControllerConfig::default(),
             todos: new_shared_todo_list(),
             plan_state: new_shared_plan_state(),
+            max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
         }
     }
 }
@@ -258,11 +263,24 @@ struct ToolUseState {
 }
 
 /// Maximum time to wait for a single stream chunk before assuming a stall.
+/// **This is the idle timeout** — it resets on every SSE chunk, so long
+/// thinking turns that ARE producing reasoning_content stay alive. Only a
+/// genuine `chunk_timeout` window of silence kills the stream.
 const STREAM_CHUNK_TIMEOUT_SECS: u64 = 90;
 /// Maximum total bytes of text/thinking content before aborting the stream.
 const STREAM_MAX_CONTENT_BYTES: usize = 10 * 1024 * 1024; // 10 MB
-/// Maximum wall-clock duration for a single streaming response.
-const STREAM_MAX_DURATION_SECS: u64 = 300; // 5 minutes
+/// Sanity backstop for total stream wall-clock duration. **Not** a routine
+/// kill switch — `STREAM_CHUNK_TIMEOUT_SECS` (idle) is the primary stall
+/// detector. The wall-clock cap is here only to bound pathological cases
+/// (e.g. a server that keeps sending heartbeats forever without progress).
+///
+/// History: this used to be 300s (5 min) which was too aggressive — V4
+/// thinking turns on hard prompts legitimately exceed 5 minutes wall-clock
+/// while still emitting reasoning_content chunks the whole way. Bumped to
+/// 30 min in v0.6.6 to address `TODO_FIXES.md` #1. Codex defaults to a
+/// per-chunk idle of 300s with no wall-clock cap; we keep both layers but
+/// give the wall-clock a generous window so it never fires in practice.
+const STREAM_MAX_DURATION_SECS: u64 = 1800; // 30 minutes (was 300s; #103/#1)
 /// Max output tokens requested for normal agent turns. Generous on purpose:
 /// V4 thinking models can produce tens of thousands of reasoning tokens on
 /// hard prompts before the visible reply, and DeepSeek V4 ships with a 1M
@@ -1210,7 +1228,9 @@ impl Engine {
                         self.build_tool_context(AppMode::Agent, self.session.auto_approve),
                         self.session.allow_shell,
                         Some(self.tx_event.clone()),
-                    );
+                        Arc::clone(&self.subagent_manager),
+                    )
+                    .with_max_spawn_depth(self.config.max_spawn_depth);
 
                     let result = {
                         let mut manager = self.subagent_manager.lock().await;
@@ -1471,13 +1491,17 @@ impl Engine {
             AppMode::Agent | AppMode::Yolo => {
                 if self.config.features.enabled(Feature::Subagents) {
                     let runtime = if let Some(client) = self.deepseek_client.clone() {
-                        Some(SubAgentRuntime::new(
-                            client,
-                            self.session.model.clone(),
-                            tool_context.clone(),
-                            self.session.allow_shell,
-                            Some(self.tx_event.clone()),
-                        ))
+                        Some(
+                            SubAgentRuntime::new(
+                                client,
+                                self.session.model.clone(),
+                                tool_context.clone(),
+                                self.session.allow_shell,
+                                Some(self.tx_event.clone()),
+                                Arc::clone(&self.subagent_manager),
+                            )
+                            .with_max_spawn_depth(self.config.max_spawn_depth),
+                        )
                     } else {
                         None
                     };

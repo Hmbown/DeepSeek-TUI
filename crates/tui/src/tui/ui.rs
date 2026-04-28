@@ -81,6 +81,7 @@ use super::slash_menu::{
     apply_slash_menu_selection, try_autocomplete_slash_command, visible_slash_menu_entries,
 };
 use super::views::{ConfigView, HelpView, ModalKind, ViewEvent};
+use super::widgets::pending_input_preview::PendingInputPreview;
 use super::widgets::{
     ChatWidget, ComposerWidget, FooterProps, FooterToast, FooterWidget, HeaderData, HeaderWidget,
     Renderable,
@@ -329,6 +330,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         capacity: crate::core::capacity::CapacityControllerConfig::from_app_config(config),
         todos: app.todos.clone(),
         plan_state: app.plan_state.clone(),
+        max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
     }
 }
 
@@ -350,6 +352,11 @@ async fn run_event_loop(
     let mut last_status_frame = Instant::now()
         .checked_sub(Duration::from_millis(UI_STATUS_ANIMATION_MS))
         .unwrap_or_else(Instant::now);
+    // 120 FPS draw cap. Without this we redraw on every SSE chunk during a
+    // long stream — wasted work the user can't perceive. See
+    // `tui::frame_rate_limiter` for the rationale; ports the small piece of
+    // codex's frame coalescing that maps cleanly onto our poll-based loop.
+    let mut frame_rate_limiter = crate::tui::frame_rate_limiter::FrameRateLimiter::default();
 
     loop {
         if last_task_refresh.elapsed() >= Duration::from_millis(2500) {
@@ -943,8 +950,18 @@ async fn run_event_loop(
             !app.is_loading && !has_running_agents && !app.is_compacting;
         refresh_workspace_context_if_needed(app, now, allow_workspace_context_refresh);
 
-        if app.needs_redraw {
+        // Draw is gated by the frame-rate limiter (120 FPS cap). When a
+        // redraw is needed but the limiter says we're inside the cooldown
+        // window, leave `needs_redraw = true` and shorten the poll timeout
+        // so the loop wakes up exactly when drawing is allowed.
+        let draw_wait = if app.needs_redraw {
+            frame_rate_limiter.time_until_next_draw(now)
+        } else {
+            None
+        };
+        if app.needs_redraw && draw_wait.is_none() {
             terminal.draw(|f| render(f, app))?; // app is &mut
+            frame_rate_limiter.mark_emitted(Instant::now());
             app.needs_redraw = false;
         }
 
@@ -955,6 +972,9 @@ async fn run_event_loop(
         };
         if let Some(until_flush) = app.paste_burst.next_flush_delay(now) {
             poll_timeout = poll_timeout.min(until_flush);
+        }
+        if let Some(until_draw) = draw_wait {
+            poll_timeout = poll_timeout.min(until_draw);
         }
         // While the quit-confirmation prompt is armed, ensure we wake up to
         // expire it on time even if no input event arrives.
@@ -1365,6 +1385,13 @@ async fn run_event_loop(
                         engine_handle.cancel();
                         app.is_loading = false;
                         app.streaming_state.reset();
+                        // Optimistically clear the turn-in-progress flag so
+                        // the footer wave animation halts immediately —
+                        // without this, the strip keeps animating until the
+                        // engine eventually emits TurnComplete (#5a). The
+                        // engine's eventual TurnComplete event will overwrite
+                        // with the real outcome ("interrupted").
+                        app.runtime_turn_status = None;
                         app.status_message = Some("Request cancelled".to_string());
                         app.disarm_quit();
                     } else if app.quit_is_armed() {
@@ -1390,6 +1417,10 @@ async fn run_event_loop(
                         engine_handle.cancel();
                         app.is_loading = false;
                         app.streaming_state.reset();
+                        // Optimistically halt the wave + working label —
+                        // engine's TurnComplete will resync with the real
+                        // outcome. Fixes #5a (wave kept animating after Esc).
+                        app.runtime_turn_status = None;
                         app.status_message = Some("Request cancelled".to_string());
                     }
                     EscapeAction::DiscardQueuedDraft => {
@@ -2691,6 +2722,22 @@ fn reconcile_subagent_activity_state(app: &mut App) {
     }
 }
 
+/// Build the pending-input preview widget from current `App` state.
+///
+/// v0.6.6 ships the queued-messages half of #85: when the user types during
+/// a running turn the message goes onto `app.queued_messages` and shows
+/// here above the composer. The full steer/rejected-steer wiring lands in
+/// a follow-up (TODO_BACKEND.md §4).
+fn build_pending_input_preview(app: &App) -> PendingInputPreview {
+    let mut preview = PendingInputPreview::new();
+    preview.queued_messages = app
+        .queued_messages
+        .iter()
+        .map(|m| m.display.clone())
+        .collect();
+    preview
+}
+
 fn render(f: &mut Frame, app: &mut App) {
     let size = f.area();
 
@@ -2727,11 +2774,19 @@ fn render(f: &mut Frame, app: &mut App) {
         composer_widget.desired_height(size.width)
     };
 
+    // Pending-input preview (queued / steered messages). Empty when nothing's
+    // queued, so zero height when idle. Phase 2 of #85 — solves the
+    // "messages typed during a running turn vanish" complaint by giving the
+    // user immediate visible feedback above the composer.
+    let pending_preview = build_pending_input_preview(app);
+    let preview_height = pending_preview.desired_height(size.width);
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(header_height),   // Header
             Constraint::Min(1),                  // Chat area
+            Constraint::Length(preview_height),  // Pending input preview (0 if empty)
             Constraint::Length(composer_height), // Composer
             Constraint::Length(footer_height),   // Footer
         ])
@@ -2808,6 +2863,12 @@ fn render(f: &mut Frame, app: &mut App) {
         }
     }
 
+    // Render pending-input preview (queued/steered messages, if any).
+    if preview_height > 0 {
+        let buf = f.buffer_mut();
+        pending_preview.render(chunks[2], buf);
+    }
+
     // Render composer
     let cursor_pos = {
         let composer_widget = ComposerWidget::new(
@@ -2817,15 +2878,15 @@ fn render(f: &mut Frame, app: &mut App) {
             &mention_menu_entries,
         );
         let buf = f.buffer_mut();
-        composer_widget.render(chunks[2], buf);
-        composer_widget.cursor_pos(chunks[2])
+        composer_widget.render(chunks[3], buf);
+        composer_widget.cursor_pos(chunks[3])
     };
     if let Some(cursor_pos) = cursor_pos {
         f.set_cursor_position(cursor_pos);
     }
 
     // Render footer
-    render_footer(f, chunks[3], app);
+    render_footer(f, chunks[4], app);
 
     if !app.view_stack.is_empty() {
         let buf = f.buffer_mut();

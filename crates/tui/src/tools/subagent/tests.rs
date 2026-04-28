@@ -328,13 +328,15 @@ fn test_send_input_schema_does_not_require_message_field() {
 }
 
 #[test]
-fn test_allowed_tools_shell_filter() {
-    let tools = build_allowed_tools(&SubAgentType::General, None, false).unwrap();
-    assert!(!tools.contains(&"exec_shell".to_string()));
-    assert!(!tools.contains(&"exec_shell_wait".to_string()));
-    assert!(!tools.contains(&"exec_shell_interact".to_string()));
-    assert!(!tools.contains(&"exec_wait".to_string()));
-    assert!(!tools.contains(&"exec_interact".to_string()));
+fn test_build_allowed_tools_independent_of_allow_shell() {
+    // v0.6.6: allow_shell no longer filters at the build_allowed_tools
+    // level — the registry builder controls shell-tool registration.
+    // Both calls return None (full inheritance) for a default General
+    // agent.
+    let with_shell = build_allowed_tools(&SubAgentType::General, None, true).unwrap();
+    let without_shell = build_allowed_tools(&SubAgentType::General, None, false).unwrap();
+    assert!(with_shell.is_none());
+    assert!(without_shell.is_none());
 }
 
 #[test]
@@ -352,7 +354,7 @@ fn test_allowed_tools_are_deduplicated() {
     .unwrap();
     assert_eq!(
         tools,
-        vec!["read_file".to_string(), "grep_files".to_string()]
+        Some(vec!["read_file".to_string(), "grep_files".to_string()])
     );
 }
 
@@ -428,11 +430,12 @@ fn test_build_assignment_prompt_includes_metadata() {
 #[test]
 fn test_subagent_tool_registry_reports_unavailable_tools() {
     let tmp = tempdir().expect("tempdir");
-    let context = ToolContext::new(tmp.path().to_path_buf());
+    let mut runtime = stub_runtime();
+    runtime.context = ToolContext::new(tmp.path().to_path_buf());
+    runtime.allow_shell = false;
     let registry = SubAgentToolRegistry::new(
-        context,
-        vec!["read_file".to_string(), "missing_tool".to_string()],
-        false,
+        runtime,
+        Some(vec!["read_file".to_string(), "missing_tool".to_string()]),
         Arc::new(Mutex::new(TodoList::new())),
         Arc::new(Mutex::new(PlanState::default())),
     );
@@ -450,7 +453,7 @@ async fn test_wait_for_result_reports_timeout_when_still_running() {
         SubAgentType::Explore,
         "prompt".to_string(),
         make_assignment(),
-        vec!["read_file".to_string()],
+        Some(vec!["read_file".to_string()]),
         input_tx,
     );
     let agent_id = agent.id.clone();
@@ -474,7 +477,7 @@ fn test_running_count_respects_limit() {
         SubAgentType::Explore,
         "prompt".to_string(),
         make_assignment(),
-        vec!["read_file".to_string()],
+        Some(vec!["read_file".to_string()]),
         input_tx,
     );
     agent.status = SubAgentStatus::Running;
@@ -491,7 +494,7 @@ async fn test_running_count_ignores_finished_task_handles() {
         SubAgentType::Explore,
         "prompt".to_string(),
         make_assignment(),
-        vec!["read_file".to_string()],
+        Some(vec!["read_file".to_string()]),
         input_tx,
     );
     agent.status = SubAgentStatus::Running;
@@ -516,7 +519,7 @@ fn test_assign_updates_running_agent_and_sends_message() {
         SubAgentType::General,
         "work".to_string(),
         make_assignment(),
-        vec!["read_file".to_string()],
+        Some(vec!["read_file".to_string()]),
         input_tx,
     );
     let agent_id = agent.id.clone();
@@ -550,7 +553,7 @@ fn test_assign_rejects_message_for_non_running_agent() {
         SubAgentType::Explore,
         "prompt".to_string(),
         make_assignment(),
-        vec!["read_file".to_string()],
+        Some(vec!["read_file".to_string()]),
         input_tx,
     );
     agent.status = SubAgentStatus::Completed;
@@ -571,7 +574,7 @@ fn test_assign_updates_non_running_metadata_without_message() {
         SubAgentType::Plan,
         "prompt".to_string(),
         make_assignment(),
-        vec!["read_file".to_string()],
+        Some(vec!["read_file".to_string()]),
         input_tx,
     );
     agent.status = SubAgentStatus::Completed;
@@ -603,7 +606,7 @@ fn test_persist_and_reload_marks_running_agent_as_interrupted() {
         SubAgentType::General,
         "work".to_string(),
         make_assignment(),
-        vec!["read_file".to_string()],
+        Some(vec!["read_file".to_string()]),
         input_tx,
     );
     let running_id = running.id.clone();
@@ -707,4 +710,297 @@ fn test_wrap_with_deprecation_notice_all_alias_mappings() {
             "alias={alias}"
         );
     }
+}
+
+// === v0.6.6 — sub-agent authority unification ===
+
+#[test]
+fn build_allowed_tools_general_returns_none_for_full_inheritance() {
+    // Default behavior: General agent with no explicit list inherits the
+    // parent's full registry (None signals no narrowing).
+    let result = build_allowed_tools(&SubAgentType::General, None, true).unwrap();
+    assert!(
+        result.is_none(),
+        "General with no explicit_tools should default to full inheritance (None), got {result:?}"
+    );
+}
+
+#[test]
+fn build_allowed_tools_explore_returns_none_for_full_inheritance() {
+    // Per-type allowlists are now advisory — Explore also gets the full
+    // surface unless an explicit list is passed.
+    let result = build_allowed_tools(&SubAgentType::Explore, None, true).unwrap();
+    assert!(
+        result.is_none(),
+        "Explore with no explicit_tools should default to full inheritance"
+    );
+}
+
+#[test]
+fn build_allowed_tools_custom_requires_explicit_list() {
+    // Custom is the one type that REQUIRES explicit allowed_tools.
+    let err = build_allowed_tools(&SubAgentType::Custom, None, true).unwrap_err();
+    assert!(
+        err.to_string().contains("Custom sub-agent requires"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn build_allowed_tools_explicit_list_returned_as_some() {
+    let explicit = vec!["read_file".to_string(), "list_dir".to_string()];
+    let result = build_allowed_tools(&SubAgentType::Custom, Some(explicit.clone()), true).unwrap();
+    assert_eq!(result, Some(explicit));
+}
+
+#[test]
+fn build_allowed_tools_explicit_list_dedupes_and_trims() {
+    let explicit = vec![
+        "read_file".to_string(),
+        "  read_file  ".to_string(), // trim + dedupe
+        "list_dir".to_string(),
+        "".to_string(), // skip empty
+    ];
+    let result = build_allowed_tools(&SubAgentType::Custom, Some(explicit), true).unwrap();
+    assert_eq!(
+        result,
+        Some(vec!["read_file".to_string(), "list_dir".to_string()])
+    );
+}
+
+#[test]
+fn parse_spawn_request_extracts_cwd_when_present() {
+    let input = json!({
+        "prompt": "build feature A",
+        "cwd": ".worktrees/feature-a"
+    });
+    let parsed = parse_spawn_request(&input).expect("spawn request should parse");
+    assert_eq!(
+        parsed.cwd.as_ref().map(|p| p.to_string_lossy().to_string()),
+        Some(".worktrees/feature-a".to_string())
+    );
+}
+
+#[test]
+fn parse_spawn_request_cwd_absent_yields_none() {
+    let input = json!({ "prompt": "no cwd" });
+    let parsed = parse_spawn_request(&input).expect("spawn request should parse");
+    assert!(parsed.cwd.is_none());
+}
+
+#[test]
+fn parse_spawn_request_cwd_empty_string_yields_none() {
+    let input = json!({ "prompt": "empty cwd", "cwd": "   " });
+    let parsed = parse_spawn_request(&input).expect("spawn request should parse");
+    assert!(parsed.cwd.is_none(), "whitespace-only cwd should be None");
+}
+
+#[test]
+fn build_subagent_system_prompt_appends_role_when_set() {
+    let assignment = SubAgentAssignment::new("p".to_string(), Some("worker".to_string()));
+    let prompt = build_subagent_system_prompt(&SubAgentType::General, &assignment);
+    assert!(
+        prompt.ends_with("You are operating in the role of `worker`."),
+        "expected role line at end, got: {}",
+        &prompt[prompt.len().saturating_sub(80)..]
+    );
+}
+
+#[test]
+fn build_subagent_system_prompt_skips_role_when_none() {
+    let assignment = SubAgentAssignment::new("p".to_string(), None);
+    let prompt = build_subagent_system_prompt(&SubAgentType::General, &assignment);
+    assert!(!prompt.contains("You are operating in the role of"));
+}
+
+#[test]
+fn build_subagent_system_prompt_skips_role_when_blank() {
+    let assignment = SubAgentAssignment::new("p".to_string(), Some("   ".to_string()));
+    let prompt = build_subagent_system_prompt(&SubAgentType::General, &assignment);
+    assert!(!prompt.contains("You are operating in the role of"));
+}
+
+#[test]
+fn subagent_done_sentinel_format_is_well_formed() {
+    let res = make_snapshot(SubAgentStatus::Completed);
+    let sentinel = subagent_done_sentinel("agent_xyz", &res);
+    assert!(sentinel.starts_with("<deepseek:subagent.done>"));
+    assert!(sentinel.ends_with("</deepseek:subagent.done>"));
+
+    // The inner JSON parses and carries the expected fields.
+    let inner = sentinel
+        .trim_start_matches("<deepseek:subagent.done>")
+        .trim_end_matches("</deepseek:subagent.done>");
+    let parsed: serde_json::Value = serde_json::from_str(inner).expect("inner JSON parses");
+    assert_eq!(parsed["agent_id"], "agent_xyz");
+    assert_eq!(parsed["status"], "completed");
+    assert_eq!(parsed["agent_type"], "general");
+}
+
+#[test]
+fn subagent_failed_sentinel_format_is_well_formed() {
+    let sentinel = subagent_failed_sentinel("agent_zzz", "boom");
+    let inner = sentinel
+        .trim_start_matches("<deepseek:subagent.done>")
+        .trim_end_matches("</deepseek:subagent.done>");
+    let parsed: serde_json::Value = serde_json::from_str(inner).expect("inner JSON parses");
+    assert_eq!(parsed["agent_id"], "agent_zzz");
+    assert_eq!(parsed["status"], "failed");
+    assert_eq!(parsed["error"], "boom");
+}
+
+#[test]
+fn subagent_runtime_default_max_depth_is_three() {
+    // Sanity-check the constant — bumping it without a test means stale docs.
+    assert_eq!(DEFAULT_MAX_SPAWN_DEPTH, 3);
+}
+
+#[test]
+fn would_exceed_depth_at_boundary() {
+    // depth=2, max=3 → next spawn (depth 3) is allowed (allow-equal).
+    // depth=3, max=3 → next spawn (depth 4) exceeds.
+    let runtime = stub_runtime();
+    let mut at_max = runtime.clone();
+    at_max.spawn_depth = 3;
+    at_max.max_spawn_depth = 3;
+    assert!(
+        at_max.would_exceed_depth(),
+        "depth 3 + max 3 → next would be 4, exceeds"
+    );
+
+    let mut below_max = runtime;
+    below_max.spawn_depth = 2;
+    below_max.max_spawn_depth = 3;
+    assert!(
+        !below_max.would_exceed_depth(),
+        "depth 2 + max 3 → next is 3, allowed"
+    );
+}
+
+#[test]
+fn child_runtime_increments_depth_and_forces_auto_approve() {
+    let mut parent = stub_runtime();
+    parent.spawn_depth = 1;
+    parent.context.auto_approve = false; // parent in suggest mode
+    let child = parent.child_runtime();
+    assert_eq!(child.spawn_depth, 2, "child depth = parent + 1");
+    assert!(
+        child.context.auto_approve,
+        "child must auto-approve regardless of parent mode (spawning IS the approval)"
+    );
+    // Parent mode is unchanged — the override is on the child only.
+    assert!(!parent.context.auto_approve);
+}
+
+#[test]
+fn child_cancellation_cascades_from_parent() {
+    let parent = stub_runtime();
+    let child = parent.child_runtime();
+    assert!(!child.cancel_token.is_cancelled());
+    parent.cancel_token.cancel();
+    assert!(
+        child.cancel_token.is_cancelled(),
+        "parent cancel() must propagate to child via child_token()"
+    );
+}
+
+#[test]
+fn persisted_empty_allowed_tools_loads_as_full_inheritance() {
+    // Backward-compat: a v0.6.5 session that persisted with an empty Vec
+    // (or a v0.6.6 session with no narrowing) should load as None on
+    // restart, meaning full inheritance.
+    let dir = tempdir().unwrap();
+    let state_path = dir.path().join("subagents.v1.json");
+    let payload = serde_json::json!({
+        "schema_version": SUBAGENT_STATE_SCHEMA_VERSION,
+        "agents": [{
+            "id": "agent_test",
+            "agent_type": "general",
+            "prompt": "p",
+            "assignment": { "objective": "p" },
+            "status": "Completed",
+            "result": null,
+            "steps_taken": 0,
+            "duration_ms": 0,
+            "allowed_tools": [],
+            "updated_at_ms": 0
+        }]
+    });
+    std::fs::write(&state_path, payload.to_string()).unwrap();
+
+    let mut manager = SubAgentManager::new(dir.path().to_path_buf(), 5).with_state_path(state_path);
+    manager.load_state().expect("load should succeed");
+    let agent = manager.agents.get("agent_test").expect("loaded agent");
+    assert!(
+        agent.allowed_tools.is_none(),
+        "empty Vec on disk → None (full inheritance)"
+    );
+}
+
+#[test]
+fn persisted_non_empty_allowed_tools_loads_as_narrow() {
+    // Backward-compat the other way: a v0.6.5 session that persisted with
+    // an explicit narrow list keeps that list on reload.
+    let dir = tempdir().unwrap();
+    let state_path = dir.path().join("subagents.v1.json");
+    let payload = serde_json::json!({
+        "schema_version": SUBAGENT_STATE_SCHEMA_VERSION,
+        "agents": [{
+            "id": "agent_narrow",
+            "agent_type": "custom",
+            "prompt": "p",
+            "assignment": { "objective": "p" },
+            "status": "Completed",
+            "result": null,
+            "steps_taken": 0,
+            "duration_ms": 0,
+            "allowed_tools": ["read_file", "list_dir"],
+            "updated_at_ms": 0
+        }]
+    });
+    std::fs::write(&state_path, payload.to_string()).unwrap();
+
+    let mut manager = SubAgentManager::new(dir.path().to_path_buf(), 5).with_state_path(state_path);
+    manager.load_state().expect("load should succeed");
+    let agent = manager.agents.get("agent_narrow").expect("loaded agent");
+    assert_eq!(
+        agent.allowed_tools.as_deref(),
+        Some(&["read_file".to_string(), "list_dir".to_string()][..]),
+        "non-empty Vec → Some(list), narrow scope preserved"
+    );
+}
+
+/// Build a minimal `SubAgentRuntime` for tests that exercise pure runtime
+/// helpers (depth, cancellation, child_runtime). Doesn't construct a real
+/// HTTP client — calls that hit `runtime.client` would fail, but the
+/// helpers we test here don't.
+fn stub_runtime() -> SubAgentRuntime {
+    use tokio_util::sync::CancellationToken;
+
+    let workspace = std::env::temp_dir().join("deepseek-test-stub");
+    let context = ToolContext::new(workspace.clone());
+    SubAgentRuntime {
+        client: stub_client(),
+        model: "deepseek-v4-flash".to_string(),
+        context,
+        allow_shell: true,
+        event_tx: None,
+        manager: new_shared_subagent_manager(workspace, 5),
+        spawn_depth: 0,
+        max_spawn_depth: DEFAULT_MAX_SPAWN_DEPTH,
+        cancel_token: CancellationToken::new(),
+    }
+}
+
+/// A minimal stub client. Test helpers below only ever check struct fields
+/// (depth, cancel_token, context); they don't call the network. We need a
+/// *some* `DeepSeekClient` because `SubAgentRuntime.client` isn't
+/// `Option<...>`. `Config::default()` is enough — `DeepSeekClient::new`
+/// only validates that an API key field exists, not that the key works.
+fn stub_client() -> DeepSeekClient {
+    let config = crate::config::Config {
+        api_key: Some("test-key".to_string()),
+        ..crate::config::Config::default()
+    };
+    DeepSeekClient::new(&config).expect("stub client should construct")
 }

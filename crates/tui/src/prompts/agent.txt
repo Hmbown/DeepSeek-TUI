@@ -6,3 +6,10 @@ Any write, patch, shell execution, sub-agent spawn, or CSV batch operation will 
 Before requesting approval for writes, lay out your work with `todo_write` so the user can see what
 you intend to do and approve with context. Complex changes should also get an `update_plan` first.
 Decomposition builds trust — a clear plan gets faster approvals.
+
+## Sub-agent completion sentinel
+
+When you spawn a sub-agent via `agent_spawn` (or `agent_swarm`), the child runs independently.
+You will receive a `<deepseek:subagent.done>` element in the transcript when it finishes.
+Read its `summary` field and integrate the work — do not re-do what the child already did.
+You can also call `agent_result` to pull the full structured result.
