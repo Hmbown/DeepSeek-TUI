@@ -47,6 +47,7 @@ mod sandbox;
 mod session_manager;
 mod settings;
 mod skills;
+mod snapshot;
 mod task_manager;
 #[cfg(test)]
 mod test_support;
@@ -2787,6 +2788,14 @@ async fn run_interactive(
         logging::warn(format!("Failed to install system skills: {e}"));
     }
 
+    // Prune stale workspace snapshots from prior sessions (7-day default).
+    // Non-fatal: a flaky disk, missing `git`, or read-only home should
+    // never block the TUI from starting.
+    let snapshots = config.snapshots_config();
+    if snapshots.enabled {
+        session_manager::prune_workspace_snapshots(&workspace, snapshots.max_age());
+    }
+
     tui::run_tui(
         config,
         tui::TuiOptions {
@@ -2950,6 +2959,7 @@ async fn run_exec_agent(
         plan_state: new_shared_plan_state(),
         max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
         network_policy,
+        snapshots_enabled: config.snapshots_config().enabled,
     };
 
     let engine_handle = spawn_engine(engine_config, config);

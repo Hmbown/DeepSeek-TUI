@@ -28,6 +28,7 @@ DeepSeek TUI is a coding agent that runs entirely in your terminal. It gives Dee
 - **Three interaction modes** — Plan (read-only explore), Agent (interactive with approval), YOLO (auto-approved). Decomposition-first system prompts teach the model to `todo_write`, `update_plan`, and spawn sub-agents before acting
 - **Reasoning-effort tiers** — cycle through `off → high → max` with Shift+Tab
 - **Session save/resume** — checkpoint and resume long sessions
+- **Workspace rollback** — side-git pre/post-turn snapshots with `/restore` and `revert_turn`, without touching your repo's `.git`
 - **HTTP/SSE runtime API** — `deepseek serve --http` for headless agent workflows
 - **MCP protocol** — connect to Model Context Protocol servers for extended tooling
 - **Live cost tracking** — per-turn and session-level token usage and cost estimates

@@ -170,6 +170,10 @@ If you are upgrading from older releases:
 - `mcp_config_path` (string, optional): defaults to `~/.deepseek/mcp.json`.
 - `notes_path` (string, optional): defaults to `~/.deepseek/notes.txt` and is used by the `note` tool.
 - `memory_path` (string, optional): defaults to `~/.deepseek/memory.md`.
+- `snapshots.*` (optional): side-git workspace snapshots for file rollback:
+  - `[snapshots].enabled` (bool, default `true`)
+  - `[snapshots].max_age_days` (int, default `7`)
+  - snapshots live under `~/.deepseek/snapshots/<project_hash>/<worktree_hash>/.git` and never use the workspace's own `.git` directory
 - `retry.*` (optional): retry/backoff settings for API requests:
   - `[retry].enabled` (bool, default `true`)
   - `[retry].max_retries` (int, default `3`)

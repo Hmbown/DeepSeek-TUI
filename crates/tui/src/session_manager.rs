@@ -370,6 +370,22 @@ pub fn default_sessions_dir() -> std::io::Result<PathBuf> {
     Ok(home.join(".deepseek").join("sessions"))
 }
 
+/// Prune snapshots older than `max_age` for `workspace`.
+///
+/// Always non-fatal. Returns silently — callers don't need the count
+/// (the underlying repo logs at WARN if anything blew up).
+pub fn prune_workspace_snapshots(workspace: &Path, max_age: std::time::Duration) {
+    match crate::snapshot::prune_older_than(workspace, max_age) {
+        Ok(0) => {}
+        Ok(n) => {
+            tracing::debug!(target: "snapshot", "boot prune removed {n} snapshot(s)");
+        }
+        Err(e) => {
+            tracing::warn!(target: "snapshot", "boot prune failed: {e}");
+        }
+    }
+}
+
 /// Create a new `SavedSession` from conversation state
 pub fn create_saved_session(
     messages: &[Message],

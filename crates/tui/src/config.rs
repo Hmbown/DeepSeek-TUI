@@ -192,6 +192,41 @@ pub struct NotificationsConfig {
     pub include_summary: bool,
 }
 
+fn default_snapshots_enabled() -> bool {
+    true
+}
+
+fn default_snapshot_max_age_days() -> u64 {
+    crate::snapshot::DEFAULT_MAX_AGE.as_secs() / (24 * 60 * 60)
+}
+
+/// Workspace side-git snapshot configuration (#137).
+#[derive(Debug, Clone, Deserialize)]
+pub struct SnapshotsConfig {
+    /// Snapshot the workspace before and after each interactive agent turn.
+    #[serde(default = "default_snapshots_enabled")]
+    pub enabled: bool,
+    /// Prune side-git snapshots older than this many days at session boot.
+    #[serde(default = "default_snapshot_max_age_days")]
+    pub max_age_days: u64,
+}
+
+impl Default for SnapshotsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_snapshots_enabled(),
+            max_age_days: default_snapshot_max_age_days(),
+        }
+    }
+}
+
+impl SnapshotsConfig {
+    #[must_use]
+    pub fn max_age(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.max_age_days.saturating_mul(24 * 60 * 60))
+    }
+}
+
 /// One configurable footer item.
 ///
 /// Order in the user's `Vec<StatusItem>` is preserved: items in the left
@@ -436,6 +471,11 @@ pub struct Config {
     /// [`crate::skills::install::DEFAULT_MAX_SIZE_BYTES`]).
     #[serde(default)]
     pub skills: Option<SkillsConfig>,
+
+    /// Workspace side-git snapshots (#137). Defaults to enabled with 7-day
+    /// retention when the table is absent.
+    #[serde(default)]
+    pub snapshots: Option<SnapshotsConfig>,
 }
 
 /// `[skills]` table — knobs for the community-skill installer.
@@ -910,6 +950,12 @@ impl Config {
     #[must_use]
     pub fn notifications_config(&self) -> NotificationsConfig {
         self.notifications.clone().unwrap_or_default()
+    }
+
+    /// Resolve workspace side-git snapshot settings with defaults applied.
+    #[must_use]
+    pub fn snapshots_config(&self) -> SnapshotsConfig {
+        self.snapshots.clone().unwrap_or_default()
     }
 
     /// Resolve enabled features from defaults and config entries.
@@ -1422,6 +1468,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         notifications: override_cfg.notifications.or(base.notifications),
         network: override_cfg.network.or(base.network),
         skills: override_cfg.skills.or(base.skills),
+        snapshots: override_cfg.snapshots.or(base.snapshots),
     }
 }
 

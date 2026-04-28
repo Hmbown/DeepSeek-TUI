@@ -2,8 +2,20 @@
 //!
 //! A "turn" is one user message and the resulting AI response,
 //! including any tool calls that occur.
+//!
+//! ## Snapshot lifecycle hooks
+//!
+//! [`pre_turn_snapshot`] and [`post_turn_snapshot`] book-end a turn by
+//! taking a workspace-level snapshot into a side git repo (see
+//! `crate::snapshot`). They are intentionally non-blocking and
+//! non-fatal: any IO error is logged at WARN and swallowed so a busted
+//! filesystem or missing `git` binary never derails the agent loop.
+//! `/restore N` and the `revert_turn` tool both consume these
+//! snapshots.
 
 use crate::models::Usage;
+use crate::snapshot::SnapshotRepo;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 /// Context for a single turn (user message + AI response).
@@ -113,6 +125,36 @@ fn add_optional_usage(total: Option<u32>, delta: Option<u32>) -> Option<u32> {
         (None, Some(delta)) => Some(delta),
         (Some(total), None) => Some(total),
         (None, None) => None,
+    }
+}
+
+/// Take a `pre-turn:<seq>` workspace snapshot.
+///
+/// Returns the snapshot SHA on success, `None` on any error. Errors are
+/// logged at WARN; the turn loop must not block on this.
+pub fn pre_turn_snapshot(workspace: &Path, turn_seq: u64) -> Option<String> {
+    snapshot_with_label(workspace, &format!("pre-turn:{turn_seq}"))
+}
+
+/// Take a `post-turn:<seq>` workspace snapshot. Same failure model as
+/// [`pre_turn_snapshot`].
+pub fn post_turn_snapshot(workspace: &Path, turn_seq: u64) -> Option<String> {
+    snapshot_with_label(workspace, &format!("post-turn:{turn_seq}"))
+}
+
+fn snapshot_with_label(workspace: &Path, label: &str) -> Option<String> {
+    match SnapshotRepo::open_or_init(workspace) {
+        Ok(repo) => match repo.snapshot(label) {
+            Ok(id) => Some(id.0),
+            Err(e) => {
+                tracing::warn!(target: "snapshot", "snapshot '{label}' failed: {e}");
+                None
+            }
+        },
+        Err(e) => {
+            tracing::warn!(target: "snapshot", "snapshot repo init failed: {e}");
+            None
+        }
     }
 }
 
