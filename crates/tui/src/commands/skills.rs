@@ -70,6 +70,9 @@ pub fn run_skill(app: &mut App, name: Option<&str>) -> CommandResult {
         }
     };
 
+    // `/skill new` is a friendly alias for `/skill skill-creator`.
+    let name = if name == "new" { "skill-creator" } else { name };
+
     let skills_dir = app.skills_dir.clone();
     let registry = SkillRegistry::discover(&skills_dir);
 

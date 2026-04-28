@@ -2748,6 +2748,13 @@ async fn run_interactive(
         .map(|s| s.bracketed_paste)
         .unwrap_or(true);
 
+    // Auto-install bundled system skills (e.g. skill-creator) on first launch.
+    // Errors are non-fatal: log a warning and continue.
+    let skills_dir = config.skills_dir();
+    if let Err(e) = crate::skills::install_system_skills(&skills_dir) {
+        logging::warn(format!("Failed to install system skills: {e}"));
+    }
+
     tui::run_tui(
         config,
         tui::TuiOptions {
@@ -2757,7 +2764,7 @@ async fn run_interactive(
             use_alt_screen,
             use_mouse_capture,
             use_bracketed_paste,
-            skills_dir: config.skills_dir(),
+            skills_dir,
             memory_path: config.memory_path(),
             notes_path: config.notes_path(),
             mcp_config_path: config.mcp_config_path(),
