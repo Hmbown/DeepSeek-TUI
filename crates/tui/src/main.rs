@@ -1347,28 +1347,54 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     // Check API keys
     println!();
     println!("{}", "API Keys:".bold());
-    let has_api_key = if std::env::var("DEEPSEEK_API_KEY")
-        .ok()
-        .filter(|k| !k.trim().is_empty())
-        .is_some()
-    {
-        println!(
-            "  {} DEEPSEEK_API_KEY is set",
+
+    // Report the active keyring backend (system / file-based / unavailable).
+    let secrets = deepseek_secrets::Secrets::auto_detect();
+    println!("  · keyring backend: {}", secrets.backend_name());
+
+    // Per-provider state: keyring, env, config file (no values printed).
+    for (slot, env_names) in [
+        ("deepseek", &["DEEPSEEK_API_KEY"][..]),
+        ("nvidia-nim", &["NVIDIA_API_KEY", "NVIDIA_NIM_API_KEY"][..]),
+        ("openrouter", &["OPENROUTER_API_KEY"][..]),
+        ("novita", &["NOVITA_API_KEY"][..]),
+    ] {
+        let in_keyring = secrets
+            .get(slot)
+            .ok()
+            .flatten()
+            .is_some_and(|v| !v.trim().is_empty());
+        let in_env = env_names.iter().any(|n| {
+            std::env::var(n)
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+                .is_some()
+        });
+        let icon = if in_keyring || in_env {
             "✓".truecolor(aqua_r, aqua_g, aqua_b)
-        );
-        true
-    } else if config.deepseek_api_key().is_ok() {
+        } else {
+            "·".dimmed()
+        };
         println!(
-            "  {} DeepSeek API key found in effective config",
+            "  {} {slot}: keyring={}, env={}",
+            icon,
+            if in_keyring { "yes" } else { "no" },
+            if in_env { "yes" } else { "no" }
+        );
+    }
+
+    let has_api_key = if config.deepseek_api_key().is_ok() {
+        println!(
+            "  {} active provider key resolved",
             "✓".truecolor(aqua_r, aqua_g, aqua_b)
         );
         true
     } else {
         println!(
-            "  {} DeepSeek API key not configured",
+            "  {} active provider key not configured",
             "✗".truecolor(red_r, red_g, red_b)
         );
-        println!("    Run 'deepseek' to configure interactively, or set DEEPSEEK_API_KEY");
+        println!("    Run 'deepseek auth set --provider <name>' to save a key to the OS keyring.");
         false
     };
 

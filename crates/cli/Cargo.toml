@@ -19,6 +19,7 @@ deepseek-app-server = { path = "../app-server", version = "0.6.0" }
 deepseek-config = { path = "../config", version = "0.6.0" }
 deepseek-execpolicy = { path = "../execpolicy", version = "0.6.0" }
 deepseek-mcp = { path = "../mcp", version = "0.6.0" }
+deepseek-secrets = { path = "../secrets", version = "0.6.0" }
 deepseek-state = { path = "../state", version = "0.6.0" }
 chrono.workspace = true
 dirs.workspace = true

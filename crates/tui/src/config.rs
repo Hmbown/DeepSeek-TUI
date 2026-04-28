@@ -636,77 +636,72 @@ impl Config {
         normalize_base_url(&base)
     }
 
-    /// Read the API key from config/environment.
+    /// Read the API key.
+    ///
+    /// Precedence: **OS keyring → environment → config file**. The
+    /// keyring + env layers are collapsed by [`deepseek_secrets::Secrets::resolve`];
+    /// the config-file fallback is preserved here for users who haven't
+    /// run `deepseek auth migrate` yet.
     pub fn deepseek_api_key(&self) -> Result<String> {
         let provider = self.api_provider();
+        let slot = match provider {
+            ApiProvider::Deepseek => "deepseek",
+            ApiProvider::NvidiaNim => "nvidia-nim",
+            ApiProvider::Openrouter => "openrouter",
+            ApiProvider::Novita => "novita",
+        };
 
-        match provider {
-            ApiProvider::Deepseek => {
-                if let Ok(key) = std::env::var("DEEPSEEK_API_KEY")
-                    && !key.trim().is_empty()
-                {
-                    return Ok(key);
-                }
-            }
-            ApiProvider::NvidiaNim => {
-                for name in ["NVIDIA_API_KEY", "NVIDIA_NIM_API_KEY", "DEEPSEEK_API_KEY"] {
-                    if let Ok(key) = std::env::var(name)
-                        && !key.trim().is_empty()
-                    {
-                        return Ok(key);
-                    }
-                }
-            }
-            ApiProvider::Openrouter => {
-                if let Ok(key) = std::env::var("OPENROUTER_API_KEY")
-                    && !key.trim().is_empty()
-                {
-                    return Ok(key);
-                }
-            }
-            ApiProvider::Novita => {
-                if let Ok(key) = std::env::var("NOVITA_API_KEY")
-                    && !key.trim().is_empty()
-                {
-                    return Ok(key);
-                }
-            }
+        // 1. OS keyring + 2. environment variables (handled by Secrets).
+        let secrets = deepseek_secrets::Secrets::auto_detect();
+        if let Some(value) = secrets.resolve(slot)
+            && !value.trim().is_empty()
+        {
+            return Ok(value);
         }
 
-        // Then check config file
+        // 3. config file (provider-scoped slot).
         if let Some(configured) = self
             .provider_config_for(provider)
             .and_then(|provider| provider.api_key.clone())
             && !configured.trim().is_empty()
         {
+            tracing::warn!(
+                "[providers.{slot}] api_key in config.toml is deprecated; \
+                 run 'deepseek auth set --provider {slot}' to move it to the OS keyring"
+            );
             return Ok(configured);
         }
 
+        // 4. legacy root `api_key` (deepseek only).
         if let Some(configured) = self.api_key.clone()
             && !configured.trim().is_empty()
             && configured != API_KEYRING_SENTINEL
         {
+            tracing::warn!(
+                "api_key in config.toml is deprecated; run 'deepseek auth migrate' to move it to the OS keyring"
+            );
             return Ok(configured);
         }
 
         match provider {
             ApiProvider::Deepseek => anyhow::bail!(
                 "DeepSeek API key not found. Set it using one of these methods:\n\
-                 1. Set DEEPSEEK_API_KEY environment variable (recommended)\n\
-                 2. Run 'deepseek login' to save to ~/.deepseek/config.toml\n\
-                 3. Add 'api_key = \"your-key\"' to ~/.deepseek/config.toml"
+                 1. Run 'deepseek auth set --provider deepseek' to save it in the OS keyring (recommended)\n\
+                 2. Set DEEPSEEK_API_KEY environment variable\n\
+                 3. Add 'api_key = \"your-key\"' to ~/.deepseek/config.toml (deprecated)"
             ),
             ApiProvider::NvidiaNim => anyhow::bail!(
-                "NVIDIA NIM API key not found. Set NVIDIA_API_KEY, NVIDIA_NIM_API_KEY, \
-                 or save api_key in ~/.deepseek/config.toml with provider = \"nvidia-nim\"."
+                "NVIDIA NIM API key not found. Run 'deepseek auth set --provider nvidia-nim', \
+                 set NVIDIA_API_KEY/NVIDIA_NIM_API_KEY, or save api_key in ~/.deepseek/config.toml \
+                 with provider = \"nvidia-nim\"."
             ),
             ApiProvider::Openrouter => anyhow::bail!(
-                "OpenRouter API key not found. Set OPENROUTER_API_KEY \
-                 or add [providers.openrouter] api_key in ~/.deepseek/config.toml."
+                "OpenRouter API key not found. Run 'deepseek auth set --provider openrouter', \
+                 set OPENROUTER_API_KEY, or add [providers.openrouter] api_key in ~/.deepseek/config.toml."
             ),
             ApiProvider::Novita => anyhow::bail!(
-                "Novita API key not found. Set NOVITA_API_KEY \
-                 or add [providers.novita] api_key in ~/.deepseek/config.toml."
+                "Novita API key not found. Run 'deepseek auth set --provider novita', \
+                 set NOVITA_API_KEY, or add [providers.novita] api_key in ~/.deepseek/config.toml."
             ),
         }
     }
