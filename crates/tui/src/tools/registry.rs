@@ -414,6 +414,7 @@ impl ToolRegistryBuilder {
     /// MCP tools are marked `defer_loading` by default (except discovery
     /// helpers) to keep the model-visible catalog compact.
     #[must_use]
+    #[allow(dead_code)]
     pub fn with_mcp_tools(
         mut self,
         mcp_pool: std::sync::Arc<tokio::sync::Mutex<crate::mcp::McpPool>>,
@@ -592,6 +593,7 @@ impl Default for ToolRegistryBuilder {
 
 /// Adapter that wraps an MCP tool definition so it can live in the
 /// unified `ToolRegistry` alongside native tools (§5.B).
+#[allow(dead_code)]
 struct McpToolAdapter {
     name: String,
     tool: crate::mcp::McpTool,

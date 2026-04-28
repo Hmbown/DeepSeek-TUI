@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! System prompts for different modes.
 //!
 //! Prompts are assembled from composable layers loaded at compile time:
@@ -375,7 +376,7 @@ mod tests {
         assert!(prompt.contains("### `edit_file`"));
         assert!(prompt.contains("### `exec_shell`"));
         assert!(prompt.contains("### `agent_spawn`"));
-        assert!(prompt.contains("### `rlm_query`"));
+        assert!(prompt.contains("### `rlm`"));
     }
 
     #[test]

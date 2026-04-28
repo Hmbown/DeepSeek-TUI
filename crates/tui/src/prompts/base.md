@@ -79,12 +79,14 @@ Don't reach for `agent_spawn` when:
 - The work can be done with a fast `exec_shell` pipeline or a `grep_files` call.
 - You haven't first laid out a plan with `todo_write`. Sub-agents are implementation, not exploration.
 
-### `rlm_query`
-Don't reach for `rlm_query` when:
+### `rlm`
+Don't reach for `rlm` (the recursive language model tool) when:
 - The input fits comfortably in your context window — just read it directly with `read_file`.
 - A simple `grep_files` or `exec_shell` pipeline can answer the question.
-- You need interactive, iterative exploration of the data — RLM is batch-oriented.
+- You need interactive, iterative exploration of the data — `rlm` is batch-oriented (the sub-LLM writes Python in one shot, then returns).
 - The task is a simple classification or extraction on short text — your own reasoning is faster and cheaper.
+
+Inside the `rlm` REPL, the sub-LLM has access to `llm_query()`, `llm_query_batched()`, `rlm_query()`, and `rlm_query_batched()` as Python helpers for further sub-LLM work — those are not standalone tools you call directly.
 
 ## Sub-agent completion sentinel
 

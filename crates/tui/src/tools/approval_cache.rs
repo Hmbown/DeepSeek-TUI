@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Per‑call approval cache with fingerprint keys (§5.A).
 //!
 //! Instead of caching by tool name alone (which would let an approved

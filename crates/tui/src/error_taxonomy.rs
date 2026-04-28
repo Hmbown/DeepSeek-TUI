@@ -305,6 +305,7 @@ impl From<ToolError> for ErrorEnvelope {
 ///
 /// Carries a full `ErrorEnvelope` so the TUI can render category‑specific
 /// styling instead of a generic `Event::Error { message, recoverable }`.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum ClientError {
     /// Transport / HTTP / auth error from the LLM provider.
@@ -322,6 +323,7 @@ pub enum ClientError {
     Internal { envelope: ErrorEnvelope },
 }
 
+#[allow(dead_code)]
 impl ClientError {
     /// Unwrap the inner envelope regardless of variant.
     #[must_use]
@@ -407,6 +409,7 @@ impl std::error::Error for ClientError {}
 ///
 /// Each variant maps to an `ErrorCategory` so the UI can render
 /// stream‑specific icons or formatting.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum StreamError {
     /// Stream stalled — no chunk received within the idle timeout.
@@ -421,6 +424,7 @@ pub enum StreamError {
     Transport { message: String },
 }
 
+#[allow(dead_code)]
 impl StreamError {
     /// Convert into a `ClientError` for emission.
     #[must_use]
