@@ -1390,6 +1390,7 @@ impl RuntimeThreadManager {
             plan_state: new_shared_plan_state(),
             max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
             network_policy,
+            snapshots_enabled: self.config.snapshots_config().enabled,
         };
 
         let engine = spawn_engine(engine_cfg, &self.config);

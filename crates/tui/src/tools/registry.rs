@@ -468,7 +468,8 @@ impl ToolRegistryBuilder {
             .with_diagnostics_tool()
             .with_project_tools()
             .with_test_runner_tool()
-            .with_validation_tools();
+            .with_validation_tools()
+            .with_revert_turn_tool();
 
         if allow_shell {
             builder.with_shell_tools()
@@ -505,7 +506,6 @@ impl ToolRegistryBuilder {
             .with_review_tool(client.clone(), model.clone())
             .with_rlm_tool(client, model)
             .with_recall_archive_tool()
-            .with_revert_turn_tool()
             .with_subagent_tools(manager, runtime)
     }
 

@@ -12,8 +12,9 @@
 //! repo, the command fails fast instead of falling back to "current
 //! directory".
 
+use std::collections::HashSet;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -110,10 +111,10 @@ impl SnapshotRepo {
 
     /// Take a snapshot of the current working tree.
     ///
-    /// Internally: `git add -A` then `git commit --allow-empty -m <label>`.
-    /// `git add -A` honours the user's workspace `.gitignore` because we
-    /// keep the side repo's `core.excludesFile` empty and let git read
-    /// the workspace's own `.gitignore` files when staging.
+    /// Internally: `git add -A`, `git write-tree`, `git commit-tree`, then
+    /// `git update-ref HEAD <commit>`.
+    /// `git add -A` honours the user's workspace ignore rules while staging
+    /// into the side repo's index.
     ///
     /// Returns the snapshot's commit SHA.
     pub fn snapshot(&self, label: &str) -> io::Result<SnapshotId> {
@@ -128,36 +129,58 @@ impl SnapshotRepo {
             )));
         }
 
-        // `--allow-empty` so back-to-back snapshots with no changes
-        // still produce a marker commit (otherwise `/restore N` indices
-        // would skip turns where nothing changed).
-        let commit = run_git(
+        let tree = run_git(&self.git_dir, &self.work_tree, &["write-tree"])?;
+        if !tree.status.success() {
+            return Err(io_other(format!(
+                "git write-tree failed: {}",
+                String::from_utf8_lossy(&tree.stderr).trim()
+            )));
+        }
+        let tree = String::from_utf8_lossy(&tree.stdout).trim().to_string();
+
+        let parent = run_git(
             &self.git_dir,
             &self.work_tree,
-            &[
-                "commit",
-                "--allow-empty",
-                "--no-verify",
-                "--no-gpg-sign",
-                "-m",
-                label,
-            ],
+            &["rev-parse", "--verify", "HEAD"],
         )?;
+        let parent = parent
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&parent.stdout).trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        let mut args = vec!["commit-tree".to_string(), tree];
+        if let Some(parent) = parent {
+            args.push("-p".to_string());
+            args.push(parent);
+        }
+        args.push("-m".to_string());
+        args.push(label.to_string());
+        let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+
+        // `commit-tree` creates marker commits even when the tree matches its
+        // parent, and it does not run user/global commit hooks.
+        let commit = run_git(&self.git_dir, &self.work_tree, &arg_refs)?;
         if !commit.status.success() {
             return Err(io_other(format!(
-                "git commit failed: {}",
+                "git commit-tree failed: {}",
                 String::from_utf8_lossy(&commit.stderr).trim()
             )));
         }
+        let sha = String::from_utf8_lossy(&commit.stdout).trim().to_string();
 
-        let head = run_git(&self.git_dir, &self.work_tree, &["rev-parse", "HEAD"])?;
-        if !head.status.success() {
+        let update = run_git(
+            &self.git_dir,
+            &self.work_tree,
+            &["update-ref", "HEAD", &sha],
+        )?;
+        if !update.status.success() {
             return Err(io_other(format!(
-                "git rev-parse HEAD failed: {}",
-                String::from_utf8_lossy(&head.stderr).trim()
+                "git update-ref HEAD failed: {}",
+                String::from_utf8_lossy(&update.stderr).trim()
             )));
         }
-        let sha = String::from_utf8_lossy(&head.stdout).trim().to_string();
+
         Ok(SnapshotId(sha))
     }
 
@@ -167,6 +190,8 @@ impl SnapshotRepo {
     /// snapshot tree relative to the workspace root. We do NOT touch the
     /// user's own `.git` — snapshots only contain working-tree files.
     pub fn restore(&self, id: &SnapshotId) -> io::Result<()> {
+        let current_paths = self.tree_paths("HEAD")?;
+        let target_paths = self.tree_paths(id.as_str())?;
         let checkout = run_git(
             &self.git_dir,
             &self.work_tree,
@@ -178,7 +203,58 @@ impl SnapshotRepo {
                 String::from_utf8_lossy(&checkout.stderr).trim()
             )));
         }
+        self.remove_paths_missing_from_target(&current_paths, &target_paths)?;
         Ok(())
+    }
+
+    fn tree_paths(&self, treeish: &str) -> io::Result<HashSet<PathBuf>> {
+        let ls = run_git(
+            &self.git_dir,
+            &self.work_tree,
+            &["ls-tree", "-r", "-z", "--name-only", treeish],
+        )?;
+        if !ls.status.success() {
+            return Err(io_other(format!(
+                "git ls-tree failed: {}",
+                String::from_utf8_lossy(&ls.stderr).trim()
+            )));
+        }
+        Ok(parse_nul_paths(&ls.stdout))
+    }
+
+    fn remove_paths_missing_from_target(
+        &self,
+        current_paths: &HashSet<PathBuf>,
+        target_paths: &HashSet<PathBuf>,
+    ) -> io::Result<()> {
+        for rel in current_paths.difference(target_paths) {
+            if !is_safe_relative_path(rel) {
+                continue;
+            }
+            let path = self.work_tree.join(rel);
+            let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if metadata.file_type().is_dir() {
+                let _ = std::fs::remove_dir(&path);
+            } else {
+                std::fs::remove_file(&path)?;
+            }
+            self.prune_empty_parent_dirs(path.parent());
+        }
+        Ok(())
+    }
+
+    fn prune_empty_parent_dirs(&self, mut dir: Option<&Path>) {
+        while let Some(path) = dir {
+            if path == self.work_tree {
+                break;
+            }
+            if std::fs::remove_dir(path).is_err() {
+                break;
+            }
+            dir = path.parent();
+        }
     }
 
     /// List up to `limit` most-recent snapshots, newest first.
@@ -331,6 +407,21 @@ fn io_other(msg: impl Into<String>) -> io::Error {
     io::Error::other(msg.into())
 }
 
+fn parse_nul_paths(bytes: &[u8]) -> HashSet<PathBuf> {
+    bytes
+        .split(|b| *b == 0)
+        .filter(|chunk| !chunk.is_empty())
+        .map(|chunk| PathBuf::from(String::from_utf8_lossy(chunk).into_owned()))
+        .collect()
+}
+
+fn is_safe_relative_path(path: &Path) -> bool {
+    !path.as_os_str().is_empty()
+        && path
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -414,6 +505,87 @@ mod tests {
         repo.restore(&id).expect("restore");
         let after = std::fs::read_to_string(&f).unwrap();
         assert_eq!(after, "original");
+    }
+
+    #[test]
+    fn restore_removes_files_added_after_target_snapshot() {
+        let tmp = tempdir().unwrap();
+        let (repo, _home) = make_repo(tmp.path());
+        let original = repo.work_tree().join("original.txt");
+        let added = repo.work_tree().join("added.txt");
+
+        std::fs::write(&original, b"original").unwrap();
+        let id = repo.snapshot("pre-turn:1").expect("snapshot");
+
+        std::fs::write(&added, b"new file").unwrap();
+        repo.snapshot("post-turn:1").expect("snapshot 2");
+
+        repo.restore(&id).expect("restore");
+        assert!(original.exists());
+        assert!(!added.exists(), "restore must remove tracked added files");
+    }
+
+    #[test]
+    fn snapshot_and_restore_do_not_move_user_git_head() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        Command::new("git")
+            .arg("-C")
+            .arg(&workspace)
+            .arg("init")
+            .arg("--quiet")
+            .status()
+            .unwrap();
+        std::fs::write(workspace.join("tracked.txt"), b"committed").unwrap();
+        Command::new("git")
+            .arg("-C")
+            .arg(&workspace)
+            .arg("add")
+            .arg("tracked.txt")
+            .status()
+            .unwrap();
+        Command::new("git")
+            .arg("-C")
+            .arg(&workspace)
+            .arg("-c")
+            .arg("user.name=user")
+            .arg("-c")
+            .arg("user.email=user@example.test")
+            .arg("commit")
+            .arg("--quiet")
+            .arg("-m")
+            .arg("init")
+            .status()
+            .unwrap();
+        let user_head_before = Command::new("git")
+            .arg("-C")
+            .arg(&workspace)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout;
+
+        let _home = scoped_home(tmp.path());
+        let repo = SnapshotRepo::open_or_init(&workspace).unwrap();
+        std::fs::write(workspace.join("tracked.txt"), b"dirty-before").unwrap();
+        let id = repo.snapshot("pre-turn:1").unwrap();
+        std::fs::write(workspace.join("tracked.txt"), b"dirty-after").unwrap();
+        repo.snapshot("post-turn:1").unwrap();
+        repo.restore(&id).unwrap();
+
+        let user_head_after = Command::new("git")
+            .arg("-C")
+            .arg(&workspace)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout;
+        assert_eq!(user_head_after, user_head_before);
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("tracked.txt")).unwrap(),
+            "dirty-before"
+        );
     }
 
     #[test]

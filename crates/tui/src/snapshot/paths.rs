@@ -5,8 +5,6 @@
 //! project independently — `git worktree list` users won't get cross-talk
 //! between feature branches.
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -72,13 +70,15 @@ fn strip_worktree_suffix(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
-/// Hex-encoded `DefaultHasher` digest. Sufficient for directory naming
-/// (collision risk is negligible for the small set of paths we care
-/// about, and we'd rather not pull in `sha2` for a 16-byte tag).
+/// Hex-encoded deterministic FNV-1a digest. This is only a directory tag, not
+/// a security boundary, but it must remain stable across process launches.
 fn stable_hex(path: &Path) -> String {
-    let mut hasher = DefaultHasher::new();
-    path.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in path.to_string_lossy().as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
 }
 
 #[cfg(test)]

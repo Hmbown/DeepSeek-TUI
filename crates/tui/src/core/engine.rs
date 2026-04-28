@@ -110,6 +110,8 @@ pub struct EngineConfig {
     /// session-scoped approvals (`/network allow <host>`) persist for the
     /// remainder of the run.
     pub network_policy: Option<crate::network_policy::NetworkPolicyDecider>,
+    /// Whether to take side-git workspace snapshots before/after each turn.
+    pub snapshots_enabled: bool,
 }
 
 impl Default for EngineConfig {
@@ -131,6 +133,7 @@ impl Default for EngineConfig {
             plan_state: new_shared_plan_state(),
             max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
             network_policy: None,
+            snapshots_enabled: true,
         }
     }
 }
@@ -1436,14 +1439,15 @@ impl Engine {
         self.turn_counter = self.turn_counter.saturating_add(1);
         self.capacity_controller.mark_turn_start(self.turn_counter);
 
-        // Snapshot the workspace BEFORE we touch a single tool. Spawn on
-        // the blocking pool so the agent loop never waits on the side-git
-        // commit; failure is non-fatal (the helper logs at WARN).
-        let pre_workspace = self.session.workspace.clone();
-        let pre_seq = self.turn_counter;
-        tokio::task::spawn_blocking(move || {
-            let _ = pre_turn_snapshot(&pre_workspace, pre_seq);
-        });
+        // Snapshot the workspace BEFORE we touch a single tool. Run the git
+        // work on the blocking pool so the async runtime stays responsive;
+        // failure is non-fatal (the helper logs at WARN).
+        if self.config.snapshots_enabled {
+            let pre_workspace = self.session.workspace.clone();
+            let pre_seq = self.turn_counter;
+            let _ = tokio::task::spawn_blocking(move || pre_turn_snapshot(&pre_workspace, pre_seq))
+                .await;
+        }
 
         // Emit turn started event
         let _ = self
@@ -1667,11 +1671,13 @@ impl Engine {
 
         // Post-turn snapshot. Same non-blocking, non-fatal contract as
         // the pre-turn hook above.
-        let post_workspace = self.session.workspace.clone();
-        let post_seq = self.turn_counter;
-        tokio::task::spawn_blocking(move || {
-            let _ = post_turn_snapshot(&post_workspace, post_seq);
-        });
+        if self.config.snapshots_enabled {
+            let post_workspace = self.session.workspace.clone();
+            let post_seq = self.turn_counter;
+            let _ =
+                tokio::task::spawn_blocking(move || post_turn_snapshot(&post_workspace, post_seq))
+                    .await;
+        }
 
         // Checkpoint-restart cycle boundary (issue #124). The turn just
         // settled cleanly — no in-flight tools, no streaming, no pending

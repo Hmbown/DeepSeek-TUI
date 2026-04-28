@@ -128,8 +128,37 @@ pub struct ConfigToml {
     /// to a permissive default that mirrors pre-v0.7.0 behavior.
     #[serde(default)]
     pub network: Option<NetworkPolicyToml>,
+    /// Workspace side-git snapshots (#137). The live TUI defaults this to
+    /// enabled with 7-day retention when absent.
+    #[serde(default)]
+    pub snapshots: Option<SnapshotsToml>,
     #[serde(flatten)]
     pub extras: BTreeMap<String, toml::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SnapshotsToml {
+    #[serde(default = "default_snapshots_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_snapshot_max_age_days")]
+    pub max_age_days: u64,
+}
+
+fn default_snapshots_enabled() -> bool {
+    true
+}
+
+fn default_snapshot_max_age_days() -> u64 {
+    7
+}
+
+impl Default for SnapshotsToml {
+    fn default() -> Self {
+        Self {
+            enabled: default_snapshots_enabled(),
+            max_age_days: default_snapshot_max_age_days(),
+        }
+    }
 }
 
 /// On-disk schema for the `[network]` table (#135). See `config.example.toml`
