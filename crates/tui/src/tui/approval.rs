@@ -1,7 +1,31 @@
-//! Tool approval system for `DeepSeek` CLI
+//! Tool approval system for `DeepSeek` CLI.
 //!
-//! Provides types and overlay widget for requesting user approval before
-//! executing tools that may have costs or side effects.
+//! Hosts the [`ApprovalRequest`] / [`ApprovalView`] pair the engine asks
+//! the TUI to present whenever a tool needs human approval, plus the
+//! sandbox elevation flow ([`ElevationRequest`] / [`ElevationView`]) that
+//! follows a sandbox denial.
+//!
+//! ## v0.6.7: Codex-style takeover with stakes-based variants (#129)
+//!
+//! The modal now renders as a full-screen takeover (calm centered card
+//! against the transcript area) and routes each request to one of two
+//! stakes-based variants:
+//!
+//! - **Benign** (`RiskLevel::Benign`) — read-only ops, MCP discovery,
+//!   query-only network. A single `Enter` / `1` / `y` approves once;
+//!   `2` / `a` approves for the session.
+//! - **Destructive** (`RiskLevel::Destructive`) — file writes, shell,
+//!   patches, MCP actions, unclassified tools, and any "fetch arbitrary
+//!   content" surface. The first approve press *stages* a decision and
+//!   the second matching press commits — muscle-memory `Enter` cannot
+//!   accidentally land on an approval. Any non-approve key clears the
+//!   staging and keeps the user in selection mode.
+//!
+//! The decision events emitted upstream are unchanged
+//! (`ViewEvent::ApprovalDecision`), so `ui.rs` and the engine handle
+//! both variants without modification. Auto-approve / YOLO bypasses
+//! happen *before* the view is constructed (see `tui/ui.rs`); this
+//! module always assumes the user is being asked.
 
 use crate::sandbox::SandboxPolicy;
 use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
@@ -65,6 +89,20 @@ pub enum ToolCategory {
     Unknown,
 }
 
+/// Stakes-based variant for the takeover modal.
+///
+/// `RiskLevel::Benign` lets a single keystroke commit the approval.
+/// `RiskLevel::Destructive` requires an explicit second confirmation
+/// keypress so muscle-memory `Enter` never lands on an irreversible op.
+///
+/// Routing rules live in [`classify_risk`] — when in doubt, route to
+/// `Destructive`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RiskLevel {
+    Benign,
+    Destructive,
+}
+
 /// Request for user approval of a tool execution
 #[derive(Debug, Clone)]
 pub struct ApprovalRequest {
@@ -76,6 +114,8 @@ pub struct ApprovalRequest {
     pub description: String,
     /// Tool category
     pub category: ToolCategory,
+    /// Stakes-based routing for the takeover modal
+    pub risk: RiskLevel,
     /// Derived impact summary for the approval prompt
     pub impacts: Vec<String>,
     /// Tool parameters (for display)
@@ -93,12 +133,14 @@ impl ApprovalRequest {
         approval_key: &str,
     ) -> Self {
         let category = get_tool_category(tool_name);
+        let risk = classify_risk(tool_name, category, params);
 
         Self {
             id: id.to_string(),
             tool_name: tool_name.to_string(),
             description: description.to_string(),
             category,
+            risk,
             impacts: build_impact_summary(tool_name, category, params),
             params: params.clone(),
             approval_key: approval_key.to_string(),
@@ -146,6 +188,42 @@ pub fn get_tool_category(name: &str) -> ToolCategory {
         ToolCategory::Safe
     } else {
         ToolCategory::Unknown
+    }
+}
+
+/// Decide the stakes variant for an approval request.
+///
+/// The bias is conservative: a category we don't recognise routes to
+/// `Destructive`, and any shell command that `command_safety` flags as
+/// `Dangerous` is forced to `Destructive` even when the rest of the
+/// request looks calm. The split lets the modal swap muscle-memory
+/// approval for an explicit two-key confirmation on anything that can
+/// touch state outside this turn.
+#[must_use]
+pub fn classify_risk(tool_name: &str, category: ToolCategory, params: &Value) -> RiskLevel {
+    match category {
+        // Read paths and discovery — never staged.
+        ToolCategory::Safe | ToolCategory::McpRead => RiskLevel::Benign,
+        // Query-only network is benign; opening a URL pulls arbitrary
+        // remote content, so it stays destructive.
+        ToolCategory::Network => match tool_name {
+            "web_search" | "web_run" => RiskLevel::Benign,
+            _ => RiskLevel::Destructive,
+        },
+        // Shell is always destructive. We probe command_safety for
+        // shape so a future routing tweak (say, pure-readonly `ls`
+        // staying benign) lands here without a second pass.
+        ToolCategory::Shell => {
+            if let Some(cmd) = params.get("command").and_then(Value::as_str) {
+                let _ = crate::command_safety::analyze_command(cmd);
+            }
+            RiskLevel::Destructive
+        }
+        // File writes, MCP actions, unclassified surfaces — all
+        // require explicit confirmation.
+        ToolCategory::FileWrite | ToolCategory::McpAction | ToolCategory::Unknown => {
+            RiskLevel::Destructive
+        }
     }
 }
 
@@ -259,11 +337,65 @@ fn build_impact_summary(tool_name: &str, category: ToolCategory, params: &Value)
     }
 }
 
+/// Indices into the option list shared by both variants. Visible to
+/// the widget module so it can render the staged-confirmation banner
+/// without re-deriving the variant from the request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalOption {
+    ApproveOnce,
+    ApproveAlways,
+    Deny,
+    Abort,
+}
+
+impl ApprovalOption {
+    const ORDER: [ApprovalOption; 4] = [
+        ApprovalOption::ApproveOnce,
+        ApprovalOption::ApproveAlways,
+        ApprovalOption::Deny,
+        ApprovalOption::Abort,
+    ];
+
+    fn from_index(idx: usize) -> ApprovalOption {
+        Self::ORDER.get(idx).copied().unwrap_or(Self::Abort)
+    }
+
+    fn index(self) -> usize {
+        Self::ORDER
+            .iter()
+            .position(|o| *o == self)
+            .unwrap_or(Self::ORDER.len() - 1)
+    }
+
+    fn decision(self) -> ReviewDecision {
+        match self {
+            ApprovalOption::ApproveOnce => ReviewDecision::Approved,
+            ApprovalOption::ApproveAlways => ReviewDecision::ApprovedForSession,
+            ApprovalOption::Deny => ReviewDecision::Denied,
+            ApprovalOption::Abort => ReviewDecision::Abort,
+        }
+    }
+
+    /// Whether this option needs an explicit second-key confirmation in
+    /// the destructive variant. Deny/Abort are never staged.
+    fn requires_confirm(self, risk: RiskLevel) -> bool {
+        matches!(risk, RiskLevel::Destructive)
+            && matches!(
+                self,
+                ApprovalOption::ApproveOnce | ApprovalOption::ApproveAlways
+            )
+    }
+}
+
 /// Approval overlay state managed by the modal view stack
 #[derive(Debug, Clone)]
 pub struct ApprovalView {
     request: ApprovalRequest,
     selected: usize,
+    /// When `Some`, the destructive variant has staged this approval and
+    /// is waiting for the user to press the same key (or `Enter`) again.
+    /// Any other key clears the staging.
+    pending_confirm: Option<ApprovalOption>,
     timeout: Option<Duration>,
     requested_at: Instant,
 }
@@ -273,6 +405,7 @@ impl ApprovalView {
         Self {
             request,
             selected: 0,
+            pending_confirm: None,
             timeout: None,
             requested_at: Instant::now(),
         }
@@ -280,19 +413,62 @@ impl ApprovalView {
 
     fn select_prev(&mut self) {
         self.selected = self.selected.saturating_sub(1);
+        // Moving the selection abandons any staged confirmation; the
+        // user is reconsidering.
+        self.pending_confirm = None;
     }
 
     fn select_next(&mut self) {
-        self.selected = (self.selected + 1).min(3);
+        self.selected = (self.selected + 1).min(ApprovalOption::ORDER.len() - 1);
+        self.pending_confirm = None;
     }
 
+    fn current_option(&self) -> ApprovalOption {
+        ApprovalOption::from_index(self.selected)
+    }
+
+    /// Test-only accessor — the widget reads decisions through
+    /// `commit_or_stage` instead of polling.
+    #[cfg(test)]
     fn current_decision(&self) -> ReviewDecision {
-        match self.selected {
-            0 => ReviewDecision::Approved,
-            1 => ReviewDecision::ApprovedForSession,
-            2 => ReviewDecision::Denied,
-            _ => ReviewDecision::Abort,
+        self.current_option().decision()
+    }
+
+    /// Selected option for the renderer (used by the widget tests too).
+    pub fn selected(&self) -> usize {
+        self.selected
+    }
+
+    /// Risk level for the renderer's accent picking.
+    #[cfg(test)]
+    pub fn risk(&self) -> RiskLevel {
+        self.request.risk
+    }
+
+    /// The staged option, if any. `None` in the benign variant or when
+    /// no approve key has been pressed yet.
+    pub(crate) fn pending_confirm(&self) -> Option<ApprovalOption> {
+        self.pending_confirm
+    }
+
+    /// Try to commit (or stage) the given option respecting the
+    /// variant's confirmation policy. Returns the action the modal
+    /// stack should apply.
+    fn commit_or_stage(&mut self, option: ApprovalOption) -> ViewAction {
+        if option.requires_confirm(self.request.risk) {
+            // Two-step destructive flow: first press stages, second
+            // press of the same option commits.
+            if self.pending_confirm == Some(option) {
+                self.pending_confirm = None;
+                return self.emit_decision(option.decision(), false);
+            }
+            self.pending_confirm = Some(option);
+            self.selected = option.index();
+            return ViewAction::None;
         }
+        // Benign variant or non-approve options commit immediately.
+        self.pending_confirm = None;
+        self.emit_decision(option.decision(), false)
     }
 
     fn emit_decision(&self, decision: ReviewDecision, timed_out: bool) -> ViewAction {
@@ -337,18 +513,34 @@ impl ModalView for ApprovalView {
                 self.select_next();
                 ViewAction::None
             }
-            KeyCode::Enter => self.emit_decision(self.current_decision(), false),
-            KeyCode::Char('y') => self.emit_decision(ReviewDecision::Approved, false),
-            KeyCode::Char('a') => self.emit_decision(ReviewDecision::ApprovedForSession, false),
-            KeyCode::Char('n') => self.emit_decision(ReviewDecision::Denied, false),
-            KeyCode::Char('v') | KeyCode::Char('V') => self.emit_params_pager(),
+            KeyCode::Enter => self.commit_or_stage(self.current_option()),
+            // Direct shortcuts; '1' / '2' map to the first two options
+            // so a numeric pad still works for benign approve flows.
+            KeyCode::Char('y') | KeyCode::Char('1') => {
+                self.commit_or_stage(ApprovalOption::ApproveOnce)
+            }
+            KeyCode::Char('a') | KeyCode::Char('2') => {
+                self.commit_or_stage(ApprovalOption::ApproveAlways)
+            }
+            KeyCode::Char('n') | KeyCode::Char('d') | KeyCode::Char('3') => {
+                self.commit_or_stage(ApprovalOption::Deny)
+            }
+            KeyCode::Char('v') | KeyCode::Char('V') => {
+                self.pending_confirm = None;
+                self.emit_params_pager()
+            }
             KeyCode::Esc => self.emit_decision(ReviewDecision::Abort, false),
-            _ => ViewAction::None,
+            _ => {
+                // Any unrecognised key cancels a staged confirmation —
+                // the user is no longer aiming at "approve".
+                self.pending_confirm = None;
+                ViewAction::None
+            }
         }
     }
 
     fn render(&self, area: ratatui::layout::Rect, buf: &mut ratatui::buffer::Buffer) {
-        let approval_widget = ApprovalWidget::new(&self.request, self.selected);
+        let approval_widget = ApprovalWidget::new(&self.request, self);
         approval_widget.render(area, buf);
     }
 
@@ -622,13 +814,32 @@ mod tests {
         }
     }
 
+    fn benign_request() -> ApprovalRequest {
+        ApprovalRequest::new(
+            "test-id",
+            "read_file",
+            "Read a file from disk",
+            &json!({"path": "src/main.rs"}),
+            "tool:read_file",
+        )
+    }
+
+    fn destructive_request() -> ApprovalRequest {
+        ApprovalRequest::new(
+            "test-id",
+            "write_file",
+            "Write a file to disk",
+            &json!({"path": "src/main.rs", "content": "test"}),
+            "tool:write_file",
+        )
+    }
+
     // ========================================================================
     // Tool Category Tests
     // ========================================================================
 
     #[test]
     fn test_get_tool_category_safe_tools() {
-        // Read-only operations should be Safe
         assert_eq!(get_tool_category("read_file"), ToolCategory::Safe);
         assert_eq!(get_tool_category("list_dir"), ToolCategory::Safe);
         assert_eq!(get_tool_category("todo_write"), ToolCategory::Safe);
@@ -639,7 +850,6 @@ mod tests {
 
     #[test]
     fn test_get_tool_category_file_write_tools() {
-        // File modification tools should be FileWrite
         assert_eq!(get_tool_category("write_file"), ToolCategory::FileWrite);
         assert_eq!(get_tool_category("edit_file"), ToolCategory::FileWrite);
         assert_eq!(get_tool_category("apply_patch"), ToolCategory::FileWrite);
@@ -647,7 +857,6 @@ mod tests {
 
     #[test]
     fn test_get_tool_category_shell_tools() {
-        // Shell execution tools should be Shell
         assert_eq!(get_tool_category("exec_shell"), ToolCategory::Shell);
         assert_eq!(
             get_tool_category("mcp_linear_save_issue"),
@@ -659,6 +868,70 @@ mod tests {
     #[test]
     fn test_get_tool_category_unknown_tools_need_review() {
         assert_eq!(get_tool_category("unknown_tool"), ToolCategory::Unknown);
+    }
+
+    // ========================================================================
+    // Risk Routing Tests (#129)
+    // ========================================================================
+
+    #[test]
+    fn risk_safe_categories_route_benign() {
+        let cat = ToolCategory::Safe;
+        assert_eq!(
+            classify_risk("read_file", cat, &json!({"path": "x"})),
+            RiskLevel::Benign
+        );
+        let cat = ToolCategory::McpRead;
+        assert_eq!(
+            classify_risk("list_mcp_tools", cat, &json!({})),
+            RiskLevel::Benign
+        );
+    }
+
+    #[test]
+    fn risk_query_only_network_is_benign_but_fetch_is_destructive() {
+        // web_search is read-only enough to skip the two-key dance.
+        let cat = ToolCategory::Network;
+        assert_eq!(
+            classify_risk("web_search", cat, &json!({"q": "rust"})),
+            RiskLevel::Benign
+        );
+        // fetch_url pulls arbitrary remote content; never staged.
+        assert_eq!(
+            classify_risk("fetch_url", cat, &json!({"url": "https://example.com"})),
+            RiskLevel::Destructive
+        );
+    }
+
+    #[test]
+    fn risk_writes_shell_mcp_action_unknown_route_destructive() {
+        for (name, cat) in [
+            ("write_file", ToolCategory::FileWrite),
+            ("edit_file", ToolCategory::FileWrite),
+            ("apply_patch", ToolCategory::FileWrite),
+            ("exec_shell", ToolCategory::Shell),
+            ("mcp_linear_save_issue", ToolCategory::McpAction),
+            ("totally_new_tool", ToolCategory::Unknown),
+        ] {
+            assert_eq!(
+                classify_risk(name, cat, &json!({})),
+                RiskLevel::Destructive,
+                "expected {name:?} to be Destructive",
+            );
+        }
+    }
+
+    #[test]
+    fn risk_dangerous_shell_command_stays_destructive() {
+        // command_safety would flag this as Dangerous; classify_risk
+        // already routes Shell to Destructive. The check exists so a
+        // future attempt to relax shell to Benign cannot smuggle this
+        // through unexamined.
+        let cat = ToolCategory::Shell;
+        assert_eq!(
+            classify_risk("exec_shell", cat, &json!({"command": "rm -rf /"})),
+            RiskLevel::Destructive
+        );
     }
 
     // ========================================================================
@@ -679,12 +952,12 @@ mod tests {
         assert_eq!(request.id, "test-id");
         assert_eq!(request.tool_name, "write_file");
         assert_eq!(request.category, ToolCategory::FileWrite);
+        assert_eq!(request.risk, RiskLevel::Destructive);
         assert_eq!(request.params, params);
     }
 
     #[test]
     fn test_approval_request_params_display_truncates() {
-        // Create params with a very long string
         let long_content = "x".repeat(300);
         let params = json!({"path": "src/main.rs", "content": long_content});
         let request = ApprovalRequest::new(
@@ -696,7 +969,6 @@ mod tests {
         );
 
         let display = request.params_display();
-        // Should be truncated to around 200 chars
         assert!(display.len() < 250);
         assert!(display.contains("src/main.rs"));
     }
@@ -743,47 +1015,27 @@ mod tests {
     }
 
     // ========================================================================
-    // ApprovalView Tests
+    // ApprovalView Tests — Benign Variant (single-key approve)
     // ========================================================================
 
     #[test]
     fn test_approval_view_initial_state() {
-        let params = json!({"path": "src/main.rs"});
-        let request = ApprovalRequest::new(
-            "test-id",
-            "read_file",
-            "Read a file from disk",
-            &params,
-            "test_key",
-        );
-        let view = ApprovalView::new(request.clone());
-
+        let view = ApprovalView::new(benign_request());
         assert_eq!(view.selected, 0);
         assert!(view.timeout.is_none());
+        assert_eq!(view.pending_confirm(), None);
+        assert_eq!(view.risk(), RiskLevel::Benign);
     }
 
     #[test]
     fn test_approval_view_navigation() {
-        let params = json!({"path": "src/main.rs"});
-        let request = ApprovalRequest::new(
-            "test-id",
-            "read_file",
-            "Read a file from disk",
-            &params,
-            "test_key",
-        );
-        let mut view = ApprovalView::new(request);
-
-        // Initially at 0
+        let mut view = ApprovalView::new(benign_request());
         assert_eq!(view.selected, 0);
 
-        // Navigate down
         view.select_next();
         assert_eq!(view.selected, 1);
-
         view.select_next();
         assert_eq!(view.selected, 2);
-
         view.select_next();
         assert_eq!(view.selected, 3);
 
@@ -791,24 +1043,13 @@ mod tests {
         view.select_next();
         assert_eq!(view.selected, 3);
 
-        // Navigate up
         view.select_prev();
         assert_eq!(view.selected, 2);
     }
 
     #[test]
-    fn test_approval_view_keybindings_decisions() {
-        let params = json!({"path": "src/main.rs"});
-        let request = ApprovalRequest::new(
-            "test-id",
-            "read_file",
-            "Read a file from disk",
-            &params,
-            "test_key",
-        );
-        let mut view = ApprovalView::new(request.clone());
-
-        // Test 'y' -> Approved
+    fn benign_y_one_step_approves() {
+        let mut view = ApprovalView::new(benign_request());
         let action = view.handle_key(create_key_event(KeyCode::Char('y')));
         assert!(matches!(
             action,
@@ -817,20 +1058,37 @@ mod tests {
                 ..
             })
         ));
+    }
 
-        // Test 'n' -> Denied
-        let mut view = ApprovalView::new(request.clone());
-        let action = view.handle_key(create_key_event(KeyCode::Char('n')));
+    #[test]
+    fn benign_one_key_approves_via_numeric_pad() {
+        let mut view = ApprovalView::new(benign_request());
+        let action = view.handle_key(create_key_event(KeyCode::Char('1')));
         assert!(matches!(
             action,
             ViewAction::EmitAndClose(ViewEvent::ApprovalDecision {
-                decision: ReviewDecision::Denied,
+                decision: ReviewDecision::Approved,
                 ..
             })
         ));
+    }
 
-        // Test 'a' -> ApprovedForSession
-        let mut view = ApprovalView::new(request.clone());
+    #[test]
+    fn benign_enter_approves_in_one_step() {
+        let mut view = ApprovalView::new(benign_request());
+        let action = view.handle_key(create_key_event(KeyCode::Enter));
+        assert!(matches!(
+            action,
+            ViewAction::EmitAndClose(ViewEvent::ApprovalDecision {
+                decision: ReviewDecision::Approved,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn benign_a_two_approves_for_session() {
+        let mut view = ApprovalView::new(benign_request());
         let action = view.handle_key(create_key_event(KeyCode::Char('a')));
         assert!(matches!(
             action,
@@ -840,8 +1098,38 @@ mod tests {
             })
         ));
 
-        // Test Esc -> Abort
-        let mut view = ApprovalView::new(request);
+        let mut view = ApprovalView::new(benign_request());
+        let action = view.handle_key(create_key_event(KeyCode::Char('2')));
+        assert!(matches!(
+            action,
+            ViewAction::EmitAndClose(ViewEvent::ApprovalDecision {
+                decision: ReviewDecision::ApprovedForSession,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn benign_n_d_three_all_deny() {
+        for code in [KeyCode::Char('n'), KeyCode::Char('d'), KeyCode::Char('3')] {
+            let mut view = ApprovalView::new(benign_request());
+            let action = view.handle_key(create_key_event(code));
+            assert!(
+                matches!(
+                    action,
+                    ViewAction::EmitAndClose(ViewEvent::ApprovalDecision {
+                        decision: ReviewDecision::Denied,
+                        ..
+                    })
+                ),
+                "expected Denied for {code:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn benign_esc_aborts() {
+        let mut view = ApprovalView::new(benign_request());
         let action = view.handle_key(create_key_event(KeyCode::Esc));
         assert!(matches!(
             action,
@@ -854,22 +1142,13 @@ mod tests {
 
     #[test]
     fn test_approval_view_enter_uses_selected_option() {
-        let params = json!({"path": "src/main.rs"});
-        let request = ApprovalRequest::new(
-            "test-id",
-            "read_file",
-            "Read a file from disk",
-            &params,
-            "test_key",
-        );
-        let mut view = ApprovalView::new(request);
+        let mut view = ApprovalView::new(benign_request());
 
         // Navigate to index 2 (Denied)
         view.select_next();
         view.select_next();
         assert_eq!(view.selected, 2);
 
-        // Press Enter - should use current selection
         let action = view.handle_key(create_key_event(KeyCode::Enter));
         assert!(matches!(
             action,
@@ -882,54 +1161,31 @@ mod tests {
 
     #[test]
     fn test_approval_view_navigation_keys() {
-        let params = json!({"path": "src/main.rs"});
-        let request = ApprovalRequest::new(
-            "test-id",
-            "read_file",
-            "Read a file from disk",
-            &params,
-            "test_key",
-        );
-        let mut view = ApprovalView::new(request);
+        let mut view = ApprovalView::new(benign_request());
 
-        // Test Up arrow
         view.handle_key(create_key_event(KeyCode::Up));
-        assert_eq!(view.selected, 0); // Should clamp at 0
+        assert_eq!(view.selected, 0); // clamped at 0
 
-        // Test Down arrow
         view.handle_key(create_key_event(KeyCode::Down));
         assert_eq!(view.selected, 1);
 
-        // Test 'j' for down
         view.handle_key(create_key_event(KeyCode::Char('j')));
         assert_eq!(view.selected, 2);
 
-        // Test 'k' for up
         view.handle_key(create_key_event(KeyCode::Char('k')));
         assert_eq!(view.selected, 1);
     }
 
     #[test]
     fn test_approval_view_view_params() {
-        let params = json!({"path": "src/main.rs", "content": "test"});
-        let request = ApprovalRequest::new(
-            "test-id",
-            "read_file",
-            "Read a file from disk",
-            &params,
-            "test_key",
-        );
-        let mut view = ApprovalView::new(request.clone());
-
-        // Test 'v' to view params
+        let mut view = ApprovalView::new(benign_request());
         let action = view.handle_key(create_key_event(KeyCode::Char('v')));
         assert!(matches!(
             action,
             ViewAction::Emit(ViewEvent::OpenTextPager { .. })
         ));
 
-        // Test 'V' (uppercase) also works
-        let mut view = ApprovalView::new(request.clone());
+        let mut view = ApprovalView::new(benign_request());
         let action = view.handle_key(create_key_event(KeyCode::Char('V')));
         assert!(matches!(
             action,
@@ -939,31 +1195,237 @@ mod tests {
 
     #[test]
     fn test_approval_view_current_decision_mapping() {
-        let params = json!({"path": "src/main.rs"});
-        let request = ApprovalRequest::new(
-            "test-id",
-            "read_file",
-            "Read a file from disk",
-            &params,
-            "test_key",
-        );
-        let mut view = ApprovalView::new(request);
+        let mut view = ApprovalView::new(benign_request());
 
-        // Index 0 -> Approved
         view.selected = 0;
         assert_eq!(view.current_decision(), ReviewDecision::Approved);
-
-        // Index 1 -> ApprovedForSession
         view.selected = 1;
         assert_eq!(view.current_decision(), ReviewDecision::ApprovedForSession);
-
-        // Index 2 -> Denied
         view.selected = 2;
         assert_eq!(view.current_decision(), ReviewDecision::Denied);
-
-        // Index 3 -> Abort
         view.selected = 3;
         assert_eq!(view.current_decision(), ReviewDecision::Abort);
+    }
+
+    // ========================================================================
+    // ApprovalView Tests — Destructive Variant (two-key confirm)
+    // ========================================================================
+
+    #[test]
+    fn destructive_request_routes_destructive() {
+        let view = ApprovalView::new(destructive_request());
+        assert_eq!(view.risk(), RiskLevel::Destructive);
+    }
+
+    #[test]
+    fn destructive_y_first_press_stages_then_second_commits() {
+        let mut view = ApprovalView::new(destructive_request());
+
+        // First press stages — no decision emitted yet.
+        let action = view.handle_key(create_key_event(KeyCode::Char('y')));
+        assert!(matches!(action, ViewAction::None));
+        assert_eq!(view.pending_confirm(), Some(ApprovalOption::ApproveOnce));
+
+        // Second press of the same key commits.
+        let action = view.handle_key(create_key_event(KeyCode::Char('y')));
+        assert!(matches!(
+            action,
+            ViewAction::EmitAndClose(ViewEvent::ApprovalDecision {
+                decision: ReviewDecision::Approved,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn destructive_enter_first_press_stages_then_second_commits() {
+        let mut view = ApprovalView::new(destructive_request());
+
+        // Selection starts at ApproveOnce — Enter stages.
+        let action = view.handle_key(create_key_event(KeyCode::Enter));
+        assert!(matches!(action, ViewAction::None));
+        assert_eq!(view.pending_confirm(), Some(ApprovalOption::ApproveOnce));
+
+        // Second Enter on the same selection commits.
+        let action = view.handle_key(create_key_event(KeyCode::Enter));
+        assert!(matches!(
+            action,
+            ViewAction::EmitAndClose(ViewEvent::ApprovalDecision {
+                decision: ReviewDecision::Approved,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn destructive_navigation_clears_staged_confirmation() {
+        let mut view = ApprovalView::new(destructive_request());
+
+        view.handle_key(create_key_event(KeyCode::Char('y')));
+        assert_eq!(view.pending_confirm(), Some(ApprovalOption::ApproveOnce));
+
+        // Moving the selection abandons the staging.
+        view.handle_key(create_key_event(KeyCode::Down));
+        assert_eq!(view.pending_confirm(), None);
+    }
+
+    #[test]
+    fn destructive_unrelated_key_clears_staged_confirmation() {
+        let mut view = ApprovalView::new(destructive_request());
+
+        view.handle_key(create_key_event(KeyCode::Char('y')));
+        assert_eq!(view.pending_confirm(), Some(ApprovalOption::ApproveOnce));
+
+        // A key with no mapped action clears the staging.
+        let action = view.handle_key(create_key_event(KeyCode::Char('q')));
+        assert!(matches!(action, ViewAction::None));
+        assert_eq!(view.pending_confirm(), None);
+    }
+
+    #[test]
+    fn destructive_a_first_press_stages_then_second_commits_session() {
+        let mut view = ApprovalView::new(destructive_request());
+
+        let action = view.handle_key(create_key_event(KeyCode::Char('a')));
+        assert!(matches!(action, ViewAction::None));
+        assert_eq!(view.pending_confirm(), Some(ApprovalOption::ApproveAlways));
+
+        let action = view.handle_key(create_key_event(KeyCode::Char('a')));
+        assert!(matches!(
+            action,
+            ViewAction::EmitAndClose(ViewEvent::ApprovalDecision {
+                decision: ReviewDecision::ApprovedForSession,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn destructive_y_then_a_does_not_commit_either() {
+        // Pressing 'y' then 'a' must NOT commit ApproveAlways — the
+        // second key is a different option, so it re-stages instead.
+        let mut view = ApprovalView::new(destructive_request());
+
+        let action = view.handle_key(create_key_event(KeyCode::Char('y')));
+        assert!(matches!(action, ViewAction::None));
+        assert_eq!(view.pending_confirm(), Some(ApprovalOption::ApproveOnce));
+
+        let action = view.handle_key(create_key_event(KeyCode::Char('a')));
+        assert!(matches!(action, ViewAction::None));
+        assert_eq!(view.pending_confirm(), Some(ApprovalOption::ApproveAlways));
+    }
+
+    #[test]
+    fn destructive_deny_does_not_require_confirmation() {
+        // Deny / Abort skip the two-key dance — the user is bailing.
+        let mut view = ApprovalView::new(destructive_request());
+        let action = view.handle_key(create_key_event(KeyCode::Char('n')));
+        assert!(matches!(
+            action,
+            ViewAction::EmitAndClose(ViewEvent::ApprovalDecision {
+                decision: ReviewDecision::Denied,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn destructive_esc_aborts_immediately() {
+        let mut view = ApprovalView::new(destructive_request());
+        // Stage something first.
+        view.handle_key(create_key_event(KeyCode::Char('y')));
+        // Esc still aborts in one press.
+        let action = view.handle_key(create_key_event(KeyCode::Esc));
+        assert!(matches!(
+            action,
+            ViewAction::EmitAndClose(ViewEvent::ApprovalDecision {
+                decision: ReviewDecision::Abort,
+                ..
+            })
+        ));
+    }
+
+    // ========================================================================
+    // Render takeover smoke tests — keep the visual contract honest so a
+    // future widget refactor cannot silently shrink back to a popup.
+    // ========================================================================
+
+    fn render_lines(view: &ApprovalView, w: u16, h: u16) -> Vec<String> {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        let mut buf = Buffer::empty(Rect::new(0, 0, w, h));
+        ModalView::render(view, Rect::new(0, 0, w, h), &mut buf);
+        (0..buf.area.height)
+            .map(|row| {
+                (0..buf.area.width)
+                    .map(|col| buf[(col, row)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn render_benign_includes_review_badge_and_one_step_hint() {
+        let view = ApprovalView::new(benign_request());
+        let lines = render_lines(&view, 100, 40);
+        let joined = lines.join("\n");
+        assert!(joined.contains("REVIEW"), "missing REVIEW badge:\n{joined}");
+        assert!(
+            joined.contains("Single key approves"),
+            "benign hint missing:\n{joined}"
+        );
+        assert!(joined.contains("read_file"));
+    }
+
+    #[test]
+    fn render_destructive_shows_warning_badge_and_two_step_hint() {
+        let view = ApprovalView::new(destructive_request());
+        let lines = render_lines(&view, 100, 40);
+        let joined = lines.join("\n");
+        assert!(
+            joined.contains("DESTRUCTIVE"),
+            "missing DESTRUCTIVE badge:\n{joined}"
+        );
+        assert!(
+            joined.contains("Two keys to approve"),
+            "destructive hint missing:\n{joined}"
+        );
+        assert!(joined.contains("write_file"));
+    }
+
+    #[test]
+    fn render_destructive_after_stage_shows_confirm_banner() {
+        let mut view = ApprovalView::new(destructive_request());
+        view.handle_key(create_key_event(KeyCode::Char('y')));
+        let lines = render_lines(&view, 100, 40);
+        let joined = lines.join("\n");
+        assert!(
+            joined.contains("Confirm destructive action"),
+            "confirm banner missing:\n{joined}"
+        );
+        assert!(
+            joined.contains("(staged)"),
+            "stage marker missing:\n{joined}"
+        );
+    }
+
+    #[test]
+    fn render_takeover_card_fills_most_of_area() {
+        // The card should be wider than the old 65-cell popup whenever
+        // the terminal can hold it; this guards against a regression
+        // back to the centered popup.
+        let view = ApprovalView::new(benign_request());
+        let lines = render_lines(&view, 120, 40);
+        // Find the widest non-blank rendered row.
+        let widest = lines
+            .iter()
+            .map(|l| l.trim_end_matches(' ').len())
+            .max()
+            .unwrap_or(0);
+        assert!(
+            widest >= 80,
+            "takeover card too narrow: widest row = {widest} cells"
+        );
     }
 
     // ========================================================================
@@ -975,7 +1437,6 @@ mod tests {
         let request =
             ElevationRequest::for_shell("test-id", "cargo build", "network blocked", true, false);
         let view = ElevationView::new(request);
-
         assert_eq!(view.selected, 0);
     }
 
@@ -985,7 +1446,6 @@ mod tests {
             ElevationRequest::for_shell("test-id", "cargo test", "write blocked", false, true);
         let mut view = ElevationView::new(request);
 
-        // Test 'n' -> WithNetwork
         let action = view.handle_key(create_key_event(KeyCode::Char('n')));
         assert!(matches!(
             action,
@@ -995,7 +1455,6 @@ mod tests {
             })
         ));
 
-        // Test 'w' -> WithWriteAccess
         let request =
             ElevationRequest::for_shell("test-id", "cargo build", "write blocked", false, true);
         let mut view = ElevationView::new(request);
@@ -1008,7 +1467,6 @@ mod tests {
             })
         ));
 
-        // Test 'f' -> FullAccess
         let request =
             ElevationRequest::for_shell("test-id", "cargo build", "blocked", false, false);
         let mut view = ElevationView::new(request);
@@ -1021,7 +1479,6 @@ mod tests {
             })
         ));
 
-        // Test Esc -> Abort
         let request =
             ElevationRequest::for_shell("test-id", "cargo build", "blocked", false, false);
         let mut view = ElevationView::new(request);
@@ -1034,7 +1491,6 @@ mod tests {
             })
         ));
 
-        // Test 'a' -> Abort (alternative)
         let request =
             ElevationRequest::for_shell("test-id", "cargo build", "blocked", false, false);
         let mut view = ElevationView::new(request);
@@ -1053,18 +1509,14 @@ mod tests {
         let request = ElevationRequest::for_shell("test-id", "cargo build", "blocked", true, false);
         let mut view = ElevationView::new(request);
 
-        // Initially at 0
         assert_eq!(view.selected, 0);
 
-        // Navigate down
         view.handle_key(create_key_event(KeyCode::Down));
         assert_eq!(view.selected, 1);
 
-        // Navigate up
         view.handle_key(create_key_event(KeyCode::Up));
         assert_eq!(view.selected, 0);
 
-        // Test 'j' and 'k'
         view.handle_key(create_key_event(KeyCode::Char('j')));
         assert_eq!(view.selected, 1);
 
@@ -1077,11 +1529,9 @@ mod tests {
         let request = ElevationRequest::for_shell("test-id", "cargo build", "blocked", true, false);
         let mut view = ElevationView::new(request);
 
-        // Navigate to index 1
         view.handle_key(create_key_event(KeyCode::Down));
         assert_eq!(view.selected, 1);
 
-        // Press Enter
         let action = view.handle_key(create_key_event(KeyCode::Enter));
         assert!(matches!(
             action,

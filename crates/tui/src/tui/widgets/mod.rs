@@ -23,7 +23,9 @@ use std::time::Duration;
 
 use crate::palette;
 use crate::tui::app::{App, AppMode, ComposerDensity};
-use crate::tui::approval::{ApprovalRequest, ElevationOption, ElevationRequest, ToolCategory};
+use crate::tui::approval::{
+    ApprovalRequest, ApprovalView, ElevationOption, ElevationRequest, RiskLevel, ToolCategory,
+};
 use crate::tui::history::HistoryCell;
 use crate::tui::scrolling::TranscriptLineMeta;
 use crate::{commands, config::COMMON_DEEPSEEK_MODELS};
@@ -484,94 +486,127 @@ impl Renderable for ComposerWidget<'_> {
     }
 }
 
+/// Codex-style full-screen approval takeover (#129).
+///
+/// The widget reads its mutable state (selected option, staged
+/// confirmation) directly from the [`ApprovalView`] so the destructive
+/// variant can render its "Press Y again to confirm" banner without
+/// touching internal fields. Rendering reflows to fill most of the
+/// transcript area instead of a centered popup; on small terminals it
+/// falls back to a 65×22 card so existing snapshot tests still see a
+/// coherent layout.
 pub struct ApprovalWidget<'a> {
     request: &'a ApprovalRequest,
-    selected: usize,
+    view: &'a ApprovalView,
 }
 
 impl<'a> ApprovalWidget<'a> {
-    pub fn new(request: &'a ApprovalRequest, selected: usize) -> Self {
-        Self { request, selected }
+    pub fn new(request: &'a ApprovalRequest, view: &'a ApprovalView) -> Self {
+        Self { request, view }
     }
 }
 
+/// Layout pad around the takeover card. Generous so the modal feels
+/// like a takeover rather than a popup, but never larger than the
+/// terminal can hold.
+const APPROVAL_CARD_HORIZONTAL_PAD: u16 = 6;
+const APPROVAL_CARD_VERTICAL_PAD: u16 = 2;
+/// Minimum card height — anything tighter and the destructive variant's
+/// confirmation banner overlaps the option list.
+const APPROVAL_CARD_MIN_HEIGHT: u16 = 18;
+/// Maximum card width — readability craters past this on wide terminals.
+const APPROVAL_CARD_MAX_WIDTH: u16 = 96;
+
 impl Renderable for ApprovalWidget<'_> {
     fn render(&self, area: Rect, buf: &mut Buffer) {
-        let popup_width = 65.min(area.width.saturating_sub(4));
-        let popup_height = 22.min(area.height.saturating_sub(4));
-        let popup_area = Rect {
-            x: (area.width.saturating_sub(popup_width)) / 2,
-            y: (area.height.saturating_sub(popup_height)) / 2,
-            width: popup_width,
-            height: popup_height,
-        };
+        let card_area = compute_takeover_area(area);
+        Clear.render(card_area, buf);
 
-        Clear.render(popup_area, buf);
+        let risk = self.request.risk;
+        let palette_colors = approval_palette(risk);
+        let mut lines: Vec<Line<'static>> = Vec::with_capacity(20);
 
-        let mut lines = vec![
-            Line::from(""),
-            Line::from(vec![
-                Span::raw("  Tool: "),
-                Span::styled(
-                    &self.request.tool_name,
-                    Style::default()
-                        .fg(palette::DEEPSEEK_SKY)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]),
-        ];
-
-        let category_label = match self.request.category {
-            ToolCategory::Safe => ("Safe", palette::STATUS_SUCCESS),
-            ToolCategory::FileWrite => ("File Write", palette::STATUS_WARNING),
-            ToolCategory::Shell => ("Shell Command", palette::STATUS_ERROR),
-            ToolCategory::Network => ("Network", palette::STATUS_WARNING),
-            ToolCategory::McpRead => ("MCP Read", palette::DEEPSEEK_SKY),
-            ToolCategory::McpAction => ("MCP Action", palette::STATUS_WARNING),
-            ToolCategory::Unknown => ("Unknown", palette::STATUS_ERROR),
-        };
+        // Header: stakes badge + tool identifier. The badge is the
+        // first thing the eye lands on.
+        lines.push(Line::from(""));
         lines.push(Line::from(vec![
-            Span::raw("  Type: "),
+            Span::raw("  "),
             Span::styled(
-                category_label.0,
+                format!(" {} ", risk_badge_text(risk)),
                 Style::default()
-                    .fg(category_label.1)
+                    .fg(palette::DEEPSEEK_INK)
+                    .bg(palette_colors.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(
+                self.request.tool_name.clone(),
+                Style::default()
+                    .fg(palette::DEEPSEEK_SKY)
                     .add_modifier(Modifier::BOLD),
             ),
         ]));
 
+        // Category line — unchanged vocabulary so existing tests still
+        // recognise the rendering.
+        let (cat_label, cat_color) = category_label_for(self.request.category);
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled("Type: ", Style::default().fg(palette::TEXT_HINT)),
+            Span::styled(
+                cat_label,
+                Style::default().fg(cat_color).add_modifier(Modifier::BOLD),
+            ),
+        ]));
+
         lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            format!("  About: {}", self.request.description),
-            Style::default().fg(palette::TEXT_MUTED),
-        )));
-        for impact in self.request.impacts.iter().take(3) {
-            lines.push(Line::from(Span::styled(
-                format!("  Impact: {impact}"),
-                Style::default().fg(palette::TEXT_PRIMARY),
-            )));
+        // About + impacts. Impact lines are the load-bearing content;
+        // they tell the user what will happen.
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled("About:  ", Style::default().fg(palette::TEXT_HINT)),
+            Span::styled(
+                self.request.description.clone(),
+                Style::default().fg(palette::TEXT_BODY),
+            ),
+        ]));
+        for impact in self.request.impacts.iter().take(4) {
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled("Impact: ", Style::default().fg(palette::TEXT_HINT)),
+                Span::styled(impact.clone(), Style::default().fg(palette::TEXT_BODY)),
+            ]));
         }
+
         lines.push(Line::from(""));
         let params_str = self.request.params_display();
-        let params_truncated = crate::utils::truncate_with_ellipsis(&params_str, 60, "...");
-        lines.push(Line::from(Span::styled(
-            format!("  Params: {params_truncated}"),
-            Style::default().fg(palette::TEXT_MUTED),
-        )));
+        let params_width = card_area.width.saturating_sub(14) as usize;
+        let params_truncated =
+            crate::utils::truncate_with_ellipsis(&params_str, params_width.max(20), "...");
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled("Params: ", Style::default().fg(palette::TEXT_HINT)),
+            Span::styled(
+                params_truncated,
+                Style::default().fg(palette::TEXT_SECONDARY),
+            ),
+        ]));
 
         lines.push(Line::from(""));
 
-        let options = [
-            ("y", "Approve (this time)"),
-            ("a", "Approve for session"),
-            ("n", "Deny"),
-            ("v", "View full params"),
-            ("Esc", "Abort turn"),
-        ];
+        let options = approval_options_for(risk);
+        let pending = self.view.pending_confirm();
 
-        for (i, (key, label)) in options.iter().enumerate() {
-            let is_selected = i == self.selected;
-            let style = if is_selected {
+        for (i, opt) in options.iter().enumerate() {
+            let is_selected = i == self.view.selected();
+            let staged = pending.is_some_and(|p| p == opt.option);
+            let label_color = if opt.dangerous {
+                palette_colors.accent
+            } else {
+                palette::TEXT_BODY
+            };
+
+            let row_style = if is_selected {
                 Style::default()
                     .fg(palette::SELECTION_TEXT)
                     .bg(palette::SELECTION_BG)
@@ -579,34 +614,244 @@ impl Renderable for ApprovalWidget<'_> {
                 Style::default()
             };
 
-            lines.push(Line::from(vec![
+            let mut spans = vec![
                 Span::raw("  "),
                 Span::styled(
-                    format!("[{key}] "),
-                    Style::default().fg(palette::STATUS_SUCCESS),
+                    format!("[{}] ", opt.key_hint),
+                    Style::default()
+                        .fg(palette_colors.shortcut)
+                        .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(*label, style),
-            ]));
+                Span::styled(opt.label.to_string(), row_style.fg(label_color)),
+            ];
+            if staged {
+                spans.push(Span::raw("  "));
+                spans.push(Span::styled(
+                    "(staged)",
+                    Style::default()
+                        .fg(palette_colors.accent)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
+            lines.push(Line::from(spans));
         }
 
-        let title = format!(" Approve Tool: {} ", &self.request.tool_name);
+        // Variant-specific footer: benign nudges single-key approve;
+        // destructive shows either the standing prompt or the
+        // confirmation banner when an approve key has been staged.
+        lines.push(Line::from(""));
+        match (risk, pending) {
+            (RiskLevel::Benign, _) => {
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(
+                        "Single key approves: ",
+                        Style::default().fg(palette::TEXT_HINT),
+                    ),
+                    Span::styled(
+                        "Enter / 1 / y",
+                        Style::default()
+                            .fg(palette_colors.accent)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        "  ·  v: full params  ·  Esc: abort",
+                        Style::default().fg(palette::TEXT_HINT),
+                    ),
+                ]));
+            }
+            (RiskLevel::Destructive, Some(opt)) => {
+                let again_key = match opt {
+                    crate::tui::approval::ApprovalOption::ApproveOnce => "Enter or y",
+                    crate::tui::approval::ApprovalOption::ApproveAlways => "Enter or a",
+                    _ => "Enter",
+                };
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(
+                        "Confirm destructive action — press ",
+                        Style::default()
+                            .fg(palette_colors.accent)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        again_key.to_string(),
+                        Style::default()
+                            .fg(palette::DEEPSEEK_INK)
+                            .bg(palette_colors.accent)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        " again to commit, anything else cancels.",
+                        Style::default().fg(palette::TEXT_HINT),
+                    ),
+                ]));
+            }
+            (RiskLevel::Destructive, None) => {
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(
+                        "Two keys to approve: ",
+                        Style::default().fg(palette::TEXT_HINT),
+                    ),
+                    Span::styled(
+                        "y/a then y/a again",
+                        Style::default()
+                            .fg(palette_colors.accent)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        "  ·  v: full params  ·  Esc: abort",
+                        Style::default().fg(palette::TEXT_HINT),
+                    ),
+                ]));
+            }
+        }
+
+        let title = format!(
+            " {} approval — {} ",
+            risk_badge_text(risk),
+            self.request.tool_name
+        );
         let block = Block::default()
             .title(title)
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(palette::BORDER_COLOR))
+            .border_style(Style::default().fg(palette_colors.border))
             .style(Style::default().bg(palette::DEEPSEEK_INK))
             .padding(Padding::uniform(1));
 
+        // Render the card body inside the block, then paint the warm
+        // accent rail on the destructive variant. The rail uses a
+        // single-cell column so it doesn't shift the body layout.
         let paragraph = Paragraph::new(lines)
             .block(block)
             .wrap(Wrap { trim: false });
+        paragraph.render(card_area, buf);
 
-        paragraph.render(popup_area, buf);
+        if matches!(risk, RiskLevel::Destructive) {
+            paint_left_rail(card_area, buf, palette_colors.accent);
+        }
     }
 
     fn desired_height(&self, _width: u16) -> u16 {
         1
     }
+}
+
+/// Compute the card rect inside `area`. Always centered; pad on every
+/// side so the takeover reads as a takeover but a small terminal still
+/// renders the full card without truncation.
+fn compute_takeover_area(area: Rect) -> Rect {
+    let avail_width = area.width.saturating_sub(APPROVAL_CARD_HORIZONTAL_PAD * 2);
+    let avail_height = area.height.saturating_sub(APPROVAL_CARD_VERTICAL_PAD * 2);
+    let card_width = APPROVAL_CARD_MAX_WIDTH.min(avail_width).max(40);
+    let card_height = APPROVAL_CARD_MIN_HEIGHT.max(avail_height.min(28));
+    let x = area.x + (area.width.saturating_sub(card_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(card_height)) / 2;
+    Rect {
+        x,
+        y,
+        width: card_width,
+        height: card_height,
+    }
+}
+
+/// Paint a single-column accent on the inside-left of the card. Only
+/// touches cells that already exist in the buffer area.
+fn paint_left_rail(card: Rect, buf: &mut Buffer, color: Color) {
+    if card.width < 2 || card.height < 4 {
+        return;
+    }
+    let rail_x = card.x + 1;
+    let top = card.y + 1;
+    let bot = card.y + card.height.saturating_sub(2);
+    for y in top..=bot {
+        if y >= buf.area.y + buf.area.height {
+            break;
+        }
+        let cell = &mut buf[(rail_x, y)];
+        cell.set_char('\u{2503}'); // ┃ — heavy bar so the warning reads at a glance
+        cell.set_style(Style::default().fg(color).bg(palette::DEEPSEEK_INK));
+    }
+}
+
+/// Approval palette per risk variant.
+struct ApprovalColors {
+    border: Color,
+    accent: Color,
+    shortcut: Color,
+}
+
+fn approval_palette(risk: RiskLevel) -> ApprovalColors {
+    match risk {
+        RiskLevel::Benign => ApprovalColors {
+            border: palette::BORDER_COLOR,
+            accent: palette::DEEPSEEK_SKY,
+            shortcut: palette::DEEPSEEK_SKY,
+        },
+        RiskLevel::Destructive => ApprovalColors {
+            border: palette::DEEPSEEK_RED,
+            accent: palette::DEEPSEEK_RED,
+            shortcut: palette::STATUS_WARNING,
+        },
+    }
+}
+
+fn risk_badge_text(risk: RiskLevel) -> &'static str {
+    match risk {
+        RiskLevel::Benign => "REVIEW",
+        RiskLevel::Destructive => "DESTRUCTIVE",
+    }
+}
+
+fn category_label_for(category: ToolCategory) -> (&'static str, Color) {
+    match category {
+        ToolCategory::Safe => ("Safe", palette::STATUS_SUCCESS),
+        ToolCategory::FileWrite => ("File Write", palette::STATUS_WARNING),
+        ToolCategory::Shell => ("Shell Command", palette::STATUS_ERROR),
+        ToolCategory::Network => ("Network", palette::STATUS_WARNING),
+        ToolCategory::McpRead => ("MCP Read", palette::DEEPSEEK_SKY),
+        ToolCategory::McpAction => ("MCP Action", palette::STATUS_WARNING),
+        ToolCategory::Unknown => ("Unknown", palette::STATUS_ERROR),
+    }
+}
+
+struct ApprovalOptionRow {
+    option: crate::tui::approval::ApprovalOption,
+    label: &'static str,
+    key_hint: &'static str,
+    dangerous: bool,
+}
+
+fn approval_options_for(risk: RiskLevel) -> [ApprovalOptionRow; 4] {
+    use crate::tui::approval::ApprovalOption as O;
+    let dangerous = matches!(risk, RiskLevel::Destructive);
+    [
+        ApprovalOptionRow {
+            option: O::ApproveOnce,
+            label: "Approve once",
+            key_hint: "1 / y",
+            dangerous,
+        },
+        ApprovalOptionRow {
+            option: O::ApproveAlways,
+            label: "Approve always for this kind",
+            key_hint: "2 / a",
+            dangerous,
+        },
+        ApprovalOptionRow {
+            option: O::Deny,
+            label: "Deny this call",
+            key_hint: "3 / d / n",
+            dangerous: false,
+        },
+        ApprovalOptionRow {
+            option: O::Abort,
+            label: "Abort the turn",
+            key_hint: "Esc",
+            dangerous: false,
+        },
+    ]
 }
 
 pub struct ElevationWidget<'a> {
