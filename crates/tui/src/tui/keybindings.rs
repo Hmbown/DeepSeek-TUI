@@ -179,6 +179,11 @@ pub const KEYBINDINGS: &[KeybindingEntry] = &[
         section: KeybindingSection::Submission,
     },
     KeybindingEntry {
+        chord: "Alt+V",
+        description: "Open tool-details pager",
+        section: KeybindingSection::Submission,
+    },
+    KeybindingEntry {
         chord: "Ctrl+O",
         description: "Open thinking pager",
         section: KeybindingSection::Submission,
