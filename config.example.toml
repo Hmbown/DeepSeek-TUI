@@ -62,6 +62,16 @@ memory_path = "~/.deepseek/memory.md"
 allow_shell = true
 approval_policy = "on-request" # on-request | untrusted | never
 sandbox_mode = "workspace-write" # read-only | workspace-write | danger-full-access | external-sandbox
+
+# auto_allow entries match by command prefix, not raw string.
+# See command_safety.rs for the prefix dictionary.
+#
+# Examples:
+#   auto_allow = ["git status"]   # auto-approves: git status, git status -s, git status --porcelain
+#                                 # does NOT auto-approve: git push, git checkout
+#   auto_allow = ["cargo check", "npm run"]
+#
+# auto_allow = []
 max_subagents = 5 # optional (1-20)
 
 # Optional managed policy paths (defaults to /etc/deepseek/*.toml on unix):

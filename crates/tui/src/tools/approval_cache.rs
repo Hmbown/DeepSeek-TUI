@@ -23,6 +23,8 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
+use crate::command_safety::classify_command;
+
 /// The fingerprint of a tool call — stable enough to match repeated
 /// calls but specific enough to avoid privilege confusion.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -139,19 +141,18 @@ pub fn build_approval_key(tool_name: &str, input: &serde_json::Value) -> Approva
     ApprovalKey(fingerprint)
 }
 
-/// Extract the first three non‑flag tokens from the command string.
+/// Return the canonical command prefix for the shell command in `input`.
+///
+/// Uses [`classify_command`] from the arity dictionary so that
+/// `auto_allow = ["git status"]` correctly matches `git status -s` and
+/// `git status --porcelain` without also matching `git push`.
 fn command_prefix(input: &serde_json::Value) -> String {
     let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
-    let tokens: Vec<&str> = cmd
-        .split_whitespace()
-        .filter(|t| !t.starts_with('-'))
-        .take(3)
-        .collect();
+    let tokens: Vec<&str> = cmd.split_whitespace().collect();
     if tokens.is_empty() {
-        "<empty>".to_string()
-    } else {
-        tokens.join(" ")
+        return "<empty>".to_string();
     }
+    classify_command(&tokens)
 }
 
 /// Hash the sorted set of file paths referenced by a patch input.
