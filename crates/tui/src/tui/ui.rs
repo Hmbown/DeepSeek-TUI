@@ -54,6 +54,7 @@ use crate::tui::command_palette::{
     CommandPaletteView, build_entries as build_command_palette_entries,
 };
 use crate::tui::event_broker::EventBroker;
+use crate::tui::live_transcript::LiveTranscriptOverlay;
 use crate::tui::onboarding;
 use crate::tui::pager::PagerView;
 use crate::tui::plan_prompt::PlanPromptView;
@@ -1377,6 +1378,12 @@ async fn run_event_loop(
                 KeyCode::Char('o')
                     if key.modifiers == KeyModifiers::CONTROL && open_thinking_pager(app) =>
                 {
+                    continue;
+                }
+                KeyCode::Char('t') | KeyCode::Char('T')
+                    if key.modifiers == KeyModifiers::CONTROL =>
+                {
+                    toggle_live_transcript_overlay(app);
                     continue;
                 }
                 KeyCode::Char('1') if key.modifiers.contains(KeyModifiers::ALT) => {
@@ -3092,9 +3099,46 @@ fn render(f: &mut Frame, app: &mut App) {
     render_footer(f, chunks[4], app);
 
     if !app.view_stack.is_empty() {
+        // The live transcript overlay snapshots the app's history + active
+        // cell on each render so streaming mutations propagate. Other views
+        // are static and skip this refresh.
+        if app.view_stack.top_kind() == Some(ModalKind::LiveTranscript) {
+            refresh_live_transcript_overlay(app);
+        }
         let buf = f.buffer_mut();
         app.view_stack.render(size, buf);
     }
+}
+
+/// Pull the latest snapshot of cells / revisions / render options into the
+/// live transcript overlay sitting on top of the view stack. No-op if the
+/// top view isn't a `LiveTranscriptOverlay`.
+fn refresh_live_transcript_overlay(app: &mut App) {
+    // Pop+push lets us hold &mut to the overlay while also borrowing `app`
+    // mutably for the snapshot — direct re-borrow through `view_stack`
+    // would otherwise alias `app`.
+    let Some(mut overlay) = app.view_stack.pop() else {
+        return;
+    };
+    if let Some(typed) = overlay.as_any_mut().downcast_mut::<LiveTranscriptOverlay>() {
+        typed.refresh_from_app(app);
+    }
+    app.view_stack.push_boxed(overlay);
+}
+
+/// Toggle the live transcript overlay on `Ctrl+T`. Closes the overlay if it's
+/// already on top; otherwise pushes a fresh one in sticky-tail mode.
+fn toggle_live_transcript_overlay(app: &mut App) {
+    if app.view_stack.top_kind() == Some(ModalKind::LiveTranscript) {
+        app.view_stack.pop();
+        app.needs_redraw = true;
+        return;
+    }
+    let mut overlay = LiveTranscriptOverlay::new();
+    overlay.refresh_from_app(app);
+    app.view_stack.push(overlay);
+    app.status_message = Some("Live transcript: tailing (Esc to close)".to_string());
+    app.needs_redraw = true;
 }
 
 async fn handle_view_events(

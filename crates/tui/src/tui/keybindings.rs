@@ -183,6 +183,11 @@ pub const KEYBINDINGS: &[KeybindingEntry] = &[
         description: "Open thinking pager",
         section: KeybindingSection::Submission,
     },
+    KeybindingEntry {
+        chord: "Ctrl+T",
+        description: "Open live transcript overlay (sticky-tail auto-scroll)",
+        section: KeybindingSection::Submission,
+    },
     // --- Modes ---
     KeybindingEntry {
         chord: "Tab / Shift+Tab",

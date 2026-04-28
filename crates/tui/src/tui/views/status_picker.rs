@@ -107,6 +107,10 @@ impl ModalView for StatusPickerView {
         ModalKind::StatusPicker
     }
 
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
     fn handle_key(&mut self, key: KeyEvent) -> ViewAction {
         match key.code {
             KeyCode::Esc => {

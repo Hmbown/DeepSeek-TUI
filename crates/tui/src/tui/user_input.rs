@@ -238,6 +238,10 @@ impl ModalView for UserInputView {
         ModalKind::UserInput
     }
 
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
     fn handle_key(&mut self, key: KeyEvent) -> ViewAction {
         match self.mode {
             InputMode::Selecting => self.handle_selecting_key(key),
