@@ -1,5 +1,8 @@
 //! Skill discovery and registry for local SKILL.md files.
 
+mod system;
+pub use system::install_system_skills;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
