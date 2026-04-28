@@ -3966,12 +3966,11 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
         let dot_frame = now_ms / 400;
-        // Surface a `working`-with-dot-pulse label whenever a turn is live.
-        // This replaces the plain "working" / no-label state for the
-        // duration of the turn so the user always has a textual signal,
-        // even on terminals where the spout strip is disabled.
-        let working_label = crate::tui::widgets::footer_working_label(dot_frame);
-        props.state_label = working_label;
+        // Surface one compact live status row in the footer whenever a turn
+        // is live. Tool turns get the current action plus active/done counts;
+        // non-tool work falls back to the existing dot-pulse label.
+        props.state_label = active_tool_status_label(app)
+            .unwrap_or_else(|| crate::tui::widgets::footer_working_label(dot_frame));
         props.state_color = palette::DEEPSEEK_SKY;
 
         // Spout drift: only animate when low_motion is off. The textual
@@ -3999,6 +3998,136 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
 fn footer_working_strip_active(app: &App) -> bool {
     let turn_in_progress = app.runtime_turn_status.as_deref() == Some("in_progress");
     app.is_loading || app.is_compacting || running_agent_count(app) > 0 || turn_in_progress
+}
+
+#[derive(Default)]
+struct ActiveToolStatusSnapshot {
+    primary_running: Option<String>,
+    primary_any: Option<String>,
+    running: usize,
+    completed: usize,
+    started_at: Option<Instant>,
+}
+
+impl ActiveToolStatusSnapshot {
+    fn record(&mut self, label: String, status: ToolStatus, started_at: Option<Instant>) {
+        if self.primary_any.is_none() {
+            self.primary_any = Some(label.clone());
+        }
+        if status == ToolStatus::Running {
+            self.running += 1;
+            if self.primary_running.is_none() {
+                self.primary_running = Some(label);
+            }
+        } else {
+            self.completed += 1;
+        }
+        if let Some(started) = started_at {
+            self.started_at = Some(match self.started_at {
+                Some(current) => current.min(started),
+                None => started,
+            });
+        }
+    }
+
+    fn total(&self) -> usize {
+        self.running + self.completed
+    }
+}
+
+fn active_tool_status_label(app: &App) -> Option<String> {
+    let active = app.active_cell.as_ref()?;
+    if active.is_empty() {
+        return None;
+    }
+
+    let mut snapshot = ActiveToolStatusSnapshot::default();
+    for cell in active.entries() {
+        collect_active_tool_status(cell, &mut snapshot);
+    }
+    if snapshot.total() == 0 {
+        return None;
+    }
+
+    let primary = snapshot
+        .primary_running
+        .or(snapshot.primary_any)
+        .unwrap_or_else(|| "tools".to_string());
+    let primary = truncate_line_to_width(&primary, 30);
+    let elapsed = snapshot
+        .started_at
+        .or(app.turn_started_at)
+        .map(|started| format!("{}s", started.elapsed().as_secs()));
+
+    let mut parts = vec![
+        primary,
+        format!("{} active", snapshot.running),
+        format!("{} done", snapshot.completed),
+    ];
+    if let Some(elapsed) = elapsed {
+        parts.push(elapsed);
+    }
+    parts.push("Alt+V".to_string());
+    Some(parts.join(" \u{00B7} "))
+}
+
+fn collect_active_tool_status(cell: &HistoryCell, snapshot: &mut ActiveToolStatusSnapshot) {
+    let HistoryCell::Tool(tool) = cell else {
+        return;
+    };
+    match tool {
+        ToolCell::Exec(exec) => snapshot.record(
+            format!("run {}", one_line_summary(&exec.command, 80)),
+            exec.status,
+            exec.started_at,
+        ),
+        ToolCell::Exploring(explore) => {
+            for entry in &explore.entries {
+                snapshot.record(
+                    format!("read {}", one_line_summary(&entry.label, 80)),
+                    entry.status,
+                    None,
+                );
+            }
+        }
+        ToolCell::PlanUpdate(plan) => {
+            snapshot.record("update plan".to_string(), plan.status, None);
+        }
+        ToolCell::PatchSummary(patch) => {
+            snapshot.record(format!("patch {}", patch.path), patch.status, None);
+        }
+        ToolCell::Review(review) => {
+            let target = one_line_summary(&review.target, 80);
+            let label = if target.is_empty() {
+                "review".to_string()
+            } else {
+                format!("review {target}")
+            };
+            snapshot.record(label, review.status, None);
+        }
+        ToolCell::DiffPreview(diff) => {
+            snapshot.record(format!("diff {}", diff.title), ToolStatus::Success, None);
+        }
+        ToolCell::Mcp(mcp) => snapshot.record(format!("tool {}", mcp.tool), mcp.status, None),
+        ToolCell::ViewImage(image) => snapshot.record(
+            format!("image {}", image.path.display()),
+            ToolStatus::Success,
+            None,
+        ),
+        ToolCell::WebSearch(search) => {
+            snapshot.record(format!("search {}", search.query), search.status, None);
+        }
+        ToolCell::Generic(generic) => {
+            snapshot.record(format!("tool {}", generic.name), generic.status, None);
+        }
+    }
+}
+
+fn one_line_summary(text: &str, max_width: usize) -> String {
+    truncate_line_to_width(
+        &text.split_whitespace().collect::<Vec<_>>().join(" "),
+        max_width,
+    )
 }
 
 /// Build [`FooterProps`] from a user-configured `status_items` slice.

@@ -4,11 +4,14 @@ use crate::tui::file_mention::{
     apply_mention_menu_selection, find_file_mention_completions, partial_file_mention_at_cursor,
     try_autocomplete_file_mention, user_request_with_file_mentions, visible_mention_menu_entries,
 };
-use crate::tui::history::{GenericToolCell, HistoryCell, ToolCell, ToolStatus};
+use crate::tui::history::{
+    ExecCell, ExecSource, GenericToolCell, HistoryCell, ToolCell, ToolStatus,
+};
 use crate::tui::views::{ModalView, ViewAction};
 use crate::working_set::Workspace;
 use std::path::PathBuf;
 use std::process::Command;
+use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 #[test]
@@ -131,6 +134,43 @@ fn create_test_app() -> App {
         resume_session_id: None,
     };
     App::new(options, &Config::default())
+}
+
+#[test]
+fn active_tool_status_label_summarizes_live_tool_group() {
+    let mut app = create_test_app();
+    app.turn_started_at = Some(Instant::now() - Duration::from_secs(5));
+    let mut active = ActiveCell::new();
+    active.push_tool(
+        "exec-1",
+        HistoryCell::Tool(ToolCell::Exec(ExecCell {
+            command: "cargo test --workspace --all-features".to_string(),
+            status: ToolStatus::Running,
+            output: None,
+            started_at: app.turn_started_at,
+            duration_ms: None,
+            source: ExecSource::Assistant,
+            interaction: None,
+        })),
+    );
+    active.push_tool(
+        "tool-2",
+        HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            name: "grep_files".to_string(),
+            status: ToolStatus::Success,
+            input_summary: Some("pattern: TODO".to_string()),
+            output: Some("done".to_string()),
+            prompts: None,
+        })),
+    );
+    app.active_cell = Some(active);
+
+    let label = active_tool_status_label(&app).expect("status label");
+
+    assert!(label.contains("run cargo test"));
+    assert!(label.contains("1 active"));
+    assert!(label.contains("1 done"));
+    assert!(label.contains("Alt+V"));
 }
 
 #[test]
