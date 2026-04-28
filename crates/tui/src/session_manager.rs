@@ -7,6 +7,7 @@
 //! - Managing session lifecycle
 
 use crate::models::{ContentBlock, Message, SystemPrompt};
+use crate::tui::file_mention::ContextReference;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -55,6 +56,13 @@ impl Default for OfflineQueueState {
     }
 }
 
+/// Durable context-reference metadata attached to a user message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionContextReference {
+    pub message_index: usize,
+    pub reference: ContextReference,
+}
+
 /// Session metadata stored with each saved session
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionMetadata {
@@ -91,6 +99,10 @@ pub struct SavedSession {
     pub messages: Vec<Message>,
     /// System prompt if any
     pub system_prompt: Option<String>,
+    /// Compact linked context references for user-visible `@path` and
+    /// `/attach` mentions. Optional for backward-compatible session loads.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub context_references: Vec<SessionContextReference>,
 }
 
 /// Manager for session persistence operations
@@ -443,6 +455,7 @@ pub fn create_saved_session_with_mode(
         },
         messages: messages.to_vec(),
         system_prompt: system_prompt_to_string(system_prompt),
+        context_references: Vec::new(),
     }
 }
 
@@ -730,6 +743,39 @@ mod tests {
                 .expect("load queue state")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn test_session_context_references_round_trip() {
+        let tmp = tempdir().expect("tempdir");
+        let manager = SessionManager::new(tmp.path().join("sessions")).expect("new");
+        let mut session = create_saved_session(
+            &[make_test_message("user", "read @src/main.rs")],
+            "deepseek-v4-pro",
+            tmp.path(),
+            0,
+            None,
+        );
+        session.context_references.push(SessionContextReference {
+            message_index: 0,
+            reference: ContextReference {
+                kind: crate::tui::file_mention::ContextReferenceKind::File,
+                source: crate::tui::file_mention::ContextReferenceSource::AtMention,
+                badge: "file".to_string(),
+                label: "src/main.rs".to_string(),
+                target: tmp.path().join("src/main.rs").display().to_string(),
+                included: true,
+                expanded: true,
+                detail: Some("included".to_string()),
+            },
+        });
+
+        let path = manager.save_session(&session).expect("save session");
+        let loaded = manager
+            .load_session(&session.metadata.id)
+            .expect("load session");
+        assert!(path.exists());
+        assert_eq!(loaded.context_references, session.context_references);
     }
 
     #[test]

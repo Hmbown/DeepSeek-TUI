@@ -25,6 +25,8 @@ use std::fmt::Write;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
+
 use crate::tui::app::App;
 use crate::working_set::Workspace;
 
@@ -49,6 +51,46 @@ pub struct FileMentionPreview {
     pub label: String,
     pub detail: Option<String>,
     pub included: bool,
+}
+
+/// Durable, compact metadata for a user-visible context reference.
+///
+/// The transcript keeps the user's compact text (`@path` or `[Attached ...]`)
+/// readable. This record preserves the exact target and inclusion state for
+/// the context inspector and for session resume without leaking raw metadata
+/// into the visible history cell.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextReference {
+    pub kind: ContextReferenceKind,
+    pub source: ContextReferenceSource,
+    /// Short badge for terminal display, e.g. `file`, `dir`, `image`.
+    pub badge: String,
+    /// Compact display label from the transcript, without the leading `@`.
+    pub label: String,
+    /// Resolved target path or URI-equivalent string.
+    pub target: String,
+    pub included: bool,
+    pub expanded: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextReferenceKind {
+    File,
+    Directory,
+    Missing,
+    Unsupported,
+    MediaMention,
+    MediaAttachment,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextReferenceSource {
+    AtMention,
+    Attachment,
 }
 
 // ---------------------------------------------------------------------------
@@ -289,7 +331,24 @@ pub fn pending_context_previews(
     workspace: &Path,
     cwd: Option<PathBuf>,
 ) -> Vec<FileMentionPreview> {
-    let mut previews = Vec::new();
+    context_references_from_input(input, workspace, cwd)
+        .into_iter()
+        .map(|reference| FileMentionPreview {
+            kind: reference.badge,
+            label: reference.label,
+            detail: reference.detail,
+            included: reference.included,
+        })
+        .collect()
+}
+
+#[must_use]
+pub fn context_references_from_input(
+    input: &str,
+    workspace: &Path,
+    cwd: Option<PathBuf>,
+) -> Vec<ContextReference> {
+    let mut references = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let ws = Workspace::with_cwd(workspace.to_path_buf(), cwd);
 
@@ -307,63 +366,94 @@ pub fn pending_context_previews(
                 (path, display, false)
             }
         };
-        if !seen.insert(format!("mention:{display_path}")) {
+        let reference = context_reference_for_mention(&mention, &path, &display_path, exists);
+        if !seen.insert(format!(
+            "{:?}:{:?}:{}:{}",
+            reference.source, reference.kind, reference.target, reference.label
+        )) {
             continue;
         }
-        previews.push(preview_for_mention(&mention, &path, &display_path, exists));
+        references.push(reference);
     }
 
     for reference in extract_media_attachment_references(input) {
-        if !seen.insert(format!("media:{}", reference.path)) {
+        let context_reference = ContextReference {
+            kind: ContextReferenceKind::MediaAttachment,
+            source: ContextReferenceSource::Attachment,
+            badge: reference.kind,
+            label: reference.path.clone(),
+            target: reference.path,
+            included: true,
+            expanded: false,
+            detail: Some("attached media".to_string()),
+        };
+        if !seen.insert(format!(
+            "{:?}:{:?}:{}:{}",
+            context_reference.source,
+            context_reference.kind,
+            context_reference.target,
+            context_reference.label
+        )) {
             continue;
         }
-        previews.push(FileMentionPreview {
-            kind: reference.kind,
-            label: reference.path,
-            detail: Some("attached media".to_string()),
-            included: true,
-        });
+        references.push(context_reference);
     }
 
-    previews
+    references
 }
 
-fn preview_for_mention(
+fn context_reference_for_mention(
     raw: &str,
     path: &Path,
     display_path: &str,
     exists: bool,
-) -> FileMentionPreview {
+) -> ContextReference {
     if !exists {
-        return FileMentionPreview {
-            kind: "missing".to_string(),
+        return ContextReference {
+            kind: ContextReferenceKind::Missing,
+            source: ContextReferenceSource::AtMention,
+            badge: "missing".to_string(),
             label: raw.to_string(),
-            detail: Some("not found".to_string()),
+            target: display_path.to_string(),
             included: false,
+            expanded: false,
+            detail: Some("not found".to_string()),
         };
     }
     if path.is_dir() {
-        return FileMentionPreview {
-            kind: "dir".to_string(),
+        return ContextReference {
+            kind: ContextReferenceKind::Directory,
+            source: ContextReferenceSource::AtMention,
+            badge: "dir".to_string(),
             label: raw.to_string(),
-            detail: Some("directory listing".to_string()),
+            target: display_path.to_string(),
             included: true,
+            expanded: true,
+            detail: Some("directory listing".to_string()),
         };
     }
     if !path.is_file() {
-        return FileMentionPreview {
-            kind: "skipped".to_string(),
+        return ContextReference {
+            kind: ContextReferenceKind::Unsupported,
+            source: ContextReferenceSource::AtMention,
+            badge: "skipped".to_string(),
             label: raw.to_string(),
-            detail: Some("unsupported path".to_string()),
+            target: display_path.to_string(),
             included: false,
+            expanded: false,
+            detail: Some("unsupported path".to_string()),
         };
     }
     if is_media_path(path) {
-        return FileMentionPreview {
-            kind: "media".to_string(),
+        return ContextReference {
+            kind: ContextReferenceKind::MediaMention,
+            source: ContextReferenceSource::AtMention,
+            badge: "media".to_string(),
             label: raw.to_string(),
-            detail: Some("use /attach for media bytes".to_string()),
+            target: display_path.to_string(),
             included: false,
+            expanded: false,
+            detail: Some("use /attach for media bytes".to_string()),
         };
     }
 
@@ -375,11 +465,15 @@ fn preview_for_mention(
         Err(err) => Some(format!("metadata: {err}")),
     };
 
-    FileMentionPreview {
-        kind: "file".to_string(),
+    ContextReference {
+        kind: ContextReferenceKind::File,
+        source: ContextReferenceSource::AtMention,
+        badge: "file".to_string(),
         label: raw.to_string(),
-        detail: detail.or_else(|| Some(display_path.to_string())),
+        target: display_path.to_string(),
         included: true,
+        expanded: true,
+        detail: detail.or_else(|| Some(display_path.to_string())),
     }
 }
 
@@ -823,5 +917,29 @@ mod tests {
                 .any(|item| item.kind == "image" && item.included),
             "/attach media should be included: {previews:?}"
         );
+    }
+
+    #[test]
+    fn context_references_preserve_exact_targets_and_roundtrip() {
+        let tmp = TempDir::new().expect("tempdir");
+        std::fs::create_dir_all(tmp.path().join("src")).expect("mkdir");
+        std::fs::write(tmp.path().join("src/main.rs"), "fn main() {}").expect("write");
+        let input = "read @src/main.rs";
+
+        let references =
+            context_references_from_input(input, tmp.path(), Some(tmp.path().to_path_buf()));
+
+        assert_eq!(references.len(), 1);
+        let reference = &references[0];
+        assert_eq!(reference.kind, ContextReferenceKind::File);
+        assert_eq!(reference.source, ContextReferenceSource::AtMention);
+        assert_eq!(reference.label, "src/main.rs");
+        assert!(reference.target.ends_with("src/main.rs"));
+        assert!(reference.included);
+        assert!(reference.expanded);
+
+        let encoded = serde_json::to_string(reference).expect("serialize");
+        let decoded: ContextReference = serde_json::from_str(&encoded).expect("deserialize");
+        assert_eq!(&decoded, reference);
     }
 }

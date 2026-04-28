@@ -53,6 +53,7 @@ use crate::tools::subagent::{MailboxMessage, SubAgentResult, SubAgentStatus};
 use crate::tui::command_palette::{
     CommandPaletteView, build_entries as build_command_palette_entries,
 };
+use crate::tui::context_inspector::build_context_inspector_text;
 use crate::tui::event_broker::EventBroker;
 use crate::tui::live_transcript::LiveTranscriptOverlay;
 use crate::tui::onboarding;
@@ -1352,6 +1353,16 @@ async fn run_event_loop(
                 continue;
             }
 
+            if matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C'))
+                && key.modifiers.contains(KeyModifiers::ALT)
+                && !key.modifiers.contains(KeyModifiers::CONTROL)
+                && !key.modifiers.contains(KeyModifiers::SUPER)
+                && app.view_stack.is_empty()
+            {
+                open_context_inspector(app);
+                continue;
+            }
+
             if !app.view_stack.is_empty() {
                 let events = app.view_stack.handle_key(key);
                 if handle_view_events(app, config, &task_manager, &mut engine_handle, events)
@@ -1999,16 +2010,19 @@ fn build_session_snapshot(app: &App, manager: &SessionManager) -> SavedSession {
             app.system_prompt.as_ref(),
         );
         updated.metadata.mode = Some(app.mode.as_setting().to_string());
+        updated.context_references = app.session_context_references.clone();
         updated
     } else {
-        create_saved_session_with_mode(
+        let mut session = create_saved_session_with_mode(
             &app.api_messages,
             &app.model,
             &app.workspace,
             u64::from(app.total_tokens),
             app.system_prompt.as_ref(),
             Some(app.mode.as_setting()),
-        )
+        );
+        session.context_references = app.session_context_references.clone();
+        session
     }
 }
 
@@ -2302,14 +2316,18 @@ fn build_queued_message(app: &mut App, input: String) -> QueuedMessage {
     QueuedMessage::new(input, skill_instruction)
 }
 
-fn queued_message_content_for_app(app: &App, message: &QueuedMessage) -> String {
+fn queued_message_content_for_app(
+    app: &App,
+    message: &QueuedMessage,
+    cwd: Option<PathBuf>,
+) -> String {
     // Pass the process CWD explicitly so the resolver's two-pass logic can
     // honor the user's launch directory when it differs from `--workspace`
     // (issue #101 — file mentions silently routing to the wrong root).
     let user_request = crate::tui::file_mention::user_request_with_file_mentions(
         &message.display,
         &app.workspace,
-        std::env::current_dir().ok(),
+        cwd,
     );
     if let Some(skill_instruction) = message.skill_instruction.as_ref() {
         format!("{skill_instruction}\n\n---\n\nUser request: {user_request}")
@@ -2327,7 +2345,14 @@ async fn dispatch_user_message(
     app.is_loading = true;
     app.last_send_at = Some(Instant::now());
 
-    let content = queued_message_content_for_app(app, &message);
+    let cwd = std::env::current_dir().ok();
+    let references = crate::tui::file_mention::context_references_from_input(
+        &message.display,
+        &app.workspace,
+        cwd.clone(),
+    );
+    let content = queued_message_content_for_app(app, &message, cwd);
+    let message_index = app.api_messages.len();
     app.system_prompt = Some(prompts::system_prompt_for_mode_with_context(
         app.mode,
         &app.workspace,
@@ -2336,6 +2361,8 @@ async fn dispatch_user_message(
     app.add_message(HistoryCell::User {
         content: message.display.clone(),
     });
+    let history_cell = app.history.len().saturating_sub(1);
+    app.record_context_references(history_cell, message_index, references);
     app.scroll_to_bottom();
     app.api_messages.push(Message {
         role: "user".to_string(),
@@ -2576,6 +2603,19 @@ fn open_text_pager(app: &mut App, title: String, content: String) {
     ));
 }
 
+fn open_context_inspector(app: &mut App) {
+    let width = app
+        .last_transcript_area
+        .map(|area| area.width)
+        .unwrap_or(80);
+    let content = build_context_inspector_text(app);
+    app.view_stack.push(PagerView::from_text(
+        "Context inspector",
+        &content,
+        width.saturating_sub(2),
+    ));
+}
+
 async fn apply_command_result(
     app: &mut App,
     engine_handle: &mut EngineHandle,
@@ -2697,6 +2737,9 @@ async fn apply_command_result(
                         ));
                 }
             }
+            AppAction::OpenContextInspector => {
+                open_context_inspector(app);
+            }
             AppAction::CompactContext => {
                 app.status_message = Some("Compacting context...".to_string());
                 let _ = engine_handle.send(Op::CompactContext).await;
@@ -2796,12 +2839,21 @@ async fn steer_user_message(
     engine_handle: &EngineHandle,
     message: QueuedMessage,
 ) -> Result<()> {
-    let content = queued_message_content_for_app(app, &message);
+    let cwd = std::env::current_dir().ok();
+    let references = crate::tui::file_mention::context_references_from_input(
+        &message.display,
+        &app.workspace,
+        cwd.clone(),
+    );
+    let content = queued_message_content_for_app(app, &message, cwd);
+    let message_index = app.api_messages.len();
 
     // Mirror steer input in local transcript/session state.
     app.add_message(HistoryCell::User {
         content: format!("+ {}", message.display),
     });
+    let history_cell = app.history.len().saturating_sub(1);
+    app.record_context_references(history_cell, message_index, references);
     app.api_messages.push(Message {
         role: "user".to_string(),
         content: vec![ContentBlock::Text {
@@ -3715,12 +3767,33 @@ fn apply_loaded_session(app: &mut App, session: &SavedSession) {
     app.pending_tool_uses.clear();
     app.last_exec_wait_command = None;
 
-    let cells_to_add: Vec<_> = app
-        .api_messages
-        .iter()
-        .flat_map(history_cells_from_message)
-        .collect();
-    app.extend_history(cells_to_add);
+    let messages = app.api_messages.clone();
+    let mut message_to_cell = std::collections::HashMap::new();
+    for (message_index, msg) in messages.iter().enumerate() {
+        let mut cells = history_cells_from_message(msg);
+        if msg.role == "user"
+            && session
+                .context_references
+                .iter()
+                .any(|record| record.message_index == message_index)
+        {
+            for cell in &mut cells {
+                if let HistoryCell::User { content } = cell {
+                    *content = compact_user_context_display(content);
+                }
+            }
+        }
+        let base = app.history.len();
+        if msg.role == "user"
+            && let Some(offset) = cells
+                .iter()
+                .position(|cell| matches!(cell, HistoryCell::User { .. }))
+        {
+            message_to_cell.insert(message_index, base + offset);
+        }
+        app.extend_history(cells);
+    }
+    app.sync_context_references_from_session(&session.context_references, &message_to_cell);
     app.mark_history_updated();
     app.transcript_selection.clear();
     app.model.clone_from(&session.metadata.model);
@@ -3741,6 +3814,14 @@ fn apply_loaded_session(app: &mut App, session: &SavedSession) {
         app.system_prompt = None;
     }
     app.scroll_to_bottom();
+}
+
+fn compact_user_context_display(content: &str) -> String {
+    content
+        .split("\n\n---\n\nLocal context from @mentions:")
+        .next()
+        .unwrap_or(content)
+        .to_string()
 }
 
 fn refresh_workspace_context_if_needed(app: &mut App, now: Instant, allow_blocking_refresh: bool) {

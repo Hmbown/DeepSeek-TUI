@@ -169,6 +169,11 @@ pub const KEYBINDINGS: &[KeybindingEntry] = &[
         section: KeybindingSection::Submission,
     },
     KeybindingEntry {
+        chord: "Alt+C",
+        description: "Open compact session context inspector",
+        section: KeybindingSection::Submission,
+    },
+    KeybindingEntry {
         chord: "l",
         description: "Open pager for the last message (when input is empty)",
         section: KeybindingSection::Submission,

@@ -3,11 +3,9 @@
 //! Debug commands: tokens, cost, system, context, undo, retry
 
 use super::CommandResult;
-use crate::compaction::estimate_input_tokens_conservative;
-use crate::models::{DEFAULT_CONTEXT_WINDOW_TOKENS, SystemPrompt, context_window_for_model};
+use crate::models::SystemPrompt;
 use crate::tui::app::{App, AppAction};
 use crate::tui::history::HistoryCell;
-use crate::utils::estimate_message_chars;
 
 /// Show token usage for session
 pub fn tokens(app: &mut App) -> CommandResult {
@@ -76,41 +74,8 @@ pub fn system_prompt(app: &mut App) -> CommandResult {
 }
 
 /// Show context window usage
-pub fn context(app: &mut App) -> CommandResult {
-    let mut total_chars = estimate_message_chars(&app.api_messages);
-    let estimated_tokens =
-        estimate_input_tokens_conservative(&app.api_messages, app.system_prompt.as_ref());
-
-    // System prompt
-    if let Some(SystemPrompt::Text(text)) = &app.system_prompt {
-        total_chars += text.len();
-    } else if let Some(SystemPrompt::Blocks(blocks)) = &app.system_prompt {
-        for block in blocks {
-            total_chars += block.text.len();
-        }
-    }
-
-    let context_size =
-        context_window_for_model(&app.model).unwrap_or(DEFAULT_CONTEXT_WINDOW_TOKENS);
-    let estimated_tokens_u32 = u32::try_from(estimated_tokens).unwrap_or(u32::MAX);
-    let usage_pct = (f64::from(estimated_tokens_u32) / f64::from(context_size) * 100.0).min(100.0);
-
-    CommandResult::message(format!(
-        "Context Usage:\n\
-         ─────────────────────────────\n\
-         Characters:       {}\n\
-         Estimated tokens: ~{}\n\
-         Context window:   {}\n\
-         Usage:            {:.1}%\n\n\
-         Messages:         {}\n\
-         API messages:     {}",
-        total_chars,
-        estimated_tokens,
-        context_size,
-        usage_pct,
-        app.history.len(),
-        app.api_messages.len(),
-    ))
+pub fn context(_app: &mut App) -> CommandResult {
+    CommandResult::action(AppAction::OpenContextInspector)
 }
 
 #[cfg(test)]
@@ -250,15 +215,11 @@ mod tests {
         });
 
         let result = context(&mut app);
-        assert!(result.message.is_some());
-        let msg = result.message.unwrap();
-        assert!(msg.contains("Context Usage"));
-        assert!(msg.contains("Characters:"));
-        assert!(msg.contains("Estimated tokens:"));
-        assert!(msg.contains("Context window:"));
-        assert!(msg.contains("Usage:"));
-        assert!(msg.contains("Messages:"));
-        assert!(msg.contains("API messages:"));
+        assert!(matches!(
+            result.action,
+            Some(AppAction::OpenContextInspector)
+        ));
+        assert!(result.message.is_none());
     }
 
     #[test]

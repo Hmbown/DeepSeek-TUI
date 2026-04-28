@@ -8,6 +8,7 @@ pub mod approval;
 pub mod backtrack;
 pub mod clipboard;
 pub mod command_palette;
+pub mod context_inspector;
 pub mod diff_render;
 pub mod event_broker;
 pub mod external_editor;
