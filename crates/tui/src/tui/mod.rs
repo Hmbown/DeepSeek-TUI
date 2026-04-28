@@ -14,6 +14,7 @@ pub mod file_mention;
 pub mod file_picker;
 pub mod frame_rate_limiter;
 pub mod history;
+pub mod keybindings;
 pub mod markdown_render;
 pub mod model_picker;
 pub mod onboarding;
