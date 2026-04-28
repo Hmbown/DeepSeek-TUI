@@ -914,16 +914,16 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let session_id = format!("test-session-{}", uuid::Uuid::new_v4());
 
-        // Override HOME so archive_dir_for resolves into our tempdir.
-        // SAFETY: Test isolation only. Restore on drop via the tempdir
-        // guard. set_var is not concurrency-safe but cargo test runs each
-        // process serially per test binary unless --test-threads says
-        // otherwise; this single-threaded write is acceptable for our
-        // archive smoke test.
+        // Redirect dirs::home_dir() into our tempdir. On Unix that reads
+        // HOME; on Windows it reads USERPROFILE — set both so the test is
+        // platform-portable. SAFETY: cargo runs each test binary
+        // single-threaded by default; we do not await across the env
+        // mutation window.
         let original_home = std::env::var("HOME").ok();
-        // SAFETY: see comment above — single-threaded test path.
+        let original_userprofile = std::env::var("USERPROFILE").ok();
         unsafe {
             std::env::set_var("HOME", dir.path());
+            std::env::set_var("USERPROFILE", dir.path());
         }
 
         let messages = vec![
@@ -937,7 +937,7 @@ mod tests {
             .expect("archive_cycle should succeed");
 
         assert!(path.exists(), "archive file should exist on disk");
-        assert!(path.to_string_lossy().ends_with("/1.jsonl"));
+        assert_eq!(path.file_name().and_then(|s| s.to_str()), Some("1.jsonl"));
 
         let contents = std::fs::read_to_string(&path).expect("read archive back");
         let mut lines = contents.lines();
@@ -957,12 +957,15 @@ mod tests {
         }
         assert!(lines.next().is_none(), "no extra trailing lines");
 
-        // Restore HOME so subsequent tests aren't surprised.
-        // SAFETY: see set_var comment above.
+        // Restore env so subsequent tests aren't surprised.
         unsafe {
             match original_home {
                 Some(value) => std::env::set_var("HOME", value),
                 None => std::env::remove_var("HOME"),
+            }
+            match original_userprofile {
+                Some(value) => std::env::set_var("USERPROFILE", value),
+                None => std::env::remove_var("USERPROFILE"),
             }
         }
     }

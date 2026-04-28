@@ -428,28 +428,36 @@ mod tests {
         }
     }
 
-    /// Serializes HOME-mutating tests since cargo runs tests in parallel by
-    /// default. Held for the full test (no `.await` while holding it).
+    /// Serializes home-redirecting tests since cargo runs tests in parallel
+    /// by default. Held for the full test (no `.await` while holding it).
     static HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    /// Guard that points HOME at a tempdir for the test's lifetime and
-    /// restores the original on drop. Holds `HOME_LOCK` to serialize.
+    /// Guard that points `dirs::home_dir()` at a tempdir for the test's
+    /// lifetime and restores the original on drop. On Unix this means
+    /// `HOME`; on Windows it means `USERPROFILE`. We set both so the same
+    /// guard works portably. Holds `HOME_LOCK` to serialize.
     struct HomeGuard {
         _tmp: TempDir,
-        original: Option<String>,
+        original_home: Option<String>,
+        original_userprofile: Option<String>,
         _lock: std::sync::MutexGuard<'static, ()>,
     }
     impl HomeGuard {
         fn new() -> Self {
             let lock = HOME_LOCK.lock().unwrap_or_else(|p| p.into_inner());
             let tmp = TempDir::new().expect("tempdir");
-            let original = std::env::var("HOME").ok();
-            // SAFETY: serialized by HOME_LOCK; only this thread mutates HOME
-            // for the duration of the guard.
-            unsafe { std::env::set_var("HOME", tmp.path()) };
+            let original_home = std::env::var("HOME").ok();
+            let original_userprofile = std::env::var("USERPROFILE").ok();
+            // SAFETY: serialized by HOME_LOCK; only this thread mutates the
+            // env vars for the duration of the guard.
+            unsafe {
+                std::env::set_var("HOME", tmp.path());
+                std::env::set_var("USERPROFILE", tmp.path());
+            }
             Self {
                 _tmp: tmp,
-                original,
+                original_home,
+                original_userprofile,
                 _lock: lock,
             }
         }
@@ -458,9 +466,13 @@ mod tests {
         fn drop(&mut self) {
             // SAFETY: still holding HOME_LOCK.
             unsafe {
-                match self.original.take() {
+                match self.original_home.take() {
                     Some(v) => std::env::set_var("HOME", v),
                     None => std::env::remove_var("HOME"),
+                }
+                match self.original_userprofile.take() {
+                    Some(v) => std::env::set_var("USERPROFILE", v),
+                    None => std::env::remove_var("USERPROFILE"),
                 }
             }
         }
