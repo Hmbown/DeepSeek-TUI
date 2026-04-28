@@ -83,6 +83,49 @@ pub fn tool_family_for_name(name: &str) -> ToolFamily {
     }
 }
 
+/// Build a compact semantic summary for a tool header from the public tool
+/// name and the already-sanitized argument summary.
+#[must_use]
+pub fn tool_header_summary_for_name(name: &str, input_summary: Option<&str>) -> Option<String> {
+    let summary = input_summary?.trim();
+    if summary.is_empty() {
+        return None;
+    }
+
+    let preferred_keys = match tool_family_for_name(name) {
+        ToolFamily::Read | ToolFamily::Patch => ["path", "file", "target", "content"].as_slice(),
+        ToolFamily::Run => ["command", "cmd", "script"].as_slice(),
+        ToolFamily::Find => ["query", "pattern", "path", "scope"].as_slice(),
+        ToolFamily::Delegate | ToolFamily::Fanout => ["prompt", "task", "model"].as_slice(),
+        ToolFamily::Think | ToolFamily::Generic => {
+            ["query", "path", "command", "prompt"].as_slice()
+        }
+    };
+
+    for key in preferred_keys {
+        if let Some(value) = summary_value(summary, key) {
+            return Some(value);
+        }
+    }
+
+    Some(summary.to_string())
+}
+
+fn summary_value(summary: &str, key: &str) -> Option<String> {
+    for part in summary.split(", ") {
+        let Some((part_key, value)) = part.split_once(':') else {
+            continue;
+        };
+        if part_key.trim() == key {
+            let value = value.trim();
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
+}
+
 /// The verb glyph for a family. Single grapheme so the header layout math
 /// in `render_tool_header` stays simple (one cell wide).
 #[must_use]
@@ -148,7 +191,7 @@ pub fn rail_glyph(rail: CardRail) -> &'static str {
 mod tests {
     use super::{
         CardRail, ToolFamily, family_glyph, family_label, rail_glyph, tool_family_for_name,
-        tool_family_for_title,
+        tool_family_for_title, tool_header_summary_for_name,
     };
 
     #[test]
@@ -174,6 +217,29 @@ mod tests {
         assert_eq!(
             tool_family_for_name("totally_new_tool"),
             ToolFamily::Generic
+        );
+    }
+
+    #[test]
+    fn tool_header_summary_prefers_family_specific_arguments() {
+        assert_eq!(
+            tool_header_summary_for_name("read_file", Some("path: src/main.rs, limit: 20"))
+                .as_deref(),
+            Some("src/main.rs")
+        );
+        assert_eq!(
+            tool_header_summary_for_name("exec_shell", Some("command: cargo test, cwd: /repo"))
+                .as_deref(),
+            Some("cargo test")
+        );
+        assert_eq!(
+            tool_header_summary_for_name("grep_files", Some("pattern: TODO, path: crates"))
+                .as_deref(),
+            Some("TODO")
+        );
+        assert_eq!(
+            tool_header_summary_for_name("unknown", Some("alpha: beta")).as_deref(),
+            Some("alpha: beta")
         );
     }
 
