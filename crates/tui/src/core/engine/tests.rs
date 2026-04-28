@@ -939,3 +939,103 @@ fn final_tool_input_falls_back_to_initial_when_buffer_unparseable() {
     let state = tool_state(json!({"command": "echo hi"}), "{not json");
     assert_eq!(final_tool_input(&state), json!({"command": "echo hi"}));
 }
+
+// === #103 transparent stream-retry policy =====================================
+
+#[test]
+fn stream_retry_zero_content_then_error_is_transparently_retried() {
+    // Case 2 from issue #103: stream yielded ZERO content then errored.
+    // The decoder hit Err on the very first poll → engine should retry
+    // because DeepSeek hasn't billed and the user has seen nothing.
+    assert!(
+        super::should_transparently_retry_stream(false, 0, false),
+        "first attempt with no content must be eligible for transparent retry"
+    );
+    assert!(
+        super::should_transparently_retry_stream(false, 1, false),
+        "second attempt (one prior retry) with no content must still be eligible"
+    );
+}
+
+#[test]
+fn stream_retry_after_content_received_surfaces_error() {
+    // Case 3 from issue #103: stream yielded content then errored. We must
+    // NOT transparently retry — the model has emitted billed output tokens
+    // and the UI has streamed deltas; resending would double-bill and the
+    // user would see the same prefix twice.
+    assert!(
+        !super::should_transparently_retry_stream(true, 0, false),
+        "any content received → no transparent retry, even with full budget"
+    );
+    assert!(
+        !super::should_transparently_retry_stream(true, 1, false),
+        "any content received → no transparent retry on subsequent attempts"
+    );
+}
+
+#[test]
+fn stream_retry_budget_caps_transparent_retries_at_two() {
+    // Case 4 from issue #103: after MAX_TRANSPARENT_STREAM_RETRIES attempts
+    // we stop trying transparently and let the outer error path surface.
+    // (The outer per-turn `stream_retry_attempts` retry is a separate layer
+    // and is still in effect at the whole-turn level.)
+    assert!(
+        super::should_transparently_retry_stream(
+            false,
+            super::MAX_TRANSPARENT_STREAM_RETRIES - 1,
+            false,
+        ),
+        "one short of the cap should still retry"
+    );
+    assert!(
+        !super::should_transparently_retry_stream(
+            false,
+            super::MAX_TRANSPARENT_STREAM_RETRIES,
+            false,
+        ),
+        "at the cap, no further transparent retries"
+    );
+    assert!(
+        !super::should_transparently_retry_stream(
+            false,
+            super::MAX_TRANSPARENT_STREAM_RETRIES + 5,
+            false,
+        ),
+        "well past the cap, definitely no transparent retries"
+    );
+}
+
+#[test]
+fn stream_retry_respects_cancellation() {
+    // Cancellation overrides every other condition. If the user pressed
+    // Esc / Ctrl-C, do not silently re-issue the request behind their back.
+    assert!(
+        !super::should_transparently_retry_stream(false, 0, true),
+        "cancelled turn must not be transparently retried"
+    );
+    assert!(
+        !super::should_transparently_retry_stream(false, 1, true),
+        "cancelled turn must not be transparently retried even with budget"
+    );
+}
+
+#[test]
+fn stream_retry_threshold_relaxed_to_five() {
+    // Case 1+4 from issue #103: the consecutive-error threshold for marking
+    // the turn failed was relaxed from 3 → 5 in v0.6.7 because the new
+    // HTTP/2 keepalive defaults make spurious decode errors rarer.
+    // This test pins the constant so a future regression to 3 fails loudly.
+    assert_eq!(
+        super::MAX_STREAM_ERRORS_BEFORE_FAIL,
+        5,
+        "the consecutive-stream-error threshold should be 5; \
+         lowering it back to 3 will fail mid-turn under transient flakiness"
+    );
+    // And a regression guard on the transparent-retry cap.
+    assert_eq!(
+        super::MAX_TRANSPARENT_STREAM_RETRIES,
+        2,
+        "transparent-retry cap should be 2; raising it risks hammering the \
+         provider on real outages"
+    );
+}
