@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-04-28
+
+### Added
+- OS keyring-backed auth storage with `deepseek auth` subcommands, migration from plaintext config, provider-aware key resolution, and doctor visibility. (#134)
+- Egress network policy with allow/deny/prompt decisions, deny-wins matching, audit logging, and enforcement hooks for network-capable tools. (#135)
+- Side-git workspace snapshots, `/restore`, and `revert_turn` so agent edits can be rolled back without moving the user's repository HEAD. (#137)
+- Esc-Esc backtrack over prior user turns, desktop turn-complete notifications, Alt+V tool-details access, safer command-prefix auto-allow matching, bundled `skill-creator`, and `/skill install` management for community skills. (#131, #132, #133, #138, #139, #140)
+
+### Changed
+- Split more engine/tool primitives into focused modules and workspace crates, including shared tool result primitives and extracted turn/capacity flow. (#67, #74)
+
+### Tests
+- Added mock LLM and skill-install integration coverage for streaming turns, reasoning replay, tool-call loops, network policy, and skill validation. (#69, #140)
+
 ## [0.6.5] - 2026-04-27
 
 ### Added

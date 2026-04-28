@@ -7,7 +7,8 @@
 #      crate must inherit `version.workspace = true`.
 #   2. `npm/deepseek-tui/package.json` `version` matches the workspace
 #      `version` in the root `Cargo.toml`.
-#   3. `Cargo.lock` is in sync with the manifests (`cargo metadata --locked`
+#   3. Internal `deepseek-*` path dependency pins match the workspace version.
+#   4. `Cargo.lock` is in sync with the manifests (`cargo metadata --locked`
 #      fails if not).
 set -euo pipefail
 
@@ -31,7 +32,18 @@ if [[ "${workspace_version}" != "${npm_version}" ]]; then
   fail=1
 fi
 
-# 3) Cargo.lock in sync.
+# 3) Internal path dependency pins.
+internal_dep_drift="$(
+  grep -nE 'deepseek-[a-z-]+[[:space:]]*=[[:space:]]*\{[^}]*version[[:space:]]*=[[:space:]]*"' crates/*/Cargo.toml \
+    | grep -v "version[[:space:]]*=[[:space:]]*\"${workspace_version}\"" || true
+)"
+if [[ -n "${internal_dep_drift}" ]]; then
+  echo "::error::Internal deepseek-* path dependency versions must match workspace version ${workspace_version}:" >&2
+  echo "${internal_dep_drift}" >&2
+  fail=1
+fi
+
+# 4) Cargo.lock in sync.
 if ! cargo metadata --locked --format-version 1 --no-deps >/dev/null 2>&1; then
   echo "::error::Cargo.lock is out of sync with the manifests. Run 'cargo update -p deepseek-tui' or 'cargo build' and commit the result." >&2
   fail=1
