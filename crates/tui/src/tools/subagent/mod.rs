@@ -34,6 +34,10 @@ use crate::tools::spec::{
 };
 use crate::tools::todo::{SharedTodoList, TodoList};
 
+pub mod mailbox;
+#[allow(unused_imports)]
+pub use mailbox::{Mailbox, MailboxEnvelope, MailboxMessage, MailboxReceiver};
+
 // === Constants ===
 
 const DEFAULT_MAX_STEPS: u32 = 100;
@@ -440,6 +444,10 @@ pub struct SubAgentRuntime {
     /// Cooperative cancellation token. Children derive a child_token() from
     /// the parent so cancelling the root cascades down.
     pub cancel_token: CancellationToken,
+    /// Structured progress / lifecycle stream. Cloned across children so the
+    /// whole spawn tree publishes into one ordered, fan-out-able mailbox.
+    /// `None` only when no consumer is wired (legacy entry points / tests).
+    pub mailbox: Option<Mailbox>,
 }
 
 impl SubAgentRuntime {
@@ -466,7 +474,28 @@ impl SubAgentRuntime {
             spawn_depth: 0,
             max_spawn_depth: DEFAULT_MAX_SPAWN_DEPTH,
             cancel_token: CancellationToken::new(),
+            mailbox: None,
         }
+    }
+
+    /// Attach a `Mailbox` so this runtime (and every descendant — children
+    /// clone it) publishes structured `MailboxMessage` envelopes alongside
+    /// the legacy `Event` stream. Pair with [`Self::with_cancel_token`] when
+    /// you want close-as-cancel to propagate the same way.
+    #[must_use]
+    #[allow(dead_code)] // wired by #128 (in-transcript cards) when it lands.
+    pub fn with_mailbox(mut self, mailbox: Mailbox) -> Self {
+        self.mailbox = Some(mailbox);
+        self
+    }
+
+    /// Replace the cancellation token (e.g. when the engine constructs the
+    /// runtime alongside a mailbox bound to the same token).
+    #[must_use]
+    #[allow(dead_code)] // wired by #128 alongside `with_mailbox`.
+    pub fn with_cancel_token(mut self, token: CancellationToken) -> Self {
+        self.cancel_token = token;
+        self
     }
 
     /// Override the maximum spawn depth (default `DEFAULT_MAX_SPAWN_DEPTH`).
@@ -501,6 +530,7 @@ impl SubAgentRuntime {
             spawn_depth: self.spawn_depth + 1,
             max_spawn_depth: self.max_spawn_depth,
             cancel_token: self.cancel_token.child_token(),
+            mailbox: self.mailbox.clone(),
         }
     }
 
@@ -2477,23 +2507,38 @@ async fn run_subagent_task(task: SubAgentTask) {
         Err(err) => manager.update_failed(&task.agent_id, err.to_string()),
     }
 
-    if let Some(event_tx) = task.runtime.event_tx {
-        // Emit BOTH a human-friendly summary (rendered in the parent's
-        // sidebar / cell) AND a structured sentinel the model can recognize
-        // on its next turn. Format: human summary on the first line,
-        // sentinel on the second. The sentinel uses an opaque tag
-        // (`deepseek:subagent.done`) to avoid collision with normal user
-        // text.
-        let (summary, sentinel) = match &result {
-            Ok(res) => (
-                summarize_subagent_result(res),
-                subagent_done_sentinel(&task.agent_id, res),
-            ),
-            Err(err) => (
-                format!("Failed: {err}"),
-                subagent_failed_sentinel(&task.agent_id, &err.to_string()),
-            ),
+    // Emit BOTH a human-friendly summary (rendered in the parent's
+    // sidebar / cell) AND a structured sentinel the model can recognize
+    // on its next turn. Format: human summary on the first line,
+    // sentinel on the second. The sentinel uses an opaque tag
+    // (`deepseek:subagent.done`) to avoid collision with normal user
+    // text.
+    let (summary, sentinel) = match &result {
+        Ok(res) => (
+            summarize_subagent_result(res),
+            subagent_done_sentinel(&task.agent_id, res),
+        ),
+        Err(err) => (
+            format!("Failed: {err}"),
+            subagent_failed_sentinel(&task.agent_id, &err.to_string()),
+        ),
+    };
+
+    if let Some(mb) = task.runtime.mailbox.as_ref() {
+        let envelope = match &result {
+            Ok(_) => MailboxMessage::Completed {
+                agent_id: task.agent_id.clone(),
+                summary: summary.clone(),
+            },
+            Err(err) => MailboxMessage::Failed {
+                agent_id: task.agent_id.clone(),
+                error: err.to_string(),
+            },
         };
+        let _ = mb.send(envelope);
+    }
+
+    if let Some(event_tx) = task.runtime.event_tx {
         let payload = format!("{summary}\n{sentinel}");
         let _ = event_tx.try_send(Event::AgentComplete {
             id: task.agent_id,
@@ -2555,8 +2600,12 @@ async fn run_subagent(
         ));
     }
     let tools = tool_registry.tools_for_model();
+    if let Some(mb) = runtime.mailbox.as_ref() {
+        let _ = mb.send(MailboxMessage::started(&agent_id, agent_type.clone()));
+    }
     emit_agent_progress(
         runtime.event_tx.as_ref(),
+        runtime.mailbox.as_ref(),
         &agent_id,
         format!("started ({})", agent_type.as_str()),
     );
@@ -2580,9 +2629,15 @@ async fn run_subagent(
         if runtime.cancel_token.is_cancelled() {
             emit_agent_progress(
                 runtime.event_tx.as_ref(),
+                runtime.mailbox.as_ref(),
                 &agent_id,
                 format!("step {steps}/{max_steps}: cancelled"),
             );
+            if let Some(mb) = runtime.mailbox.as_ref() {
+                let _ = mb.send(MailboxMessage::Cancelled {
+                    agent_id: agent_id.clone(),
+                });
+            }
             return Ok(SubAgentResult {
                 agent_id: agent_id.clone(),
                 agent_type: agent_type.clone(),
@@ -2597,6 +2652,7 @@ async fn run_subagent(
         steps += 1;
         emit_agent_progress(
             runtime.event_tx.as_ref(),
+            runtime.mailbox.as_ref(),
             &agent_id,
             format!("step {steps}/{max_steps}: requesting model response"),
         );
@@ -2643,9 +2699,15 @@ async fn run_subagent(
             () = runtime.cancel_token.cancelled() => {
                 emit_agent_progress(
                     runtime.event_tx.as_ref(),
+                    runtime.mailbox.as_ref(),
                     &agent_id,
                     format!("step {steps}/{max_steps}: cancelled mid-request"),
                 );
+                if let Some(mb) = runtime.mailbox.as_ref() {
+                    let _ = mb.send(MailboxMessage::Cancelled {
+                        agent_id: agent_id.clone(),
+                    });
+                }
                 return Ok(SubAgentResult {
                     agent_id: agent_id.clone(),
                     agent_type: agent_type.clone(),
@@ -2692,6 +2754,7 @@ async fn run_subagent(
             if pending_inputs.is_empty() {
                 emit_agent_progress(
                     runtime.event_tx.as_ref(),
+                    runtime.mailbox.as_ref(),
                     &agent_id,
                     format!("step {steps}/{max_steps}: complete"),
                 );
@@ -2702,6 +2765,7 @@ async fn run_subagent(
 
         emit_agent_progress(
             runtime.event_tx.as_ref(),
+            runtime.mailbox.as_ref(),
             &agent_id,
             format!(
                 "step {steps}/{max_steps}: executing {} tool call(s)",
@@ -2712,9 +2776,17 @@ async fn run_subagent(
         for (tool_id, tool_name, tool_input) in tool_uses {
             emit_agent_progress(
                 runtime.event_tx.as_ref(),
+                runtime.mailbox.as_ref(),
                 &agent_id,
                 format!("step {steps}/{max_steps}: running tool '{tool_name}'"),
             );
+            if let Some(mb) = runtime.mailbox.as_ref() {
+                let _ = mb.send(MailboxMessage::ToolCallStarted {
+                    agent_id: agent_id.clone(),
+                    tool_name: tool_name.clone(),
+                    step: steps,
+                });
+            }
             let result = match tokio::time::timeout(TOOL_TIMEOUT, async {
                 tool_registry
                     .execute(&agent_id, &tool_name, tool_input)
@@ -2726,11 +2798,21 @@ async fn run_subagent(
                 Ok(Err(e)) => format!("Error: {e}"),
                 Err(_) => format!("Error: Tool {tool_name} timed out"),
             };
+            let tool_ok = !result.starts_with("Error:");
             emit_agent_progress(
                 runtime.event_tx.as_ref(),
+                runtime.mailbox.as_ref(),
                 &agent_id,
                 format!("step {steps}/{max_steps}: finished tool '{tool_name}'"),
             );
+            if let Some(mb) = runtime.mailbox.as_ref() {
+                let _ = mb.send(MailboxMessage::ToolCallCompleted {
+                    agent_id: agent_id.clone(),
+                    tool_name: tool_name.clone(),
+                    step: steps,
+                    ok: tool_ok,
+                });
+            }
 
             tool_results.push(ContentBlock::ToolResult {
                 tool_use_id: tool_id,
@@ -3702,7 +3784,15 @@ fn build_assignment_prompt(
     )
 }
 
-fn emit_agent_progress(event_tx: Option<&mpsc::Sender<Event>>, agent_id: &str, status: String) {
+fn emit_agent_progress(
+    event_tx: Option<&mpsc::Sender<Event>>,
+    mailbox: Option<&Mailbox>,
+    agent_id: &str,
+    status: String,
+) {
+    if let Some(mb) = mailbox {
+        let _ = mb.send(MailboxMessage::progress(agent_id, status.clone()));
+    }
     if let Some(event_tx) = event_tx {
         let _ = event_tx.try_send(Event::AgentProgress {
             id: agent_id.to_string(),

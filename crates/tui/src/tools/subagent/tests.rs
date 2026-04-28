@@ -905,6 +905,103 @@ fn child_cancellation_cascades_from_parent() {
 }
 
 #[test]
+fn mailbox_propagates_through_child_runtime_chain() {
+    use crate::tools::subagent::mailbox::Mailbox;
+    let parent_token = CancellationToken::new();
+    let (mailbox, _rx) = Mailbox::new(parent_token.clone());
+
+    let mut parent = stub_runtime();
+    parent.cancel_token = parent_token;
+    parent.mailbox = Some(mailbox);
+
+    let child = parent.child_runtime();
+    let grandchild = child.child_runtime();
+    assert!(parent.mailbox.is_some());
+    assert!(child.mailbox.is_some(), "child inherits parent mailbox");
+    assert!(
+        grandchild.mailbox.is_some(),
+        "grandchild inherits via the cloned Arc inside Mailbox"
+    );
+}
+
+#[tokio::test]
+async fn mailbox_close_as_cancel_propagates_to_grandchild_runtime() {
+    use crate::tools::subagent::mailbox::Mailbox;
+    let parent_token = CancellationToken::new();
+    let (mailbox, _rx) = Mailbox::new(parent_token.clone());
+
+    let mut parent = stub_runtime();
+    parent.cancel_token = parent_token;
+    parent.mailbox = Some(mailbox.clone());
+
+    let child = parent.child_runtime();
+    let grandchild = child.child_runtime();
+    assert!(!grandchild.cancel_token.is_cancelled());
+
+    // Close the mailbox via *any* clone — the original or the one stored on
+    // the runtime. Cancellation must reach all the way to the grandchild.
+    mailbox.close();
+    assert!(parent.cancel_token.is_cancelled());
+    assert!(child.cancel_token.is_cancelled());
+    assert!(
+        grandchild.cancel_token.is_cancelled(),
+        "close-as-cancel must propagate across max_spawn_depth=3"
+    );
+}
+
+#[tokio::test]
+async fn mailbox_orders_messages_from_parent_and_child_runtimes() {
+    use crate::tools::subagent::mailbox::{Mailbox, MailboxMessage};
+    let parent_token = CancellationToken::new();
+    let (mailbox, mut rx) = Mailbox::new(parent_token.clone());
+
+    let mut parent = stub_runtime();
+    parent.cancel_token = parent_token;
+    parent.mailbox = Some(mailbox);
+    let child = parent.child_runtime();
+
+    // Interleave sends from both runtimes; sequence numbers stay monotonic.
+    parent
+        .mailbox
+        .as_ref()
+        .unwrap()
+        .send(MailboxMessage::progress("parent_a", "step 1"));
+    child
+        .mailbox
+        .as_ref()
+        .unwrap()
+        .send(MailboxMessage::progress("child_b", "step 1"));
+    parent
+        .mailbox
+        .as_ref()
+        .unwrap()
+        .send(MailboxMessage::progress("parent_a", "step 2"));
+
+    let drained = rx.drain();
+    assert_eq!(drained.len(), 3);
+    assert_eq!(drained[0].seq, 1);
+    assert_eq!(drained[1].seq, 2);
+    assert_eq!(drained[2].seq, 3);
+    // Verify ordering is preserved across publishers.
+    match (
+        &drained[0].message,
+        &drained[1].message,
+        &drained[2].message,
+    ) {
+        (
+            MailboxMessage::Progress { agent_id: a, .. },
+            MailboxMessage::Progress { agent_id: b, .. },
+            MailboxMessage::Progress { agent_id: c, .. },
+        ) => {
+            assert_eq!(a, "parent_a");
+            assert_eq!(b, "child_b");
+            assert_eq!(c, "parent_a");
+        }
+        other => panic!("unexpected message order: {other:?}"),
+    }
+}
+
+#[test]
 fn persisted_empty_allowed_tools_loads_as_full_inheritance() {
     // Backward-compat: a v0.6.5 session that persisted with an empty Vec
     // (or a v0.6.6 session with no narrowing) should load as None on
@@ -989,6 +1086,7 @@ fn stub_runtime() -> SubAgentRuntime {
         spawn_depth: 0,
         max_spawn_depth: DEFAULT_MAX_SPAWN_DEPTH,
         cancel_token: CancellationToken::new(),
+        mailbox: None,
     }
 }
 
