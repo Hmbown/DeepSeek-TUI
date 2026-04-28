@@ -2095,6 +2095,35 @@ fn build_pending_input_preview_populates_all_three_buckets() {
 }
 
 #[test]
+fn build_pending_input_preview_includes_current_context_chips() {
+    let tmpdir = TempDir::new().expect("tempdir");
+    std::fs::write(tmpdir.path().join("guide.md"), "hello").expect("write");
+    let mut app = create_test_app();
+    app.workspace = tmpdir.path().to_path_buf();
+    app.input = "Read @guide.md and @missing.md".to_string();
+    app.cursor_position = app.input.chars().count();
+
+    let preview = build_pending_input_preview(&app);
+
+    assert!(
+        preview
+            .context_items
+            .iter()
+            .any(|item| item.kind == "file" && item.label == "guide.md" && item.included),
+        "file mention preview missing: {:?}",
+        preview.context_items
+    );
+    assert!(
+        preview
+            .context_items
+            .iter()
+            .any(|item| item.kind == "missing" && item.label == "missing.md" && !item.included),
+        "missing mention preview missing: {:?}",
+        preview.context_items
+    );
+}
+
+#[test]
 fn render_footer_from_with_default_items_renders_mode_and_model() {
     // Default footer composition should show the mode chip and model
     // identifier — exactly what v0.6.6 users see today.

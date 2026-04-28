@@ -82,7 +82,7 @@ use super::slash_menu::{
     apply_slash_menu_selection, try_autocomplete_slash_command, visible_slash_menu_entries,
 };
 use super::views::{ConfigView, HelpView, ModalKind, ViewEvent};
-use super::widgets::pending_input_preview::PendingInputPreview;
+use super::widgets::pending_input_preview::{ContextPreviewItem, PendingInputPreview};
 use super::widgets::{
     ChatWidget, ComposerWidget, FooterProps, FooterToast, FooterWidget, HeaderData, HeaderWidget,
     Renderable,
@@ -3035,6 +3035,19 @@ fn reconcile_subagent_activity_state(app: &mut App) {
 ///   end-of-turn.
 fn build_pending_input_preview(app: &App) -> PendingInputPreview {
     let mut preview = PendingInputPreview::new();
+    preview.context_items = crate::tui::file_mention::pending_context_previews(
+        &app.input,
+        &app.workspace,
+        std::env::current_dir().ok(),
+    )
+    .into_iter()
+    .map(|item| ContextPreviewItem {
+        kind: item.kind,
+        label: item.label,
+        detail: item.detail,
+        included: item.included,
+    })
+    .collect();
     preview.pending_steers = app
         .pending_steers
         .iter()

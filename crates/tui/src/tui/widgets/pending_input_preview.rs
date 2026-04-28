@@ -49,15 +49,28 @@ impl EditBinding {
 /// messages while a turn is in progress.
 #[derive(Debug, Clone)]
 pub struct PendingInputPreview {
+    pub context_items: Vec<ContextPreviewItem>,
     pub pending_steers: Vec<String>,
     pub rejected_steers: Vec<String>,
     pub queued_messages: Vec<String>,
     pub edit_binding: EditBinding,
 }
 
+/// Compact pre-send context row shown above the composer. `included=false`
+/// marks missing/skipped context distinctly from files/media that will be
+/// sent or inlined.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextPreviewItem {
+    pub kind: String,
+    pub label: String,
+    pub detail: Option<String>,
+    pub included: bool,
+}
+
 impl PendingInputPreview {
     pub fn new() -> Self {
         Self {
+            context_items: Vec::new(),
             pending_steers: Vec::new(),
             rejected_steers: Vec::new(),
             queued_messages: Vec::new(),
@@ -69,7 +82,8 @@ impl PendingInputPreview {
     /// at `width`. Pulled out so `desired_height` can ask the same renderer
     /// without duplicating wrapping logic.
     fn lines(&self, width: u16) -> Vec<Line<'static>> {
-        if (self.pending_steers.is_empty()
+        if (self.context_items.is_empty()
+            && self.pending_steers.is_empty()
             && self.rejected_steers.is_empty()
             && self.queued_messages.is_empty())
             || width < 4
@@ -84,7 +98,20 @@ impl PendingInputPreview {
 
         let mut lines: Vec<Line<'static>> = Vec::new();
 
+        if !self.context_items.is_empty() {
+            push_section_header(
+                &mut lines,
+                Line::from(vec![Span::raw("• "), Span::raw("Context for next send")]),
+            );
+            for item in &self.context_items {
+                push_context_item(&mut lines, item, width);
+            }
+        }
+
         if !self.pending_steers.is_empty() {
+            if !lines.is_empty() {
+                lines.push(Line::from(""));
+            }
             push_section_header(
                 &mut lines,
                 Line::from(vec![
@@ -164,6 +191,34 @@ impl Renderable for PendingInputPreview {
 
 fn push_section_header(lines: &mut Vec<Line<'static>>, header: Line<'static>) {
     lines.push(header);
+}
+
+fn push_context_item(lines: &mut Vec<Line<'static>>, item: &ContextPreviewItem, width: u16) {
+    let status_style = if item.included {
+        Style::default().fg(palette::TEXT_MUTED)
+    } else {
+        Style::default().fg(palette::STATUS_WARNING)
+    };
+    let label_style = if item.included {
+        Style::default().fg(palette::TEXT_PRIMARY)
+    } else {
+        Style::default().fg(palette::TEXT_MUTED)
+    };
+    let detail = item
+        .detail
+        .as_deref()
+        .filter(|detail| !detail.trim().is_empty())
+        .map(|detail| format!(" · {detail}"))
+        .unwrap_or_default();
+    let body = format!("[{}] {}{}", item.kind, item.label, detail);
+    let body_width = width.saturating_sub(4).max(1) as usize;
+    for (idx, segment) in wrap_to_width(&body, body_width).into_iter().enumerate() {
+        let prefix = if idx == 0 { "  ↳ " } else { "    " };
+        lines.push(Line::from(vec![
+            Span::styled(prefix.to_string(), status_style),
+            Span::styled(segment, label_style),
+        ]));
+    }
 }
 
 /// Render a single bucket item with `↳` prefix, truncating to
@@ -298,6 +353,27 @@ mod tests {
         assert!(rows[0].contains("Queued follow-up inputs"));
         assert!(rows[1].contains("Hello, world!"));
         assert!(rows[2].contains("edit last queued message"));
+    }
+
+    #[test]
+    fn context_items_render_before_queue_buckets() {
+        let mut preview = PendingInputPreview::new();
+        preview.context_items.push(ContextPreviewItem {
+            kind: "file".to_string(),
+            label: "src/main.rs".to_string(),
+            detail: Some("included".to_string()),
+            included: true,
+        });
+        preview.context_items.push(ContextPreviewItem {
+            kind: "missing".to_string(),
+            label: "nope.txt".to_string(),
+            detail: Some("not found".to_string()),
+            included: false,
+        });
+        let rows = render_to_string(&preview, 64);
+        assert!(rows[0].contains("Context for next send"));
+        assert!(rows[1].contains("[file] src/main.rs"));
+        assert!(rows[2].contains("[missing] nope.txt"));
     }
 
     #[test]
