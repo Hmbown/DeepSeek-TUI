@@ -14,6 +14,8 @@ use crate::tools::{ToolContext, ToolRegistryBuilder};
 use crate::tui::app::App;
 use crate::tui::approval::{ElevationOption, ReviewDecision};
 
+pub mod status_picker;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModalKind {
     Approval,
@@ -28,6 +30,7 @@ pub enum ModalKind {
     Config,
     ModelPicker,
     FilePicker,
+    StatusPicker,
 }
 
 #[derive(Debug, Clone)]
@@ -99,6 +102,14 @@ pub enum ViewEvent {
         effort: crate::tui::app::ReasoningEffort,
         previous_model: String,
         previous_effort: crate::tui::app::ReasoningEffort,
+    },
+    /// Emitted by the `/statusline` picker every time the user toggles an
+    /// item (live preview) and once more on Enter (final). The handler
+    /// updates `app.status_items` immediately and persists on `final_save`
+    /// so the footer animates without a write per keystroke.
+    StatusItemsUpdated {
+        items: Vec<crate::config::StatusItem>,
+        final_save: bool,
     },
 }
 
