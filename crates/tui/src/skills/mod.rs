@@ -1,6 +1,17 @@
 //! Skill discovery and registry for local SKILL.md files.
 
+pub mod install;
 mod system;
+// Re-exports kept for documentation parity and downstream consumers; the
+// binary itself imports directly from `skills::install`. `#[allow(...)]`
+// silences the dead-code warning that fires because no `bin` source path
+// references these names through `skills::*`.
+#[allow(unused_imports)]
+pub use install::{
+    DEFAULT_MAX_SIZE_BYTES, DEFAULT_REGISTRY_URL, INSTALLED_FROM_MARKER, InstallOutcome,
+    InstallSource, InstalledSkill, RegistryDocument, RegistryEntry, RegistryFetchResult,
+    UpdateResult,
+};
 pub use system::install_system_skills;
 
 use std::fs;
