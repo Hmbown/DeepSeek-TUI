@@ -91,6 +91,30 @@ max_subagents = 5 # optional (1-20)
 # model = "deepseek-ai/deepseek-v4-pro"     # or deepseek-ai/deepseek-v4-flash
 
 # ─────────────────────────────────────────────────────────────────────────────────
+# Network Policy (#135)
+# ─────────────────────────────────────────────────────────────────────────────────
+# Per-domain allow/deny rules for outbound network calls made by the TUI's
+# tools (`fetch_url`, `web_search`) and the MCP HTTP transport. Stdio MCP
+# servers and direct LLM API calls are unaffected.
+#
+# Precedence: deny wins. A host listed in both `allow` and `deny` is denied.
+#
+# Host-matching rules:
+#   - Exact match: `api.deepseek.com` matches only `api.deepseek.com`.
+#   - Subdomain wildcard: an entry starting with `.` (e.g. `.example.com`)
+#     matches `api.example.com` and `a.b.example.com` but not the apex
+#     `example.com`. To cover both, list both. `*.example.com` is also accepted.
+#
+# Defaults are intentionally conservative: when this section is absent, no
+# policy is enforced (mirrors pre-v0.7.0 behavior). To opt in:
+#
+# [network]
+# default = "prompt"     # allow | deny | prompt
+# allow = ["api.deepseek.com", "github.com", ".githubusercontent.com"]
+# deny = []
+# audit = true            # one line per call to ~/.deepseek/audit.log
+
+# ─────────────────────────────────────────────────────────────────────────────────
 # TUI
 # ─────────────────────────────────────────────────────────────────────────────────
 [tui]
