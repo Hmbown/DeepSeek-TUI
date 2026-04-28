@@ -46,6 +46,8 @@ pub struct FooterProps {
     /// Cache-hit-rate chip spans (empty when no usage reported).
     pub cache: Vec<Span<'static>>,
     /// Session-cost chip spans (empty when below the display threshold).
+    /// Rendered in the left cluster (after the model name) — cost is steady
+    /// info, not a transient signal, so it lives with mode and model.
     pub cost: Vec<Span<'static>>,
     /// Optional toast that, when present, replaces the left status line.
     pub toast: Option<FooterToast>,
@@ -58,48 +60,46 @@ pub struct FooterProps {
 
 /// One frame of the footer's water-spout animation. `col` is the cell index
 /// inside the strip, `width` the strip's total width, `frame` the discrete
-/// frame counter. Returns the glyph that should appear in that cell on that
-/// frame.
+/// 150 ms tick counter. Returns the glyph that should appear in that cell on
+/// that frame.
 ///
-/// Visual: two box-drawing "arcs" (`╭───╮`) sweeping horizontally at
-/// independent speeds across a calm water surface (`─`). Arcs that meet
-/// blend into a wider arch, giving the criss-cross fountain feel. Purely
-/// deterministic given (col, width, frame) so unit tests can pin frames.
+/// Visual: two crests sweep across a calm water surface (`─`). The opener
+/// `⌒` rises, then a soft `‿` trails behind. Crest A advances every 4 ticks
+/// (~600 ms), crest B every 6 ticks (~900 ms) — independent speeds give the
+/// criss-cross fountain feel. Every 17 ticks (~2.5 s) the phase of crest B
+/// jitters by one column so the pattern never settles into a strict beat.
+///
+/// All math is pure given (col, width, frame) so unit tests can pin frames.
 #[must_use]
 pub fn footer_working_strip_glyph_at(col: usize, width: usize, frame: u64) -> char {
     if width == 0 {
         return ' ';
     }
 
-    // Half-width of an arc (so a full arc spans `2*ARC_HALF + 1` columns:
-    // `╭`, `─`...`─`, `╮`). Three keeps the arcs `╭───╮` — five glyphs wide,
-    // matching the issue's sketch.
-    const ARC_HALF: i64 = 2;
-    let arc_span = ARC_HALF * 2 + 1; // 5
+    // Crest is two glyphs wide: the leading `⌒` followed by a trailing `‿`.
+    const CREST_SPAN: i64 = 2;
+    // Cycle wide enough that each crest enters and exits cleanly.
+    let cycle = (width as i64).max(CREST_SPAN) + CREST_SPAN * 2;
+    let frame_i = frame as i64;
+    // Crest A advances one column every 4 ticks; B every 6.
+    let pos_a = frame_i.div_euclid(4).rem_euclid(cycle) - CREST_SPAN;
+    // Phase jitter: every 17 ticks, nudge B by one column so the two crests
+    // never lock into a fixed offset.
+    let jitter = frame_i.div_euclid(17).rem_euclid(3);
+    let pos_b = (frame_i.div_euclid(6) + jitter + (cycle / 3) + 5).rem_euclid(cycle) - CREST_SPAN;
 
-    // Two arcs at independent speeds drifting through a wrap-around span
-    // wider than the strip itself, so each arc enters from the left, sweeps
-    // across, and exits on the right before re-entering. Phase offsets keep
-    // them from synchronising at frame 0.
-    let cycle = (width as i64).max(arc_span) + arc_span * 2;
-    let frame = frame as i64;
-    let pos1 = (frame).rem_euclid(cycle) - arc_span;
-    let pos2 = (frame * 2 + (cycle / 3) + 7).rem_euclid(cycle) - arc_span;
-
-    arc_glyph_for(col as i64, pos1)
-        .or_else(|| arc_glyph_for(col as i64, pos2))
+    crest_glyph_for(col as i64, pos_a)
+        .or_else(|| crest_glyph_for(col as i64, pos_b))
         .unwrap_or('\u{2500}') // ─  — calm water surface
 }
 
-/// Helper: returns the glyph for column `col` if it falls inside an arc
-/// centred at `pos`, else `None`. An arc is `╭───╮` shaped — left cup, three
-/// dashes, right cup — five columns wide.
-fn arc_glyph_for(col: i64, pos: i64) -> Option<char> {
+/// Helper: returns the glyph for column `col` if it falls inside a crest
+/// centred at `pos`. A crest is `⌒‿` shaped — soft rise then a gentle dip.
+fn crest_glyph_for(col: i64, pos: i64) -> Option<char> {
     let dist = col - pos;
     match dist {
-        -2 => Some('\u{256D}'),     // ╭  arc rising from the left
-        -1..=1 => Some('\u{2500}'), // ─  arc top
-        2 => Some('\u{256E}'),      // ╮  arc falling on the right
+        0 => Some('\u{2312}'), // ⌒  arc rising from the left
+        1 => Some('\u{203F}'), // ‿  trailing dip
         _ => None,
     }
 }
@@ -225,12 +225,15 @@ impl FooterWidget {
     }
 
     fn auxiliary_spans(&self, max_width: usize) -> Vec<Span<'static>> {
+        // `cost` is rendered in the left cluster now — keep it out of the
+        // right-hand chip parade. Coherence / agents / replay / cache are
+        // transient signals; they belong on the right where they appear and
+        // disappear without disturbing the steady mode·model·cost line.
         let parts: Vec<&Vec<Span<'static>>> = [
             &self.props.coherence,
             &self.props.agents,
             &self.props.reasoning_replay,
             &self.props.cache,
-            &self.props.cost,
         ]
         .into_iter()
         .filter(|spans| !spans.is_empty())
@@ -261,14 +264,15 @@ impl FooterWidget {
     ///
     /// Priority order (highest to lowest — last to drop):
     /// 1. Mode label (always visible at any width; truncated only as a last resort)
-    /// 2. Model name (always visible when width ≥ enough for "mode · model"; then truncated mid-word)
-    /// 3. Status label (e.g. "working", "draft") — drops first when space is tight
+    /// 2. Model name (always visible; then truncated mid-word once status & cost are gone)
+    /// 3. Cost chip — drops second after status (steady-info still wants to be visible)
+    /// 4. Status label (e.g. "working", "draft") — drops first when space is tight
     ///
-    /// At every width ≥40 cols the line never wraps mid-hint: the widget chooses
-    /// one of (`mode · model · status`, `mode · model`, `mode`) and renders
-    /// that single line within `max_width`. Below 40 cols the same fallback
-    /// applies; the model is allowed to truncate with an ellipsis only when
-    /// the status label has already been dropped.
+    /// At every width ≥40 cols the line never wraps mid-hint: the widget
+    /// chooses one of (`mode · model · cost · status`, `mode · model · cost`,
+    /// `mode · model`, `mode`) and renders that single line within
+    /// `max_width`. Cost lives between model and status so the eye finds
+    /// "what's this run going to cost me" without scanning past the wave.
     fn status_line_spans(&self, max_width: usize) -> Vec<Span<'static>> {
         if max_width == 0 {
             return Vec::new();
@@ -279,25 +283,50 @@ impl FooterWidget {
         let model = self.props.model.as_str();
         let show_status = self.props.state_label != "ready";
         let status_label = self.props.state_label.as_str();
+        let cost_text = spans_text(&self.props.cost);
+        let show_cost = !cost_text.is_empty();
 
         let mode_w = mode_label.width();
         let sep_w = sep.width();
         let model_w = UnicodeWidthStr::width(model);
         let status_w = status_label.width();
+        let cost_w = cost_text.width();
 
-        // Tier 1: mode · model · status — full footer, no truncation.
-        let full_w = mode_w + sep_w + model_w + sep_w + status_w;
-        if show_status && full_w <= max_width {
-            return self.build_status_line_spans(mode_label, model.to_string(), Some(status_label));
+        // Tier 1: mode · model · cost · status — everything fits.
+        let full_w = mode_w
+            + sep_w
+            + model_w
+            + if show_cost { sep_w + cost_w } else { 0 }
+            + if show_status { sep_w + status_w } else { 0 };
+        if (show_cost || show_status) && full_w <= max_width {
+            return self.build_status_line_spans(
+                mode_label,
+                model.to_string(),
+                show_cost.then(|| cost_text.clone()),
+                show_status.then_some(status_label),
+            );
         }
 
-        // Tier 2: mode · model — drop status first.
+        // Tier 2: mode · model · cost — drop status first.
+        if show_cost {
+            let with_cost_w = mode_w + sep_w + model_w + sep_w + cost_w;
+            if with_cost_w <= max_width {
+                return self.build_status_line_spans(
+                    mode_label,
+                    model.to_string(),
+                    Some(cost_text.clone()),
+                    None,
+                );
+            }
+        }
+
+        // Tier 3: mode · model — drop cost too.
         let mode_model_w = mode_w + sep_w + model_w;
         if mode_model_w <= max_width {
-            return self.build_status_line_spans(mode_label, model.to_string(), None);
+            return self.build_status_line_spans(mode_label, model.to_string(), None, None);
         }
 
-        // Tier 3: mode · <truncated model> — keep both labels visible by
+        // Tier 4: mode · <truncated model> — keep both labels visible by
         // ellipsizing the model name. Only do this when there is enough room
         // for at least the ellipsis ("..."). Below that we drop to mode-only.
         let prefix_w = mode_w + sep_w;
@@ -306,12 +335,12 @@ impl FooterWidget {
             if model_budget >= 4 {
                 let truncated = truncate_to_width(model, model_budget);
                 if !truncated.is_empty() {
-                    return self.build_status_line_spans(mode_label, truncated, None);
+                    return self.build_status_line_spans(mode_label, truncated, None, None);
                 }
             }
         }
 
-        // Tier 4: mode-only. If even the mode label cannot fit, truncate it
+        // Tier 5: mode-only. If even the mode label cannot fit, truncate it
         // so the footer never wraps to a second row.
         if mode_w <= max_width {
             return vec![Span::styled(
@@ -329,6 +358,7 @@ impl FooterWidget {
         &self,
         mode_label: &'static str,
         model_label: String,
+        cost: Option<String>,
         status: Option<&str>,
     ) -> Vec<Span<'static>> {
         let sep = " \u{00B7} ";
@@ -340,6 +370,16 @@ impl FooterWidget {
             Span::styled(sep.to_string(), Style::default().fg(palette::TEXT_DIM)),
             Span::styled(model_label, Style::default().fg(palette::TEXT_HINT)),
         ];
+        if let Some(cost_text) = cost {
+            spans.push(Span::styled(
+                sep.to_string(),
+                Style::default().fg(palette::TEXT_DIM),
+            ));
+            spans.push(Span::styled(
+                cost_text,
+                Style::default().fg(palette::TEXT_MUTED),
+            ));
+        }
         if let Some(status_label) = status {
             spans.push(Span::styled(
                 sep.to_string(),
@@ -352,6 +392,13 @@ impl FooterWidget {
         }
         spans
     }
+}
+
+fn spans_text(spans: &[Span<'_>]) -> String {
+    spans
+        .iter()
+        .map(|s| s.content.as_ref())
+        .collect::<String>()
 }
 
 impl Renderable for FooterWidget {
@@ -440,7 +487,10 @@ mod tests {
     use crate::config::Config;
     use crate::palette;
     use crate::tui::app::{App, AppMode, TuiOptions};
-    use ratatui::{style::Color, text::Span};
+    use ratatui::{
+        style::{Color, Style},
+        text::Span,
+    };
     use std::path::PathBuf;
 
     fn make_app() -> App {
@@ -620,21 +670,24 @@ mod tests {
 
     #[test]
     fn working_strip_glyph_is_deterministic_per_frame() {
-        // Same (col, width, frame) → same glyph. Different `frame` values
-        // produce different overall strings, which is what makes the
-        // animation visible.
+        // Same (col, width, frame) → same glyph. Stepping by one full
+        // crest-A tick (4 ticks ≈ 600 ms) is the minimum guaranteed
+        // animation step.
         let a = super::footer_working_strip_string(40, 1);
         let b = super::footer_working_strip_string(40, 1);
         assert_eq!(a, b, "deterministic given the same frame");
-        let c = super::footer_working_strip_string(40, 2);
-        assert_ne!(a, c, "advancing the frame must change the strip");
+        let c = super::footer_working_strip_string(40, 5);
+        assert_ne!(
+            a, c,
+            "advancing one full crest-A step must change the strip",
+        );
     }
 
     #[test]
     fn working_strip_renders_glyphs_only_when_frame_is_some() {
         // Idle: spacer is plain whitespace. Active: spacer contains the
-        // box-drawing animation glyphs (`╭` rising-arc, `╮` falling-arc,
-        // `─` water surface) and visibly differs from the idle render.
+        // crest animation glyphs (`⌒` opener, `‿` trailer, `─` water
+        // surface) and visibly differs from the idle render.
         let app = make_app();
         let mut props = idle_props_for(&app);
 
@@ -653,43 +706,52 @@ mod tests {
             "active footer must visibly differ from idle one"
         );
         assert!(
-            active.contains('\u{256D}')   // ╭
-                || active.contains('\u{256E}') // ╮
-                || active.contains('\u{2500}'), // ─
+            active.contains('\u{2312}')   // ⌒  crest opener
+                || active.contains('\u{203F}') // ‿  crest trailer
+                || active.contains('\u{2500}'), // ─  water surface
             "active strip must contain at least one animation glyph: {active:?}",
         );
     }
 
     #[test]
-    fn working_strip_arc_position_advances_with_frame() {
-        // At least one arc cup (╭) must shift columns between consecutive
-        // frames so the animation reads as drift, not a static pattern.
-        let width = 32;
-        let f0 = super::footer_working_strip_string(width, 1);
-        let f1 = super::footer_working_strip_string(width, 2);
-        // Collect the columns that hold a left-arc `╭` glyph in each frame.
-        let cups = |s: &str| -> Vec<usize> {
+    fn working_strip_advances_position_within_full_crest_step() {
+        // Crest A advances one column every 4 ticks; B every 6. Stepping by
+        // 12 ticks guarantees both have moved at least one column,
+        // independent of the jitter cadence (17).
+        let width = 60;
+        let f0 = super::footer_working_strip_string(width, 0);
+        let f12 = super::footer_working_strip_string(width, 12);
+        // Collect the columns that hold a crest opener `⌒` in each frame.
+        let openers = |s: &str| -> Vec<usize> {
             s.chars()
                 .enumerate()
-                .filter_map(|(i, c)| (c == '\u{256D}').then_some(i))
+                .filter_map(|(i, c)| (c == '\u{2312}').then_some(i))
                 .collect()
         };
-        let p0 = cups(&f0);
-        let p1 = cups(&f1);
-        assert_ne!(p0, p1, "arc cup positions must advance between frames");
+        assert_ne!(
+            openers(&f0),
+            openers(&f12),
+            "crest opener columns must shift across a 12-tick window",
+        );
     }
 
     #[test]
-    fn working_strip_renders_full_arc_when_room() {
-        // A frame at which arc 1 is fully inside the strip should render
-        // the canonical `╭───╮` shape — the artistic centrepiece of the
-        // animation. Arc 1's leading edge starts at `frame % cycle - 5`,
-        // so frame == 5 puts the arc's left cup exactly at column 0.
-        // (See `footer_working_strip_glyph_at` for the math.)
-        let s = super::footer_working_strip_string(40, 5);
+    fn working_strip_renders_paired_crest_glyphs() {
+        // The `⌒‿` pair is the visual centrepiece — a soft rise followed by
+        // a gentle dip. Sweep enough ticks that a crest is guaranteed to
+        // land fully inside a 60-cell strip at some point.
+        let width = 60;
+        let mut saw_pair = false;
+        for frame in 0..120 {
+            let s = super::footer_working_strip_string(width, frame);
+            if s.contains("\u{2312}\u{203F}") {
+                saw_pair = true;
+                break;
+            }
+        }
         assert!(
-            s.contains("\u{256D}\u{2500}\u{2500}\u{2500}\u{256E}"),
-            "expected ╭───╮ arc somewhere in the strip: {s:?}",
+            saw_pair,
+            "expected `⌒‿` pair somewhere in the first 120 ticks",
         );
     }
 
@@ -818,6 +880,53 @@ mod tests {
             "model truncated as last resort: {line:?}"
         );
         assert!(!line.contains("working"), "status dropped: {line:?}");
+    }
+
+    fn props_with_status_and_cost(state: &str, cost: &str) -> FooterProps {
+        let app = make_app();
+        FooterProps::from_app(
+            &app,
+            None,
+            Box::leak(state.to_string().into_boxed_str()),
+            palette::DEEPSEEK_SKY,
+            Vec::<Span<'static>>::new(),
+            Vec::<Span<'static>>::new(),
+            Vec::<Span<'static>>::new(),
+            Vec::<Span<'static>>::new(),
+            vec![Span::styled(cost.to_string(), Style::default())],
+        )
+    }
+
+    /// v0.6.6 redesign — cost lives on the LEFT, between model and status.
+    /// At wide widths the line reads `mode · model · cost · status`.
+    #[test]
+    fn footer_cost_renders_in_left_cluster_at_wide_widths() {
+        let props = props_with_status_and_cost("working", "$0.42");
+        let line = render_at_width(props, 120);
+        let mode_pos = line.find("agent").expect("mode visible");
+        let model_pos = line.find("deepseek-v4-flash").expect("model visible");
+        let cost_pos = line.find("$0.42").expect("cost visible on left");
+        let status_pos = line.find("working").expect("status visible");
+        assert!(mode_pos < model_pos);
+        assert!(model_pos < cost_pos, "cost must follow model: {line:?}");
+        assert!(
+            cost_pos < status_pos,
+            "cost must precede status: {line:?}"
+        );
+    }
+
+    /// Cost is preserved when status drops — cost is steady info, status is
+    /// a transient signal.
+    #[test]
+    fn footer_cost_outranks_status_when_space_tight() {
+        // "agent · deepseek-v4-flash · $0.42 · refreshing context" = 53 cols.
+        // At 47 the status drops but the cost survives (47 ≥ 36 mode+model+cost).
+        let props = props_with_status_and_cost("refreshing context", "$0.42");
+        let line = render_at_width(props, 47);
+        assert!(line.contains("agent"));
+        assert!(line.contains("deepseek-v4-flash"));
+        assert!(line.contains("$0.42"), "cost survives status drop: {line:?}");
+        assert!(!line.contains("refreshing"), "status dropped: {line:?}");
     }
 
     #[test]

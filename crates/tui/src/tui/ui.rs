@@ -3418,9 +3418,10 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
     // Animate the spacer between the left status line and the right-hand
     // chips whenever a turn is live: model loading/streaming, compacting, or
     // sub-agents in flight. Honors the `low_motion` setting — calm terminals
-    // get the plain whitespace gap. Strip frame counter ticks every 80 ms;
-    // dot-pulse counter ticks every 400 ms so `working` → `working...` reads
-    // at a calm pace. The renderer is deterministic given the frame.
+    // get the plain whitespace gap. Strip frame counter ticks every 150 ms
+    // (crest A advances every 4 ticks ≈ 600 ms, B every 6 ticks ≈ 900 ms,
+    // jitter every 17 ticks ≈ 2.5 s). Dot-pulse counter ticks every 400 ms
+    // so `working` → `working...` reads at a calm pace.
     if footer_working_strip_active(app) {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -3439,7 +3440,7 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
         // `working...` pulse stays even in low-motion mode so the user still
         // sees that something is happening.
         if !app.low_motion {
-            let strip_frame = now_ms / 80;
+            let strip_frame = now_ms / 150;
             props.working_strip_frame = Some(strip_frame);
         }
     }
