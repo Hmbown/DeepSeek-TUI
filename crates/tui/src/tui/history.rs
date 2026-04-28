@@ -27,6 +27,21 @@ const TOOL_RUNNING_SYMBOLS: [&str; 4] = ["·", "◦", "•", "◦"];
 // ~2.88 s — fast enough that the user sees motion within a few hundred ms of
 // starting a tool, slow enough to read as a pulse rather than a strobe.
 const TOOL_STATUS_SYMBOL_MS: u64 = 720;
+/// Visual marker for the user role at the start of their message line. Solid
+/// vertical bar — no animation; user input is a finished thing.
+const USER_GLYPH: &str = "\u{258E}"; // ▎
+/// Visual marker for the assistant role. Solid bullet that pulses at 2s
+/// cycle while the response is streaming, holds full brightness when idle.
+const ASSISTANT_GLYPH: &str = "\u{25CF}"; // ●
+/// Reasoning header opener. Replaces the spinner glyph on thinking cells —
+/// reasoning is a slow exhale, not a tool spin.
+const REASONING_OPENER: &str = "\u{2026}"; // …
+/// Reasoning body left rail. Dashed (`╎`) instead of the solid `▏` block to
+/// visually separate reasoning from message body and tool output.
+const REASONING_RAIL: &str = "\u{254E} "; // ╎ + space
+/// Trailing-line cursor on streaming reasoning. Anchored to the live colour
+/// so the user sees where new tokens land.
+const REASONING_CURSOR: &str = "\u{258E}"; // ▎
 const TOOL_CARD_SUMMARY_LINES: usize = 4;
 const THINKING_SUMMARY_LINE_LIMIT: usize = 4;
 const TOOL_DONE_SYMBOL: &str = "•";
@@ -108,15 +123,15 @@ impl HistoryCell {
     pub fn lines(&self, width: u16) -> Vec<Line<'static>> {
         match self {
             HistoryCell::User { content } => render_message(
-                "You",
+                USER_GLYPH,
                 user_label_style(),
                 message_body_style(),
                 content,
                 width,
             ),
-            HistoryCell::Assistant { content, .. } => render_message(
-                "Assistant",
-                assistant_label_style(),
+            HistoryCell::Assistant { content, streaming } => render_message(
+                ASSISTANT_GLYPH,
+                assistant_label_style_for(*streaming, /*low_motion*/ false),
                 message_body_style(),
                 content,
                 width,
@@ -179,9 +194,21 @@ impl HistoryCell {
                 lines
             }
             HistoryCell::Tool(cell) => cell.lines_with_motion(width, options.low_motion),
-            HistoryCell::User { .. }
-            | HistoryCell::Assistant { .. }
-            | HistoryCell::System { .. } => self.lines(width),
+            HistoryCell::User { content } => render_message(
+                USER_GLYPH,
+                user_label_style(),
+                message_body_style(),
+                content,
+                width,
+            ),
+            HistoryCell::Assistant { content, streaming } => render_message(
+                ASSISTANT_GLYPH,
+                assistant_label_style_for(*streaming, options.low_motion),
+                message_body_style(),
+                content,
+                width,
+            ),
+            HistoryCell::System { .. } => self.lines(width),
         }
     }
 
@@ -195,9 +222,23 @@ impl HistoryCell {
     /// diverge.
     pub fn transcript_lines(&self, width: u16) -> Vec<Line<'static>> {
         match self {
-            HistoryCell::User { .. }
-            | HistoryCell::Assistant { .. }
-            | HistoryCell::System { .. } => self.lines(width),
+            HistoryCell::User { content } => render_message(
+                USER_GLYPH,
+                user_label_style(),
+                message_body_style(),
+                content,
+                width,
+            ),
+            HistoryCell::Assistant { content, streaming } => render_message(
+                ASSISTANT_GLYPH,
+                // Pager / clipboard surface — pin the glyph at full
+                // brightness so a screenshot reads the same as a live frame.
+                assistant_label_style_for(*streaming, /*low_motion*/ true),
+                message_body_style(),
+                content,
+                width,
+            ),
+            HistoryCell::System { .. } => self.lines(width),
             HistoryCell::Thinking {
                 content,
                 streaming,
@@ -917,8 +958,13 @@ impl GenericToolCell {
         mode: RenderMode,
     ) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
-        lines.push(render_tool_header(
-            "Tool",
+        // Map the actual tool name (e.g. `agent_spawn`, `apply_patch`) to a
+        // family rather than the catch-all `"Tool"` title — this is what
+        // gives a `GenericToolCell` the right verb glyph (◐ delegate, ⋮⋮
+        // fanout, etc.) instead of falling back to the neutral bullet.
+        let family = crate::tui::widgets::tool_card::tool_family_for_name(&self.name);
+        lines.push(render_tool_header_with_family(
+            family,
             tool_status_label(self.status),
             self.status,
             None,
@@ -1284,10 +1330,22 @@ fn render_thinking(
 ) -> Vec<Line<'static>> {
     let state = thinking_visual_state(streaming, duration_secs);
     let style = thinking_style();
+    // 12% reasoning surface tint over the app ink — the only deliberately
+    // warm element in the transcript. Dropped on Ansi-16 terminals where the
+    // tint would distort the named palette.
+    let depth = palette::ColorDepth::detect();
+    let body_bg = palette::reasoning_surface_tint(depth);
+    let body_style = match body_bg {
+        Some(bg) => style.italic().bg(bg),
+        None => style.italic(),
+    };
     let mut lines = Vec::new();
+
+    // Header: `…` opener (replaces the spinner; reasoning isn't a tool, it's
+    // a slow exhale) followed by the `thinking` label and live status.
     let mut header_spans = vec![
         Span::styled(
-            format!("{} ", thinking_symbol(state, low_motion)),
+            format!("{REASONING_OPENER} "),
             Style::default().fg(thinking_state_accent(state)),
         ),
         Span::styled("thinking", thinking_title_style()),
@@ -1309,32 +1367,43 @@ fn render_thinking(
     } else {
         content.to_string()
     };
-    let mut rendered = markdown_render::render_markdown(&body_text, content_width, style);
+    let mut rendered = markdown_render::render_markdown(&body_text, content_width, body_style);
     let mut truncated = false;
     if collapsed && rendered.len() > THINKING_SUMMARY_LINE_LIMIT {
         rendered.truncate(THINKING_SUMMARY_LINE_LIMIT);
         truncated = true;
     }
 
+    let rail_style = Style::default().fg(thinking_state_accent(state));
+    let cursor_style = Style::default().fg(palette::ACCENT_REASONING_LIVE);
+
     if rendered.is_empty() && streaming {
-        lines.push(Line::from(vec![
-            Span::styled("▏ ", Style::default().fg(thinking_state_accent(state))),
-            Span::styled("reasoning in progress...", style.italic()),
-        ]));
+        let mut spans = vec![Span::styled(REASONING_RAIL.to_string(), rail_style)];
+        spans.push(Span::styled(
+            "reasoning in progress...",
+            body_style.italic(),
+        ));
+        if !low_motion {
+            spans.push(Span::styled(format!(" {REASONING_CURSOR}"), cursor_style));
+        }
+        lines.push(Line::from(spans));
     }
 
-    for line in rendered {
-        let mut spans = vec![Span::styled(
-            "▏ ",
-            Style::default().fg(thinking_state_accent(state)),
-        )];
+    let last_idx = rendered.len().saturating_sub(1);
+    for (idx, line) in rendered.into_iter().enumerate() {
+        let mut spans = vec![Span::styled(REASONING_RAIL.to_string(), rail_style)];
         spans.extend(line.spans);
+        // Trailing cursor on the very last body line while streaming —
+        // signals "still generating" without churning every line.
+        if streaming && !low_motion && idx == last_idx {
+            spans.push(Span::styled(format!(" {REASONING_CURSOR}"), cursor_style));
+        }
         lines.push(Line::from(spans));
     }
 
     if collapsed && (!streaming && (truncated || body_text.trim() != content.trim())) {
         lines.push(Line::from(vec![
-            Span::styled("▏ ", Style::default().fg(thinking_state_accent(state))),
+            Span::styled(REASONING_RAIL.to_string(), rail_style),
             Span::styled(
                 "thinking collapsed; press Ctrl+O for full text",
                 Style::default().fg(palette::TEXT_MUTED).italic(),
@@ -1647,8 +1716,22 @@ fn user_label_style() -> Style {
     Style::default().fg(palette::TEXT_MUTED)
 }
 
-fn assistant_label_style() -> Style {
-    Style::default().fg(palette::DEEPSEEK_SKY)
+/// Style for the assistant glyph (`●`). When the cell is streaming and
+/// motion is allowed, the foreground pulses on a 2s cycle between 30% and
+/// 100% brightness — the only deliberately animated element in a calm
+/// transcript. When idle (or low_motion is on) it sits at the full DeepSeek
+/// sky color so finished turns read as solid rather than dim.
+fn assistant_label_style_for(streaming: bool, low_motion: bool) -> Style {
+    let color = if streaming && !low_motion {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        palette::pulse_brightness(palette::DEEPSEEK_SKY, now_ms)
+    } else {
+        palette::DEEPSEEK_SKY
+    };
+    Style::default().fg(color)
 }
 
 fn system_label_style() -> Style {
@@ -1674,6 +1757,20 @@ fn render_tool_header(
     started_at: Option<Instant>,
     low_motion: bool,
 ) -> Line<'static> {
+    let family = crate::tui::widgets::tool_card::tool_family_for_title(title);
+    render_tool_header_with_family(family, state, status, started_at, low_motion)
+}
+
+/// Render a tool-card header with an explicit verb family. Lets callers
+/// (e.g. `GenericToolCell`) bypass the legacy title→family mapping when
+/// they already know the actual tool name.
+fn render_tool_header_with_family(
+    family: crate::tui::widgets::tool_card::ToolFamily,
+    state: &str,
+    status: ToolStatus,
+    started_at: Option<Instant>,
+    low_motion: bool,
+) -> Line<'static> {
     // For long-running tools, append elapsed seconds so the user can see the
     // call isn't stuck. Threshold matches the eye's "did this hang?" reflex
     // — under 3s we stay quiet so quick reads/greps don't visually churn.
@@ -1686,12 +1783,19 @@ fn render_tool_header(
         state.to_string()
     };
 
+    let glyph = crate::tui::widgets::tool_card::family_glyph(family);
+    let verb = crate::tui::widgets::tool_card::family_label(family);
+
     Line::from(vec![
         Span::styled(
             format!("{} ", status_symbol(started_at, status, low_motion)),
             Style::default().fg(tool_state_color(status)),
         ),
-        Span::styled(title.to_string(), tool_title_style()),
+        Span::styled(
+            format!("{glyph} "),
+            Style::default().fg(tool_state_color(status)),
+        ),
+        Span::styled(verb.to_string(), tool_title_style()),
         Span::styled(" ", Style::default()),
         Span::styled(state_owned, tool_status_style(status)),
     ])
@@ -1789,14 +1893,6 @@ fn thinking_status_label(state: ThinkingVisualState) -> &'static str {
     }
 }
 
-fn thinking_symbol(state: ThinkingVisualState, low_motion: bool) -> String {
-    match state {
-        ThinkingVisualState::Live => status_symbol(None, ToolStatus::Running, low_motion),
-        ThinkingVisualState::Done => "◦".to_string(),
-        ThinkingVisualState::Idle => "·".to_string(),
-    }
-}
-
 fn thinking_title_style() -> Style {
     Style::default()
         .fg(palette::TEXT_SOFT)
@@ -1826,11 +1922,14 @@ fn thinking_state_accent(state: ThinkingVisualState) -> Color {
 #[cfg(test)]
 mod tests {
     use super::{
-        ExecCell, ExecSource, GenericToolCell, HistoryCell, PlanStep, PlanUpdateCell,
-        TOOL_RUNNING_SYMBOLS, TOOL_STATUS_SYMBOL_MS, ToolCell, ToolStatus, TranscriptRenderOptions,
-        extract_reasoning_summary, render_thinking, running_status_label_with_elapsed,
+        ASSISTANT_GLYPH, ExecCell, ExecSource, GenericToolCell, HistoryCell, PlanStep,
+        PlanUpdateCell, REASONING_CURSOR, REASONING_OPENER, REASONING_RAIL, TOOL_RUNNING_SYMBOLS,
+        TOOL_STATUS_SYMBOL_MS, ToolCell, ToolStatus, TranscriptRenderOptions, USER_GLYPH,
+        assistant_label_style_for, extract_reasoning_summary, render_thinking,
+        running_status_label_with_elapsed,
     };
     use crate::deepseek_theme::Theme;
+    use crate::palette;
     use ratatui::style::Modifier;
     use std::time::{Duration, Instant};
 
@@ -1921,6 +2020,229 @@ mod tests {
         assert_ne!(animated_symbol, TOOL_RUNNING_SYMBOLS[0]);
     }
 
+    // === Speaker glyph tests (v0.6.6 UI redesign) ===
+    //
+    // The literal "Assistant" / "You" labels are replaced by the calmer
+    // bullet/bar glyphs (`●` / `▎`). Only the assistant glyph pulses, and
+    // only while the cell is streaming — finished turns sit at the source
+    // sky color so the transcript reads as solid history.
+
+    #[test]
+    fn user_cell_renders_with_bar_glyph_not_literal_label() {
+        let cell = HistoryCell::User {
+            content: "hello".to_string(),
+        };
+        let lines = cell.lines(80);
+        let head = &lines[0];
+        assert_eq!(head.spans[0].content.as_ref(), USER_GLYPH);
+        // No "You" literal anywhere in the rendered head line.
+        let visible: String = head
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>();
+        assert!(!visible.contains("You"), "user label dropped: {visible:?}");
+        assert!(visible.contains("hello"));
+    }
+
+    #[test]
+    fn assistant_cell_renders_with_bullet_glyph_not_literal_label() {
+        let cell = HistoryCell::Assistant {
+            content: "ready".to_string(),
+            streaming: false,
+        };
+        let lines = cell.lines(80);
+        let head = &lines[0];
+        assert_eq!(head.spans[0].content.as_ref(), ASSISTANT_GLYPH);
+        let visible: String = head
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>();
+        assert!(
+            !visible.contains("Assistant"),
+            "assistant label dropped: {visible:?}"
+        );
+        assert!(visible.contains("ready"));
+    }
+
+    #[test]
+    fn assistant_glyph_holds_full_brightness_when_idle() {
+        // Idle (streaming=false) and low_motion both pin the colour to the
+        // source sky — pulse only fires when actively streaming.
+        let idle = assistant_label_style_for(false, false);
+        let low_motion = assistant_label_style_for(true, true);
+        assert_eq!(idle.fg, Some(palette::DEEPSEEK_SKY));
+        assert_eq!(low_motion.fg, Some(palette::DEEPSEEK_SKY));
+    }
+
+    #[test]
+    fn assistant_glyph_pulses_when_streaming_and_motion_allowed() {
+        // The streaming path runs through `pulse_brightness`, which yields
+        // an RGB colour scaled within 30%..100% of the source. Sample twice
+        // — at least one of the samples must fall below 100% brightness, or
+        // the test wouldn't be exercising the pulse at all. (We can't pin
+        // the value because the function reads SystemTime::now().)
+        use ratatui::style::Color;
+        let mut saw_dimmed = false;
+        for _ in 0..50 {
+            if let Some(Color::Rgb(_, _, b)) = assistant_label_style_for(true, false).fg {
+                let Color::Rgb(_, _, src_b) = palette::DEEPSEEK_SKY else {
+                    panic!("DEEPSEEK_SKY must be RGB");
+                };
+                if b < src_b {
+                    saw_dimmed = true;
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(
+            saw_dimmed,
+            "expected the streaming pulse to dip below source brightness at least once",
+        );
+    }
+
+    // === Tool-card verb-glyph tests (v0.6.6 UI redesign) ===
+
+    #[test]
+    fn exec_cell_header_uses_run_verb_glyph_and_label() {
+        let cell = ExecCell {
+            command: "ls".to_string(),
+            status: ToolStatus::Success,
+            output: Some("a\nb\n".to_string()),
+            started_at: None,
+            duration_ms: Some(10),
+            source: ExecSource::Assistant,
+            interaction: None,
+        };
+        let header = &cell.lines_with_motion(80, true)[0];
+        let visible: String = header
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>();
+        assert!(
+            visible.contains('\u{25B6}'),
+            "Run glyph `▶` present: {visible:?}"
+        );
+        assert!(visible.contains(" run "), "verb label `run`: {visible:?}");
+        // Old literal title must be gone.
+        assert!(
+            !visible.contains("Shell"),
+            "old `Shell` literal is gone: {visible:?}"
+        );
+    }
+
+    #[test]
+    fn generic_tool_cell_picks_family_from_tool_name() {
+        let cell = GenericToolCell {
+            name: "agent_spawn".to_string(),
+            status: ToolStatus::Running,
+            input_summary: Some("foo".to_string()),
+            output: None,
+            prompts: None,
+        };
+        let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
+        let header_visible: String = lines[0]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>();
+        // agent_spawn → Delegate family (◐ delegate).
+        assert!(
+            header_visible.contains('\u{25D0}'),
+            "Delegate glyph `◐`: {header_visible:?}"
+        );
+        assert!(
+            header_visible.contains(" delegate "),
+            "verb label `delegate`: {header_visible:?}"
+        );
+    }
+
+    // === Reasoning treatment tests (v0.6.6 UI redesign) ===
+
+    #[test]
+    fn render_thinking_uses_dotted_opener_in_header() {
+        let lines = render_thinking("Step one\nStep two", 80, false, Some(2.0), false, true);
+        let header = &lines[0];
+        // First span carries `…` followed by a space.
+        assert!(
+            header.spans[0].content.starts_with(REASONING_OPENER),
+            "header opener: {:?}",
+            header.spans[0].content
+        );
+    }
+
+    #[test]
+    fn render_thinking_body_lines_use_dashed_rail_and_italic() {
+        let lines = render_thinking(
+            "concrete reasoning content",
+            80,
+            /*streaming*/ false,
+            Some(1.0),
+            /*collapsed*/ false,
+            /*low_motion*/ true,
+        );
+        // Header is index 0; first body line is index 1.
+        assert!(lines.len() >= 2, "expected at least one body line");
+        let body = &lines[1];
+        assert_eq!(
+            body.spans[0].content.as_ref(),
+            REASONING_RAIL,
+            "body rail must be the dashed `╎ ` glyph"
+        );
+        // The body span should carry italic.
+        let italic_seen = body
+            .spans
+            .iter()
+            .skip(1)
+            .any(|span| span.style.add_modifier.contains(Modifier::ITALIC));
+        assert!(italic_seen, "body content should carry italic modifier");
+    }
+
+    #[test]
+    fn render_thinking_streaming_appends_cursor_when_motion_allowed() {
+        let lines = render_thinking(
+            "ongoing reasoning...",
+            80,
+            /*streaming*/ true,
+            None,
+            /*collapsed*/ false,
+            /*low_motion*/ false,
+        );
+        // Last line is the most recent body line — cursor lives there.
+        let last = lines.last().expect("body line present");
+        let last_span = last.spans.last().expect("trailing span present");
+        assert!(
+            last_span.content.contains(REASONING_CURSOR),
+            "expected trailing cursor `▎` on last streaming body line, got {:?}",
+            last_span.content
+        );
+    }
+
+    #[test]
+    fn render_thinking_streaming_omits_cursor_when_low_motion() {
+        let lines = render_thinking(
+            "ongoing reasoning...",
+            80,
+            /*streaming*/ true,
+            None,
+            /*collapsed*/ false,
+            /*low_motion*/ true,
+        );
+        let last = lines.last().expect("body line present");
+        let visible: String = last
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>();
+        assert!(
+            !visible.contains(REASONING_CURSOR),
+            "low_motion must suppress the streaming cursor: {visible:?}"
+        );
+    }
+
     // === Theme parity tests ===
     //
     // These lock the visible color/style choices for one plan cell and one
@@ -1952,11 +2274,16 @@ mod tests {
 
         let lines = cell.lines_with_motion(80, true);
 
-        // Header: "<symbol> Plan <state>"
+        // Header: "<spinner> <family-glyph> <verb> <state>" (v0.6.6 layout).
+        // PlanUpdate has no canonical family yet, so it falls into the
+        // Generic bullet glyph + "tool" verb. The shape and colour wiring
+        // is what matters for the theme parity; the verb text moves with
+        // the redesign.
         let header = &lines[0];
         let symbol_span = &header.spans[0];
-        let title_span = &header.spans[1];
-        let state_span = &header.spans[3];
+        let glyph_span = &header.spans[1];
+        let title_span = &header.spans[2];
+        let state_span = &header.spans[4];
 
         assert_eq!(
             symbol_span.style.fg,
@@ -1964,9 +2291,14 @@ mod tests {
             "running header symbol should use the dark theme running accent"
         );
         assert_eq!(
+            glyph_span.style.fg,
+            Some(theme.tool_running_accent),
+            "family glyph rides the same status colour as the spinner"
+        );
+        assert_eq!(
             title_span.content.as_ref(),
-            "Plan",
-            "tool title text is locked"
+            "tool",
+            "PlanUpdate routes to Generic family → 'tool' verb",
         );
         assert_eq!(title_span.style.fg, Some(theme.tool_title_color));
         assert!(
@@ -2027,18 +2359,25 @@ mod tests {
 
         let header = &lines[0];
         let symbol_span = &header.spans[0];
-        let title_span = &header.spans[1];
-        let state_span = &header.spans[3];
+        let glyph_span = &header.spans[1];
+        let title_span = &header.spans[2];
+        let state_span = &header.spans[4];
 
         assert_eq!(
             symbol_span.style.fg,
             Some(theme.tool_failed_accent),
             "failed exec header symbol should use the dark theme failed accent"
         );
+        // ExecCell is family Run → glyph `▶ ` and verb `run`.
+        assert!(
+            glyph_span.content.starts_with('\u{25B6}'),
+            "Run family glyph: {:?}",
+            glyph_span.content
+        );
         assert_eq!(
             title_span.content.as_ref(),
-            "Shell",
-            "exec title text is locked"
+            "run",
+            "ExecCell routes to Run family → 'run' verb",
         );
         assert_eq!(title_span.style.fg, Some(theme.tool_title_color));
         assert!(title_span.style.add_modifier.contains(Modifier::BOLD));
