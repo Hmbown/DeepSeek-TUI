@@ -1909,6 +1909,28 @@ impl App {
         self.queued_messages.len()
     }
 
+    /// Pop the most-recently queued message back into the composer for editing
+    /// (issue #85 — Alt+↑ affordance). The popped message is parked in
+    /// [`Self::queued_draft`] so the next Enter re-queues it carrying its
+    /// original skill instruction. No-op if the composer already has typed
+    /// content or a draft is already being edited — surfacing the affordance
+    /// would be ambiguous in either case.
+    ///
+    /// Returns `true` when the composer state was mutated.
+    pub fn pop_last_queued_into_draft(&mut self) -> bool {
+        if !self.input.is_empty() || self.queued_draft.is_some() {
+            return false;
+        }
+        let Some(msg) = self.queued_messages.pop_back() else {
+            return false;
+        };
+        self.input = msg.display.clone();
+        self.cursor_position = char_count(&self.input);
+        self.queued_draft = Some(msg);
+        self.needs_redraw = true;
+        true
+    }
+
     /// Park a composer input the user steered with Esc. Re-armed each call so
     /// rapid Esc taps accumulate rather than overwriting each other.
     pub fn push_pending_steer(&mut self, message: QueuedMessage) {
@@ -2605,6 +2627,62 @@ mod tests {
         app.push_pending_steer(QueuedMessage::new("b".to_string(), None));
         assert!(app.submit_pending_steers_after_interrupt);
         assert_eq!(app.pending_steers.len(), 2);
+    }
+
+    #[test]
+    fn pop_last_queued_into_draft_pops_back_and_arms_draft() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.queue_message(QueuedMessage::new(
+            "first".to_string(),
+            Some("skill-A".to_string()),
+        ));
+        app.queue_message(QueuedMessage::new(
+            "last".to_string(),
+            Some("skill-B".to_string()),
+        ));
+
+        assert!(app.pop_last_queued_into_draft());
+        assert_eq!(app.input, "last");
+        assert_eq!(app.cursor_position, "last".chars().count());
+        assert_eq!(app.queued_messages.len(), 1);
+        let draft = app.queued_draft.clone().expect("draft is set");
+        assert_eq!(draft.display, "last");
+        assert_eq!(draft.skill_instruction.as_deref(), Some("skill-B"));
+    }
+
+    #[test]
+    fn pop_last_queued_into_draft_noop_when_composer_dirty() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.queue_message(QueuedMessage::new("queued".to_string(), None));
+        app.input = "typing".to_string();
+        app.cursor_position = char_count(&app.input);
+
+        assert!(!app.pop_last_queued_into_draft());
+        assert_eq!(app.input, "typing");
+        assert_eq!(app.queued_messages.len(), 1);
+        assert!(app.queued_draft.is_none());
+    }
+
+    #[test]
+    fn pop_last_queued_into_draft_noop_when_draft_already_armed() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.queue_message(QueuedMessage::new("queued".to_string(), None));
+        app.queued_draft = Some(QueuedMessage::new("editing".to_string(), None));
+
+        assert!(!app.pop_last_queued_into_draft());
+        assert_eq!(app.queued_messages.len(), 1);
+        assert_eq!(
+            app.queued_draft.as_ref().map(|d| d.display.as_str()),
+            Some("editing")
+        );
+    }
+
+    #[test]
+    fn pop_last_queued_into_draft_noop_when_queue_empty() {
+        let mut app = App::new(test_options(false), &Config::default());
+        assert!(!app.pop_last_queued_into_draft());
+        assert!(app.input.is_empty());
+        assert!(app.queued_draft.is_none());
     }
 
     #[test]
