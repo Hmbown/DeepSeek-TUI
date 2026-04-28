@@ -13,6 +13,7 @@ Current packaging note:
   - `deepseek-tui`
   - `deepseek-tui-cli`
 - Supporting crates published from this workspace:
+  - `deepseek-secrets`
   - `deepseek-config`
   - `deepseek-protocol`
   - `deepseek-state`
@@ -101,6 +102,7 @@ The CI workflow runs the same tarball install + smoke test on Linux and macOS.
 2. Tag the release as `vX.Y.Z`.
 3. Let `.github/workflows/crates-publish.yml` verify the workspace version and dry-run each crate.
 4. Publish crates in this order:
+   - `deepseek-secrets`
    - `deepseek-config`
    - `deepseek-protocol`
    - `deepseek-state`

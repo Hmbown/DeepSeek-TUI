@@ -11,6 +11,7 @@ case "${mode}" in
 esac
 
 packages=(
+  deepseek-secrets
   deepseek-config
   deepseek-protocol
   deepseek-state
@@ -41,6 +42,62 @@ for pkg in metadata["packages"]:
         break
 PY
 )"
+
+workspace_deepseek_packages=()
+while IFS= read -r workspace_package; do
+  workspace_deepseek_packages+=("${workspace_package}")
+done < <(
+  python3 - <<'PY'
+import json
+import subprocess
+
+metadata = json.loads(
+    subprocess.check_output(["cargo", "metadata", "--format-version", "1", "--no-deps"])
+)
+workspace_members = set(metadata["workspace_members"])
+for pkg in sorted(metadata["packages"], key=lambda item: item["name"]):
+    if pkg["id"] in workspace_members and pkg["name"].startswith("deepseek-"):
+        print(pkg["name"])
+PY
+)
+
+missing_packages=()
+for workspace_package in "${workspace_deepseek_packages[@]}"; do
+  found=0
+  for package in "${packages[@]}"; do
+    if [[ "${package}" == "${workspace_package}" ]]; then
+      found=1
+      break
+    fi
+  done
+  if [[ "${found}" == "0" ]]; then
+    missing_packages+=("${workspace_package}")
+  fi
+done
+
+extra_packages=()
+for package in "${packages[@]}"; do
+  found=0
+  for workspace_package in "${workspace_deepseek_packages[@]}"; do
+    if [[ "${package}" == "${workspace_package}" ]]; then
+      found=1
+      break
+    fi
+  done
+  if [[ "${found}" == "0" ]]; then
+    extra_packages+=("${package}")
+  fi
+done
+
+if (( ${#missing_packages[@]} > 0 || ${#extra_packages[@]} > 0 )); then
+  if (( ${#missing_packages[@]} > 0 )); then
+    echo "publish package list is missing workspace crates: ${missing_packages[*]}" >&2
+  fi
+  if (( ${#extra_packages[@]} > 0 )); then
+    echo "publish package list contains non-workspace crates: ${extra_packages[*]}" >&2
+  fi
+  exit 1
+fi
 
 package_has_workspace_deps() {
   local package_name="$1"
