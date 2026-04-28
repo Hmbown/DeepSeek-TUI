@@ -401,6 +401,17 @@ pub(super) fn api_url(base_url: &str, path: &str) -> String {
 
 // === DeepSeekClient ===
 
+/// Returns true when DEEPSEEK_FORCE_HTTP1 is set to a truthy value
+/// (`1`, `true`, `yes`, `on`, case-insensitive). Used by `build_http_client`
+/// to opt out of HTTP/2 entirely when DeepSeek's edge mishandles long-lived H2
+/// streams (#103). Anything else (unset, `0`, `false`, ...) leaves HTTP/2 on.
+fn force_http1_from_env() -> bool {
+    std::env::var("DEEPSEEK_FORCE_HTTP1")
+        .ok()
+        .map(|v| v.trim().to_ascii_lowercase())
+        .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
+}
+
 impl DeepSeekClient {
     /// Create a DeepSeek client from CLI configuration.
     pub fn new(config: &Config) -> Result<Self> {
@@ -441,7 +452,7 @@ impl DeepSeekClient {
             AUTHORIZATION,
             HeaderValue::from_str(&format!("Bearer {api_key}"))?,
         );
-        reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder()
             .default_headers(headers)
             .connect_timeout(Duration::from_secs(30))
             // The blanket 300s request timeout was incompatible with V4-pro
@@ -451,9 +462,16 @@ impl DeepSeekClient {
             .tcp_keepalive(Some(Duration::from_secs(30)))
             .http2_keep_alive_interval(Some(Duration::from_secs(15)))
             .http2_keep_alive_timeout(Duration::from_secs(20))
-            .min_tls_version(reqwest::tls::Version::TLS_1_2)
-            .build()
-            .map_err(Into::into)
+            .min_tls_version(reqwest::tls::Version::TLS_1_2);
+        // Escape hatch (#103): some DeepSeek edge nodes mishandle long-lived
+        // HTTP/2 streams. Setting DEEPSEEK_FORCE_HTTP1=1 pins the client to
+        // HTTP/1.1 so users can experiment without us committing to that
+        // path as the default.
+        if force_http1_from_env() {
+            logging::info("DEEPSEEK_FORCE_HTTP1=1 — pinning HTTP client to HTTP/1.1");
+            builder = builder.http1_only();
+        }
+        builder.build().map_err(Into::into)
     }
 
     /// List available models from the provider.
@@ -2126,5 +2144,66 @@ mod tests {
             &mut health,
             now + RECOVERY_PROBE_COOLDOWN + Duration::from_millis(1)
         ));
+    }
+
+    // === #103 Phase 2: HTTP/1 escape hatch ===================================
+
+    /// Serialize tests that mutate `DEEPSEEK_FORCE_HTTP1` so they don't race
+    /// against each other — env vars are process-global.
+    static FORCE_HTTP1_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct ForceHttp1EnvGuard {
+        prior: Option<std::ffi::OsString>,
+    }
+    impl ForceHttp1EnvGuard {
+        fn capture() -> Self {
+            Self {
+                prior: std::env::var_os("DEEPSEEK_FORCE_HTTP1"),
+            }
+        }
+    }
+    impl Drop for ForceHttp1EnvGuard {
+        fn drop(&mut self) {
+            // Safety: scoped to test process; reverts to the captured value.
+            match &self.prior {
+                Some(v) => unsafe { std::env::set_var("DEEPSEEK_FORCE_HTTP1", v) },
+                None => unsafe { std::env::remove_var("DEEPSEEK_FORCE_HTTP1") },
+            }
+        }
+    }
+
+    #[test]
+    fn force_http1_unset_is_false() {
+        let _lock = FORCE_HTTP1_ENV_LOCK.lock().unwrap();
+        let _guard = ForceHttp1EnvGuard::capture();
+        unsafe { std::env::remove_var("DEEPSEEK_FORCE_HTTP1") };
+        assert!(!force_http1_from_env());
+    }
+
+    #[test]
+    fn force_http1_truthy_values() {
+        let _lock = FORCE_HTTP1_ENV_LOCK.lock().unwrap();
+        let _guard = ForceHttp1EnvGuard::capture();
+        for value in ["1", "true", "True", "YES", "on", " 1 "] {
+            // Safety: serialized by FORCE_HTTP1_ENV_LOCK; reverted by guard.
+            unsafe { std::env::set_var("DEEPSEEK_FORCE_HTTP1", value) };
+            assert!(
+                force_http1_from_env(),
+                "{value:?} should be parsed as truthy",
+            );
+        }
+    }
+
+    #[test]
+    fn force_http1_falsy_values() {
+        let _lock = FORCE_HTTP1_ENV_LOCK.lock().unwrap();
+        let _guard = ForceHttp1EnvGuard::capture();
+        for value in ["0", "false", "no", "off", "", "garbage", "2"] {
+            unsafe { std::env::set_var("DEEPSEEK_FORCE_HTTP1", value) };
+            assert!(
+                !force_http1_from_env(),
+                "{value:?} should NOT be parsed as truthy",
+            );
+        }
     }
 }

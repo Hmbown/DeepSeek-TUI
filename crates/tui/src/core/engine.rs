@@ -8,7 +8,6 @@
 //! - Tool execution orchestration
 
 use std::path::PathBuf;
-use std::pin::pin;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 use std::{fs::OpenOptions, io::Write};
@@ -294,6 +293,35 @@ const STREAM_MAX_CONTENT_BYTES: usize = 10 * 1024 * 1024; // 10 MB
 /// per-chunk idle of 300s with no wall-clock cap; we keep both layers but
 /// give the wall-clock a generous window so it never fires in practice.
 const STREAM_MAX_DURATION_SECS: u64 = 1800; // 30 minutes (was 300s; #103/#1)
+/// Hard cap on consecutive recoverable stream errors before we surface a turn
+/// failure. Bumped 3 → 5 in v0.6.7 along with the HTTP/2 keepalive defaults
+/// (#103) — keepalive should make spurious decode errors rarer, so we can
+/// tolerate a longer streak before giving up on the turn.
+const MAX_STREAM_ERRORS_BEFORE_FAIL: u32 = 5;
+/// Cap on transparent stream-level retries — these only happen when the wire
+/// dies before any content was streamed, so DeepSeek hasn't billed us and
+/// the user hasn't seen anything. Two attempts is enough to ride out a
+/// flaky edge node without amplifying real outages (#103).
+const MAX_TRANSPARENT_STREAM_RETRIES: u32 = 2;
+
+/// Decide whether a stream error is eligible for a transparent retry.
+///
+/// True only when ALL three conditions hold:
+/// 1. No content has been received on the current attempt — otherwise DeepSeek
+///    has already billed us for output tokens and the user has seen partial
+///    deltas; resending would double-bill and desync the UI.
+/// 2. We still have transparent-retry budget remaining.
+/// 3. The turn has not been cancelled.
+///
+/// Extracted as a pure function so the four #103 retry cases can be exercised
+/// in unit tests without booting the full engine state machine.
+fn should_transparently_retry_stream(
+    any_content_received: bool,
+    transparent_attempts: u32,
+    cancelled: bool,
+) -> bool {
+    !any_content_received && transparent_attempts < MAX_TRANSPARENT_STREAM_RETRIES && !cancelled
+}
 /// Max output tokens requested for normal agent turns. Generous on purpose:
 /// V4 thinking models can produce tens of thousands of reasoning tokens on
 /// hard prompts before the visible reply, and DeepSeek V4 ships with a 1M
@@ -2373,8 +2401,11 @@ impl Engine {
                 top_p: None,
             };
 
-            // Stream the response
-            let stream_result = client.create_message_stream(request).await;
+            // Stream the response. Keep the request around (cloned into the
+            // first call) so we can resend it on a transparent retry below
+            // when the wire dies before any content was streamed (#103).
+            let stream_request = request;
+            let stream_result = client.create_message_stream(stream_request.clone()).await;
             let stream = match stream_result {
                 Ok(s) => {
                     context_recovery_attempts = 0;
@@ -2400,7 +2431,10 @@ impl Engine {
                     return (TurnOutcomeStatus::Failed, turn_error);
                 }
             };
-            let mut stream = pin!(stream);
+            // The stream value is itself `Pin<Box<dyn Stream + Send>>`, which
+            // is `Unpin`, so we can rebind it on a transparent retry without
+            // breaking the existing pin invariants.
+            let mut stream = stream;
 
             // Track content blocks
             let mut content_blocks: Vec<ContentBlock> = Vec::new();
@@ -2420,8 +2454,18 @@ impl Engine {
             let mut pending_message_complete = false;
             let mut last_text_index: Option<usize> = None;
             let mut stream_errors = 0u32;
+            // #103 transparent retry bookkeeping. `any_content_received` flips
+            // on the first non-MessageStart event so we know whether DeepSeek
+            // billed us / the user has seen any output for this turn yet.
+            // This is distinct from the outer `stream_retry_attempts` (which
+            // restarts the whole turn-step when a stream died with no
+            // content-block delta delivered to the consumer).
+            let mut any_content_received = false;
+            let mut transparent_stream_retries = 0u32;
             let mut pending_steers: Vec<String> = Vec::new();
-            let stream_start = Instant::now();
+            // `stream_start` is reset on a transparent retry so the wall-clock
+            // budget restarts with the fresh stream.
+            let mut stream_start = Instant::now();
             let mut stream_content_bytes: usize = 0;
             let chunk_timeout = Duration::from_secs(STREAM_CHUNK_TIMEOUT_SECS);
             let max_duration = Duration::from_secs(STREAM_MAX_DURATION_SECS);
@@ -2493,13 +2537,58 @@ impl Engine {
                 }
 
                 let event = match event_result {
-                    Ok(e) => e,
+                    Ok(e) => {
+                        // Flip on the first non-MessageStart event — that's
+                        // the moment we cross from "stream not yet productive"
+                        // (eligible for transparent retry) into "DeepSeek has
+                        // billed us / user has seen output" (must surface).
+                        if !any_content_received && !matches!(e, StreamEvent::MessageStart { .. }) {
+                            any_content_received = true;
+                        }
+                        e
+                    }
                     Err(e) => {
                         stream_errors = stream_errors.saturating_add(1);
                         let message = e.to_string();
+                        // #103: when the stream errors before any content was
+                        // streamed AND we still have retry budget, transparently
+                        // resend the request. DeepSeek has not billed for any
+                        // output and the user has seen nothing — re-trying is
+                        // the right user-visible behavior.
+                        if should_transparently_retry_stream(
+                            any_content_received,
+                            transparent_stream_retries,
+                            self.cancel_token.is_cancelled(),
+                        ) {
+                            transparent_stream_retries =
+                                transparent_stream_retries.saturating_add(1);
+                            crate::logging::info(format!(
+                                "Transparent stream retry {}/{} (no content received yet): {}",
+                                transparent_stream_retries, MAX_TRANSPARENT_STREAM_RETRIES, message,
+                            ));
+                            // Drop the failed stream before issuing the new
+                            // request to release the underlying connection.
+                            drop(stream);
+                            match client.create_message_stream(stream_request.clone()).await {
+                                Ok(fresh) => {
+                                    stream = fresh;
+                                    stream_start = Instant::now();
+                                    // Roll back the error counter — this one
+                                    // didn't surface to the user.
+                                    stream_errors = stream_errors.saturating_sub(1);
+                                    continue;
+                                }
+                                Err(retry_err) => {
+                                    let retry_msg = format!("Stream retry failed: {retry_err}");
+                                    turn_error.get_or_insert(retry_msg.clone());
+                                    let _ = self.tx_event.send(Event::error(retry_msg, true)).await;
+                                    break;
+                                }
+                            }
+                        }
                         turn_error.get_or_insert(message.clone());
                         let _ = self.tx_event.send(Event::error(message, true)).await;
-                        if stream_errors >= 3 {
+                        if stream_errors >= MAX_STREAM_ERRORS_BEFORE_FAIL {
                             break;
                         }
                         continue;

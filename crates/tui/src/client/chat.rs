@@ -161,6 +161,12 @@ impl DeepSeekClient {
         }
 
         let model = request.model.clone();
+
+        // Capture transport-shape headers before we consume `response` into
+        // `bytes_stream()`. They are surfaced in the decode-error log path so
+        // we can tell HTTP/2 RST_STREAM from chunked-encoding corruption from
+        // gzip-compressor failure when investigating #103.
+        let response_headers = format_stream_headers(response.headers());
         let byte_stream = response.bytes_stream();
 
         let stream = async_stream::stream! {
@@ -233,10 +239,11 @@ impl DeepSeekClient {
                         }
                         crate::logging::warn(format!(
                             "Stream read error: {error_chain} \
-                             (elapsed: {}ms, bytes_received: {}, ms_since_last_event: {})",
+                             (elapsed: {}ms, bytes_received: {}, ms_since_last_event: {}, headers: {})",
                             stream_start.elapsed().as_millis(),
                             bytes_received,
                             last_event_at.elapsed().as_millis(),
+                            response_headers,
                         ));
                         yield Err(anyhow::anyhow!("Stream read error: {e}"));
                         break;
@@ -756,6 +763,27 @@ pub(super) fn count_reasoning_replay_chars(body: &Value) -> u64 {
         .sum()
 }
 
+/// Render the transport-shape headers we care about for #103 diagnostics.
+/// Always returns SOMETHING printable so the decode-error log line is parseable
+/// even when the server stripped a header we expected.
+fn format_stream_headers(headers: &reqwest::header::HeaderMap) -> String {
+    const FIELDS: &[&str] = &[
+        "content-encoding",
+        "transfer-encoding",
+        "connection",
+        "server",
+    ];
+    let mut parts: Vec<String> = Vec::with_capacity(FIELDS.len());
+    for field in FIELDS {
+        let rendered = headers
+            .get(*field)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("(absent)");
+        parts.push(format!("{field}={rendered}"));
+    }
+    parts.join(", ")
+}
+
 /// Diagnostic logger fired when DeepSeek rejects the request despite the
 /// sanitizer. Walks the body and logs which assistant messages have tool_calls
 /// but no `reasoning_content` — useful to track down a code path that bypasses
@@ -1245,4 +1273,202 @@ pub(super) fn parse_sse_chunk(
     }
 
     events
+}
+
+// === #103 Phase 1: stream-decode diagnostics ===================================
+
+#[cfg(test)]
+mod stream_diagnostics_tests {
+    use super::*;
+    use reqwest::header::{HeaderMap, HeaderValue};
+
+    #[test]
+    fn format_stream_headers_renders_all_fields_when_present() {
+        let mut headers = HeaderMap::new();
+        headers.insert("content-encoding", HeaderValue::from_static("gzip"));
+        headers.insert("transfer-encoding", HeaderValue::from_static("chunked"));
+        headers.insert("connection", HeaderValue::from_static("keep-alive"));
+        headers.insert("server", HeaderValue::from_static("openresty/1.25.3.1"));
+
+        let rendered = format_stream_headers(&headers);
+        // Order is fixed by FIELDS in the helper; assert each field appears.
+        assert!(
+            rendered.contains("content-encoding=gzip"),
+            "got: {rendered}"
+        );
+        assert!(
+            rendered.contains("transfer-encoding=chunked"),
+            "got: {rendered}"
+        );
+        assert!(
+            rendered.contains("connection=keep-alive"),
+            "got: {rendered}"
+        );
+        assert!(
+            rendered.contains("server=openresty/1.25.3.1"),
+            "got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn format_stream_headers_marks_missing_fields_as_absent() {
+        // DeepSeek frequently omits content-encoding when not compressing.
+        // The diagnostic must still produce a parseable line so log scrapers
+        // don't lose the slot.
+        let headers = HeaderMap::new();
+        let rendered = format_stream_headers(&headers);
+        assert!(
+            rendered.contains("content-encoding=(absent)"),
+            "missing field must be explicitly marked; got: {rendered}"
+        );
+        assert!(
+            rendered.contains("transfer-encoding=(absent)"),
+            "missing field must be explicitly marked; got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn format_stream_headers_handles_non_ascii_value_gracefully() {
+        // If a header value isn't UTF-8, `.to_str()` fails — we must not panic
+        // and should still produce a parseable line.
+        let mut headers = HeaderMap::new();
+        // 0xFF is a valid byte but invalid UTF-8 start byte.
+        headers.insert(
+            "server",
+            HeaderValue::from_bytes(b"\xff\xfemystery").expect("header value"),
+        );
+        let rendered = format_stream_headers(&headers);
+        assert!(
+            rendered.contains("server=(absent)"),
+            "non-UTF8 header values fall back to (absent); got: {rendered}"
+        );
+    }
+}
+
+// === #103 Phase 4: SSE decoder behavior on canned chunk sequences ============
+
+#[cfg(test)]
+mod stream_decoder_tests {
+    //! Drive `parse_sse_chunk` (the in-place SSE event extractor) over canned
+    //! chunk sequences. The full `handle_chat_completion_stream` path needs a
+    //! live `reqwest::Response` so it isn't unit-testable without a mock HTTP
+    //! harness (issue #69 tracks that). For #103 we exercise the chunk decoder
+    //! directly to verify each "class of stream failure" the engine relies on.
+    use super::*;
+    use crate::models::{ContentBlockStart, Delta, StreamEvent};
+
+    /// Decode a raw SSE-data JSON chunk into our internal events, mirroring
+    /// the per-event call shape used by `handle_chat_completion_stream`.
+    fn decode_chunk(json_text: &str) -> Vec<StreamEvent> {
+        let chunk: Value = serde_json::from_str(json_text).expect("valid SSE JSON");
+        let mut content_index = 0u32;
+        let mut text_started = false;
+        let mut thinking_started = false;
+        let mut tool_indices = std::collections::HashMap::new();
+        parse_sse_chunk(
+            &chunk,
+            &mut content_index,
+            &mut text_started,
+            &mut thinking_started,
+            &mut tool_indices,
+            true,
+        )
+    }
+
+    #[test]
+    fn decoder_emits_text_delta_for_content_chunk() {
+        // The "happy" first chunk: a normal content delta. The engine treats
+        // this as `any_content_received = true` and would NOT transparently
+        // retry on a subsequent error.
+        let events = decode_chunk(r#"{"choices":[{"delta":{"content":"hello"}}]}"#);
+        assert!(
+            matches!(
+                events.first(),
+                Some(StreamEvent::ContentBlockStart {
+                    content_block: ContentBlockStart::Text { .. },
+                    ..
+                })
+            ),
+            "first event should open a text block; got {events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, StreamEvent::ContentBlockDelta {
+                    delta: Delta::TextDelta { text },
+                    ..
+                } if text == "hello")),
+            "should yield a TextDelta carrying 'hello'; got {events:?}"
+        );
+    }
+
+    #[test]
+    fn decoder_emits_thinking_delta_for_reasoning_chunk() {
+        // V4 thinking models surface reasoning_content first — the engine
+        // also counts these as content received (so a subsequent stream error
+        // surfaces rather than retrying transparently).
+        let events = decode_chunk(r#"{"choices":[{"delta":{"reasoning_content":"plan..."}}]}"#);
+        assert!(
+            matches!(
+                events.first(),
+                Some(StreamEvent::ContentBlockStart {
+                    content_block: ContentBlockStart::Thinking { .. },
+                    ..
+                })
+            ),
+            "first event should open a thinking block; got {events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, StreamEvent::ContentBlockDelta {
+                    delta: Delta::ThinkingDelta { thinking },
+                    ..
+                } if thinking == "plan...")),
+            "should yield a ThinkingDelta carrying 'plan...'; got {events:?}"
+        );
+    }
+
+    #[test]
+    fn decoder_yields_no_events_for_keepalive_chunk() {
+        // DeepSeek often sends `{"choices":[]}` keepalive chunks before
+        // emitting real content. The engine MUST treat a stream error after
+        // these as "no content received" and be eligible for transparent
+        // retry — assert here that the decoder yields no payload events.
+        let events = decode_chunk(r#"{"choices":[]}"#);
+        assert!(
+            events.is_empty(),
+            "empty-choices chunk must produce no events; got {events:?}"
+        );
+    }
+
+    #[test]
+    fn decoder_emits_tool_use_block_for_tool_call_delta() {
+        // Tool-call deltas are content too — once one arrives, transparent
+        // retry must be off (the model has committed to a tool invocation
+        // path that DeepSeek has billed for).
+        let events = decode_chunk(
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"grep_files","arguments":"{\"pattern\":\"foo\"}"}}]}}]}"#,
+        );
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                StreamEvent::ContentBlockStart {
+                    content_block: ContentBlockStart::ToolUse { name, .. },
+                    ..
+                } if name == "grep_files"
+            )),
+            "should open a ToolUse block for grep_files; got {events:?}"
+        );
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                StreamEvent::ContentBlockDelta {
+                    delta: Delta::InputJsonDelta { partial_json },
+                    ..
+                } if partial_json.contains("\"pattern\"")
+            )),
+            "should yield InputJsonDelta carrying the tool args; got {events:?}"
+        );
+    }
 }
