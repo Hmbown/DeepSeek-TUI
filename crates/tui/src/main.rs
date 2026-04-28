@@ -32,6 +32,7 @@ mod logging;
 mod mcp;
 mod mcp_server;
 mod models;
+mod network_policy;
 mod palette;
 mod pricing;
 mod project_context;
@@ -2890,6 +2891,10 @@ async fn run_exec_agent(
         ..Default::default()
     };
 
+    let network_policy = config.network.clone().map(|toml_cfg| {
+        crate::network_policy::NetworkPolicyDecider::with_default_audit(toml_cfg.into_runtime())
+    });
+
     let engine_config = EngineConfig {
         model: model.to_string(),
         workspace: workspace.clone(),
@@ -2906,6 +2911,7 @@ async fn run_exec_agent(
         todos: new_shared_todo_list(),
         plan_state: new_shared_plan_state(),
         max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
+        network_policy,
     };
 
     let engine_handle = spawn_engine(engine_config, config);
