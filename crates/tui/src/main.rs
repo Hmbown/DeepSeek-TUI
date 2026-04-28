@@ -47,6 +47,7 @@ mod sandbox;
 mod session_manager;
 mod settings;
 mod skills;
+mod snapshot;
 mod task_manager;
 #[cfg(test)]
 mod test_support;
