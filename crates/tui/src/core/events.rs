@@ -259,23 +259,10 @@ pub enum Event {
 }
 
 impl Event {
-    /// Create a new error event with a categorized envelope.
-    pub fn error(message: impl Into<String>, recoverable: bool) -> Self {
-        let envelope = ErrorEnvelope::new(
-            crate::error_taxonomy::ErrorCategory::Internal,
-            crate::error_taxonomy::ErrorSeverity::Error,
-            recoverable,
-            "event_error",
-            message,
-        );
-        Event::Error {
-            envelope,
-            recoverable,
-        }
-    }
-
-    /// Create an error event from a pre-built `ErrorEnvelope`.
-    pub fn error_with_envelope(envelope: ErrorEnvelope, recoverable: bool) -> Self {
+    /// Create an error event from a categorized envelope. The envelope's own
+    /// `recoverable` flag controls whether the UI flips into offline mode.
+    pub fn error(envelope: ErrorEnvelope) -> Self {
+        let recoverable = envelope.recoverable;
         Event::Error {
             envelope,
             recoverable,

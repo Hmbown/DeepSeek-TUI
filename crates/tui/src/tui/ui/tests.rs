@@ -1920,14 +1920,12 @@ fn truncate_line_to_width_respects_display_width_for_tiny_budgets() {
 /// the session in offline mode with the next typed message queued.
 #[test]
 fn recoverable_engine_error_does_not_enter_offline_mode() {
+    use crate::error_taxonomy::{ErrorEnvelope, StreamError};
     let mut app = create_test_app();
     assert!(!app.offline_mode);
 
-    apply_engine_error_to_app(
-        &mut app,
-        "Stream stalled: no data received for 60s, closing stream".to_string(),
-        true,
-    );
+    let envelope = StreamError::Stall { timeout_secs: 60 }.into_envelope();
+    apply_engine_error_to_app(&mut app, envelope);
 
     assert!(
         !app.offline_mode,
@@ -1942,6 +1940,17 @@ fn recoverable_engine_error_does_not_enter_offline_mode() {
         status.starts_with("Connection interrupted"),
         "expected interrupt-style status, got {status:?}"
     );
+
+    // Sanity: the rendered cell is the categorized Error variant, not a plain System note.
+    let last = app
+        .history
+        .last()
+        .expect("recoverable engine error should push a history cell");
+    assert!(
+        matches!(last, crate::tui::history::HistoryCell::Error { .. }),
+        "expected HistoryCell::Error, got {last:?}"
+    );
+    let _ = ErrorEnvelope::transient("");
 }
 
 /// Hard failures (auth, billing, malformed request) DO need to flip offline
@@ -1949,13 +1958,13 @@ fn recoverable_engine_error_does_not_enter_offline_mode() {
 /// against a broken upstream.
 #[test]
 fn non_recoverable_engine_error_enters_offline_mode() {
+    use crate::error_taxonomy::ErrorEnvelope;
     let mut app = create_test_app();
     assert!(!app.offline_mode);
 
     apply_engine_error_to_app(
         &mut app,
-        "Authentication failed: invalid API key".to_string(),
-        false,
+        ErrorEnvelope::fatal_auth("Authentication failed: invalid API key"),
     );
 
     assert!(

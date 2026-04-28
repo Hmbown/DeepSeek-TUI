@@ -28,6 +28,7 @@ use crate::cycle_manager::{
     CycleBriefing, CycleConfig, StructuredState, archive_cycle, build_seed_messages,
     estimate_briefing_tokens, produce_briefing, should_advance_cycle,
 };
+use crate::error_taxonomy::{ErrorCategory, ErrorEnvelope, StreamError};
 use crate::features::{Feature, Features};
 use crate::llm_client::LlmClient;
 use crate::mcp::McpPool;
@@ -1101,8 +1102,7 @@ fn context_input_budget(model: &str, requested_output_tokens: u32) -> Option<usi
 }
 
 fn is_context_length_error_message(message: &str) -> bool {
-    crate::error_taxonomy::classify_error_message(message)
-        == crate::error_taxonomy::ErrorCategory::InvalidInput
+    crate::error_taxonomy::classify_error_message(message) == ErrorCategory::InvalidInput
 }
 
 fn emit_tool_audit(event: serde_json::Value) {
@@ -1259,7 +1259,10 @@ impl Engine {
                             .unwrap_or_else(|| {
                                 "Failed to spawn sub-agent: API client not configured".to_string()
                             });
-                        let _ = self.tx_event.send(Event::error(message, false)).await;
+                        let _ = self
+                            .tx_event
+                            .send(Event::error(ErrorEnvelope::fatal(message)))
+                            .await;
                         continue;
                     };
 
@@ -1298,10 +1301,9 @@ impl Engine {
                         Err(err) => {
                             let _ = self
                                 .tx_event
-                                .send(Event::error(
-                                    format!("Failed to spawn sub-agent: {err}"),
-                                    false,
-                                ))
+                                .send(Event::error(ErrorEnvelope::fatal(format!(
+                                    "Failed to spawn sub-agent: {err}"
+                                ))))
                                 .await;
                         }
                     }
@@ -1446,7 +1448,7 @@ impl Engine {
                 .unwrap_or_else(|| "Failed to send message: API client not configured".to_string());
             let _ = self
                 .tx_event
-                .send(Event::error(message.clone(), false))
+                .send(Event::error(ErrorEnvelope::fatal_auth(message.clone())))
                 .await;
             let _ = self
                 .tx_event
@@ -1673,7 +1675,7 @@ impl Engine {
                 .await;
             let _ = self
                 .tx_event
-                .send(Event::error(message.clone(), false))
+                .send(Event::error(ErrorEnvelope::fatal_auth(message.clone())))
                 .await;
             let _ = self
                 .tx_event
@@ -1786,7 +1788,9 @@ impl Engine {
                 .unwrap_or_else(|| "API client not configured".to_string());
             let _ = self
                 .tx_event
-                .send(Event::error(format!("RLM error: {err}"), false))
+                .send(Event::error(ErrorEnvelope::fatal_auth(format!(
+                    "RLM error: {err}"
+                ))))
                 .await;
             return;
         };
@@ -1810,7 +1814,9 @@ impl Engine {
         if let Some(ref err) = result.error {
             let _ = self
                 .tx_event
-                .send(Event::error(format!("RLM error: {err}"), true))
+                .send(Event::error(ErrorEnvelope::tool(format!(
+                    "RLM error: {err}"
+                ))))
                 .await;
         }
 
@@ -2385,7 +2391,10 @@ impl Engine {
                             MAX_CONTEXT_RECOVERY_ATTEMPTS, estimated_input, input_budget
                         );
                         turn_error = Some(message.clone());
-                        let _ = self.tx_event.send(Event::error(message, true)).await;
+                        let _ = self
+                            .tx_event
+                            .send(Event::error(ErrorEnvelope::context_overflow(message)))
+                            .await;
                         return (TurnOutcomeStatus::Failed, turn_error);
                     }
 
@@ -2459,7 +2468,10 @@ impl Engine {
                         continue;
                     }
                     turn_error = Some(message.clone());
-                    let _ = self.tx_event.send(Event::error(message, true)).await;
+                    let _ = self
+                        .tx_event
+                        .send(Event::error(ErrorEnvelope::classify(message, true)))
+                        .await;
                     return (TurnOutcomeStatus::Failed, turn_error);
                 }
             };
@@ -2511,12 +2523,12 @@ impl Engine {
                             Ok(Some(event_result)) => Some(event_result),
                             Ok(None) => None, // stream ended normally
                             Err(_) => {
-                                let msg = format!(
-                                    "Stream stalled: no data received for {}s, closing stream",
-                                    STREAM_CHUNK_TIMEOUT_SECS,
-                                );
-                                crate::logging::warn(&msg);
-                                let _ = self.tx_event.send(Event::error(msg, true)).await;
+                                let envelope = StreamError::Stall {
+                                    timeout_secs: STREAM_CHUNK_TIMEOUT_SECS,
+                                }
+                                .into_envelope();
+                                crate::logging::warn(&envelope.message);
+                                let _ = self.tx_event.send(Event::error(envelope)).await;
                                 None
                             }
                         }
@@ -2546,25 +2558,25 @@ impl Engine {
 
                 // Guard: max wall-clock duration
                 if stream_start.elapsed() > max_duration {
-                    let msg = format!(
-                        "Stream exceeded maximum duration of {}s, closing",
-                        STREAM_MAX_DURATION_SECS,
-                    );
-                    crate::logging::warn(&msg);
-                    turn_error.get_or_insert(msg.clone());
-                    let _ = self.tx_event.send(Event::error(msg, true)).await;
+                    let envelope = StreamError::DurationLimit {
+                        limit_secs: STREAM_MAX_DURATION_SECS,
+                    }
+                    .into_envelope();
+                    crate::logging::warn(&envelope.message);
+                    turn_error.get_or_insert(envelope.message.clone());
+                    let _ = self.tx_event.send(Event::error(envelope)).await;
                     break;
                 }
 
                 // Guard: max accumulated content bytes
                 if stream_content_bytes > STREAM_MAX_CONTENT_BYTES {
-                    let msg = format!(
-                        "Stream exceeded maximum content size of {} bytes, closing",
-                        STREAM_MAX_CONTENT_BYTES,
-                    );
-                    crate::logging::warn(&msg);
-                    turn_error.get_or_insert(msg.clone());
-                    let _ = self.tx_event.send(Event::error(msg, true)).await;
+                    let envelope = StreamError::Overflow {
+                        limit_bytes: STREAM_MAX_CONTENT_BYTES,
+                    }
+                    .into_envelope();
+                    crate::logging::warn(&envelope.message);
+                    turn_error.get_or_insert(envelope.message.clone());
+                    let _ = self.tx_event.send(Event::error(envelope)).await;
                     break;
                 }
 
@@ -2613,13 +2625,21 @@ impl Engine {
                                 Err(retry_err) => {
                                     let retry_msg = format!("Stream retry failed: {retry_err}");
                                     turn_error.get_or_insert(retry_msg.clone());
-                                    let _ = self.tx_event.send(Event::error(retry_msg, true)).await;
+                                    let _ = self
+                                        .tx_event
+                                        .send(Event::error(ErrorEnvelope::classify(
+                                            retry_msg, true,
+                                        )))
+                                        .await;
                                     break;
                                 }
                             }
                         }
                         turn_error.get_or_insert(message.clone());
-                        let _ = self.tx_event.send(Event::error(message, true)).await;
+                        let _ = self
+                            .tx_event
+                            .send(Event::error(ErrorEnvelope::classify(message, true)))
+                            .await;
                         if stream_errors >= MAX_STREAM_ERRORS_BEFORE_FAIL {
                             break;
                         }
@@ -3543,6 +3563,11 @@ impl Engine {
             }
 
             let mut step_error_count = 0usize;
+            // Categorized tool errors collected this step. Feeds the capacity
+            // controller's error-escalation checkpoint so it can distinguish
+            // (e.g.) a Tool failure that should escalate from a permission
+            // denial that should not.
+            let mut step_error_categories: Vec<ErrorCategory> = Vec::new();
             let mut stop_after_plan_tool = false;
 
             for outcome in outcomes.into_iter().flatten() {
@@ -3588,14 +3613,18 @@ impl Engine {
                         .await;
                     }
                     Err(e) => {
+                        let envelope: ErrorEnvelope = e.clone().into();
                         emit_tool_audit(json!({
                             "event": "tool.result",
                             "tool_id": outcome.id.clone(),
                             "tool_name": outcome.name.clone(),
                             "success": false,
                             "error": e.to_string(),
+                            "category": envelope.category.to_string(),
+                            "severity": envelope.severity.to_string(),
                         }));
                         step_error_count += 1;
+                        step_error_categories.push(envelope.category);
                         let error = format_tool_error(&e, &outcome.name);
                         tool_call.set_error(error.clone(), duration);
                         self.session.working_set.observe_tool_call(
@@ -3669,7 +3698,7 @@ impl Engine {
                     mode,
                     step_error_count,
                     consecutive_tool_error_steps,
-                    &[],
+                    &step_error_categories,
                 )
                 .await
             {
@@ -3770,19 +3799,28 @@ impl Engine {
         mode: AppMode,
         step_error_count: usize,
         consecutive_tool_error_steps: u32,
-        #[allow(clippy::needless_pass_by_ref_mut)]
-        // error_categories will be used in future escalation logic
-        error_categories: &[crate::error_taxonomy::ErrorCategory],
+        error_categories: &[ErrorCategory],
     ) -> bool {
         if step_error_count == 0 && consecutive_tool_error_steps < 2 {
             return false;
         }
 
-        let has_context_overflow =
-            error_categories.contains(&crate::error_taxonomy::ErrorCategory::InvalidInput);
-
+        // Categorize this step's failures by typed `ErrorCategory` rather than
+        // substring-matching error strings. Context overflow always escalates;
+        // network / rate-limit / timeout are transient and skip escalation;
+        // anything else only escalates with consecutive consecutive failures.
+        let has_context_overflow = error_categories.contains(&ErrorCategory::InvalidInput);
+        let only_transient = !error_categories.is_empty()
+            && error_categories.iter().all(|c| {
+                matches!(
+                    c,
+                    ErrorCategory::Network | ErrorCategory::RateLimit | ErrorCategory::Timeout
+                )
+            });
+        if only_transient && !has_context_overflow {
+            return false;
+        }
         if !has_context_overflow && consecutive_tool_error_steps < 2 {
-            // Only escalate on non-context errors when we have consecutive failures
             return false;
         }
 

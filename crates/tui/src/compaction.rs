@@ -659,19 +659,17 @@ pub struct CompactionResult {
     pub retries_used: u32,
 }
 
-/// Check if an error is transient and worth retrying.
+/// Check if an error is transient and worth retrying. Categories that map to
+/// transient retry: Network, RateLimit, Timeout. Anything else (auth, parse,
+/// invalid request, etc.) is permanent and propagates.
 fn is_transient_error(e: &anyhow::Error) -> bool {
-    let msg = e.to_string().to_lowercase();
-    msg.contains("timeout")
-        || msg.contains("timed out")
-        || msg.contains("connection")
-        || msg.contains("rate limit")
-        || msg.contains("too many requests")
-        || msg.contains("503")
-        || msg.contains("502")
-        || msg.contains("429")
-        || msg.contains("network")
-        || msg.contains("temporarily unavailable")
+    let category = crate::error_taxonomy::classify_error_message(&e.to_string());
+    matches!(
+        category,
+        crate::error_taxonomy::ErrorCategory::Network
+            | crate::error_taxonomy::ErrorCategory::RateLimit
+            | crate::error_taxonomy::ErrorCategory::Timeout
+    )
 }
 
 /// Compact messages with retry and backoff for transient errors.

@@ -170,6 +170,7 @@ impl TranscriptViewCache {
                     is_system_or_tool: matches!(
                         cell,
                         HistoryCell::System { .. }
+                            | HistoryCell::Error { .. }
                             | HistoryCell::Tool(_)
                             | HistoryCell::SubAgent(_)
                     ),
