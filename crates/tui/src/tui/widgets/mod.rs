@@ -159,6 +159,9 @@ impl ChatWidget {
         app.last_transcript_visible = visible_lines;
         app.last_transcript_total = total_lines;
         app.last_transcript_padding_top = 0;
+        let detail_target_cell = (!app.transcript_selection.is_active())
+            .then(|| app.detail_cell_index_for_viewport(top, visible_lines, line_meta))
+            .flatten();
 
         let end = (top + visible_lines).min(total_lines);
         let mut lines = if total_lines == 0 {
@@ -176,6 +179,10 @@ impl ChatWidget {
             } else {
                 app.last_send_at = None;
             }
+        }
+
+        if let Some(target_cell) = detail_target_cell {
+            apply_detail_target_highlight(&mut lines, top, target_cell, line_meta);
         }
 
         apply_selection(&mut lines, top, app);
@@ -1064,6 +1071,25 @@ fn apply_selection(lines: &mut [Line<'static>], top: usize, app: &App) {
         }
 
         line.spans = apply_selection_to_line(line, col_start, col_end, selection_style);
+    }
+}
+
+fn apply_detail_target_highlight(
+    lines: &mut [Line<'static>],
+    top: usize,
+    target_cell: usize,
+    line_meta: &[TranscriptLineMeta],
+) {
+    let highlight_bg = Color::Rgb(18, 29, 39);
+    for (idx, line) in lines.iter_mut().enumerate() {
+        let line_index = top + idx;
+        if let Some(TranscriptLineMeta::CellLine { cell_index, .. }) = line_meta.get(line_index)
+            && *cell_index == target_cell
+        {
+            for span in &mut line.spans {
+                span.style = span.style.bg(highlight_bg);
+            }
+        }
     }
 }
 

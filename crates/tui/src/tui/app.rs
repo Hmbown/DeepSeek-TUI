@@ -27,7 +27,7 @@ use crate::tui::approval::ApprovalMode;
 use crate::tui::clipboard::{ClipboardContent, ClipboardHandler};
 use crate::tui::history::{HistoryCell, TranscriptRenderOptions};
 use crate::tui::paste_burst::{FlushResult, PasteBurst};
-use crate::tui::scrolling::{MouseScrollState, TranscriptScroll};
+use crate::tui::scrolling::{MouseScrollState, TranscriptLineMeta, TranscriptScroll};
 use crate::tui::selection::TranscriptSelection;
 use crate::tui::streaming::StreamingState;
 use crate::tui::transcript::TranscriptViewCache;
@@ -1280,6 +1280,65 @@ impl App {
                 .as_ref()
                 .and_then(|active| active.entries().get(entry_idx))
         }
+    }
+
+    /// Resolve the tool-detail record for a committed or still-active virtual
+    /// transcript cell.
+    #[must_use]
+    pub fn tool_detail_record_for_cell(&self, index: usize) -> Option<&ToolDetailRecord> {
+        if let Some(detail) = self.tool_details_by_cell.get(&index) {
+            return Some(detail);
+        }
+        self.active_tool_details
+            .values()
+            .find(|detail| self.tool_cells.get(&detail.tool_id).copied() == Some(index))
+    }
+
+    /// Whether a virtual transcript cell can open a meaningful Alt+V detail
+    /// view.
+    #[must_use]
+    pub fn cell_has_detail_target(&self, index: usize) -> bool {
+        self.tool_detail_record_for_cell(index).is_some()
+            || matches!(
+                self.cell_at_virtual_index(index),
+                Some(HistoryCell::Tool(_) | HistoryCell::SubAgent(_))
+            )
+    }
+
+    /// Pick the detail target for the current viewport. This is used by the
+    /// transcript highlight and footer hint so they agree with Alt+V.
+    #[must_use]
+    pub fn detail_cell_index_for_viewport(
+        &self,
+        top: usize,
+        visible: usize,
+        line_meta: &[TranscriptLineMeta],
+    ) -> Option<usize> {
+        let selected_cell = self
+            .transcript_selection
+            .ordered_endpoints()
+            .and_then(|(start, _)| line_meta.get(start.line_index))
+            .and_then(TranscriptLineMeta::cell_line)
+            .map(|(cell_index, _)| cell_index)
+            .filter(|&idx| self.cell_has_detail_target(idx));
+        if selected_cell.is_some() {
+            return selected_cell;
+        }
+
+        let start = top.min(line_meta.len().saturating_sub(1));
+        let end = start.saturating_add(visible).min(line_meta.len());
+        for meta in line_meta.iter().take(end).skip(start) {
+            let Some((cell_index, _)) = meta.cell_line() else {
+                continue;
+            };
+            if self.cell_has_detail_target(cell_index) {
+                return Some(cell_index);
+            }
+        }
+
+        (0..self.virtual_cell_count())
+            .rev()
+            .find(|&idx| self.cell_has_detail_target(idx))
     }
 
     /// Mutable variant of [`Self::cell_at_virtual_index`]. Bumps the
