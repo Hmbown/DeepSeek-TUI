@@ -180,6 +180,10 @@ impl ModalView for PagerView {
         ModalKind::Pager
     }
 
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
     fn handle_key(&mut self, key: KeyEvent) -> ViewAction {
         if self.search_mode {
             match key.code {

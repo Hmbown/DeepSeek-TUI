@@ -240,6 +240,10 @@ impl ModalView for ProviderPickerView {
         ModalKind::ProviderPicker
     }
 
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
     fn handle_key(&mut self, key: KeyEvent) -> ViewAction {
         match self.stage {
             Stage::List => match key.code {
