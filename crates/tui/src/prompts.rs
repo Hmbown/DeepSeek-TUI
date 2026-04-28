@@ -134,9 +134,8 @@ pub fn compose_prompt(mode: AppMode, personality: Personality) -> String {
         approval_prompt(mode).trim(),
     ];
 
-    let mut out = String::with_capacity(
-        parts.iter().map(|p| p.len()).sum::<usize>() + (parts.len() - 1) * 2,
-    );
+    let mut out =
+        String::with_capacity(parts.iter().map(|p| p.len()).sum::<usize>() + (parts.len() - 1) * 2);
     for (i, part) in parts.iter().enumerate() {
         if i > 0 {
             out.push('\n');
@@ -335,9 +334,13 @@ mod tests {
 
     #[test]
     fn each_mode_gets_correct_approval() {
-        assert!(compose_prompt(AppMode::Agent, Personality::Calm).contains("Approval Policy: Suggest"));
+        assert!(
+            compose_prompt(AppMode::Agent, Personality::Calm).contains("Approval Policy: Suggest")
+        );
         assert!(compose_prompt(AppMode::Yolo, Personality::Calm).contains("Approval Policy: Auto"));
-        assert!(compose_prompt(AppMode::Plan, Personality::Calm).contains("Approval Policy: Never"));
+        assert!(
+            compose_prompt(AppMode::Plan, Personality::Calm).contains("Approval Policy: Never")
+        );
     }
 
     #[test]

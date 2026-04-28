@@ -607,10 +607,7 @@ impl ToolSpec for McpToolAdapter {
     fn description(&self) -> &str {
         // McpTool.description is Option<String>; fall back to the
         // prefixed name when absent.
-        self.tool
-            .description
-            .as_deref()
-            .unwrap_or(&self.name)
+        self.tool.description.as_deref().unwrap_or(&self.name)
     }
 
     fn input_schema(&self) -> Value {
@@ -645,18 +642,13 @@ impl ToolSpec for McpToolAdapter {
         !keep_loaded
     }
 
-    async fn execute(
-        &self,
-        input: Value,
-        _context: &ToolContext,
-    ) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
         let mut pool = self.pool.lock().await;
         let result = pool
             .call_tool(&self.name, input)
             .await
             .map_err(|e| ToolError::execution_failed(format!("MCP tool failed: {e}")))?;
-        let content =
-            serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string());
+        let content = serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string());
         Ok(ToolResult::success(content))
     }
 }

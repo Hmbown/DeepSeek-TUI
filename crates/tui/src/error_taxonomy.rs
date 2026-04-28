@@ -319,9 +319,7 @@ pub enum ClientError {
         retryable: bool,
     },
     /// Generic internal error that doesn't fit a provider taxonomy.
-    Internal {
-        envelope: ErrorEnvelope,
-    },
+    Internal { envelope: ErrorEnvelope },
 }
 
 impl ClientError {
@@ -412,25 +410,15 @@ impl std::error::Error for ClientError {}
 #[derive(Debug, Clone)]
 pub enum StreamError {
     /// Stream stalled — no chunk received within the idle timeout.
-    Stall {
-        timeout_secs: u64,
-    },
+    Stall { timeout_secs: u64 },
     /// Chunk decode / JSON parse failure.
-    Decode {
-        message: String,
-    },
+    Decode { message: String },
     /// Stream exceeded content size limit.
-    Overflow {
-        limit_bytes: usize,
-    },
+    Overflow { limit_bytes: usize },
     /// Stream exceeded wall‑clock duration limit.
-    DurationLimit {
-        limit_secs: u64,
-    },
+    DurationLimit { limit_secs: u64 },
     /// Transport error from the underlying SSE connection.
-    Transport {
-        message: String,
-    },
+    Transport { message: String },
 }
 
 impl StreamError {
@@ -439,29 +427,19 @@ impl StreamError {
     pub fn into_client_error(self) -> ClientError {
         match self {
             Self::Stall { timeout_secs } => {
-                ClientError::stream(
-                    format!("Stream stalled after {timeout_secs}s idle"),
-                    true,
-                )
+                ClientError::stream(format!("Stream stalled after {timeout_secs}s idle"), true)
             }
             Self::Decode { message } => {
                 ClientError::stream(format!("Stream decode error: {message}"), true)
             }
             Self::Overflow { limit_bytes } => {
-                ClientError::stream(
-                    format!("Stream exceeded {limit_bytes} bytes limit"),
-                    false,
-                )
+                ClientError::stream(format!("Stream exceeded {limit_bytes} bytes limit"), false)
             }
-            Self::DurationLimit { limit_secs } => {
-                ClientError::stream(
-                    format!("Stream exceeded {limit_secs}s duration limit"),
-                    false,
-                )
-            }
-            Self::Transport { message } => {
-                ClientError::stream(message, true)
-            }
+            Self::DurationLimit { limit_secs } => ClientError::stream(
+                format!("Stream exceeded {limit_secs}s duration limit"),
+                false,
+            ),
+            Self::Transport { message } => ClientError::stream(message, true),
         }
     }
 }

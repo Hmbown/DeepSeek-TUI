@@ -121,8 +121,11 @@ pub fn build_approval_key(tool_name: &str, input: &serde_json::Value) -> Approva
             let paths_hash = hash_patch_paths(input);
             format!("patch:{paths_hash}")
         }
-        "exec_shell" | "exec_shell_wait" | "exec_shell_interact"
-        | "exec_wait" | "exec_interact" => {
+        "exec_shell"
+        | "exec_shell_wait"
+        | "exec_shell_interact"
+        | "exec_wait"
+        | "exec_interact" => {
             let prefix = command_prefix(input);
             format!("shell:{prefix}")
         }
@@ -137,10 +140,7 @@ pub fn build_approval_key(tool_name: &str, input: &serde_json::Value) -> Approva
 
 /// Extract the first three non‑flag tokens from the command string.
 fn command_prefix(input: &serde_json::Value) -> String {
-    let cmd = input
-        .get("command")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
     let tokens: Vec<&str> = cmd
         .split_whitespace()
         .filter(|t| !t.starts_with('-'))
@@ -190,10 +190,7 @@ fn hash_patch_paths(input: &serde_json::Value) -> String {
 
 /// Parse the host portion from a URL input.
 fn parse_host(input: &serde_json::Value) -> String {
-    let url = input
-        .get("url")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let url = input.get("url").and_then(|v| v.as_str()).unwrap_or("");
 
     if let Ok(parsed) = reqwest::Url::parse(url) {
         parsed.host_str().unwrap_or(url).to_string()

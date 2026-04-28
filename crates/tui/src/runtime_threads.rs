@@ -3177,7 +3177,8 @@ mod tests {
 
         harness
             .tx_event
-            .send(EngineEvent::ApprovalRequired { approval_key: "test_key".to_string(),
+            .send(EngineEvent::ApprovalRequired {
+                approval_key: "test_key".to_string(),
                 id: "tool_stale".to_string(),
                 tool_name: "exec_command".to_string(),
                 description: "stale approval".to_string(),

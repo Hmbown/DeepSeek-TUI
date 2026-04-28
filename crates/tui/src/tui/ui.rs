@@ -771,8 +771,9 @@ async fn run_event_loop(
                         description,
                         approval_key,
                     } => {
-                        let session_approved = app.approval_session_approved.contains(&approval_key)
-                            || app.approval_session_approved.contains(&tool_name);
+                        let session_approved =
+                            app.approval_session_approved.contains(&approval_key)
+                                || app.approval_session_approved.contains(&tool_name);
                         if session_approved || app.approval_mode == ApprovalMode::Auto {
                             log_sensitive_event(
                                 "tool.approval.auto_approve",
@@ -809,8 +810,13 @@ async fn run_event_loop(
                             }
 
                             // Create approval request and show overlay
-                            let request =
-                                ApprovalRequest::new(&id, &tool_name, &description, &tool_input, &approval_key);
+                            let request = ApprovalRequest::new(
+                                &id,
+                                &tool_name,
+                                &description,
+                                &tool_input,
+                                &approval_key,
+                            );
                             log_sensitive_event(
                                 "tool.approval.prompted",
                                 serde_json::json!({
