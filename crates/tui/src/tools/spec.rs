@@ -551,6 +551,13 @@ pub trait ToolSpec: Send + Sync {
         false
     }
 
+    /// Returns whether this tool should be excluded from the model-visible
+    /// tool catalog (deferred loading). Tools marked `true` are registered
+    /// but not sent to the model until explicitly activated via tool search.
+    fn defer_loading(&self) -> bool {
+        false
+    }
+
     /// Execute the tool with the given input and context.
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError>;
 }

@@ -3298,12 +3298,19 @@ impl Engine {
                             "tool_id": tool_id.clone(),
                             "tool_name": tool_name.clone(),
                         }));
+                        let approval_key =
+                            crate::tools::approval_cache::build_approval_key(
+                                &tool_name,
+                                &tool_input,
+                            )
+                            .0;
                         let _ = self
                             .tx_event
                             .send(Event::ApprovalRequired {
                                 id: tool_id.clone(),
                                 tool_name: tool_name.clone(),
                                 description: plan.approval_description.clone(),
+                                approval_key,
                             })
                             .await;
 

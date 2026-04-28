@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use serde_json::Value;
 
 use crate::core::coherence::CoherenceState;
+use crate::error_taxonomy::ErrorEnvelope;
 use crate::models::{Message, SystemPrompt, Usage};
 use crate::tools::spec::{ToolError, ToolResult};
 use crate::tools::subagent::SubAgentResult;
@@ -183,7 +184,7 @@ pub enum Event {
     // === System Events ===
     /// An error occurred
     Error {
-        message: String,
+        envelope: ErrorEnvelope,
         #[allow(dead_code)]
         recoverable: bool,
     },
@@ -202,6 +203,8 @@ pub enum Event {
         id: String,
         tool_name: String,
         description: String,
+        /// Fingerprint key for per‑call approval caching (§5.A).
+        approval_key: String,
     },
 
     /// Request user input for a tool call
@@ -237,10 +240,25 @@ pub enum Event {
 }
 
 impl Event {
-    /// Create a new error event
+    /// Create a new error event with a categorized envelope.
     pub fn error(message: impl Into<String>, recoverable: bool) -> Self {
+        let envelope = ErrorEnvelope::new(
+            crate::error_taxonomy::ErrorCategory::Internal,
+            crate::error_taxonomy::ErrorSeverity::Error,
+            recoverable,
+            "event_error",
+            message,
+        );
         Event::Error {
-            message: message.into(),
+            envelope,
+            recoverable,
+        }
+    }
+
+    /// Create an error event from a pre-built `ErrorEnvelope`.
+    pub fn error_with_envelope(envelope: ErrorEnvelope, recoverable: bool) -> Self {
+        Event::Error {
+            envelope,
             recoverable,
         }
     }

@@ -1,6 +1,7 @@
 //! Tool system modules and re-exports.
 
 pub mod apply_patch;
+pub mod approval_cache;
 pub mod diagnostics;
 pub mod file;
 pub mod file_search;

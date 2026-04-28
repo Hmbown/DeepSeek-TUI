@@ -51,6 +51,8 @@ pub enum ViewEvent {
         tool_name: String,
         decision: ReviewDecision,
         timed_out: bool,
+        /// Fingerprint key for per‑call approval caching (§5.A).
+        approval_key: String,
     },
     ElevationDecision {
         tool_id: String,

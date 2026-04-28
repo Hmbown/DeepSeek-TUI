@@ -1,5 +1,6 @@
 //! Shared error taxonomy across client, tools, runtime, and UI.
 use std::fmt;
+use std::time::Duration;
 
 use crate::llm_client::LlmError;
 use crate::tools::spec::ToolError;
@@ -299,3 +300,188 @@ impl From<ToolError> for ErrorEnvelope {
         }
     }
 }
+
+/// Client‑side error wrapper surfaced to the UI.
+///
+/// Carries a full `ErrorEnvelope` so the TUI can render category‑specific
+/// styling instead of a generic `Event::Error { message, recoverable }`.
+#[derive(Debug, Clone)]
+pub enum ClientError {
+    /// Transport / HTTP / auth error from the LLM provider.
+    Provider {
+        envelope: ErrorEnvelope,
+        /// When true the engine should attempt a retry.
+        retryable: bool,
+    },
+    /// Error originating from the stream (SSE / chunk decode / protocol).
+    Stream {
+        envelope: ErrorEnvelope,
+        retryable: bool,
+    },
+    /// Generic internal error that doesn't fit a provider taxonomy.
+    Internal {
+        envelope: ErrorEnvelope,
+    },
+}
+
+impl ClientError {
+    /// Unwrap the inner envelope regardless of variant.
+    #[must_use]
+    pub fn envelope(&self) -> &ErrorEnvelope {
+        match self {
+            Self::Provider { envelope, .. }
+            | Self::Stream { envelope, .. }
+            | Self::Internal { envelope } => envelope,
+        }
+    }
+
+    /// Whether this error is eligible for a transparent retry.
+    #[must_use]
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            Self::Provider { retryable, .. } | Self::Stream { retryable, .. } => *retryable,
+            Self::Internal { .. } => false,
+        }
+    }
+
+    /// Construct from an `LlmError` with Retry‑After header support.
+    pub fn from_llm_error(err: LlmError, retry_after: Option<Duration>) -> Self {
+        let retryable = err.is_retryable();
+        let envelope: ErrorEnvelope = err.into();
+        if retryable {
+            let envelope = if let Some(delay) = retry_after {
+                ErrorEnvelope {
+                    code: format!("{}:retry_after_{}s", envelope.code, delay.as_secs()),
+                    ..envelope
+                }
+            } else {
+                envelope
+            };
+            Self::Provider {
+                envelope,
+                retryable: true,
+            }
+        } else {
+            Self::Provider {
+                envelope,
+                retryable: false,
+            }
+        }
+    }
+
+    /// Construct a stream‑level error.
+    pub fn stream(message: impl Into<String>, retryable: bool) -> Self {
+        let envelope = ErrorEnvelope::new(
+            ErrorCategory::Internal,
+            ErrorSeverity::Warning,
+            retryable,
+            "stream_error",
+            message,
+        );
+        Self::Stream {
+            envelope,
+            retryable,
+        }
+    }
+
+    /// Construct an internal error.
+    pub fn internal(message: impl Into<String>) -> Self {
+        let envelope = ErrorEnvelope::new(
+            ErrorCategory::Internal,
+            ErrorSeverity::Error,
+            false,
+            "internal",
+            message,
+        );
+        Self::Internal { envelope }
+    }
+}
+
+impl fmt::Display for ClientError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.envelope())
+    }
+}
+
+impl std::error::Error for ClientError {}
+
+/// Stream‑level error discriminated by origin.
+///
+/// Each variant maps to an `ErrorCategory` so the UI can render
+/// stream‑specific icons or formatting.
+#[derive(Debug, Clone)]
+pub enum StreamError {
+    /// Stream stalled — no chunk received within the idle timeout.
+    Stall {
+        timeout_secs: u64,
+    },
+    /// Chunk decode / JSON parse failure.
+    Decode {
+        message: String,
+    },
+    /// Stream exceeded content size limit.
+    Overflow {
+        limit_bytes: usize,
+    },
+    /// Stream exceeded wall‑clock duration limit.
+    DurationLimit {
+        limit_secs: u64,
+    },
+    /// Transport error from the underlying SSE connection.
+    Transport {
+        message: String,
+    },
+}
+
+impl StreamError {
+    /// Convert into a `ClientError` for emission.
+    #[must_use]
+    pub fn into_client_error(self) -> ClientError {
+        match self {
+            Self::Stall { timeout_secs } => {
+                ClientError::stream(
+                    format!("Stream stalled after {timeout_secs}s idle"),
+                    true,
+                )
+            }
+            Self::Decode { message } => {
+                ClientError::stream(format!("Stream decode error: {message}"), true)
+            }
+            Self::Overflow { limit_bytes } => {
+                ClientError::stream(
+                    format!("Stream exceeded {limit_bytes} bytes limit"),
+                    false,
+                )
+            }
+            Self::DurationLimit { limit_secs } => {
+                ClientError::stream(
+                    format!("Stream exceeded {limit_secs}s duration limit"),
+                    false,
+                )
+            }
+            Self::Transport { message } => {
+                ClientError::stream(message, true)
+            }
+        }
+    }
+}
+
+impl fmt::Display for StreamError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Stall { timeout_secs } => {
+                write!(f, "Stream stalled after {timeout_secs}s idle")
+            }
+            Self::Decode { message } => write!(f, "Stream decode error: {message}"),
+            Self::Overflow { limit_bytes } => {
+                write!(f, "Stream exceeded {limit_bytes} bytes limit")
+            }
+            Self::DurationLimit { limit_secs } => {
+                write!(f, "Stream exceeded {limit_secs}s duration limit")
+            }
+            Self::Transport { message } => write!(f, "Stream transport: {message}"),
+        }
+    }
+}
+
+impl std::error::Error for StreamError {}
