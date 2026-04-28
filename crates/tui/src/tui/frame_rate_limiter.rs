@@ -35,12 +35,17 @@ use std::time::Instant;
 /// 120 FPS minimum frame interval (≈8.33ms).
 pub const MIN_FRAME_INTERVAL: Duration = Duration::from_nanos(8_333_334);
 
+/// 30 FPS minimum frame interval (≈33.33ms) used in low-motion mode.
+pub const LOW_MOTION_MIN_FRAME_INTERVAL: Duration = Duration::from_nanos(33_333_333);
+
 /// Remembers the most recent emitted draw, allowing deadlines to be clamped
 /// forward so the next draw never lands sooner than `MIN_FRAME_INTERVAL`
 /// after the last one.
 #[derive(Debug, Default)]
 pub struct FrameRateLimiter {
     last_emitted_at: Option<Instant>,
+    /// When true, use the 30 FPS cap instead of 120 FPS.
+    low_motion: bool,
 }
 
 impl FrameRateLimiter {
@@ -52,7 +57,7 @@ impl FrameRateLimiter {
             return requested;
         };
         let min_allowed = last_emitted_at
-            .checked_add(MIN_FRAME_INTERVAL)
+            .checked_add(self.interval())
             .unwrap_or(last_emitted_at);
         requested.max(min_allowed)
     }
@@ -72,6 +77,19 @@ impl FrameRateLimiter {
             None
         } else {
             Some(clamped - now)
+        }
+    }
+
+    /// Set low-motion mode: caps frame rate at 30 FPS instead of 120 FPS.
+    pub fn set_low_motion(&mut self, low_motion: bool) {
+        self.low_motion = low_motion;
+    }
+
+    fn interval(&self) -> Duration {
+        if self.low_motion {
+            LOW_MOTION_MIN_FRAME_INTERVAL
+        } else {
+            MIN_FRAME_INTERVAL
         }
     }
 }
@@ -123,5 +141,46 @@ mod tests {
 
         let well_past = t0 + Duration::from_millis(50);
         assert!(limiter.time_until_next_draw(well_past).is_none());
+    }
+
+    #[test]
+    fn low_motion_clamps_to_30fps_interval() {
+        let t0 = Instant::now();
+        let mut limiter = FrameRateLimiter::default();
+        limiter.set_low_motion(true);
+        limiter.mark_emitted(t0);
+
+        let too_soon = t0 + Duration::from_millis(5);
+        // Under 30 FPS (~33.33 ms), a draw 5 ms after last emit is clamped.
+        assert_eq!(
+            limiter.clamp_deadline(too_soon),
+            t0 + LOW_MOTION_MIN_FRAME_INTERVAL
+        );
+
+        // After 34 ms, draw is allowed.
+        let after_34 = t0 + Duration::from_millis(34);
+        assert!(limiter.time_until_next_draw(after_34).is_none());
+    }
+
+    #[test]
+    fn low_motion_switching_respects_current_mode() {
+        let t0 = Instant::now();
+        let mut limiter = FrameRateLimiter::default();
+
+        // Default (120 FPS): mark at t0, 10 ms later is clamped to ~8.33ms
+        limiter.mark_emitted(t0);
+        let t10 = t0 + Duration::from_millis(10);
+        assert!(limiter.time_until_next_draw(t10).is_none()); // 10ms > 8.33ms
+
+        // Switch to low_motion; mark again
+        limiter.set_low_motion(true);
+        limiter.mark_emitted(t10);
+        let t20 = t10 + Duration::from_millis(10);
+        let remaining = limiter.time_until_next_draw(t20).unwrap();
+        // 30 FPS = 33.33 ms interval; 10ms elapsed → ~23.33 remaining
+        assert!(
+            remaining > Duration::from_millis(20) && remaining < Duration::from_millis(25),
+            "expected ~23.33ms remaining, got {remaining:?}"
+        );
     }
 }
