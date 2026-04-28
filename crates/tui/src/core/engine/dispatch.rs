@@ -13,7 +13,7 @@
 //! * The tool execution plan/outcome types the batch driver passes around.
 //!
 //! All items are `pub(super)`-only: the public engine surface (Op/Event,
-//! `EngineHandle`, `spawn_engine`) stays in `engine/mod.rs`.
+//! `EngineHandle`, `spawn_engine`) stays in `core/engine.rs`.
 
 use serde_json::json;
 
