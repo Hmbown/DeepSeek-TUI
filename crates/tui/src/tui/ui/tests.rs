@@ -765,9 +765,14 @@ fn test_esc_priority_order_matches_cancel_stack() {
     app.is_loading = true;
     app.input = "draft".to_string();
     app.mode = AppMode::Yolo;
+    // #122: typing during a running turn now steers instead of cancelling.
+    assert_eq!(next_escape_action(&app, false), EscapeAction::SteerAndAbort);
+
+    app.input.clear();
     assert_eq!(next_escape_action(&app, false), EscapeAction::CancelRequest);
 
     app.is_loading = false;
+    app.input = "draft".to_string();
     assert_eq!(next_escape_action(&app, false), EscapeAction::ClearInput);
 
     app.input.clear();
@@ -1963,4 +1968,116 @@ fn non_recoverable_engine_error_enters_offline_mode() {
         status.starts_with("Engine error"),
         "expected engine-error status, got {status:?}"
     );
+}
+
+// ---- Issue #122: Esc-to-steer routing + steer merge ----
+
+#[test]
+fn next_escape_action_cancels_when_loading_with_empty_input() {
+    let mut app = create_test_app();
+    app.is_loading = true;
+    app.input.clear();
+    assert_eq!(next_escape_action(&app, false), EscapeAction::CancelRequest);
+}
+
+#[test]
+fn next_escape_action_steers_when_loading_with_input() {
+    let mut app = create_test_app();
+    app.is_loading = true;
+    app.input = "hold on, look at this instead".to_string();
+    assert_eq!(next_escape_action(&app, false), EscapeAction::SteerAndAbort);
+}
+
+#[test]
+fn next_escape_action_treats_whitespace_only_as_empty() {
+    let mut app = create_test_app();
+    app.is_loading = true;
+    app.input = "   \n\t".to_string();
+    assert_eq!(next_escape_action(&app, false), EscapeAction::CancelRequest);
+}
+
+#[test]
+fn next_escape_action_idle_with_input_clears() {
+    let mut app = create_test_app();
+    app.is_loading = false;
+    app.input = "draft".to_string();
+    assert_eq!(next_escape_action(&app, false), EscapeAction::ClearInput);
+}
+
+#[test]
+fn next_escape_action_idle_empty_is_noop() {
+    let mut app = create_test_app();
+    app.is_loading = false;
+    app.input.clear();
+    assert_eq!(next_escape_action(&app, false), EscapeAction::Noop);
+}
+
+#[test]
+fn next_escape_action_slash_menu_takes_priority() {
+    let mut app = create_test_app();
+    app.is_loading = true;
+    app.input = "anything".to_string();
+    assert_eq!(next_escape_action(&app, true), EscapeAction::CloseSlashMenu);
+}
+
+#[test]
+fn merge_pending_steers_returns_none_when_empty() {
+    let mut app = create_test_app();
+    assert!(merge_pending_steers(&mut app).is_none());
+    assert!(!app.submit_pending_steers_after_interrupt);
+}
+
+#[test]
+fn merge_pending_steers_passes_through_single_message() {
+    let mut app = create_test_app();
+    app.push_pending_steer(QueuedMessage::new(
+        "lone steer".to_string(),
+        Some("skill body".to_string()),
+    ));
+    let merged = merge_pending_steers(&mut app).expect("merge yields a message");
+    assert_eq!(merged.display, "lone steer");
+    assert_eq!(merged.skill_instruction.as_deref(), Some("skill body"));
+    assert!(app.pending_steers.is_empty());
+    assert!(!app.submit_pending_steers_after_interrupt);
+}
+
+#[test]
+fn merge_pending_steers_concatenates_multiple_with_blank_line() {
+    let mut app = create_test_app();
+    app.push_pending_steer(QueuedMessage::new("first".to_string(), None));
+    app.push_pending_steer(QueuedMessage::new("second".to_string(), None));
+    app.push_pending_steer(QueuedMessage::new("third".to_string(), None));
+
+    let merged = merge_pending_steers(&mut app).expect("merge yields a message");
+    assert_eq!(merged.display, "first\n\nsecond\n\nthird");
+    assert!(app.pending_steers.is_empty());
+}
+
+#[test]
+fn merge_pending_steers_keeps_first_skill_instruction_only() {
+    let mut app = create_test_app();
+    app.push_pending_steer(QueuedMessage::new(
+        "a".to_string(),
+        Some("first skill".to_string()),
+    ));
+    app.push_pending_steer(QueuedMessage::new(
+        "b".to_string(),
+        Some("second skill".to_string()),
+    ));
+    let merged = merge_pending_steers(&mut app).expect("merge yields a message");
+    assert_eq!(merged.skill_instruction.as_deref(), Some("first skill"));
+    assert_eq!(merged.display, "a\n\nb");
+}
+
+#[test]
+fn build_pending_input_preview_populates_all_three_buckets() {
+    let mut app = create_test_app();
+    app.push_pending_steer(QueuedMessage::new("steer-msg".to_string(), None));
+    app.rejected_steers.push_back("rejected-msg".to_string());
+    app.queue_message(QueuedMessage::new("queued-msg".to_string(), None));
+
+    let preview = build_pending_input_preview(&app);
+    assert_eq!(preview.pending_steers, vec!["steer-msg".to_string()]);
+    assert_eq!(preview.rejected_steers, vec!["rejected-msg".to_string()]);
+    assert_eq!(preview.queued_messages, vec!["queued-msg".to_string()]);
 }
