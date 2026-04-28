@@ -158,6 +158,40 @@ pub struct TuiConfig {
     pub status_items: Option<Vec<StatusItem>>,
 }
 
+/// Notification delivery method (mirrors `tui::notifications::Method`).
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum NotificationMethod {
+    /// Auto-detect: OSC 9 for iTerm.app / Ghostty / WezTerm; BEL otherwise.
+    #[default]
+    Auto,
+    /// OSC 9 escape.
+    Osc9,
+    /// Plain BEL character.
+    Bel,
+    /// Disable notifications.
+    Off,
+}
+
+fn default_threshold_secs() -> u64 {
+    30
+}
+
+/// Desktop-notification configuration (OSC 9 / BEL on turn completion).
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct NotificationsConfig {
+    /// Delivery method: `auto` | `osc9` | `bel` | `off`. Default: `auto`.
+    #[serde(default)]
+    pub method: NotificationMethod,
+    /// Only notify when the turn took at least this many seconds. Default: 30.
+    #[serde(default = "default_threshold_secs")]
+    pub threshold_secs: u64,
+    /// Include a short summary (elapsed time + cost) in the notification body.
+    /// Default: `false`.
+    #[serde(default)]
+    pub include_summary: bool,
+}
+
 /// One configurable footer item.
 ///
 /// Order in the user's `Vec<StatusItem>` is preserved: items in the left
@@ -386,6 +420,10 @@ pub struct Config {
     /// Provider-specific credentials and defaults shared with the `deepseek` facade.
     #[serde(default)]
     pub providers: Option<ProvidersConfig>,
+
+    /// Desktop notification settings (OSC 9 / BEL on long turn completion).
+    #[serde(default)]
+    pub notifications: Option<NotificationsConfig>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -774,6 +812,12 @@ impl Config {
     /// Get hooks configuration, returning default if not configured.
     pub fn hooks_config(&self) -> HooksConfig {
         self.hooks.clone().unwrap_or_default()
+    }
+
+    /// Resolve the notifications configuration with defaults applied.
+    #[must_use]
+    pub fn notifications_config(&self) -> NotificationsConfig {
+        self.notifications.clone().unwrap_or_default()
     }
 
     /// Resolve enabled features from defaults and config entries.
@@ -1283,6 +1327,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         hooks: override_cfg.hooks.or(base.hooks),
         providers: merge_providers(base.providers, override_cfg.providers),
         features: merge_features(base.features, override_cfg.features),
+        notifications: override_cfg.notifications.or(base.notifications),
     }
 }
 

@@ -617,6 +617,10 @@ async fn run_event_loop(
                         app.is_loading = false;
                         app.offline_mode = false;
                         app.streaming_state.reset();
+                        // Capture elapsed before clearing turn_started_at so
+                        // notifications can use the real wall-clock duration.
+                        let turn_elapsed =
+                            app.turn_started_at.map(|t| t.elapsed()).unwrap_or_default();
                         app.turn_started_at = None;
                         // Stream lock applies per-turn; clear it so the next
                         // turn's chunks pull the view down again until the
@@ -645,10 +649,43 @@ async fn run_event_loop(
                         }
 
                         // Update session cost
-                        if let Some(turn_cost) =
-                            crate::pricing::calculate_turn_cost_from_usage(&app.model, &usage)
-                        {
-                            app.session_cost += turn_cost;
+                        let turn_cost =
+                            crate::pricing::calculate_turn_cost_from_usage(&app.model, &usage);
+                        if let Some(cost) = turn_cost {
+                            app.session_cost += cost;
+                        }
+
+                        // Emit OSC 9 / BEL desktop notification for long turns.
+                        if status == crate::core::events::TurnOutcomeStatus::Completed {
+                            let notif = config.notifications_config();
+                            let method =
+                                crate::tui::notifications::Method::from_str(match &notif.method {
+                                    crate::config::NotificationMethod::Auto => "auto",
+                                    crate::config::NotificationMethod::Osc9 => "osc9",
+                                    crate::config::NotificationMethod::Bel => "bel",
+                                    crate::config::NotificationMethod::Off => "off",
+                                });
+                            let threshold = std::time::Duration::from_secs(notif.threshold_secs);
+                            let in_tmux = std::env::var("TMUX").is_ok_and(|v| !v.is_empty());
+                            let msg = if notif.include_summary {
+                                let human =
+                                    crate::tui::notifications::humanize_duration(turn_elapsed);
+                                match turn_cost {
+                                    Some(c) => {
+                                        format!("deepseek: turn complete ({human}, ${c:.2})")
+                                    }
+                                    None => format!("deepseek: turn complete ({human})"),
+                                }
+                            } else {
+                                "deepseek: turn complete".to_string()
+                            };
+                            crate::tui::notifications::notify_done(
+                                method,
+                                in_tmux,
+                                &msg,
+                                threshold,
+                                turn_elapsed,
+                            );
                         }
 
                         // Auto-save completed turn and clear crash checkpoint.

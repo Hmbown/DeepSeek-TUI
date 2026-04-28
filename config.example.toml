@@ -162,6 +162,24 @@ base_url = "https://integrate.api.nvidia.com/v1"
 default_text_model = "deepseek-ai/deepseek-v4-pro"
 
 # ─────────────────────────────────────────────────────────────────────────────────
+# Desktop Notifications (OSC 9 / BEL on long agent-turn completion)
+# ─────────────────────────────────────────────────────────────────────────────────
+# Emits an escape sequence to the terminal when a turn finishes and took longer
+# than `threshold_secs`. Useful when you tab away from the TUI and want an alert.
+#
+# method        = "auto"   # auto | osc9 | bel | off
+#                 auto: OSC 9 for iTerm.app / Ghostty / WezTerm, BEL otherwise.
+#                 osc9: \x1b]9;<msg>\x07 (iTerm2-style; shows macOS notification)
+#                 bel:  plain \x07 beep
+#                 off:  disable entirely
+# threshold_secs = 30      # only notify when the turn took >= this many seconds
+# include_summary = false  # include elapsed time + cost in the notification body
+[notifications]
+# method = "auto"
+# threshold_secs = 30
+# include_summary = false
+
+# ─────────────────────────────────────────────────────────────────────────────────
 # Hooks (optional)
 # ─────────────────────────────────────────────────────────────────────────────────
 # Hooks run shell commands on lifecycle events (session start/end, tool calls, etc.).
