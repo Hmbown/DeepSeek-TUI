@@ -169,7 +169,9 @@ impl TranscriptViewCache {
                     is_conversational: cell.is_conversational(),
                     is_system_or_tool: matches!(
                         cell,
-                        HistoryCell::System { .. } | HistoryCell::Tool(_)
+                        HistoryCell::System { .. }
+                            | HistoryCell::Tool(_)
+                            | HistoryCell::SubAgent(_)
                     ),
                 });
                 idx += 1;

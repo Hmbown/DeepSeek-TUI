@@ -41,7 +41,7 @@ use crate::tools::plan::{SharedPlanState, new_shared_plan_state};
 use crate::tools::shell::{SharedShellManager, new_shared_shell_manager};
 use crate::tools::spec::{ApprovalRequirement, ToolError, ToolResult, required_str};
 use crate::tools::subagent::{
-    SharedSubAgentManager, SubAgentRuntime, SubAgentType, new_shared_subagent_manager,
+    Mailbox, SharedSubAgentManager, SubAgentRuntime, SubAgentType, new_shared_subagent_manager,
 };
 use crate::tools::todo::{SharedTodoList, new_shared_todo_list};
 use crate::tools::user_input::{UserInputRequest, UserInputResponse};
@@ -1501,21 +1501,53 @@ impl Engine {
             builder = builder.with_shell_tools();
         }
 
+        // Mailbox for structured sub-agent envelopes (#128/#130). One per
+        // turn: the receiver is drained by a short-lived task that converts
+        // envelopes into `Event::SubAgentMailbox` so the UI can route them
+        // to the matching in-transcript card. The drainer exits naturally
+        // when every cloned sender is dropped at turn-end.
+        let mailbox_for_runtime = if self.config.features.enabled(Feature::Subagents) {
+            let cancel_token = self.cancel_token.child_token();
+            let (mailbox, mut receiver) = Mailbox::new(cancel_token.clone());
+            let tx_event_clone = self.tx_event.clone();
+            tokio::spawn(async move {
+                while let Some(envelope) = receiver.recv().await {
+                    if tx_event_clone
+                        .send(Event::SubAgentMailbox {
+                            seq: envelope.seq,
+                            message: envelope.message,
+                        })
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            });
+            Some((mailbox, cancel_token))
+        } else {
+            None
+        };
+
         let tool_registry = match mode {
             AppMode::Agent | AppMode::Yolo => {
                 if self.config.features.enabled(Feature::Subagents) {
                     let runtime = if let Some(client) = self.deepseek_client.clone() {
-                        Some(
-                            SubAgentRuntime::new(
-                                client,
-                                self.session.model.clone(),
-                                tool_context.clone(),
-                                self.session.allow_shell,
-                                Some(self.tx_event.clone()),
-                                Arc::clone(&self.subagent_manager),
-                            )
-                            .with_max_spawn_depth(self.config.max_spawn_depth),
+                        let mut rt = SubAgentRuntime::new(
+                            client,
+                            self.session.model.clone(),
+                            tool_context.clone(),
+                            self.session.allow_shell,
+                            Some(self.tx_event.clone()),
+                            Arc::clone(&self.subagent_manager),
                         )
+                        .with_max_spawn_depth(self.config.max_spawn_depth);
+                        if let Some((mailbox, cancel_token)) = mailbox_for_runtime.as_ref() {
+                            rt = rt
+                                .with_mailbox(mailbox.clone())
+                                .with_cancel_token(cancel_token.clone());
+                        }
+                        Some(rt)
                     } else {
                         None
                     };

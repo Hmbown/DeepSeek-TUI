@@ -49,7 +49,7 @@ use crate::task_manager::{
 };
 use crate::tools::ReviewOutput;
 use crate::tools::spec::{ToolError, ToolResult};
-use crate::tools::subagent::{SubAgentResult, SubAgentStatus};
+use crate::tools::subagent::{MailboxMessage, SubAgentResult, SubAgentStatus};
 use crate::tui::command_palette::{
     CommandPaletteView, build_entries as build_command_palette_entries,
 };
@@ -510,6 +510,28 @@ async fn run_event_loop(
                     EngineEvent::ToolCallStarted { id, name, input } => {
                         app.pending_tool_uses
                             .push((id.clone(), name.clone(), input.clone()));
+                        // Note this dispatch so the next sub-agent `Started`
+                        // mailbox envelope routes into the right card kind
+                        // (delegate vs fanout).
+                        if matches!(
+                            name.as_str(),
+                            "agent_spawn"
+                                | "agent_swarm"
+                                | "spawn_agents_on_csv"
+                                | "rlm"
+                                | "delegate"
+                        ) {
+                            app.pending_subagent_dispatch = Some(name.clone());
+                            if matches!(
+                                name.as_str(),
+                                "agent_swarm" | "spawn_agents_on_csv" | "rlm"
+                            ) {
+                                // New fanout invocation — children should
+                                // group under a fresh card, not the
+                                // previous swarm's leftover.
+                                app.last_fanout_card_index = None;
+                            }
+                        }
                         handle_tool_call_started(app, &id, &name, &input);
                     }
                     EngineEvent::ToolCallComplete { id, name, result } => {
@@ -806,6 +828,10 @@ async fn run_event_loop(
                         }
                         // Individual spawn/complete events already log to history;
                         // full list available via /agents command.
+                    }
+                    EngineEvent::SubAgentMailbox { seq, message } => {
+                        handle_subagent_mailbox(app, seq, &message);
+                        transcript_batch_updated = true;
                     }
                     EngineEvent::ApprovalRequired {
                         id,
@@ -3992,6 +4018,8 @@ fn idle_poll_ms(app: &App) -> u64 {
 }
 
 fn history_has_live_motion(history: &[HistoryCell]) -> bool {
+    use crate::tui::history::SubAgentCell;
+    use crate::tui::widgets::agent_card::AgentLifecycle;
     history.iter().any(|cell| match cell {
         HistoryCell::Thinking { streaming, .. } => *streaming,
         HistoryCell::Tool(tool) => match tool {
@@ -4009,6 +4037,14 @@ fn history_has_live_motion(history: &[HistoryCell]) -> bool {
             ToolCell::WebSearch(cell) => cell.status == ToolStatus::Running,
             ToolCell::Generic(cell) => cell.status == ToolStatus::Running,
         },
+        HistoryCell::SubAgent(SubAgentCell::Delegate(card)) => matches!(
+            card.status,
+            AgentLifecycle::Pending | AgentLifecycle::Running
+        ),
+        HistoryCell::SubAgent(SubAgentCell::Fanout(card)) => card
+            .workers
+            .iter()
+            .any(|w| matches!(w.status, AgentLifecycle::Pending | AgentLifecycle::Running)),
         _ => false,
     })
 }
@@ -4327,6 +4363,7 @@ fn open_tool_details_pager(app: &mut App) -> bool {
         HistoryCell::System { .. } => "Note".to_string(),
         HistoryCell::Thinking { .. } => "Reasoning".to_string(),
         HistoryCell::Tool(_) => "Message".to_string(),
+        HistoryCell::SubAgent(_) => "Sub-agent".to_string(),
     };
     let width = app
         .last_transcript_area
@@ -4402,6 +4439,95 @@ fn sort_subagents_in_place(agents: &mut [SubAgentResult]) {
             .then_with(|| a.agent_type.as_str().cmp(b.agent_type.as_str()))
             .then_with(|| a.agent_id.cmp(&b.agent_id))
     });
+}
+
+/// Route a `MailboxMessage` envelope to the matching in-transcript card,
+/// allocating a `DelegateCard` or `FanoutCard` on first sight (issue #128).
+fn handle_subagent_mailbox(app: &mut App, _seq: u64, message: &MailboxMessage) {
+    use crate::tui::history::{HistoryCell, SubAgentCell};
+    use crate::tui::widgets::agent_card::{
+        DelegateCard, FanoutCard, apply_to_delegate, apply_to_fanout,
+    };
+
+    // Resolve (or allocate) the target cell for this envelope. ChildSpawned
+    // is special — it always belongs to the active fanout card if one
+    // exists; otherwise it seeds a new one.
+    let agent_id = message.agent_id().to_string();
+
+    if matches!(message, MailboxMessage::ChildSpawned { .. })
+        && let Some(idx) = app.last_fanout_card_index
+        && let Some(HistoryCell::SubAgent(SubAgentCell::Fanout(card))) = app.history.get_mut(idx)
+    {
+        apply_to_fanout(card, message);
+        app.subagent_card_index.insert(agent_id, idx);
+        app.mark_history_updated();
+        return;
+    }
+
+    // Existing card for this agent_id? Mutate in place.
+    if let Some(&idx) = app.subagent_card_index.get(&agent_id) {
+        let updated = match app.history.get_mut(idx) {
+            Some(HistoryCell::SubAgent(SubAgentCell::Delegate(card))) => {
+                apply_to_delegate(card, message)
+            }
+            Some(HistoryCell::SubAgent(SubAgentCell::Fanout(card))) => {
+                apply_to_fanout(card, message)
+            }
+            _ => false,
+        };
+        if updated {
+            app.mark_history_updated();
+        }
+        return;
+    }
+
+    // No existing card — only `Started` reasonably opens one. Anything else
+    // for an unknown agent_id is dropped (likely arrived after the cell was
+    // cleared, e.g. session-resume edge cases).
+    let MailboxMessage::Started { agent_type, .. } = message else {
+        return;
+    };
+
+    let dispatch_kind = app.pending_subagent_dispatch.as_deref();
+    let is_fanout = matches!(
+        dispatch_kind,
+        Some("agent_swarm" | "spawn_agents_on_csv" | "rlm")
+    );
+
+    if is_fanout {
+        // Reuse the active fanout card for sibling spawns; otherwise create
+        // one anchored at this position so subsequent siblings join it.
+        if let Some(idx) = app.last_fanout_card_index
+            && let Some(HistoryCell::SubAgent(SubAgentCell::Fanout(card))) =
+                app.history.get_mut(idx)
+        {
+            card.upsert_worker(
+                &agent_id,
+                crate::tui::widgets::agent_card::AgentLifecycle::Running,
+            );
+            app.subagent_card_index.insert(agent_id, idx);
+        } else {
+            let mut card = FanoutCard::new(dispatch_kind.unwrap_or("fanout").to_string());
+            card.upsert_worker(
+                &agent_id,
+                crate::tui::widgets::agent_card::AgentLifecycle::Running,
+            );
+            app.add_message(HistoryCell::SubAgent(SubAgentCell::Fanout(card)));
+            let idx = app.history.len().saturating_sub(1);
+            app.last_fanout_card_index = Some(idx);
+            app.subagent_card_index.insert(agent_id, idx);
+        }
+    } else {
+        let card = DelegateCard::new(agent_id.clone(), agent_type.clone());
+        app.add_message(HistoryCell::SubAgent(SubAgentCell::Delegate(card)));
+        let idx = app.history.len().saturating_sub(1);
+        app.subagent_card_index.insert(agent_id, idx);
+        // Single delegate consumes the pending dispatch label so a follow-on
+        // tool call doesn't accidentally inherit it.
+        app.pending_subagent_dispatch = None;
+    }
+
+    app.mark_history_updated();
 }
 
 fn task_mode_label(mode: AppMode) -> &'static str {

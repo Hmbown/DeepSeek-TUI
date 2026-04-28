@@ -302,129 +302,114 @@ fn render_sidebar_subagents(f: &mut Frame, area: Rect, app: &App) {
     }
 
     let content_width = area.width.saturating_sub(4) as usize;
-    let mut lines: Vec<Line<'static>> = Vec::with_capacity(usize::from(area.height).max(4));
 
-    // The footer's `running_agent_count` takes the union of `agent_progress`
-    // (live engine progress events) and `subagent_cache` (the snapshot that
-    // arrives async via `Op::ListSubAgents`). When 5 agents are spawning, the
-    // footer chip says "5 agents" because progress events update immediately,
-    // but `subagent_cache` is empty until the engine responds — so the
-    // sidebar would say "No agents" while the footer says 5 (#63).
-    //
-    // Mirror the footer's union here. Cached entries get the full status
-    // line; progress-only IDs get a single "starting…" row using the latest
-    // progress message, so the sidebar matches the footer in real time.
+    // Demoted to navigator (issue #128): the in-transcript DelegateCard /
+    // FanoutCard now carries the live action tree and dot-grid. The sidebar
+    // shows just count + role-mix so the user can scan parallel work at a
+    // glance and scroll to the matching transcript card for detail.
     let cached_ids: std::collections::HashSet<&str> = app
         .subagent_cache
         .iter()
         .map(|agent| agent.agent_id.as_str())
         .collect();
-    let progress_only: Vec<(&str, &str)> = app
+    let progress_only_count = app
         .agent_progress
+        .keys()
+        .filter(|id| !cached_ids.contains(id.as_str()))
+        .count();
+    let cached_running = app
+        .subagent_cache
         .iter()
-        .filter(|(id, _)| !cached_ids.contains(id.as_str()))
-        .map(|(id, msg)| (id.as_str(), msg.as_str()))
-        .collect();
+        .filter(|agent| matches!(agent.status, SubAgentStatus::Running))
+        .count();
+    let role_counts: std::collections::BTreeMap<String, usize> =
+        app.subagent_cache
+            .iter()
+            .fold(std::collections::BTreeMap::new(), |mut acc, agent| {
+                *acc.entry(agent.agent_type.as_str().to_string())
+                    .or_insert(0) += 1;
+                acc
+            });
 
-    if app.subagent_cache.is_empty() && progress_only.is_empty() {
+    let summary = SidebarSubagentSummary {
+        cached_total: app.subagent_cache.len(),
+        cached_running,
+        progress_only_count,
+        role_counts,
+    };
+    let lines = subagent_navigator_lines(&summary, content_width);
+
+    render_sidebar_section(f, area, "Agents", lines);
+}
+
+/// Minimal projection of the data the sub-agent sidebar needs. Lifted out
+/// of `render_sidebar_subagents` so the rendering can be snapshot-tested
+/// without a full `App`.
+#[derive(Debug, Clone, Default)]
+pub struct SidebarSubagentSummary {
+    pub cached_total: usize,
+    pub cached_running: usize,
+    pub progress_only_count: usize,
+    pub role_counts: std::collections::BTreeMap<String, usize>,
+}
+
+/// Build the demoted navigator lines from a summary projection. Public
+/// for the snapshot test in this module.
+pub fn subagent_navigator_lines(
+    summary: &SidebarSubagentSummary,
+    content_width: usize,
+) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(4);
+
+    if summary.cached_total == 0 && summary.progress_only_count == 0 {
         lines.push(Line::from(Span::styled(
             "No agents",
             Style::default().fg(palette::TEXT_MUTED),
         )));
-    } else {
-        let cached_running = app
-            .subagent_cache
-            .iter()
-            .filter(|agent| matches!(agent.status, SubAgentStatus::Running))
-            .count();
-        let live_running = cached_running + progress_only.len();
-        let total = app.subagent_cache.len() + progress_only.len();
-        let done = total.saturating_sub(live_running);
-        // When agents have all finished, "0 running / 1" reads as broken.
-        // Switch to "1 done" once nothing is in flight; only show the
-        // running/total split while activity is live.
-        let header = if live_running > 0 {
-            vec![
-                Span::styled(
-                    format!("{live_running} running"),
-                    Style::default().fg(palette::DEEPSEEK_SKY).bold(),
-                ),
-                Span::styled(
-                    format!(" / {total}"),
-                    Style::default().fg(palette::TEXT_MUTED),
-                ),
-            ]
-        } else {
-            vec![Span::styled(
-                format!("{done} done"),
-                Style::default().fg(palette::STATUS_SUCCESS),
-            )]
-        };
-        lines.push(Line::from(header));
-
-        let usable_rows = area.height.saturating_sub(3) as usize;
-        let max_agents = usable_rows.saturating_sub(lines.len());
-
-        let push_agent_row =
-            |lines: &mut Vec<Line<'static>>, summary: &str, detail: &str, color| {
-                lines.push(Line::from(Span::styled(
-                    truncate_line_to_width(summary, content_width.max(1)),
-                    Style::default().fg(color),
-                )));
-                lines.push(Line::from(Span::styled(
-                    format!(
-                        "  {}",
-                        truncate_line_to_width(detail, content_width.saturating_sub(2).max(1))
-                    ),
-                    Style::default().fg(palette::TEXT_DIM),
-                )));
-            };
-
-        // Live (progress-only) agents first — they're the freshest signal.
-        let mut rendered = 0usize;
-        for (id, msg) in progress_only.iter().take(max_agents) {
-            let summary = format!("{} starting", truncate_line_to_width(id, 10));
-            push_agent_row(&mut lines, &summary, msg, palette::STATUS_WARNING);
-            rendered += 1;
-        }
-
-        // Then the cached snapshot for everything that's already settled into
-        // `subagent_cache`.
-        let remaining_budget = max_agents.saturating_sub(rendered);
-        for agent in app.subagent_cache.iter().take(remaining_budget) {
-            let (status_label, status_color) = match &agent.status {
-                SubAgentStatus::Running => ("running", palette::STATUS_WARNING),
-                SubAgentStatus::Completed => ("done", palette::STATUS_SUCCESS),
-                SubAgentStatus::Interrupted(_) => ("interrupted", palette::STATUS_WARNING),
-                SubAgentStatus::Failed(_) => ("failed", palette::STATUS_ERROR),
-                SubAgentStatus::Cancelled => ("cancelled", palette::TEXT_MUTED),
-            };
-            let agent_type = agent.agent_type.as_str();
-            let role = agent.assignment.role.as_deref().unwrap_or("default");
-            let summary = format!(
-                "{} {agent_type}/{role} {status_label} ({} steps)",
-                truncate_line_to_width(&agent.agent_id, 10),
-                agent.steps_taken
-            );
-            push_agent_row(
-                &mut lines,
-                &summary,
-                &agent.assignment.objective,
-                status_color,
-            );
-            rendered += 1;
-        }
-
-        let remaining = total.saturating_sub(rendered);
-        if remaining > 0 {
-            lines.push(Line::from(Span::styled(
-                format!("+{remaining} more agents"),
-                Style::default().fg(palette::TEXT_MUTED),
-            )));
-        }
+        return lines;
     }
 
-    render_sidebar_section(f, area, "Agents", lines);
+    let live_running = summary.cached_running + summary.progress_only_count;
+    let total = summary.cached_total + summary.progress_only_count;
+    let done = total.saturating_sub(live_running);
+    let header = if live_running > 0 {
+        vec![
+            Span::styled(
+                format!("{live_running} running"),
+                Style::default().fg(palette::DEEPSEEK_SKY).bold(),
+            ),
+            Span::styled(
+                format!(" / {total}"),
+                Style::default().fg(palette::TEXT_MUTED),
+            ),
+        ]
+    } else {
+        vec![Span::styled(
+            format!("{done} done"),
+            Style::default().fg(palette::STATUS_SUCCESS),
+        )]
+    };
+    lines.push(Line::from(header));
+
+    if !summary.role_counts.is_empty() {
+        let mix: Vec<String> = summary
+            .role_counts
+            .iter()
+            .map(|(role, count)| format!("{count} {role}"))
+            .collect();
+        let role_line = mix.join(" \u{00B7} ");
+        lines.push(Line::from(Span::styled(
+            truncate_line_to_width(&role_line, content_width.max(1)),
+            Style::default().fg(palette::TEXT_DIM),
+        )));
+    }
+
+    lines.push(Line::from(Span::styled(
+        "(see transcript card for detail)",
+        Style::default().fg(palette::TEXT_MUTED).italic(),
+    )));
+
+    lines
 }
 
 fn render_sidebar_section(f: &mut Frame, area: Rect, title: &str, lines: Vec<Line<'static>>) {
@@ -454,4 +439,95 @@ fn render_sidebar_section(f: &mut Frame, area: Rect, title: &str, lines: Vec<Lin
     );
 
     f.render_widget(section, area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SidebarSubagentSummary, subagent_navigator_lines};
+    use ratatui::text::Line;
+
+    fn lines_to_text(lines: &[Line<'static>]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn navigator_empty_state_says_no_agents() {
+        let summary = SidebarSubagentSummary::default();
+        let lines = subagent_navigator_lines(&summary, 32);
+        let text = lines_to_text(&lines);
+        assert_eq!(text, vec!["No agents".to_string()]);
+    }
+
+    #[test]
+    fn navigator_running_state_renders_count_role_and_navigator_hint() {
+        // Two general agents (one running, one done) + one explore (running).
+        let mut role_counts = std::collections::BTreeMap::new();
+        role_counts.insert("general".to_string(), 2);
+        role_counts.insert("explore".to_string(), 1);
+        let summary = SidebarSubagentSummary {
+            cached_total: 3,
+            cached_running: 2,
+            progress_only_count: 0,
+            role_counts,
+        };
+        let text = lines_to_text(&subagent_navigator_lines(&summary, 64));
+        assert!(text[0].contains("2 running"), "header: {:?}", text[0]);
+        assert!(text[0].contains("/ 3"), "total in header: {:?}", text[0]);
+        assert!(
+            text[1].contains("1 explore") && text[1].contains("2 general"),
+            "role mix line: {:?}",
+            text[1]
+        );
+        assert!(
+            text.iter().any(|l| l.contains("transcript card")),
+            "navigator hint must defer to transcript: {text:?}",
+        );
+    }
+
+    #[test]
+    fn navigator_settled_state_says_done() {
+        let mut role_counts = std::collections::BTreeMap::new();
+        role_counts.insert("general".to_string(), 1);
+        let summary = SidebarSubagentSummary {
+            cached_total: 1,
+            cached_running: 0,
+            progress_only_count: 0,
+            role_counts,
+        };
+        let text = lines_to_text(&subagent_navigator_lines(&summary, 32));
+        assert!(text[0].contains("1 done"), "settled header: {:?}", text[0]);
+    }
+
+    #[test]
+    fn navigator_truncates_long_role_mix_to_content_width() {
+        // Build a wide role mix; assert it doesn't blow past content_width.
+        let mut role_counts = std::collections::BTreeMap::new();
+        for role in ["general", "explore", "plan", "review", "custom", "extra"] {
+            role_counts.insert(role.to_string(), 1);
+        }
+        let summary = SidebarSubagentSummary {
+            cached_total: 6,
+            cached_running: 6,
+            progress_only_count: 0,
+            role_counts,
+        };
+        let lines = subagent_navigator_lines(&summary, 16);
+        let role_line: &str = lines[1]
+            .spans
+            .first()
+            .map(|s| s.content.as_ref())
+            .unwrap_or("");
+        assert!(
+            role_line.chars().count() <= 16,
+            "role line {role_line:?} exceeded content_width"
+        );
+    }
 }
