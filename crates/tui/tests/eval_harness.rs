@@ -6,6 +6,7 @@ use std::fs;
 mod eval;
 
 use eval::{EvalHarness, EvalHarnessConfig, ScenarioStepKind};
+use tempfile::tempdir;
 
 #[test]
 fn runs_offline_tool_loop_successfully() {
@@ -97,4 +98,45 @@ fn validation_can_fail_without_tool_errors() {
         !run.metrics.success,
         "validation should fail due to shell token"
     );
+}
+
+#[test]
+fn record_flag_writes_one_jsonl_line_per_step() {
+    let dir = tempdir().expect("tempdir");
+    let config = EvalHarnessConfig {
+        record_dir: Some(dir.path().to_path_buf()),
+        ..EvalHarnessConfig::default()
+    };
+    let harness = EvalHarness::new(config);
+    let run = harness.run().expect("eval harness run should succeed");
+
+    let scenario_file = dir.path().join("offline-tool-loop.jsonl");
+    assert!(
+        scenario_file.exists(),
+        "record_dir should contain {}",
+        scenario_file
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+    );
+
+    let contents = fs::read_to_string(&scenario_file).expect("read jsonl");
+    let lines: Vec<&str> = contents.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(
+        lines.len(),
+        run.metrics.steps,
+        "one JSONL line per step expected"
+    );
+
+    // Each line is a self-contained JSON object with the documented schema.
+    for line in lines {
+        let parsed: serde_json::Value =
+            serde_json::from_str(line).expect("each fixture line is valid JSON");
+        assert!(parsed.get("request").is_some(), "missing request");
+        let events = parsed
+            .get("response_events")
+            .and_then(|v| v.as_array())
+            .expect("response_events must be an array");
+        assert!(!events.is_empty(), "every fixture must have ≥1 event");
+    }
 }

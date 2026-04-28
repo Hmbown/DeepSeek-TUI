@@ -282,6 +282,10 @@ struct EvalArgs {
     /// Emit machine-readable JSON output
     #[arg(long, default_value_t = false)]
     json: bool,
+    /// Append one JSONL fixture line per step to `<DIR>/<scenario>.jsonl`.
+    /// Mock LLM tests can later replay these fixtures.
+    #[arg(long, value_name = "DIR")]
+    record: Option<PathBuf>,
 }
 
 #[derive(Args, Debug, Clone, Default)]
@@ -672,6 +676,7 @@ fn run_eval(args: EvalArgs) -> Result<()> {
         shell_command: args.shell_command,
         shell_expect_token: args.shell_expect_token,
         max_output_chars: args.max_output_chars,
+        record_dir: args.record.clone(),
         ..EvalHarnessConfig::default()
     };
 

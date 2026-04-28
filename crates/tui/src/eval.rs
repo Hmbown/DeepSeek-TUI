@@ -6,9 +6,10 @@
 use anyhow::{Context, Result, anyhow};
 use ignore::WalkBuilder;
 use regex::Regex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -102,6 +103,14 @@ pub struct EvalHarnessConfig {
     pub shell_expect_token: String,
     /// Maximum characters stored for step output summaries.
     pub max_output_chars: usize,
+    /// When set, every step is appended as a JSON Lines fixture to a file
+    /// inside this directory. The fixture file is named after the scenario
+    /// (e.g. `offline-tool-loop.jsonl`). Each line follows the schema:
+    /// `{ "request": <step descriptor>, "response_events": [<events>] }`.
+    /// The mock LLM client (`crate::llm_client::mock`) can replay these
+    /// fixtures for deterministic offline tests. See
+    /// `crates/tui/tests/README.md` for the full record/replay flow.
+    pub record_dir: Option<PathBuf>,
 }
 
 impl Default for EvalHarnessConfig {
@@ -117,6 +126,7 @@ impl Default for EvalHarnessConfig {
             shell_command,
             shell_expect_token: "eval-harness".to_string(),
             max_output_chars: 240,
+            record_dir: None,
         }
     }
 }
@@ -273,24 +283,120 @@ impl EvalHarness {
                     success: true,
                     duration,
                     error: None,
-                    output: Some(output),
+                    output: Some(output.clone()),
                 });
+                if let Some(dir) = self.config.record_dir.as_deref() {
+                    let _ = record_fixture(
+                        dir,
+                        &self.config.scenario_name,
+                        FixtureRecord::ok(kind, &output),
+                    );
+                }
                 Some(value)
             }
             Err(err) => {
                 stats.errors += 1;
+                let err_str = err.to_string();
                 steps.push(EvalStep {
                     kind,
                     tool_name: kind.tool_name(),
                     success: false,
                     duration,
-                    error: Some(err.to_string()),
+                    error: Some(err_str.clone()),
                     output: None,
                 });
+                if let Some(dir) = self.config.record_dir.as_deref() {
+                    let _ = record_fixture(
+                        dir,
+                        &self.config.scenario_name,
+                        FixtureRecord::err(kind, &err_str),
+                    );
+                }
                 None
             }
         }
     }
+}
+
+// === Fixture record/replay format ===========================================
+//
+// The `--record` flag writes one JSON object per line to a `.jsonl` file:
+//
+//     { "request": { "step": "list_dir", "kind": "List" },
+//       "response_events": [{ "type": "ok", "output": "…" }] }
+//
+// The mock LLM client replays these fixtures via
+// `MockLlmClient::push_message_response` (or the streaming variant) by mapping
+// each `response_events` array onto a canned `Vec<StreamEvent>`.
+//
+// This format is intentionally minimal — additional fields (timing, model,
+// usage) can be added without breaking older fixtures because each line is a
+// self-contained JSON object.
+
+/// Schema for one line of a `--record` JSONL fixture file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FixtureRecord {
+    /// Step descriptor (`{ step, kind }`).
+    pub request: serde_json::Value,
+    /// One or more synthetic response events.
+    pub response_events: Vec<serde_json::Value>,
+}
+
+impl FixtureRecord {
+    fn ok(kind: ScenarioStepKind, output: &str) -> Self {
+        Self {
+            request: serde_json::json!({
+                "step": kind.tool_name(),
+                "kind": format!("{kind:?}"),
+            }),
+            response_events: vec![serde_json::json!({
+                "type": "ok",
+                "output": output,
+            })],
+        }
+    }
+
+    fn err(kind: ScenarioStepKind, error: &str) -> Self {
+        Self {
+            request: serde_json::json!({
+                "step": kind.tool_name(),
+                "kind": format!("{kind:?}"),
+            }),
+            response_events: vec![serde_json::json!({
+                "type": "error",
+                "error": error,
+            })],
+        }
+    }
+}
+
+/// Append one fixture record to `<dir>/<scenario>.jsonl` (creating dir + file
+/// if missing). Best-effort: I/O errors are returned but generally ignored by
+/// the harness so a recording failure does not mask the run's primary result.
+pub fn record_fixture(dir: &Path, scenario_name: &str, record: FixtureRecord) -> Result<PathBuf> {
+    fs::create_dir_all(dir)
+        .with_context(|| format!("failed to create fixture dir: {}", dir.display()))?;
+    let safe_scenario = scenario_name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let path = dir.join(format!("{safe_scenario}.jsonl"));
+    let line = serde_json::to_string(&record).context("failed to serialize fixture record")?;
+
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .with_context(|| format!("failed to open fixture file: {}", path.display()))?;
+    writeln!(file, "{line}")
+        .with_context(|| format!("failed to write fixture line to {}", path.display()))?;
+    Ok(path)
 }
 
 impl Default for EvalHarness {
