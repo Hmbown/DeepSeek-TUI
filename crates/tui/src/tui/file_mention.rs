@@ -588,9 +588,16 @@ mod tests {
 
         assert!(content.contains("# nested deep"), "got: {content}");
         assert!(!content.contains("<missing-file"), "got: {content}");
+        // Path-separator-portable check: the resolved path's filename is the
+        // most reliable cross-platform anchor (Windows mixes `/` and `\` when
+        // join() preserves user-typed separators).
+        let basename = file_md
+            .file_name()
+            .and_then(|n| n.to_str())
+            .expect("file_name utf-8");
         assert!(
-            content.contains(&file_md.display().to_string()),
-            "got: {content}",
+            content.contains(basename),
+            "basename {basename} not in path; got: {content}",
         );
     }
 
