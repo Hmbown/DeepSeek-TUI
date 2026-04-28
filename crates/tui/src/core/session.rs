@@ -2,9 +2,11 @@
 //!
 //! Tracks conversation history, token usage, and session metadata.
 
+use crate::cycle_manager::CycleBriefing;
 use crate::models::{Message, SystemPrompt, Usage};
 use crate::project_context::{ProjectContext, load_project_context_with_parents};
 use crate::working_set::WorkingSet;
+use chrono::{DateTime, Utc};
 use std::path::PathBuf;
 
 /// Session state for the engine.
@@ -55,6 +57,19 @@ pub struct Session {
 
     /// Repo-aware working set for context management.
     pub working_set: WorkingSet,
+
+    /// Number of cycle boundaries crossed in this session (issue #124). The
+    /// active cycle index is `cycle_count + 1` (cycles are 1-based for users).
+    pub cycle_count: u32,
+
+    /// UTC start time of the *current* cycle. Updated when the engine resets
+    /// the conversation buffer. Used by archive headers and the `/cycles`
+    /// command's display.
+    pub current_cycle_started: DateTime<Utc>,
+
+    /// Briefings produced at past cycle boundaries, in chronological order.
+    /// Bounded growth: one entry per cycle, briefing capped at ~3,000 tokens.
+    pub cycle_briefings: Vec<CycleBriefing>,
 }
 
 /// Cumulative usage statistics for a session.
@@ -117,6 +132,9 @@ impl Session {
                 None
             },
             working_set: WorkingSet::default(),
+            cycle_count: 0,
+            current_cycle_started: Utc::now(),
+            cycle_briefings: Vec::new(),
         }
     }
 

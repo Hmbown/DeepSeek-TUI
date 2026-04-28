@@ -20,6 +20,7 @@ mod commands;
 mod compaction;
 mod config;
 mod core;
+mod cycle_manager;
 mod deepseek_theme;
 mod error_taxonomy;
 mod eval;
@@ -2866,8 +2867,13 @@ async fn run_exec_agent(
     use crate::tools::todo::new_shared_todo_list;
     use crate::tui::app::AppMode;
 
+    // Compaction defaults to disabled in v0.6.6: the checkpoint-restart cycle
+    // architecture (issue #124) handles long-context resets via fresh contexts
+    // rather than progressive summarization. The compaction config is still
+    // wired through so users who explicitly opt back in via [compaction]
+    // enabled = true keep their old behavior.
     let compaction = CompactionConfig {
-        enabled: true,
+        enabled: false,
         model: model.to_string(),
         token_threshold: compaction_threshold_for_model(model),
         message_threshold: compaction_message_threshold_for_model(model),
@@ -2885,6 +2891,7 @@ async fn run_exec_agent(
         max_subagents,
         features: config.features(),
         compaction,
+        cycle: crate::cycle_manager::CycleConfig::default(),
         capacity: crate::core::capacity::CapacityControllerConfig::from_app_config(config),
         todos: new_shared_todo_list(),
         plan_state: new_shared_plan_state(),

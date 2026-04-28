@@ -25,6 +25,10 @@ use crate::compaction::{
     CompactionConfig, compact_messages_safe, estimate_tokens, merge_system_prompts, should_compact,
 };
 use crate::config::{Config, DEFAULT_MAX_SUBAGENTS, DEFAULT_TEXT_MODEL};
+use crate::cycle_manager::{
+    CycleBriefing, CycleConfig, StructuredState, archive_cycle, build_seed_messages,
+    estimate_briefing_tokens, produce_briefing, should_advance_cycle,
+};
 use crate::features::{Feature, Features};
 use crate::llm_client::LlmClient;
 use crate::mcp::McpPool;
@@ -83,7 +87,15 @@ pub struct EngineConfig {
     /// Feature flags controlling tool availability.
     pub features: Features,
     /// Auto-compaction settings for long conversations.
+    ///
+    /// As of v0.6.6 the high-level summarization compaction (`compact_messages_safe`)
+    /// is **disabled by default**; the checkpoint-restart cycle architecture
+    /// (`cycle_manager`) replaces it. The compaction config is still wired through
+    /// for the per-tool-result truncation path (`compact_tool_result_for_context`)
+    /// and for users who explicitly opt back in via `[compaction] enabled = true`.
     pub compaction: CompactionConfig,
+    /// Checkpoint-restart cycle settings (issue #124).
+    pub cycle: CycleConfig,
     /// Capacity-controller settings.
     pub capacity: CapacityControllerConfig,
     /// Shared Todo list state.
@@ -109,6 +121,7 @@ impl Default for EngineConfig {
             max_subagents: DEFAULT_MAX_SUBAGENTS,
             features: Features::with_defaults(),
             compaction: CompactionConfig::default(),
+            cycle: CycleConfig::default(),
             capacity: CapacityControllerConfig::default(),
             todos: new_shared_todo_list(),
             plan_state: new_shared_plan_state(),
@@ -431,6 +444,7 @@ fn should_default_defer_tool(name: &str, mode: AppMode) -> bool {
             | "file_search"
             | "diagnostics"
             | "rlm"
+            | "recall_archive"
             | MULTI_TOOL_PARALLEL_NAME
             | "update_plan"
             | "todo_write"
@@ -1574,6 +1588,16 @@ impl Engine {
                 error,
             })
             .await;
+
+        // Checkpoint-restart cycle boundary (issue #124). The turn just
+        // settled cleanly — no in-flight tools, no streaming, no pending
+        // approval — so this is the safe phase to swap the context if we've
+        // crossed the per-cycle token threshold. We only fire on a
+        // Completed turn; Failed/Interrupted turns leave the buffer alone
+        // so the user can retry without a forced reset.
+        if matches!(status, TurnOutcomeStatus::Completed) {
+            self.maybe_advance_cycle(mode).await;
+        }
     }
 
     async fn handle_manual_compaction(&mut self) {
@@ -4489,6 +4513,154 @@ impl Engine {
             Some("Rehydrated canonical state from memory."),
         );
         self.merge_compaction_summary(Some(prompt));
+    }
+
+    /// Run the checkpoint-restart cycle boundary if the session has crossed
+    /// its token threshold (issue #124). No-op in the common case.
+    ///
+    /// Caller must invoke this only at a clean turn boundary (no in-flight
+    /// tool, no open stream, no pending approval modal). The phase guard
+    /// inside `should_advance_cycle` is a defence-in-depth check; the
+    /// engine's wider state machine is the primary enforcement layer.
+    ///
+    /// Sub-agents are intentionally NOT awaited: each sub-agent has its own
+    /// context, the parent's reset doesn't invalidate them. Their handles
+    /// are captured in the structured-state block so the next cycle can see
+    /// they're still running.
+    async fn maybe_advance_cycle(&mut self, mode: AppMode) {
+        if !should_advance_cycle(
+            self.session.total_usage.input_tokens,
+            self.session.total_usage.output_tokens,
+            &self.session.model,
+            &self.config.cycle,
+            false,
+        ) {
+            return;
+        }
+
+        let Some(client) = self.deepseek_client.clone() else {
+            crate::logging::warn(
+                "Cycle boundary skipped: API client not configured for briefing turn",
+            );
+            return;
+        };
+
+        let from = self.session.cycle_count;
+        let to = from.saturating_add(1);
+        let archive_started = self.session.current_cycle_started;
+        let max_briefing_tokens = self.config.cycle.briefing_max_for(&self.session.model);
+
+        let _ = self
+            .tx_event
+            .send(Event::status(format!(
+                "↻ context refreshing (cycle {from} → {to}, generating briefing…)"
+            )))
+            .await;
+
+        // 1. Generate the model-curated briefing. We do this *before*
+        //    archiving so a briefing-call failure leaves the cycle intact —
+        //    the user can keep working at higher token counts until the next
+        //    boundary check, rather than losing their context to a failed
+        //    handoff.
+        let briefing_text = match produce_briefing(
+            &client,
+            &self.session.model,
+            &self.session.messages,
+            max_briefing_tokens,
+        )
+        .await
+        {
+            Ok(text) => text,
+            Err(err) => {
+                crate::logging::warn(format!(
+                    "Cycle briefing turn failed; skipping cycle advance: {err}"
+                ));
+                let _ = self
+                    .tx_event
+                    .send(Event::status(format!(
+                        "↻ cycle handoff failed (continuing in cycle {from}): {err}"
+                    )))
+                    .await;
+                return;
+            }
+        };
+
+        let briefing_tokens = estimate_briefing_tokens(&briefing_text);
+        let now = chrono::Utc::now();
+        let briefing = CycleBriefing {
+            cycle: to,
+            timestamp: now,
+            briefing_text: briefing_text.clone(),
+            token_estimate: briefing_tokens,
+        };
+
+        // 2. Archive the cycle to disk. If the archive write fails we still
+        //    proceed with the swap — the briefing alone preserves enough
+        //    state to continue, and the user can recover the lost archive
+        //    from their session log if needed.
+        match archive_cycle(
+            &self.session.id,
+            to,
+            &self.session.messages,
+            &self.session.model,
+            archive_started,
+        ) {
+            Ok(path) => {
+                crate::logging::info(format!("Cycle {to} archived to {}", path.display()));
+            }
+            Err(err) => {
+                crate::logging::warn(format!(
+                    "Failed to archive cycle {to}; continuing with swap: {err}"
+                ));
+            }
+        }
+
+        // 3. Capture structured state. Locks are held only for the snapshot.
+        let state = StructuredState::capture(
+            mode.label(),
+            self.config.workspace.clone(),
+            std::env::current_dir().ok(),
+            &self.session.working_set,
+            &self.config.todos,
+            &self.config.plan_state,
+            Some(&self.subagent_manager),
+        )
+        .await;
+        let state_block = state.to_system_block();
+
+        // 4. Build the seed messages. The next cycle starts with the
+        //    base system prompt (refreshed below) and these seeds.
+        let seed_messages = build_seed_messages(
+            state_block.as_deref(),
+            Some(&briefing),
+            None, // pending_user_message — pulled from steer/queue elsewhere
+        );
+
+        // 5. Atomic swap.
+        self.session.messages = seed_messages;
+        self.session.cycle_count = to;
+        self.session.current_cycle_started = now;
+        self.session.cycle_briefings.push(briefing.clone());
+        // Drop any compaction summary — that path is incompatible with the
+        // fresh-context model and would Frankenstein-merge with the briefing.
+        self.session.compaction_summary_prompt = None;
+        self.refresh_system_prompt(mode);
+        self.emit_session_updated().await;
+
+        let _ = self
+            .tx_event
+            .send(Event::CycleAdvanced {
+                from,
+                to,
+                briefing: briefing.clone(),
+            })
+            .await;
+        let _ = self
+            .tx_event
+            .send(Event::status(format!(
+                "↻ context refreshed (cycle {from} → {to}, briefing: {briefing_tokens} tokens carried)"
+            )))
+            .await;
     }
 
     /// Refresh the system prompt based on current mode and context.

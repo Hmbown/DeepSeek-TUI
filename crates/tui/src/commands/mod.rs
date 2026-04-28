@@ -6,6 +6,7 @@
 mod attachment;
 mod config;
 mod core;
+mod cycle;
 mod debug;
 mod init;
 mod note;
@@ -204,8 +205,26 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "compact",
         aliases: &[],
-        description: "Trigger context compaction to free up space",
+        description: "Trigger context compaction to free up space (legacy; v0.6.6 prefers cycle restart)",
         usage: "/compact",
+    },
+    CommandInfo {
+        name: "cycles",
+        aliases: &[],
+        description: "List checkpoint-restart cycle handoffs in this session",
+        usage: "/cycles",
+    },
+    CommandInfo {
+        name: "cycle",
+        aliases: &[],
+        description: "Show the carry-forward briefing for a specific cycle",
+        usage: "/cycle <n>",
+    },
+    CommandInfo {
+        name: "recall",
+        aliases: &[],
+        description: "Search prior cycle archives (BM25 over message text)",
+        usage: "/recall <query>",
     },
     CommandInfo {
         name: "export",
@@ -357,6 +376,9 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "sessions" | "resume" => session::sessions(app),
         "load" => session::load(app, arg),
         "compact" => session::compact(app),
+        "cycles" => cycle::list_cycles(app),
+        "cycle" => cycle::show_cycle(app, arg),
+        "recall" => cycle::recall_archive(app, arg),
         "export" => session::export(app, arg),
 
         // Config commands

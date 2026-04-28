@@ -11,6 +11,7 @@ use thiserror::Error;
 use crate::compaction::CompactionConfig;
 use crate::config::{ApiProvider, Config, has_api_key, save_api_key};
 use crate::core::coherence::CoherenceState;
+use crate::cycle_manager::{CycleBriefing, CycleConfig};
 use crate::hooks::{HookContext, HookEvent, HookExecutor, HookResult};
 use crate::models::{
     Message, SystemPrompt, compaction_message_threshold_for_model,
@@ -593,6 +594,18 @@ pub struct App {
     /// Ctrl+C keeps its current "interrupt this turn" semantics in those
     /// states. See [`App::arm_quit`] / [`App::quit_is_armed`].
     pub quit_armed_until: Option<Instant>,
+
+    /// Number of checkpoint-restart cycles crossed in this session
+    /// (issue #124). Mirrors `Session.cycle_count` on the engine side.
+    pub cycle_count: u32,
+
+    /// Briefings produced at past cycle boundaries, in chronological order.
+    /// Used by `/cycles` and `/cycle <n>` slash commands.
+    pub cycle_briefings: Vec<CycleBriefing>,
+
+    /// Active cycle configuration (token threshold, briefing cap, per-model
+    /// overrides). Loaded from config and forwarded to the engine.
+    pub cycle: CycleConfig,
 }
 
 /// Message queued while the engine is busy.
@@ -873,6 +886,9 @@ impl App {
             coherence_state: CoherenceState::default(),
             last_send_at: None,
             quit_armed_until: None,
+            cycle_count: 0,
+            cycle_briefings: Vec::new(),
+            cycle: CycleConfig::default(),
         }
     }
 
@@ -1887,6 +1903,12 @@ impl App {
             model: self.model.clone(),
             ..Default::default()
         }
+    }
+
+    /// Forward the active cycle configuration to the engine. Cloned so the
+    /// engine has its own copy to mutate per-session.
+    pub fn cycle_config(&self) -> CycleConfig {
+        self.cycle.clone()
     }
 }
 

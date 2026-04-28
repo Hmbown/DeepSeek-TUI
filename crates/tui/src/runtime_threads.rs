@@ -35,7 +35,13 @@ use crate::tui::app::AppMode;
 const EVENT_CHANNEL_CAPACITY: usize = 1024;
 const MAX_ACTIVE_THREADS_DEFAULT: usize = 8;
 const SUMMARY_LIMIT: usize = 280;
-const CURRENT_RUNTIME_SCHEMA_VERSION: u32 = 1;
+/// Bumped to 2 for v0.6.6 — see issue #124. The persisted thread/turn/item
+/// records didn't change shape, but the live engine semantics did: cycle
+/// boundaries advance the `Session.cycle_count` and produce archived JSONL
+/// files at `~/.deepseek/sessions/<id>/cycles/<n>.jsonl`. A v1 reader on a
+/// session written by v2 wouldn't know about the cycle archive directory and
+/// might misinterpret message counts; bumping is the safe choice.
+const CURRENT_RUNTIME_SCHEMA_VERSION: u32 = 2;
 const RUNTIME_RESTART_REASON: &str = "Interrupted by process restart";
 
 const fn default_runtime_schema_version() -> u32 {
@@ -1335,8 +1341,11 @@ impl RuntimeThreadManager {
             }
         }
 
+        // Compaction defaults to disabled in v0.6.6 — the cycle architecture
+        // (issue #124) handles long-context resets. Threads keep the
+        // legacy summarizer wired off unless an operator opts in via config.
         let compaction = CompactionConfig {
-            enabled: true,
+            enabled: false,
             model: thread.model.clone(),
             token_threshold: compaction_threshold_for_model(&thread.model),
             message_threshold: compaction_message_threshold_for_model(&thread.model),
@@ -1353,6 +1362,7 @@ impl RuntimeThreadManager {
             max_subagents: self.config.max_subagents().clamp(1, MAX_SUBAGENTS),
             features: self.config.features(),
             compaction,
+            cycle: crate::cycle_manager::CycleConfig::default(),
             capacity: crate::core::capacity::CapacityControllerConfig::from_app_config(
                 &self.config,
             ),
@@ -1680,6 +1690,26 @@ impl RuntimeThreadManager {
                         )
                         .await?;
                     }
+                }
+                EngineEvent::CycleAdvanced { from, to, briefing } => {
+                    // Surface the cycle boundary in the runtime event timeline so
+                    // background-task subscribers and replay see it. The actual
+                    // archive write is the engine's responsibility (see
+                    // `cycle_manager::archive_cycle`); this event is informational.
+                    self.emit_event(
+                        &thread_id,
+                        Some(&turn_id),
+                        None,
+                        "cycle.advanced",
+                        json!({
+                            "from": from,
+                            "to": to,
+                            "briefing_tokens": briefing.token_estimate,
+                            "cycle": briefing.cycle,
+                            "timestamp": briefing.timestamp,
+                        }),
+                    )
+                    .await?;
                 }
                 EngineEvent::CoherenceState {
                     state,
@@ -2491,6 +2521,39 @@ mod tests {
             }
             sleep(Duration::from_millis(20)).await;
         }
+    }
+
+    #[test]
+    fn store_load_thread_rejects_newer_schema_version() {
+        let dir = test_runtime_dir();
+        let store = RuntimeThreadStore::open(dir.clone()).expect("open store");
+
+        // Construct a thread record persisted with a future schema version.
+        let mut thread = sample_thread("thr_future");
+        thread.schema_version = CURRENT_RUNTIME_SCHEMA_VERSION + 1;
+
+        // Bypass save_thread (which would respect our local schema_version)
+        // by writing the JSON directly so we can simulate a future writer.
+        let path = store.threads_dir.join(format!("{}.json", thread.id));
+        std::fs::create_dir_all(path.parent().unwrap()).expect("mkdirs");
+        let payload = serde_json::to_string(&thread).expect("serialize thread");
+        std::fs::write(&path, payload).expect("write thread");
+
+        let err = store
+            .load_thread(&thread.id)
+            .expect_err("load_thread must reject newer schema");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("newer than supported"), "got: {msg}");
+
+        // Cleanup so we don't leak across tests.
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn current_runtime_schema_version_is_two_on_v066() {
+        // Locks the bump in (issue #124). Bump deliberately when persisted
+        // shape changes.
+        assert_eq!(CURRENT_RUNTIME_SCHEMA_VERSION, 2);
     }
 
     #[test]
