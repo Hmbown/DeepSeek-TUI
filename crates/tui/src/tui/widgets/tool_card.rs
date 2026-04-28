@@ -88,14 +88,14 @@ pub fn tool_family_for_name(name: &str) -> ToolFamily {
 #[must_use]
 pub fn family_glyph(family: ToolFamily) -> &'static str {
     match family {
-        ToolFamily::Read => "\u{25B7}",     // ▷
-        ToolFamily::Patch => "\u{25C6}",    // ◆
-        ToolFamily::Run => "\u{25B6}",      // ▶
-        ToolFamily::Find => "\u{2315}",     // ⌕
-        ToolFamily::Delegate => "\u{25D0}", // ◐
+        ToolFamily::Read => "\u{25B7}",           // ▷
+        ToolFamily::Patch => "\u{25C6}",          // ◆
+        ToolFamily::Run => "\u{25B6}",            // ▶
+        ToolFamily::Find => "\u{2315}",           // ⌕
+        ToolFamily::Delegate => "\u{25D0}",       // ◐
         ToolFamily::Fanout => "\u{22EE}\u{22EE}", // ⋮⋮ (two cells)
-        ToolFamily::Think => "\u{2026}",    // …
-        ToolFamily::Generic => "\u{2022}",  // •
+        ToolFamily::Think => "\u{2026}",          // …
+        ToolFamily::Generic => "\u{2022}",        // •
     }
 }
 
@@ -171,7 +171,10 @@ mod tests {
         assert_eq!(tool_family_for_name("agent_spawn"), ToolFamily::Delegate);
         assert_eq!(tool_family_for_name("agent_swarm"), ToolFamily::Fanout);
         assert_eq!(tool_family_for_name("rlm"), ToolFamily::Fanout);
-        assert_eq!(tool_family_for_name("totally_new_tool"), ToolFamily::Generic);
+        assert_eq!(
+            tool_family_for_name("totally_new_tool"),
+            ToolFamily::Generic
+        );
     }
 
     #[test]

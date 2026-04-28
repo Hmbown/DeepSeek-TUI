@@ -162,11 +162,11 @@ impl ColorDepth {
 }
 
 /// Adapt a foreground color to the terminal's color depth.
-#[allow(dead_code)]
 ///
 /// On TrueColor, `color` passes through. On Ansi256 we let ratatui's renderer
 /// down-convert (it does this already). On Ansi16 we strip RGB to a near
 /// named color so semantic intent survives even on legacy terminals.
+#[allow(dead_code)]
 #[must_use]
 pub fn adapt_color(color: Color, depth: ColorDepth) -> Color {
     match (color, depth) {
@@ -177,9 +177,9 @@ pub fn adapt_color(color: Color, depth: ColorDepth) -> Color {
 }
 
 /// Adapt a background color. On Ansi16 terminals background tints are noisy,
-#[allow(dead_code)]
 /// so we drop them to `Color::Reset` rather than attempt a coarse named-color
 /// match — a quiet background reads cleaner than a wrong one.
+#[allow(dead_code)]
 #[must_use]
 pub fn adapt_bg(color: Color, depth: ColorDepth) -> Color {
     match depth {
@@ -239,10 +239,10 @@ pub fn pulse_brightness(color: Color, now_ms: u64) -> Color {
 }
 
 /// Map an RGB triple to its closest ANSI-16 named color. Only used by
-#[allow(dead_code)]
 /// `adapt_color` on Ansi16 terminals; we lean on hue dominance + lightness so
 /// brand colors land on the obviously-related named entry (sky → cyan, blue →
 /// blue, red → red, etc.) rather than dithering around grey.
+#[allow(dead_code)]
 fn nearest_ansi16(r: u8, g: u8, b: u8) -> Color {
     let lum = (u16::from(r) + u16::from(g) + u16::from(b)) / 3;
     if lum < 24 {
@@ -257,11 +257,19 @@ fn nearest_ansi16(r: u8, g: u8, b: u8) -> Color {
     if max.saturating_sub(min) < 16 {
         return if bright { Color::Gray } else { Color::DarkGray };
     }
-    let dom = if r >= g && r >= b {
+    if r >= g && r >= b {
         if g > b + 24 {
-            if bright { Color::LightYellow } else { Color::Yellow }
+            if bright {
+                Color::LightYellow
+            } else {
+                Color::Yellow
+            }
         } else if b > r.saturating_sub(24) {
-            if bright { Color::LightMagenta } else { Color::Magenta }
+            if bright {
+                Color::LightMagenta
+            } else {
+                Color::Magenta
+            }
         } else if bright {
             Color::LightRed
         } else {
@@ -269,22 +277,33 @@ fn nearest_ansi16(r: u8, g: u8, b: u8) -> Color {
         }
     } else if g >= r && g >= b {
         if b > r + 24 {
-            if bright { Color::LightCyan } else { Color::Cyan }
+            if bright {
+                Color::LightCyan
+            } else {
+                Color::Cyan
+            }
         } else if bright {
             Color::LightGreen
         } else {
             Color::Green
         }
     } else if r > g + 24 {
-        if bright { Color::LightMagenta } else { Color::Magenta }
+        if bright {
+            Color::LightMagenta
+        } else {
+            Color::Magenta
+        }
     } else if g > r + 24 {
-        if bright { Color::LightCyan } else { Color::Cyan }
+        if bright {
+            Color::LightCyan
+        } else {
+            Color::Cyan
+        }
     } else if bright {
         Color::LightBlue
     } else {
         Color::Blue
-    };
-    dom
+    }
 }
 
 #[cfg(test)]
@@ -316,7 +335,10 @@ mod tests {
 
     #[test]
     fn adapt_bg_disables_tints_on_ansi16() {
-        assert_eq!(adapt_bg(SURFACE_REASONING, ColorDepth::Ansi16), Color::Reset);
+        assert_eq!(
+            adapt_bg(SURFACE_REASONING, ColorDepth::Ansi16),
+            Color::Reset
+        );
         assert_eq!(
             adapt_bg(SURFACE_REASONING, ColorDepth::TrueColor),
             SURFACE_REASONING

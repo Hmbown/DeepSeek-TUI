@@ -1384,10 +1384,7 @@ fn render_thinking(
             body_style.italic(),
         ));
         if !low_motion {
-            spans.push(Span::styled(
-                format!(" {REASONING_CURSOR}"),
-                cursor_style,
-            ));
+            spans.push(Span::styled(format!(" {REASONING_CURSOR}"), cursor_style));
         }
         lines.push(Line::from(spans));
     }
@@ -1399,10 +1396,7 @@ fn render_thinking(
         // Trailing cursor on the very last body line while streaming —
         // signals "still generating" without churning every line.
         if streaming && !low_motion && idx == last_idx {
-            spans.push(Span::styled(
-                format!(" {REASONING_CURSOR}"),
-                cursor_style,
-            ));
+            spans.push(Span::styled(format!(" {REASONING_CURSOR}"), cursor_style));
         }
         lines.push(Line::from(spans));
     }
@@ -1934,8 +1928,8 @@ mod tests {
         assistant_label_style_for, extract_reasoning_summary, render_thinking,
         running_status_label_with_elapsed,
     };
-    use crate::palette;
     use crate::deepseek_theme::Theme;
+    use crate::palette;
     use ratatui::style::Modifier;
     use std::time::{Duration, Instant};
 
@@ -2092,9 +2086,7 @@ mod tests {
         use ratatui::style::Color;
         let mut saw_dimmed = false;
         for _ in 0..50 {
-            if let Some(Color::Rgb(_, _, b)) =
-                assistant_label_style_for(true, false).fg
-            {
+            if let Some(Color::Rgb(_, _, b)) = assistant_label_style_for(true, false).fg {
                 let Color::Rgb(_, _, src_b) = palette::DEEPSEEK_SKY else {
                     panic!("DEEPSEEK_SKY must be RGB");
                 };

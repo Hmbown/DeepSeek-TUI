@@ -395,10 +395,7 @@ impl FooterWidget {
 }
 
 fn spans_text(spans: &[Span<'_>]) -> String {
-    spans
-        .iter()
-        .map(|s| s.content.as_ref())
-        .collect::<String>()
+    spans.iter().map(|s| s.content.as_ref()).collect::<String>()
 }
 
 impl Renderable for FooterWidget {
@@ -909,10 +906,7 @@ mod tests {
         let status_pos = line.find("working").expect("status visible");
         assert!(mode_pos < model_pos);
         assert!(model_pos < cost_pos, "cost must follow model: {line:?}");
-        assert!(
-            cost_pos < status_pos,
-            "cost must precede status: {line:?}"
-        );
+        assert!(cost_pos < status_pos, "cost must precede status: {line:?}");
     }
 
     /// Cost is preserved when status drops — cost is steady info, status is
@@ -925,7 +919,10 @@ mod tests {
         let line = render_at_width(props, 47);
         assert!(line.contains("agent"));
         assert!(line.contains("deepseek-v4-flash"));
-        assert!(line.contains("$0.42"), "cost survives status drop: {line:?}");
+        assert!(
+            line.contains("$0.42"),
+            "cost survives status drop: {line:?}"
+        );
         assert!(!line.contains("refreshing"), "status dropped: {line:?}");
     }
 
