@@ -68,7 +68,9 @@ Current boundary note:
 ### Core Components
 
 - **`core/`** - Main engine components
-  - `engine.rs` - Agent loop, message processing, tool execution orchestration
+  - `engine.rs` - Engine state, operation handling, message processing
+  - `engine/turn_loop.rs` - Streaming turn loop and tool execution orchestration
+  - `engine/capacity_flow.rs` - Capacity guardrail checkpoints and interventions
   - `session.rs` - Session state management
   - `turn.rs` - Turn-based conversation handling
   - `events.rs` - Event system for UI updates
