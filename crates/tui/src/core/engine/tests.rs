@@ -1118,3 +1118,164 @@ fn capacity_escalation_skips_pure_transient_categories() {
         });
     assert!(only_transient);
 }
+
+// ── #136: post-edit LSP diagnostics hook ─────────────────────────────────
+
+#[test]
+fn edited_paths_for_edit_file_returns_path() {
+    let input = json!({ "path": "src/foo.rs", "search": "x", "replace": "y" });
+    let paths = edited_paths_for_tool("edit_file", &input);
+    assert_eq!(paths, vec![PathBuf::from("src/foo.rs")]);
+}
+
+#[test]
+fn edited_paths_for_write_file_returns_path() {
+    let input = json!({ "path": "src/bar.rs", "content": "fn main() {}" });
+    let paths = edited_paths_for_tool("write_file", &input);
+    assert_eq!(paths, vec![PathBuf::from("src/bar.rs")]);
+}
+
+#[test]
+fn edited_paths_for_apply_patch_with_files_returns_each_path() {
+    let input = json!({
+        "files": [
+            { "path": "a.rs", "content": "" },
+            { "path": "b.rs", "content": "" }
+        ]
+    });
+    let paths = edited_paths_for_tool("apply_patch", &input);
+    assert_eq!(paths, vec![PathBuf::from("a.rs"), PathBuf::from("b.rs")]);
+}
+
+#[test]
+fn edited_paths_for_apply_patch_with_diff_text_extracts_paths() {
+    let input = json!({
+        "patch": "--- a/foo.rs\n+++ b/foo.rs\n@@ -1 +1 @@\n-let x: i32 = 0;\n+let x: i32 = \"oops\";\n"
+    });
+    let paths = edited_paths_for_tool("apply_patch", &input);
+    assert_eq!(paths, vec![PathBuf::from("foo.rs")]);
+}
+
+#[test]
+fn edited_paths_for_unknown_tool_returns_empty() {
+    let input = json!({ "path": "irrelevant.rs" });
+    let paths = edited_paths_for_tool("read_file", &input);
+    assert!(paths.is_empty());
+    let paths = edited_paths_for_tool("grep_files", &input);
+    assert!(paths.is_empty());
+}
+
+#[test]
+fn parse_patch_paths_skips_dev_null() {
+    let patch = "--- a/keep.rs\n+++ b/keep.rs\n--- a/deleted.rs\n+++ /dev/null\n";
+    let paths = parse_patch_paths(patch);
+    assert_eq!(paths, vec![PathBuf::from("keep.rs")]);
+}
+
+#[tokio::test]
+async fn post_edit_hook_injects_diagnostics_message_before_next_request() {
+    use crate::lsp::{Diagnostic, Language, Severity};
+    use std::sync::Arc;
+
+    let tmp = tempdir().expect("tempdir");
+    let workspace = tmp.path().to_path_buf();
+    let target = workspace.join("src").join("main.rs");
+    fs::create_dir_all(workspace.join("src")).unwrap();
+    fs::write(&target, "let x: i32 = \"not a number\";").unwrap();
+
+    let lsp_config = crate::lsp::LspConfig::default();
+    let engine_config = EngineConfig {
+        workspace: workspace.clone(),
+        lsp_config: Some(lsp_config),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(engine_config, &Config::default());
+
+    // Install a fake transport that always reports a type error.
+    let fake = Arc::new(crate::lsp::tests::FakeTransport::new(vec![Diagnostic {
+        line: 1,
+        column: 14,
+        severity: Severity::Error,
+        message: "expected i32, found &str".to_string(),
+    }]));
+    engine
+        .lsp_manager
+        .install_test_transport(Language::Rust, fake)
+        .await;
+
+    // Simulate the success path of an edit_file tool call.
+    let input = json!({ "path": "src/main.rs", "search": "0", "replace": "\"not a number\"" });
+    engine.run_post_edit_lsp_hook("edit_file", &input).await;
+    assert_eq!(engine.pending_lsp_blocks.len(), 1);
+
+    // Flush prepares the synthetic message.
+    let messages_before = engine.session.messages.len();
+    engine.flush_pending_lsp_diagnostics().await;
+    assert_eq!(engine.session.messages.len(), messages_before + 1);
+
+    let last = engine.session.messages.last().expect("message appended");
+    assert_eq!(last.role, "user");
+    let text = match &last.content[0] {
+        crate::models::ContentBlock::Text { text, .. } => text.clone(),
+        other => panic!("expected text block, got {other:?}"),
+    };
+    assert!(text.contains("<diagnostics file=\""));
+    assert!(text.contains("ERROR [1:14] expected i32, found &str"));
+}
+
+#[tokio::test]
+async fn post_edit_hook_is_silent_when_lsp_disabled() {
+    let tmp = tempdir().expect("tempdir");
+    let workspace = tmp.path().to_path_buf();
+    let target = workspace.join("src").join("main.rs");
+    fs::create_dir_all(workspace.join("src")).unwrap();
+    fs::write(&target, "fn main() {}").unwrap();
+
+    let lsp_config = crate::lsp::LspConfig {
+        enabled: false,
+        ..Default::default()
+    };
+    let engine_config = EngineConfig {
+        workspace: workspace.clone(),
+        lsp_config: Some(lsp_config),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(engine_config, &Config::default());
+
+    let input = json!({ "path": "src/main.rs", "search": "x", "replace": "y" });
+    engine.run_post_edit_lsp_hook("edit_file", &input).await;
+    assert!(engine.pending_lsp_blocks.is_empty());
+
+    let messages_before = engine.session.messages.len();
+    engine.flush_pending_lsp_diagnostics().await;
+    assert_eq!(engine.session.messages.len(), messages_before);
+}
+
+#[tokio::test]
+async fn post_edit_hook_skips_unknown_tool_names() {
+    use crate::lsp::{Diagnostic, Language, Severity};
+    use std::sync::Arc;
+
+    let tmp = tempdir().expect("tempdir");
+    let engine_config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        lsp_config: Some(crate::lsp::LspConfig::default()),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(engine_config, &Config::default());
+    let fake = Arc::new(crate::lsp::tests::FakeTransport::new(vec![Diagnostic {
+        line: 1,
+        column: 1,
+        severity: Severity::Error,
+        message: "should not be reported".to_string(),
+    }]));
+    engine
+        .lsp_manager
+        .install_test_transport(Language::Rust, fake.clone())
+        .await;
+
+    let input = json!({ "path": "src/main.rs" });
+    engine.run_post_edit_lsp_hook("read_file", &input).await;
+    assert!(engine.pending_lsp_blocks.is_empty());
+    assert_eq!(fake.call_count(), 0);
+}

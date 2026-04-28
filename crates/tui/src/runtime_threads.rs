@@ -1490,6 +1490,11 @@ impl RuntimeThreadManager {
         let network_policy = self.config.network.clone().map(|toml_cfg| {
             crate::network_policy::NetworkPolicyDecider::with_default_audit(toml_cfg.into_runtime())
         });
+        let lsp_config = self
+            .config
+            .lsp
+            .clone()
+            .map(crate::config::LspConfigToml::into_runtime);
         let engine_cfg = EngineConfig {
             model: thread.model.clone(),
             workspace: thread.workspace.clone(),
@@ -1510,6 +1515,7 @@ impl RuntimeThreadManager {
             max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
             network_policy,
             snapshots_enabled: self.config.snapshots_config().enabled,
+            lsp_config,
         };
 
         let engine = spawn_engine(engine_cfg, &self.config);

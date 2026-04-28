@@ -112,6 +112,9 @@ pub struct EngineConfig {
     pub network_policy: Option<crate::network_policy::NetworkPolicyDecider>,
     /// Whether to take side-git workspace snapshots before/after each turn.
     pub snapshots_enabled: bool,
+    /// Post-edit LSP diagnostics injection (#136). When `None`, the engine
+    /// constructs a disabled manager so the field is always present.
+    pub lsp_config: Option<crate::lsp::LspConfig>,
 }
 
 impl Default for EngineConfig {
@@ -134,6 +137,7 @@ impl Default for EngineConfig {
             max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
             network_policy: None,
             snapshots_enabled: true,
+            lsp_config: None,
         }
     }
 }
@@ -263,6 +267,13 @@ pub struct Engine {
     capacity_controller: CapacityController,
     coherence_state: CoherenceState,
     turn_counter: u64,
+    /// Post-edit LSP diagnostics injection (#136). Populated unconditionally
+    /// — when LSP is disabled in config, this is an inert manager that
+    /// always returns `None` from `diagnostics_for`.
+    lsp_manager: Arc<crate::lsp::LspManager>,
+    /// Diagnostics collected during the current step's tool calls. Drained
+    /// and forwarded as a synthetic user message before the next API call.
+    pending_lsp_blocks: Vec<crate::lsp::DiagnosticBlock>,
 }
 
 // === Internal stream helpers ===
@@ -838,6 +849,67 @@ fn caller_type_for_tool_use(caller: Option<&ToolCaller>) -> &str {
     caller.map_or("direct", |c| c.caller_type.as_str())
 }
 
+/// #136: derive the file path(s) edited by a tool call. Returns the empty
+/// vec for tools that don't modify files. We intentionally only handle the
+/// three known edit tools — adding more (e.g. specialized refactor tools)
+/// is a one-line change here.
+fn edited_paths_for_tool(tool_name: &str, input: &serde_json::Value) -> Vec<PathBuf> {
+    match tool_name {
+        "edit_file" | "write_file" => {
+            if let Some(path) = input.get("path").and_then(|v| v.as_str()) {
+                vec![PathBuf::from(path)]
+            } else {
+                Vec::new()
+            }
+        }
+        "apply_patch" => {
+            // `apply_patch` accepts either a `path` override or a list of
+            // `files` (each `{path, content}`). We try both shapes.
+            let mut out = Vec::new();
+            if let Some(path) = input.get("path").and_then(|v| v.as_str()) {
+                out.push(PathBuf::from(path));
+            }
+            if let Some(files) = input.get("files").and_then(|v| v.as_array()) {
+                for entry in files {
+                    if let Some(path) = entry.get("path").and_then(|v| v.as_str()) {
+                        out.push(PathBuf::from(path));
+                    }
+                }
+            }
+            // Fallback: parse `---`/`+++` headers from a unified diff payload.
+            if out.is_empty()
+                && let Some(patch) = input.get("patch").and_then(|v| v.as_str())
+            {
+                out.extend(parse_patch_paths(patch));
+            }
+            out
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Lightweight parser for `+++ b/<path>` lines in a unified diff. Used as a
+/// fallback when `apply_patch` is invoked with raw `patch` text and no
+/// `path`/`files` override. We deliberately keep this dumb — the real
+/// `apply_patch` tool already validates the patch shape; we only need a
+/// best-effort hint for the LSP hook.
+fn parse_patch_paths(patch: &str) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for line in patch.lines() {
+        if let Some(rest) = line.strip_prefix("+++ ") {
+            let trimmed = rest.trim();
+            // Strip leading `b/` per git diff conventions.
+            let path = trimmed.strip_prefix("b/").unwrap_or(trimmed);
+            // Skip `/dev/null` (deletion).
+            if path == "/dev/null" {
+                continue;
+            }
+            out.push(PathBuf::from(path));
+        }
+    }
+    out
+}
+
 fn caller_allowed_for_tool(caller: Option<&ToolCaller>, tool_def: Option<&Tool>) -> bool {
     let requested = caller_type_for_tool_use(caller);
     if let Some(def) = tool_def
@@ -1182,6 +1254,11 @@ impl Engine {
         let shell_manager = new_shared_shell_manager(config.workspace.clone());
         let capacity_controller = CapacityController::new(config.capacity.clone());
 
+        let lsp_manager = Arc::new(match config.lsp_config.clone() {
+            Some(cfg) => crate::lsp::LspManager::new(cfg, config.workspace.clone()),
+            None => crate::lsp::LspManager::disabled(),
+        });
+
         let mut engine = Engine {
             config,
             deepseek_client,
@@ -1201,6 +1278,8 @@ impl Engine {
             capacity_controller,
             coherence_state: CoherenceState::default(),
             turn_counter: 0,
+            lsp_manager,
+            pending_lsp_blocks: Vec::new(),
         };
         engine.rehydrate_latest_canonical_state();
 
@@ -1414,6 +1493,57 @@ impl Engine {
     async fn add_session_message(&mut self, message: Message) {
         self.session.add_message(message);
         self.emit_session_updated().await;
+    }
+
+    /// #136: post-edit hook. Inspects the tool name + input, derives the
+    /// edited file path, and asks the LSP manager for diagnostics. The
+    /// rendered block is queued in `pending_lsp_blocks` and flushed to the
+    /// session message stream just before the next API request. Failure is
+    /// silent by design — a missing/crashing LSP server must never block
+    /// the agent.
+    async fn run_post_edit_lsp_hook(&mut self, tool_name: &str, tool_input: &serde_json::Value) {
+        if !self.lsp_manager.config().enabled {
+            return;
+        }
+        let paths = edited_paths_for_tool(tool_name, tool_input);
+        for path in paths {
+            let absolute = if path.is_absolute() {
+                path.clone()
+            } else {
+                self.session.workspace.join(&path)
+            };
+            // Use a short edit-sequence based on the existing turn counter so
+            // log output stays correlated even though we do not currently
+            // batch by sequence.
+            let seq = self.turn_counter;
+            if let Some(block) = self.lsp_manager.diagnostics_for(&absolute, seq).await {
+                self.pending_lsp_blocks.push(block);
+            }
+        }
+    }
+
+    /// Drain `pending_lsp_blocks` into a single synthetic user message so the
+    /// model sees the diagnostics on its next request. Skips when nothing is
+    /// pending. The message uses the standard `text` content block shape
+    /// (the same shape as the post-tool steer messages) so we don't need to
+    /// invent a new envelope.
+    async fn flush_pending_lsp_diagnostics(&mut self) {
+        if self.pending_lsp_blocks.is_empty() {
+            return;
+        }
+        let blocks = std::mem::take(&mut self.pending_lsp_blocks);
+        let rendered = crate::lsp::render_blocks(&blocks);
+        if rendered.is_empty() {
+            return;
+        }
+        self.add_session_message(Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: rendered,
+                cache_control: None,
+            }],
+        })
+        .await;
     }
 
     /// Handle a send message operation
@@ -2446,6 +2576,11 @@ impl Engine {
                     }
                 }
             }
+
+            // #136: drain any LSP diagnostics collected since the last
+            // request and inject them as a synthetic user message so the
+            // model sees compile errors before its next reasoning step.
+            self.flush_pending_lsp_diagnostics().await;
 
             // Build the request
             let force_update_plan_this_step = force_update_plan_first && turn.tool_calls.is_empty();
@@ -3636,6 +3771,16 @@ impl Engine {
                             Some(&output_for_context),
                             &self.session.workspace,
                         );
+
+                        // #136: post-edit LSP diagnostics hook. We only run
+                        // this on success — failed edits leave the file
+                        // untouched, so polling for diagnostics would just
+                        // surface stale state.
+                        if output.success {
+                            self.run_post_edit_lsp_hook(&outcome.name, &tool_input)
+                                .await;
+                        }
+
                         self.add_session_message(Message {
                             role: "user".to_string(),
                             content: vec![ContentBlock::ToolResult {

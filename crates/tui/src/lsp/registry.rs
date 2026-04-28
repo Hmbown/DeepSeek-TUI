@@ -1,0 +1,146 @@
+//! Language detection + the fixed dictionary mapping a language to the LSP
+//! server binary that handles it.
+//!
+//! Kept intentionally small: a dozen languages, a hard-coded executable name
+//! per language, an optional list of args. Users can override the defaults
+//! via `[lsp.servers]` in `~/.deepseek/config.toml` (handled by
+//! [`super::LspConfig`], not this file).
+
+use std::path::Path;
+
+/// A language we know how to ask an LSP server about. Detected from the file
+/// extension by [`detect_language`]. `Other` is a sentinel used when we do
+/// not have an LSP for the file — the LSP manager treats it as "skip".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Language {
+    Rust,
+    Go,
+    Python,
+    TypeScript,
+    JavaScript,
+    C,
+    Cpp,
+    Other,
+}
+
+impl Language {
+    /// Stable lowercase string used as the key in `[lsp.servers]` overrides
+    /// and in log lines.
+    #[must_use]
+    pub fn as_key(self) -> &'static str {
+        match self {
+            Language::Rust => "rust",
+            Language::Go => "go",
+            Language::Python => "python",
+            Language::TypeScript => "typescript",
+            Language::JavaScript => "javascript",
+            Language::C => "c",
+            Language::Cpp => "cpp",
+            Language::Other => "other",
+        }
+    }
+
+    /// LSP `languageId` value used in `textDocument/didOpen`. We follow the
+    /// LSP-spec values: `rust`, `go`, `python`, `typescript`, `javascript`,
+    /// `c`, `cpp`.
+    #[must_use]
+    pub fn language_id(self) -> &'static str {
+        match self {
+            Language::Rust => "rust",
+            Language::Go => "go",
+            Language::Python => "python",
+            Language::TypeScript => "typescript",
+            Language::JavaScript => "javascript",
+            Language::C => "c",
+            Language::Cpp => "cpp",
+            Language::Other => "plaintext",
+        }
+    }
+}
+
+/// Detect the language of `path` from its extension. Falls back to
+/// `Language::Other` when the extension is unknown (or the file has none),
+/// which signals "skip" to the manager.
+#[must_use]
+pub fn detect_language(path: &Path) -> Language {
+    let ext = match path.extension().and_then(|e| e.to_str()) {
+        Some(ext) => ext.to_ascii_lowercase(),
+        None => return Language::Other,
+    };
+    match ext.as_str() {
+        "rs" => Language::Rust,
+        "go" => Language::Go,
+        "py" | "pyi" => Language::Python,
+        "ts" | "tsx" => Language::TypeScript,
+        "js" | "jsx" | "mjs" | "cjs" => Language::JavaScript,
+        "c" | "h" => Language::C,
+        "cpp" | "cc" | "cxx" | "hpp" | "hxx" | "hh" => Language::Cpp,
+        _ => Language::Other,
+    }
+}
+
+/// Fixed default for "what executable + args do we run for `lang`?".
+/// Returns `None` when no LSP server is wired for that language. The TUI
+/// config layer can override this dictionary at runtime.
+#[must_use]
+pub fn server_for(lang: Language) -> Option<(&'static str, &'static [&'static str])> {
+    match lang {
+        Language::Rust => Some(("rust-analyzer", &[])),
+        Language::Go => Some(("gopls", &["serve"])),
+        Language::Python => Some(("pyright-langserver", &["--stdio"])),
+        Language::TypeScript | Language::JavaScript => {
+            Some(("typescript-language-server", &["--stdio"]))
+        }
+        Language::C | Language::Cpp => Some(("clangd", &[])),
+        Language::Other => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn detects_rust_extension() {
+        assert_eq!(detect_language(&PathBuf::from("foo.rs")), Language::Rust);
+        assert_eq!(detect_language(&PathBuf::from("FOO.RS")), Language::Rust);
+    }
+
+    #[test]
+    fn detects_unknown_as_other() {
+        assert_eq!(
+            detect_language(&PathBuf::from("notes.txt")),
+            Language::Other
+        );
+        assert_eq!(detect_language(&PathBuf::from("README")), Language::Other);
+    }
+
+    #[test]
+    fn detects_typescript_variants() {
+        assert_eq!(
+            detect_language(&PathBuf::from("foo.ts")),
+            Language::TypeScript
+        );
+        assert_eq!(
+            detect_language(&PathBuf::from("foo.tsx")),
+            Language::TypeScript
+        );
+        assert_eq!(
+            detect_language(&PathBuf::from("foo.js")),
+            Language::JavaScript
+        );
+    }
+
+    #[test]
+    fn server_for_rust_is_rust_analyzer() {
+        let (cmd, args) = server_for(Language::Rust).expect("rust has a server");
+        assert_eq!(cmd, "rust-analyzer");
+        assert!(args.is_empty());
+    }
+
+    #[test]
+    fn server_for_other_is_none() {
+        assert!(server_for(Language::Other).is_none());
+    }
+}
