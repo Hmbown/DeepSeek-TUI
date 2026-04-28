@@ -1,8 +1,10 @@
-// TODO(integrate): Move prompt building from engine into this module — tracked as future refactoring
-#![allow(dead_code)]
-
 //! System prompts for different modes.
-//! NOTE: Prompt building is currently handled directly in engine - these are for future refactoring.
+//!
+//! Prompts are assembled from composable layers loaded at compile time:
+//!   base.md → personality overlay → mode delta → approval policy
+//!
+//! This keeps each concern in its own file and makes prompt tuning
+//! a single-file operation.
 
 use crate::models::SystemPrompt;
 use crate::project_context::{ProjectContext, load_project_context_with_parents};
@@ -31,32 +33,141 @@ fn load_handoff_block(workspace: &Path) -> Option<String> {
     ))
 }
 
-// Prompt files loaded at compile time
-pub const BASE_PROMPT: &str = include_str!("prompts/base.txt");
-#[allow(dead_code)]
-pub const NORMAL_PROMPT: &str = include_str!("prompts/normal.txt");
+// ── Prompt layers loaded at compile time ──────────────────────────────
+
+/// Core: task execution, tool-use rules, output format, toolbox reference,
+/// "When NOT to use" guidance, sub-agent sentinel protocol.
+pub const BASE_PROMPT: &str = include_str!("prompts/base.md");
+
+/// Personality overlays — voice and tone.
+pub const CALM_PERSONALITY: &str = include_str!("prompts/personalities/calm.md");
+pub const PLAYFUL_PERSONALITY: &str = include_str!("prompts/personalities/playful.md");
+
+/// Mode deltas — permissions, workflow expectations, mode-specific rules.
+pub const AGENT_MODE: &str = include_str!("prompts/modes/agent.md");
+pub const PLAN_MODE: &str = include_str!("prompts/modes/plan.md");
+pub const YOLO_MODE: &str = include_str!("prompts/modes/yolo.md");
+
+/// Approval-policy overlays — whether tool calls are auto-approved,
+/// require confirmation, or are blocked.
+pub const AUTO_APPROVAL: &str = include_str!("prompts/approvals/auto.md");
+pub const SUGGEST_APPROVAL: &str = include_str!("prompts/approvals/suggest.md");
+pub const NEVER_APPROVAL: &str = include_str!("prompts/approvals/never.md");
+
+/// Compaction handoff template — written into the system prompt so the
+/// model knows the format to use when writing `.deepseek/handoff.md`.
+pub const COMPACT_TEMPLATE: &str = include_str!("prompts/compact.md");
+
+// ── Legacy prompt constants (kept for backwards compatibility) ────────
+
+/// Legacy base prompt (agent.txt — now decomposed into base.md + overlays).
+/// Still available for callers that haven't migrated to the layered API.
 pub const AGENT_PROMPT: &str = include_str!("prompts/agent.txt");
 pub const YOLO_PROMPT: &str = include_str!("prompts/yolo.txt");
 pub const PLAN_PROMPT: &str = include_str!("prompts/plan.txt");
 
-fn mode_prompt(mode: AppMode) -> &'static str {
-    match mode {
-        AppMode::Agent => AGENT_PROMPT,
-        AppMode::Yolo => YOLO_PROMPT,
-        AppMode::Plan => PLAN_PROMPT,
+// ── Personality selection ─────────────────────────────────────────────
+
+/// Which personality overlay to apply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Personality {
+    /// Cool, spatial, reserved — the default.
+    Calm,
+    /// Warm, energetic, playful — alternative for fun mode.
+    Playful,
+}
+
+impl Personality {
+    /// Resolve from the `calm_mode` settings flag.
+    /// When `calm_mode` is true → Calm; when false → Playful (future).
+    /// For now, always returns Calm — Playful is wired but opt-in.
+    #[must_use]
+    pub fn from_settings(calm_mode: bool) -> Self {
+        if calm_mode {
+            Self::Calm
+        } else {
+            // Future: when playful mode is exposed in settings, return Playful here.
+            // For now, calm is the only default.
+            Self::Calm
+        }
+    }
+
+    fn prompt(self) -> &'static str {
+        match self {
+            Self::Calm => CALM_PERSONALITY,
+            Self::Playful => PLAYFUL_PERSONALITY,
+        }
     }
 }
 
-fn compose_mode_prompt(mode: AppMode) -> String {
-    format!("{}\n\n{}", BASE_PROMPT.trim(), mode_prompt(mode).trim())
+// ── Composition ───────────────────────────────────────────────────────
+
+fn mode_prompt(mode: AppMode) -> &'static str {
+    match mode {
+        AppMode::Agent => AGENT_MODE,
+        AppMode::Yolo => YOLO_MODE,
+        AppMode::Plan => PLAN_MODE,
+    }
 }
 
-/// Get the system prompt for a specific mode
+fn approval_prompt(mode: AppMode) -> &'static str {
+    match mode {
+        AppMode::Agent => SUGGEST_APPROVAL,
+        AppMode::Yolo => AUTO_APPROVAL,
+        AppMode::Plan => NEVER_APPROVAL,
+    }
+}
+
+/// Compose the full system prompt in deterministic order:
+///   1. base.md        — core identity, toolbox, execution contract
+///   2. personality    — voice and tone overlay
+///   3. mode delta     — mode-specific permissions and workflow
+///   4. approval policy — tool-approval behavior
+///
+/// Each layer is separated by a blank line for readability in the
+/// rendered prompt (the model sees them as contiguous sections).
+pub fn compose_prompt(mode: AppMode, personality: Personality) -> String {
+    let parts: [&str; 4] = [
+        BASE_PROMPT.trim(),
+        personality.prompt().trim(),
+        mode_prompt(mode).trim(),
+        approval_prompt(mode).trim(),
+    ];
+
+    let mut out = String::with_capacity(
+        parts.iter().map(|p| p.len()).sum::<usize>() + (parts.len() - 1) * 2,
+    );
+    for (i, part) in parts.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+            out.push('\n');
+        }
+        out.push_str(part);
+    }
+    out
+}
+
+/// Compose for the default personality (Calm).
+fn compose_mode_prompt(mode: AppMode) -> String {
+    compose_prompt(mode, Personality::Calm)
+}
+
+// ── Public API ────────────────────────────────────────────────────────
+
+/// Get the system prompt for a specific mode (default Calm personality).
 pub fn system_prompt_for_mode(mode: AppMode) -> SystemPrompt {
     SystemPrompt::Text(compose_mode_prompt(mode))
 }
 
-/// Get the system prompt for a specific mode with project context
+/// Get the system prompt for a specific mode with explicit personality.
+pub fn system_prompt_for_mode_with_personality(
+    mode: AppMode,
+    personality: Personality,
+) -> SystemPrompt {
+    SystemPrompt::Text(compose_prompt(mode, personality))
+}
+
+/// Get the system prompt for a specific mode with project context.
 pub fn system_prompt_for_mode_with_context(
     mode: AppMode,
     workspace: &Path,
@@ -102,6 +213,11 @@ pub fn system_prompt_for_mode_with_context(
         );
     }
 
+    // Append the compaction handoff template so the model knows the format
+    // to use when writing `.deepseek/handoff.md` on exit / `/compact`.
+    full_prompt.push_str("\n\n");
+    full_prompt.push_str(COMPACT_TEMPLATE);
+
     SystemPrompt::Text(full_prompt)
 }
 
@@ -115,7 +231,8 @@ pub fn build_system_prompt(base: &str, project_context: Option<&ProjectContext>)
     SystemPrompt::Text(full_prompt)
 }
 
-// Legacy functions for backwards compatibility
+// ── Legacy functions for backwards compatibility ──────────────────────
+
 pub fn base_system_prompt() -> SystemPrompt {
     SystemPrompt::Text(BASE_PROMPT.trim().to_string())
 }
@@ -188,5 +305,96 @@ mod tests {
             SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
         };
         assert!(!prompt.contains(HANDOFF_BLOCK_MARKER));
+    }
+
+    #[test]
+    fn compose_prompt_includes_all_layers() {
+        let prompt = compose_prompt(AppMode::Agent, Personality::Calm);
+        // Base layer
+        assert!(prompt.contains("You are DeepSeek TUI"));
+        // Personality layer
+        assert!(prompt.contains("Personality: Calm"));
+        // Mode layer
+        assert!(prompt.contains("Mode: Agent"));
+        // Approval layer
+        assert!(prompt.contains("Approval Policy: Suggest"));
+    }
+
+    #[test]
+    fn compose_prompt_deterministic_order() {
+        let prompt = compose_prompt(AppMode::Yolo, Personality::Calm);
+        let base_pos = prompt.find("You are DeepSeek TUI").unwrap();
+        let personality_pos = prompt.find("Personality: Calm").unwrap();
+        let mode_pos = prompt.find("Mode: YOLO").unwrap();
+        let approval_pos = prompt.find("Approval Policy: Auto").unwrap();
+
+        assert!(base_pos < personality_pos);
+        assert!(personality_pos < mode_pos);
+        assert!(mode_pos < approval_pos);
+    }
+
+    #[test]
+    fn each_mode_gets_correct_approval() {
+        assert!(compose_prompt(AppMode::Agent, Personality::Calm).contains("Approval Policy: Suggest"));
+        assert!(compose_prompt(AppMode::Yolo, Personality::Calm).contains("Approval Policy: Auto"));
+        assert!(compose_prompt(AppMode::Plan, Personality::Calm).contains("Approval Policy: Never"));
+    }
+
+    #[test]
+    fn personality_switches_correctly() {
+        let calm = compose_prompt(AppMode::Agent, Personality::Calm);
+        let playful = compose_prompt(AppMode::Agent, Personality::Playful);
+        assert!(calm.contains("Personality: Calm"));
+        assert!(playful.contains("Personality: Playful"));
+        assert!(!calm.contains("Personality: Playful"));
+    }
+
+    #[test]
+    fn compact_template_is_included_in_full_prompt() {
+        let tmp = tempdir().expect("tempdir");
+        let prompt = match system_prompt_for_mode_with_context(AppMode::Agent, tmp.path(), None) {
+            SystemPrompt::Text(text) => text,
+            SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
+        };
+        assert!(prompt.contains("## Compaction Handoff"));
+        assert!(prompt.contains("### Active task"));
+        assert!(prompt.contains("### Files touched"));
+        assert!(prompt.contains("### Key decisions"));
+        assert!(prompt.contains("### Open blockers"));
+        assert!(prompt.contains("### Next step"));
+    }
+
+    #[test]
+    fn when_not_to_use_sections_present() {
+        let prompt = compose_prompt(AppMode::Agent, Personality::Calm);
+        assert!(prompt.contains("When NOT to use certain tools"));
+        assert!(prompt.contains("### `apply_patch`"));
+        assert!(prompt.contains("### `edit_file`"));
+        assert!(prompt.contains("### `exec_shell`"));
+        assert!(prompt.contains("### `agent_spawn`"));
+        assert!(prompt.contains("### `rlm_query`"));
+    }
+
+    #[test]
+    fn subagent_done_sentinel_section_present() {
+        let prompt = compose_prompt(AppMode::Agent, Personality::Calm);
+        assert!(prompt.contains("Sub-agent completion sentinel"));
+        assert!(prompt.contains("<deepseek:subagent.done>"));
+        assert!(prompt.contains("Integration protocol"));
+    }
+
+    #[test]
+    fn preamble_rhythm_section_present() {
+        let prompt = compose_prompt(AppMode::Agent, Personality::Calm);
+        assert!(prompt.contains("Preamble Rhythm"));
+        assert!(prompt.contains("I'll start by reading the module structure"));
+    }
+
+    #[test]
+    fn legacy_constants_still_available() {
+        // Verify the old .txt constants still compile and contain expected content
+        assert!(!AGENT_PROMPT.is_empty());
+        assert!(!YOLO_PROMPT.is_empty());
+        assert!(!PLAN_PROMPT.is_empty());
     }
 }
