@@ -697,9 +697,9 @@ async fn run_event_loop(
                     }
                     EngineEvent::Error {
                         envelope,
-                        recoverable,
+                        recoverable: _,
                     } => {
-                        apply_engine_error_to_app(app, envelope.message.clone(), recoverable);
+                        apply_engine_error_to_app(app, envelope);
                     }
                     EngineEvent::Status { message } => {
                         app.status_message = Some(message);
@@ -1931,19 +1931,28 @@ fn queued_session_to_ui(msg: QueuedSessionMessage) -> QueuedMessage {
 
 /// Translate an `EngineEvent::Error` into UI state updates.
 ///
-/// `recoverable` is the engine's own classification: stream stalls, chunk
+/// The engine's `recoverable` flag (mirrored on `ErrorEnvelope`) decides
+/// whether the session flips into offline mode: stream stalls, chunk
 /// timeouts, transient network errors, and rate-limit/server hiccups arrive
-/// with `recoverable = true` and must NOT flip the session into offline mode
-/// — the user can resend the turn and the underlying transport will retry.
-/// Hard failures (auth, billing, invalid request) arrive with
-/// `recoverable = false`; those flip offline mode so subsequent messages get
-/// queued instead of silently lost mid-flight.
-pub(crate) fn apply_engine_error_to_app(app: &mut App, message: String, recoverable: bool) {
+/// recoverable and must NOT flip into offline. Hard failures (auth, billing,
+/// invalid request) arrive non-recoverable; those flip offline so subsequent
+/// messages get queued instead of silently lost mid-flight.
+///
+/// `severity` drives transcript color: red for `Error`/`Critical`, amber for
+/// `Warning`, dim for `Info`.
+pub(crate) fn apply_engine_error_to_app(
+    app: &mut App,
+    envelope: crate::error_taxonomy::ErrorEnvelope,
+) {
+    let recoverable = envelope.recoverable;
+    let message = envelope.message.clone();
+    let severity = envelope.severity;
     app.streaming_state.reset();
     app.streaming_message_index = None;
     app.streaming_thinking_active_entry = None;
-    app.add_message(HistoryCell::System {
-        content: format!("Error: {message}"),
+    app.add_message(HistoryCell::Error {
+        message: message.clone(),
+        severity,
     });
     app.is_loading = false;
     if recoverable {
@@ -4583,6 +4592,7 @@ fn open_tool_details_pager(app: &mut App) -> bool {
         HistoryCell::User { .. } => "You".to_string(),
         HistoryCell::Assistant { .. } => "Assistant".to_string(),
         HistoryCell::System { .. } => "Note".to_string(),
+        HistoryCell::Error { .. } => "Error".to_string(),
         HistoryCell::Thinking { .. } => "Reasoning".to_string(),
         HistoryCell::Tool(_) => "Message".to_string(),
         HistoryCell::SubAgent(_) => "Sub-agent".to_string(),

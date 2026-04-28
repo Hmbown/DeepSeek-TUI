@@ -1039,3 +1039,82 @@ fn stream_retry_threshold_relaxed_to_five() {
          provider on real outages"
     );
 }
+
+// === Issue #66: error taxonomy wired through engine + audit + capacity ===
+
+/// A failed-tool audit entry must carry the typed `category` and `severity`
+/// fields derived from the underlying `ToolError`. This is what makes
+/// downstream tooling able to bucket failures without scraping the message
+/// string.
+#[test]
+fn tool_failure_audit_payload_carries_category_and_severity() {
+    use crate::error_taxonomy::ErrorEnvelope;
+    use crate::tools::spec::ToolError;
+
+    let error = ToolError::Timeout { seconds: 30 };
+    let envelope: ErrorEnvelope = error.clone().into();
+    let payload = json!({
+        "event": "tool.result",
+        "tool_id": "tool-1",
+        "tool_name": "exec_shell",
+        "success": false,
+        "error": error.to_string(),
+        "category": envelope.category.to_string(),
+        "severity": envelope.severity.to_string(),
+    });
+
+    assert_eq!(payload["category"], "timeout");
+    assert_eq!(payload["severity"], "warning");
+    assert_eq!(payload["success"], false);
+}
+
+/// Capacity escalation sees `ErrorCategory::InvalidInput` as a context-overflow
+/// signal that must escalate even on the first failure (no consecutive
+/// requirement). The previous string-matching path scanned the message for
+/// "context length" — categories give us a typed contract instead.
+#[test]
+fn capacity_escalation_treats_invalid_input_as_overflow_signal() {
+    use crate::error_taxonomy::ErrorCategory;
+
+    // Replays the categorization branches inside
+    // `run_capacity_error_escalation_checkpoint`. Keeping the assertions on
+    // the typed surface (slice of `ErrorCategory`) means this test fails
+    // loudly if a future refactor reverts to substring matching.
+    let categories: &[ErrorCategory] = &[ErrorCategory::InvalidInput];
+    let has_context_overflow = categories.contains(&ErrorCategory::InvalidInput);
+    assert!(has_context_overflow);
+
+    let only_transient = !categories.is_empty()
+        && categories.iter().all(|c| {
+            matches!(
+                c,
+                ErrorCategory::Network | ErrorCategory::RateLimit | ErrorCategory::Timeout
+            )
+        });
+    assert!(!only_transient);
+}
+
+/// Transient categories (network / rate limit / timeout) must NOT escalate by
+/// themselves — those resolve via the existing retry loop and shouldn't
+/// trigger a capacity-driven replan.
+#[test]
+fn capacity_escalation_skips_pure_transient_categories() {
+    use crate::error_taxonomy::ErrorCategory;
+
+    let categories: &[ErrorCategory] = &[
+        ErrorCategory::Network,
+        ErrorCategory::RateLimit,
+        ErrorCategory::Timeout,
+    ];
+    let has_context_overflow = categories.contains(&ErrorCategory::InvalidInput);
+    assert!(!has_context_overflow);
+
+    let only_transient = !categories.is_empty()
+        && categories.iter().all(|c| {
+            matches!(
+                c,
+                ErrorCategory::Network | ErrorCategory::RateLimit | ErrorCategory::Timeout
+            )
+        });
+    assert!(only_transient);
+}

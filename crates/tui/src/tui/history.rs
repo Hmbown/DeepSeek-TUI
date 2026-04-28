@@ -82,6 +82,13 @@ pub enum HistoryCell {
     System {
         content: String,
     },
+    /// Categorized engine-error cell. Severity drives the label glyph + color
+    /// (red for `Error`/`Critical`, amber for `Warning`, dim for `Info`) so
+    /// the user can prioritize at a glance.
+    Error {
+        message: String,
+        severity: crate::error_taxonomy::ErrorSeverity,
+    },
     Thinking {
         content: String,
         streaming: bool,
@@ -164,6 +171,13 @@ impl HistoryCell {
                 content,
                 width,
             ),
+            HistoryCell::Error { message, severity } => render_message(
+                error_label_text(*severity),
+                error_label_style(*severity),
+                error_body_style(*severity),
+                message,
+                width,
+            ),
             HistoryCell::Thinking {
                 content,
                 streaming,
@@ -230,7 +244,7 @@ impl HistoryCell {
                 content,
                 width,
             ),
-            HistoryCell::System { .. } => self.lines(width),
+            HistoryCell::System { .. } | HistoryCell::Error { .. } => self.lines(width),
             HistoryCell::SubAgent(cell) => cell.lines(width),
         }
     }
@@ -261,7 +275,7 @@ impl HistoryCell {
                 content,
                 width,
             ),
-            HistoryCell::System { .. } => self.lines(width),
+            HistoryCell::System { .. } | HistoryCell::Error { .. } => self.lines(width),
             HistoryCell::Thinking {
                 content,
                 streaming,
@@ -1770,6 +1784,41 @@ fn system_body_style() -> Style {
     Style::default().fg(palette::TEXT_MUTED).italic()
 }
 
+/// Label glyph for an error cell. `Critical`/`Error` get the loudest marker;
+/// `Warning` is softer; `Info` is neutral. Kept as ASCII so it survives any
+/// terminal font fallback.
+fn error_label_text(severity: crate::error_taxonomy::ErrorSeverity) -> &'static str {
+    match severity {
+        crate::error_taxonomy::ErrorSeverity::Critical
+        | crate::error_taxonomy::ErrorSeverity::Error => "Error",
+        crate::error_taxonomy::ErrorSeverity::Warning => "Warn",
+        crate::error_taxonomy::ErrorSeverity::Info => "Info",
+    }
+}
+
+/// Label color for an error cell — drives the leading rail glyph.
+fn error_label_style(severity: crate::error_taxonomy::ErrorSeverity) -> Style {
+    let color = match severity {
+        crate::error_taxonomy::ErrorSeverity::Critical
+        | crate::error_taxonomy::ErrorSeverity::Error => palette::STATUS_ERROR,
+        crate::error_taxonomy::ErrorSeverity::Warning => palette::STATUS_WARNING,
+        crate::error_taxonomy::ErrorSeverity::Info => palette::TEXT_DIM,
+    };
+    Style::default().fg(color).add_modifier(Modifier::BOLD)
+}
+
+/// Body color for an error cell — softer than the label so the rail draws
+/// the eye but the prose stays readable.
+fn error_body_style(severity: crate::error_taxonomy::ErrorSeverity) -> Style {
+    let color = match severity {
+        crate::error_taxonomy::ErrorSeverity::Critical
+        | crate::error_taxonomy::ErrorSeverity::Error => palette::STATUS_ERROR,
+        crate::error_taxonomy::ErrorSeverity::Warning => palette::STATUS_WARNING,
+        crate::error_taxonomy::ErrorSeverity::Info => palette::TEXT_MUTED,
+    };
+    Style::default().fg(color)
+}
+
 fn thinking_style() -> Style {
     Style::default().fg(palette::TEXT_TOOL_OUTPUT)
 }
@@ -2716,5 +2765,87 @@ mod tests {
         assert!(live_text.contains("row 00"));
         let transcript_text = lines_text(&transcript);
         assert!(transcript_text.contains("row 29"));
+    }
+
+    // === ErrorEnvelope severity → cell color tests (#66) ===
+
+    /// Snapshot: an `Error`-severity cell uses the red status palette token
+    /// for both the leading "Error" label glyph and the body. This is the
+    /// load-bearing visual signal that distinguishes an error cell from a
+    /// neutral system note.
+    #[test]
+    fn error_severity_cell_renders_in_red() {
+        let cell = HistoryCell::Error {
+            message: "Authentication failed: invalid API key".to_string(),
+            severity: crate::error_taxonomy::ErrorSeverity::Error,
+        };
+        let lines = cell.lines(80);
+        assert!(
+            !lines.is_empty(),
+            "error cell must render at least one line"
+        );
+
+        let head = &lines[0];
+        let label_span = &head.spans[0];
+        assert_eq!(label_span.content.as_ref(), "Error");
+        assert_eq!(label_span.style.fg, Some(palette::STATUS_ERROR));
+        assert!(label_span.style.add_modifier.contains(Modifier::BOLD));
+
+        // The body carries the error message and is rendered in the same red.
+        let body_text = lines
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
+            .collect::<String>();
+        assert!(body_text.contains("Authentication failed"));
+        // Find a span whose text contains "Authentication" and verify its color.
+        let body_span = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .find(|span| span.content.contains("Authentication"))
+            .expect("error body span must exist");
+        assert_eq!(body_span.style.fg, Some(palette::STATUS_ERROR));
+    }
+
+    /// `Warning`-severity uses amber, not red — distinguishes a transient
+    /// retry hiccup from a hard failure.
+    #[test]
+    fn warning_severity_cell_renders_in_amber() {
+        let cell = HistoryCell::Error {
+            message: "Stream stalled: no data received for 60s, closing stream".to_string(),
+            severity: crate::error_taxonomy::ErrorSeverity::Warning,
+        };
+        let lines = cell.lines(80);
+        let label_span = &lines[0].spans[0];
+        assert_eq!(label_span.content.as_ref(), "Warn");
+        assert_eq!(label_span.style.fg, Some(palette::STATUS_WARNING));
+    }
+
+    /// `Critical` severity collapses to the same red as `Error` — both flip
+    /// offline mode and both should read as the loudest signal in the
+    /// transcript.
+    #[test]
+    fn critical_severity_cell_renders_in_red() {
+        let cell = HistoryCell::Error {
+            message: "API key expired".to_string(),
+            severity: crate::error_taxonomy::ErrorSeverity::Critical,
+        };
+        let lines = cell.lines(80);
+        let label_span = &lines[0].spans[0];
+        assert_eq!(label_span.content.as_ref(), "Error");
+        assert_eq!(label_span.style.fg, Some(palette::STATUS_ERROR));
+    }
+
+    /// `Info` severity stays neutral / dim so it doesn't draw the eye away
+    /// from real failures sitting alongside it in the transcript.
+    #[test]
+    fn info_severity_cell_renders_in_dim() {
+        let cell = HistoryCell::Error {
+            message: "Reconnected".to_string(),
+            severity: crate::error_taxonomy::ErrorSeverity::Info,
+        };
+        let lines = cell.lines(80);
+        let label_span = &lines[0].spans[0];
+        assert_eq!(label_span.content.as_ref(), "Info");
+        assert_eq!(label_span.style.fg, Some(palette::TEXT_DIM));
     }
 }

@@ -155,6 +155,11 @@ pub fn export(app: &mut App, path: Option<&str>) -> CommandResult {
             HistoryCell::User { content } => ("**You:**", content.clone()),
             HistoryCell::Assistant { content, .. } => ("**Assistant:**", content.clone()),
             HistoryCell::System { content } => ("*System:*", content.clone()),
+            HistoryCell::Error { message, severity } => match severity {
+                crate::error_taxonomy::ErrorSeverity::Warning => ("**Warning:**", message.clone()),
+                crate::error_taxonomy::ErrorSeverity::Info => ("*Info:*", message.clone()),
+                _ => ("**Error:**", message.clone()),
+            },
             HistoryCell::Thinking { content, .. } => ("*Thinking:*", content.clone()),
             HistoryCell::Tool(tool) => ("**Tool:**", render_tool_cell(tool, 80)),
             HistoryCell::SubAgent(sub) => ("**Sub-agent:**", render_subagent_cell(sub, 80)),

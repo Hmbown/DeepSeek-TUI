@@ -1,6 +1,5 @@
 //! Shared error taxonomy across client, tools, runtime, and UI.
 use std::fmt;
-use std::time::Duration;
 
 use crate::llm_client::LlmError;
 use crate::tools::spec::ToolError;
@@ -22,11 +21,6 @@ pub enum ErrorCategory {
 }
 
 /// Severity hint for UI and logs.
-///
-/// Adopted in `From<LlmError>` / `From<ToolError>` and exercised by tests, but
-/// not yet read by an audit-log writer or TUI severity colorer. Pending #66
-/// follow-up; the type is stable.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorSeverity {
@@ -37,11 +31,6 @@ pub enum ErrorSeverity {
 }
 
 /// Unified envelope used when crossing subsystem boundaries.
-///
-/// Constructed by the `From<LlmError>` / `From<ToolError>` impls below and
-/// validated by tests, but the engine still emits errors as `(String, bool)`
-/// pairs on the event channel. Pending #66 follow-up.
-#[allow(dead_code)]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ErrorEnvelope {
     pub category: ErrorCategory,
@@ -90,7 +79,6 @@ impl fmt::Display for ErrorEnvelope {
 impl std::error::Error for ErrorEnvelope {}
 
 impl ErrorEnvelope {
-    #[allow(dead_code)]
     #[must_use]
     pub fn new(
         category: ErrorCategory,
@@ -106,6 +94,112 @@ impl ErrorEnvelope {
             code: code.into(),
             message: message.into(),
         }
+    }
+
+    /// Recoverable internal error — stream stalls, transient retries, generic
+    /// engine errors that the user can resolve by retrying. Severity is
+    /// `Warning` so the UI surfaces it in amber rather than red.
+    #[must_use]
+    pub fn transient(message: impl Into<String>) -> Self {
+        Self::new(
+            ErrorCategory::Internal,
+            ErrorSeverity::Warning,
+            true,
+            "transient",
+            message,
+        )
+    }
+
+    /// Non-recoverable internal error — missing client, spawn failure, etc.
+    /// Flips the session into offline mode.
+    #[must_use]
+    pub fn fatal(message: impl Into<String>) -> Self {
+        Self::new(
+            ErrorCategory::Internal,
+            ErrorSeverity::Error,
+            false,
+            "fatal",
+            message,
+        )
+    }
+
+    /// Authentication failure — fatal and blocks the session.
+    #[must_use]
+    pub fn fatal_auth(message: impl Into<String>) -> Self {
+        Self::new(
+            ErrorCategory::Authentication,
+            ErrorSeverity::Critical,
+            false,
+            "auth_fatal",
+            message,
+        )
+    }
+
+    /// Context length / overflow — invalid input, recoverable via /compact.
+    #[must_use]
+    pub fn context_overflow(message: impl Into<String>) -> Self {
+        Self::new(
+            ErrorCategory::InvalidInput,
+            ErrorSeverity::Error,
+            true,
+            "context_overflow",
+            message,
+        )
+    }
+
+    /// Recoverable network / transport hiccup.
+    #[must_use]
+    pub fn network(message: impl Into<String>) -> Self {
+        Self::new(
+            ErrorCategory::Network,
+            ErrorSeverity::Warning,
+            true,
+            "network_transient",
+            message,
+        )
+    }
+
+    /// Tool execution failure.
+    #[must_use]
+    pub fn tool(message: impl Into<String>) -> Self {
+        Self::new(
+            ErrorCategory::Tool,
+            ErrorSeverity::Error,
+            true,
+            "tool_failed",
+            message,
+        )
+    }
+
+    /// Build an envelope by classifying a raw error message string. Used at
+    /// boundaries where the underlying error type was already stringified.
+    #[must_use]
+    pub fn classify(message: impl Into<String>, recoverable: bool) -> Self {
+        let message = message.into();
+        let category = classify_error_message(&message);
+        let severity = match category {
+            ErrorCategory::Authentication => ErrorSeverity::Critical,
+            ErrorCategory::RateLimit | ErrorCategory::Timeout | ErrorCategory::Network => {
+                ErrorSeverity::Warning
+            }
+            ErrorCategory::InvalidInput | ErrorCategory::Authorization | ErrorCategory::Parse => {
+                ErrorSeverity::Error
+            }
+            ErrorCategory::Tool | ErrorCategory::State | ErrorCategory::Internal => {
+                if recoverable {
+                    ErrorSeverity::Warning
+                } else {
+                    ErrorSeverity::Error
+                }
+            }
+        };
+        Self::new(
+            category,
+            severity,
+            recoverable,
+            category.to_string(),
+            message,
+        )
     }
 }
 
@@ -226,7 +320,23 @@ pub fn classify_error_message(message: &str) -> ErrorCategory {
     if lower.contains("permission") || lower.contains("forbidden") || lower.contains("denied") {
         return ErrorCategory::Authorization;
     }
-    if lower.contains("network") || lower.contains("connection") || lower.contains("dns") {
+    if lower.contains("network")
+        || lower.contains("connection")
+        || lower.contains("dns")
+        || lower.contains("temporarily unavailable")
+        || lower.contains(" 502 ")
+        || lower.contains(" 503 ")
+        || lower.contains(" 504 ")
+        || lower.starts_with("502 ")
+        || lower.starts_with("503 ")
+        || lower.starts_with("504 ")
+        || lower.ends_with(" 502")
+        || lower.ends_with(" 503")
+        || lower.ends_with(" 504")
+        || lower == "502"
+        || lower == "503"
+        || lower == "504"
+    {
         return ErrorCategory::Network;
     }
     if lower.contains("parse") || lower.contains("syntax") || lower.contains("malformed") {
@@ -301,149 +411,49 @@ impl From<ToolError> for ErrorEnvelope {
     }
 }
 
-/// Client‑side error wrapper surfaced to the UI.
-///
-/// Carries a full `ErrorEnvelope` so the TUI can render category‑specific
-/// styling instead of a generic `Event::Error { message, recoverable }`.
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub enum ClientError {
-    /// Transport / HTTP / auth error from the LLM provider.
-    Provider {
-        envelope: ErrorEnvelope,
-        /// When true the engine should attempt a retry.
-        retryable: bool,
-    },
-    /// Error originating from the stream (SSE / chunk decode / protocol).
-    Stream {
-        envelope: ErrorEnvelope,
-        retryable: bool,
-    },
-    /// Generic internal error that doesn't fit a provider taxonomy.
-    Internal { envelope: ErrorEnvelope },
-}
-
-#[allow(dead_code)]
-impl ClientError {
-    /// Unwrap the inner envelope regardless of variant.
-    #[must_use]
-    pub fn envelope(&self) -> &ErrorEnvelope {
-        match self {
-            Self::Provider { envelope, .. }
-            | Self::Stream { envelope, .. }
-            | Self::Internal { envelope } => envelope,
-        }
-    }
-
-    /// Whether this error is eligible for a transparent retry.
-    #[must_use]
-    pub fn is_retryable(&self) -> bool {
-        match self {
-            Self::Provider { retryable, .. } | Self::Stream { retryable, .. } => *retryable,
-            Self::Internal { .. } => false,
-        }
-    }
-
-    /// Construct from an `LlmError` with Retry‑After header support.
-    pub fn from_llm_error(err: LlmError, retry_after: Option<Duration>) -> Self {
-        let retryable = err.is_retryable();
-        let envelope: ErrorEnvelope = err.into();
-        if retryable {
-            let envelope = if let Some(delay) = retry_after {
-                ErrorEnvelope {
-                    code: format!("{}:retry_after_{}s", envelope.code, delay.as_secs()),
-                    ..envelope
-                }
-            } else {
-                envelope
-            };
-            Self::Provider {
-                envelope,
-                retryable: true,
-            }
-        } else {
-            Self::Provider {
-                envelope,
-                retryable: false,
-            }
-        }
-    }
-
-    /// Construct a stream‑level error.
-    pub fn stream(message: impl Into<String>, retryable: bool) -> Self {
-        let envelope = ErrorEnvelope::new(
-            ErrorCategory::Internal,
-            ErrorSeverity::Warning,
-            retryable,
-            "stream_error",
-            message,
-        );
-        Self::Stream {
-            envelope,
-            retryable,
-        }
-    }
-
-    /// Construct an internal error.
-    pub fn internal(message: impl Into<String>) -> Self {
-        let envelope = ErrorEnvelope::new(
-            ErrorCategory::Internal,
-            ErrorSeverity::Error,
-            false,
-            "internal",
-            message,
-        );
-        Self::Internal { envelope }
-    }
-}
-
-impl fmt::Display for ClientError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.envelope())
-    }
-}
-
-impl std::error::Error for ClientError {}
-
 /// Stream‑level error discriminated by origin.
 ///
 /// Each variant maps to an `ErrorCategory` so the UI can render
-/// stream‑specific icons or formatting.
-#[allow(dead_code)]
+/// stream‑specific icons or formatting. Wired into engine.rs at the three
+/// stream guard sites (chunk timeout, max-bytes overflow, max-duration).
 #[derive(Debug, Clone)]
 pub enum StreamError {
     /// Stream stalled — no chunk received within the idle timeout.
     Stall { timeout_secs: u64 },
-    /// Chunk decode / JSON parse failure.
-    Decode { message: String },
     /// Stream exceeded content size limit.
     Overflow { limit_bytes: usize },
     /// Stream exceeded wall‑clock duration limit.
     DurationLimit { limit_secs: u64 },
-    /// Transport error from the underlying SSE connection.
-    Transport { message: String },
 }
 
-#[allow(dead_code)]
 impl StreamError {
-    /// Convert into a `ClientError` for emission.
+    /// Convert directly into an `ErrorEnvelope` for emission on the engine
+    /// event channel. Stalls are warning-severity and recoverable; size and
+    /// duration limits are errors (the user must restart the turn).
     #[must_use]
-    pub fn into_client_error(self) -> ClientError {
+    pub fn into_envelope(self) -> ErrorEnvelope {
         match self {
-            Self::Stall { timeout_secs } => {
-                ClientError::stream(format!("Stream stalled after {timeout_secs}s idle"), true)
-            }
-            Self::Decode { message } => {
-                ClientError::stream(format!("Stream decode error: {message}"), true)
-            }
-            Self::Overflow { limit_bytes } => {
-                ClientError::stream(format!("Stream exceeded {limit_bytes} bytes limit"), false)
-            }
-            Self::DurationLimit { limit_secs } => ClientError::stream(
-                format!("Stream exceeded {limit_secs}s duration limit"),
-                false,
+            Self::Stall { timeout_secs } => ErrorEnvelope::new(
+                ErrorCategory::Timeout,
+                ErrorSeverity::Warning,
+                true,
+                "stream_stall",
+                format!("Stream stalled: no data received for {timeout_secs}s, closing stream"),
             ),
-            Self::Transport { message } => ClientError::stream(message, true),
+            Self::Overflow { limit_bytes } => ErrorEnvelope::new(
+                ErrorCategory::Internal,
+                ErrorSeverity::Error,
+                true,
+                "stream_overflow",
+                format!("Stream exceeded maximum content size of {limit_bytes} bytes, closing"),
+            ),
+            Self::DurationLimit { limit_secs } => ErrorEnvelope::new(
+                ErrorCategory::Timeout,
+                ErrorSeverity::Error,
+                true,
+                "stream_duration_limit",
+                format!("Stream exceeded maximum duration of {limit_secs}s, closing"),
+            ),
         }
     }
 }
@@ -454,14 +464,12 @@ impl fmt::Display for StreamError {
             Self::Stall { timeout_secs } => {
                 write!(f, "Stream stalled after {timeout_secs}s idle")
             }
-            Self::Decode { message } => write!(f, "Stream decode error: {message}"),
             Self::Overflow { limit_bytes } => {
                 write!(f, "Stream exceeded {limit_bytes} bytes limit")
             }
             Self::DurationLimit { limit_secs } => {
                 write!(f, "Stream exceeded {limit_secs}s duration limit")
             }
-            Self::Transport { message } => write!(f, "Stream transport: {message}"),
         }
     }
 }
