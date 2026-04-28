@@ -32,6 +32,11 @@ pub struct Workspace {
 }
 
 impl Workspace {
+    /// Construct a workspace anchored at `root`, capturing the process CWD as
+    /// the secondary resolution pass. Convenience entry point intended for
+    /// callers that don't already have a CWD on hand; the App routes through
+    /// [`Workspace::with_cwd`] with its own captured launch directory.
+    #[allow(dead_code)] // Keeps the surface stable for #97 (Ctrl+P picker).
     pub fn new(root: PathBuf) -> Self {
         Self::with_cwd(root, std::env::current_dir().ok())
     }
@@ -90,6 +95,9 @@ impl Workspace {
         let mut index: HashMap<String, Vec<PathBuf>> = HashMap::new();
         let mut builder = WalkBuilder::new(&self.root);
         builder.hidden(true).follow_links(false).max_depth(Some(6));
+        // Honor `.deepseekignore` in addition to the defaults the `ignore` crate
+        // already respects (`.gitignore`, `.git/info/exclude`, `.ignore`).
+        let _ = builder.add_custom_ignore_filename(".deepseekignore");
 
         for entry in builder.build().flatten() {
             if entry
@@ -104,6 +112,121 @@ impl Workspace {
             }
         }
         index
+    }
+
+    /// Walk the workspace (and the recorded `cwd` when it diverges) and
+    /// return relative paths whose representation matches `partial`.
+    ///
+    /// Ranking: a candidate matches when its case-insensitive display string
+    /// starts with `partial` (prefix hit) or contains it as a substring; prefix
+    /// hits sort first so `docs/de` lands `docs/deepseek_v4.pdf` ahead of any
+    /// path that merely shares those bytes.
+    ///
+    /// Display strings are workspace-relative for files under `root`, and
+    /// cwd-relative for files only under the recorded `cwd` — so what the user
+    /// Tab-completes matches what their shell would have shown them.
+    ///
+    /// Honors `.gitignore`, `.git/info/exclude`, `.ignore`, and
+    /// `.deepseekignore`. Capped at `limit` results.
+    #[must_use]
+    pub fn completions(&self, partial: &str, limit: usize) -> Vec<String> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        let needle = partial.to_lowercase();
+        let mut prefix_hits: Vec<String> = Vec::new();
+        let mut substring_hits: Vec<String> = Vec::new();
+        let mut seen: HashSet<PathBuf> = HashSet::new();
+
+        // Walk the recorded cwd first when it diverges from the workspace
+        // root, so cwd-relative entries appear ahead of duplicates surfaced by
+        // the workspace walk.
+        let cwd_diverges = self
+            .cwd
+            .as_deref()
+            .map(|c| c != self.root.as_path())
+            .unwrap_or(false);
+        if cwd_diverges && let Some(cwd) = self.cwd.as_deref() {
+            walk_for_completions(
+                cwd,
+                cwd,
+                &needle,
+                limit,
+                &mut prefix_hits,
+                &mut substring_hits,
+                &mut seen,
+            );
+        }
+        walk_for_completions(
+            &self.root,
+            &self.root,
+            &needle,
+            limit,
+            &mut prefix_hits,
+            &mut substring_hits,
+            &mut seen,
+        );
+
+        prefix_hits.sort();
+        substring_hits.sort();
+        prefix_hits.extend(substring_hits);
+        prefix_hits.truncate(limit);
+        prefix_hits
+    }
+}
+
+/// Maximum directory depth walked when surfacing file-mention completions.
+/// Mirrors the existing `project_tree` cutoff and keeps Tab snappy in deep
+/// monorepos.
+const COMPLETIONS_WALK_DEPTH: usize = 6;
+
+#[allow(clippy::too_many_arguments)]
+fn walk_for_completions(
+    walk_root: &Path,
+    display_root: &Path,
+    needle: &str,
+    limit: usize,
+    prefix_hits: &mut Vec<String>,
+    substring_hits: &mut Vec<String>,
+    seen: &mut HashSet<PathBuf>,
+) {
+    let mut builder = WalkBuilder::new(walk_root);
+    builder
+        .hidden(true)
+        .follow_links(false)
+        .max_depth(Some(COMPLETIONS_WALK_DEPTH));
+    let _ = builder.add_custom_ignore_filename(".deepseekignore");
+
+    for entry in builder.build().flatten() {
+        if prefix_hits.len() + substring_hits.len() >= limit {
+            break;
+        }
+        let path = entry.path();
+        let Ok(rel) = path.strip_prefix(display_root) else {
+            continue;
+        };
+        let rel_str = rel.to_string_lossy().replace('\\', "/");
+        if rel_str.is_empty() {
+            continue;
+        }
+        // Dedup across the (cwd, workspace) double-walk by absolute path; we
+        // want the cwd-relative display when both walks see the same file.
+        let abs = path.to_path_buf();
+        if !seen.insert(abs) {
+            continue;
+        }
+        let is_dir = entry.file_type().is_some_and(|ft| ft.is_dir());
+        let candidate = if is_dir {
+            format!("{rel_str}/")
+        } else {
+            rel_str.clone()
+        };
+        let lower = candidate.to_lowercase();
+        if needle.is_empty() || lower.starts_with(needle) {
+            prefix_hits.push(candidate);
+        } else if lower.contains(needle) {
+            substring_hits.push(candidate);
+        }
     }
 }
 
@@ -926,18 +1049,60 @@ mod tests {
         // tests that mutate the real process cwd.
         let ws = Workspace::with_cwd(tmp.path().to_path_buf(), Some(sub.clone()));
 
-        // Test 1: @bar.txt with cwd=sub → resolves via the cwd pass.
+        // #101 repro #1: @bar.txt with cwd=sub MUST resolve via the cwd pass,
+        // never to the bogus workspace path tmp/bar.txt (which doesn't exist).
         let res1 = ws.resolve("bar.txt").unwrap();
         assert_eq!(
-            res1.canonicalize().unwrap_or(res1),
-            bar.canonicalize().unwrap_or(bar)
+            res1.canonicalize().unwrap_or(res1.clone()),
+            bar.canonicalize().unwrap_or(bar.clone())
         );
+        let wrong = tmp.path().join("bar.txt");
+        assert_ne!(res1, wrong, "must not have routed to workspace fallback");
 
-        // Test 2: @nested/deep/file.md → falls through to workspace root.
+        // #101 repro #2: @nested/deep/file.md falls through to workspace root.
         let res2 = ws.resolve("nested/deep/file.md").unwrap();
         assert_eq!(
             res2.canonicalize().unwrap_or(res2),
             file_md.canonicalize().unwrap_or(file_md)
+        );
+    }
+
+    /// Negative test (#101): a truly missing path returns `Err` with a path
+    /// that callers can show to the user as a signal of failure.
+    #[test]
+    fn workspace_resolve_returns_err_for_truly_missing_path() {
+        let tmp = TempDir::new().unwrap();
+        let ws = Workspace::with_cwd(tmp.path().to_path_buf(), Some(tmp.path().to_path_buf()));
+
+        let res = ws.resolve("does/not/exist.txt");
+        assert!(res.is_err(), "expected Err for missing path, got: {res:?}");
+    }
+
+    /// `Workspace::completions` returns workspace-relative entries for files
+    /// under the root, and cwd-relative entries when the cwd-only file lives
+    /// outside the workspace tree. Honors `.gitignore`.
+    #[test]
+    fn workspace_completions_walk_surfaces_workspace_and_cwd() {
+        let tmp = TempDir::new().unwrap();
+        // Two trees: a workspace under `ws/` and a cwd under `cwd/` that is
+        // NOT inside the workspace, so the two walks are disjoint and we can
+        // assert each branch contributed.
+        let ws_root = tmp.path().join("ws");
+        let cwd_root = tmp.path().join("cwd");
+        std::fs::create_dir_all(&ws_root).unwrap();
+        std::fs::create_dir_all(&cwd_root).unwrap();
+        std::fs::write(ws_root.join("alpha.txt"), "a").unwrap();
+        std::fs::write(cwd_root.join("alphabeta.txt"), "b").unwrap();
+
+        let ws = Workspace::with_cwd(ws_root.clone(), Some(cwd_root.clone()));
+        let entries = ws.completions("alpha", 16);
+        assert!(
+            entries.iter().any(|e| e == "alpha.txt"),
+            "expected workspace entry alpha.txt; got: {entries:?}",
+        );
+        assert!(
+            entries.iter().any(|e| e == "alphabeta.txt"),
+            "expected cwd entry alphabeta.txt; got: {entries:?}",
         );
     }
 

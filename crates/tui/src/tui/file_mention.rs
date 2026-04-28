@@ -23,9 +23,7 @@
 
 use std::fmt::Write;
 use std::io::Read;
-use std::path::Path;
-
-use ignore::WalkBuilder;
+use std::path::{Path, PathBuf};
 
 use crate::tui::app::App;
 use crate::working_set::Workspace;
@@ -42,10 +40,6 @@ pub const MAX_DIRECTORY_MENTION_ENTRIES: usize = 80;
 /// Maximum file-mention completion candidates to consider per keypress. Caps
 /// the cost of walking large workspaces; subsequent keystrokes narrow further.
 const FILE_MENTION_COMPLETION_LIMIT: usize = 64;
-
-/// Maximum directory depth walked when completing a file mention. Mirrors the
-/// existing `project_tree` cutoff and keeps Tab snappy in deep monorepos.
-const FILE_MENTION_COMPLETION_DEPTH: usize = 6;
 
 // ---------------------------------------------------------------------------
 //  Tab-completion
@@ -92,56 +86,31 @@ pub fn partial_file_mention_at_cursor(input: &str, cursor_chars: usize) -> Optio
     Some((byte_start, partial))
 }
 
-/// Walk the workspace and return relative paths whose representation matches
-/// the partial mention. A file matches when its case-insensitive relative
-/// path either starts with the partial or contains it as a substring; the
-/// former rank earlier so a partial like `docs/de` resolves to
-/// `docs/deepseek_v4.pdf` before any path that merely contains those bytes.
-pub fn find_file_mention_completions(workspace: &Path, partial: &str, limit: usize) -> Vec<String> {
-    if limit == 0 {
-        return Vec::new();
-    }
-    let needle = partial.to_lowercase();
-    let mut prefix_hits: Vec<String> = Vec::new();
-    let mut substring_hits: Vec<String> = Vec::new();
+/// Cwd-aware completion entry point. Shares its walker with the future
+/// Ctrl+P fuzzy picker (#97); see [`Workspace::completions`] for the
+/// ranking + display rules.
+pub fn find_file_mention_completions(
+    workspace: &Workspace,
+    partial: &str,
+    limit: usize,
+) -> Vec<String> {
+    let entries = workspace.completions(partial, limit);
+    tracing::debug!(
+        target: "deepseek_tui::file_mention",
+        partial = %partial,
+        workspace = %workspace.root.display(),
+        cwd = ?std::env::current_dir().ok(),
+        match_count = entries.len(),
+        "file mention completion walk",
+    );
+    entries
+}
 
-    let mut builder = WalkBuilder::new(workspace);
-    builder
-        .hidden(true)
-        .follow_links(false)
-        .max_depth(Some(FILE_MENTION_COMPLETION_DEPTH));
-
-    for entry in builder.build().flatten() {
-        if prefix_hits.len() + substring_hits.len() >= limit {
-            break;
-        }
-        let path = entry.path();
-        let Ok(rel) = path.strip_prefix(workspace) else {
-            continue;
-        };
-        let rel_str = rel.to_string_lossy().replace('\\', "/");
-        if rel_str.is_empty() {
-            continue;
-        }
-        let is_dir = entry.file_type().is_some_and(|ft| ft.is_dir());
-        let candidate = if is_dir {
-            format!("{rel_str}/")
-        } else {
-            rel_str.clone()
-        };
-        let lower = candidate.to_lowercase();
-        if needle.is_empty() || lower.starts_with(&needle) {
-            prefix_hits.push(candidate);
-        } else if lower.contains(&needle) {
-            substring_hits.push(candidate);
-        }
-    }
-
-    prefix_hits.sort();
-    substring_hits.sort();
-    prefix_hits.extend(substring_hits);
-    prefix_hits.truncate(limit);
-    prefix_hits
+/// Build a `Workspace` for the running app: anchors at `app.workspace` and
+/// captures the process CWD so the resolver and completion walker honor the
+/// user's launch directory when it differs from `--workspace`.
+fn workspace_for_app(app: &App) -> Workspace {
+    Workspace::with_cwd(app.workspace.clone(), std::env::current_dir().ok())
 }
 
 /// Resolve the `@`-mention completion popup contents for the current
@@ -169,7 +138,8 @@ pub fn visible_mention_menu_entries(app: &App, limit: usize) -> Vec<String> {
     if limit == 0 {
         return Vec::new();
     }
-    find_file_mention_completions(&app.workspace, &partial, limit)
+    let ws = workspace_for_app(app);
+    find_file_mention_completions(&ws, &partial, limit)
 }
 
 /// Apply the currently selected `@`-mention popup entry to the composer
@@ -209,9 +179,8 @@ pub fn try_autocomplete_file_mention(app: &mut App) -> bool {
     else {
         return false;
     };
-    let workspace = app.workspace.clone();
-    let candidates =
-        find_file_mention_completions(&workspace, &partial, FILE_MENTION_COMPLETION_LIMIT);
+    let ws = workspace_for_app(app);
+    let candidates = find_file_mention_completions(&ws, &partial, FILE_MENTION_COMPLETION_LIMIT);
     if candidates.is_empty() {
         app.status_message = Some(format!("No files match @{partial}"));
         return true;
@@ -287,14 +256,28 @@ pub fn longest_common_prefix<'a>(values: &[&'a str]) -> &'a str {
 /// Append a "Local context from @mentions" block to the user's message when
 /// any `@path` references are present. Returns the input unchanged when
 /// there are none.
-pub fn user_request_with_file_mentions(input: &str, workspace: &Path) -> String {
-    let Some(context) = local_context_from_file_mentions(input, workspace) else {
+///
+/// `cwd` carries the user's launch directory and drives the second
+/// resolution pass (issue #101): relative `@<path>` mentions resolve under
+/// `cwd` when `workspace.join(path)` doesn't exist, so the user's mental
+/// anchor (their shell's pwd) wins when it diverges from `--workspace`.
+/// Pass `None` to disable the cwd pass entirely (workspace-only).
+pub fn user_request_with_file_mentions(
+    input: &str,
+    workspace: &Path,
+    cwd: Option<PathBuf>,
+) -> String {
+    let Some(context) = local_context_from_file_mentions(input, workspace, cwd) else {
         return input.to_string();
     };
     format!("{input}\n\n---\n\nLocal context from @mentions:\n{context}")
 }
 
-fn local_context_from_file_mentions(input: &str, workspace: &Path) -> Option<String> {
+fn local_context_from_file_mentions(
+    input: &str,
+    workspace: &Path,
+    cwd: Option<PathBuf>,
+) -> Option<String> {
     let mentions = extract_file_mentions(input);
     if mentions.is_empty() {
         return None;
@@ -302,7 +285,7 @@ fn local_context_from_file_mentions(input: &str, workspace: &Path) -> Option<Str
 
     let mut blocks = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    let ws = Workspace::new(workspace.to_path_buf());
+    let ws = Workspace::with_cwd(workspace.to_path_buf(), cwd);
 
     for mention in mentions.into_iter().take(MAX_FILE_MENTIONS_PER_MESSAGE) {
         // `Workspace::resolve` already returns absolute paths when the root
@@ -320,6 +303,15 @@ fn local_context_from_file_mentions(input: &str, workspace: &Path) -> Option<Str
                 (p, d, false)
             }
         };
+        tracing::debug!(
+            target: "deepseek_tui::file_mention",
+            raw_typed = %mention,
+            workspace = %workspace.display(),
+            cwd = ?std::env::current_dir().ok(),
+            resolved = %display_path,
+            exists,
+            "file mention resolution",
+        );
 
         // Gate every block — including <missing-file> — through the dedup
         // set so a user typing the same non-existent file twice doesn't
@@ -527,4 +519,116 @@ fn is_media_path(path: &Path) -> bool {
             | "avi"
             | "mkv"
     )
+}
+
+// ---------------------------------------------------------------------------
+//  #101 regression repros
+// ---------------------------------------------------------------------------
+//
+// The bug being guarded: typing `@<some/file>` resolved under `--workspace`,
+// not the user's launch CWD. When the two diverged (the canonical case is
+// `--workspace=/repo` with `pwd=/repo/sub`), every relative `@` token routed
+// to the wrong root and the prompt got `<missing-file>` blocks.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// #101 regression — workspace-vs-cwd divergence: `@bar.txt` typed from
+    /// the cwd `<root>/sub` MUST resolve to `<root>/sub/bar.txt`, never to
+    /// `<root>/bar.txt` (which doesn't exist).
+    #[test]
+    fn cwd_pass_resolves_when_workspace_pass_misses() {
+        let tmp = TempDir::new().expect("tempdir");
+        let sub = tmp.path().join("sub");
+        std::fs::create_dir_all(&sub).expect("mkdir");
+        let bar = sub.join("bar.txt");
+        std::fs::write(&bar, "hello bar").expect("write bar");
+
+        let content =
+            user_request_with_file_mentions("look at @bar.txt", tmp.path(), Some(sub.clone()));
+
+        // The block must reference the cwd-rooted path with the file's body —
+        // and crucially it must NOT collapse to <missing-file>.
+        assert!(
+            content.contains("hello bar"),
+            "expected file body to be inlined; got: {content}",
+        );
+        assert!(
+            !content.contains("<missing-file"),
+            "must not surface <missing-file> for a path that exists under cwd; got: {content}",
+        );
+        let bar_disp = bar.display().to_string();
+        assert!(
+            content.contains(&bar_disp),
+            "expected resolved path {bar_disp} in content; got: {content}",
+        );
+        // Belt-and-suspenders: the workspace-rooted path doesn't exist and
+        // must not appear in the rendered <file path="..."> attribute.
+        let wrong = tmp.path().join("bar.txt").display().to_string();
+        assert!(
+            !content.contains(&format!("path=\"{wrong}\"")),
+            "should NOT have routed to {wrong}; got: {content}",
+        );
+    }
+
+    /// #101 regression — nested workspace path: `@nested/deep/file.md` with
+    /// the file at workspace root resolves through the workspace pass.
+    #[test]
+    fn workspace_pass_resolves_nested_path() {
+        let tmp = TempDir::new().expect("tempdir");
+        let nested = tmp.path().join("nested/deep");
+        std::fs::create_dir_all(&nested).expect("mkdir");
+        let file_md = nested.join("file.md");
+        std::fs::write(&file_md, "# nested deep").expect("write file_md");
+
+        // Cwd is irrelevant; an unrelated tempdir would do. Pass `None` so we
+        // are unambiguously testing the workspace-pass path.
+        let content = user_request_with_file_mentions("see @nested/deep/file.md", tmp.path(), None);
+
+        assert!(content.contains("# nested deep"), "got: {content}");
+        assert!(!content.contains("<missing-file"), "got: {content}");
+        assert!(
+            content.contains(&file_md.display().to_string()),
+            "got: {content}",
+        );
+    }
+
+    /// Snapshot-style check: the rendered `<file>` block for a resolvable
+    /// mention must include the expected attributes and contents, and must
+    /// NOT contain `<missing-file>`.
+    #[test]
+    fn resolvable_mention_renders_file_block_not_missing_file() {
+        let tmp = TempDir::new().expect("tempdir");
+        std::fs::write(tmp.path().join("guide.md"), "# Guide\nUse the fast path.\n")
+            .expect("write");
+
+        let content = user_request_with_file_mentions("read @guide.md", tmp.path(), None);
+
+        // Header + tag presence.
+        assert!(content.contains("Local context from @mentions:"));
+        assert!(content.contains("<file mention=\"@guide.md\""));
+        assert!(content.contains("# Guide\nUse the fast path."));
+        assert!(content.ends_with("</file>"), "got: {content}");
+        // The bug fingerprint MUST be absent.
+        assert!(!content.contains("<missing-file"), "got: {content}");
+    }
+
+    /// Negative test: a truly missing path still produces `<missing-file>`
+    /// so the user gets an explicit signal instead of silent failure.
+    #[test]
+    fn truly_missing_mention_still_renders_missing_file() {
+        let tmp = TempDir::new().expect("tempdir");
+
+        let content = user_request_with_file_mentions(
+            "huh @does/not/exist.txt",
+            tmp.path(),
+            Some(tmp.path().to_path_buf()),
+        );
+
+        assert!(
+            content.contains("<missing-file mention=\"@does/not/exist.txt\""),
+            "got: {content}",
+        );
+    }
 }
