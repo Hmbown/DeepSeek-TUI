@@ -22,6 +22,8 @@ enum ProviderArg {
     Deepseek,
     NvidiaNim,
     Openai,
+    Openrouter,
+    Novita,
 }
 
 impl From<ProviderArg> for ProviderKind {
@@ -30,6 +32,8 @@ impl From<ProviderArg> for ProviderKind {
             ProviderArg::Deepseek => ProviderKind::Deepseek,
             ProviderArg::NvidiaNim => ProviderKind::NvidiaNim,
             ProviderArg::Openai => ProviderKind::Openai,
+            ProviderArg::Openrouter => ProviderKind::Openrouter,
+            ProviderArg::Novita => ProviderKind::Novita,
         }
     }
 }
@@ -817,10 +821,13 @@ fn delegate_to_tui(
 
     if !matches!(
         resolved_runtime.provider,
-        ProviderKind::Deepseek | ProviderKind::NvidiaNim
+        ProviderKind::Deepseek
+            | ProviderKind::NvidiaNim
+            | ProviderKind::Openrouter
+            | ProviderKind::Novita
     ) {
         bail!(
-            "The interactive TUI supports DeepSeek and NVIDIA NIM providers. Remove --provider {} or use `deepseek model ...` for provider registry inspection.",
+            "The interactive TUI supports DeepSeek, NVIDIA NIM, OpenRouter, and Novita providers. Remove --provider {} or use `deepseek model ...` for provider registry inspection.",
             resolved_runtime.provider.as_str()
         );
     }

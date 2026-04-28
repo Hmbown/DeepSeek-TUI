@@ -2041,6 +2041,9 @@ pub enum AppAction {
     OpenConfigView,
     /// Open the `/model` two-pane picker (Pro/Flash + Off/High/Max).
     OpenModelPicker,
+    /// Open the `/provider` picker modal — DeepSeek / NVIDIA NIM / OpenRouter
+    /// / Novita with inline API-key prompt for un-configured providers (#52).
+    OpenProviderPicker,
     /// Send a message to the AI (normal chat mode).
     SendMessage(String),
     /// Run a Recursive Language Model (RLM) turn — Algorithm 1 from

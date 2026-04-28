@@ -1128,6 +1128,14 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
                     "NVIDIA_API_KEY",
                     "deepseek auth set --provider nvidia-nim --api-key \"...\"",
                 ),
+                crate::config::ApiProvider::Openrouter => (
+                    "OPENROUTER_API_KEY",
+                    "deepseek auth set --provider openrouter --api-key \"...\"",
+                ),
+                crate::config::ApiProvider::Novita => (
+                    "NOVITA_API_KEY",
+                    "deepseek auth set --provider novita --api-key \"...\"",
+                ),
                 crate::config::ApiProvider::Deepseek => {
                     ("DEEPSEEK_API_KEY", "deepseek login --api-key \"...\"")
                 }
@@ -1137,6 +1145,8 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
                 "✗".truecolor(red_r, red_g, red_b),
                 match config.api_provider() {
                     crate::config::ApiProvider::NvidiaNim => "nvidia_nim",
+                    crate::config::ApiProvider::Openrouter => "openrouter",
+                    crate::config::ApiProvider::Novita => "novita",
                     crate::config::ApiProvider::Deepseek => "deepseek",
                 }
             );

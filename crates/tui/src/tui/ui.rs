@@ -2503,6 +2503,15 @@ async fn apply_command_result(
                         .push(crate::tui::model_picker::ModelPickerView::new(app));
                 }
             }
+            AppAction::OpenProviderPicker => {
+                if app.view_stack.top_kind() != Some(ModalKind::ProviderPicker) {
+                    app.view_stack
+                        .push(crate::tui::provider_picker::ProviderPickerView::new(
+                            app.api_provider,
+                            config,
+                        ));
+                }
+            }
             AppAction::CompactContext => {
                 app.status_message = Some("Compacting context...".to_string());
                 let _ = engine_handle.send(Op::CompactContext).await;
@@ -2928,6 +2937,8 @@ fn render(f: &mut Frame, app: &mut App) {
         let provider_label = match app.api_provider {
             crate::config::ApiProvider::Deepseek => None,
             crate::config::ApiProvider::NvidiaNim => Some("NIM"),
+            crate::config::ApiProvider::Openrouter => Some("OR"),
+            crate::config::ApiProvider::Novita => Some("Novita"),
         };
         let header_data = HeaderData::new(
             app.mode,
@@ -3240,10 +3251,66 @@ async fn handle_view_events(
                 )
                 .await;
             }
+            ViewEvent::ProviderPickerApplied { provider } => {
+                switch_provider(app, engine_handle, config, provider, None).await;
+            }
+            ViewEvent::ProviderPickerApiKeySubmitted { provider, api_key } => {
+                apply_provider_picker_api_key(app, engine_handle, config, provider, api_key).await;
+            }
         }
     }
 
     Ok(false)
+}
+
+/// Persist the typed API key to `~/.deepseek/config.toml`, refresh the
+/// in-memory config so the engine can see it, then switch to the provider.
+async fn apply_provider_picker_api_key(
+    app: &mut App,
+    engine_handle: &mut EngineHandle,
+    config: &mut Config,
+    provider: ApiProvider,
+    api_key: String,
+) {
+    use crate::config::{ProviderConfig, ProvidersConfig, save_api_key_for};
+
+    match save_api_key_for(provider, &api_key) {
+        Ok(path) => {
+            app.status_message = Some(format!(
+                "Saved {} API key to {}",
+                provider.as_str(),
+                path.display()
+            ));
+        }
+        Err(err) => {
+            app.add_message(HistoryCell::System {
+                content: format!(
+                    "Failed to save {} API key: {err}\nProvider unchanged.",
+                    provider.as_str()
+                ),
+            });
+            return;
+        }
+    }
+
+    // Mirror the saved key into the in-memory config so the engine sees it
+    // immediately without a reload — `save_api_key_for` only touches disk.
+    if matches!(provider, ApiProvider::Deepseek) {
+        config.api_key = Some(api_key);
+    } else {
+        let providers = config
+            .providers
+            .get_or_insert_with(ProvidersConfig::default);
+        let entry: &mut ProviderConfig = match provider {
+            ApiProvider::Deepseek => unreachable!(),
+            ApiProvider::NvidiaNim => &mut providers.nvidia_nim,
+            ApiProvider::Openrouter => &mut providers.openrouter,
+            ApiProvider::Novita => &mut providers.novita,
+        };
+        entry.api_key = Some(api_key);
+    }
+
+    switch_provider(app, engine_handle, config, provider, None).await;
 }
 
 fn apply_loaded_session(app: &mut App, session: &SavedSession) {

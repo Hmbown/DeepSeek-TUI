@@ -730,7 +730,11 @@ pub(super) fn apply_reasoning_effort(
     let normalized = effort.trim().to_ascii_lowercase();
     match normalized.as_str() {
         "off" | "disabled" | "none" | "false" => match provider {
-            ApiProvider::Deepseek => body["thinking"] = json!({ "type": "disabled" }),
+            // OpenRouter / Novita relay the same DeepSeek V4 payload shape
+            // as DeepSeek native; they pass through `thinking` / `reasoning_effort`.
+            ApiProvider::Deepseek | ApiProvider::Openrouter | ApiProvider::Novita => {
+                body["thinking"] = json!({ "type": "disabled" });
+            }
             ApiProvider::NvidiaNim => {
                 body["chat_template_kwargs"] = json!({
                     "thinking": false,
@@ -738,7 +742,7 @@ pub(super) fn apply_reasoning_effort(
             }
         },
         "low" | "minimal" | "medium" | "mid" | "high" | "" => match provider {
-            ApiProvider::Deepseek => {
+            ApiProvider::Deepseek | ApiProvider::Openrouter | ApiProvider::Novita => {
                 body["reasoning_effort"] = json!("high");
                 body["thinking"] = json!({ "type": "enabled" });
             }
@@ -750,7 +754,7 @@ pub(super) fn apply_reasoning_effort(
             }
         },
         "xhigh" | "max" | "highest" => match provider {
-            ApiProvider::Deepseek => {
+            ApiProvider::Deepseek | ApiProvider::Openrouter | ApiProvider::Novita => {
                 body["reasoning_effort"] = json!("max");
                 body["thinking"] = json!({ "type": "enabled" });
             }
