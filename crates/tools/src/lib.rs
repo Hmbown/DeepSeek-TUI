@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -8,6 +9,213 @@ use deepseek_protocol::{ToolKind, ToolOutput, ToolPayload};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::RwLock;
+
+/// Capabilities that a tool may have or require.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ToolCapability {
+    /// Tool only reads data, never modifies state.
+    ReadOnly,
+    /// Tool writes to the filesystem.
+    WritesFiles,
+    /// Tool executes arbitrary shell commands.
+    ExecutesCode,
+    /// Tool makes network requests.
+    Network,
+    /// Tool can be run in a sandbox.
+    Sandboxable,
+    /// Tool requires user approval before execution.
+    RequiresApproval,
+}
+
+/// Approval requirement for a tool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ApprovalRequirement {
+    /// Never needs approval: safe read-only operations.
+    #[default]
+    Auto,
+    /// Suggest approval but allow user to skip.
+    Suggest,
+    /// Always require explicit user approval.
+    Required,
+}
+
+/// Errors that can occur during tool execution.
+#[derive(Debug, Clone)]
+pub enum ToolError {
+    InvalidInput { message: String },
+    MissingField { field: String },
+    PathEscape { path: PathBuf },
+    ExecutionFailed { message: String },
+    Timeout { seconds: u64 },
+    NotAvailable { message: String },
+    PermissionDenied { message: String },
+}
+
+impl std::fmt::Display for ToolError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidInput { message } => {
+                write!(f, "Failed to validate input: {message}")
+            }
+            Self::MissingField { field } => {
+                write!(
+                    f,
+                    "Failed to validate input: missing required field '{field}'"
+                )
+            }
+            Self::PathEscape { path } => {
+                write!(
+                    f,
+                    "Failed to resolve path '{}': path escapes workspace",
+                    path.display()
+                )
+            }
+            Self::ExecutionFailed { message } => {
+                write!(f, "Failed to execute tool: {message}")
+            }
+            Self::Timeout { seconds } => {
+                write!(
+                    f,
+                    "Failed to execute tool: operation timed out after {seconds}s"
+                )
+            }
+            Self::NotAvailable { message } => {
+                write!(f, "Failed to locate tool: {message}")
+            }
+            Self::PermissionDenied { message } => {
+                write!(f, "Failed to authorize tool execution: {message}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ToolError {}
+
+impl ToolError {
+    #[must_use]
+    pub fn invalid_input(msg: impl Into<String>) -> Self {
+        Self::InvalidInput {
+            message: msg.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn missing_field(field: impl Into<String>) -> Self {
+        Self::MissingField {
+            field: field.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn execution_failed(msg: impl Into<String>) -> Self {
+        Self::ExecutionFailed {
+            message: msg.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn path_escape(path: impl Into<PathBuf>) -> Self {
+        Self::PathEscape { path: path.into() }
+    }
+
+    #[must_use]
+    pub fn not_available(msg: impl Into<String>) -> Self {
+        Self::NotAvailable {
+            message: msg.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn permission_denied(msg: impl Into<String>) -> Self {
+        Self::PermissionDenied {
+            message: msg.into(),
+        }
+    }
+}
+
+/// Result of a tool execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolResult {
+    /// The output content, which may be JSON or plain text.
+    pub content: String,
+    /// Whether the execution was successful.
+    pub success: bool,
+    /// Optional structured metadata.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
+}
+
+impl ToolResult {
+    /// Create a successful result with content.
+    #[must_use]
+    pub fn success(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            success: true,
+            metadata: None,
+        }
+    }
+
+    /// Create an error result with message.
+    #[must_use]
+    pub fn error(message: impl Into<String>) -> Self {
+        Self {
+            content: message.into(),
+            success: false,
+            metadata: None,
+        }
+    }
+
+    /// Create a successful result from JSON.
+    pub fn json<T: Serialize>(value: &T) -> std::result::Result<Self, serde_json::Error> {
+        Ok(Self {
+            content: serde_json::to_string_pretty(value)?,
+            success: true,
+            metadata: None,
+        })
+    }
+
+    /// Add metadata to the result.
+    #[must_use]
+    pub fn with_metadata(mut self, metadata: Value) -> Self {
+        self.metadata = Some(metadata);
+        self
+    }
+}
+
+/// Helper to extract a required string field from JSON input.
+pub fn required_str<'a>(input: &'a Value, field: &str) -> std::result::Result<&'a str, ToolError> {
+    input
+        .get(field)
+        .and_then(Value::as_str)
+        .ok_or_else(|| ToolError::missing_field(field))
+}
+
+/// Helper to extract an optional string field from JSON input.
+#[must_use]
+pub fn optional_str<'a>(input: &'a Value, field: &str) -> Option<&'a str> {
+    input.get(field).and_then(Value::as_str)
+}
+
+/// Helper to extract a required u64 field from JSON input.
+pub fn required_u64(input: &Value, field: &str) -> std::result::Result<u64, ToolError> {
+    input
+        .get(field)
+        .and_then(Value::as_u64)
+        .ok_or_else(|| ToolError::missing_field(field))
+}
+
+/// Helper to extract an optional u64 field with default.
+#[must_use]
+pub fn optional_u64(input: &Value, field: &str, default: u64) -> u64 {
+    input.get(field).and_then(Value::as_u64).unwrap_or(default)
+}
+
+/// Helper to extract an optional bool field with default.
+#[must_use]
+pub fn optional_bool(input: &Value, field: &str, default: bool) -> bool {
+    input.get(field).and_then(Value::as_bool).unwrap_or(default)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolSpec {
@@ -198,5 +406,40 @@ fn tool_payload_kind(payload: &ToolPayload) -> ToolKind {
         ToolPayload::Function { .. }
         | ToolPayload::Custom { .. }
         | ToolPayload::LocalShell { .. } => ToolKind::Function,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn tool_result_json_round_trips_content() {
+        let result = ToolResult::json(&json!({"ok": true})).expect("json");
+        assert!(result.success);
+        assert!(result.content.contains("\"ok\": true"));
+    }
+
+    #[test]
+    fn helper_extractors_validate_shape() {
+        let input = json!({"name": "demo", "count": 7, "enabled": true});
+        assert_eq!(required_str(&input, "name").expect("name"), "demo");
+        assert_eq!(optional_u64(&input, "count", 0), 7);
+        assert!(optional_bool(&input, "enabled", false));
+        assert!(matches!(
+            required_u64(&input, "name"),
+            Err(ToolError::MissingField { .. })
+        ));
+    }
+
+    #[test]
+    fn tool_error_display_matches_legacy_text() {
+        let err = ToolError::missing_field("path");
+        assert_eq!(
+            err.to_string(),
+            "Failed to validate input: missing required field 'path'"
+        );
     }
 }

@@ -1169,6 +1169,7 @@ dependencies = [
  "crossterm",
  "csv",
  "deepseek-secrets",
+ "deepseek-tools",
  "dirs",
  "dotenvy",
  "flate2",

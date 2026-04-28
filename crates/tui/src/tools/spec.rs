@@ -9,160 +9,16 @@
 use std::path::{Component, Path, PathBuf};
 
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use thiserror::Error;
 
 use crate::features::Features;
 use crate::network_policy::NetworkPolicyDecider;
 use crate::tools::shell::{SharedShellManager, new_shared_shell_manager};
-
-/// Capabilities that a tool may have or require.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ToolCapability {
-    /// Tool only reads data, never modifies state
-    ReadOnly,
-    /// Tool writes to the filesystem
-    WritesFiles,
-    /// Tool executes arbitrary shell commands
-    ExecutesCode,
-    /// Tool makes network requests
-    Network,
-    /// Tool can be run in a sandbox
-    Sandboxable,
-    /// Tool requires user approval before execution
-    RequiresApproval,
-}
-
-/// Approval requirement for a tool.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ApprovalRequirement {
-    /// Never needs approval - safe read-only operations
-    #[default]
-    Auto,
-    /// Suggest approval but allow user to skip
-    Suggest,
-    /// Always require explicit user approval
-    Required,
-}
-
-/// Errors that can occur during tool execution.
-#[derive(Debug, Clone, Error)]
-pub enum ToolError {
-    #[error("Failed to validate input: {message}")]
-    InvalidInput { message: String },
-
-    #[error("Failed to validate input: missing required field '{field}'")]
-    MissingField { field: String },
-
-    #[error("Failed to resolve path '{path}': path escapes workspace")]
-    PathEscape { path: PathBuf },
-
-    #[error("Failed to execute tool: {message}")]
-    ExecutionFailed { message: String },
-
-    #[error("Failed to execute tool: operation timed out after {seconds}s")]
-    Timeout { seconds: u64 },
-
-    #[error("Failed to locate tool: {message}")]
-    NotAvailable { message: String },
-
-    #[error("Failed to authorize tool execution: {message}")]
-    PermissionDenied { message: String },
-}
-
-impl ToolError {
-    #[must_use]
-    pub fn invalid_input(msg: impl Into<String>) -> Self {
-        Self::InvalidInput {
-            message: msg.into(),
-        }
-    }
-
-    #[must_use]
-    pub fn missing_field(field: impl Into<String>) -> Self {
-        Self::MissingField {
-            field: field.into(),
-        }
-    }
-
-    #[must_use]
-    pub fn execution_failed(msg: impl Into<String>) -> Self {
-        Self::ExecutionFailed {
-            message: msg.into(),
-        }
-    }
-
-    #[must_use]
-    #[allow(dead_code)]
-    pub fn path_escape(path: impl Into<PathBuf>) -> Self {
-        Self::PathEscape { path: path.into() }
-    }
-
-    #[must_use]
-    pub fn not_available(msg: impl Into<String>) -> Self {
-        Self::NotAvailable {
-            message: msg.into(),
-        }
-    }
-
-    #[must_use]
-    pub fn permission_denied(msg: impl Into<String>) -> Self {
-        Self::PermissionDenied {
-            message: msg.into(),
-        }
-    }
-}
-
-/// Result of a tool execution.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolResult {
-    /// The output content (may be JSON or plain text)
-    pub content: String,
-    /// Whether the execution was successful
-    pub success: bool,
-    /// Optional structured metadata
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<Value>,
-}
-
-impl ToolResult {
-    /// Create a successful result with content.
-    #[must_use]
-    pub fn success(content: impl Into<String>) -> Self {
-        Self {
-            content: content.into(),
-            success: true,
-            metadata: None,
-        }
-    }
-
-    /// Create an error result with message.
-    #[must_use]
-    pub fn error(message: impl Into<String>) -> Self {
-        Self {
-            content: message.into(),
-            success: false,
-            metadata: None,
-        }
-    }
-
-    /// Create a successful result from JSON.
-    pub fn json<T: Serialize>(value: &T) -> Result<Self, serde_json::Error> {
-        Ok(Self {
-            content: serde_json::to_string_pretty(value)?,
-            success: true,
-            metadata: None,
-        })
-    }
-
-    /// Add metadata to the result.
-    #[must_use]
-    pub fn with_metadata(mut self, metadata: Value) -> Self {
-        self.metadata = Some(metadata);
-        self
-    }
-}
+#[allow(unused_imports)]
+pub use deepseek_tools::{
+    ApprovalRequirement, ToolCapability, ToolError, ToolResult, optional_bool, optional_str,
+    optional_u64, required_str, required_u64,
+};
 
 /// Sandbox policy for command execution.
 #[derive(Debug, Clone, Default)]
@@ -575,46 +431,6 @@ pub trait ToolSpec: Send + Sync {
 
     /// Execute the tool with the given input and context.
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError>;
-}
-
-// === Helper functions for extracting values from JSON input ===
-
-/// Helper to extract required string field from JSON input.
-pub fn required_str<'a>(input: &'a Value, field: &str) -> Result<&'a str, ToolError> {
-    input
-        .get(field)
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| ToolError::missing_field(field))
-}
-
-/// Helper to extract optional string field from JSON input.
-pub fn optional_str<'a>(input: &'a Value, field: &str) -> Option<&'a str> {
-    input.get(field).and_then(|v| v.as_str())
-}
-
-/// Helper to extract required u64 field from JSON input.
-#[allow(dead_code)]
-pub fn required_u64(input: &Value, field: &str) -> Result<u64, ToolError> {
-    input
-        .get(field)
-        .and_then(serde_json::Value::as_u64)
-        .ok_or_else(|| ToolError::missing_field(field))
-}
-
-/// Helper to extract optional u64 field with default.
-pub fn optional_u64(input: &Value, field: &str, default: u64) -> u64 {
-    input
-        .get(field)
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(default)
-}
-
-/// Helper to extract optional bool field with default.
-pub fn optional_bool(input: &Value, field: &str, default: bool) -> bool {
-    input
-        .get(field)
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(default)
 }
 
 // === Unit Tests ===
