@@ -81,6 +81,10 @@ Current boundary note:
 - **`config.rs`** - Configuration loading, profiles, environment variables
 - **`settings.rs`** - Runtime settings management
 
+### Workspace Crates
+
+- **`crates/tools`** - Shared tool invocation primitives, including tool result/error/capability types used by the TUI runtime.
+
 ### LLM Integration
 
 - **`client.rs`** - HTTP client for DeepSeek's documented OpenAI-compatible Chat Completions API
