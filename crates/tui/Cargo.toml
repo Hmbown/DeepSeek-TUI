@@ -57,6 +57,9 @@ zeroize = "1.8.2"
 ignore = "0.4"
 image = { version = "0.25", default-features = false, features = ["png"] }
 pdf-extract = "0.7"
+tar = "0.4"
+flate2 = "1.1"
+sha2 = "0.10"
 
 [dev-dependencies]
 wiremock = "0.6"
