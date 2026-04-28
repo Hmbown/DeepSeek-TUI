@@ -958,8 +958,13 @@ impl GenericToolCell {
         mode: RenderMode,
     ) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
-        lines.push(render_tool_header(
-            "Tool",
+        // Map the actual tool name (e.g. `agent_spawn`, `apply_patch`) to a
+        // family rather than the catch-all `"Tool"` title — this is what
+        // gives a `GenericToolCell` the right verb glyph (◐ delegate, ⋮⋮
+        // fanout, etc.) instead of falling back to the neutral bullet.
+        let family = crate::tui::widgets::tool_card::tool_family_for_name(&self.name);
+        lines.push(render_tool_header_with_family(
+            family,
             tool_status_label(self.status),
             self.status,
             None,
@@ -1758,6 +1763,20 @@ fn render_tool_header(
     started_at: Option<Instant>,
     low_motion: bool,
 ) -> Line<'static> {
+    let family = crate::tui::widgets::tool_card::tool_family_for_title(title);
+    render_tool_header_with_family(family, state, status, started_at, low_motion)
+}
+
+/// Render a tool-card header with an explicit verb family. Lets callers
+/// (e.g. `GenericToolCell`) bypass the legacy title→family mapping when
+/// they already know the actual tool name.
+fn render_tool_header_with_family(
+    family: crate::tui::widgets::tool_card::ToolFamily,
+    state: &str,
+    status: ToolStatus,
+    started_at: Option<Instant>,
+    low_motion: bool,
+) -> Line<'static> {
     // For long-running tools, append elapsed seconds so the user can see the
     // call isn't stuck. Threshold matches the eye's "did this hang?" reflex
     // — under 3s we stay quiet so quick reads/greps don't visually churn.
@@ -1770,12 +1789,19 @@ fn render_tool_header(
         state.to_string()
     };
 
+    let glyph = crate::tui::widgets::tool_card::family_glyph(family);
+    let verb = crate::tui::widgets::tool_card::family_label(family);
+
     Line::from(vec![
         Span::styled(
             format!("{} ", status_symbol(started_at, status, low_motion)),
             Style::default().fg(tool_state_color(status)),
         ),
-        Span::styled(title.to_string(), tool_title_style()),
+        Span::styled(
+            format!("{glyph} "),
+            Style::default().fg(tool_state_color(status)),
+        ),
+        Span::styled(verb.to_string(), tool_title_style()),
         Span::styled(" ", Style::default()),
         Span::styled(state_owned, tool_status_style(status)),
     ])
@@ -2085,6 +2111,63 @@ mod tests {
         );
     }
 
+    // === Tool-card verb-glyph tests (v0.6.6 UI redesign) ===
+
+    #[test]
+    fn exec_cell_header_uses_run_verb_glyph_and_label() {
+        let cell = ExecCell {
+            command: "ls".to_string(),
+            status: ToolStatus::Success,
+            output: Some("a\nb\n".to_string()),
+            started_at: None,
+            duration_ms: Some(10),
+            source: ExecSource::Assistant,
+            interaction: None,
+        };
+        let header = &cell.lines_with_motion(80, true)[0];
+        let visible: String = header
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>();
+        assert!(
+            visible.contains('\u{25B6}'),
+            "Run glyph `▶` present: {visible:?}"
+        );
+        assert!(visible.contains(" run "), "verb label `run`: {visible:?}");
+        // Old literal title must be gone.
+        assert!(
+            !visible.contains("Shell"),
+            "old `Shell` literal is gone: {visible:?}"
+        );
+    }
+
+    #[test]
+    fn generic_tool_cell_picks_family_from_tool_name() {
+        let cell = GenericToolCell {
+            name: "agent_spawn".to_string(),
+            status: ToolStatus::Running,
+            input_summary: Some("foo".to_string()),
+            output: None,
+            prompts: None,
+        };
+        let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
+        let header_visible: String = lines[0]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>();
+        // agent_spawn → Delegate family (◐ delegate).
+        assert!(
+            header_visible.contains('\u{25D0}'),
+            "Delegate glyph `◐`: {header_visible:?}"
+        );
+        assert!(
+            header_visible.contains(" delegate "),
+            "verb label `delegate`: {header_visible:?}"
+        );
+    }
+
     // === Reasoning treatment tests (v0.6.6 UI redesign) ===
 
     #[test]
@@ -2199,11 +2282,16 @@ mod tests {
 
         let lines = cell.lines_with_motion(80, true);
 
-        // Header: "<symbol> Plan <state>"
+        // Header: "<spinner> <family-glyph> <verb> <state>" (v0.6.6 layout).
+        // PlanUpdate has no canonical family yet, so it falls into the
+        // Generic bullet glyph + "tool" verb. The shape and colour wiring
+        // is what matters for the theme parity; the verb text moves with
+        // the redesign.
         let header = &lines[0];
         let symbol_span = &header.spans[0];
-        let title_span = &header.spans[1];
-        let state_span = &header.spans[3];
+        let glyph_span = &header.spans[1];
+        let title_span = &header.spans[2];
+        let state_span = &header.spans[4];
 
         assert_eq!(
             symbol_span.style.fg,
@@ -2211,9 +2299,14 @@ mod tests {
             "running header symbol should use the dark theme running accent"
         );
         assert_eq!(
+            glyph_span.style.fg,
+            Some(theme.tool_running_accent),
+            "family glyph rides the same status colour as the spinner"
+        );
+        assert_eq!(
             title_span.content.as_ref(),
-            "Plan",
-            "tool title text is locked"
+            "tool",
+            "PlanUpdate routes to Generic family → 'tool' verb",
         );
         assert_eq!(title_span.style.fg, Some(theme.tool_title_color));
         assert!(
@@ -2274,18 +2367,25 @@ mod tests {
 
         let header = &lines[0];
         let symbol_span = &header.spans[0];
-        let title_span = &header.spans[1];
-        let state_span = &header.spans[3];
+        let glyph_span = &header.spans[1];
+        let title_span = &header.spans[2];
+        let state_span = &header.spans[4];
 
         assert_eq!(
             symbol_span.style.fg,
             Some(theme.tool_failed_accent),
             "failed exec header symbol should use the dark theme failed accent"
         );
+        // ExecCell is family Run → glyph `▶ ` and verb `run`.
+        assert!(
+            glyph_span.content.starts_with('\u{25B6}'),
+            "Run family glyph: {:?}",
+            glyph_span.content
+        );
         assert_eq!(
             title_span.content.as_ref(),
-            "Shell",
-            "exec title text is locked"
+            "run",
+            "ExecCell routes to Run family → 'run' verb",
         );
         assert_eq!(title_span.style.fg, Some(theme.tool_title_color));
         assert!(title_span.style.add_modifier.contains(Modifier::BOLD));
