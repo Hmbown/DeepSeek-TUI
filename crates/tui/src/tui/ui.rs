@@ -2132,8 +2132,14 @@ fn build_queued_message(app: &mut App, input: String) -> QueuedMessage {
 }
 
 fn queued_message_content_for_app(app: &App, message: &QueuedMessage) -> String {
-    let user_request =
-        crate::tui::file_mention::user_request_with_file_mentions(&message.display, &app.workspace);
+    // Pass the process CWD explicitly so the resolver's two-pass logic can
+    // honor the user's launch directory when it differs from `--workspace`
+    // (issue #101 — file mentions silently routing to the wrong root).
+    let user_request = crate::tui::file_mention::user_request_with_file_mentions(
+        &message.display,
+        &app.workspace,
+        std::env::current_dir().ok(),
+    );
     if let Some(skill_instruction) = message.skill_instruction.as_ref() {
         format!("{skill_instruction}\n\n---\n\nUser request: {user_request}")
     } else {
