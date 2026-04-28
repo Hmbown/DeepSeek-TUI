@@ -322,14 +322,14 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "skills",
         aliases: &[],
-        description: "List available skills",
-        usage: "/skills",
+        description: "List local skills (or --remote to browse the curated registry)",
+        usage: "/skills [--remote]",
     },
     CommandInfo {
         name: "skill",
         aliases: &[],
-        description: "Activate a skill for next message",
-        usage: "/skill <name>",
+        description: "Activate a skill, or install/update/uninstall/trust a community skill",
+        usage: "/skill <name|install <spec>|update <name>|uninstall <name>|trust <name>>",
     },
     CommandInfo {
         name: "review",
@@ -409,7 +409,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "init" => init::init(app),
 
         // Skills commands
-        "skills" => skills::list_skills(app),
+        "skills" => skills::list_skills(app, arg),
         "skill" => skills::run_skill(app, arg),
         "review" => review::review(app, arg),
 

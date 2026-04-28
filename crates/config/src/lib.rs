@@ -128,8 +128,27 @@ pub struct ConfigToml {
     /// to a permissive default that mirrors pre-v0.7.0 behavior.
     #[serde(default)]
     pub network: Option<NetworkPolicyToml>,
+    /// Community skill installer settings (#140). Mirrors
+    /// [`SkillsToml`] from the TUI side; the dispatcher consults
+    /// `registry_url` when running `deepseek skill install`.
+    #[serde(default)]
+    pub skills: Option<SkillsToml>,
     #[serde(flatten)]
     pub extras: BTreeMap<String, toml::Value>,
+}
+
+/// On-disk schema for the `[skills]` table (#140). See `config.example.toml`
+/// for documentation.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SkillsToml {
+    /// Curated registry index URL. When unset, the TUI falls back to the
+    /// bundled default (community-curated GitHub raw).
+    #[serde(default)]
+    pub registry_url: Option<String>,
+    /// Per-skill maximum *uncompressed* size in bytes. When unset, the TUI
+    /// uses 5 MiB.
+    #[serde(default)]
+    pub max_install_size_bytes: Option<u64>,
 }
 
 /// On-disk schema for the `[network]` table (#135). See `config.example.toml`

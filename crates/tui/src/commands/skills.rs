@@ -2,7 +2,12 @@
 
 use std::fmt::Write;
 
+use crate::network_policy::NetworkPolicy;
 use crate::skills::SkillRegistry;
+use crate::skills::install::{
+    self, DEFAULT_MAX_SIZE_BYTES, DEFAULT_REGISTRY_URL, InstallOutcome, InstallSource,
+    RegistryFetchResult, UpdateResult,
+};
 use crate::tui::app::App;
 use crate::tui::history::HistoryCell;
 
@@ -21,8 +26,18 @@ fn render_skill_warnings(registry: &SkillRegistry) -> String {
     out
 }
 
-/// List all available skills
-pub fn list_skills(app: &mut App) -> CommandResult {
+/// List all available skills. Pass `--remote` (or `remote`) to fetch the
+/// curated registry instead of scanning the local skills directory.
+pub fn list_skills(app: &mut App, arg: Option<&str>) -> CommandResult {
+    if let Some(arg) = arg {
+        let trimmed = arg.trim();
+        if trimmed == "--remote" || trimmed == "remote" {
+            return list_remote_skills(app);
+        }
+        if !trimmed.is_empty() {
+            return CommandResult::error("Usage: /skills [--remote]");
+        }
+    }
     let skills_dir = app.skills_dir.clone();
     let registry = SkillRegistry::discover(&skills_dir);
     let warnings = render_skill_warnings(&registry);
@@ -61,15 +76,35 @@ pub fn list_skills(app: &mut App) -> CommandResult {
     CommandResult::message(output)
 }
 
-/// Run a specific skill - activates skill for next user message
+/// Run a specific skill — activates skill for next user message, or
+/// dispatches a sub-command (`install`, `update`, `uninstall`, `trust`).
 pub fn run_skill(app: &mut App, name: Option<&str>) -> CommandResult {
-    let name = match name {
+    let raw = match name {
         Some(n) => n.trim(),
         None => {
-            return CommandResult::error("Usage: /skill <name>");
+            return CommandResult::error(
+                "Usage: /skill <name>\n\nSubcommands:\n  /skill install <github:owner/repo|https://…|<registry-name>>\n  /skill update <name>\n  /skill uninstall <name>\n  /skill trust <name>",
+            );
         }
     };
 
+    // Sub-command dispatch happens before the activation path so users can't
+    // accidentally activate a skill literally named "install".
+    let mut iter = raw.splitn(2, char::is_whitespace);
+    let head = iter.next().unwrap_or("").trim();
+    let rest = iter.next().unwrap_or("").trim();
+    match head {
+        "install" => return install_skill(app, rest),
+        "update" => return update_skill(app, rest),
+        "uninstall" => return uninstall_skill(app, rest),
+        "trust" => return trust_skill(app, rest),
+        _ => {}
+    }
+
+    activate_skill(app, raw)
+}
+
+fn activate_skill(app: &mut App, name: &str) -> CommandResult {
     // `/skill new` is a friendly alias for `/skill skill-creator`.
     let name = if name == "new" { "skill-creator" } else { name };
 
@@ -111,6 +146,214 @@ pub fn run_skill(app: &mut App, name: Option<&str>) -> CommandResult {
     }
 }
 
+// ─── /skill install ────────────────────────────────────────────────────────
+
+fn install_skill(app: &mut App, spec: &str) -> CommandResult {
+    if spec.is_empty() {
+        return CommandResult::error(
+            "Usage: /skill install <github:owner/repo|https://…|<registry-name>>",
+        );
+    }
+    let source = match InstallSource::parse(spec) {
+        Ok(s) => s,
+        Err(err) => return CommandResult::error(format!("Invalid install source: {err}")),
+    };
+    let skills_dir = app.skills_dir.clone();
+    let (network, max_size, registry_url) = installer_settings(app);
+
+    let outcome = run_async(async move {
+        install::install_with_registry(
+            source,
+            &skills_dir,
+            max_size,
+            &network,
+            false,
+            &registry_url,
+        )
+        .await
+    });
+
+    match outcome {
+        Ok(InstallOutcome::Installed(installed)) => {
+            let path_str = path_or_default(&installed.path);
+            CommandResult::message(format!(
+                "Installed skill '{}' from {}.\nLocation: {}\n\nRun /skills to see it in the list.",
+                installed.name, spec, path_str
+            ))
+        }
+        Ok(InstallOutcome::NeedsApproval(host)) => {
+            CommandResult::error(needs_approval_message(&host))
+        }
+        Ok(InstallOutcome::NetworkDenied(host)) => {
+            CommandResult::error(network_denied_message(&host))
+        }
+        Err(err) => CommandResult::error(format!("Install failed: {err:#}")),
+    }
+}
+
+// ─── /skill update ─────────────────────────────────────────────────────────
+
+fn update_skill(app: &mut App, name: &str) -> CommandResult {
+    if name.is_empty() {
+        return CommandResult::error("Usage: /skill update <name>");
+    }
+    let skills_dir = app.skills_dir.clone();
+    let (network, max_size, registry_url) = installer_settings(app);
+    let owned_name = name.to_string();
+    let outcome = run_async(async move {
+        install::update_with_registry(&owned_name, &skills_dir, max_size, &network, &registry_url)
+            .await
+    });
+
+    match outcome {
+        Ok(UpdateResult::NoChange) => {
+            CommandResult::message(format!("Skill '{name}': no upstream change."))
+        }
+        Ok(UpdateResult::Updated(installed)) => CommandResult::message(format!(
+            "Skill '{}' updated. Location: {}",
+            installed.name,
+            path_or_default(&installed.path)
+        )),
+        Ok(UpdateResult::NeedsApproval(host)) => {
+            CommandResult::error(needs_approval_message(&host))
+        }
+        Ok(UpdateResult::NetworkDenied(host)) => {
+            CommandResult::error(network_denied_message(&host))
+        }
+        Err(err) => CommandResult::error(format!("Update failed: {err:#}")),
+    }
+}
+
+// ─── /skill uninstall ──────────────────────────────────────────────────────
+
+fn uninstall_skill(app: &mut App, name: &str) -> CommandResult {
+    if name.is_empty() {
+        return CommandResult::error("Usage: /skill uninstall <name>");
+    }
+    match install::uninstall(name, &app.skills_dir) {
+        Ok(()) => CommandResult::message(format!("Removed skill '{name}'.")),
+        Err(err) => CommandResult::error(format!("Uninstall failed: {err:#}")),
+    }
+}
+
+// ─── /skill trust ──────────────────────────────────────────────────────────
+
+fn trust_skill(app: &mut App, name: &str) -> CommandResult {
+    if name.is_empty() {
+        return CommandResult::error("Usage: /skill trust <name>");
+    }
+    match install::trust(name, &app.skills_dir) {
+        Ok(()) => CommandResult::message(format!(
+            "Marked skill '{name}' as trusted. Tools that consult the .trusted marker may now invoke its scripts/."
+        )),
+        Err(err) => CommandResult::error(format!("Trust failed: {err:#}")),
+    }
+}
+
+// ─── /skills --remote ──────────────────────────────────────────────────────
+
+/// List skills available in the configured curated registry.
+pub fn list_remote_skills(app: &mut App) -> CommandResult {
+    let (network, _max_size, registry_url) = installer_settings(app);
+    let registry = run_async(async move { install::fetch_registry(&network, &registry_url).await });
+    match registry {
+        Ok(RegistryFetchResult::Loaded(doc)) => {
+            if doc.skills.is_empty() {
+                return CommandResult::message("Registry is empty.");
+            }
+            let mut out = format!("Available remote skills ({}):\n", doc.skills.len());
+            out.push_str("─────────────────────────────\n");
+            for (name, entry) in &doc.skills {
+                let _ = writeln!(
+                    out,
+                    "  {name} — {} (source: {})",
+                    entry.description.clone().unwrap_or_default(),
+                    entry.source
+                );
+            }
+            let _ = write!(out, "\nInstall with: /skill install <name>");
+            CommandResult::message(out)
+        }
+        Ok(RegistryFetchResult::NeedsApproval(host)) => {
+            CommandResult::error(needs_approval_message(&host))
+        }
+        Ok(RegistryFetchResult::Denied(host)) => {
+            CommandResult::error(network_denied_message(&host))
+        }
+        Err(err) => CommandResult::error(format!("Failed to fetch registry: {err:#}")),
+    }
+}
+
+// ─── helpers ───────────────────────────────────────────────────────────────
+
+/// Read the active config knobs for the installer.
+///
+/// We load `Config::load` on demand because [`App`] does not carry a `Config`
+/// field — and loading is cheap (small TOML file) compared to the network
+/// round-trip the install/update operation will incur next. If the config
+/// fails to parse, we fall back to defaults so the user still gets a
+/// network-gated install rather than a silent crash.
+fn installer_settings(_app: &App) -> (NetworkPolicy, u64, String) {
+    let cfg = crate::config::Config::load(None, None).unwrap_or_default();
+    let network = cfg
+        .network
+        .clone()
+        .map(|policy| policy.into_runtime())
+        .unwrap_or_default();
+    let skills_cfg = cfg.skills.as_ref();
+    let max_size = skills_cfg
+        .and_then(|s| s.max_install_size_bytes)
+        .unwrap_or(DEFAULT_MAX_SIZE_BYTES);
+    let registry_url = skills_cfg
+        .and_then(|s| s.registry_url.clone())
+        .unwrap_or_else(|| DEFAULT_REGISTRY_URL.to_string());
+    (network, max_size, registry_url)
+}
+
+fn run_async<F, T>(future: F) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    // We're on the TUI's thread, which is part of the multi-threaded runtime.
+    // `block_in_place` + `Handle::current().block_on` is the pattern used by
+    // `commands/cycle.rs` to bridge sync slash-command handlers back into the
+    // async ecosystem.
+    tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(future))
+}
+
+fn path_or_default(path: &std::path::Path) -> String {
+    path.file_name()
+        .map(|n| {
+            // Display with parent so the user sees the full skill location.
+            // We intentionally use `display()` here because it's just for
+            // user-facing output, not for path comparisons.
+            let parent = path
+                .parent()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+            if parent.is_empty() {
+                n.to_string_lossy().to_string()
+            } else {
+                format!("{parent}/{}", n.to_string_lossy())
+            }
+        })
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+fn needs_approval_message(host: &str) -> String {
+    format!(
+        "Network policy requires approval for {host}.\n\
+         Add it to your allow list with `/network allow {host}` (or set [network].default = \"allow\" in ~/.deepseek/config.toml), then retry."
+    )
+}
+
+fn network_denied_message(host: &str) -> String {
+    format!(
+        "Network policy denied access to {host}.\n\
+         Remove the deny entry from ~/.deepseek/config.toml under [network] or contact your administrator."
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,7 +393,7 @@ mod tests {
     fn test_list_skills_empty_directory() {
         let tmpdir = TempDir::new().unwrap();
         let mut app = create_test_app_with_tmpdir(&tmpdir);
-        let result = list_skills(&mut app);
+        let result = list_skills(&mut app, None);
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
         assert!(msg.contains("No skills found"));
@@ -166,11 +409,30 @@ mod tests {
             "---\nname: test-skill\ndescription: A test skill\n---\nDo something",
         );
         let mut app = create_test_app_with_tmpdir(&tmpdir);
-        let result = list_skills(&mut app);
+        let result = list_skills(&mut app, None);
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
         assert!(msg.contains("Available skills"));
         assert!(msg.contains("/test-skill"));
+    }
+
+    #[test]
+    fn test_skill_subcommand_dispatch_install_usage() {
+        let tmpdir = TempDir::new().unwrap();
+        let mut app = create_test_app_with_tmpdir(&tmpdir);
+        // Empty install spec → usage hint, not invalid-source error.
+        let result = run_skill(&mut app, Some("install"));
+        let msg = result.message.unwrap();
+        assert!(msg.contains("/skill install"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_skill_subcommand_dispatch_uninstall_missing() {
+        let tmpdir = TempDir::new().unwrap();
+        let mut app = create_test_app_with_tmpdir(&tmpdir);
+        let result = run_skill(&mut app, Some("uninstall absent-skill"));
+        let msg = result.message.unwrap();
+        assert!(msg.contains("not installed"), "got: {msg}");
     }
 
     #[test]
