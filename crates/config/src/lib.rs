@@ -122,8 +122,51 @@ pub struct ConfigToml {
     pub sandbox_mode: Option<String>,
     #[serde(default)]
     pub providers: ProvidersToml,
+    /// Per-domain network policy (#135). When absent, network tools fall back
+    /// to a permissive default that mirrors pre-v0.7.0 behavior.
+    #[serde(default)]
+    pub network: Option<NetworkPolicyToml>,
     #[serde(flatten)]
     pub extras: BTreeMap<String, toml::Value>,
+}
+
+/// On-disk schema for the `[network]` table (#135). See `config.example.toml`
+/// for documentation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkPolicyToml {
+    /// Decision for hosts that are not in `allow` or `deny`. One of
+    /// `"allow" | "deny" | "prompt"`. Defaults to `"prompt"`.
+    #[serde(default = "default_network_decision")]
+    pub default: String,
+    /// Hosts that are always allowed. Subdomain rules: a leading dot
+    /// (`.example.com`) matches subdomains but not the apex.
+    #[serde(default)]
+    pub allow: Vec<String>,
+    /// Hosts that are always denied. Deny entries win over allow entries.
+    #[serde(default)]
+    pub deny: Vec<String>,
+    /// Whether to record one audit-log line per outbound network call.
+    #[serde(default = "default_network_audit")]
+    pub audit: bool,
+}
+
+fn default_network_decision() -> String {
+    "prompt".to_string()
+}
+
+fn default_network_audit() -> bool {
+    true
+}
+
+impl Default for NetworkPolicyToml {
+    fn default() -> Self {
+        Self {
+            default: default_network_decision(),
+            allow: Vec::new(),
+            deny: Vec::new(),
+            audit: default_network_audit(),
+        }
+    }
 }
 
 impl ConfigToml {
