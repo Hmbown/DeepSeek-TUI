@@ -548,6 +548,23 @@ pub struct App {
     pub queued_messages: VecDeque<QueuedMessage>,
     /// Draft queued message being edited
     pub queued_draft: Option<QueuedMessage>,
+    /// Composer inputs the user steered with Esc during a running turn. Held
+    /// here until the in-flight turn aborts; then merged into a single fresh
+    /// turn (#122). Not the same channel as the engine's mid-turn steer
+    /// (`EngineHandle::steer`) — those flow through `queued_messages`/`Steer`
+    /// disposition and never abort the current turn.
+    pub pending_steers: VecDeque<QueuedMessage>,
+    /// Engine-rejected steers (e.g. a tool was already running and couldn't be
+    /// cancelled cleanly). Surfaced in the pending-input preview so the user
+    /// knows the steer was deferred to end-of-turn. Today no engine path
+    /// produces these; the field is scaffolding for a future signalling
+    /// channel and the bucket renders identically when populated.
+    pub rejected_steers: VecDeque<String>,
+    /// Set when the user pressed Esc with non-empty input. The next
+    /// `TurnComplete::Interrupted` event drains `pending_steers`, merges them
+    /// into one user message, and dispatches a fresh turn. Cleared on drain
+    /// (or whenever the queue empties out).
+    pub submit_pending_steers_after_interrupt: bool,
     /// Start time for current turn
     pub turn_started_at: Option<Instant>,
     /// Current runtime turn id (if known).
@@ -600,6 +617,21 @@ pub struct App {
 pub struct QueuedMessage {
     pub display: String,
     pub skill_instruction: Option<String>,
+}
+
+/// How a freshly-typed user input should be sent.
+///
+/// Picked by [`App::decide_submit_disposition`] when the user hits Enter on a
+/// non-empty composer. The Esc-to-steer path (typed input + Esc during a
+/// running turn) is separate — see [`App::push_pending_steer`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubmitDisposition {
+    /// Engine idle (or offline mode without a busy turn): send immediately.
+    Immediate,
+    /// Engine busy and offline: park on `queued_messages` for end-of-turn drain.
+    Queue,
+    /// Engine busy and online: forward as a mid-turn steer.
+    Steer,
 }
 
 /// Detailed tool payload attached to a history cell.
@@ -855,6 +887,9 @@ impl App {
             pending_tool_uses: Vec::new(),
             queued_messages: VecDeque::new(),
             queued_draft: None,
+            pending_steers: VecDeque::new(),
+            rejected_steers: VecDeque::new(),
+            submit_pending_steers_after_interrupt: false,
             turn_started_at: None,
             runtime_turn_id: None,
             runtime_turn_status: None,
@@ -1828,6 +1863,68 @@ impl App {
         self.queued_messages.len()
     }
 
+    /// Park a composer input the user steered with Esc. Re-armed each call so
+    /// rapid Esc taps accumulate rather than overwriting each other.
+    pub fn push_pending_steer(&mut self, message: QueuedMessage) {
+        self.pending_steers.push_back(message);
+        self.submit_pending_steers_after_interrupt = true;
+        self.needs_redraw = true;
+    }
+
+    /// Drain the pending-steer queue and clear the resend flag. Returns the
+    /// messages in submit order (oldest first).
+    pub fn drain_pending_steers(&mut self) -> Vec<QueuedMessage> {
+        self.submit_pending_steers_after_interrupt = false;
+        if self.pending_steers.is_empty() {
+            return Vec::new();
+        }
+        self.needs_redraw = true;
+        self.pending_steers.drain(..).collect()
+    }
+
+    /// Decide how to route a fresh composer submit. Esc-to-steer goes through
+    /// [`Self::push_pending_steer`] instead; this is the Enter path.
+    ///
+    /// Truth table (preserves the pre-refactor behaviour):
+    ///   offline=F, busy=F → Immediate
+    ///   offline=F, busy=T → Steer
+    ///   offline=T, busy=F → Queue
+    ///   offline=T, busy=T → Steer (in-flight turn still owns the wire; the
+    ///     steer attempt falls back to queueing on send failure)
+    #[must_use]
+    pub fn decide_submit_disposition(&self) -> SubmitDisposition {
+        if self.is_loading {
+            SubmitDisposition::Steer
+        } else if self.offline_mode {
+            SubmitDisposition::Queue
+        } else {
+            SubmitDisposition::Immediate
+        }
+    }
+
+    /// Mark the in-flight streaming Assistant cell as interrupted: prepend
+    /// `[interrupted]` to whatever streamed so far (so the user can see what
+    /// was salvaged) and flip `streaming` off so the spinner halts. No-op if
+    /// no Assistant cell is currently streaming.
+    ///
+    /// Deliberate divergence from openai/codex which discards partial output
+    /// on abort — V4 thinking is expensive and the user usually wants to see
+    /// what the model produced before steering.
+    pub fn finalize_streaming_assistant_as_interrupted(&mut self) {
+        let Some(index) = self.streaming_message_index.take() else {
+            return;
+        };
+        if let Some(HistoryCell::Assistant { content, streaming }) = self.history.get_mut(index) {
+            *streaming = false;
+            if content.is_empty() {
+                *content = "[interrupted]".to_string();
+            } else if !content.starts_with("[interrupted]") {
+                content.insert_str(0, "[interrupted] ");
+            }
+        }
+        self.bump_history_cell(index);
+    }
+
     pub fn history_up(&mut self) {
         if self.input_history.is_empty() {
             return;
@@ -2369,6 +2466,166 @@ mod tests {
         app.arm_quit();
         let deadline = app.quit_armed_until.expect("re-armed");
         assert!(deadline > Instant::now(), "fresh deadline in the future");
+    }
+
+    // ---- Issue #122: Esc-to-steer + queue visibility ----
+
+    #[test]
+    fn submit_disposition_immediate_when_idle_and_online() {
+        let app = App::new(test_options(false), &Config::default());
+        assert!(!app.is_loading);
+        assert!(!app.offline_mode);
+        assert_eq!(
+            app.decide_submit_disposition(),
+            SubmitDisposition::Immediate
+        );
+    }
+
+    #[test]
+    fn submit_disposition_steer_when_busy_and_online() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.is_loading = true;
+        app.offline_mode = false;
+        assert_eq!(app.decide_submit_disposition(), SubmitDisposition::Steer);
+    }
+
+    #[test]
+    fn submit_disposition_queue_when_offline_and_idle() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.is_loading = false;
+        app.offline_mode = true;
+        assert_eq!(app.decide_submit_disposition(), SubmitDisposition::Queue);
+    }
+
+    #[test]
+    fn submit_disposition_offline_busy_still_steers() {
+        // In-flight turn owns the wire even in offline mode; steer attempt
+        // catches the send error and falls back to the queue.
+        let mut app = App::new(test_options(false), &Config::default());
+        app.is_loading = true;
+        app.offline_mode = true;
+        assert_eq!(app.decide_submit_disposition(), SubmitDisposition::Steer);
+    }
+
+    #[test]
+    fn push_pending_steer_arms_resend_flag() {
+        let mut app = App::new(test_options(false), &Config::default());
+        assert!(!app.submit_pending_steers_after_interrupt);
+        app.push_pending_steer(QueuedMessage::new("steer me".to_string(), None));
+        assert_eq!(app.pending_steers.len(), 1);
+        assert!(app.submit_pending_steers_after_interrupt);
+    }
+
+    #[test]
+    fn drain_pending_steers_clears_flag_and_returns_in_order() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.push_pending_steer(QueuedMessage::new("first".to_string(), None));
+        app.push_pending_steer(QueuedMessage::new("second".to_string(), None));
+        app.push_pending_steer(QueuedMessage::new("third".to_string(), None));
+
+        let drained = app.drain_pending_steers();
+        assert_eq!(drained.len(), 3);
+        assert_eq!(drained[0].display, "first");
+        assert_eq!(drained[2].display, "third");
+        assert!(app.pending_steers.is_empty());
+        assert!(!app.submit_pending_steers_after_interrupt);
+    }
+
+    #[test]
+    fn drain_pending_steers_when_empty_is_safe() {
+        let mut app = App::new(test_options(false), &Config::default());
+        // Flag-only set (someone armed it manually): drain still clears it.
+        app.submit_pending_steers_after_interrupt = true;
+        let drained = app.drain_pending_steers();
+        assert!(drained.is_empty());
+        assert!(!app.submit_pending_steers_after_interrupt);
+    }
+
+    #[test]
+    fn double_push_pending_steer_is_idempotent_on_flag() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.push_pending_steer(QueuedMessage::new("a".to_string(), None));
+        app.push_pending_steer(QueuedMessage::new("b".to_string(), None));
+        assert!(app.submit_pending_steers_after_interrupt);
+        assert_eq!(app.pending_steers.len(), 2);
+    }
+
+    #[test]
+    fn finalize_streaming_assistant_marks_existing_cell_interrupted() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.add_message(HistoryCell::Assistant {
+            content: "partial reply so far".to_string(),
+            streaming: true,
+        });
+        let idx = app.history.len() - 1;
+        app.streaming_message_index = Some(idx);
+
+        app.finalize_streaming_assistant_as_interrupted();
+
+        assert!(app.streaming_message_index.is_none());
+        match &app.history[idx] {
+            HistoryCell::Assistant { content, streaming } => {
+                assert!(content.starts_with("[interrupted]"), "got: {content}");
+                assert!(content.contains("partial reply so far"));
+                assert!(!*streaming);
+            }
+            other => panic!("expected Assistant cell, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn finalize_streaming_assistant_handles_empty_content() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.add_message(HistoryCell::Assistant {
+            content: String::new(),
+            streaming: true,
+        });
+        let idx = app.history.len() - 1;
+        app.streaming_message_index = Some(idx);
+
+        app.finalize_streaming_assistant_as_interrupted();
+
+        match &app.history[idx] {
+            HistoryCell::Assistant { content, streaming } => {
+                assert_eq!(content, "[interrupted]");
+                assert!(!*streaming);
+            }
+            other => panic!("expected Assistant cell, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn finalize_streaming_assistant_no_op_without_index() {
+        let mut app = App::new(test_options(false), &Config::default());
+        // No streaming index set; should not panic and should leave history unchanged.
+        let prev_len = app.history.len();
+        app.finalize_streaming_assistant_as_interrupted();
+        assert_eq!(app.history.len(), prev_len);
+        assert!(app.streaming_message_index.is_none());
+    }
+
+    #[test]
+    fn finalize_streaming_assistant_is_idempotent_on_double_call() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.add_message(HistoryCell::Assistant {
+            content: "something".to_string(),
+            streaming: true,
+        });
+        let idx = app.history.len() - 1;
+        app.streaming_message_index = Some(idx);
+
+        app.finalize_streaming_assistant_as_interrupted();
+        // Second call without resetting state must be safe.
+        app.finalize_streaming_assistant_as_interrupted();
+
+        match &app.history[idx] {
+            HistoryCell::Assistant { content, .. } => {
+                // Second call still finds index None — content unchanged from first.
+                assert!(content.starts_with("[interrupted] "));
+                assert_eq!(content.matches("[interrupted]").count(), 1);
+            }
+            other => panic!("expected Assistant cell, got {other:?}"),
+        }
     }
 
     #[test]

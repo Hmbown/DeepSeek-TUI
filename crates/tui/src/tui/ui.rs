@@ -66,7 +66,7 @@ use crate::tui::user_input::UserInputView;
 use super::active_cell::ActiveCell;
 use super::app::{
     App, AppAction, AppMode, OnboardingState, QueuedMessage, SidebarFocus, StatusToastLevel,
-    TaskPanelEntry, ToolDetailRecord, TuiOptions,
+    SubmitDisposition, TaskPanelEntry, ToolDetailRecord, TuiOptions,
 };
 use super::approval::{
     ApprovalMode, ApprovalRequest, ApprovalView, ElevationRequest, ElevationView, ReviewDecision,
@@ -582,6 +582,11 @@ async fn run_event_loop(
                                 | crate::core::events::TurnOutcomeStatus::Failed
                         ) {
                             app.finalize_active_cell_as_interrupted();
+                            // Also mark the streaming Assistant cell (if any)
+                            // so partial reasoning/text isn't left with a
+                            // permanent spinner. Idempotent with the
+                            // optimistic call in the Esc handler.
+                            app.finalize_streaming_assistant_as_interrupted();
                         } else {
                             app.flush_active_cell();
                         }
@@ -641,6 +646,27 @@ async fn run_event_loop(
                             }
                         }
                         app.plan_tool_used_in_turn = false;
+
+                        // Esc-to-steer (#122): the user interrupted with input
+                        // pending. Merge every steered message into one fresh
+                        // turn so the model sees a single coherent prompt.
+                        if status == crate::core::events::TurnOutcomeStatus::Interrupted
+                            && app.submit_pending_steers_after_interrupt
+                        {
+                            if let Some(merged) = merge_pending_steers(&mut *app) {
+                                queued_to_send = Some(merged);
+                            }
+                        } else if status == crate::core::events::TurnOutcomeStatus::Failed
+                            && !app.pending_steers.is_empty()
+                        {
+                            // Hard-fail recovery: if the engine failed before
+                            // a clean Interrupted landed, demote pending
+                            // steers to the visible queue so they're not
+                            // silently lost. User can /queue to inspect.
+                            for msg in app.drain_pending_steers() {
+                                app.queue_message(msg);
+                            }
+                        }
 
                         if queued_to_send.is_none() {
                             queued_to_send = app.pop_queued_message();
@@ -1437,7 +1463,25 @@ async fn run_event_loop(
                         // engine's TurnComplete will resync with the real
                         // outcome. Fixes #5a (wave kept animating after Esc).
                         app.runtime_turn_status = None;
+                        app.finalize_streaming_assistant_as_interrupted();
                         app.status_message = Some("Request cancelled".to_string());
+                    }
+                    EscapeAction::SteerAndAbort => {
+                        if let Some(input) = app.submit_input() {
+                            let queued = build_queued_message(app, input);
+                            app.push_pending_steer(queued);
+                            engine_handle.cancel();
+                            app.is_loading = false;
+                            app.streaming_state.reset();
+                            app.runtime_turn_status = None;
+                            app.finalize_streaming_assistant_as_interrupted();
+                            let count = app.pending_steers.len();
+                            app.status_message = Some(if count == 1 {
+                                "Steering: aborting turn and resending input".to_string()
+                            } else {
+                                format!("Steering: aborting turn and resending {count} input(s)")
+                            });
+                        }
                     }
                     EscapeAction::DiscardQueuedDraft => {
                         app.queued_draft = None;
@@ -1990,6 +2034,9 @@ fn finalize_streaming_thinking_active_entry(
 enum EscapeAction {
     CloseSlashMenu,
     CancelRequest,
+    /// Composer non-empty during a running turn — capture the input as a
+    /// pending steer, abort the turn, and re-submit on TurnComplete (#122).
+    SteerAndAbort,
     DiscardQueuedDraft,
     ClearInput,
     Noop,
@@ -1999,7 +2046,11 @@ fn next_escape_action(app: &App, slash_menu_open: bool) -> EscapeAction {
     if slash_menu_open {
         EscapeAction::CloseSlashMenu
     } else if app.is_loading {
-        EscapeAction::CancelRequest
+        if app.input.trim().is_empty() {
+            EscapeAction::CancelRequest
+        } else {
+            EscapeAction::SteerAndAbort
+        }
     } else if app.queued_draft.is_some() && app.input.is_empty() {
         EscapeAction::DiscardQueuedDraft
     } else if !app.input.is_empty() {
@@ -2559,26 +2610,51 @@ async fn submit_or_steer_message(
     engine_handle: &EngineHandle,
     message: QueuedMessage,
 ) -> Result<()> {
-    if app.offline_mode && !app.is_loading {
-        app.queue_message(message);
-        app.status_message = Some(format!(
-            "Offline mode: queued {} message(s) - /queue to review",
-            app.queued_message_count()
-        ));
-        return Ok(());
-    }
-    if app.is_loading {
-        if let Err(err) = steer_user_message(app, engine_handle, message.clone()).await {
+    match app.decide_submit_disposition() {
+        SubmitDisposition::Immediate => dispatch_user_message(app, engine_handle, message).await,
+        SubmitDisposition::Queue => {
             app.queue_message(message);
             app.status_message = Some(format!(
-                "Steer failed ({err}); queued {} message(s) - /queue to view/edit",
+                "Offline mode: queued {} message(s) - /queue to review",
                 app.queued_message_count()
             ));
+            Ok(())
         }
-        Ok(())
-    } else {
-        dispatch_user_message(app, engine_handle, message).await
+        SubmitDisposition::Steer => {
+            if let Err(err) = steer_user_message(app, engine_handle, message.clone()).await {
+                app.queue_message(message);
+                app.status_message = Some(format!(
+                    "Steer failed ({err}); queued {} message(s) - /queue to view/edit",
+                    app.queued_message_count()
+                ));
+            }
+            Ok(())
+        }
     }
+}
+
+/// Drain `app.pending_steers` into a single `QueuedMessage` ready for
+/// `dispatch_user_message`. Returns `None` if the queue was empty (caller
+/// then falls back to `app.queued_messages`). Skill instruction is taken
+/// from the first message that supplies one — multiple steers shouldn't
+/// double-up the system framing.
+fn merge_pending_steers(app: &mut App) -> Option<QueuedMessage> {
+    let drained = app.drain_pending_steers();
+    if drained.is_empty() {
+        return None;
+    }
+    if drained.len() == 1 {
+        return drained.into_iter().next();
+    }
+    let mut skill_instruction: Option<String> = None;
+    let mut bodies: Vec<String> = Vec::with_capacity(drained.len());
+    for msg in drained {
+        if skill_instruction.is_none() {
+            skill_instruction = msg.skill_instruction;
+        }
+        bodies.push(msg.display);
+    }
+    Some(QueuedMessage::new(bodies.join("\n\n"), skill_instruction))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2740,12 +2816,21 @@ fn reconcile_subagent_activity_state(app: &mut App) {
 
 /// Build the pending-input preview widget from current `App` state.
 ///
-/// v0.6.6 ships the queued-messages half of #85: when the user types during
-/// a running turn the message goes onto `app.queued_messages` and shows
-/// here above the composer. The full steer/rejected-steer wiring lands in
-/// a follow-up (TODO_BACKEND.md §4).
+/// v0.6.6 (#122) wires all three buckets:
+/// - `pending_steers` — typed during a running turn + Esc; held until the
+///   abort lands and gets resubmitted as a fresh merged turn.
+/// - `rejected_steers` — engine declined a mid-turn steer (scaffolding;
+///   no engine path produces these yet but the bucket renders identically).
+/// - `queued_messages` — Enter while busy (offline-mode FIFO); drained at
+///   end-of-turn.
 fn build_pending_input_preview(app: &App) -> PendingInputPreview {
     let mut preview = PendingInputPreview::new();
+    preview.pending_steers = app
+        .pending_steers
+        .iter()
+        .map(|m| m.display.clone())
+        .collect();
+    preview.rejected_steers = app.rejected_steers.iter().cloned().collect();
     preview.queued_messages = app
         .queued_messages
         .iter()
