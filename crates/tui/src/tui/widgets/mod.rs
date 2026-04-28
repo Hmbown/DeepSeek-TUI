@@ -11,6 +11,7 @@ pub mod key_hint;
 // keeps the unused-imports lint quiet until then.
 pub mod pending_input_preview;
 mod renderable;
+pub mod tool_card;
 
 pub use footer::{
     FooterProps, FooterToast, FooterWidget, footer_agents_chip, footer_working_label,
