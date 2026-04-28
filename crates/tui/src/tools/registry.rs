@@ -399,6 +399,14 @@ impl ToolRegistryBuilder {
         self.with_tool(Arc::new(ReviewTool::new(client, model)))
     }
 
+    /// Include the `recall_archive` tool — searches prior cycle archives
+    /// produced by the checkpoint-restart system (issue #127).
+    #[must_use]
+    pub fn with_recall_archive_tool(self) -> Self {
+        use super::recall_archive::RecallArchiveTool;
+        self.with_tool(Arc::new(RecallArchiveTool))
+    }
+
     /// Include note tool.
     #[must_use]
     pub fn with_note_tool(self) -> Self {
@@ -486,6 +494,7 @@ impl ToolRegistryBuilder {
             .with_plan_tool(plan_state)
             .with_review_tool(client.clone(), model.clone())
             .with_rlm_tool(client, model)
+            .with_recall_archive_tool()
             .with_subagent_tools(manager, runtime)
     }
 

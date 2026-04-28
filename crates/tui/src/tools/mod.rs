@@ -13,6 +13,7 @@ pub mod git_history;
 pub mod parallel;
 pub mod plan;
 pub mod project;
+pub mod recall_archive;
 pub mod registry;
 pub mod review;
 pub mod rlm;

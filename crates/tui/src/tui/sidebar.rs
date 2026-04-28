@@ -61,6 +61,19 @@ fn render_sidebar_plan(f: &mut Frame, area: Rect, app: &App) {
     let content_width = area.width.saturating_sub(4) as usize;
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(usize::from(area.height).max(4));
 
+    // Cycle indicator (issue #124). Only shown once a boundary has fired —
+    // first-time users with cycle_count == 0 don't need this row of chrome.
+    if app.cycle_count > 0 {
+        lines.push(Line::from(Span::styled(
+            format!(
+                "cycles: {} (active: {})",
+                app.cycle_count,
+                app.cycle_count.saturating_add(1)
+            ),
+            Style::default().fg(theme.plan_summary_color),
+        )));
+    }
+
     match app.plan_state.try_lock() {
         Ok(plan) => {
             if plan.is_empty() {

@@ -327,6 +327,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         max_subagents: app.max_subagents,
         features: config.features(),
         compaction: app.compaction_config(),
+        cycle: app.cycle_config(),
         capacity: crate::core::capacity::CapacityControllerConfig::from_app_config(config),
         todos: app.todos.clone(),
         plan_state: app.plan_state.clone(),
@@ -681,6 +682,21 @@ async fn run_event_loop(
                     EngineEvent::CompactionFailed { message, .. } => {
                         app.is_compacting = false;
                         app.status_message = Some(message);
+                    }
+                    EngineEvent::CycleAdvanced { from, to, briefing } => {
+                        // Mirror the engine-side counter on the UI app state
+                        // so the sidebar / slash commands stay in sync, and
+                        // record the briefing so `/cycle <n>` can show it.
+                        app.cycle_count = to;
+                        let briefing_tokens = briefing.token_estimate;
+                        app.cycle_briefings.push(briefing);
+                        let separator = format!(
+                            "─── cycle {from} → {to}  (briefing: {briefing_tokens} tokens) ───"
+                        );
+                        app.add_message(HistoryCell::System { content: separator });
+                        app.status_message = Some(format!(
+                            "↻ context refreshed (cycle {from} → {to}, briefing: {briefing_tokens} tokens carried)"
+                        ));
                     }
                     EngineEvent::CoherenceState { state, .. } => {
                         app.coherence_state = state;
