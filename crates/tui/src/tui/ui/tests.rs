@@ -2084,3 +2084,50 @@ fn build_pending_input_preview_populates_all_three_buckets() {
     assert_eq!(preview.rejected_steers, vec!["rejected-msg".to_string()]);
     assert_eq!(preview.queued_messages, vec!["queued-msg".to_string()]);
 }
+
+#[test]
+fn render_footer_from_with_default_items_renders_mode_and_model() {
+    // Default footer composition should show the mode chip and model
+    // identifier — exactly what v0.6.6 users see today.
+    let mut app = create_test_app();
+    app.session_cost = 0.42;
+    let items = crate::config::StatusItem::default_footer();
+    let props = render_footer_from(&app, &items, None);
+    assert_eq!(props.mode_label, "agent");
+    assert_eq!(props.model, "deepseek-v4-pro");
+    // Cost chip is included whenever cost > 0.001.
+    assert!(!props.cost.is_empty());
+}
+
+#[test]
+fn render_footer_from_with_empty_items_blanks_every_segment() {
+    // A user who toggles every chip OFF should get a bare footer (no model
+    // text, no cost, no auxiliary chips). This is the explicit-empty case.
+    let mut app = create_test_app();
+    app.session_cost = 1.5;
+    let props = render_footer_from(&app, &[], None);
+    assert_eq!(props.mode_label, "");
+    assert!(props.model.is_empty());
+    assert!(props.cost.is_empty());
+    assert!(props.coherence.is_empty());
+    assert!(props.agents.is_empty());
+    assert!(props.cache.is_empty());
+}
+
+#[test]
+fn render_footer_from_drops_only_unselected_clusters() {
+    // Toggling Cost off but keeping the rest should hide cost only.
+    let mut app = create_test_app();
+    app.session_cost = 0.42;
+    let items: Vec<crate::config::StatusItem> = crate::config::StatusItem::default_footer()
+        .into_iter()
+        .filter(|item| *item != crate::config::StatusItem::Cost)
+        .collect();
+    let props = render_footer_from(&app, &items, None);
+    assert_eq!(props.mode_label, "agent");
+    assert_eq!(props.model, "deepseek-v4-pro");
+    assert!(
+        props.cost.is_empty(),
+        "cost cluster should be empty when Cost is disabled"
+    );
+}

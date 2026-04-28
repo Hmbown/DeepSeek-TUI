@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::audit::log_sensitive_event;
@@ -149,6 +149,162 @@ pub struct RetryConfig {
 pub struct TuiConfig {
     pub alternate_screen: Option<String>,
     pub mouse_capture: Option<bool>,
+    /// Ordered list of footer items the user wants visible. `None` (the field
+    /// missing from `config.toml`) means "use the built-in default order"; an
+    /// empty `Some(vec![])` means "show nothing in the footer".
+    ///
+    /// Edited interactively via `/statusline`; persisted to `tui.status_items`
+    /// in `~/.deepseek/config.toml`.
+    pub status_items: Option<Vec<StatusItem>>,
+}
+
+/// One configurable footer item.
+///
+/// Order in the user's `Vec<StatusItem>` is preserved: items in the left
+/// cluster (`Mode`, `Model`, `Cost`, `Status`) render in the order given;
+/// right-cluster chips (`Coherence`, `Agents`, `ReasoningReplay`, `Cache`,
+/// `ContextPercent`, `GitBranch`, `LastToolElapsed`, `RateLimit`) likewise
+/// honour ordering inside their cluster. The split between left and right is
+/// deliberate — left holds steady identity (mode/model/cost), right holds
+/// transient signals — so we route each variant to the correct side rather
+/// than letting users reorder across the spacer.
+///
+/// Variants without a current data source (`RateLimit`, `LastToolElapsed`)
+/// are intentionally exposed today so the picker is forward-compatible; they
+/// render empty until the supporting fields land. Empty spans don't take
+/// up footer width, so the user sees no visual artifact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum StatusItem {
+    /// "agent" / "yolo" / "plan" chip.
+    Mode,
+    /// Model identifier (e.g. `deepseek-v4-pro`).
+    Model,
+    /// Session cost in USD ("$0.42").
+    Cost,
+    /// Activity label: "ready" / "draft" / "working".
+    Status,
+    /// Coherence intervention label: "refreshing context" / "verifying" / "resetting plan".
+    Coherence,
+    /// Sub-agent count chip ("3 agents").
+    Agents,
+    /// Reasoning-replay token count ("rsn 12.3k").
+    ReasoningReplay,
+    /// Cache hit rate ("cache 73%").
+    Cache,
+    /// Context-window utilisation percent ("48%").
+    ContextPercent,
+    /// Current git branch name (placeholder until wired).
+    GitBranch,
+    /// Elapsed time of the most recent tool call (placeholder until wired).
+    LastToolElapsed,
+    /// Remaining rate-limit budget (placeholder until wired).
+    RateLimit,
+}
+
+impl StatusItem {
+    /// Default footer composition matching v0.6.6 behaviour exactly. Used when
+    /// `tui.status_items` is missing from `config.toml` so upgraders see the
+    /// same footer they had before.
+    #[must_use]
+    pub fn default_footer() -> Vec<StatusItem> {
+        vec![
+            StatusItem::Mode,
+            StatusItem::Model,
+            StatusItem::Cost,
+            StatusItem::Status,
+            StatusItem::Coherence,
+            StatusItem::Agents,
+            StatusItem::ReasoningReplay,
+            StatusItem::Cache,
+        ]
+    }
+
+    /// Stable canonical name used in TOML and the picker label.
+    #[must_use]
+    pub fn key(self) -> &'static str {
+        match self {
+            StatusItem::Mode => "mode",
+            StatusItem::Model => "model",
+            StatusItem::Cost => "cost",
+            StatusItem::Status => "status",
+            StatusItem::Coherence => "coherence",
+            StatusItem::Agents => "agents",
+            StatusItem::ReasoningReplay => "reasoning_replay",
+            StatusItem::Cache => "cache",
+            StatusItem::ContextPercent => "context_percent",
+            StatusItem::GitBranch => "git_branch",
+            StatusItem::LastToolElapsed => "last_tool_elapsed",
+            StatusItem::RateLimit => "rate_limit",
+        }
+    }
+
+    /// Human-readable label for the picker.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            StatusItem::Mode => "Mode",
+            StatusItem::Model => "Model",
+            StatusItem::Cost => "Session cost",
+            StatusItem::Status => "Activity (ready/draft/working)",
+            StatusItem::Coherence => "Coherence interventions",
+            StatusItem::Agents => "Sub-agents in flight",
+            StatusItem::ReasoningReplay => "Reasoning replay tokens",
+            StatusItem::Cache => "Prompt cache hit rate",
+            StatusItem::ContextPercent => "Context window %",
+            StatusItem::GitBranch => "Git branch",
+            StatusItem::LastToolElapsed => "Last tool elapsed",
+            StatusItem::RateLimit => "Rate-limit remaining",
+        }
+    }
+
+    /// One-line hint shown beside the label so the user knows what each item
+    /// surfaces without having to toggle it on first.
+    #[must_use]
+    pub fn hint(self) -> &'static str {
+        match self {
+            StatusItem::Mode => "agent · yolo · plan",
+            StatusItem::Model => "the model id you'll send to",
+            StatusItem::Cost => "running USD total for this session",
+            StatusItem::Status => "what the agent is doing right now",
+            StatusItem::Coherence => "shown only when the engine intervenes",
+            StatusItem::Agents => "swarm in progress",
+            StatusItem::ReasoningReplay => "thinking tokens replayed each turn",
+            StatusItem::Cache => "% of prompt served from cache",
+            StatusItem::ContextPercent => "tokens used / model context window",
+            StatusItem::GitBranch => "current branch (placeholder)",
+            StatusItem::LastToolElapsed => "ms of the most recent tool call (placeholder)",
+            StatusItem::RateLimit => "remaining requests in the budget (placeholder)",
+        }
+    }
+
+    /// Every variant in display order — used by the picker to enumerate rows.
+    #[must_use]
+    pub fn all() -> &'static [StatusItem] {
+        &[
+            StatusItem::Mode,
+            StatusItem::Model,
+            StatusItem::Cost,
+            StatusItem::Status,
+            StatusItem::Coherence,
+            StatusItem::Agents,
+            StatusItem::ReasoningReplay,
+            StatusItem::Cache,
+            StatusItem::ContextPercent,
+            StatusItem::GitBranch,
+            StatusItem::LastToolElapsed,
+            StatusItem::RateLimit,
+        ]
+    }
+
+    /// Items that belong in the footer's left cluster (steady identity).
+    #[must_use]
+    pub fn is_left_cluster(self) -> bool {
+        matches!(
+            self,
+            StatusItem::Mode | StatusItem::Model | StatusItem::Cost | StatusItem::Status
+        )
+    }
 }
 
 /// Resolved retry policy with defaults applied.

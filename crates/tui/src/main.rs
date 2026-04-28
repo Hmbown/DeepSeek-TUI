@@ -3110,6 +3110,7 @@ mod terminal_mode_tests {
             tui: Some(crate::config::TuiConfig {
                 alternate_screen: None,
                 mouse_capture: Some(false),
+                status_items: None,
             }),
             ..Config::default()
         };

@@ -2557,6 +2557,14 @@ async fn apply_command_result(
                         ));
                 }
             }
+            AppAction::OpenStatusPicker => {
+                if app.view_stack.top_kind() != Some(ModalKind::StatusPicker) {
+                    app.view_stack
+                        .push(crate::tui::views::status_picker::StatusPickerView::new(
+                            &app.status_items,
+                        ));
+                }
+            }
             AppAction::CompactContext => {
                 app.status_message = Some("Compacting context...".to_string());
                 let _ = engine_handle.send(Op::CompactContext).await;
@@ -3256,6 +3264,25 @@ async fn handle_view_events(
                     app.view_stack.push(ConfigView::new_for_app(app));
                 }
             }
+            ViewEvent::StatusItemsUpdated { items, final_save } => {
+                // Apply to the live App immediately so the footer reflects
+                // every keystroke (live preview).
+                app.status_items = items.clone();
+                app.needs_redraw = true;
+                if final_save {
+                    match commands::persist_status_items(&items) {
+                        Ok(path) => {
+                            app.status_message =
+                                Some(format!("Status line saved to {}", path.display()));
+                        }
+                        Err(err) => {
+                            app.add_message(HistoryCell::System {
+                                content: format!("Failed to save status line: {err}"),
+                            });
+                        }
+                    }
+                }
+            }
             ViewEvent::SubAgentsRefresh => {
                 app.status_message = Some("Refreshing sub-agents...".to_string());
                 let _ = engine_handle.send(Op::ListSubAgents).await;
@@ -3602,31 +3629,13 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
         })
     });
 
-    let (state_label, state_color) = footer_state_label(app);
-    let coherence = footer_coherence_spans(app);
-    let agents = crate::tui::widgets::footer_agents_chip(running_agent_count(app));
-    let reasoning_replay = footer_reasoning_replay_spans(app);
-    let cache = footer_cache_spans(app);
-    let cost = if app.session_cost > 0.001 {
-        vec![Span::styled(
-            format!("${:.2}", app.session_cost),
-            Style::default().fg(palette::TEXT_MUTED),
-        )]
-    } else {
-        Vec::new()
-    };
-
-    let mut props = FooterProps::from_app(
-        app,
-        toast,
-        state_label,
-        state_color,
-        coherence,
-        agents,
-        reasoning_replay,
-        cache,
-        cost,
-    );
+    // Drive every cluster from the user's configured `status_items`. Mode
+    // and Model are always rendered by `FooterProps` itself (their position
+    // is structural — cluster gating is handled by the widget), so we only
+    // gate the optional clusters here. If a variant is missing from
+    // `status_items`, its span vec stays empty and the footer hides it.
+    let mut props = render_footer_from(app, &app.status_items, toast);
+    // FooterProps is mut so the working-strip animation can layer on top.
 
     // Animate the spacer between the left status line and the right-hand
     // chips whenever a turn is live: model loading/streaming, compacting, or
@@ -3674,6 +3683,133 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
 fn footer_working_strip_active(app: &App) -> bool {
     let turn_in_progress = app.runtime_turn_status.as_deref() == Some("in_progress");
     app.is_loading || app.is_compacting || running_agent_count(app) > 0 || turn_in_progress
+}
+
+/// Build [`FooterProps`] from a user-configured `status_items` slice.
+///
+/// Variants are routed to their structural cluster: `Mode` and `Model` are
+/// always emitted (the widget needs them to lay out the line correctly even
+/// when the user toggled them off the picker — we honour the toggle by
+/// blanking their visible content rather than collapsing the layout).
+/// `Cost` and `Status` belong in the left cluster; the rest in the right.
+///
+/// A variant absent from `items` produces an empty span vec, which the
+/// footer widget already hides cleanly. This keeps the renderer fully
+/// data-driven without changing `FooterProps`'s public shape.
+fn render_footer_from(
+    app: &App,
+    items: &[crate::config::StatusItem],
+    toast: Option<FooterToast>,
+) -> FooterProps {
+    use crate::config::StatusItem as S;
+    let has = |item: S| items.contains(&item);
+
+    let (state_label, state_color) = if has(S::Status) {
+        footer_state_label(app)
+    } else {
+        // "ready" is the sentinel the widget uses to skip the status segment;
+        // pair it with TEXT_MUTED for visual neutrality.
+        ("ready", palette::TEXT_MUTED)
+    };
+
+    let coherence = if has(S::Coherence) {
+        footer_coherence_spans(app)
+    } else {
+        Vec::new()
+    };
+    let agents = if has(S::Agents) {
+        crate::tui::widgets::footer_agents_chip(running_agent_count(app))
+    } else {
+        Vec::new()
+    };
+    let reasoning_replay = if has(S::ReasoningReplay) {
+        footer_reasoning_replay_spans(app)
+    } else {
+        Vec::new()
+    };
+    let cache = if has(S::Cache) {
+        footer_cache_spans(app)
+    } else {
+        Vec::new()
+    };
+    let cost = if has(S::Cost) && app.session_cost > 0.001 {
+        vec![Span::styled(
+            format!("${:.2}", app.session_cost),
+            Style::default().fg(palette::TEXT_MUTED),
+        )]
+    } else {
+        Vec::new()
+    };
+
+    // Build the props; `Mode` and `Model` toggles modulate downstream by
+    // blanking the rendered text rather than restructuring the widget — the
+    // user is opting out of the chip, not destroying the bar.
+    let mut props = FooterProps::from_app(
+        app,
+        toast,
+        state_label,
+        state_color,
+        coherence,
+        agents,
+        reasoning_replay,
+        cache,
+        cost,
+    );
+    if !has(S::Mode) {
+        props.mode_label = "";
+    }
+    if !has(S::Model) {
+        props.model.clear();
+    }
+
+    // Right-cluster extension chips: append in `items` order so user
+    // ordering is preserved across the new variants.
+    let mut extra: Vec<Span<'static>> = Vec::new();
+    for item in items {
+        let chip = match *item {
+            S::ContextPercent => footer_context_percent_spans(app),
+            S::GitBranch | S::LastToolElapsed | S::RateLimit => Vec::new(),
+            _ => continue,
+        };
+        if chip.is_empty() {
+            continue;
+        }
+        if !extra.is_empty() {
+            extra.push(Span::raw("  "));
+        }
+        extra.extend(chip);
+    }
+    if !extra.is_empty() {
+        // Stack into the cache slot — last existing right-cluster pipe — so
+        // they appear adjacent without changing FooterProps's API. Keep
+        // existing cache spans first so cache hit rate stays before the
+        // user-added extras.
+        if !props.cache.is_empty() {
+            props.cache.push(Span::raw("  "));
+        }
+        props.cache.extend(extra);
+    }
+
+    props
+}
+
+/// Spans for the "context %" footer chip. Mirrors the header colour ramp so
+/// the two surfaces stay visually consistent when both are enabled.
+fn footer_context_percent_spans(app: &App) -> Vec<Span<'static>> {
+    let Some((_, _, percent)) = context_usage_snapshot(app) else {
+        return Vec::new();
+    };
+    let color = if percent >= 95.0 {
+        palette::STATUS_ERROR
+    } else if percent >= 85.0 {
+        palette::STATUS_WARNING
+    } else {
+        palette::TEXT_MUTED
+    };
+    vec![Span::styled(
+        format!("ctx {percent:.0}%"),
+        Style::default().fg(color),
+    )]
 }
 
 /// Test-only helper retained as a parity reference for `FooterWidget`'s

@@ -362,29 +362,49 @@ impl FooterWidget {
         status: Option<&str>,
     ) -> Vec<Span<'static>> {
         let sep = " \u{00B7} ";
-        let mut spans = vec![
-            Span::styled(
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        // Skip the mode chip when the user has toggled it off via
+        // `/statusline`. The widget no longer assumes mode is always
+        // present so an opt-out user doesn't see a stray separator.
+        if !mode_label.is_empty() {
+            spans.push(Span::styled(
                 mode_label.to_string(),
                 Style::default().fg(self.props.mode_color),
-            ),
-            Span::styled(sep.to_string(), Style::default().fg(palette::TEXT_DIM)),
-            Span::styled(model_label, Style::default().fg(palette::TEXT_HINT)),
-        ];
-        if let Some(cost_text) = cost {
-            spans.push(Span::styled(
-                sep.to_string(),
-                Style::default().fg(palette::TEXT_DIM),
             ));
+        }
+        // Same treatment for the model label — gating both keeps the bar
+        // visually tidy when only auxiliary chips remain.
+        if !model_label.is_empty() {
+            if !spans.is_empty() {
+                spans.push(Span::styled(
+                    sep.to_string(),
+                    Style::default().fg(palette::TEXT_DIM),
+                ));
+            }
+            spans.push(Span::styled(
+                model_label,
+                Style::default().fg(palette::TEXT_HINT),
+            ));
+        }
+        if let Some(cost_text) = cost {
+            if !spans.is_empty() {
+                spans.push(Span::styled(
+                    sep.to_string(),
+                    Style::default().fg(palette::TEXT_DIM),
+                ));
+            }
             spans.push(Span::styled(
                 cost_text,
                 Style::default().fg(palette::TEXT_MUTED),
             ));
         }
         if let Some(status_label) = status {
-            spans.push(Span::styled(
-                sep.to_string(),
-                Style::default().fg(palette::TEXT_DIM),
-            ));
+            if !spans.is_empty() {
+                spans.push(Span::styled(
+                    sep.to_string(),
+                    Style::default().fg(palette::TEXT_DIM),
+                ));
+            }
             spans.push(Span::styled(
                 status_label.to_string(),
                 Style::default().fg(self.props.state_color),
