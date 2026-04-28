@@ -12,6 +12,7 @@ mod init;
 mod note;
 mod provider;
 mod queue;
+mod restore;
 mod review;
 mod session;
 mod skills;
@@ -337,6 +338,12 @@ pub const COMMANDS: &[CommandInfo] = &[
         description: "Run a structured code review on a file, diff, or PR",
         usage: "/review <target>",
     },
+    CommandInfo {
+        name: "restore",
+        aliases: &[],
+        description: "Roll back the workspace to a prior pre/post-turn snapshot. With no arg, lists recent snapshots.",
+        usage: "/restore [N]",
+    },
     // RLM command
     CommandInfo {
         name: "rlm",
@@ -412,6 +419,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "skills" => skills::list_skills(app),
         "skill" => skills::run_skill(app, arg),
         "review" => review::review(app, arg),
+        "restore" => restore::restore(app, arg),
 
         // RLM command
         "rlm" | "recursive" => rlm(app, arg),

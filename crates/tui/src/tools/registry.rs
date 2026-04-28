@@ -381,6 +381,16 @@ impl ToolRegistryBuilder {
         self.with_tool(Arc::new(ApplyPatchTool))
     }
 
+    /// Include the `revert_turn` tool. Approval-gated since it mutates
+    /// the workspace; the model uses it when the user asks to "undo my
+    /// last edit". Backed by the per-workspace snapshot side-repo
+    /// (`crate::snapshot`).
+    #[must_use]
+    pub fn with_revert_turn_tool(self) -> Self {
+        use super::revert_turn::RevertTurnTool;
+        self.with_tool(Arc::new(RevertTurnTool))
+    }
+
     /// Include the RLM tool (`rlm`). Runs the full recursive language-model
     /// loop on a long input (file or inline content); the long input never
     /// enters the calling model's context window. The Python REPL exposes
@@ -495,6 +505,7 @@ impl ToolRegistryBuilder {
             .with_review_tool(client.clone(), model.clone())
             .with_rlm_tool(client, model)
             .with_recall_archive_tool()
+            .with_revert_turn_tool()
             .with_subagent_tools(manager, runtime)
     }
 
