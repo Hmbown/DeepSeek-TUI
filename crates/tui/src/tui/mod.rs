@@ -18,6 +18,7 @@ pub mod keybindings;
 pub mod live_transcript;
 pub mod markdown_render;
 pub mod model_picker;
+pub mod notifications;
 pub mod onboarding;
 pub mod pager;
 pub mod paste;
