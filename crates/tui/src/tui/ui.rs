@@ -1530,6 +1530,19 @@ async fn run_event_loop(
                     EscapeAction::ClearInput => app.clear_input(),
                     EscapeAction::Noop => {}
                 },
+                // #85: Alt+↑ pops the most-recent queued message back into the
+                // composer for editing when the preview's affordance is visible
+                // (queue non-empty, composer idle). Splits the binding into two
+                // arms so the legacy scroll fallback is unambiguous on the same
+                // chord.
+                KeyCode::Up
+                    if key.modifiers.contains(KeyModifiers::ALT)
+                        && app.input.is_empty()
+                        && app.queued_draft.is_none()
+                        && !app.queued_messages.is_empty() =>
+                {
+                    let _ = app.pop_last_queued_into_draft();
+                }
                 KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => {
                     app.scroll_up(3);
                 }
