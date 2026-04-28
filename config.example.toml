@@ -214,6 +214,35 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 # include_summary = false
 
 # ─────────────────────────────────────────────────────────────────────────────────
+# LSP Diagnostics (post-edit) (#136)
+# ─────────────────────────────────────────────────────────────────────────────────
+# After every successful file edit (`edit_file`, `apply_patch`, `write_file`),
+# the engine asks an LSP server for diagnostics on the file and injects them
+# as a synthetic system message before the next API call. This lets the agent
+# see compile breaks immediately without round-tripping through the user.
+#
+# Enabled by default. Failure modes are non-blocking: a missing LSP binary,
+# a crashed server, or a timeout simply skips the post-edit hook for that
+# turn — the agent's work is never blocked.
+#
+# Built-in language → server defaults:
+#   rust       → rust-analyzer
+#   go         → gopls serve
+#   python     → pyright-langserver --stdio
+#   typescript → typescript-language-server --stdio
+#   c, cpp     → clangd
+#
+# Override the defaults via the `servers` table below.
+[lsp]
+# enabled = true
+# poll_after_edit_ms = 5000
+# max_diagnostics_per_file = 20
+# include_warnings = false
+# [lsp.servers]
+# rust = ["rust-analyzer"]
+# go = ["gopls", "serve"]
+
+# ─────────────────────────────────────────────────────────────────────────────────
 # Hooks (optional)
 # ─────────────────────────────────────────────────────────────────────────────────
 # Hooks run shell commands on lifecycle events (session start/end, tool calls, etc.).
