@@ -33,6 +33,15 @@ const USER_GLYPH: &str = "\u{258E}"; // ▎
 /// Visual marker for the assistant role. Solid bullet that pulses at 2s
 /// cycle while the response is streaming, holds full brightness when idle.
 const ASSISTANT_GLYPH: &str = "\u{25CF}"; // ●
+/// Reasoning header opener. Replaces the spinner glyph on thinking cells —
+/// reasoning is a slow exhale, not a tool spin.
+const REASONING_OPENER: &str = "\u{2026}"; // …
+/// Reasoning body left rail. Dashed (`╎`) instead of the solid `▏` block to
+/// visually separate reasoning from message body and tool output.
+const REASONING_RAIL: &str = "\u{254E} "; // ╎ + space
+/// Trailing-line cursor on streaming reasoning. Anchored to the live colour
+/// so the user sees where new tokens land.
+const REASONING_CURSOR: &str = "\u{258E}"; // ▎
 const TOOL_CARD_SUMMARY_LINES: usize = 4;
 const THINKING_SUMMARY_LINE_LIMIT: usize = 4;
 const TOOL_DONE_SYMBOL: &str = "•";
@@ -1316,10 +1325,22 @@ fn render_thinking(
 ) -> Vec<Line<'static>> {
     let state = thinking_visual_state(streaming, duration_secs);
     let style = thinking_style();
+    // 12% reasoning surface tint over the app ink — the only deliberately
+    // warm element in the transcript. Dropped on Ansi-16 terminals where the
+    // tint would distort the named palette.
+    let depth = palette::ColorDepth::detect();
+    let body_bg = palette::reasoning_surface_tint(depth);
+    let body_style = match body_bg {
+        Some(bg) => style.italic().bg(bg),
+        None => style.italic(),
+    };
     let mut lines = Vec::new();
+
+    // Header: `…` opener (replaces the spinner; reasoning isn't a tool, it's
+    // a slow exhale) followed by the `thinking` label and live status.
     let mut header_spans = vec![
         Span::styled(
-            format!("{} ", thinking_symbol(state, low_motion)),
+            format!("{REASONING_OPENER} "),
             Style::default().fg(thinking_state_accent(state)),
         ),
         Span::styled("thinking", thinking_title_style()),
@@ -1341,32 +1362,49 @@ fn render_thinking(
     } else {
         content.to_string()
     };
-    let mut rendered = markdown_render::render_markdown(&body_text, content_width, style);
+    let mut rendered = markdown_render::render_markdown(&body_text, content_width, body_style);
     let mut truncated = false;
     if collapsed && rendered.len() > THINKING_SUMMARY_LINE_LIMIT {
         rendered.truncate(THINKING_SUMMARY_LINE_LIMIT);
         truncated = true;
     }
 
+    let rail_style = Style::default().fg(thinking_state_accent(state));
+    let cursor_style = Style::default().fg(palette::ACCENT_REASONING_LIVE);
+
     if rendered.is_empty() && streaming {
-        lines.push(Line::from(vec![
-            Span::styled("▏ ", Style::default().fg(thinking_state_accent(state))),
-            Span::styled("reasoning in progress...", style.italic()),
-        ]));
+        let mut spans = vec![Span::styled(REASONING_RAIL.to_string(), rail_style)];
+        spans.push(Span::styled(
+            "reasoning in progress...",
+            body_style.italic(),
+        ));
+        if !low_motion {
+            spans.push(Span::styled(
+                format!(" {REASONING_CURSOR}"),
+                cursor_style,
+            ));
+        }
+        lines.push(Line::from(spans));
     }
 
-    for line in rendered {
-        let mut spans = vec![Span::styled(
-            "▏ ",
-            Style::default().fg(thinking_state_accent(state)),
-        )];
+    let last_idx = rendered.len().saturating_sub(1);
+    for (idx, line) in rendered.into_iter().enumerate() {
+        let mut spans = vec![Span::styled(REASONING_RAIL.to_string(), rail_style)];
         spans.extend(line.spans);
+        // Trailing cursor on the very last body line while streaming —
+        // signals "still generating" without churning every line.
+        if streaming && !low_motion && idx == last_idx {
+            spans.push(Span::styled(
+                format!(" {REASONING_CURSOR}"),
+                cursor_style,
+            ));
+        }
         lines.push(Line::from(spans));
     }
 
     if collapsed && (!streaming && (truncated || body_text.trim() != content.trim())) {
         lines.push(Line::from(vec![
-            Span::styled("▏ ", Style::default().fg(thinking_state_accent(state))),
+            Span::styled(REASONING_RAIL.to_string(), rail_style),
             Span::styled(
                 "thinking collapsed; press Ctrl+O for full text",
                 Style::default().fg(palette::TEXT_MUTED).italic(),
@@ -1835,14 +1873,6 @@ fn thinking_status_label(state: ThinkingVisualState) -> &'static str {
     }
 }
 
-fn thinking_symbol(state: ThinkingVisualState, low_motion: bool) -> String {
-    match state {
-        ThinkingVisualState::Live => status_symbol(None, ToolStatus::Running, low_motion),
-        ThinkingVisualState::Done => "◦".to_string(),
-        ThinkingVisualState::Idle => "·".to_string(),
-    }
-}
-
 fn thinking_title_style() -> Style {
     Style::default()
         .fg(palette::TEXT_SOFT)
@@ -1873,9 +1903,10 @@ fn thinking_state_accent(state: ThinkingVisualState) -> Color {
 mod tests {
     use super::{
         ASSISTANT_GLYPH, ExecCell, ExecSource, GenericToolCell, HistoryCell, PlanStep,
-        PlanUpdateCell, TOOL_RUNNING_SYMBOLS, TOOL_STATUS_SYMBOL_MS, ToolCell, ToolStatus,
-        TranscriptRenderOptions, USER_GLYPH, assistant_label_style_for, extract_reasoning_summary,
-        render_thinking, running_status_label_with_elapsed,
+        PlanUpdateCell, REASONING_CURSOR, REASONING_OPENER, REASONING_RAIL, TOOL_RUNNING_SYMBOLS,
+        TOOL_STATUS_SYMBOL_MS, ToolCell, ToolStatus, TranscriptRenderOptions, USER_GLYPH,
+        assistant_label_style_for, extract_reasoning_summary, render_thinking,
+        running_status_label_with_elapsed,
     };
     use crate::palette;
     use crate::deepseek_theme::Theme;
@@ -2051,6 +2082,89 @@ mod tests {
         assert!(
             saw_dimmed,
             "expected the streaming pulse to dip below source brightness at least once",
+        );
+    }
+
+    // === Reasoning treatment tests (v0.6.6 UI redesign) ===
+
+    #[test]
+    fn render_thinking_uses_dotted_opener_in_header() {
+        let lines = render_thinking("Step one\nStep two", 80, false, Some(2.0), false, true);
+        let header = &lines[0];
+        // First span carries `…` followed by a space.
+        assert!(
+            header.spans[0].content.starts_with(REASONING_OPENER),
+            "header opener: {:?}",
+            header.spans[0].content
+        );
+    }
+
+    #[test]
+    fn render_thinking_body_lines_use_dashed_rail_and_italic() {
+        let lines = render_thinking(
+            "concrete reasoning content",
+            80,
+            /*streaming*/ false,
+            Some(1.0),
+            /*collapsed*/ false,
+            /*low_motion*/ true,
+        );
+        // Header is index 0; first body line is index 1.
+        assert!(lines.len() >= 2, "expected at least one body line");
+        let body = &lines[1];
+        assert_eq!(
+            body.spans[0].content.as_ref(),
+            REASONING_RAIL,
+            "body rail must be the dashed `╎ ` glyph"
+        );
+        // The body span should carry italic.
+        let italic_seen = body
+            .spans
+            .iter()
+            .skip(1)
+            .any(|span| span.style.add_modifier.contains(Modifier::ITALIC));
+        assert!(italic_seen, "body content should carry italic modifier");
+    }
+
+    #[test]
+    fn render_thinking_streaming_appends_cursor_when_motion_allowed() {
+        let lines = render_thinking(
+            "ongoing reasoning...",
+            80,
+            /*streaming*/ true,
+            None,
+            /*collapsed*/ false,
+            /*low_motion*/ false,
+        );
+        // Last line is the most recent body line — cursor lives there.
+        let last = lines.last().expect("body line present");
+        let last_span = last.spans.last().expect("trailing span present");
+        assert!(
+            last_span.content.contains(REASONING_CURSOR),
+            "expected trailing cursor `▎` on last streaming body line, got {:?}",
+            last_span.content
+        );
+    }
+
+    #[test]
+    fn render_thinking_streaming_omits_cursor_when_low_motion() {
+        let lines = render_thinking(
+            "ongoing reasoning...",
+            80,
+            /*streaming*/ true,
+            None,
+            /*collapsed*/ false,
+            /*low_motion*/ true,
+        );
+        let last = lines.last().expect("body line present");
+        let visible: String = last
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>();
+        assert!(
+            !visible.contains(REASONING_CURSOR),
+            "low_motion must suppress the streaming cursor: {visible:?}"
         );
     }
 

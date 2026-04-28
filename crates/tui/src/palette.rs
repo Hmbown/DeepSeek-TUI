@@ -71,7 +71,6 @@ pub const STATUS_NEUTRAL: Color = Color::Rgb(160, 160, 160); // #A0A0A0
 pub const SURFACE_PANEL: Color = Color::Rgb(21, 33, 52); // #152134
 #[allow(dead_code)]
 pub const SURFACE_ELEVATED: Color = Color::Rgb(28, 42, 64); // #1C2A40
-#[allow(dead_code)]
 pub const SURFACE_REASONING: Color = Color::Rgb(54, 44, 26); // #362C1A
 #[allow(dead_code)]
 pub const SURFACE_REASONING_ACTIVE: Color = Color::Rgb(68, 53, 28); // #44351C
@@ -136,7 +135,6 @@ pub enum ColorDepth {
 
 impl ColorDepth {
     /// Detect the active terminal's color depth. Honors `COLORTERM`
-    #[allow(dead_code)]
     /// (truecolor / 24bit) first, then falls back to `TERM`. Defaults to
     /// `TrueColor` because most modern terminals support it; the conservative
     /// fallback is `Ansi16` so background tints disappear safely.
@@ -191,7 +189,6 @@ pub fn adapt_bg(color: Color, depth: ColorDepth) -> Color {
 }
 
 /// Mix two RGB colors at `alpha` (0.0 = `bg`, 1.0 = `fg`). Anything that's not
-#[allow(dead_code)]
 /// RGB falls back to `fg` — there's no meaningful alpha blend on a named
 /// palette entry.
 #[must_use]
@@ -211,7 +208,6 @@ pub fn blend(fg: Color, bg: Color, alpha: f32) -> Color {
 }
 
 /// Return the reasoning surface color tinted at 12% over the app background.
-#[allow(dead_code)]
 /// This is the headline reasoning treatment in v0.6.6; a 12% blend keeps the
 /// warm bias subtle without competing with body text. Returns `None` when the
 /// terminal can't render the bg faithfully.
