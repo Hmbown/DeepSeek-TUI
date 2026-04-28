@@ -1053,6 +1053,119 @@ fn jump_to_adjacent_tool_cell_finds_next_and_previous() {
     ));
 }
 
+fn first_line_for_cell(app: &App, cell_index: usize) -> usize {
+    app.transcript_cache
+        .line_meta()
+        .iter()
+        .position(|meta| meta.cell_line().is_some_and(|(idx, _)| idx == cell_index))
+        .expect("cell should have rendered line")
+}
+
+#[test]
+fn detail_target_prefers_visible_tool_card() {
+    let mut app = create_test_app();
+    app.history = vec![
+        HistoryCell::User {
+            content: "hello".to_string(),
+        },
+        HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            name: "file_search".to_string(),
+            status: ToolStatus::Success,
+            input_summary: Some("query: foo".to_string()),
+            output: Some("done".to_string()),
+            prompts: None,
+        })),
+        HistoryCell::Assistant {
+            content: "ok".to_string(),
+            streaming: false,
+        },
+        HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            name: "exec_shell".to_string(),
+            status: ToolStatus::Success,
+            input_summary: Some("command: ls".to_string()),
+            output: Some("...".to_string()),
+            prompts: None,
+        })),
+    ];
+    app.tool_details_by_cell.insert(
+        1,
+        ToolDetailRecord {
+            tool_id: "search-1".to_string(),
+            tool_name: "file_search".to_string(),
+            input: serde_json::json!({"query": "foo"}),
+            output: Some("done".to_string()),
+        },
+    );
+    app.tool_details_by_cell.insert(
+        3,
+        ToolDetailRecord {
+            tool_id: "exec-1".to_string(),
+            tool_name: "exec_shell".to_string(),
+            input: serde_json::json!({"command": "ls"}),
+            output: Some("...".to_string()),
+        },
+    );
+    app.resync_history_revisions();
+    let revisions = app.history_revisions.clone();
+    app.transcript_cache.ensure(
+        &app.history,
+        &revisions,
+        100,
+        app.transcript_render_options(),
+    );
+    app.last_transcript_top = first_line_for_cell(&app, 1);
+    app.last_transcript_visible = 6;
+
+    assert_eq!(detail_target_cell_index(&app), Some(1));
+    assert_eq!(
+        selected_detail_footer_label(&app).as_deref(),
+        Some("Alt+V details: file_search")
+    );
+}
+
+#[test]
+fn open_tool_details_pager_supports_active_virtual_tool_cell() {
+    let mut app = create_test_app();
+    handle_tool_call_started(
+        &mut app,
+        "active-1",
+        "exec_shell",
+        &serde_json::json!({"command": "echo hi"}),
+    );
+    let active_entries = app
+        .active_cell
+        .as_ref()
+        .expect("active cell")
+        .entries()
+        .to_vec();
+    app.transcript_cache.ensure_split(
+        &[&app.history, active_entries.as_slice()],
+        &[1],
+        100,
+        app.transcript_render_options(),
+    );
+    app.last_transcript_top = 0;
+    app.last_transcript_visible = 4;
+
+    assert_eq!(detail_target_cell_index(&app), Some(0));
+    assert!(open_tool_details_pager(&mut app));
+    assert_eq!(app.view_stack.top_kind(), Some(ModalKind::Pager));
+}
+
+#[test]
+fn details_shortcut_modifiers_accept_plain_shift_and_alt_only() {
+    assert!(details_shortcut_modifiers(KeyModifiers::NONE));
+    assert!(details_shortcut_modifiers(KeyModifiers::SHIFT));
+    assert!(details_shortcut_modifiers(KeyModifiers::ALT));
+    assert!(details_shortcut_modifiers(
+        KeyModifiers::ALT | KeyModifiers::SHIFT
+    ));
+    assert!(!details_shortcut_modifiers(KeyModifiers::CONTROL));
+    assert!(!details_shortcut_modifiers(
+        KeyModifiers::ALT | KeyModifiers::CONTROL
+    ));
+}
+
 #[test]
 fn partial_file_mention_finds_token_under_cursor() {
     // Cursor in middle of `@docs/de` should be detected as a partial mention.

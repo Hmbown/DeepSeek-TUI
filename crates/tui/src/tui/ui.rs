@@ -1426,8 +1426,8 @@ async fn run_event_loop(
                 {
                     continue;
                 }
-                KeyCode::Char('v')
-                    if key.modifiers.is_empty()
+                KeyCode::Char('v') | KeyCode::Char('V')
+                    if details_shortcut_modifiers(key.modifiers)
                         && app.input.is_empty()
                         && open_tool_details_pager(app) =>
                 {
@@ -3980,6 +3980,11 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
             let strip_frame = now_ms / 150;
             props.working_strip_frame = Some(strip_frame);
         }
+    } else if props.state_label == "ready"
+        && let Some(label) = selected_detail_footer_label(app)
+    {
+        props.state_label = label;
+        props.state_color = palette::TEXT_MUTED;
     }
 
     let widget = FooterWidget::new(props);
@@ -4983,20 +4988,12 @@ fn open_thinking_pager(app: &mut App) -> bool {
 }
 
 fn open_tool_details_pager(app: &mut App) -> bool {
-    let target_cell = if let Some((start, _)) = app.transcript_selection.ordered_endpoints() {
-        app.transcript_cache
-            .line_meta()
-            .get(start.line_index)
-            .and_then(|meta| meta.cell_line())
-            .map(|(cell_index, _)| cell_index)
-    } else {
-        app.history.len().checked_sub(1)
-    };
+    let target_cell = detail_target_cell_index(app);
 
     let Some(cell_index) = target_cell else {
         return false;
     };
-    if let Some(detail) = app.tool_details_by_cell.get(&cell_index) {
+    if let Some(detail) = app.tool_detail_record_for_cell(cell_index) {
         let input = serde_json::to_string_pretty(&detail.input)
             .unwrap_or_else(|_| detail.input.to_string());
         let output = detail.output.as_deref().map_or(
@@ -5020,7 +5017,7 @@ fn open_tool_details_pager(app: &mut App) -> bool {
         return true;
     }
 
-    let Some(cell) = app.history.get(cell_index) else {
+    let Some(cell) = app.cell_at_virtual_index(cell_index) else {
         app.status_message = Some("No details available for the selected line".to_string());
         return false;
     };
@@ -5046,6 +5043,76 @@ fn open_tool_details_pager(app: &mut App) -> bool {
     true
 }
 
+fn detail_target_cell_index(app: &App) -> Option<usize> {
+    if let Some((start, _)) = app.transcript_selection.ordered_endpoints() {
+        return app
+            .transcript_cache
+            .line_meta()
+            .get(start.line_index)
+            .and_then(|meta| meta.cell_line())
+            .map(|(cell_index, _)| cell_index);
+    }
+
+    app.detail_cell_index_for_viewport(
+        app.last_transcript_top,
+        app.last_transcript_visible.max(1),
+        app.transcript_cache.line_meta(),
+    )
+    .or_else(|| app.history.len().checked_sub(1))
+}
+
+fn selected_detail_footer_label(app: &App) -> Option<String> {
+    if app.transcript_selection.is_active() {
+        return None;
+    }
+    let cell_index = app.detail_cell_index_for_viewport(
+        app.last_transcript_top,
+        app.last_transcript_visible.max(1),
+        app.transcript_cache.line_meta(),
+    )?;
+    let label = detail_target_label(app, cell_index)?;
+    Some(format!(
+        "Alt+V details: {}",
+        truncate_line_to_width(&label, 34)
+    ))
+}
+
+fn detail_target_label(app: &App, cell_index: usize) -> Option<String> {
+    if let Some(detail) = app.tool_detail_record_for_cell(cell_index) {
+        return Some(detail.tool_name.clone());
+    }
+    let cell = app.cell_at_virtual_index(cell_index)?;
+    match cell {
+        HistoryCell::Tool(ToolCell::Exec(exec)) => {
+            Some(format!("run {}", one_line_summary(&exec.command, 80)))
+        }
+        HistoryCell::Tool(ToolCell::Exploring(explore)) => Some(format!(
+            "workspace {} item{}",
+            explore.entries.len(),
+            if explore.entries.len() == 1 { "" } else { "s" }
+        )),
+        HistoryCell::Tool(ToolCell::PlanUpdate(_)) => Some("update plan".to_string()),
+        HistoryCell::Tool(ToolCell::PatchSummary(patch)) => Some(format!("patch {}", patch.path)),
+        HistoryCell::Tool(ToolCell::Review(review)) => {
+            let target = one_line_summary(&review.target, 80);
+            Some(if target.is_empty() {
+                "review".to_string()
+            } else {
+                format!("review {target}")
+            })
+        }
+        HistoryCell::Tool(ToolCell::DiffPreview(diff)) => Some(format!("diff {}", diff.title)),
+        HistoryCell::Tool(ToolCell::Mcp(mcp)) => Some(format!("tool {}", mcp.tool)),
+        HistoryCell::Tool(ToolCell::ViewImage(image)) => {
+            Some(format!("image {}", image.path.display()))
+        }
+        HistoryCell::Tool(ToolCell::WebSearch(search)) => Some(format!("search {}", search.query)),
+        HistoryCell::Tool(ToolCell::Generic(generic)) => Some(format!("tool {}", generic.name)),
+        HistoryCell::SubAgent(_) => Some("sub-agent".to_string()),
+        _ => None,
+    }
+}
+
 fn is_copy_shortcut(key: &KeyEvent) -> bool {
     let is_c = matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C'));
     if !is_c {
@@ -5057,6 +5124,14 @@ fn is_copy_shortcut(key: &KeyEvent) -> bool {
     }
 
     key.modifiers.contains(KeyModifiers::CONTROL) && key.modifiers.contains(KeyModifiers::SHIFT)
+}
+
+fn details_shortcut_modifiers(modifiers: KeyModifiers) -> bool {
+    modifiers.is_empty()
+        || modifiers == KeyModifiers::SHIFT
+        || (modifiers.contains(KeyModifiers::ALT)
+            && !modifiers.contains(KeyModifiers::CONTROL)
+            && !modifiers.contains(KeyModifiers::SUPER))
 }
 
 fn is_paste_shortcut(key: &KeyEvent) -> bool {
