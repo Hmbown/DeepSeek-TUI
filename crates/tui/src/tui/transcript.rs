@@ -18,7 +18,10 @@
 
 use std::sync::Arc;
 
-use ratatui::text::Line;
+use ratatui::{
+    style::Style,
+    text::{Line, Span},
+};
 
 use crate::tui::app::TranscriptSpacing;
 use crate::tui::history::{HistoryCell, TranscriptRenderOptions};
@@ -54,6 +57,8 @@ struct CachedCell {
     is_conversational: bool,
     /// Whether this cell is a System or Tool cell (affects spacer rules).
     is_system_or_tool: bool,
+    /// Whether this cell participates in the compact tool-card rail group.
+    is_tool_groupable: bool,
 }
 
 /// Cache of rendered transcript lines for the current viewport.
@@ -159,7 +164,13 @@ impl TranscriptViewCache {
                 }
 
                 any_dirty = true;
-                let rendered = cell.lines_with_options(width, options);
+                let is_tool_groupable = matches!(cell, HistoryCell::Tool(_));
+                let render_width = if is_tool_groupable {
+                    width.saturating_sub(2).max(1)
+                } else {
+                    width
+                };
+                let rendered = cell.lines_with_options(render_width, options);
                 let is_empty = rendered.is_empty();
                 new_per_cell.push(CachedCell {
                     revision: current_rev,
@@ -174,6 +185,7 @@ impl TranscriptViewCache {
                             | HistoryCell::Tool(_)
                             | HistoryCell::SubAgent(_)
                     ),
+                    is_tool_groupable,
                 });
                 idx += 1;
             }
@@ -202,8 +214,18 @@ impl TranscriptViewCache {
             // Arc::make_mut would deep-clone only on write; since we just
             // rebuilt `lines` from scratch we always need the owned data.
             // Deref is zero-cost and gives us &[Line].
+            let rendered_line_count = cached.lines.len();
             for (line_in_cell, line) in cached.lines.iter().enumerate() {
-                lines.push(line.clone());
+                lines.push(line_with_group_rail(
+                    line,
+                    tool_group_rail(
+                        self.per_cell.as_slice(),
+                        cell_index,
+                        line_in_cell,
+                        rendered_line_count,
+                    ),
+                    usize::from(self.width),
+                ));
                 meta.push(TranscriptLineMeta::CellLine {
                     cell_index,
                     line_in_cell,
@@ -251,6 +273,10 @@ fn spacer_rows_between(
         return 0;
     }
 
+    if current.is_tool_groupable && next.is_tool_groupable {
+        return 0;
+    }
+
     let conversational_gap = match spacing {
         TranscriptSpacing::Compact => 0,
         TranscriptSpacing::Comfortable => 1,
@@ -270,10 +296,121 @@ fn spacer_rows_between(
     }
 }
 
+fn tool_group_rail(
+    cells: &[CachedCell],
+    cell_index: usize,
+    line_in_cell: usize,
+    rendered_line_count: usize,
+) -> Option<crate::tui::widgets::tool_card::CardRail> {
+    let cached = cells.get(cell_index)?;
+    if !cached.is_tool_groupable || rendered_line_count == 0 {
+        return None;
+    }
+
+    let previous_is_tool = cell_index
+        .checked_sub(1)
+        .and_then(|idx| cells.get(idx))
+        .is_some_and(|cell| cell.is_tool_groupable && !cell.is_empty);
+    let next_is_tool = cells
+        .get(cell_index + 1)
+        .is_some_and(|cell| cell.is_tool_groupable && !cell.is_empty);
+    let first_line_in_group = !previous_is_tool && line_in_cell == 0;
+    let last_line_in_group = !next_is_tool && line_in_cell + 1 == rendered_line_count;
+
+    let rail = match (first_line_in_group, last_line_in_group) {
+        (true, true) if rendered_line_count == 1 => {
+            crate::tui::widgets::tool_card::CardRail::Single
+        }
+        (true, _) => crate::tui::widgets::tool_card::CardRail::Top,
+        (_, true) => crate::tui::widgets::tool_card::CardRail::Bottom,
+        _ => crate::tui::widgets::tool_card::CardRail::Middle,
+    };
+    Some(rail)
+}
+
+fn line_with_group_rail(
+    line: &Line<'static>,
+    rail: Option<crate::tui::widgets::tool_card::CardRail>,
+    max_width: usize,
+) -> Line<'static> {
+    let Some(rail) = rail else {
+        return line.clone();
+    };
+    let glyph = crate::tui::widgets::tool_card::rail_glyph(rail);
+    if glyph.is_empty() {
+        let mut rendered = line.clone();
+        rendered.spans = truncate_spans_to_width(rendered.spans, max_width);
+        return rendered;
+    }
+
+    let mut rendered = line.clone();
+    let mut spans = Vec::with_capacity(rendered.spans.len() + 1);
+    spans.push(Span::styled(
+        format!("{glyph} "),
+        Style::default().fg(crate::palette::TEXT_DIM),
+    ));
+    spans.extend(rendered.spans);
+    rendered.spans = truncate_spans_to_width(spans, max_width);
+    rendered
+}
+
+fn truncate_spans_to_width(spans: Vec<Span<'static>>, max_width: usize) -> Vec<Span<'static>> {
+    if max_width == 0 || spans.is_empty() {
+        return Vec::new();
+    }
+    let current_width: usize = spans
+        .iter()
+        .map(|span| unicode_width::UnicodeWidthStr::width(span.content.as_ref()))
+        .sum();
+    if current_width <= max_width {
+        return spans;
+    }
+
+    let ellipsis = if max_width > 3 { "..." } else { "" };
+    let content_budget = max_width.saturating_sub(ellipsis.len());
+    let mut used = 0usize;
+    let mut truncated = Vec::with_capacity(spans.len() + usize::from(!ellipsis.is_empty()));
+    let mut last_style = Style::default();
+
+    'outer: for span in spans {
+        last_style = span.style;
+        let mut content = String::new();
+        for ch in span.content.chars() {
+            let width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+            if used + width > content_budget {
+                break 'outer;
+            }
+            content.push(ch);
+            used += width;
+        }
+        if !content.is_empty() {
+            truncated.push(Span::styled(content, span.style));
+        }
+    }
+
+    if !ellipsis.is_empty() {
+        truncated.push(Span::styled(ellipsis.to_string(), last_style));
+    }
+    truncated
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui::history::HistoryCell;
+    use crate::tui::history::{ExecCell, ExecSource, HistoryCell, ToolCell, ToolStatus};
+
+    fn plain_lines(cache: &TranscriptViewCache) -> Vec<String> {
+        cache
+            .lines()
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect()
+    }
 
     fn user_cell(content: &str) -> HistoryCell {
         HistoryCell::User {
@@ -286,6 +423,18 @@ mod tests {
             content: content.to_string(),
             streaming,
         }
+    }
+
+    fn exec_tool_cell(command: &str) -> HistoryCell {
+        HistoryCell::Tool(ToolCell::Exec(ExecCell {
+            command: command.to_string(),
+            status: ToolStatus::Running,
+            output: None,
+            started_at: None,
+            duration_ms: None,
+            source: ExecSource::Assistant,
+            interaction: None,
+        }))
     }
 
     #[test]
@@ -554,5 +703,54 @@ mod tests {
         // Both cells were rendered (no panic, output non-empty).
         assert_eq!(cache.per_cell.len(), 2);
         assert!(!cache.lines().is_empty());
+    }
+
+    #[test]
+    fn adjacent_tool_cells_render_as_one_railed_group() {
+        let cells = vec![exec_tool_cell("cargo test"), exec_tool_cell("cargo clippy")];
+        let revisions = vec![1u64, 1];
+        let mut cache = TranscriptViewCache::new();
+
+        cache.ensure(&cells, &revisions, 80, TranscriptRenderOptions::default());
+        let lines = plain_lines(&cache);
+
+        assert!(
+            lines
+                .first()
+                .is_some_and(|line| line.starts_with("\u{256D} ")),
+            "first tool line should open the shared rail: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|line| line.starts_with("\u{2502} ")),
+            "middle tool lines should continue the shared rail: {lines:?}"
+        );
+        assert!(
+            lines
+                .last()
+                .is_some_and(|line| line.starts_with("\u{2570} ")),
+            "last tool line should close the shared rail: {lines:?}"
+        );
+        assert!(
+            !lines.iter().any(String::is_empty),
+            "adjacent tool cells should not be separated by blank spacer rows: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn tool_rails_preserve_rendered_width_budget() {
+        let cells = vec![exec_tool_cell(
+            "printf 'this is a command with enough text to wrap in narrow terminals'",
+        )];
+        let revisions = vec![1u64];
+        let mut cache = TranscriptViewCache::new();
+
+        cache.ensure(&cells, &revisions, 24, TranscriptRenderOptions::default());
+
+        for line in plain_lines(&cache) {
+            assert!(
+                unicode_width::UnicodeWidthStr::width(line.as_str()) <= 24,
+                "tool rail line exceeded narrow width: {line:?}"
+            );
+        }
     }
 }
