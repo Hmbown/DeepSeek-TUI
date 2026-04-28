@@ -429,6 +429,43 @@ pub struct Config {
     /// to a permissive default that mirrors pre-v0.7.0 behavior.
     #[serde(default)]
     pub network: Option<NetworkPolicyToml>,
+
+    /// Community skill installer settings (#140). When absent, installer
+    /// commands fall back to the bundled defaults
+    /// ([`crate::skills::install::DEFAULT_REGISTRY_URL`] +
+    /// [`crate::skills::install::DEFAULT_MAX_SIZE_BYTES`]).
+    #[serde(default)]
+    pub skills: Option<SkillsConfig>,
+}
+
+/// `[skills]` table — knobs for the community-skill installer.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct SkillsConfig {
+    /// Curated registry index. `/skill install <name>` looks up the spec here.
+    /// Defaults to [`crate::skills::install::DEFAULT_REGISTRY_URL`].
+    #[serde(default)]
+    pub registry_url: Option<String>,
+    /// Per-skill maximum *uncompressed* size in bytes. Tarballs that exceed
+    /// this limit are rejected during validation. Defaults to 5 MiB.
+    #[serde(default)]
+    pub max_install_size_bytes: Option<u64>,
+}
+
+impl SkillsConfig {
+    /// Resolve the registry URL with the bundled default.
+    #[must_use]
+    pub fn registry_url(&self) -> String {
+        self.registry_url
+            .clone()
+            .unwrap_or_else(|| crate::skills::install::DEFAULT_REGISTRY_URL.to_string())
+    }
+
+    /// Resolve the max install size with the bundled default.
+    #[must_use]
+    pub fn max_install_size_bytes(&self) -> u64 {
+        self.max_install_size_bytes
+            .unwrap_or(crate::skills::install::DEFAULT_MAX_SIZE_BYTES)
+    }
 }
 
 /// `[network]` table — mirrors `deepseek_config::NetworkPolicyToml` so the live
@@ -1384,6 +1421,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         features: merge_features(base.features, override_cfg.features),
         notifications: override_cfg.notifications.or(base.notifications),
         network: override_cfg.network.or(base.network),
+        skills: override_cfg.skills.or(base.skills),
     }
 }
 
