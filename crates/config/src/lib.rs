@@ -1,8 +1,10 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use anyhow::{Context, Result, bail};
+pub use deepseek_secrets::Secrets;
 use serde::{Deserialize, Serialize};
 
 pub const CONFIG_FILE_NAME: &str = "config.toml";
@@ -374,8 +376,25 @@ impl ConfigToml {
         out
     }
 
+    /// Resolve runtime options with the default secrets façade
+    /// ([`Secrets::auto_detect`]). For test injection or custom backends,
+    /// use [`Self::resolve_runtime_options_with_secrets`].
     #[must_use]
     pub fn resolve_runtime_options(&self, cli: &CliRuntimeOverrides) -> ResolvedRuntimeOptions {
+        self.resolve_runtime_options_with_secrets(cli, default_secrets())
+    }
+
+    /// Resolve runtime options using an explicit secrets façade.
+    ///
+    /// API-key precedence is **CLI flag → keyring → env → config-file**.
+    /// (`Secrets::resolve` already collapses keyring → env, so we layer
+    /// CLI on top and TOML on the bottom.)
+    #[must_use]
+    pub fn resolve_runtime_options_with_secrets(
+        &self,
+        cli: &CliRuntimeOverrides,
+        secrets: &Secrets,
+    ) -> ResolvedRuntimeOptions {
         let env = EnvRuntimeOverrides::load();
         let provider = cli.provider.or(env.provider).unwrap_or(self.provider);
 
@@ -389,12 +408,18 @@ impl ConfigToml {
         let root_deepseek_model = (provider == ProviderKind::Deepseek)
             .then(|| self.default_text_model.clone())
             .flatten();
+        // CLI flag wins outright. Otherwise: keyring → env (via Secrets) → config-file.
         let api_key = cli
             .api_key
             .clone()
-            .or_else(|| env.api_key_for(provider))
-            .or_else(|| provider_cfg.api_key.clone())
-            .or(root_deepseek_api_key);
+            .or_else(|| secrets.resolve(provider.as_str()))
+            .or_else(|| {
+                let from_file = provider_cfg.api_key.clone().or(root_deepseek_api_key);
+                if from_file.is_some() {
+                    warn_legacy_api_key_in_toml_once();
+                }
+                from_file
+            });
 
         let base_url = cli
             .base_url
@@ -576,6 +601,45 @@ impl ConfigStore {
     }
 }
 
+/// One-time deprecation warning emitted whenever a TOML `api_key`
+/// value is read by the resolver. Callers should migrate to the
+/// keyring via `deepseek auth set` / `deepseek auth migrate`.
+fn warn_legacy_api_key_in_toml_once() {
+    static WARNED: OnceLock<()> = OnceLock::new();
+    let _ = WARNED.get_or_init(|| {
+        tracing::warn!(
+            "api_key in config.toml is deprecated; use 'deepseek auth set' or 'deepseek auth migrate' to move it to the OS keyring"
+        );
+    });
+}
+
+/// Process-wide default [`Secrets`] façade. The first caller wins; the
+/// lock is exposed so test or CLI code can install an explicit
+/// backend (e.g. an [`deepseek_secrets::InMemoryKeyringStore`]) before
+/// any resolver runs.
+pub fn default_secrets() -> &'static Secrets {
+    static SECRETS: OnceLock<Secrets> = OnceLock::new();
+    SECRETS.get_or_init(|| {
+        // Tests should never poke the real OS keyring — using
+        // auto_detect would surface stale macOS Keychain entries
+        // from the developer's session and break the precedence
+        // assertions. Cargo sets the `RUST_TEST_*` family of env
+        // vars (and `CARGO_PKG_NAME` is always populated), but the
+        // `cfg(test)` flag is the canonical signal here. See
+        // `install_test_secrets` for explicit installs.
+        #[cfg(test)]
+        {
+            Secrets::new(std::sync::Arc::new(
+                deepseek_secrets::InMemoryKeyringStore::new(),
+            ))
+        }
+        #[cfg(not(test))]
+        {
+            Secrets::auto_detect()
+        }
+    })
+}
+
 pub fn resolve_config_path(explicit: Option<PathBuf>) -> Result<PathBuf> {
     if let Some(path) = explicit {
         return Ok(path);
@@ -619,11 +683,6 @@ struct EnvRuntimeOverrides {
     telemetry: Option<bool>,
     approval_policy: Option<String>,
     sandbox_mode: Option<String>,
-    deepseek_api_key: Option<String>,
-    openai_api_key: Option<String>,
-    nvidia_api_key: Option<String>,
-    openrouter_api_key: Option<String>,
-    novita_api_key: Option<String>,
     deepseek_base_url: Option<String>,
     nvidia_base_url: Option<String>,
     openai_base_url: Option<String>,
@@ -646,16 +705,6 @@ impl EnvRuntimeOverrides {
                 .and_then(|v| parse_bool(&v).ok()),
             approval_policy: std::env::var("DEEPSEEK_APPROVAL_POLICY").ok(),
             sandbox_mode: std::env::var("DEEPSEEK_SANDBOX_MODE").ok(),
-            deepseek_api_key: std::env::var("DEEPSEEK_API_KEY")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            openai_api_key: std::env::var("OPENAI_API_KEY")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            nvidia_api_key: std::env::var("NVIDIA_API_KEY")
-                .or_else(|_| std::env::var("NVIDIA_NIM_API_KEY"))
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
             deepseek_base_url: std::env::var("DEEPSEEK_BASE_URL")
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
@@ -667,31 +716,12 @@ impl EnvRuntimeOverrides {
             openai_base_url: std::env::var("OPENAI_BASE_URL")
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
-            openrouter_api_key: std::env::var("OPENROUTER_API_KEY")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
-            novita_api_key: std::env::var("NOVITA_API_KEY")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
             openrouter_base_url: std::env::var("OPENROUTER_BASE_URL")
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
             novita_base_url: std::env::var("NOVITA_BASE_URL")
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
-        }
-    }
-
-    fn api_key_for(&self, provider: ProviderKind) -> Option<String> {
-        match provider {
-            ProviderKind::Deepseek => self.deepseek_api_key.clone(),
-            ProviderKind::NvidiaNim => self
-                .nvidia_api_key
-                .clone()
-                .or_else(|| self.deepseek_api_key.clone()),
-            ProviderKind::Openai => self.openai_api_key.clone(),
-            ProviderKind::Openrouter => self.openrouter_api_key.clone(),
-            ProviderKind::Novita => self.novita_api_key.clone(),
         }
     }
 
@@ -1093,5 +1123,83 @@ mod tests {
 
         assert_eq!(resolved.api_key.as_deref(), Some("file-key"));
         assert_eq!(resolved.base_url, "https://or-mirror.example/v1");
+    }
+
+    #[test]
+    fn keyring_resolves_above_env_and_toml() {
+        use deepseek_secrets::KeyringStore;
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        // Safety: env mutation guarded by env_lock().
+        unsafe { std::env::set_var("DEEPSEEK_API_KEY", "env-key") };
+
+        let store = std::sync::Arc::new(deepseek_secrets::InMemoryKeyringStore::new());
+        store.set("deepseek", "ring-key").unwrap();
+        let secrets = Secrets::new(store);
+
+        let mut config = ConfigToml::default();
+        config.providers.deepseek.api_key = Some("file-key".to_string());
+
+        let resolved =
+            config.resolve_runtime_options_with_secrets(&CliRuntimeOverrides::default(), &secrets);
+        assert_eq!(resolved.api_key.as_deref(), Some("ring-key"));
+
+        // Safety: env mutation guarded by env_lock().
+        unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
+    }
+
+    #[test]
+    fn env_resolves_when_keyring_empty_above_toml() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        // Safety: env mutation guarded by env_lock().
+        unsafe { std::env::set_var("DEEPSEEK_API_KEY", "env-key") };
+
+        let secrets = Secrets::new(std::sync::Arc::new(
+            deepseek_secrets::InMemoryKeyringStore::new(),
+        ));
+        let mut config = ConfigToml::default();
+        config.providers.deepseek.api_key = Some("file-key".to_string());
+
+        let resolved =
+            config.resolve_runtime_options_with_secrets(&CliRuntimeOverrides::default(), &secrets);
+        assert_eq!(resolved.api_key.as_deref(), Some("env-key"));
+
+        // Safety: env mutation guarded by env_lock().
+        unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
+    }
+
+    #[test]
+    fn config_file_resolves_when_keyring_and_env_empty() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+
+        let secrets = Secrets::new(std::sync::Arc::new(
+            deepseek_secrets::InMemoryKeyringStore::new(),
+        ));
+        let mut config = ConfigToml::default();
+        config.providers.deepseek.api_key = Some("file-key".to_string());
+
+        let resolved =
+            config.resolve_runtime_options_with_secrets(&CliRuntimeOverrides::default(), &secrets);
+        assert_eq!(resolved.api_key.as_deref(), Some("file-key"));
+    }
+
+    #[test]
+    fn cli_flag_still_overrides_keyring() {
+        use deepseek_secrets::KeyringStore;
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+
+        let store = std::sync::Arc::new(deepseek_secrets::InMemoryKeyringStore::new());
+        store.set("deepseek", "ring-key").unwrap();
+        let secrets = Secrets::new(store);
+
+        let cli = CliRuntimeOverrides {
+            api_key: Some("cli-key".to_string()),
+            ..CliRuntimeOverrides::default()
+        };
+        let resolved = ConfigToml::default().resolve_runtime_options_with_secrets(&cli, &secrets);
+        assert_eq!(resolved.api_key.as_deref(), Some("cli-key"));
     }
 }
