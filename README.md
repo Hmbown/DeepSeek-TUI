@@ -198,6 +198,23 @@ Full reference: [docs/CONFIGURATION.md](docs/CONFIGURATION.md)
 
 ---
 
+## Publishing your own skill
+
+DeepSeek-TUI can install community skills directly from a GitHub repo, with no
+backend service in the loop:
+
+1. Create a public GitHub repo with a `SKILL.md` at the root containing the
+   usual `---` frontmatter (`name`, `description`).
+2. Multi-skill bundles use `skills/<name>/SKILL.md` instead — the installer
+   picks the first match and names the install after the frontmatter `name`.
+3. Push to `main` (or `master`); the installer fetches
+   `archive/refs/heads/main.tar.gz` and falls back to `master.tar.gz`.
+4. Users install via `/skill install github:<owner>/<repo>` — installs are
+   gated by the `[network]` policy, validated for path traversal and size, and
+   placed under `~/.deepseek/skills/<name>/`.
+5. Submit a PR to the curated `index.json` (default registry) to make the skill
+   installable by name (`/skill install <name>`) instead of the GitHub spec.
+
 ## Documentation
 
 | Doc | Topic |
