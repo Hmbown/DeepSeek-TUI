@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-04-28
+
+### Added
+- Grouped active tool-call cards with compact rails and a live working-status row while tools run. (#142, #149)
+- Selected-card-aware Alt+V details so the visible or selected tool card opens the matching detail payload. (#143)
+- Compact terminal-native session context inspector with persisted `@path` and `/attach` reference metadata for resumed transcripts. (#146, #150)
+
+### Changed
+- Polished tool cards, diff summaries, and pending context previews for denser terminal-native scanning. (#141, #144, #145, #148)
+- Ranked Ctrl+P file-picker results with working-set relevance from modified files, recent `@file` mentions, and recent tool paths while keeping fuzzy filtering in memory. (#147)
+
 ## [0.7.0] - 2026-04-28
 
 ### Added
