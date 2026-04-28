@@ -491,6 +491,15 @@ impl StreamingState {
         result
     }
 
+    /// Propagate the low-motion flag to every block's chunking policy.
+    /// When true, all policies stay in `Smooth` regardless of queue pressure,
+    /// preventing CatchUp burst drains that would create sudden visual jumps.
+    pub fn set_low_motion(&mut self, low_motion: bool) {
+        for block in self.blocks.iter_mut().flatten() {
+            block.policy.set_low_motion(low_motion);
+        }
+    }
+
     /// Check if any stream is still active
     fn check_active(&mut self) {
         self.is_active = self.blocks.iter().any(|b| {

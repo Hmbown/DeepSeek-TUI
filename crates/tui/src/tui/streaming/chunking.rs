@@ -90,6 +90,10 @@ pub struct AdaptiveChunkingPolicy {
     mode: ChunkingMode,
     below_exit_threshold_since: Option<Instant>,
     last_catch_up_exit_at: Option<Instant>,
+    /// When true, the policy never enters `CatchUp` — it stays in `Smooth`
+    /// regardless of queue pressure, keeping the display calm for users who
+    /// prefer reduced visual churn.
+    low_motion: bool,
 }
 
 impl AdaptiveChunkingPolicy {
@@ -109,8 +113,31 @@ impl AdaptiveChunkingPolicy {
         self.last_catch_up_exit_at = None;
     }
 
+    /// When true, the policy never enters `CatchUp` — it stays in `Smooth`
+    /// regardless of queue pressure.
+    pub fn set_low_motion(&mut self, low_motion: bool) {
+        self.low_motion = low_motion;
+        if low_motion {
+            self.mode = ChunkingMode::Smooth;
+            self.below_exit_threshold_since = None;
+            self.last_catch_up_exit_at = None;
+        }
+    }
+
     /// Computes a drain decision from the current queue snapshot.
     pub fn decide(&mut self, snapshot: QueueSnapshot, now: Instant) -> ChunkingDecision {
+        // In low-motion mode, always use Smooth pacing regardless of queue
+        // pressure — the user asked for a calm, steady display.
+        if self.low_motion {
+            self.mode = ChunkingMode::Smooth;
+            self.below_exit_threshold_since = None;
+            return ChunkingDecision {
+                mode: self.mode,
+                entered_catch_up: false,
+                drain_plan: DrainPlan::Single,
+            };
+        }
+
         if snapshot.queued_lines == 0 {
             self.note_catch_up_exit(now);
             self.mode = ChunkingMode::Smooth;
@@ -350,5 +377,47 @@ mod tests {
         let severe = policy.decide(snap(64, 20), t0 + Duration::from_millis(100));
         assert_eq!(severe.mode, ChunkingMode::CatchUp);
         assert_eq!(severe.drain_plan, DrainPlan::Batch(64));
+    }
+
+    #[test]
+    fn low_motion_always_smooth_regardless_of_pressure() {
+        let mut policy = AdaptiveChunkingPolicy::new();
+        policy.set_low_motion(true);
+        let t0 = Instant::now();
+
+        // Queue depth far above ENTER threshold.
+        let d1 = policy.decide(snap(20, 10), t0);
+        assert_eq!(d1.mode, ChunkingMode::Smooth);
+        assert!(!d1.entered_catch_up);
+        assert_eq!(d1.drain_plan, DrainPlan::Single);
+
+        // Oldest age far above ENTER threshold.
+        let d2 = policy.decide(snap(5, 500), t0 + Duration::from_millis(100));
+        assert_eq!(d2.mode, ChunkingMode::Smooth);
+        assert!(!d2.entered_catch_up);
+        assert_eq!(d2.drain_plan, DrainPlan::Single);
+
+        // Severe backlog — still Smooth.
+        let d3 = policy.decide(snap(80, 500), t0 + Duration::from_millis(200));
+        assert_eq!(d3.mode, ChunkingMode::Smooth);
+        assert_eq!(d3.drain_plan, DrainPlan::Single);
+    }
+
+    #[test]
+    fn low_motion_reset_resumes_normal_operation() {
+        let mut policy = AdaptiveChunkingPolicy::new();
+        policy.set_low_motion(true);
+        let t0 = Instant::now();
+
+        // Low motion blocks catch-up.
+        let d1 = policy.decide(snap(20, 10), t0);
+        assert_eq!(d1.mode, ChunkingMode::Smooth);
+
+        // Turn off low motion — next burst should enter CatchUp.
+        policy.set_low_motion(false);
+        let d2 = policy.decide(snap(20, 10), t0 + Duration::from_millis(10));
+        assert_eq!(d2.mode, ChunkingMode::CatchUp);
+        assert!(d2.entered_catch_up);
+        assert_eq!(d2.drain_plan, DrainPlan::Batch(20));
     }
 }

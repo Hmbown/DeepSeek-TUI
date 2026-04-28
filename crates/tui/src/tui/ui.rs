@@ -954,6 +954,13 @@ async fn run_event_loop(
         // redraw is needed but the limiter says we're inside the cooldown
         // window, leave `needs_redraw = true` and shorten the poll timeout
         // so the loop wakes up exactly when drawing is allowed.
+
+        // Sync low-motion flag into the frame-rate limiter and streaming
+        // chunking policy. Low-motion mode drops the frame cap to 30 FPS
+        // and forces Smooth-only chunking so the display stays calm.
+        frame_rate_limiter.set_low_motion(app.low_motion);
+        app.streaming_state.set_low_motion(app.low_motion);
+
         let draw_wait = if app.needs_redraw {
             frame_rate_limiter.time_until_next_draw(now)
         } else {
