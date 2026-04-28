@@ -1840,6 +1840,12 @@ async fn run_event_loop(
                     app.set_mode(AppMode::Plan);
                     continue;
                 }
+                KeyCode::Char('v') | KeyCode::Char('V')
+                    if key.modifiers.contains(KeyModifiers::ALT) =>
+                {
+                    open_tool_details_pager(app);
+                    continue;
+                }
                 KeyCode::Char(c) => {
                     app.insert_char(c);
                 }

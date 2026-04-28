@@ -53,7 +53,7 @@ const TOOL_FAILED_SYMBOL: &str = "•";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RenderMode {
     /// Live in-stream view: thinking is collapsed to a summary, tool output is
-    /// truncated with a "press v for details" affordance.
+    /// truncated with a "Alt+V for details" affordance.
     Live,
     /// Full transcript view: every line of reasoning and tool output is
     /// emitted, no caps, no affordance.
@@ -223,7 +223,7 @@ impl HistoryCell {
                 if lines.len() > TOOL_CARD_SUMMARY_LINES {
                     lines.truncate(TOOL_CARD_SUMMARY_LINES);
                     lines.push(details_affordance_line(
-                        "press v for details",
+                        "Alt+V for details",
                         Style::default().fg(palette::TEXT_MUTED).italic(),
                     ));
                 }
@@ -250,7 +250,7 @@ impl HistoryCell {
     }
 
     /// Render the cell in transcript mode: full content, no caps, no
-    /// "press v for details" affordances.
+    /// "Alt+V for details" affordances.
     ///
     /// Use this for the pager (`v` / `Ctrl+O`), clipboard exports, and any
     /// surface that wants the complete body rather than the live summary.
@@ -410,7 +410,7 @@ impl ToolCell {
     }
 
     /// Full-content rendering for the pager / clipboard. Tool output that
-    /// would be capped + suffixed with "press v for details" in the live view
+    /// would be capped + suffixed with "Alt+V for details" in the live view
     /// is emitted in full here.
     pub fn transcript_lines(&self, width: u16) -> Vec<Line<'static>> {
         self.render(width, /*low_motion*/ false, RenderMode::Transcript)
@@ -1505,7 +1505,7 @@ fn render_command_mode(command: &str, width: u16, mode: RenderMode) -> Vec<Line<
     {
         if count >= cap {
             lines.push(details_affordance_line(
-                "command clipped; press v for details",
+                "command clipped; Alt+V for details",
                 Style::default().fg(palette::TEXT_MUTED),
             ));
             break;
@@ -1552,7 +1552,7 @@ fn render_tool_output_mode(
             let omitted = total.saturating_sub(effective_limit);
             if omitted > 0 {
                 lines.push(details_affordance_line(
-                    &format!("+{omitted} more lines; press v for details"),
+                    &format!("+{omitted} more lines; Alt+V for details"),
                     Style::default().fg(palette::TEXT_MUTED),
                 ));
             }
@@ -1635,7 +1635,7 @@ fn render_exec_output_mode(
     if total > 2 * line_limit {
         let omitted = total.saturating_sub(2 * line_limit);
         lines.push(details_affordance_line(
-            &format!("+{omitted} more lines; press v for details"),
+            &format!("+{omitted} more lines; Alt+V for details"),
             Style::default().fg(palette::TEXT_MUTED),
         ));
         let tail_start = total.saturating_sub(line_limit);
@@ -2613,11 +2613,11 @@ mod tests {
             transcript.len()
         );
         assert!(
-            live_text.contains("press v for details"),
+            live_text.contains("Alt+V for details"),
             "live exec output must surface the pager affordance: {live_text}"
         );
         assert!(
-            !transcript_text.contains("press v for details"),
+            !transcript_text.contains("Alt+V for details"),
             "transcript exec output must not include the pager affordance"
         );
         // First line is always emitted on both surfaces.
@@ -2758,7 +2758,7 @@ mod tests {
         );
         let live_text = lines_text(&live);
         assert!(
-            live_text.contains("press v for details"),
+            live_text.contains("Alt+V for details"),
             "live view must show pager affordance: {live_text}"
         );
         // First line shows up in both; later rows only in transcript.
