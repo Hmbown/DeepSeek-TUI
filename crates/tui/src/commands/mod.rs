@@ -312,6 +312,12 @@ pub const COMMANDS: &[CommandInfo] = &[
         description: "Show persistent settings",
         usage: "/settings",
     },
+    CommandInfo {
+        name: "statusline",
+        aliases: &["status"],
+        description: "Configure which items appear in the footer",
+        usage: "/statusline",
+    },
     // Skills commands
     CommandInfo {
         name: "skills",
@@ -384,6 +390,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         // Config commands
         "config" => config::show_config(app),
         "settings" => config::show_settings(app),
+        "statusline" | "status" => config::status_line(app),
         "yolo" => config::yolo(app),
         "agent" => config::agent_mode(app),
         "plan" => config::plan_mode(app),
@@ -441,6 +448,14 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
 /// Update a configuration value programmatically (used by interactive UI views).
 pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) -> CommandResult {
     config::set_config_value(app, key, value, persist)
+}
+
+/// Persist the user's chosen footer items to `~/.deepseek/config.toml` under
+/// `tui.status_items`. See [`config::persist_status_items`] for details.
+pub fn persist_status_items(
+    items: &[crate::config::StatusItem],
+) -> anyhow::Result<std::path::PathBuf> {
+    config::persist_status_items(items)
 }
 
 /// Execute a Recursive Language Model (RLM) turn — Algorithm 1 from

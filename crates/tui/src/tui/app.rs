@@ -480,6 +480,11 @@ pub struct App {
     pub current_session_id: Option<String>,
     /// Trust mode - allow access outside workspace
     pub trust_mode: bool,
+    /// Ordered list of footer items the user wants visible. Sourced from
+    /// `tui.status_items` in `~/.deepseek/config.toml` at startup; mutated
+    /// live by `/statusline`. The renderer iterates this slice; no item is
+    /// hardcoded in the footer code path.
+    pub status_items: Vec<crate::config::StatusItem>,
     /// Project documentation (AGENTS.md or CLAUDE.md)
     #[allow(dead_code)]
     pub project_doc: Option<String>,
@@ -874,6 +879,15 @@ impl App {
             view_stack: ViewStack::new(),
             current_session_id: None,
             trust_mode: initial_mode == AppMode::Yolo,
+            // Honour `tui.status_items` from config; fall back to the v0.6.6
+            // default footer composition when unset so upgraders see no
+            // change. Empty `Some(vec![])` is respected (user explicitly
+            // wants a bare footer).
+            status_items: config
+                .tui
+                .as_ref()
+                .and_then(|tui| tui.status_items.clone())
+                .unwrap_or_else(crate::config::StatusItem::default_footer),
             project_doc: None,
             plan_state,
             plan_prompt_pending: false,
@@ -2041,6 +2055,8 @@ pub enum AppAction {
     OpenConfigView,
     /// Open the `/model` two-pane picker (Pro/Flash + Off/High/Max).
     OpenModelPicker,
+    /// Open the `/statusline` multi-select picker for footer items.
+    OpenStatusPicker,
     /// Send a message to the AI (normal chat mode).
     SendMessage(String),
     /// Run a Recursive Language Model (RLM) turn — Algorithm 1 from

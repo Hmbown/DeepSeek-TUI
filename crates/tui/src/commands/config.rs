@@ -21,6 +21,72 @@ pub fn show_settings(_app: &mut App) -> CommandResult {
     }
 }
 
+/// Open the `/statusline` multi-select picker for configuring footer items.
+pub fn status_line(_app: &mut App) -> CommandResult {
+    CommandResult::action(AppAction::OpenStatusPicker)
+}
+
+/// Persist `tui.status_items` to `~/.deepseek/config.toml` without disturbing
+/// the rest of the file. We round-trip through `toml::Value` so any keys we
+/// don't know about (provider blocks, MCP, etc.) survive the write
+/// untouched.
+///
+/// Returns the path written so the caller can surface it in a status toast.
+pub fn persist_status_items(items: &[crate::config::StatusItem]) -> anyhow::Result<PathBuf> {
+    use anyhow::Context;
+    use std::fs;
+
+    let path = config_toml_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create config directory {}", parent.display()))?;
+    }
+
+    let mut doc: toml::Value = if path.exists() {
+        let raw = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read config at {}", path.display()))?;
+        toml::from_str(&raw)
+            .with_context(|| format!("failed to parse config at {}", path.display()))?
+    } else {
+        toml::Value::Table(toml::value::Table::new())
+    };
+
+    let table = doc
+        .as_table_mut()
+        .context("config.toml root must be a table")?;
+    let tui_entry = table
+        .entry("tui".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::value::Table::new()));
+    let tui_table = tui_entry
+        .as_table_mut()
+        .context("`tui` section in config.toml must be a table")?;
+    let array = items
+        .iter()
+        .map(|item| toml::Value::String(item.key().to_string()))
+        .collect::<Vec<_>>();
+    tui_table.insert("status_items".to_string(), toml::Value::Array(array));
+
+    let body = toml::to_string_pretty(&doc).context("failed to serialize config.toml")?;
+    fs::write(&path, body)
+        .with_context(|| format!("failed to write config at {}", path.display()))?;
+    Ok(path)
+}
+
+/// Resolve the path to `~/.deepseek/config.toml` (or
+/// `$DEEPSEEK_CONFIG_PATH`). Mirrors what `Config::load` accepts so we
+/// never write to a different file than the one we read.
+fn config_toml_path() -> anyhow::Result<PathBuf> {
+    use anyhow::Context;
+    if let Ok(env) = std::env::var("DEEPSEEK_CONFIG_PATH") {
+        let trimmed = env.trim();
+        if !trimmed.is_empty() {
+            return Ok(PathBuf::from(trimmed));
+        }
+    }
+    let home = dirs::home_dir().context("failed to resolve home directory for config.toml path")?;
+    Ok(home.join(".deepseek").join("config.toml"))
+}
+
 /// Modify a setting at runtime
 pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) -> CommandResult {
     let key = key.to_lowercase();
@@ -687,5 +753,78 @@ mod tests {
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
         assert!(msg.contains("Usage: /set"));
+    }
+
+    #[test]
+    fn persist_status_items_writes_tui_section_to_config_toml() {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-statusline-persist-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root).unwrap();
+        let _guard = EnvGuard::new(&temp_root);
+
+        let items = vec![
+            crate::config::StatusItem::Mode,
+            crate::config::StatusItem::Model,
+            crate::config::StatusItem::Cost,
+        ];
+
+        let path = persist_status_items(&items).expect("persist should succeed");
+        let body = fs::read_to_string(&path).expect("written file should be readable");
+        assert!(body.contains("[tui]"), "expected [tui] section in {body}");
+        assert!(
+            body.contains("status_items"),
+            "expected status_items key in {body}"
+        );
+        assert!(body.contains("\"mode\""), "expected mode key in {body}");
+        assert!(body.contains("\"cost\""), "expected cost key in {body}");
+    }
+
+    #[test]
+    fn persist_status_items_preserves_existing_unrelated_keys() {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-statusline-preserve-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root).unwrap();
+        let _guard = EnvGuard::new(&temp_root);
+
+        let path = temp_root.join(".deepseek").join("config.toml");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // Seed the config with a sentinel key the picker MUST NOT clobber.
+        fs::write(
+            &path,
+            "api_key = \"sentinel-key\"\nmodel = \"deepseek-v4-pro\"\n",
+        )
+        .unwrap();
+
+        let written = persist_status_items(&[crate::config::StatusItem::Mode])
+            .expect("persist should succeed");
+        let body = fs::read_to_string(&written).expect("written file should be readable");
+        assert!(
+            body.contains("api_key = \"sentinel-key\""),
+            "round-trip lost api_key: {body}"
+        );
+        assert!(
+            body.contains("model = \"deepseek-v4-pro\""),
+            "round-trip lost model: {body}"
+        );
+        assert!(
+            body.contains("status_items"),
+            "expected status_items in {body}"
+        );
     }
 }
