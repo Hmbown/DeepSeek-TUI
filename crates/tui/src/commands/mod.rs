@@ -210,6 +210,12 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "/compact",
     },
     CommandInfo {
+        name: "context",
+        aliases: &["ctx"],
+        description: "Open compact session context inspector",
+        usage: "/context",
+    },
+    CommandInfo {
         name: "cycles",
         aliases: &[],
         description: "List checkpoint-restart cycle handoffs in this session",
@@ -408,7 +414,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "tokens" => debug::tokens(app),
         "cost" => debug::cost(app),
         "system" => debug::system_prompt(app),
-        "context" => debug::context(app),
+        "context" | "ctx" => debug::context(app),
         "undo" => debug::undo(app),
         "retry" => debug::retry(app),
 

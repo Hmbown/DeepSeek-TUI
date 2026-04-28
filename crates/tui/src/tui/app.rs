@@ -18,6 +18,7 @@ use crate::models::{
     compaction_threshold_for_model_and_effort,
 };
 use crate::palette::{self, UiTheme};
+use crate::session_manager::SessionContextReference;
 use crate::settings::Settings;
 use crate::tools::plan::{SharedPlanState, new_shared_plan_state};
 use crate::tools::subagent::SubAgentResult;
@@ -25,6 +26,7 @@ use crate::tools::todo::{SharedTodoList, new_shared_todo_list};
 use crate::tui::active_cell::ActiveCell;
 use crate::tui::approval::ApprovalMode;
 use crate::tui::clipboard::{ClipboardContent, ClipboardHandler};
+use crate::tui::file_mention::ContextReference;
 use crate::tui::history::{HistoryCell, TranscriptRenderOptions};
 use crate::tui::paste_burst::{FlushResult, PasteBurst};
 use crate::tui::scrolling::{MouseScrollState, TranscriptLineMeta, TranscriptScroll};
@@ -526,6 +528,11 @@ pub struct App {
     pub tool_cells: HashMap<String, usize>,
     /// Full tool input/output keyed by history cell index.
     pub tool_details_by_cell: HashMap<usize, ToolDetailRecord>,
+    /// Linked context references keyed by the visible user history cell that
+    /// introduced them.
+    pub context_references_by_cell: HashMap<usize, Vec<SessionContextReference>>,
+    /// Session-wide context references persisted with saved sessions.
+    pub session_context_references: Vec<SessionContextReference>,
     /// In-flight tool/exec group for the current turn. Mutated in place as
     /// parallel tool calls start and complete; flushed into `history` on
     /// `TurnComplete`.
@@ -919,6 +926,8 @@ impl App {
             active_skill: None,
             tool_cells: HashMap::new(),
             tool_details_by_cell: HashMap::new(),
+            context_references_by_cell: HashMap::new(),
+            session_context_references: Vec::new(),
             active_cell: None,
             active_cell_revision: 0,
             active_tool_details: HashMap::new(),
@@ -1189,6 +1198,8 @@ impl App {
     pub fn clear_history(&mut self) {
         self.history.clear();
         self.history_revisions.clear();
+        self.context_references_by_cell.clear();
+        self.session_context_references.clear();
         self.history_version = self.history_version.wrapping_add(1);
         self.needs_redraw = true;
     }
@@ -1198,6 +1209,8 @@ impl App {
         let cell = self.history.pop();
         if cell.is_some() {
             self.history_revisions.pop();
+            self.context_references_by_cell.remove(&self.history.len());
+            self.rebuild_session_context_references();
             self.history_version = self.history_version.wrapping_add(1);
             self.needs_redraw = true;
         }
@@ -1223,6 +1236,9 @@ impl App {
         // cells continue to render correctly.
         self.tool_cells.retain(|_, idx| *idx < new_len);
         self.tool_details_by_cell.retain(|idx, _| *idx < new_len);
+        self.context_references_by_cell
+            .retain(|idx, _| *idx < new_len);
+        self.rebuild_session_context_references();
         self.subagent_card_index.retain(|_, idx| *idx < new_len);
         if self
             .last_fanout_card_index
@@ -1339,6 +1355,56 @@ impl App {
         (0..self.virtual_cell_count())
             .rev()
             .find(|&idx| self.cell_has_detail_target(idx))
+    }
+
+    pub fn record_context_references(
+        &mut self,
+        history_cell: usize,
+        message_index: usize,
+        references: Vec<ContextReference>,
+    ) {
+        if references.is_empty() {
+            return;
+        }
+        let records: Vec<SessionContextReference> = references
+            .into_iter()
+            .map(|reference| SessionContextReference {
+                message_index,
+                reference,
+            })
+            .collect();
+        self.context_references_by_cell
+            .insert(history_cell, records.clone());
+        self.rebuild_session_context_references();
+        self.needs_redraw = true;
+    }
+
+    pub fn sync_context_references_from_session(
+        &mut self,
+        references: &[SessionContextReference],
+        message_to_cell: &HashMap<usize, usize>,
+    ) {
+        self.context_references_by_cell.clear();
+        for record in references {
+            let Some(&cell_index) = message_to_cell.get(&record.message_index) else {
+                continue;
+            };
+            self.context_references_by_cell
+                .entry(cell_index)
+                .or_default()
+                .push(record.clone());
+        }
+        self.rebuild_session_context_references();
+    }
+
+    fn rebuild_session_context_references(&mut self) {
+        let mut records: Vec<SessionContextReference> = self
+            .context_references_by_cell
+            .values()
+            .flat_map(|records| records.iter().cloned())
+            .collect();
+        records.sort_by_key(|record| record.message_index);
+        self.session_context_references = records;
     }
 
     /// Mutable variant of [`Self::cell_at_virtual_index`]. Bumps the
@@ -2218,6 +2284,7 @@ pub enum AppAction {
         model: Option<String>,
     },
     UpdateCompaction(CompactionConfig),
+    OpenContextInspector,
     CompactContext,
     TaskAdd {
         prompt: String,

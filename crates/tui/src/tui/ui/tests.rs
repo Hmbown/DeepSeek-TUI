@@ -185,13 +185,20 @@ fn file_mentions_add_local_text_context_to_model_payload() {
     app.workspace = tmpdir.path().to_path_buf();
     let message = QueuedMessage::new("Summarize @guide.md".to_string(), None);
 
-    let content = queued_message_content_for_app(&app, &message);
+    let content = queued_message_content_for_app(&app, &message, None);
 
     assert!(content.starts_with("Summarize @guide.md"));
     assert!(content.contains("Local context from @mentions:"));
     assert!(content.contains("<file mention=\"@guide.md\""));
     assert!(content.contains("# Guide\nUse the fast path."));
     assert_eq!(message.display, "Summarize @guide.md");
+}
+
+#[test]
+fn compact_user_context_display_hides_persisted_mention_block() {
+    let content = "Summarize @guide.md\n\n---\n\nLocal context from @mentions:\n<file>large</file>";
+
+    assert_eq!(compact_user_context_display(content), "Summarize @guide.md");
 }
 
 #[test]
