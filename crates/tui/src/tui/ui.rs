@@ -1263,8 +1263,7 @@ async fn run_event_loop(
                 if app.view_stack.top_kind() == Some(ModalKind::Help) {
                     app.view_stack.pop();
                 } else {
-                    app.view_stack
-                        .push(HelpView::new_for_workspace(app.workspace.clone()));
+                    app.view_stack.push(HelpView::new());
                 }
                 continue;
             }
@@ -1273,8 +1272,7 @@ async fn run_event_loop(
                 if app.view_stack.top_kind() == Some(ModalKind::Help) {
                     app.view_stack.pop();
                 } else {
-                    app.view_stack
-                        .push(HelpView::new_for_workspace(app.workspace.clone()));
+                    app.view_stack.push(HelpView::new());
                 }
                 continue;
             }
@@ -1631,6 +1629,21 @@ async fn run_event_loop(
                         && !jump_to_adjacent_tool_cell(app, SearchDirection::Forward) =>
                 {
                     app.status_message = Some("No next tool output".to_string());
+                }
+                // `?` opens the searchable help overlay (#93). Gated on the
+                // composer being empty so typing `?` mid-question is treated
+                // as text. `Shift` is permitted because US layouts produce
+                // `?` as `Shift+/`. Help-modal toggling lives next to the
+                // F1 / Ctrl+/ branch above; here we only open.
+                KeyCode::Char('?')
+                    if (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT)
+                        && app.input.is_empty()
+                        && !slash_menu_open =>
+                {
+                    if app.view_stack.top_kind() != Some(ModalKind::Help) {
+                        app.view_stack.push(HelpView::new());
+                    }
+                    continue;
                 }
                 // Input handling
                 KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
