@@ -420,6 +420,61 @@ impl RetryPolicy {
     }
 }
 
+/// Context management configuration (append-only layered context with Flash seams).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ContextConfig {
+    /// Master enable for layered context management. Default: true.
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    /// Verbatim window: last N turns never summarized. Default: 16.
+    #[serde(default)]
+    pub verbatim_window_turns: Option<usize>,
+    /// Soft seam thresholds (cumulative input+output tokens).
+    #[serde(default)]
+    pub l1_threshold: Option<usize>,
+    #[serde(default)]
+    pub l2_threshold: Option<usize>,
+    #[serde(default)]
+    pub l3_threshold: Option<usize>,
+    /// Hard cycle boundary. Default: 768000.
+    #[serde(default)]
+    pub cycle_threshold: Option<usize>,
+    /// Model used for seam/briefing work. Default: "deepseek-v4-flash".
+    #[serde(default)]
+    pub seam_model: Option<String>,
+    /// Per-model threshold overrides.
+    #[serde(default)]
+    pub per_model: Option<HashMap<String, PerModelContextConfig>>,
+}
+
+/// Per-model context tuning.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PerModelContextConfig {
+    #[serde(default)]
+    pub l1_threshold: Option<usize>,
+    #[serde(default)]
+    pub l2_threshold: Option<usize>,
+    #[serde(default)]
+    pub l3_threshold: Option<usize>,
+    #[serde(default)]
+    pub cycle_threshold: Option<usize>,
+}
+
+impl Default for ContextConfig {
+    fn default() -> Self {
+        Self {
+            enabled: Some(true),
+            verbatim_window_turns: Some(16),
+            l1_threshold: Some(192_000),
+            l2_threshold: Some(384_000),
+            l3_threshold: Some(576_000),
+            cycle_threshold: Some(768_000),
+            seam_model: Some("deepseek-v4-flash".to_string()),
+            per_model: None,
+        }
+    }
+}
+
 /// Resolved CLI configuration, including defaults and environment overrides.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Config {
@@ -481,6 +536,10 @@ pub struct Config {
     /// applies the defaults documented in [`LspConfigToml`].
     #[serde(default)]
     pub lsp: Option<LspConfigToml>,
+
+    /// Append-only layered context management with Flash seam manager (#159).
+    #[serde(default)]
+    pub context: ContextConfig,
 }
 
 /// `[skills]` table — knobs for the community-skill installer.
@@ -1519,6 +1578,22 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         skills: override_cfg.skills.or(base.skills),
         snapshots: override_cfg.snapshots.or(base.snapshots),
         lsp: override_cfg.lsp.or(base.lsp),
+        context: ContextConfig {
+            enabled: override_cfg.context.enabled.or(base.context.enabled),
+            verbatim_window_turns: override_cfg
+                .context
+                .verbatim_window_turns
+                .or(base.context.verbatim_window_turns),
+            l1_threshold: override_cfg.context.l1_threshold.or(base.context.l1_threshold),
+            l2_threshold: override_cfg.context.l2_threshold.or(base.context.l2_threshold),
+            l3_threshold: override_cfg.context.l3_threshold.or(base.context.l3_threshold),
+            cycle_threshold: override_cfg
+                .context
+                .cycle_threshold
+                .or(base.context.cycle_threshold),
+            seam_model: override_cfg.context.seam_model.or(base.context.seam_model),
+            per_model: override_cfg.context.per_model.or(base.context.per_model),
+        },
     }
 }
 

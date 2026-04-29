@@ -309,7 +309,7 @@ impl StructuredState {
 }
 
 /// Build the prompt the model uses to produce its `<carry_forward>` briefing.
-const CYCLE_HANDOFF_TEMPLATE: &str = include_str!("prompts/cycle_handoff.md");
+pub const CYCLE_HANDOFF_TEMPLATE: &str = include_str!("prompts/cycle_handoff.md");
 
 /// Run the briefing turn. The caller drives this just before swapping the
 /// session message buffer. The returned text is the contents of the

@@ -39,7 +39,7 @@ impl Default for CompactionConfig {
     }
 }
 
-const KEEP_RECENT_MESSAGES: usize = 4;
+pub const KEEP_RECENT_MESSAGES: usize = 4;
 const RECENT_WORKING_SET_WINDOW: usize = 12;
 const MAX_WORKING_SET_PATHS: usize = 24;
 const MIN_SUMMARIZE_MESSAGES: usize = 6;
@@ -94,9 +94,9 @@ fn summary_input_limits_for_model(model: &str) -> SummaryInputLimits {
 }
 
 #[derive(Debug, Clone, Default)]
-struct CompactionPlan {
-    pinned_indices: BTreeSet<usize>,
-    summarize_indices: Vec<usize>,
+pub struct CompactionPlan {
+    pub pinned_indices: BTreeSet<usize>,
+    pub summarize_indices: Vec<usize>,
 }
 
 fn path_regex() -> &'static Regex {
@@ -342,7 +342,7 @@ fn should_pin_message(text: &str, working_set_paths: &HashSet<String>) -> bool {
     patch_markers.iter().any(|m| lower.contains(m))
 }
 
-fn plan_compaction(
+pub fn plan_compaction(
     messages: &[Message],
     workspace: Option<&Path>,
     keep_recent: usize,
