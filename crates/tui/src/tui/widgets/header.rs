@@ -31,7 +31,8 @@ pub struct HeaderData<'a> {
     pub context_window: Option<u32>,
     /// Accumulated session cost in USD.
     pub session_cost: f64,
-    /// Input tokens from the most recent API call (current context utilization).
+    /// Active context input tokens used for context utilization. Callers should
+    /// pass a sanitized live-context estimate, not cumulative API usage.
     pub last_prompt_tokens: Option<u32>,
     /// Short label for the current reasoning-effort tier (e.g. "max", "high",
     /// "off"). Rendered as a chip when space allows.
@@ -90,12 +91,12 @@ impl<'a> HeaderData<'a> {
         total_tokens: u32,
         context_window: Option<u32>,
         session_cost: f64,
-        last_prompt_tokens: Option<u32>,
+        active_context_input_tokens: Option<u32>,
     ) -> Self {
         self.total_tokens = total_tokens;
         self.context_window = context_window;
         self.session_cost = session_cost;
-        self.last_prompt_tokens = last_prompt_tokens;
+        self.last_prompt_tokens = active_context_input_tokens;
         self
     }
 }

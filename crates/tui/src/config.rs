@@ -445,7 +445,7 @@ pub struct ContextConfig {
     /// Verbatim window: last N turns never summarized. Default: 16.
     #[serde(default)]
     pub verbatim_window_turns: Option<usize>,
-    /// Soft seam thresholds (cumulative input+output tokens).
+    /// Soft seam thresholds based on the active request input estimate.
     #[serde(default)]
     pub l1_threshold: Option<usize>,
     #[serde(default)]

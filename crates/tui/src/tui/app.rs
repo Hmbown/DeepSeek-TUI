@@ -612,13 +612,15 @@ pub struct App {
     pub runtime_turn_id: Option<String>,
     /// Current runtime turn status (if known).
     pub runtime_turn_status: Option<String>,
-    /// Last prompt token usage
+    /// Provider-reported input tokens from the last completed turn. This is
+    /// telemetry/cost data and may sum repeated stable prefixes across tool
+    /// rounds; active context pressure is estimated from `api_messages`.
     pub last_prompt_tokens: Option<u32>,
-    /// Last completion token usage
+    /// Provider-reported output tokens from the last completed turn.
     pub last_completion_tokens: Option<u32>,
-    /// DeepSeek context-cache hit tokens from the last API call.
+    /// DeepSeek context-cache hit tokens from the last API call. Telemetry only.
     pub last_prompt_cache_hit_tokens: Option<u32>,
-    /// DeepSeek context-cache miss tokens from the last API call.
+    /// DeepSeek context-cache miss tokens from the last API call. Telemetry only.
     pub last_prompt_cache_miss_tokens: Option<u32>,
     /// Approximate input tokens spent re-sending prior `reasoning_content` on
     /// the last thinking-mode tool-calling turn (V4 §5.1.1 "Interleaved

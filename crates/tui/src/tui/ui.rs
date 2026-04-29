@@ -4714,7 +4714,7 @@ fn footer_context_percent_spans(app: &App) -> Vec<Span<'static>> {
         palette::TEXT_MUTED
     };
     vec![Span::styled(
-        format!("ctx {percent:.0}%"),
+        format!("active ctx {percent:.0}%"),
         Style::default().fg(color),
     )]
 }
@@ -4802,7 +4802,7 @@ fn footer_cache_spans(app: &App) -> Vec<Span<'static>> {
 
     let percent = (f64::from(hit_tokens) / f64::from(total) * 100.0).clamp(0.0, 100.0);
     vec![Span::styled(
-        format!("cache {:.0}%", percent),
+        format!("cache hit {:.0}%", percent),
         Style::default().fg(palette::TEXT_MUTED),
     )]
 }

@@ -354,9 +354,9 @@ fn should_transparently_retry_stream(
 /// Max output tokens requested for normal agent turns. Generous on purpose:
 /// V4 thinking models can produce tens of thousands of reasoning tokens on
 /// hard prompts before the visible reply, and DeepSeek V4 ships with a 1M
-/// context window. 256K leaves the model effectively unconstrained on
-/// output without us imposing artificial per-turn caps that surfaced as the
-/// assistant "stopping mid-response" when reasoning consumed the budget.
+/// context window. v0.7.5 keeps this cap fixed instead of silently lowering
+/// `max_tokens` near pressure; hard-cycle/preflight checks reserve this budget
+/// plus safety headroom before sending the next request.
 const TURN_MAX_OUTPUT_TOKENS: u32 = 262_144;
 /// Keep this many most recent messages when emergency trimming is required.
 const MIN_RECENT_MESSAGES_TO_KEEP: usize = 4;
@@ -1197,6 +1197,10 @@ fn context_input_budget(model: &str, requested_output_tokens: u32) -> Option<usi
     window
         .checked_sub(output)
         .and_then(|v| v.checked_sub(CONTEXT_HEADROOM_TOKENS))
+}
+
+fn turn_response_headroom_tokens() -> u64 {
+    u64::from(TURN_MAX_OUTPUT_TOKENS).saturating_add(CONTEXT_HEADROOM_TOKENS as u64)
 }
 
 fn is_context_length_error_message(message: &str) -> bool {
@@ -2440,7 +2444,7 @@ impl Engine {
     /// Handle a turn using the DeepSeek API.
     #[allow(clippy::too_many_lines)]
     /// Run the pre-request layered-context checkpoint (#159). Checks whether
-    /// cumulative tokens have crossed a soft-seam threshold and, if so,
+    /// the active input estimate has crossed a soft-seam threshold and, if so,
     /// produces an `<archived_context>` block via Flash and appends it as an
     /// assistant message. Called from `handle_deepseek_turn` before each API
     /// request so the model always has the latest navigation aids.
@@ -2452,18 +2456,8 @@ impl Engine {
             return;
         }
 
-        // Cumulative tokens: session total (all turns so far) + current
-        // estimated input (the messages that will be sent next).
-        let cumulative_input = self
-            .session
-            .total_usage
-            .input_tokens
-            .saturating_add(self.session.total_usage.output_tokens);
-        let cumulative_estimate =
-            cumulative_input.saturating_add(self.estimated_input_tokens() as u64);
-
         let highest = seam_mgr.highest_level().await;
-        let Some(level) = seam_mgr.seam_level_for(cumulative_estimate as usize, highest) else {
+        let Some(level) = seam_mgr.seam_level_for(self.estimated_input_tokens(), highest) else {
             return;
         };
 
@@ -2563,8 +2557,8 @@ impl Engine {
     /// they're still running.
     async fn maybe_advance_cycle(&mut self, mode: AppMode) {
         if !should_advance_cycle(
-            self.session.total_usage.input_tokens,
-            self.session.total_usage.output_tokens,
+            self.estimated_input_tokens() as u64,
+            turn_response_headroom_tokens(),
             &self.session.model,
             &self.config.cycle,
             false,

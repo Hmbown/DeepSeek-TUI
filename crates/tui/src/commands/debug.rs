@@ -3,9 +3,39 @@
 //! Debug commands: tokens, cost, system, context, undo, retry
 
 use super::CommandResult;
-use crate::models::SystemPrompt;
+use crate::compaction::estimate_input_tokens_conservative;
+use crate::models::{SystemPrompt, context_window_for_model};
 use crate::tui::app::{App, AppAction};
 use crate::tui::history::HistoryCell;
+
+fn token_count(value: Option<u32>) -> String {
+    value.map_or_else(|| "not reported".to_string(), |tokens| tokens.to_string())
+}
+
+fn active_context_summary(app: &App) -> String {
+    let estimated =
+        estimate_input_tokens_conservative(&app.api_messages, app.system_prompt.as_ref());
+    match context_window_for_model(&app.model) {
+        Some(window) => {
+            let used = estimated.min(window as usize);
+            let percent = (used as f64 / f64::from(window) * 100.0).clamp(0.0, 100.0);
+            format!("~{used} / {window} ({percent:.1}%)")
+        }
+        None => format!("~{estimated} / unknown window"),
+    }
+}
+
+fn cache_summary(app: &App) -> String {
+    match (
+        app.last_prompt_cache_hit_tokens,
+        app.last_prompt_cache_miss_tokens,
+    ) {
+        (Some(hit), Some(miss)) => format!("{hit} hit / {miss} miss"),
+        (Some(hit), None) => format!("{hit} hit / miss not reported"),
+        (None, Some(miss)) => format!("hit not reported / {miss} miss"),
+        (None, None) => "not reported".to_string(),
+    }
+}
 
 /// Show token usage for session
 pub fn tokens(app: &mut App) -> CommandResult {
@@ -15,12 +45,24 @@ pub fn tokens(app: &mut App) -> CommandResult {
     CommandResult::message(format!(
         "Token Usage:\n\
          ─────────────────────────────\n\
-         Total tokens:     {}\n\
-         Session cost:     ${:.4}\n\
-         API messages:     {}\n\
-         Chat messages:    {}\n\
-         Model:            {}",
-        app.total_tokens, app.session_cost, message_count, chat_count, app.model,
+         Active context:        {}\n\
+         Last API input:        {} (turn telemetry; may count repeated prefix across tool rounds)\n\
+         Last API output:       {}\n\
+         Cache hit/miss:        {} (telemetry/cost only)\n\
+         Cumulative tokens:     {} (session usage telemetry)\n\
+         Approx session cost:   ${:.4}\n\
+         API messages:          {}\n\
+         Chat messages:         {}\n\
+         Model:                 {}",
+        active_context_summary(app),
+        token_count(app.last_prompt_tokens),
+        token_count(app.last_completion_tokens),
+        cache_summary(app),
+        app.total_tokens,
+        app.session_cost,
+        message_count,
+        chat_count,
+        app.model,
     ))
 }
 
@@ -29,7 +71,8 @@ pub fn cost(app: &mut App) -> CommandResult {
     CommandResult::message(format!(
         "Session Cost:\n\
          ─────────────────────────────\n\
-         Total spent:      ${:.4}\n\n\
+         Approx total spent: ${:.4}\n\n\
+         Cost estimates are approximate and use provider usage telemetry when available.\n\n\
          DeepSeek API Pricing:\n\
          ─────────────────────────────\n\
          Pricing details are not configured in this CLI.",
@@ -113,9 +156,16 @@ mod tests {
         let mut app = create_test_app();
         app.total_tokens = 1234;
         app.session_cost = 0.05;
+        app.last_prompt_tokens = Some(100);
+        app.last_completion_tokens = Some(25);
+        app.last_prompt_cache_hit_tokens = Some(70);
+        app.last_prompt_cache_miss_tokens = Some(30);
         app.api_messages.push(Message {
             role: "user".to_string(),
-            content: vec![],
+            content: vec![ContentBlock::Text {
+                text: "test".to_string(),
+                cache_control: None,
+            }],
         });
         app.history.push(HistoryCell::User {
             content: "test".to_string(),
@@ -125,8 +175,13 @@ mod tests {
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
         assert!(msg.contains("Token Usage"));
-        assert!(msg.contains("Total tokens:"));
-        assert!(msg.contains("Session cost:"));
+        assert!(msg.contains("Active context:"));
+        assert!(msg.contains("Last API input:"));
+        assert!(msg.contains("Last API output:"));
+        assert!(msg.contains("Cache hit/miss:"));
+        assert!(msg.contains("70 hit / 30 miss"));
+        assert!(msg.contains("Cumulative tokens:"));
+        assert!(msg.contains("Approx session cost:"));
         assert!(msg.contains("API messages:"));
         assert!(msg.contains("Chat messages:"));
         assert!(msg.contains("Model:"));
@@ -140,7 +195,8 @@ mod tests {
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
         assert!(msg.contains("Session Cost"));
-        assert!(msg.contains("Total spent:"));
+        assert!(msg.contains("Approx total spent:"));
+        assert!(msg.contains("approximate"));
         assert!(msg.contains("$0.1234"));
     }
 

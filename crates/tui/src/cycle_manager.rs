@@ -29,9 +29,12 @@
 //!
 //! ## Trigger
 //!
-//! - Token threshold: **768K** by default (~75% of the 1M window). This is a
-//!   rare overflow safety net. Optional soft seams at 192K/384K/576K are
-//!   controlled by the opt-in layered context manager (#159).
+//! - Token threshold: **768K** active input by default (~75% of the 1M window).
+//!   This is a rare overflow safety net. The trigger is based on the next
+//!   request's live input estimate, not lifetime summed API usage, with
+//!   assistant-output and safety headroom considered against the model window.
+//!   Optional soft seams at 192K/384K/576K are controlled by the opt-in layered
+//!   context manager (#159).
 //! - Phase guard: callers only invoke `should_advance_cycle` at clean turn
 //!   boundaries (no in-flight tool, no streaming, no approval modal).
 //! - Per-model overrides: `[cycle.per_model]` in config.toml lets operators
@@ -48,7 +51,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::client::DeepSeekClient;
 use crate::llm_client::LlmClient;
-use crate::models::{ContentBlock, Message, MessageRequest, SystemBlock, SystemPrompt};
+use crate::models::{
+    ContentBlock, Message, MessageRequest, SystemBlock, SystemPrompt, context_window_for_model,
+};
 use crate::tools::plan::{PlanSnapshot, SharedPlanState};
 use crate::tools::subagent::{SharedSubAgentManager, SubAgentResult, SubAgentStatus};
 use crate::tools::todo::{SharedTodoList, TodoListSnapshot};
@@ -151,14 +156,20 @@ pub struct CycleBriefing {
 
 /// Decide whether a cycle boundary should fire.
 ///
-/// `usage` is the *cumulative* session input+output tokens (both `u64` to
-/// match `SessionUsage`). `in_flight` is true when a tool is mid-execution,
-/// stream is open, or an approval modal is pending — in those cases the
-/// caller must wait until the next clean boundary.
+/// `active_input_tokens` is the estimated token count of the next request's
+/// current input, including previous assistant/tool output that is now part of
+/// the transcript. `reserved_response_headroom_tokens` is the max output budget
+/// plus any provider safety headroom reserved for that next request. Lifetime
+/// API usage is intentionally not used here because it repeatedly counts the
+/// same stable prefix across requests.
+///
+/// `in_flight` is true when a tool is mid-execution, stream is open, or an
+/// approval modal is pending — in those cases the caller must wait until the
+/// next clean boundary.
 #[must_use]
 pub fn should_advance_cycle(
-    cumulative_input_tokens: u64,
-    cumulative_output_tokens: u64,
+    active_input_tokens: u64,
+    reserved_response_headroom_tokens: u64,
     model: &str,
     cfg: &CycleConfig,
     in_flight: bool,
@@ -166,12 +177,14 @@ pub fn should_advance_cycle(
     if !cfg.enabled || in_flight {
         return false;
     }
-    let total = cumulative_input_tokens.saturating_add(cumulative_output_tokens);
     let threshold = cfg.threshold_for(model) as u64;
     if threshold == 0 {
         return false;
     }
-    total >= threshold
+    let trigger_floor = context_window_for_model(model)
+        .map(|window| u64::from(window).saturating_sub(reserved_response_headroom_tokens))
+        .map_or(threshold, |window_floor| threshold.min(window_floor));
+    active_input_tokens >= trigger_floor
 }
 
 /// Roll-up of state that survives a cycle boundary deterministically.
@@ -759,12 +772,60 @@ mod tests {
     }
 
     #[test]
-    fn should_advance_combines_input_and_output() {
+    fn should_advance_considers_output_plus_safety_headroom() {
         let cfg = CycleConfig::default();
-        // 400K + 400K = 800K > 768K threshold
+        // Below the 768K active-input threshold, but too close to the 1M
+        // model window once the next assistant response and safety headroom are
+        // included.
         assert!(should_advance_cycle(
-            400_000,
-            400_000,
+            737_000,
+            263_168,
+            "deepseek-v4-pro",
+            &cfg,
+            false
+        ));
+    }
+
+    #[test]
+    fn should_not_count_lifetime_api_usage_as_active_context() {
+        let cfg = CycleConfig::default();
+        assert!(!should_advance_cycle(
+            120_000,
+            64_000,
+            "deepseek-v4-pro",
+            &cfg,
+            false
+        ));
+    }
+
+    #[test]
+    fn should_advance_v4_calibrates_threshold_against_output_reserve() {
+        let cfg = CycleConfig::default();
+        let reserve = 263_168;
+        assert!(!should_advance_cycle(
+            700_000,
+            reserve,
+            "deepseek-v4-pro",
+            &cfg,
+            false
+        ));
+        assert!(should_advance_cycle(
+            738_000,
+            reserve,
+            "deepseek-v4-pro",
+            &cfg,
+            false
+        ));
+        assert!(should_advance_cycle(
+            768_000,
+            reserve,
+            "deepseek-v4-pro",
+            &cfg,
+            false
+        ));
+        assert!(should_advance_cycle(
+            900_000,
+            reserve,
             "deepseek-v4-pro",
             &cfg,
             false
