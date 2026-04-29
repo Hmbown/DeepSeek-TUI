@@ -72,16 +72,17 @@ impl PendingInputPreview {
         }
     }
 
+    fn has_pending_inputs(&self) -> bool {
+        !self.pending_steers.is_empty()
+            || !self.rejected_steers.is_empty()
+            || !self.queued_messages.is_empty()
+    }
+
     /// Build the (possibly empty) ordered line list this widget would render
     /// at `width`. Pulled out so `desired_height` can ask the same renderer
     /// without duplicating wrapping logic.
     fn lines(&self, width: u16) -> Vec<Line<'static>> {
-        if (self.context_items.is_empty()
-            && self.pending_steers.is_empty()
-            && self.rejected_steers.is_empty()
-            && self.queued_messages.is_empty())
-            || width < 4
-        {
+        if (self.context_items.is_empty() && !self.has_pending_inputs()) || width < 4 {
             return Vec::new();
         }
 
@@ -102,10 +103,7 @@ impl PendingInputPreview {
             }
         }
 
-        if !self.pending_steers.is_empty()
-            || !self.rejected_steers.is_empty()
-            || !self.queued_messages.is_empty()
-        {
+        if self.has_pending_inputs() {
             if !lines.is_empty() {
                 lines.push(Line::from(""));
             }

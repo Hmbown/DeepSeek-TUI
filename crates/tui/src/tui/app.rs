@@ -448,7 +448,7 @@ pub struct App {
     #[allow(dead_code)]
     pub system_prompt: Option<SystemPrompt>,
     pub input_history: Vec<String>,
-    pub draft_history: Vec<String>,
+    pub draft_history: VecDeque<String>,
     pub history_index: Option<usize>,
     pub composer_history_search: Option<ComposerHistorySearch>,
     pub selected_attachment_index: Option<usize>,
@@ -894,7 +894,7 @@ impl App {
             use_paste_burst_detection,
             system_prompt: None,
             input_history: Vec::new(),
-            draft_history: Vec::new(),
+            draft_history: VecDeque::new(),
             history_index: None,
             composer_history_search: None,
             selected_attachment_index: None,
@@ -1955,6 +1955,26 @@ impl App {
         }
     }
 
+    pub fn flush_paste_burst_if_enabled(&mut self, now: Instant) -> bool {
+        self.use_paste_burst_detection && self.flush_paste_burst_if_due(now)
+    }
+
+    pub fn paste_burst_next_flush_delay_if_enabled(&self, now: Instant) -> Option<Duration> {
+        if self.use_paste_burst_detection {
+            self.paste_burst.next_flush_delay(now)
+        } else {
+            None
+        }
+    }
+
+    pub fn flush_paste_burst_before_modified_input_if_enabled(&mut self) -> Option<String> {
+        if self.use_paste_burst_detection {
+            self.paste_burst.flush_before_modified_input()
+        } else {
+            None
+        }
+    }
+
     pub fn insert_api_key_char(&mut self, c: char) {
         let cursor = self.api_key_cursor.min(char_count(&self.api_key_input));
         let byte_index = byte_index_at_char(&self.api_key_input, cursor);
@@ -2190,10 +2210,9 @@ impl App {
             return;
         }
         self.draft_history.retain(|existing| existing != &draft);
-        self.draft_history.push(draft);
-        if self.draft_history.len() > MAX_DRAFT_HISTORY {
-            let excess = self.draft_history.len() - MAX_DRAFT_HISTORY;
-            self.draft_history.drain(0..excess);
+        self.draft_history.push_back(draft);
+        while self.draft_history.len() > MAX_DRAFT_HISTORY {
+            let _ = self.draft_history.pop_front();
         }
     }
 
@@ -2972,7 +2991,7 @@ mod tests {
         app.input_history.push("alpha one".to_string());
         app.input_history.push("beta two".to_string());
         app.input_history.push("alpha one".to_string());
-        app.draft_history.push("draft alpha".to_string());
+        app.draft_history.push_back("draft alpha".to_string());
 
         app.start_history_search();
         app.history_search_insert_str("alpha");

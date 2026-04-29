@@ -1098,9 +1098,7 @@ async fn run_event_loop(
         }
 
         let now = Instant::now();
-        if app.use_paste_burst_detection {
-            app.flush_paste_burst_if_due(now);
-        }
+        app.flush_paste_burst_if_enabled(now);
         app.sync_status_message_to_toasts();
         // Expire the "Press Ctrl+C again to quit" prompt silently after its
         // window. Triggers a redraw if the prompt was visible.
@@ -1136,9 +1134,7 @@ async fn run_event_loop(
         } else {
             Duration::from_millis(idle_poll_ms(app))
         };
-        if app.use_paste_burst_detection
-            && let Some(until_flush) = app.paste_burst.next_flush_delay(now)
-        {
+        if let Some(until_flush) = app.paste_burst_next_flush_delay_if_enabled(now) {
             poll_timeout = poll_timeout.min(until_flush);
         }
         if let Some(until_draw) = draw_wait {
@@ -1425,9 +1421,7 @@ async fn run_event_loop(
             }
 
             let now = Instant::now();
-            if app.use_paste_burst_detection {
-                app.flush_paste_burst_if_due(now);
-            }
+            app.flush_paste_burst_if_enabled(now);
 
             // On Windows, AltGr is delivered as `Ctrl+Alt`; treat
             // AltGr-typed chars (e.g. European layouts producing `@`, `\`,
@@ -1438,10 +1432,9 @@ async fn run_event_loop(
             let is_plain_char = matches!(key.code, KeyCode::Char(_)) && !has_ctrl_alt_or_super;
             let is_enter = matches!(key.code, KeyCode::Enter);
 
-            if app.use_paste_burst_detection
-                && !is_plain_char
+            if !is_plain_char
                 && !is_enter
-                && let Some(pending) = app.paste_burst.flush_before_modified_input()
+                && let Some(pending) = app.flush_paste_burst_before_modified_input_if_enabled()
             {
                 app.insert_str(&pending);
             }
