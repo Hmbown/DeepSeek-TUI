@@ -1346,7 +1346,7 @@ async fn run_event_loop(
                 if app.view_stack.top_kind() == Some(ModalKind::Help) {
                     app.view_stack.pop();
                 } else {
-                    app.view_stack.push(HelpView::new());
+                    app.view_stack.push(HelpView::new_for_locale(app.ui_locale));
                 }
                 continue;
             }
@@ -1355,7 +1355,7 @@ async fn run_event_loop(
                 if app.view_stack.top_kind() == Some(ModalKind::Help) {
                     app.view_stack.pop();
                 } else {
-                    app.view_stack.push(HelpView::new());
+                    app.view_stack.push(HelpView::new_for_locale(app.ui_locale));
                 }
                 continue;
             }
@@ -1833,7 +1833,7 @@ async fn run_event_loop(
                         && !slash_menu_open =>
                 {
                     if app.view_stack.top_kind() != Some(ModalKind::Help) {
-                        app.view_stack.push(HelpView::new());
+                        app.view_stack.push(HelpView::new_for_locale(app.ui_locale));
                     }
                     continue;
                 }
@@ -1881,16 +1881,14 @@ async fn run_event_loop(
                         }
                     }
                 }
-                KeyCode::Backspace => {
-                    if !app.remove_selected_composer_attachment() {
-                        app.delete_char();
-                    }
+                KeyCode::Backspace if !app.remove_selected_composer_attachment() => {
+                    app.delete_char();
                 }
-                KeyCode::Delete => {
-                    if !app.remove_selected_composer_attachment() {
-                        app.delete_char_forward();
-                    }
+                KeyCode::Backspace => {}
+                KeyCode::Delete if !app.remove_selected_composer_attachment() => {
+                    app.delete_char_forward();
                 }
+                KeyCode::Delete => {}
                 KeyCode::Left => {
                     app.move_cursor_left();
                 }

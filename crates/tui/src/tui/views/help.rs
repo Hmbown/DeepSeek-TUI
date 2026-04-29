@@ -22,6 +22,7 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::commands;
+use crate::localization::{Locale, MessageId, tr};
 use crate::palette;
 use crate::tui::keybindings::KEYBINDINGS;
 use crate::tui::views::{ModalKind, ModalView, ViewAction};
@@ -34,10 +35,10 @@ enum HelpSection {
 }
 
 impl HelpSection {
-    fn label(self) -> &'static str {
+    fn label(self, locale: Locale) -> &'static str {
         match self {
-            Self::Command => "Slash commands",
-            Self::Keybinding => "Keybindings",
+            Self::Command => tr(locale, MessageId::HelpSlashCommands),
+            Self::Keybinding => tr(locale, MessageId::HelpKeybindings),
         }
     }
 
@@ -67,6 +68,7 @@ struct HelpEntry {
 }
 
 pub struct HelpView {
+    locale: Locale,
     entries: Vec<HelpEntry>,
     /// Indices into `entries`, in display order, after filtering.
     filtered: Vec<usize>,
@@ -82,8 +84,13 @@ impl Default for HelpView {
 
 impl HelpView {
     pub fn new() -> Self {
+        Self::new_for_locale(Locale::En)
+    }
+
+    pub fn new_for_locale(locale: Locale) -> Self {
         let entries = build_entries();
         let mut view = Self {
+            locale,
             entries,
             filtered: Vec::new(),
             query: String::new(),
@@ -91,6 +98,10 @@ impl HelpView {
         };
         view.refilter();
         view
+    }
+
+    fn tr(&self, id: MessageId) -> &'static str {
+        tr(self.locale, id)
     }
 
     fn refilter(&mut self) {
@@ -295,9 +306,9 @@ impl ModalView for HelpView {
         let mut lines: Vec<Line<'static>> = Vec::new();
 
         let query_label = if self.query.is_empty() {
-            "Type to filter".to_string()
+            self.tr(MessageId::HelpFilterPlaceholder).to_string()
         } else {
-            format!("Filter: {}", self.query)
+            format!("{}{}", self.tr(MessageId::HelpFilterPrefix), self.query)
         };
         lines.push(Line::from(Span::styled(
             query_label,
@@ -321,7 +332,7 @@ impl ModalView for HelpView {
 
         if self.filtered.is_empty() {
             lines.push(Line::from(Span::styled(
-                "  No matches.",
+                self.tr(MessageId::HelpNoMatches),
                 Style::default()
                     .fg(palette::TEXT_MUTED)
                     .add_modifier(Modifier::ITALIC),
@@ -372,7 +383,7 @@ impl ModalView for HelpView {
                         .filter(|idx| self.entries[**idx].section == entry.section)
                         .count();
                     lines.push(Line::from(Span::styled(
-                        format!("  {} ({})", entry.section.label(), count),
+                        format!("  {} ({})", entry.section.label(self.locale), count),
                         Style::default()
                             .fg(palette::DEEPSEEK_BLUE)
                             .add_modifier(Modifier::BOLD),
@@ -403,16 +414,28 @@ impl ModalView for HelpView {
 
         let block = modal_block()
             .title(Line::from(vec![Span::styled(
-                " Help ",
+                format!(" {} ", self.tr(MessageId::HelpTitle)),
                 Style::default()
                     .fg(palette::DEEPSEEK_BLUE)
                     .add_modifier(Modifier::BOLD),
             )]))
             .title_bottom(Line::from(vec![
-                Span::styled(" type to filter ", Style::default().fg(palette::TEXT_MUTED)),
-                Span::styled("  ↑/↓ move ", Style::default().fg(palette::TEXT_MUTED)),
-                Span::styled(" PgUp/PgDn jump ", Style::default().fg(palette::TEXT_MUTED)),
-                Span::styled(" Esc close ", Style::default().fg(palette::TEXT_MUTED)),
+                Span::styled(
+                    self.tr(MessageId::HelpFooterTypeFilter),
+                    Style::default().fg(palette::TEXT_MUTED),
+                ),
+                Span::styled(
+                    self.tr(MessageId::HelpFooterMove),
+                    Style::default().fg(palette::TEXT_MUTED),
+                ),
+                Span::styled(
+                    self.tr(MessageId::HelpFooterJump),
+                    Style::default().fg(palette::TEXT_MUTED),
+                ),
+                Span::styled(
+                    self.tr(MessageId::HelpFooterClose),
+                    Style::default().fg(palette::TEXT_MUTED),
+                ),
             ]));
 
         Paragraph::new(lines).block(block).render(popup_area, buf);
@@ -589,6 +612,24 @@ mod tests {
         assert!(
             !dump.contains("/agent"),
             "non-matching commands should not render under a `yolo` filter:\n{dump}"
+        );
+    }
+
+    #[test]
+    fn localized_help_chrome_renders_without_missing_markers() {
+        let view = HelpView::new_for_locale(Locale::ZhHans);
+        let area = Rect::new(0, 0, 48, 18);
+        let mut buf = Buffer::empty(area);
+        view.render(area, &mut buf);
+
+        let dump = buffer_text(&buf, area);
+        assert!(
+            dump.contains('帮') && dump.contains('助'),
+            "missing localized title:\n{dump}"
+        );
+        assert!(
+            !dump.contains("MISSING"),
+            "missing-key marker leaked:\n{dump}"
         );
     }
 

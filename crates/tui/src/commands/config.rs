@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use super::CommandResult;
 use crate::config::{COMMON_DEEPSEEK_MODELS, clear_api_key, normalize_model_name};
+use crate::localization::resolve_locale;
 use crate::settings::Settings;
 use crate::tui::app::{App, AppAction, AppMode, OnboardingState, SidebarFocus};
 use crate::tui::approval::ApprovalMode;
@@ -215,6 +216,10 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
         "show_tool_details" | "tool_details" => {
             app.show_tool_details = settings.show_tool_details;
             app.mark_history_updated();
+        }
+        "locale" | "language" => {
+            app.ui_locale = resolve_locale(&settings.locale);
+            app.needs_redraw = true;
         }
         "composer_density" | "composer" => {
             app.composer_density =

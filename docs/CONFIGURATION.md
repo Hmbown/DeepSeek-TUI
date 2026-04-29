@@ -143,6 +143,10 @@ Common settings keys:
   independent of terminal bracketed-paste mode.
 - `show_thinking` (on/off)
 - `show_tool_details` (on/off)
+- `locale` (`auto`, `en`, `ja`, `zh-Hans`, `pt-BR`; default `auto`): UI chrome
+  locale. `auto` checks `LC_ALL`, `LC_MESSAGES`, then `LANG`; unsupported or
+  missing locales fall back to English. This does not force model output
+  language.
 - `default_mode` (agent, plan, yolo; legacy `normal` is accepted and normalized to `agent`)
 - `max_history` (number of submitted input history entries; cleared drafts are
   also kept locally for composer history search)
@@ -151,6 +155,11 @@ Common settings keys:
 Only `agent`, `plan`, and `yolo` are visible modes in the UI. For compatibility,
 older settings files with `default_mode = "normal"` still load as `agent`, and
 the hidden `/normal` slash command switches to `Agent`.
+
+Localization scope is tracked in [LOCALIZATION.md](LOCALIZATION.md). The v0.7.6
+core pack covers high-visibility TUI chrome only; provider/tool schemas,
+personality prompts, and full documentation remain English unless explicitly
+translated later.
 
 Readability semantics:
 

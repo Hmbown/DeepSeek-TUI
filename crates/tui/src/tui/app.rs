@@ -13,6 +13,7 @@ use crate::config::{ApiProvider, Config, has_api_key, save_api_key};
 use crate::core::coherence::CoherenceState;
 use crate::cycle_manager::{CycleBriefing, CycleConfig};
 use crate::hooks::{HookContext, HookEvent, HookExecutor, HookResult};
+use crate::localization::{Locale, MessageId, resolve_locale, tr};
 use crate::models::{
     Message, SystemPrompt, compaction_message_threshold_for_model,
     compaction_threshold_for_model_and_effort,
@@ -460,6 +461,7 @@ pub struct App {
     pub fancy_animations: bool,
     pub show_thinking: bool,
     pub show_tool_details: bool,
+    pub ui_locale: Locale,
     pub composer_density: ComposerDensity,
     pub composer_border: bool,
     pub transcript_spacing: TranscriptSpacing,
@@ -762,6 +764,10 @@ pub enum ApiKeyError {
 // === App State ===
 
 impl App {
+    pub fn tr(&self, id: MessageId) -> &'static str {
+        tr(self.ui_locale, id)
+    }
+
     #[allow(clippy::too_many_lines)]
     pub fn new(options: TuiOptions, config: &Config) -> Self {
         let TuiOptions {
@@ -793,6 +799,7 @@ impl App {
         let fancy_animations = settings.fancy_animations;
         let show_thinking = settings.show_thinking;
         let show_tool_details = settings.show_tool_details;
+        let ui_locale = resolve_locale(&settings.locale);
         let composer_density = ComposerDensity::from_setting(&settings.composer_density);
         let composer_border = settings.composer_border;
         let transcript_spacing = TranscriptSpacing::from_setting(&settings.transcript_spacing);
@@ -897,6 +904,7 @@ impl App {
             fancy_animations,
             show_thinking,
             show_tool_details,
+            ui_locale,
             composer_density,
             composer_border,
             transcript_spacing,
@@ -2238,8 +2246,8 @@ impl App {
     }
 
     fn history_search_matches_for_query(&self, query: &str) -> Vec<String> {
-        let normalized_query = query.trim().to_ascii_lowercase();
-        let mut seen = HashSet::new();
+        let normalized_query = query.trim().to_lowercase();
+        let mut seen: HashSet<&str> = HashSet::new();
         let mut matches = Vec::new();
 
         for candidate in self
@@ -2248,12 +2256,10 @@ impl App {
             .rev()
             .chain(self.input_history.iter().rev())
         {
-            if candidate.trim().is_empty() || !seen.insert(candidate.clone()) {
+            if candidate.trim().is_empty() || !seen.insert(candidate.as_str()) {
                 continue;
             }
-            if normalized_query.is_empty()
-                || candidate.to_ascii_lowercase().contains(&normalized_query)
-            {
+            if normalized_query.is_empty() || candidate.to_lowercase().contains(&normalized_query) {
                 matches.push(candidate.clone());
             }
         }
@@ -2974,6 +2980,20 @@ mod tests {
         assert_eq!(
             app.history_search_matches(),
             vec!["draft alpha".to_string(), "alpha one".to_string()]
+        );
+    }
+
+    #[test]
+    fn history_search_matches_unicode_case_insensitively() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input_history.push("CAFÉ prompt".to_string());
+
+        app.start_history_search();
+        app.history_search_insert_str("café");
+
+        assert_eq!(
+            app.history_search_matches(),
+            vec!["CAFÉ prompt".to_string()]
         );
     }
 

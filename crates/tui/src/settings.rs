@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{expand_path, normalize_model_name};
+use crate::localization::normalize_configured_locale;
 
 /// User settings with defaults
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,6 +33,8 @@ pub struct Settings {
     pub show_thinking: bool,
     /// Show detailed tool output
     pub show_tool_details: bool,
+    /// UI locale: auto, en, ja, zh-Hans, pt-BR
+    pub locale: String,
     /// Composer layout density: compact, comfortable, spacious
     pub composer_density: String,
     /// Show a border around the composer input area
@@ -61,6 +64,7 @@ impl Default for Settings {
             paste_burst_detection: true,
             show_thinking: true,
             show_tool_details: true,
+            locale: "auto".to_string(),
             composer_density: "comfortable".to_string(),
             composer_border: true,
             transcript_spacing: "comfortable".to_string(),
@@ -112,6 +116,9 @@ impl Settings {
         settings.transcript_spacing =
             normalize_transcript_spacing(&settings.transcript_spacing).to_string();
         settings.sidebar_focus = normalize_sidebar_focus(&settings.sidebar_focus).to_string();
+        settings.locale = normalize_configured_locale(&settings.locale)
+            .unwrap_or("en")
+            .to_string();
         settings.default_model = settings
             .default_model
             .as_deref()
@@ -162,6 +169,14 @@ impl Settings {
             }
             "show_tool_details" | "tool_details" => {
                 self.show_tool_details = parse_bool(value)?;
+            }
+            "locale" | "language" => {
+                let Some(locale) = normalize_configured_locale(value) else {
+                    anyhow::bail!(
+                        "Failed to update setting: invalid locale '{value}'. Expected: auto, en, ja, zh-Hans, pt-BR."
+                    );
+                };
+                self.locale = locale.to_string();
             }
             "composer_density" | "composer" => {
                 let normalized = normalize_composer_density(value);
@@ -273,6 +288,7 @@ impl Settings {
         ));
         lines.push(format!("  show_thinking:      {}", self.show_thinking));
         lines.push(format!("  show_tool_details:  {}", self.show_tool_details));
+        lines.push(format!("  locale:            {}", self.locale));
         lines.push(format!("  composer_density:   {}", self.composer_density));
         lines.push(format!("  composer_border:    {}", self.composer_border));
         lines.push(format!("  transcript_spacing: {}", self.transcript_spacing));
@@ -319,6 +335,10 @@ impl Settings {
             ),
             ("show_thinking", "Show model thinking: on/off"),
             ("show_tool_details", "Show detailed tool output: on/off"),
+            (
+                "locale",
+                "UI locale: auto, en, ja, zh-Hans, pt-BR (model output is unchanged)",
+            ),
             (
                 "composer_density",
                 "Composer density: compact, comfortable, spacious",
@@ -432,5 +452,20 @@ mod tests {
             .expect("disable bracketed paste");
         assert!(!settings.bracketed_paste);
         assert!(!settings.paste_burst_detection);
+    }
+
+    #[test]
+    fn locale_normalizes_supported_values_and_rejects_unknowns() {
+        let mut settings = Settings::default();
+        settings.set("locale", "ja_JP.UTF-8").expect("set ja");
+        assert_eq!(settings.locale, "ja");
+
+        settings.set("language", "pt-PT").expect("set pt fallback");
+        assert_eq!(settings.locale, "pt-BR");
+
+        let err = settings
+            .set("locale", "ar")
+            .expect_err("Arabic is planned, not shipped");
+        assert!(err.to_string().contains("invalid locale"));
     }
 }

@@ -211,7 +211,7 @@ pub const KEYBINDINGS: &[KeybindingEntry] = &[
     // --- Modes ---
     KeybindingEntry {
         chord: "Tab / Shift+Tab",
-        description: "Complete /command, queue running-turn follow-up, or cycle modes",
+        description: "Complete /command, queue running-turn follow-up, cycle modes; Shift+Tab cycles reasoning effort",
         section: KeybindingSection::Modes,
     },
     KeybindingEntry {

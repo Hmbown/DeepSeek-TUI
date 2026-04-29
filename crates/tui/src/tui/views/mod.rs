@@ -3,6 +3,7 @@ use ratatui::{buffer::Buffer, layout::Rect};
 use std::cell::Cell;
 use std::fmt;
 
+use crate::localization::{Locale, MessageId, tr};
 use crate::palette;
 use crate::settings::Settings;
 use crate::tools::UserInputResponse;
@@ -334,6 +335,7 @@ pub struct ConfigView {
     editing: Option<ConfigEdit>,
     filter: String,
     status: Option<String>,
+    locale: Locale,
     last_visible_rows: Cell<usize>,
 }
 
@@ -370,6 +372,13 @@ impl ConfigView {
                 section: ConfigSection::Permissions,
                 key: "default_mode".to_string(),
                 value: settings.default_mode.clone(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                section: ConfigSection::Display,
+                key: "locale".to_string(),
+                value: settings.locale.clone(),
                 editable: true,
                 scope: ConfigScope::Saved,
             },
@@ -473,8 +482,13 @@ impl ConfigView {
             editing: None,
             filter: String::new(),
             status: None,
+            locale: app.ui_locale,
             last_visible_rows: Cell::new(0),
         }
+    }
+
+    fn tr(&self, id: MessageId) -> &'static str {
+        tr(self.locale, id)
     }
 
     fn visible_rows_cached(&self) -> usize {
@@ -483,23 +497,22 @@ impl ConfigView {
     }
 
     fn row_matches_filter(&self, row: &ConfigRow) -> bool {
-        let filter = self.filter.trim().to_ascii_lowercase();
+        let filter = self.filter.trim().to_lowercase();
         if filter.is_empty() {
             return true;
         }
 
-        let haystack = format!(
-            "{} {} {} {}",
-            row.section.label(),
-            row.key,
-            row.value,
-            row.scope.label()
-        )
-        .to_ascii_lowercase();
+        let section = row.section.label().to_lowercase();
+        let key = row.key.to_lowercase();
+        let value = row.value.to_lowercase();
+        let scope = row.scope.label().to_lowercase();
 
-        filter
-            .split_whitespace()
-            .all(|term| haystack.contains(term))
+        filter.split_whitespace().all(|term| {
+            section.contains(term)
+                || key.contains(term)
+                || value.contains(term)
+                || scope.contains(term)
+        })
     }
 
     fn matching_row_indices(&self) -> Vec<usize> {
@@ -551,7 +564,7 @@ impl ConfigView {
             return;
         }
 
-        if !matches.iter().any(|idx| *idx == self.selected) {
+        if !matches.contains(&self.selected) {
             self.selected = matches[0];
         }
     }
@@ -773,6 +786,7 @@ fn config_hint_for_key(key: &str) -> &'static str {
         | "composer_border"
         | "paste_burst_detection" => "on/off, true/false, yes/no, 1/0",
         "composer_density" | "transcript_spacing" => "compact | comfortable | spacious",
+        "locale" => "auto | en | ja | zh-Hans | pt-BR",
         "default_mode" => "agent | plan | yolo",
         "sidebar_width" => "10..=50",
         "sidebar_focus" => "auto | plan | todos | tasks | agents",
@@ -853,11 +867,19 @@ impl ModalView for ConfigView {
                 }
             }
             KeyCode::Char('q') if self.filter.is_empty() => ViewAction::Close,
-            KeyCode::Up | KeyCode::Char('k') => {
+            KeyCode::Up => {
                 self.move_selection(-1);
                 ViewAction::None
             }
-            KeyCode::Down | KeyCode::Char('j') => {
+            KeyCode::Char('k') if self.filter.is_empty() => {
+                self.move_selection(-1);
+                ViewAction::None
+            }
+            KeyCode::Down => {
+                self.move_selection(1);
+                ViewAction::None
+            }
+            KeyCode::Char('j') if self.filter.is_empty() => {
                 self.move_selection(1);
                 ViewAction::None
             }
@@ -983,14 +1005,14 @@ impl ModalView for ConfigView {
             let end = (start + visible_rows).min(items.len());
             let scrollable = items.len() > visible_rows;
             let search_value = if self.filter.is_empty() {
-                "type to filter".to_string()
+                self.tr(MessageId::ConfigSearchPlaceholder).to_string()
             } else {
                 self.filter.clone()
             };
 
             let mut lines: Vec<Line> = vec![
                 Line::from(vec![Span::styled(
-                    "Session Configuration",
+                    self.tr(MessageId::ConfigTitle),
                     Style::default().fg(palette::DEEPSEEK_BLUE).bold(),
                 )]),
                 Line::from(vec![
@@ -1041,9 +1063,13 @@ impl ModalView for ConfigView {
 
             if items.is_empty() {
                 let message = if self.filter.is_empty() {
-                    "  No settings available.".to_string()
+                    self.tr(MessageId::ConfigNoSettings).to_string()
                 } else {
-                    format!("  No settings match \"{}\".", self.filter)
+                    format!(
+                        "{}\"{}\".",
+                        self.tr(MessageId::ConfigNoMatchesPrefix),
+                        self.filter
+                    )
                 };
                 lines.push(Line::from(Span::styled(
                     message,
@@ -1054,10 +1080,14 @@ impl ModalView for ConfigView {
             let bottom_text = if let Some(status) = self.status.as_ref() {
                 status.clone()
             } else if !self.filter.is_empty() {
-                format!("  Filtered settings: {match_count}")
+                format!(
+                    "{}: {match_count}",
+                    self.tr(MessageId::ConfigFilteredSettings)
+                )
             } else if scrollable && !items.is_empty() {
                 format!(
-                    "  Showing {}-{} / {}",
+                    "{} {}-{} / {}",
+                    self.tr(MessageId::ConfigShowing),
                     self.scroll.saturating_add(1),
                     end,
                     items.len()
@@ -1071,18 +1101,18 @@ impl ModalView for ConfigView {
             )));
 
             let footer = if !self.filter.is_empty() {
-                " type=filter, Backspace=delete, Ctrl+U/Esc=clear, Enter=edit "
+                self.tr(MessageId::ConfigFooterFiltered)
             } else if scrollable {
-                " type=filter, Up/Down=select, Enter/e=edit, PgUp/PgDn=scroll, Esc/q=close "
+                self.tr(MessageId::ConfigFooterScrollable)
             } else {
-                " type=filter, Up/Down=select, Enter/e=edit, Esc/q=close "
+                self.tr(MessageId::ConfigFooterDefault)
             };
             (lines, footer.to_string())
         };
 
         let block = Block::default()
             .title(Line::from(vec![Span::styled(
-                " Config ",
+                self.tr(MessageId::ConfigModalTitle),
                 Style::default().fg(palette::DEEPSEEK_BLUE).bold(),
             )]))
             .title_bottom(Line::from(Span::styled(
@@ -1475,8 +1505,10 @@ mod tests {
         truncate_view_text,
     };
     use crate::config::Config;
+    use crate::localization::Locale;
     use crate::tui::app::{App, TuiOptions};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::{buffer::Buffer, layout::Rect};
     use std::path::PathBuf;
 
     fn create_test_app() -> App {
@@ -1567,6 +1599,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(keys.contains(&"model"));
         assert!(keys.contains(&"approval_mode"));
+        assert!(keys.contains(&"locale"));
         assert!(keys.contains(&"auto_compact"));
         assert!(keys.contains(&"composer_border"));
         assert!(keys.contains(&"mcp_config_path"));
@@ -1587,6 +1620,41 @@ mod tests {
             vec!["sidebar_width", "sidebar_focus"]
         );
         assert_eq!(view.rows[view.selected].key, "sidebar_width");
+    }
+
+    #[test]
+    fn config_view_filter_accepts_j_k_and_unicode_case() {
+        let app = create_test_app();
+        let mut view = ConfigView::new_for_app(&app);
+
+        type_filter(&mut view, "thinking");
+        assert_eq!(visible_row_keys(&view), vec!["show_thinking"]);
+
+        view.clear_filter();
+        view.rows[0].value = "CAFÉ".to_string();
+        type_filter(&mut view, "café");
+        assert_eq!(visible_row_keys(&view), vec!["model"]);
+    }
+
+    #[test]
+    fn localized_config_view_renders_at_narrow_width() {
+        let mut app = create_test_app();
+        app.ui_locale = Locale::PtBr;
+        let view = ConfigView::new_for_app(&app);
+        let area = Rect::new(0, 0, 60, 18);
+        let mut buf = Buffer::empty(area);
+
+        view.render(area, &mut buf);
+
+        let dump = buffer_text(&buf, area);
+        assert!(
+            dump.contains("Configuração") || dump.contains("Configura"),
+            "missing localized config title:\n{dump}"
+        );
+        assert!(
+            !dump.contains("MISSING"),
+            "missing-key marker leaked:\n{dump}"
+        );
     }
 
     #[test]
@@ -1701,5 +1769,16 @@ mod tests {
         assert!(matches!(cancel, ViewAction::None));
         assert!(view.editing.is_none());
         assert_eq!(view.status.as_deref(), Some("Edit cancelled"));
+    }
+
+    fn buffer_text(buf: &Buffer, area: Rect) -> String {
+        let mut out = String::new();
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                out.push_str(buf[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
     }
 }
