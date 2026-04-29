@@ -52,7 +52,7 @@ is `https://integrate.api.nvidia.com/v1`. With `--provider nvidia-nim`,
 
 ## Supported platforms
 
-- Linux x64
+- Linux x64 / arm64
 - macOS x64 / arm64
 - Windows x64
 

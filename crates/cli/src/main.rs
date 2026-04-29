@@ -25,6 +25,8 @@ enum ProviderArg {
     Openai,
     Openrouter,
     Novita,
+    Fireworks,
+    Sglang,
 }
 
 impl From<ProviderArg> for ProviderKind {
@@ -35,6 +37,8 @@ impl From<ProviderArg> for ProviderKind {
             ProviderArg::Openai => ProviderKind::Openai,
             ProviderArg::Openrouter => ProviderKind::Openrouter,
             ProviderArg::Novita => ProviderKind::Novita,
+            ProviderArg::Fireworks => ProviderKind::Fireworks,
+            ProviderArg::Sglang => ProviderKind::Sglang,
         }
     }
 }
@@ -525,6 +529,10 @@ fn run_logout_command(store: &mut ConfigStore) -> Result<()> {
     store.config.providers.deepseek.api_key = None;
     store.config.providers.nvidia_nim.api_key = None;
     store.config.providers.openai.api_key = None;
+    store.config.providers.openrouter.api_key = None;
+    store.config.providers.novita.api_key = None;
+    store.config.providers.fireworks.api_key = None;
+    store.config.providers.sglang.api_key = None;
     store.config.auth_mode = None;
     store.config.chatgpt_access_token = None;
     store.config.device_code_session = None;
@@ -542,15 +550,19 @@ fn keyring_slot(provider: ProviderKind) -> &'static str {
         ProviderKind::Openai => "openai",
         ProviderKind::Openrouter => "openrouter",
         ProviderKind::Novita => "novita",
+        ProviderKind::Fireworks => "fireworks",
+        ProviderKind::Sglang => "sglang",
     }
 }
 
 /// Provider order used by the `auth list` and `auth status` outputs.
-const PROVIDER_LIST: [ProviderKind; 5] = [
+const PROVIDER_LIST: [ProviderKind; 7] = [
     ProviderKind::Deepseek,
     ProviderKind::NvidiaNim,
     ProviderKind::Openrouter,
     ProviderKind::Novita,
+    ProviderKind::Fireworks,
+    ProviderKind::Sglang,
     ProviderKind::Openai,
 ];
 
@@ -1021,9 +1033,11 @@ fn delegate_to_tui(
             | ProviderKind::NvidiaNim
             | ProviderKind::Openrouter
             | ProviderKind::Novita
+            | ProviderKind::Fireworks
+            | ProviderKind::Sglang
     ) {
         bail!(
-            "The interactive TUI supports DeepSeek, NVIDIA NIM, OpenRouter, and Novita providers. Remove --provider {} or use `deepseek model ...` for provider registry inspection.",
+            "The interactive TUI supports DeepSeek, NVIDIA NIM, OpenRouter, Novita, Fireworks, and SGLang providers. Remove --provider {} or use `deepseek model ...` for provider registry inspection.",
             resolved_runtime.provider.as_str()
         );
     }

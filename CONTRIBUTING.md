@@ -9,6 +9,7 @@ Thank you for your interest in contributing to DeepSeek TUI! This document provi
 - Rust 1.85 or later (edition 2024)
 - Cargo package manager
 - Git
+- Linux: `libdbus-1-dev`, `libssl-dev`, and `pkg-config`
 
 ### Setting Up Development Environment
 

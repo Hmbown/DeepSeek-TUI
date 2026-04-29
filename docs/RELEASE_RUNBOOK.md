@@ -125,10 +125,12 @@ The publish helper is idempotent for reruns: already-published crate versions ar
 `.github/workflows/release.yml` builds these binaries:
 
 - `deepseek-linux-x64`
+- `deepseek-linux-arm64`
 - `deepseek-macos-x64`
 - `deepseek-macos-arm64`
 - `deepseek-windows-x64.exe`
 - `deepseek-tui-linux-x64`
+- `deepseek-tui-linux-arm64`
 - `deepseek-tui-macos-x64`
 - `deepseek-tui-macos-arm64`
 - `deepseek-tui-windows-x64.exe`
@@ -149,7 +151,7 @@ on a workstation with `npm login` and an authenticator app.
 1. Set the npm package version in [npm/deepseek-tui/package.json](../npm/deepseek-tui/package.json) to match the workspace `Cargo.toml`. CI's version-drift guard will catch mismatches before tag.
 2. Set `deepseekBinaryVersion` to the GitHub release tag that should supply binaries.
 3. Push the version bump to `main`. `auto-tag.yml` creates the matching `vX.Y.Z` tag, and `release.yml` builds the binary matrix and drafts the GitHub Release.
-4. **Wait for the GitHub Release to finalize** with all eight signed binaries plus `deepseek-artifacts-sha256.txt`. The npm `prepublishOnly` hook (`scripts/verify-release-assets.js`) requires every asset to be present.
+4. **Wait for the GitHub Release to finalize** with all ten signed binaries plus `deepseek-artifacts-sha256.txt`. The npm `prepublishOnly` hook (`scripts/verify-release-assets.js`) requires every asset to be present.
 5. From a developer machine, publish the npm wrapper manually:
 
 ```bash

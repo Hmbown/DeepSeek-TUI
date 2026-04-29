@@ -6,7 +6,7 @@ const CHECKSUM_MANIFEST = "deepseek-artifacts-sha256.txt";
 const ASSET_MATRIX = {
   linux: {
     x64: ["deepseek-linux-x64", "deepseek-tui-linux-x64"],
-    // arm64: ["deepseek-linux-arm64", "deepseek-tui-linux-arm64"], // Uncomment when binaries are available
+    arm64: ["deepseek-linux-arm64", "deepseek-tui-linux-arm64"],
   },
   darwin: {
     x64: ["deepseek-macos-x64", "deepseek-tui-macos-x64"],

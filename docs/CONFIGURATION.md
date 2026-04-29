@@ -89,6 +89,7 @@ These override config values:
 - `NVIDIA_NIM_MODEL`
 - `FIREWORKS_API_KEY`
 - `FIREWORKS_BASE_URL`
+- `FIREWORKS_MODEL`
 - `SGLANG_BASE_URL`
 - `SGLANG_MODEL`
 - `SGLANG_API_KEY` (optional; many localhost SGLang servers do not require auth)

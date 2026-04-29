@@ -388,6 +388,8 @@ pub fn env_for(name: &str) -> Option<String> {
         "deepseek" => &["DEEPSEEK_API_KEY"],
         "openrouter" => &["OPENROUTER_API_KEY"],
         "novita" => &["NOVITA_API_KEY"],
+        "fireworks" => &["FIREWORKS_API_KEY"],
+        "sglang" => &["SGLANG_API_KEY"],
         // NVIDIA NIM falls back to `DEEPSEEK_API_KEY` last because the
         // catalog endpoint accepts the same DeepSeek-issued key when no
         // dedicated NVIDIA token is set. This mirrors pre-v0.7 behaviour.
@@ -426,6 +428,8 @@ mod tests {
             "DEEPSEEK_API_KEY",
             "OPENROUTER_API_KEY",
             "NOVITA_API_KEY",
+            "FIREWORKS_API_KEY",
+            "SGLANG_API_KEY",
             "NVIDIA_API_KEY",
             "NVIDIA_NIM_API_KEY",
             "OPENAI_API_KEY",
