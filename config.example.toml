@@ -10,12 +10,12 @@
 # Active provider + DeepSeek defaults
 # ─────────────────────────────────────────────────────────────────────────────────
 # Choose which provider to use by default. Per-provider credentials live in the
-# `[providers.deepseek]` and `[providers.nvidia_nim]` sections near the bottom of
+# `[providers.*]` sections near the bottom of
 # this file — keeping both stored at once means `/provider deepseek` and
-# `/provider nvidia-nim` (or `--provider nvidia-nim`) toggle without having to
+# `/provider nvidia-nim` (or `--provider fireworks`, `/provider sglang`) toggle without having to
 # re-enter keys. Top-level `api_key` / `base_url` are still read as DeepSeek
 # defaults when `[providers.deepseek]` is absent (backward compatibility).
-provider = "deepseek" # deepseek | nvidia-nim
+provider = "deepseek" # deepseek | nvidia-nim | openrouter | novita | fireworks | sglang
 api_key = "YOUR_DEEPSEEK_API_KEY" # must be non-empty
 base_url = "https://api.deepseek.com"
 # base_url = "https://api.deepseeki.com"         # China users
@@ -29,6 +29,9 @@ base_url = "https://api.deepseek.com"
 #   deepseek-v4-flash           — fast, cost-efficient (legacy aliases: deepseek-chat, deepseek-reasoner)
 #   deepseek-ai/deepseek-v4-pro   — NVIDIA NIM-hosted Pro model ID
 #   deepseek-ai/deepseek-v4-flash — NVIDIA NIM-hosted Flash model ID
+#   accounts/fireworks/models/deepseek-v4-pro — Fireworks AI Pro model ID
+#   deepseek-ai/DeepSeek-V4-Pro    — SGLang self-hosted Pro model ID
+#   deepseek-ai/DeepSeek-V4-Flash  — SGLang self-hosted Flash model ID
 default_text_model = "deepseek-v4-pro"
 
 # ─────────────────────────────────────────────────────────────────────────────────
@@ -81,12 +84,14 @@ max_subagents = 5 # optional (1-20)
 # ─────────────────────────────────────────────────────────────────────────────────
 # Per-provider credentials (peer providers — NIM is first-class, not a flag)
 # ─────────────────────────────────────────────────────────────────────────────────
-# Both providers can be stored at once; `provider = "..."` (top of file) or
-# `/provider deepseek` / `/provider nvidia-nim` switches between them without
+# Providers can be stored at once; `provider = "..."` (top of file) or
+# `/provider deepseek` / `/provider nvidia-nim` / `/provider fireworks` switches between them without
 # having to re-enter keys. Env vars override anything set here:
 #   DeepSeek: DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL
 #   NIM:      NVIDIA_API_KEY (or NVIDIA_NIM_API_KEY), NIM_BASE_URL
 #             (or NVIDIA_NIM_BASE_URL / NVIDIA_BASE_URL), NVIDIA_NIM_MODEL
+#   Fireworks: FIREWORKS_API_KEY, FIREWORKS_BASE_URL
+#   SGLang:    SGLANG_BASE_URL, SGLANG_MODEL, optional SGLANG_API_KEY
 
 # DeepSeek Platform (https://platform.deepseek.com)
 [providers.deepseek]
@@ -99,6 +104,18 @@ max_subagents = 5 # optional (1-20)
 # api_key = "YOUR_NVIDIA_API_KEY"
 # base_url = "https://integrate.api.nvidia.com/v1"
 # model = "deepseek-ai/deepseek-v4-pro"     # or deepseek-ai/deepseek-v4-flash
+
+# Fireworks AI-hosted DeepSeek V4 (https://fireworks.ai)
+[providers.fireworks]
+# api_key = "YOUR_FIREWORKS_API_KEY"
+# base_url = "https://api.fireworks.ai/inference/v1"
+# model = "accounts/fireworks/models/deepseek-v4-pro"
+
+# Self-hosted SGLang OpenAI-compatible server
+[providers.sglang]
+# api_key = "OPTIONAL_SGLANG_TOKEN"
+# base_url = "http://localhost:30000/v1"
+# model = "deepseek-ai/DeepSeek-V4-Pro"     # or deepseek-ai/DeepSeek-V4-Flash
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Network Policy (#135)

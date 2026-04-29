@@ -435,6 +435,30 @@ fn reconcile_subagent_activity_state_trims_stale_progress_and_sets_anchor() {
 }
 
 #[test]
+fn subagent_token_usage_updates_live_cost_counter_without_card_change() {
+    let mut app = create_test_app();
+    handle_subagent_mailbox(
+        &mut app,
+        1,
+        &crate::tools::subagent::MailboxMessage::TokenUsage {
+            agent_id: "agent-a".to_string(),
+            model: "deepseek-v4-flash".to_string(),
+            usage: crate::models::Usage {
+                input_tokens: 10_000,
+                output_tokens: 1_000,
+                ..Default::default()
+            },
+        },
+    );
+
+    assert!(app.subagent_cost > 0.0);
+    assert!(
+        app.history.is_empty(),
+        "usage-only mailbox messages should not allocate a sub-agent card"
+    );
+}
+
+#[test]
 fn format_token_count_compact_formats_units() {
     assert_eq!(format_token_count_compact(999), "999");
     assert_eq!(format_token_count_compact(1_200), "1.2k");

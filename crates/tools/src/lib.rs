@@ -448,6 +448,17 @@ mod tests {
     }
 
     #[test]
+    fn required_str_reports_provided_fields_on_missing_required_field() {
+        let input = json!({"path": "src/lib.rs", "content": "new body"});
+        let err = required_str(&input, "replace").expect_err("replace is missing");
+        let message = err.to_string();
+        assert!(message.contains("missing required field 'replace'"));
+        assert!(message.contains("Input provided:"));
+        assert!(message.contains("path"));
+        assert!(message.contains("content"));
+    }
+
+    #[test]
     fn tool_error_display_matches_legacy_text() {
         let err = ToolError::missing_field("path");
         assert_eq!(

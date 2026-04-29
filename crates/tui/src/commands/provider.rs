@@ -1,5 +1,5 @@
-//! Provider switching: flip between DeepSeek, NVIDIA NIM, OpenRouter, and
-//! Novita AI at runtime.
+//! Provider switching: flip between DeepSeek, hosted providers, and self-hosted
+//! OpenAI-compatible DeepSeek V4 servers at runtime.
 //!
 //! `/provider` with no args opens the picker modal (#52). `/provider <name>`
 //! keeps the v0.6.6 CLI form for muscle-memory + scripted use.
@@ -27,7 +27,7 @@ pub fn provider(app: &mut App, args: Option<&str>) -> CommandResult {
 
     let Some(target) = ApiProvider::parse(name) else {
         return CommandResult::error(format!(
-            "Unknown provider '{name}'. Expected: deepseek, nvidia-nim, openrouter, novita."
+            "Unknown provider '{name}'. Expected: deepseek, nvidia-nim, openrouter, novita, fireworks, or sglang."
         ));
     };
 
@@ -130,6 +130,32 @@ mod tests {
             Some(AppAction::SwitchProvider { provider, model }) => {
                 assert_eq!(provider, ApiProvider::Novita);
                 assert_eq!(model, None);
+            }
+            other => panic!("expected SwitchProvider, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn switch_to_fireworks_emits_action() {
+        let mut app = create_test_app();
+        let result = provider(&mut app, Some("fireworks pro"));
+        match result.action {
+            Some(AppAction::SwitchProvider { provider, model }) => {
+                assert_eq!(provider, ApiProvider::Fireworks);
+                assert_eq!(model.as_deref(), Some("deepseek-v4-pro"));
+            }
+            other => panic!("expected SwitchProvider, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn switch_to_sglang_flash_emits_action() {
+        let mut app = create_test_app();
+        let result = provider(&mut app, Some("sglang flash"));
+        match result.action {
+            Some(AppAction::SwitchProvider { provider, model }) => {
+                assert_eq!(provider, ApiProvider::Sglang);
+                assert_eq!(model.as_deref(), Some("deepseek-v4-flash"));
             }
             other => panic!("expected SwitchProvider, got {other:?}"),
         }

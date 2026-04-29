@@ -448,10 +448,12 @@ impl DeepSeekClient {
     fn build_http_client(api_key: &str) -> Result<reqwest::Client> {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {api_key}"))?,
-        );
+        if !api_key.trim().is_empty() {
+            headers.insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {api_key}"))?,
+            );
+        }
         let mut builder = reqwest::Client::builder()
             .default_headers(headers)
             .connect_timeout(Duration::from_secs(30))

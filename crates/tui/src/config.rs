@@ -1020,11 +1020,10 @@ impl Config {
                 "Fireworks AI API key not found. Run 'deepseek auth set --provider fireworks', \
                  set FIREWORKS_API_KEY, or add [providers.fireworks] api_key in ~/.deepseek/config.toml."
             ),
-            ApiProvider::Sglang => anyhow::bail!(
-                "SGLang API key not found (optional for self-hosted). Run 'deepseek auth set --provider sglang', \
-                 set SGLANG_API_KEY, or add [providers.sglang] api_key in ~/.deepseek/config.toml. \
-                 If your SGLang deployment runs without authentication, set SGLANG_API_KEY to an empty string or any placeholder."
-            ),
+            // Self-hosted SGLang deployments commonly run without auth on
+            // localhost. Return an empty key and let the client omit the
+            // Authorization header.
+            ApiProvider::Sglang => Ok(String::new()),
         }
     }
 
@@ -2716,6 +2715,60 @@ mod tests {
     }
 
     #[test]
+    fn fireworks_provider_uses_canonical_defaults() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-fireworks-defaults-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        let config = Config {
+            provider: Some("fireworks".to_string()),
+            ..Default::default()
+        };
+        config.validate()?;
+        assert_eq!(config.api_provider(), ApiProvider::Fireworks);
+        assert_eq!(config.default_model(), DEFAULT_FIREWORKS_MODEL);
+        assert_eq!(config.deepseek_base_url(), DEFAULT_FIREWORKS_BASE_URL);
+        Ok(())
+    }
+
+    #[test]
+    fn sglang_provider_works_without_api_key() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-sglang-defaults-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        let config = Config {
+            provider: Some("sglang".to_string()),
+            ..Default::default()
+        };
+        config.validate()?;
+        assert_eq!(config.api_provider(), ApiProvider::Sglang);
+        assert_eq!(config.default_model(), DEFAULT_SGLANG_MODEL);
+        assert_eq!(config.deepseek_base_url(), DEFAULT_SGLANG_BASE_URL);
+        assert_eq!(config.deepseek_api_key()?, "");
+        assert!(has_api_key_for(&config, ApiProvider::Sglang));
+        Ok(())
+    }
+
+    #[test]
     fn openrouter_env_api_key_resolves_via_deepseek_api_key() -> Result<()> {
         let _lock = lock_test_env();
         let nanos = SystemTime::now()
@@ -2880,6 +2933,10 @@ api_key = "novita-table-key"
 
         let mut config = Config::default();
         assert!(!has_api_key_for(&config, ApiProvider::Openrouter));
+        assert!(
+            has_api_key_for(&config, ApiProvider::Sglang),
+            "SGLang is self-hosted and does not require a key by default"
+        );
 
         // Safety: test-only environment mutation guarded by a global mutex.
         unsafe {
@@ -2945,6 +3002,26 @@ api_key = "novita-table-key"
                 .and_then(|t| t.get("api_key"))
                 .and_then(toml::Value::as_str),
             Some("novita-saved-key")
+        );
+        save_api_key_for(ApiProvider::Fireworks, "fireworks-saved-key")?;
+        save_api_key_for(ApiProvider::Sglang, "sglang-saved-key")?;
+        let contents = fs::read_to_string(&path)?;
+        let parsed: toml::Value = toml::from_str(&contents)?;
+        assert_eq!(
+            parsed
+                .get("providers")
+                .and_then(|p| p.get("fireworks"))
+                .and_then(|t| t.get("api_key"))
+                .and_then(toml::Value::as_str),
+            Some("fireworks-saved-key")
+        );
+        assert_eq!(
+            parsed
+                .get("providers")
+                .and_then(|p| p.get("sglang"))
+                .and_then(|t| t.get("api_key"))
+                .and_then(toml::Value::as_str),
+            Some("sglang-saved-key")
         );
         Ok(())
     }

@@ -64,6 +64,16 @@ deepseek --provider nvidia-nim
 DEEPSEEK_PROVIDER=nvidia-nim NVIDIA_API_KEY="..." deepseek
 ```
 
+### Other DeepSeek V4 providers
+
+```bash
+deepseek auth set --provider fireworks --api-key "YOUR_FIREWORKS_API_KEY"
+deepseek --provider fireworks --model deepseek-v4-pro
+
+# SGLang is self-hosted; auth is optional for localhost deployments.
+SGLANG_BASE_URL="http://localhost:30000/v1" deepseek --provider sglang --model deepseek-v4-flash
+```
+
 <details>
 <summary>Install from source</summary>
 
@@ -181,9 +191,12 @@ Key environment overrides:
 | `DEEPSEEK_API_KEY` | API key |
 | `DEEPSEEK_BASE_URL` | API base URL |
 | `DEEPSEEK_MODEL` | Default model |
-| `DEEPSEEK_PROVIDER` | Provider: `deepseek` (default) or `nvidia-nim` |
+| `DEEPSEEK_PROVIDER` | Provider: `deepseek` (default), `nvidia-nim`, `fireworks`, or `sglang` |
 | `DEEPSEEK_PROFILE` | Config profile name |
 | `NVIDIA_API_KEY` | NVIDIA NIM API key |
+| `FIREWORKS_API_KEY` | Fireworks AI API key |
+| `SGLANG_BASE_URL` | Self-hosted SGLang endpoint |
+| `SGLANG_API_KEY` | Optional SGLang bearer token |
 
 Quick diagnostics:
 

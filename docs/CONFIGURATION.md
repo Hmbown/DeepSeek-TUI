@@ -23,14 +23,14 @@ DeepSeek auth and model defaults. `deepseek login --api-key ...` writes the
 root `api_key` field that `deepseek-tui` reads directly, and `deepseek --model
 deepseek-v4-flash` is forwarded to the TUI as `DEEPSEEK_MODEL`.
 
-For NVIDIA NIM-hosted DeepSeek V4 Pro, set `provider = "nvidia-nim"` or pass
-`deepseek --provider nvidia-nim`. The facade stores NIM credentials under
-`[providers.nvidia_nim]` and forwards the resolved key, base URL, provider, and
-model to the TUI process. Use
-`deepseek auth set --provider nvidia-nim --api-key "YOUR_NVIDIA_API_KEY"` to
-save the NIM key through the facade. `DEEPSEEK_API_KEY` remains a compatibility
-fallback when `DEEPSEEK_PROVIDER=nvidia-nim`, but `NVIDIA_API_KEY` or
-`NVIDIA_NIM_API_KEY` is preferred.
+For hosted or self-hosted DeepSeek V4 providers, set `provider = "nvidia-nim"`,
+`"fireworks"`, or `"sglang"` or pass `deepseek --provider <name>`. The facade
+stores provider credentials under `[providers.<name>]` and forwards the resolved
+key, base URL, provider, and model to the TUI process. Use
+`deepseek auth set --provider nvidia-nim --api-key "YOUR_NVIDIA_API_KEY"` or
+`deepseek auth set --provider fireworks --api-key "YOUR_FIREWORKS_API_KEY"` to
+save hosted-provider keys through the facade. SGLang is self-hosted and can run
+without an API key by default.
 
 To bootstrap MCP and skills directories at their resolved paths, run `deepseek-tui setup`.
 To only scaffold MCP, run `deepseek-tui mcp init`.
@@ -58,6 +58,15 @@ provider = "nvidia-nim"
 api_key = "NVIDIA_KEY"
 base_url = "https://integrate.api.nvidia.com/v1"
 default_text_model = "deepseek-ai/deepseek-v4-pro"
+
+[profiles.fireworks]
+provider = "fireworks"
+default_text_model = "accounts/fireworks/models/deepseek-v4-pro"
+
+[profiles.sglang]
+provider = "sglang"
+base_url = "http://localhost:30000/v1"
+default_text_model = "deepseek-ai/DeepSeek-V4-Pro"
 ```
 
 Select a profile with:
@@ -73,11 +82,16 @@ These override config values:
 
 - `DEEPSEEK_API_KEY`
 - `DEEPSEEK_BASE_URL`
-- `DEEPSEEK_PROVIDER` (`deepseek|nvidia-nim`)
+- `DEEPSEEK_PROVIDER` (`deepseek|nvidia-nim|openrouter|novita|fireworks|sglang`)
 - `DEEPSEEK_MODEL` or `DEEPSEEK_DEFAULT_TEXT_MODEL`
 - `NVIDIA_API_KEY` or `NVIDIA_NIM_API_KEY` (preferred when provider is `nvidia-nim`; falls back to `DEEPSEEK_API_KEY`)
 - `NVIDIA_NIM_BASE_URL`, `NIM_BASE_URL`, or `NVIDIA_BASE_URL`
 - `NVIDIA_NIM_MODEL`
+- `FIREWORKS_API_KEY`
+- `FIREWORKS_BASE_URL`
+- `SGLANG_BASE_URL`
+- `SGLANG_MODEL`
+- `SGLANG_API_KEY` (optional; many localhost SGLang servers do not require auth)
 - `DEEPSEEK_LOG_LEVEL` or `RUST_LOG` (`info`/`debug`/`trace` enables lightweight verbose logs)
 - `DEEPSEEK_SKILLS_DIR`
 - `DEEPSEEK_MCP_CONFIG`
@@ -155,10 +169,10 @@ If you are upgrading from older releases:
 
 ### Core keys (used by the TUI/engine)
 
-- `provider` (string, optional): `deepseek` (default) or `nvidia-nim`. `nvidia-nim` targets NVIDIA's NIM-hosted DeepSeek endpoints through `https://integrate.api.nvidia.com/v1`.
+- `provider` (string, optional): `deepseek` (default), `nvidia-nim`, `openrouter`, `novita`, `fireworks`, or `sglang`. `nvidia-nim` targets NVIDIA's NIM-hosted DeepSeek endpoints through `https://integrate.api.nvidia.com/v1`; `fireworks` targets `https://api.fireworks.ai/inference/v1`; `sglang` targets a self-hosted OpenAI-compatible endpoint, defaulting to `http://localhost:30000/v1`.
 - `api_key` (string, required): must be non-empty (or set `DEEPSEEK_API_KEY`).
 - `base_url` (string, optional): defaults to `https://api.deepseek.com` for DeepSeek's OpenAI-compatible Chat Completions API, or `https://integrate.api.nvidia.com/v1` for `provider = "nvidia-nim"`. `https://api.deepseek.com/v1` is also accepted for SDK compatibility; use `https://api.deepseek.com/beta` only for DeepSeek beta features such as strict tool mode, chat prefix completion, and FIM completion.
-- `default_text_model` (string, optional): defaults to `deepseek-v4-pro` for DeepSeek or `deepseek-ai/deepseek-v4-pro` for NVIDIA NIM. Current public DeepSeek IDs are `deepseek-v4-pro` and `deepseek-v4-flash`, both with 1M context windows and thinking mode enabled by default. Legacy `deepseek-chat` and `deepseek-reasoner` remain compatibility aliases for `deepseek-v4-flash`. With `provider = "nvidia-nim"`, `deepseek-v4-pro` maps to `deepseek-ai/deepseek-v4-pro` and `deepseek-v4-flash` maps to `deepseek-ai/deepseek-v4-flash`. Use `/models` or `deepseek models` to discover live IDs from your configured endpoint. `DEEPSEEK_MODEL` overrides this for a single process.
+- `default_text_model` (string, optional): defaults to `deepseek-v4-pro` for DeepSeek, `deepseek-ai/deepseek-v4-pro` for NVIDIA NIM, `accounts/fireworks/models/deepseek-v4-pro` for Fireworks, and `deepseek-ai/DeepSeek-V4-Pro` for SGLang. Current public DeepSeek IDs are `deepseek-v4-pro` and `deepseek-v4-flash`, both with 1M context windows and thinking mode enabled by default. Legacy `deepseek-chat` and `deepseek-reasoner` remain compatibility aliases for `deepseek-v4-flash`. Provider-specific mappings translate `deepseek-v4-pro` / `deepseek-v4-flash` to each provider's model ID where supported. Use `/models` or `deepseek models` to discover live IDs from your configured endpoint. `DEEPSEEK_MODEL` overrides this for a single process.
 - `reasoning_effort` (string, optional): `off`, `low`, `medium`, `high`, or `max`; defaults to the configured UI tier. DeepSeek Platform receives top-level `thinking` / `reasoning_effort` fields. NVIDIA NIM receives equivalent settings through `chat_template_kwargs`.
 - `allow_shell` (bool, optional): defaults to `true` (sandboxed).
 - `approval_policy` (string, optional): `on-request`, `untrusted`, or `never`. Runtime `approval_mode` editing in `/config` also accepts `on-request` and `untrusted` aliases.
