@@ -17,6 +17,10 @@ use super::paste_burst::CharDecision;
 /// further input handling); `false` when the key still needs the normal
 /// composer path.
 pub fn handle_paste_burst_key(app: &mut App, key: &KeyEvent, now: Instant) -> bool {
+    if !app.use_paste_burst_detection {
+        return false;
+    }
+
     let has_ctrl_alt_or_super = key.modifiers.contains(KeyModifiers::CONTROL)
         || key.modifiers.contains(KeyModifiers::ALT)
         || key.modifiers.contains(KeyModifiers::SUPER);
@@ -109,4 +113,104 @@ fn apply_paste_burst_retro_capture(
 
 fn in_command_context(app: &App) -> bool {
     app.input.starts_with('/')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::tui::app::TuiOptions;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use std::path::PathBuf;
+    use std::time::{Duration, Instant};
+
+    fn test_app() -> App {
+        let options = TuiOptions {
+            model: "deepseek-v4-pro".to_string(),
+            workspace: PathBuf::from("."),
+            allow_shell: false,
+            use_alt_screen: true,
+            use_mouse_capture: false,
+            use_bracketed_paste: true,
+            max_subagents: 1,
+            skills_dir: PathBuf::from("."),
+            memory_path: PathBuf::from("memory.md"),
+            notes_path: PathBuf::from("notes.txt"),
+            mcp_config_path: PathBuf::from("mcp.json"),
+            use_memory: false,
+            start_in_agent_mode: false,
+            skip_onboarding: true,
+            yolo: false,
+            resume_session_id: None,
+        };
+        let mut app = App::new(options, &Config::default());
+        app.use_paste_burst_detection = true;
+        app
+    }
+
+    fn plain(ch: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn raw_multiline_paste_buffers_enter_instead_of_submitting() {
+        let mut app = test_app();
+        let t0 = Instant::now();
+
+        assert!(handle_paste_burst_key(&mut app, &plain('a'), t0));
+        assert!(handle_paste_burst_key(
+            &mut app,
+            &plain('b'),
+            t0 + Duration::from_millis(1)
+        ));
+        assert!(handle_paste_burst_key(
+            &mut app,
+            &plain('c'),
+            t0 + Duration::from_millis(2)
+        ));
+        assert!(handle_paste_burst_key(
+            &mut app,
+            &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            t0 + Duration::from_millis(3)
+        ));
+
+        assert!(app.input.is_empty(), "paste remains buffered until idle");
+        assert!(app.flush_paste_burst_if_due(
+            t0 + Duration::from_millis(3)
+                + crate::tui::paste_burst::PasteBurst::recommended_active_flush_delay()
+        ));
+        assert_eq!(app.input, "abc\n");
+    }
+
+    #[test]
+    fn paste_buffered_question_mark_does_not_fall_through_to_help_shortcut() {
+        let mut app = test_app();
+        let t0 = Instant::now();
+
+        assert!(handle_paste_burst_key(&mut app, &plain('?'), t0));
+
+        assert!(app.input.is_empty(), "shortcut char stays buffered first");
+        assert!(app.view_stack.is_empty(), "help modal must not open");
+        assert!(app.flush_paste_burst_if_due(
+            t0 + crate::tui::paste_burst::PasteBurst::recommended_flush_delay()
+        ));
+        assert_eq!(app.input, "?");
+    }
+
+    #[test]
+    fn paste_burst_detection_can_be_disabled_without_disabling_bracketed_paste() {
+        let mut app = test_app();
+        app.use_paste_burst_detection = false;
+
+        assert!(!handle_paste_burst_key(
+            &mut app,
+            &plain('a'),
+            Instant::now()
+        ));
+        assert!(app.input.is_empty());
+
+        app.insert_paste_text("line 1\r\nline 2");
+        assert_eq!(app.input, "line 1\nline 2");
+        assert!(app.use_bracketed_paste);
+    }
 }

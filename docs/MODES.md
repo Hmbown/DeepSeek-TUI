@@ -7,7 +7,9 @@ DeepSeek TUI has two related concepts:
 
 ## TUI Modes
 
-Press `Tab` to cycle through the visible modes: **Plan → Agent → YOLO → Plan**.
+Press `Tab` to complete composer menus, queue a draft as a next-turn follow-up
+while a turn is running, or cycle through the visible modes when the composer is
+otherwise idle: **Plan → Agent → YOLO → Plan**.
 Press `Shift+Tab` to cycle reasoning effort.
 
 - **Plan**: design-first prompting. Read-only investigation tools stay available; shell and patch execution stay off. Use this when you want to think out loud and produce a plan to hand to a human (yourself later, or a reviewer).

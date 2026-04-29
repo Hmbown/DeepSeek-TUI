@@ -25,6 +25,9 @@ pub struct Settings {
     /// terminal mishandles the `\e[?2004h` escape (rare; some legacy
     /// terminals over SSH+screen multiplex without the cap).
     pub bracketed_paste: bool,
+    /// Enable rapid-key paste-burst detection for terminals that do not emit
+    /// bracketed-paste events. Independent from `bracketed_paste`.
+    pub paste_burst_detection: bool,
     /// Show thinking blocks from the model
     pub show_thinking: bool,
     /// Show detailed tool output
@@ -55,6 +58,7 @@ impl Default for Settings {
             low_motion: false,
             fancy_animations: false,
             bracketed_paste: true,
+            paste_burst_detection: true,
             show_thinking: true,
             show_tool_details: true,
             composer_density: "comfortable".to_string(),
@@ -149,6 +153,9 @@ impl Settings {
             }
             "bracketed_paste" | "paste" => {
                 self.bracketed_paste = parse_bool(value)?;
+            }
+            "paste_burst_detection" | "paste_burst" => {
+                self.paste_burst_detection = parse_bool(value)?;
             }
             "show_thinking" | "thinking" => {
                 self.show_thinking = parse_bool(value)?;
@@ -260,6 +267,10 @@ impl Settings {
         lines.push(format!("  low_motion:         {}", self.low_motion));
         lines.push(format!("  fancy_animations:   {}", self.fancy_animations));
         lines.push(format!("  bracketed_paste:    {}", self.bracketed_paste));
+        lines.push(format!(
+            "  paste_burst_detect: {}",
+            self.paste_burst_detection
+        ));
         lines.push(format!("  show_thinking:      {}", self.show_thinking));
         lines.push(format!("  show_tool_details:  {}", self.show_tool_details));
         lines.push(format!("  composer_density:   {}", self.composer_density));
@@ -301,6 +312,10 @@ impl Settings {
             (
                 "bracketed_paste",
                 "Terminal bracketed-paste mode: on/off (rare to disable)",
+            ),
+            (
+                "paste_burst_detection",
+                "Fallback rapid-key paste detection: on/off",
             ),
             ("show_thinking", "Show model thinking: on/off"),
             ("show_tool_details", "Show detailed tool output: on/off"),
@@ -398,5 +413,24 @@ mod tests {
         assert!(settings.auto_compact);
         settings.set("auto_compact", "off").expect("disable");
         assert!(!settings.auto_compact);
+    }
+
+    #[test]
+    fn paste_burst_detection_is_configurable_independent_of_bracketed_paste() {
+        let mut settings = Settings::default();
+        assert!(settings.bracketed_paste);
+        assert!(settings.paste_burst_detection);
+
+        settings
+            .set("paste_burst_detection", "off")
+            .expect("disable paste burst fallback");
+        assert!(settings.bracketed_paste);
+        assert!(!settings.paste_burst_detection);
+
+        settings
+            .set("bracketed_paste", "off")
+            .expect("disable bracketed paste");
+        assert!(!settings.bracketed_paste);
+        assert!(!settings.paste_burst_detection);
     }
 }

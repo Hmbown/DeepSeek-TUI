@@ -225,6 +225,12 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
             app.composer_border = settings.composer_border;
             app.needs_redraw = true;
         }
+        "paste_burst_detection" | "paste_burst" => {
+            app.use_paste_burst_detection = settings.paste_burst_detection;
+            if !app.use_paste_burst_detection {
+                app.paste_burst.clear_after_explicit_paste();
+            }
+        }
         "transcript_spacing" | "spacing" => {
             app.transcript_spacing =
                 crate::tui::app::TranscriptSpacing::from_setting(&settings.transcript_spacing);

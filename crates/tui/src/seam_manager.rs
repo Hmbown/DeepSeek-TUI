@@ -197,11 +197,12 @@ impl SeamManager {
         // Use compaction pinning heuristics to identify which messages to
         // exclude from summarization. Pinned messages stay verbatim; the
         // seam summary covers everything else.
+        let local_pins = local_pins_for_range(pinned_indices, start_idx, end_idx, messages.len());
         let plan = plan_compaction(
             range,
             workspace,
             KEEP_RECENT_MESSAGES.min(range.len().saturating_sub(1)),
-            Some(pinned_indices),
+            Some(&local_pins),
             None,
         );
 
@@ -597,6 +598,21 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
     text.chars().take(max_chars).collect()
 }
 
+fn local_pins_for_range(
+    pinned_indices: &[usize],
+    start_idx: usize,
+    end_idx: usize,
+    message_count: usize,
+) -> Vec<usize> {
+    let end_idx = end_idx.min(message_count);
+    pinned_indices
+        .iter()
+        .copied()
+        .filter(|idx| *idx >= start_idx && *idx < end_idx)
+        .map(|idx| idx - start_idx)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -662,6 +678,15 @@ mod tests {
         assert_eq!(truncate_chars("abc😀é", 4), "abc😀".to_string());
         assert_eq!(truncate_chars("abc😀é", 10), "abc😀é".to_string());
         assert_eq!(truncate_chars("", 5), "".to_string());
+    }
+
+    #[test]
+    fn global_pins_are_mapped_to_soft_seam_slice_indices() {
+        let pins = vec![1, 4, 5, 8, 12];
+
+        let local = local_pins_for_range(&pins, 4, 9, 10);
+
+        assert_eq!(local, vec![0, 1, 4]);
     }
 
     #[test]

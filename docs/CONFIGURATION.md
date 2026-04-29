@@ -138,10 +138,14 @@ Common settings keys:
 
 - `theme` (default, dark, light, whale)
 - `auto_compact` (on/off, default off)
+- `paste_burst_detection` (on/off, default on): fallback rapid-key paste
+  detection for terminals that do not emit bracketed-paste events. This is
+  independent of terminal bracketed-paste mode.
 - `show_thinking` (on/off)
 - `show_tool_details` (on/off)
 - `default_mode` (agent, plan, yolo; legacy `normal` is accepted and normalized to `agent`)
-- `max_history` (number of input history entries)
+- `max_history` (number of submitted input history entries; cleared drafts are
+  also kept locally for composer history search)
 - `default_model` (model name override)
 
 Only `agent`, `plan`, and `yolo` are visible modes in the UI. For compatibility,
@@ -290,6 +294,9 @@ to the next message. Use `/attach <path>` for local image/video media paths, or
 `Ctrl+V` to attach an image from the clipboard. DeepSeek's public Chat
 Completions API currently accepts text message content, so media attachments are
 sent as explicit local path references instead of native image/video payloads.
+Attachment rows appear above the composer before submit; move to the start of
+the composer, press `↑` to select an attachment row, then press `Backspace` or
+`Delete` to remove it without editing the placeholder text by hand.
 
 ## Managed Configuration and Requirements
 

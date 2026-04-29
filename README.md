@@ -30,7 +30,7 @@ DeepSeek TUI is a coding agent that runs entirely in your terminal. It gives Dee
 - **Session save/resume** — checkpoint and resume long sessions
 - **Workspace rollback** — side-git pre/post-turn snapshots with `/restore` and `revert_turn`, without touching your repo's `.git`
 - **HTTP/SSE runtime API** — `deepseek serve --http` for headless agent workflows
-- **MCP protocol** — connect to Model Context Protocol servers for extended tooling
+- **MCP protocol** — connect to Model Context Protocol servers for extended tooling; see [docs/MCP.md](docs/MCP.md)
 - **Live cost tracking** — per-turn and session-level token usage and cost estimates
 - **Dark theme** — DeepSeek-blue palette
 
@@ -150,23 +150,31 @@ deepseek --model deepseek-v4-flash "summarize" # model override
 deepseek --yolo                               # YOLO mode (auto-approve tools)
 deepseek login --api-key "..."                # save API key
 deepseek doctor                               # check setup & connectivity
+deepseek doctor --json                        # machine-readable diagnostics
+deepseek setup --status                       # read-only setup status
+deepseek setup --tools --plugins              # scaffold local tool/plugin dirs
 deepseek models                               # list live API models
 deepseek sessions                             # list saved sessions
 deepseek resume --last                        # resume latest session
 deepseek serve --http                         # HTTP/SSE API server
+deepseek mcp list                             # list configured MCP servers
+deepseek mcp validate                         # validate MCP config/connectivity
+deepseek mcp-server                           # run dispatcher MCP stdio server
 ```
 
 ### Keyboard shortcuts
 
 | Key | Action |
 |---|---|
-| `Tab` | Cycle mode: Plan → Agent → YOLO |
+| `Tab` | Complete `/` or `@` entries; while a turn is running, queue the draft as a follow-up; otherwise cycle mode |
 | `Shift+Tab` | Cycle reasoning-effort: off → high → max |
 | `F1` | Help |
 | `Esc` | Back / dismiss |
 | `Ctrl+K` | Command palette |
+| `Ctrl+R` | Resume an earlier session |
+| `Alt+R` | Search prompt history and recover cleared drafts |
 | `@path` | Attach file/directory context in composer |
-| `/attach <path>` | Attach image/video media references |
+| `/attach <path>` | Attach image/video media references; select the row with `↑` at composer start and remove with `Backspace`/`Delete` |
 
 ---
 
@@ -198,17 +206,13 @@ Key environment overrides:
 | `SGLANG_BASE_URL` | Self-hosted SGLang endpoint |
 | `SGLANG_API_KEY` | Optional SGLang bearer token |
 
-Quick diagnostics:
-
-```bash
-deepseek-tui setup --status    # read-only status check (API key, MCP, sandbox, .env)
-deepseek-tui doctor --json     # machine-readable doctor output for CI
-deepseek-tui setup --tools --plugins  # scaffold tools/ and plugins/ directories
-```
+Quick diagnostics: `deepseek setup --status` checks API key, MCP, sandbox, and
+`.env` state without network calls; `deepseek doctor --json` is suitable for CI;
+`deepseek setup --tools --plugins` scaffolds local tool and plugin directories.
 
 DeepSeek context caching is automatic — when the API returns cache hit/miss token fields, the TUI includes them in usage and cost tracking.
 
-Full reference: [docs/CONFIGURATION.md](docs/CONFIGURATION.md)
+Full reference: [docs/CONFIGURATION.md](docs/CONFIGURATION.md) and [docs/MCP.md](docs/MCP.md).
 
 ---
 
