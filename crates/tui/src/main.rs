@@ -2940,8 +2940,8 @@ async fn run_exec_agent(
     // Compaction defaults to disabled in v0.6.6: the checkpoint-restart cycle
     // architecture (issue #124) handles long-context resets via fresh contexts
     // rather than progressive summarization. The compaction config is still
-    // wired through so users who explicitly opt back in via [compaction]
-    // enabled = true keep their old behavior.
+    // wired through so users who explicitly opt back in through TUI settings
+    // or direct engine config keep their old behavior.
     let compaction = CompactionConfig {
         enabled: false,
         model: model.to_string(),

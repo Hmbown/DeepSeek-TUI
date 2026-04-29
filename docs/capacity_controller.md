@@ -1,6 +1,9 @@
 # Capacity Controller
 
-`deepseek-tui` includes a capacity-aware context controller that keeps active prompt context near coherent operating range while preserving full history on disk.
+`deepseek-tui` includes an opt-in capacity-aware context controller. In the
+default V4 path it is disabled, because its active interventions can rewrite
+the live prompt and break prefix-cache affinity. Treat it as telemetry or an
+experimental guardrail unless `capacity.enabled = true` is set explicitly.
 
 ## Policy Overview
 
@@ -28,6 +31,8 @@ Per-model priors:
 
 - `deepseek_v3_2_chat = 3.9`
 - `deepseek_v3_2_reasoner = 4.1`
+- `deepseek_v4_pro = 3.5`
+- `deepseek_v4_flash = 4.2`
 - fallback `3.8` (used for other DeepSeek IDs, including future releases)
 
 ### Failure Probability
@@ -52,7 +57,7 @@ Risk bands:
 - medium: `p_fail <= medium_risk_max`
 - high: otherwise
 
-Action mapping:
+Action mapping when the controller is explicitly enabled:
 
 - low -> `NoIntervention`
 - medium -> `TargetedContextRefresh`
@@ -61,13 +66,18 @@ Action mapping:
 
 ## Checkpoints
 
-The engine evaluates controller policy at:
+When enabled, the engine evaluates controller policy at:
 
 1. Pre-request checkpoint (before `MessageRequest` assembly).
 2. Post-tool checkpoint (after tool result append).
 3. Error-escalation checkpoint (tool error streak path).
 
 ## Interventions
+
+Interventions are not part of the default v0.7.5 V4 path. The default path is:
+append messages, preserve prefix-cache reuse, suggest manual `/compact` near
+real model pressure, and use overflow recovery only if the request would exceed
+the model input budget.
 
 ### `TargetedContextRefresh`
 
@@ -119,18 +129,20 @@ Loader utility supports fetching last `K` snapshots for rehydration.
 
 `[capacity]` keys:
 
-- `enabled`
-- `low_risk_max`
-- `medium_risk_max`
-- `severe_min_slack`
-- `severe_violation_ratio`
-- `refresh_cooldown_turns`
-- `replan_cooldown_turns`
-- `max_replay_per_turn`
-- `min_turns_before_guardrail`
-- `profile_window`
-- `deepseek_v3_2_chat_prior`
-- `deepseek_v3_2_reasoner_prior`
-- `fallback_default_prior`
+- `enabled` (default `false`)
+- `low_risk_max` (default `0.50`)
+- `medium_risk_max` (default `0.62`)
+- `severe_min_slack` (default `-0.25`)
+- `severe_violation_ratio` (default `0.40`)
+- `refresh_cooldown_turns` (default `6`)
+- `replan_cooldown_turns` (default `5`)
+- `max_replay_per_turn` (default `1`)
+- `min_turns_before_guardrail` (default `4`)
+- `profile_window` (default `8`)
+- `deepseek_v3_2_chat_prior` (default `3.9`)
+- `deepseek_v3_2_reasoner_prior` (default `4.1`)
+- `deepseek_v4_pro_prior` (default `3.5`)
+- `deepseek_v4_flash_prior` (default `4.2`)
+- `fallback_default_prior` (default `3.8`)
 
 Equivalent environment overrides are available with `DEEPSEEK_CAPACITY_*`.

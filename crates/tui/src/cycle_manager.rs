@@ -2,8 +2,9 @@
 //!
 //! ## Why
 //!
-//! DeepSeek V4's empirical retrieval elbow is 128K tokens (paper Figure 9 —
-//! 8K/0.90, 64K/0.87, 128K/0.85, 256K/0.76, 512K/0.66, 1M/0.59). Lossy
+//! DeepSeek V4's empirical retrieval degradation begins around the 256K band
+//! (paper Figure 9: 8K/0.90, 64K/0.87, 128K/0.85, 256K/0.76,
+//! 512K/0.66, 1M/0.59). Lossy
 //! summarization compaction creates a "Frankenstein" context — half verbatim,
 //! half paraphrased — that the model cannot tell apart, so it treats the
 //! summary as if it were verbatim and confabulates around the gaps.
@@ -28,9 +29,9 @@
 //!
 //! ## Trigger
 //!
-//! - Token threshold: **768K** by default (~75% of the 1M window). Soft seams
-//!   at 192K/384K/576K (layered context manager, #159) handle intermediate
-//!   thresholds. The hard cycle only fires near the wall.
+//! - Token threshold: **768K** by default (~75% of the 1M window). This is a
+//!   rare overflow safety net. Optional soft seams at 192K/384K/576K are
+//!   controlled by the opt-in layered context manager (#159).
 //! - Phase guard: callers only invoke `should_advance_cycle` at clean turn
 //!   boundaries (no in-flight tool, no streaming, no approval modal).
 //! - Per-model overrides: `[cycle.per_model]` in config.toml lets operators
@@ -58,9 +59,9 @@ const CYCLE_ARCHIVE_SCHEMA_VERSION: u32 = 1;
 
 /// Default token threshold at which a cycle boundary fires.
 ///
-/// Bumped from 110K (pre-#159) to 768K (~75% of 1M window) in v0.7.2.
-/// The layered context manager (#159) handles intermediate thresholds via
-/// soft seams at 192K/384K/576K, so the hard cycle only fires near the wall.
+/// Bumped from 110K to 768K (~75% of 1M window). The layered context manager
+/// (#159) can add opt-in soft seams at 192K/384K/576K; the hard cycle remains
+/// a near-wall safety net.
 pub const DEFAULT_CYCLE_THRESHOLD_TOKENS: usize = 768_000;
 
 /// Default cap on the model-curated briefing block.

@@ -117,6 +117,8 @@ These override config values:
 - `DEEPSEEK_CAPACITY_PROFILE_WINDOW`
 - `DEEPSEEK_CAPACITY_PRIOR_CHAT`
 - `DEEPSEEK_CAPACITY_PRIOR_REASONER`
+- `DEEPSEEK_CAPACITY_PRIOR_V4_PRO`
+- `DEEPSEEK_CAPACITY_PRIOR_V4_FLASH`
 - `DEEPSEEK_CAPACITY_PRIOR_FALLBACK`
 
 ## Settings File (Persistent UI Preferences)
@@ -125,14 +127,17 @@ DeepSeek TUI also stores user preferences in:
 
 - `~/.config/deepseek/settings.toml`
 
-Notable settings include `auto_compact` (default `true`), which automatically summarizes
-earlier turns once the conversation grows large. You can inspect or update these from the
-TUI with `/settings` and `/config` (interactive editor).
+Notable settings include `auto_compact` (default `false`), which opts into
+replacement-style summarization only near the active model limit. The default
+V4 path preserves the stable message prefix for cache reuse; use manual
+`/compact` or enable `auto_compact` only when you explicitly want automatic
+replacement compaction. You can inspect or update these from the TUI with
+`/settings` and `/config` (interactive editor).
 
 Common settings keys:
 
 - `theme` (default, dark, light, whale)
-- `auto_compact` (on/off)
+- `auto_compact` (on/off, default off)
 - `show_thinking` (on/off)
 - `show_tool_details` (on/off)
 - `default_mode` (agent, plan, yolo; legacy `normal` is accepted and normalized to `agent`)
@@ -188,25 +193,36 @@ If you are upgrading from older releases:
   - `[snapshots].enabled` (bool, default `true`)
   - `[snapshots].max_age_days` (int, default `7`)
   - snapshots live under `~/.deepseek/snapshots/<project_hash>/<worktree_hash>/.git` and never use the workspace's own `.git` directory
+- `context.*` (optional): append-only Flash seam manager, currently opt-in:
+  - `[context].enabled` (bool, default `false`)
+  - `[context].verbatim_window_turns` (int, default `16`)
+  - `[context].l1_threshold` (int, default `192000`)
+  - `[context].l2_threshold` (int, default `384000`)
+  - `[context].l3_threshold` (int, default `576000`)
+  - `[context].cycle_threshold` (int, default `768000`)
+  - `[context].seam_model` (string, default `deepseek-v4-flash`)
 - `retry.*` (optional): retry/backoff settings for API requests:
   - `[retry].enabled` (bool, default `true`)
   - `[retry].max_retries` (int, default `3`)
   - `[retry].initial_delay` (float seconds, default `1.0`)
   - `[retry].max_delay` (float seconds, default `60.0`)
   - `[retry].exponential_base` (float, default `2.0`)
-- `capacity.*` (optional): runtime context-capacity controller:
-  - `[capacity].enabled` (bool, default `true`)
-  - `[capacity].low_risk_max` (float, default `0.34`)
+- `capacity.*` (optional): runtime context-capacity controller. This is opt-in
+  because its active interventions can rewrite the live transcript.
+  - `[capacity].enabled` (bool, default `false`)
+  - `[capacity].low_risk_max` (float, default `0.50`)
   - `[capacity].medium_risk_max` (float, default `0.62`)
   - `[capacity].severe_min_slack` (float, default `-0.25`)
   - `[capacity].severe_violation_ratio` (float, default `0.40`)
-  - `[capacity].refresh_cooldown_turns` (int, default `2`)
+  - `[capacity].refresh_cooldown_turns` (int, default `6`)
   - `[capacity].replan_cooldown_turns` (int, default `5`)
   - `[capacity].max_replay_per_turn` (int, default `1`)
-  - `[capacity].min_turns_before_guardrail` (int, default `2`)
+  - `[capacity].min_turns_before_guardrail` (int, default `4`)
   - `[capacity].profile_window` (int, default `8`)
   - `[capacity].deepseek_v3_2_chat_prior` (float, default `3.9`)
   - `[capacity].deepseek_v3_2_reasoner_prior` (float, default `4.1`)
+  - `[capacity].deepseek_v4_pro_prior` (float, default `3.5`)
+  - `[capacity].deepseek_v4_flash_prior` (float, default `4.2`)
   - `[capacity].fallback_default_prior` (float, default `3.8`)
 - `tui.alternate_screen` (string, optional): `auto`, `always`, or `never`. `auto` disables the alternate screen in Zellij; `--no-alt-screen` forces inline mode. Set `never` or run with `--no-alt-screen` when you want real terminal scrollback.
 - `tui.mouse_capture` (bool, optional, default `true` when the alternate screen is active): enable internal mouse scrolling/transcript selection. Set this to `false` or run with `--no-mouse-capture` for terminal-native drag selection and highlight-to-copy.

@@ -619,6 +619,38 @@ mod tests {
     }
 
     #[test]
+    fn default_controller_is_disabled_and_does_not_observe() {
+        let cfg = CapacityControllerConfig::default();
+        assert!(!cfg.enabled);
+
+        let mut controller = CapacityController::new(cfg);
+        let snapshot = controller.observe_pre_turn(CapacityObservationInput {
+            turn_index: 1,
+            model: "deepseek-v4-pro".to_string(),
+            action_count_this_turn: 10,
+            tool_calls_recent_window: 10,
+            unique_reference_ids_recent_window: 10,
+            context_used_ratio: 0.95,
+        });
+
+        assert!(snapshot.is_none());
+        let decision = controller.decide(1, snapshot.as_ref());
+        assert_eq!(decision.action, GuardrailAction::NoIntervention);
+        assert_eq!(decision.reason, "capacity_controller_disabled");
+    }
+
+    #[test]
+    fn app_config_without_capacity_keeps_controller_disabled() {
+        let cfg = CapacityControllerConfig::from_app_config(&crate::config::Config::default());
+        assert!(!cfg.enabled);
+        assert_eq!(cfg.low_risk_max, 0.50);
+        assert_eq!(cfg.refresh_cooldown_turns, 6);
+        assert_eq!(cfg.min_turns_before_guardrail, 4);
+        assert_eq!(cfg.model_priors.get("deepseek_v4_pro"), Some(&3.5));
+        assert_eq!(cfg.model_priors.get("deepseek_v4_flash"), Some(&4.2));
+    }
+
+    #[test]
     fn normalize_v4_pro_variants() {
         assert_eq!(
             normalize_model_prior_key("deepseek-v4-pro"),

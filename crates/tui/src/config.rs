@@ -436,9 +436,10 @@ impl RetryPolicy {
 }
 
 /// Context management configuration (append-only layered context with Flash seams).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct ContextConfig {
-    /// Master enable for layered context management. Default: true.
+    /// Master enable for layered context management. Default: false while
+    /// v0.7.5 audits V4 prefix-cache behavior.
     #[serde(default)]
     pub enabled: Option<bool>,
     /// Verbatim window: last N turns never summarized. Default: 16.
@@ -473,21 +474,6 @@ pub struct PerModelContextConfig {
     pub l3_threshold: Option<usize>,
     #[serde(default)]
     pub cycle_threshold: Option<usize>,
-}
-
-impl Default for ContextConfig {
-    fn default() -> Self {
-        Self {
-            enabled: Some(true),
-            verbatim_window_turns: Some(16),
-            l1_threshold: Some(192_000),
-            l2_threshold: Some(384_000),
-            l3_threshold: Some(576_000),
-            cycle_threshold: Some(768_000),
-            seam_model: Some("deepseek-v4-flash".to_string()),
-            per_model: None,
-        }
-    }
 }
 
 /// Resolved CLI configuration, including defaults and environment overrides.
@@ -2478,6 +2464,41 @@ mod tests {
         assert!(normalize_model_name("gpt-4o").is_none());
         assert!(normalize_model_name("deepseek v4").is_none());
         assert!(normalize_model_name("").is_none());
+    }
+
+    #[test]
+    fn default_context_seams_are_opt_in() {
+        let config = Config::default();
+        assert!(!config.context.enabled.unwrap_or(false));
+        assert_eq!(config.context.l1_threshold.unwrap_or(192_000), 192_000);
+        assert_eq!(config.context.cycle_threshold.unwrap_or(768_000), 768_000);
+        assert_eq!(
+            config
+                .context
+                .seam_model
+                .as_deref()
+                .unwrap_or("deepseek-v4-flash"),
+            "deepseek-v4-flash"
+        );
+    }
+
+    #[test]
+    fn profile_without_context_does_not_disable_base_context() {
+        let mut profiles = HashMap::new();
+        profiles.insert("work".to_string(), Config::default());
+        let config = ConfigFile {
+            base: Config {
+                context: ContextConfig {
+                    enabled: Some(true),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            profiles: Some(profiles),
+        };
+
+        let merged = apply_profile(config, Some("work")).expect("profile");
+        assert_eq!(merged.context.enabled, Some(true));
     }
 
     #[test]

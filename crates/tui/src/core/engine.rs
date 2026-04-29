@@ -94,7 +94,8 @@ pub struct EngineConfig {
     /// is **disabled by default**; the checkpoint-restart cycle architecture
     /// (`cycle_manager`) replaces it. The compaction config is still wired through
     /// for the per-tool-result truncation path (`compact_tool_result_for_context`)
-    /// and for users who explicitly opt back in via `[compaction] enabled = true`.
+    /// and for users who explicitly opt back in through the `auto_compact`
+    /// setting or a direct engine config.
     pub compaction: CompactionConfig,
     /// Checkpoint-restart cycle settings (issue #124).
     pub cycle: CycleConfig,
@@ -270,8 +271,8 @@ pub struct Engine {
     shared_cancel_token: Arc<StdMutex<CancellationToken>>,
     tool_exec_lock: Arc<RwLock<()>>,
     capacity_controller: CapacityController,
-    /// Append-only layered context manager (#159). Produces soft seams at
-    /// 192K/384K/576K and Flash-cycle briefings at 768K.
+    /// Append-only layered context manager (#159). Opt-in for v0.7.5 while
+    /// cache-hit behavior is audited.
     seam_manager: Option<SeamManager>,
     coherence_state: CoherenceState,
     turn_counter: u64,
@@ -1271,12 +1272,12 @@ impl Engine {
         let shell_manager = new_shared_shell_manager(config.workspace.clone());
         let capacity_controller = CapacityController::new(config.capacity.clone());
 
-        // Create Flash seam manager for layered context (#159). Uses the same
-        // API credentials as the main client but targets the Flash model for
-        // cost-effective summarisation and cycle briefing work.
+        // Create Flash seam manager for layered context (#159). v0.7.5 keeps
+        // this opt-in until the prefix-cache audit proves when seam production
+        // is worth the extra request and transcript mutation.
         let seam_manager = deepseek_client.as_ref().map(|main_client| {
             let seam_config = SeamConfig {
-                enabled: api_config.context.enabled.unwrap_or(true),
+                enabled: api_config.context.enabled.unwrap_or(false),
                 verbatim_window_turns: api_config
                     .context
                     .verbatim_window_turns

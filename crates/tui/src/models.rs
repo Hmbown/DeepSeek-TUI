@@ -274,47 +274,18 @@ pub fn compaction_threshold_for_model(model: &str) -> usize {
     usize::try_from(threshold).unwrap_or(DEFAULT_COMPACTION_TOKEN_THRESHOLD)
 }
 
-/// Mode-aware soft context caps for V4 models.
-///
-/// DeepSeek V4 paper Figure 9 shows retrieval quality (MRCR MMR) collapses as
-/// context grows: 0.90 at 8K, 0.94 at 32K, 0.92 at 128K, 0.66 at 512K, 0.49
-/// at 1M. The paper's own eval harness uses budget tiers per §5.3.1:
-///
-/// | Mode / Reasoning tier | Soft cap | Paper eval window |
-/// |-----------------------|----------|-------------------|
-/// | Plan / Non-Think (off) |   64,000 |       8K-128K   |
-/// | Agent / High          |  192,000 |         128K     |
-/// | YOLO / Max            |  384,000 |      384K-512K   |
-///
-/// These caps keep the agent inside the regime DeepSeek tuned for, triggering
-/// compaction *before* recall quality degrades. The 1M hard ceiling remains —
-/// users can override via config or by declining the /compact suggestion.
-pub const V4_PLAN_SOFT_CAP: usize = 64_000;
-pub const V4_AGENT_SOFT_CAP: usize = 192_000;
-pub const V4_YOLO_SOFT_CAP: usize = 384_000;
-
 /// Compaction threshold keyed by model and caller-supplied effort tier.
 ///
-/// For V4-family models the threshold is a mode-aware soft cap (see constants
-/// above). For all other models the legacy 80%-of-window rule applies.
+/// Replacement-style compaction rewrites the stable prefix, which works against
+/// DeepSeek V4 prefix-cache economics. Reasoning effort must not lower V4's
+/// automatic replacement threshold; V4-family models use the same late
+/// 80%-of-window guard as `compaction_threshold_for_model`.
 #[must_use]
 pub fn compaction_threshold_for_model_and_effort(
     model: &str,
-    reasoning_effort: Option<&str>,
+    _reasoning_effort: Option<&str>,
 ) -> usize {
-    let lower = model.to_lowercase();
-    if !lower.contains("deepseek")
-        || !(lower.contains("v4") || is_current_deepseek_v4_alias(&lower))
-    {
-        return compaction_threshold_for_model(model);
-    }
-
-    match reasoning_effort.map(str::trim).filter(|s| !s.is_empty()) {
-        Some("off" | "disabled" | "none" | "false") => V4_PLAN_SOFT_CAP,
-        Some("low" | "medium" | "high") => V4_AGENT_SOFT_CAP,
-        Some("max" | "maximum" | "xhigh") => V4_YOLO_SOFT_CAP,
-        _ => V4_AGENT_SOFT_CAP,
-    }
+    compaction_threshold_for_model(model)
 }
 
 /// Derive a compaction message-count threshold from model context window.
@@ -503,18 +474,18 @@ mod tests {
     }
 
     #[test]
-    fn v4_mode_aware_soft_caps() {
+    fn v4_replacement_compaction_ignores_reasoning_effort() {
         assert_eq!(
             compaction_threshold_for_model_and_effort("deepseek-v4-pro", Some("off")),
-            V4_PLAN_SOFT_CAP
+            800_000
         );
         assert_eq!(
             compaction_threshold_for_model_and_effort("deepseek-v4-pro", Some("high")),
-            V4_AGENT_SOFT_CAP
+            800_000
         );
         assert_eq!(
             compaction_threshold_for_model_and_effort("deepseek-v4-pro", Some("max")),
-            V4_YOLO_SOFT_CAP
+            800_000
         );
     }
 
@@ -531,14 +502,14 @@ mod tests {
     }
 
     #[test]
-    fn v4_soft_cap_defaults_to_agent_when_effort_unknown() {
+    fn v4_replacement_compaction_defaults_to_late_guard_when_effort_unknown() {
         assert_eq!(
             compaction_threshold_for_model_and_effort("deepseek-v4-pro", None),
-            V4_AGENT_SOFT_CAP
+            800_000
         );
         assert_eq!(
             compaction_threshold_for_model_and_effort("deepseek-v4-pro", Some("unknown")),
-            V4_AGENT_SOFT_CAP
+            800_000
         );
     }
 }

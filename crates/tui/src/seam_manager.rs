@@ -12,7 +12,8 @@
 //! `<archived_context>` summary blocks produced by V4 Flash. These blocks
 //! are *navigational aids* — the model reads them first, then drills into
 //! verbatim messages when precision is needed. The prefix cache stays hot
-//! for the entire stable prefix.
+//! for the entire stable prefix. In v0.7.5 this manager is opt-in while the
+//! cache/timing policy is audited.
 //!
 //! ## Soft seam levels
 //!

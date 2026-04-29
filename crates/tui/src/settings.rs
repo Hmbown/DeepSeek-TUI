@@ -13,7 +13,7 @@ use crate::config::{expand_path, normalize_model_name};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    /// Auto-compact conversations when they get long
+    /// Auto-compact conversations when they approach the model limit.
     pub auto_compact: bool,
     /// Reduce status noise and collapse details more aggressively
     pub calm_mode: bool,
@@ -50,7 +50,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            auto_compact: true,
+            auto_compact: false,
             calm_mode: false,
             low_motion: false,
             fancy_animations: false,
@@ -288,7 +288,10 @@ impl Settings {
     #[allow(dead_code)]
     pub fn available_settings() -> Vec<(&'static str, &'static str)> {
         vec![
-            ("auto_compact", "Auto-compact conversations: on/off"),
+            (
+                "auto_compact",
+                "Auto-compact near context limit: on/off (default off)",
+            ),
             ("calm_mode", "Calmer UI defaults: on/off"),
             ("low_motion", "Reduce animation and redraw churn: on/off"),
             (
@@ -375,5 +378,25 @@ fn normalize_sidebar_focus(value: &str) -> &str {
         "tasks" => "tasks",
         "agents" | "subagents" | "sub-agents" => "agents",
         _ => "auto",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_settings_preserve_v4_prefix_cache_by_default() {
+        let settings = Settings::default();
+        assert!(!settings.auto_compact);
+    }
+
+    #[test]
+    fn auto_compact_remains_explicitly_configurable() {
+        let mut settings = Settings::default();
+        settings.set("auto_compact", "on").expect("enable");
+        assert!(settings.auto_compact);
+        settings.set("auto_compact", "off").expect("disable");
+        assert!(!settings.auto_compact);
     }
 }

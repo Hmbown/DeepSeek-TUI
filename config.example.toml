@@ -195,22 +195,35 @@ exponential_base = 2.0
 # There is no config-file `[compaction]` table yet; detailed thresholds are
 # chosen by the TUI from the active model/context budget.
 
+# Append-only Flash seams are experimental and opt-in while the v0.7.5
+# context/cache audit validates prefix-cache behavior.
+[context]
+enabled = false
+verbatim_window_turns = 16
+l1_threshold = 192000
+l2_threshold = 384000
+l3_threshold = 576000
+cycle_threshold = 768000
+seam_model = "deepseek-v4-flash"
+
 # ─────────────────────────────────────────────────────────────────────────────────
 # Capacity Controller (runtime pressure guardrails)
 # ─────────────────────────────────────────────────────────────────────────────────
 [capacity]
-enabled = true
-low_risk_max = 0.34
+enabled = false
+low_risk_max = 0.50
 medium_risk_max = 0.62
 severe_min_slack = -0.25
 severe_violation_ratio = 0.40
-refresh_cooldown_turns = 2
+refresh_cooldown_turns = 6
 replan_cooldown_turns = 5
 max_replay_per_turn = 1
-min_turns_before_guardrail = 2
+min_turns_before_guardrail = 4
 profile_window = 8
 deepseek_v3_2_chat_prior = 3.9
 deepseek_v3_2_reasoner_prior = 4.1
+deepseek_v4_pro_prior = 3.5
+deepseek_v4_flash_prior = 4.2
 fallback_default_prior = 3.8
 
 # ─────────────────────────────────────────────────────────────────────────────────
