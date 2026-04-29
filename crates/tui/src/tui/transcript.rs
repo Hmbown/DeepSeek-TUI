@@ -134,7 +134,13 @@ impl TranscriptViewCache {
 
         // Track whether anything actually changed; if all cells are reused at
         // the same indices, we can skip the reflatten.
-        let mut any_dirty = layout_changed || self.per_cell.len() != total_cells;
+        let old_len = self.per_cell.len();
+        let mut any_dirty = layout_changed || old_len != total_cells;
+        let mut first_dirty: Option<usize> = if old_len != total_cells {
+            Some(old_len.min(total_cells))
+        } else {
+            None
+        };
 
         let mut new_per_cell: Vec<CachedCell> = Vec::with_capacity(total_cells);
         let revisions_match = cell_revisions.len() == total_cells;
@@ -164,6 +170,7 @@ impl TranscriptViewCache {
                 }
 
                 any_dirty = true;
+                first_dirty = Some(first_dirty.map_or(idx, |current| current.min(idx)));
                 let is_tool_groupable = matches!(cell, HistoryCell::Tool(_));
                 let render_width = if is_tool_groupable {
                     width.saturating_sub(2).max(1)
@@ -200,15 +207,47 @@ impl TranscriptViewCache {
             return;
         }
 
-        self.flatten(options.spacing);
+        let rebuild_from = if layout_changed {
+            0
+        } else {
+            first_dirty.unwrap_or(0).saturating_sub(1)
+        };
+        self.flatten_from(options.spacing, rebuild_from);
     }
 
     /// Reassemble flat `lines` / `line_meta` from `per_cell` plus spacers.
     fn flatten(&mut self, spacing: TranscriptSpacing) {
-        let mut lines = Vec::with_capacity(self.lines.capacity());
-        let mut meta = Vec::with_capacity(self.line_meta.capacity());
+        self.lines.clear();
+        self.line_meta.clear();
+        self.append_flattened_cells(spacing, 0);
+    }
 
-        for (cell_index, cached) in self.per_cell.iter().enumerate() {
+    /// Reassemble only the suffix starting at `first_cell`.
+    ///
+    /// Streaming usually mutates the active tail cell. Rebuilding from the
+    /// previous cell preserves spacer correctness while avoiding a full
+    /// O(total transcript lines) flatten on every token chunk.
+    fn flatten_from(&mut self, spacing: TranscriptSpacing, first_cell: usize) {
+        if first_cell == 0 || self.lines.is_empty() || self.line_meta.is_empty() {
+            self.flatten(spacing);
+            return;
+        }
+
+        let truncate_at = self
+            .line_meta
+            .iter()
+            .position(|meta| match meta {
+                TranscriptLineMeta::CellLine { cell_index, .. } => *cell_index >= first_cell,
+                TranscriptLineMeta::Spacer => false,
+            })
+            .unwrap_or(self.lines.len());
+        self.lines.truncate(truncate_at);
+        self.line_meta.truncate(truncate_at);
+        self.append_flattened_cells(spacing, first_cell);
+    }
+
+    fn append_flattened_cells(&mut self, spacing: TranscriptSpacing, start_cell: usize) {
+        for (cell_index, cached) in self.per_cell.iter().enumerate().skip(start_cell) {
             if cached.is_empty {
                 continue;
             }
@@ -217,7 +256,7 @@ impl TranscriptViewCache {
             // Deref is zero-cost and gives us &[Line].
             let rendered_line_count = cached.lines.len();
             for (line_in_cell, line) in cached.lines.iter().enumerate() {
-                lines.push(line_with_group_rail(
+                self.lines.push(line_with_group_rail(
                     line,
                     tool_group_rail(
                         self.per_cell.as_slice(),
@@ -227,7 +266,7 @@ impl TranscriptViewCache {
                     ),
                     usize::from(self.width),
                 ));
-                meta.push(TranscriptLineMeta::CellLine {
+                self.line_meta.push(TranscriptLineMeta::CellLine {
                     cell_index,
                     line_in_cell,
                 });
@@ -236,14 +275,11 @@ impl TranscriptViewCache {
             if let Some(next) = self.per_cell.get(cell_index + 1) {
                 let spacer_rows = spacer_rows_between(cached, next, spacing);
                 for _ in 0..spacer_rows {
-                    lines.push(Line::from(""));
-                    meta.push(TranscriptLineMeta::Spacer);
+                    self.lines.push(Line::from(""));
+                    self.line_meta.push(TranscriptLineMeta::Spacer);
                 }
             }
         }
-
-        self.lines = lines;
-        self.line_meta = meta;
     }
 
     /// Return cached lines.
@@ -586,6 +622,33 @@ mod tests {
         assert_eq!(cache.per_cell[0].revision, 1);
         assert_eq!(cache.per_cell[1].revision, 2);
         assert_eq!(cache.per_cell[2].revision, 1);
+    }
+
+    #[test]
+    fn tail_update_suffix_rebuild_matches_fresh_flatten() {
+        let mut cells = vec![
+            user_cell("first message"),
+            assistant_cell("stable answer", false),
+            user_cell("tail prompt"),
+        ];
+        let mut revisions = vec![1u64, 1, 1];
+        let mut cache = TranscriptViewCache::new();
+        cache.ensure(&cells, &revisions, 40, TranscriptRenderOptions::default());
+
+        cells.push(assistant_cell("streaming tail", true));
+        revisions.push(1);
+        cache.ensure(&cells, &revisions, 40, TranscriptRenderOptions::default());
+
+        if let HistoryCell::Assistant { content, .. } = cells.last_mut().unwrap() {
+            content.push_str(" plus delta");
+        }
+        *revisions.last_mut().unwrap() += 1;
+        cache.ensure(&cells, &revisions, 40, TranscriptRenderOptions::default());
+        let incremental = plain_lines(&cache);
+
+        let mut fresh = TranscriptViewCache::new();
+        fresh.ensure(&cells, &revisions, 40, TranscriptRenderOptions::default());
+        assert_eq!(incremental, plain_lines(&fresh));
     }
 
     #[test]

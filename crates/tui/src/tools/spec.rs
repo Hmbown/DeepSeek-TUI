@@ -29,6 +29,7 @@ pub use deepseek_tools::{
 /// attached.
 #[derive(Clone, Default)]
 pub struct RuntimeToolServices {
+    pub shell_manager: Option<SharedShellManager>,
     pub task_manager: Option<crate::task_manager::SharedTaskManager>,
     pub automations: Option<crate::automation_manager::SharedAutomationManager>,
     pub task_data_dir: Option<PathBuf>,
@@ -39,6 +40,7 @@ pub struct RuntimeToolServices {
 impl std::fmt::Debug for RuntimeToolServices {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RuntimeToolServices")
+            .field("shell_manager", &self.shell_manager.is_some())
             .field("task_manager", &self.task_manager.is_some())
             .field("automations", &self.automations.is_some())
             .field("task_data_dir", &self.task_data_dir)

@@ -402,6 +402,12 @@ impl ConfigView {
                 editable: true,
                 scope: ConfigScope::Saved,
             },
+            ConfigRow {
+                key: "mcp_config_path".to_string(),
+                value: app.mcp_config_path.display().to_string(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
         ];
 
         Self {

@@ -72,6 +72,34 @@ pub fn persist_status_items(items: &[crate::config::StatusItem]) -> anyhow::Resu
     Ok(path)
 }
 
+fn persist_root_string_key(key: &str, value: &str) -> anyhow::Result<PathBuf> {
+    use anyhow::Context;
+    use std::fs;
+
+    let path = config_toml_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create config directory {}", parent.display()))?;
+    }
+
+    let mut doc: toml::Value = if path.exists() {
+        let raw = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read config at {}", path.display()))?;
+        toml::from_str(&raw)
+            .with_context(|| format!("failed to parse config at {}", path.display()))?
+    } else {
+        toml::Value::Table(toml::value::Table::new())
+    };
+    let table = doc
+        .as_table_mut()
+        .context("config.toml root must be a table")?;
+    table.insert(key.to_string(), toml::Value::String(value.to_string()));
+    let body = toml::to_string_pretty(&doc).context("failed to serialize config.toml")?;
+    fs::write(&path, body)
+        .with_context(|| format!("failed to write config at {}", path.display()))?;
+    Ok(path)
+}
+
 /// Resolve the path to `~/.deepseek/config.toml` (or
 /// `$DEEPSEEK_CONFIG_PATH`). Mirrors what `Config::load` accepts so we
 /// never write to a different file than the one we read.
@@ -124,6 +152,29 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
                     "Invalid approval_mode. Use: auto, suggest/on-request/untrusted, never",
                 ),
             };
+        }
+        "mcp_config_path" | "mcp" => {
+            if value.trim().is_empty() {
+                return CommandResult::error("mcp_config_path cannot be empty");
+            }
+            app.mcp_config_path = PathBuf::from(expand_tilde(value));
+            app.mcp_restart_required = true;
+            let message = if persist {
+                match persist_root_string_key("mcp_config_path", value) {
+                    Ok(path) => format!(
+                        "mcp_config_path = {} (saved to {}; restart required for MCP tool pool)",
+                        app.mcp_config_path.display(),
+                        path.display()
+                    ),
+                    Err(err) => return CommandResult::error(format!("Failed to save: {err}")),
+                }
+            } else {
+                format!(
+                    "mcp_config_path = {} (session only; restart required for MCP tool pool)",
+                    app.mcp_config_path.display()
+                )
+            };
+            return CommandResult::message(message);
         }
         _ => {}
     }

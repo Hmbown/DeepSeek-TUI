@@ -46,6 +46,28 @@ chosen over the available shell equivalent. Companion to `crates/tui/src/prompts
 | `task_shell_start` | Start a long-running command in the background and return immediately. Preferred over foreground shell for diagnostics, tests, searches, and servers that may run for minutes. |
 | `task_shell_wait` | Poll a background command. If `gate` is supplied after completion, record structured gate evidence on the active durable task. |
 
+Interactive shell jobs are also visible through `/jobs`. The TUI job center is
+fed by the same shell manager as `exec_shell`/`task_shell_start`, and shows the
+command, cwd, elapsed time, status, output tail, process-local shell id, and
+linked durable task id when available. `/jobs show`, `/jobs poll`, `/jobs wait`,
+`/jobs stdin`, and `/jobs cancel` provide inspect, polling, stdin, and cancel
+controls for live jobs. Jobs are process-local; after restart, detached entries
+are marked stale rather than presented as live processes.
+
+### MCP manager and palette discovery
+
+MCP server configuration is surfaced in the TUI through `/mcp` and the
+`mcp_config_path` row in `/config`. `/mcp` shows the resolved config path,
+server enabled/disabled state, transport, command or URL, timeouts, connection
+errors, and discovered tools/resources/prompts. It supports narrow manager
+actions for init, add, enable, disable, remove, validate, and reload/reconnect.
+Config edits are written immediately, but the model-visible MCP tool pool is
+restart-required after edits.
+
+The command palette includes MCP entries grouped by server. Disabled and failed
+servers stay visible, and discovered tools/prompts use the runtime names shown
+to the model, such as `mcp_<server>_<tool>`.
+
 ### Git / diagnostics / testing
 
 | Tool | Niche |

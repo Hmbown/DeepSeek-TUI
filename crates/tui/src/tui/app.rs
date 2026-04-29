@@ -21,6 +21,7 @@ use crate::palette::{self, UiTheme};
 use crate::session_manager::SessionContextReference;
 use crate::settings::Settings;
 use crate::tools::plan::{SharedPlanState, new_shared_plan_state};
+use crate::tools::shell::new_shared_shell_manager;
 use crate::tools::spec::RuntimeToolServices;
 use crate::tools::subagent::SubAgentResult;
 use crate::tools::todo::{SharedTodoList, new_shared_todo_list};
@@ -417,6 +418,7 @@ pub struct App {
     /// Cycled via Shift+Tab; initialized from config at startup.
     pub reasoning_effort: ReasoningEffort,
     pub workspace: PathBuf,
+    pub mcp_config_path: PathBuf,
     pub skills_dir: PathBuf,
     pub use_alt_screen: bool,
     pub use_mouse_capture: bool,
@@ -519,6 +521,10 @@ pub struct App {
     pub todos: SharedTodoList,
     /// Durable runtime services exposed to model-visible task/automation tools.
     pub runtime_services: RuntimeToolServices,
+    /// Last MCP manager/discovery snapshot shown in the UI.
+    pub mcp_snapshot: Option<crate::mcp::McpManagerSnapshot>,
+    /// Set after in-TUI MCP config edits because the engine caches its MCP pool.
+    pub mcp_restart_required: bool,
     /// Tool execution log
     pub tool_log: Vec<String>,
     /// Session cost tracking
@@ -749,7 +755,7 @@ impl App {
             skills_dir: global_skills_dir,
             memory_path: _,
             notes_path: _,
-            mcp_config_path: _,
+            mcp_config_path,
             use_memory: _,
             start_in_agent_mode,
             skip_onboarding,
@@ -798,6 +804,7 @@ impl App {
             None
         };
         let allow_shell = allow_shell || initial_mode == AppMode::Yolo;
+        let shell_manager = new_shared_shell_manager(workspace.clone());
 
         // Initialize hooks executor from config
         let hooks_config = config.hooks_config();
@@ -851,6 +858,7 @@ impl App {
                     ReasoningEffort::from_setting(s)
                 }),
             workspace,
+            mcp_config_path,
             skills_dir,
             use_alt_screen,
             use_mouse_capture,
@@ -926,7 +934,12 @@ impl App {
             plan_prompt_pending: false,
             plan_tool_used_in_turn: false,
             todos: new_shared_todo_list(),
-            runtime_services: RuntimeToolServices::default(),
+            runtime_services: RuntimeToolServices {
+                shell_manager: Some(shell_manager),
+                ..RuntimeToolServices::default()
+            },
+            mcp_snapshot: None,
+            mcp_restart_required: false,
             tool_log: Vec::new(),
             session_cost: 0.0,
             subagent_cost: 0.0,
@@ -2303,6 +2316,56 @@ pub enum AppAction {
     TaskCancel {
         id: String,
     },
+    ShellJob(ShellJobAction),
+    Mcp(McpUiAction),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShellJobAction {
+    List,
+    Show {
+        id: String,
+    },
+    Poll {
+        id: String,
+        wait: bool,
+    },
+    SendStdin {
+        id: String,
+        input: String,
+        close: bool,
+    },
+    Cancel {
+        id: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpUiAction {
+    Show,
+    Init {
+        force: bool,
+    },
+    AddStdio {
+        name: String,
+        command: String,
+        args: Vec<String>,
+    },
+    AddHttp {
+        name: String,
+        url: String,
+    },
+    Enable {
+        name: String,
+    },
+    Disable {
+        name: String,
+    },
+    Remove {
+        name: String,
+    },
+    Validate,
+    Reload,
 }
 
 #[cfg(test)]

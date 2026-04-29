@@ -35,6 +35,32 @@ deepseek-tui mcp remove <name>
 deepseek-tui mcp validate
 ```
 
+## In-TUI Manager
+
+Inside the interactive TUI, `/mcp` opens a compact manager for the resolved
+MCP config path. It shows each configured server, whether it is enabled or
+disabled, its transport, command or URL, timeout values, connection errors,
+and discovered tools/resources/prompts when discovery has been run.
+
+Supported in-TUI actions:
+
+```text
+/mcp init
+/mcp init --force
+/mcp add stdio <name> <command> [args...]
+/mcp add http <name> <url>
+/mcp enable <name>
+/mcp disable <name>
+/mcp remove <name>
+/mcp validate
+/mcp reload
+```
+
+`/mcp validate` and `/mcp reload` reconnect for UI discovery and refresh the
+manager snapshot. Config edits made from the TUI are written immediately, but
+the model-visible MCP tool pool is not hot-reloaded; the manager marks this as
+restart-required until the TUI is restarted.
+
 ## Config File Location
 
 Default path:
@@ -48,7 +74,11 @@ Overrides:
 
 `deepseek-tui mcp init` (and `deepseek-tui setup --mcp`) writes to this resolved path.
 
-After editing the file, restart the TUI.
+The interactive `/config` editor also exposes `mcp_config_path`. Changing it in
+the TUI updates the path used by `/mcp`, and requires a restart before the
+model-visible MCP tool pool is rebuilt.
+
+After editing the file or changing `mcp_config_path`, restart the TUI.
 
 ## Tool Naming
 
@@ -57,6 +87,10 @@ Discovered MCP tools are exposed to the model as:
 - `mcp_<server>_<tool>`
 
 Example: a server named `git` with a tool named `status` becomes `mcp_git_status`.
+
+The command palette includes MCP entries grouped by server. It shows disabled
+and failed servers instead of hiding them, and uses the same runtime tool names
+shown to the model.
 
 ## Resource and Prompt Helpers
 
@@ -185,5 +219,6 @@ You should still only configure MCP servers you trust, and treat MCP server conf
 ## Troubleshooting
 
 - Run `deepseek-tui doctor` to confirm the MCP config path it resolved and whether it exists.
+- In the TUI, run `/mcp validate` to refresh the visible server/tool snapshot.
 - If the MCP config is missing, run `deepseek-tui mcp init --force` to regenerate it.
 - If tools don’t appear, verify the server command works from your shell and that the server supports MCP `tools/list`.

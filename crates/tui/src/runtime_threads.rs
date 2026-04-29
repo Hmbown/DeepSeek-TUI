@@ -1557,6 +1557,7 @@ impl RuntimeThreadManager {
                 task_data_dir: Some(self.manager_cfg.task_data_dir.clone()),
                 active_task_id: thread.task_id.clone(),
                 active_thread_id: Some(thread.id.clone()),
+                shell_manager: None,
             },
         };
 

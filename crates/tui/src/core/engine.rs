@@ -1269,7 +1269,11 @@ impl Engine {
 
         let subagent_manager =
             new_shared_subagent_manager(config.workspace.clone(), config.max_subagents);
-        let shell_manager = new_shared_shell_manager(config.workspace.clone());
+        let shell_manager = config
+            .runtime_services
+            .shell_manager
+            .clone()
+            .unwrap_or_else(|| new_shared_shell_manager(config.workspace.clone()));
         let capacity_controller = CapacityController::new(config.capacity.clone());
 
         // Create Flash seam manager for layered context (#159). v0.7.5 keeps

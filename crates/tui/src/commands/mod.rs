@@ -9,6 +9,8 @@ mod core;
 mod cycle;
 mod debug;
 mod init;
+mod jobs;
+mod mcp;
 mod note;
 mod provider;
 mod queue;
@@ -183,6 +185,18 @@ pub const COMMANDS: &[CommandInfo] = &[
         aliases: &["tasks"],
         description: "Manage background tasks",
         usage: "/task [add <prompt>|list|show <id>|cancel <id>]",
+    },
+    CommandInfo {
+        name: "jobs",
+        aliases: &["job"],
+        description: "Inspect and control background shell jobs",
+        usage: "/jobs [list|show <id>|poll <id>|wait <id>|stdin <id> <input>|cancel <id>]",
+    },
+    CommandInfo {
+        name: "mcp",
+        aliases: &[],
+        description: "Open or manage MCP servers",
+        usage: "/mcp [init|add stdio <name> <command> [args...]|add http <name> <url>|enable <name>|disable <name>|remove <name>|validate|reload]",
     },
     // Session commands
     CommandInfo {
@@ -389,6 +403,8 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "note" => note::note(app, arg),
         "attach" | "image" | "media" => attachment::attach(app, arg),
         "task" | "tasks" => task::task(app, arg),
+        "jobs" | "job" => jobs::jobs(app, arg),
+        "mcp" => mcp::mcp(app, arg),
 
         // Session commands
         "save" => session::save(app, arg),

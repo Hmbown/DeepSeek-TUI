@@ -148,6 +148,71 @@ fn test_write_stdin_streams_output() {
 }
 
 #[test]
+fn test_job_list_poll_cancel_and_stale_snapshot() {
+    let tmp = tempdir().expect("tempdir");
+    let mut manager = ShellManager::new(tmp.path().to_path_buf());
+
+    let started = manager
+        .execute(&sleep_then_echo_command(1, "done"), None, 5000, true)
+        .expect("execute");
+    let task_id = started.task_id.expect("task id");
+    manager
+        .tag_linked_task(&task_id, Some("task_123".to_string()))
+        .expect("tag linked task");
+
+    let running = manager.list_jobs();
+    let job = running
+        .iter()
+        .find(|job| job.id == task_id)
+        .expect("running job");
+    assert_eq!(job.status, ShellStatus::Running);
+    assert_eq!(job.linked_task_id.as_deref(), Some("task_123"));
+    assert!(job.command.contains("done"));
+    assert_eq!(job.cwd, tmp.path());
+
+    let completed = manager
+        .poll_delta(&task_id, true, 5000)
+        .expect("poll delta");
+    assert_eq!(completed.result.status, ShellStatus::Completed);
+    assert!(completed.result.stdout.contains("done"));
+
+    let detail = manager.inspect_job(&task_id).expect("inspect");
+    assert!(detail.stdout.contains("done"));
+    assert_eq!(detail.snapshot.status, ShellStatus::Completed);
+
+    manager.remember_stale_job(
+        "shell_stale",
+        "cargo test",
+        tmp.path().to_path_buf(),
+        Some("task_old".to_string()),
+    );
+    let stale = manager
+        .list_jobs()
+        .into_iter()
+        .find(|job| job.id == "shell_stale")
+        .expect("stale job");
+    assert!(stale.stale);
+    assert_eq!(stale.linked_task_id.as_deref(), Some("task_old"));
+}
+
+#[test]
+fn test_job_cancel_updates_completion_state() {
+    let tmp = tempdir().expect("tempdir");
+    let mut manager = ShellManager::new(tmp.path().to_path_buf());
+
+    let started = manager
+        .execute(&sleep_command(60), None, 5000, true)
+        .expect("execute");
+    let task_id = started.task_id.expect("task id");
+
+    let killed = manager.kill(&task_id).expect("kill");
+    assert_eq!(killed.status, ShellStatus::Killed);
+    let job = manager.inspect_job(&task_id).expect("inspect");
+    assert_eq!(job.snapshot.status, ShellStatus::Killed);
+    assert!(!job.snapshot.stdin_available);
+}
+
+#[test]
 fn test_output_truncation() {
     let long_output = "x".repeat(50_000);
     let (truncated, _meta) = truncate_with_meta(&long_output);

@@ -53,12 +53,16 @@ use crate::tui::command_palette::{
 use crate::tui::context_inspector::build_context_inspector_text;
 use crate::tui::event_broker::EventBroker;
 use crate::tui::live_transcript::LiveTranscriptOverlay;
+use crate::tui::mcp_routing::{add_mcp_message, open_mcp_manager_pager};
 use crate::tui::onboarding;
 use crate::tui::pager::PagerView;
 use crate::tui::plan_prompt::PlanPromptView;
 use crate::tui::scrolling::{ScrollDirection, TranscriptScroll};
 use crate::tui::selection::TranscriptSelectionPoint;
 use crate::tui::session_picker::SessionPickerView;
+use crate::tui::shell_job_routing::{
+    add_shell_job_message, format_shell_job_list, format_shell_poll, open_shell_job_pager,
+};
 use crate::tui::subagent_routing::{
     format_task_list, handle_subagent_mailbox, open_task_pager, reconcile_subagent_activity_state,
     running_agent_count, sort_subagents_in_place, task_mode_label, task_summary_to_panel_entry,
@@ -259,7 +263,13 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         automation_cancel.clone(),
         AutomationSchedulerConfig::default(),
     );
+    let shell_manager = app
+        .runtime_services
+        .shell_manager
+        .clone()
+        .unwrap_or_else(|| crate::tools::shell::new_shared_shell_manager(app.workspace.clone()));
     app.runtime_services = RuntimeToolServices {
+        shell_manager: Some(shell_manager),
         task_manager: Some(task_manager.clone()),
         automations: Some(automations),
         task_data_dir: Some(task_manager.data_dir()),
@@ -1359,6 +1369,8 @@ async fn run_event_loop(
                     .push(CommandPaletteView::new(build_command_palette_entries(
                         &app.skills_dir,
                         &app.workspace,
+                        &app.mcp_config_path,
+                        app.mcp_snapshot.as_ref(),
                     )));
                 continue;
             }
@@ -3058,10 +3070,170 @@ async fn apply_command_result(
                     .map(task_summary_to_panel_entry)
                     .collect();
             }
+            AppAction::ShellJob(action) => {
+                handle_shell_job_action(app, action);
+            }
+            AppAction::Mcp(action) => {
+                handle_mcp_ui_action(app, config, action).await;
+            }
         }
     }
 
     Ok(false)
+}
+
+async fn handle_mcp_ui_action(
+    app: &mut App,
+    config: &Config,
+    action: crate::tui::app::McpUiAction,
+) {
+    use crate::mcp::{self, McpWriteStatus};
+
+    let path = app.mcp_config_path.clone();
+    let mut changed = false;
+    let mut message = None;
+    let discover = matches!(
+        action,
+        crate::tui::app::McpUiAction::Validate | crate::tui::app::McpUiAction::Reload
+    );
+
+    let action_result = match action {
+        crate::tui::app::McpUiAction::Show => Ok(()),
+        crate::tui::app::McpUiAction::Init { force } => {
+            changed = true;
+            match mcp::init_config(&path, force) {
+                Ok(McpWriteStatus::Created) => {
+                    message = Some(format!("Created MCP config at {}", path.display()));
+                    Ok(())
+                }
+                Ok(McpWriteStatus::Overwritten) => {
+                    message = Some(format!("Overwrote MCP config at {}", path.display()));
+                    Ok(())
+                }
+                Ok(McpWriteStatus::SkippedExists) => {
+                    changed = false;
+                    message = Some(format!(
+                        "MCP config already exists at {} (use /mcp init --force to overwrite)",
+                        path.display()
+                    ));
+                    Ok(())
+                }
+                Err(err) => Err(err),
+            }
+        }
+        crate::tui::app::McpUiAction::AddStdio {
+            name,
+            command,
+            args,
+        } => {
+            changed = true;
+            mcp::add_server_config(&path, name.clone(), Some(command), None, args)
+                .map(|()| message = Some(format!("Added MCP stdio server '{name}'")))
+        }
+        crate::tui::app::McpUiAction::AddHttp { name, url } => {
+            changed = true;
+            mcp::add_server_config(&path, name.clone(), None, Some(url), Vec::new())
+                .map(|()| message = Some(format!("Added MCP HTTP/SSE server '{name}'")))
+        }
+        crate::tui::app::McpUiAction::Enable { name } => {
+            changed = true;
+            mcp::set_server_enabled(&path, &name, true)
+                .map(|()| message = Some(format!("Enabled MCP server '{name}'")))
+        }
+        crate::tui::app::McpUiAction::Disable { name } => {
+            changed = true;
+            mcp::set_server_enabled(&path, &name, false)
+                .map(|()| message = Some(format!("Disabled MCP server '{name}'")))
+        }
+        crate::tui::app::McpUiAction::Remove { name } => {
+            changed = true;
+            mcp::remove_server_config(&path, &name)
+                .map(|()| message = Some(format!("Removed MCP server '{name}'")))
+        }
+        crate::tui::app::McpUiAction::Validate | crate::tui::app::McpUiAction::Reload => Ok(()),
+    };
+
+    if let Err(err) = action_result {
+        add_mcp_message(app, format!("MCP action failed: {err}"));
+        return;
+    }
+
+    if changed {
+        app.mcp_restart_required = true;
+    }
+    if let Some(message) = message {
+        add_mcp_message(app, message);
+    }
+
+    let snapshot_result = if discover {
+        let network_policy = config.network.clone().map(|toml_cfg| {
+            crate::network_policy::NetworkPolicyDecider::with_default_audit(toml_cfg.into_runtime())
+        });
+        mcp::discover_manager_snapshot(&path, network_policy, app.mcp_restart_required).await
+    } else {
+        mcp::manager_snapshot_from_config(&path, app.mcp_restart_required)
+    };
+
+    match snapshot_result {
+        Ok(snapshot) => {
+            if discover {
+                add_mcp_message(
+                    app,
+                    "MCP discovery refreshed for the UI. Restart the TUI after config edits to rebuild the model-visible MCP tool pool.".to_string(),
+                );
+            }
+            app.mcp_snapshot = Some(snapshot.clone());
+            open_mcp_manager_pager(app, &snapshot);
+        }
+        Err(err) => add_mcp_message(app, format!("MCP snapshot failed: {err}")),
+    }
+}
+
+fn handle_shell_job_action(app: &mut App, action: crate::tui::app::ShellJobAction) {
+    let Some(shell_manager) = app.runtime_services.shell_manager.clone() else {
+        add_shell_job_message(app, "Shell job center is not attached.".to_string());
+        return;
+    };
+
+    let mut manager = match shell_manager.lock() {
+        Ok(manager) => manager,
+        Err(_) => {
+            add_shell_job_message(app, "Shell job center lock is poisoned.".to_string());
+            return;
+        }
+    };
+
+    match action {
+        crate::tui::app::ShellJobAction::List => {
+            let jobs = manager.list_jobs();
+            add_shell_job_message(app, format_shell_job_list(&jobs));
+        }
+        crate::tui::app::ShellJobAction::Show { id } => match manager.inspect_job(&id) {
+            Ok(detail) => open_shell_job_pager(app, &detail),
+            Err(err) => add_shell_job_message(app, format!("Shell job lookup failed: {err}")),
+        },
+        crate::tui::app::ShellJobAction::Poll { id, wait } => {
+            match manager.poll_delta(&id, wait, if wait { 5_000 } else { 1_000 }) {
+                Ok(delta) => add_shell_job_message(app, format_shell_poll(&delta.result)),
+                Err(err) => add_shell_job_message(app, format!("Shell job poll failed: {err}")),
+            }
+        }
+        crate::tui::app::ShellJobAction::SendStdin { id, input, close } => {
+            match manager.write_stdin(&id, &input, close) {
+                Ok(()) => match manager.poll_delta(&id, false, 1_000) {
+                    Ok(delta) => add_shell_job_message(app, format_shell_poll(&delta.result)),
+                    Err(err) => {
+                        add_shell_job_message(app, format!("Shell stdin sent; poll failed: {err}"));
+                    }
+                },
+                Err(err) => add_shell_job_message(app, format!("Shell stdin failed: {err}")),
+            }
+        }
+        crate::tui::app::ShellJobAction::Cancel { id } => match manager.kill(&id) {
+            Ok(result) => add_shell_job_message(app, format_shell_poll(&result)),
+            Err(err) => add_shell_job_message(app, format!("Shell job cancel failed: {err}")),
+        },
+    }
 }
 
 async fn execute_command_input(

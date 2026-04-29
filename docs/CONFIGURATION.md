@@ -187,6 +187,9 @@ If you are upgrading from older releases:
 - `max_subagents` (int, optional): defaults to `5` and is clamped to `1..=20`.
 - `skills_dir` (string, optional): defaults to `~/.deepseek/skills` (each skill is a directory containing `SKILL.md`). Workspace-local `.agents/skills` or `./skills` are preferred when present.
 - `mcp_config_path` (string, optional): defaults to `~/.deepseek/mcp.json`.
+  It is visible in `/config` and can be changed from the TUI. The new path is
+  used immediately by `/mcp`, but rebuilding the model-visible MCP tool pool
+  requires restarting the TUI.
 - `notes_path` (string, optional): defaults to `~/.deepseek/notes.txt` and is used by the `note` tool.
 - `memory_path` (string, optional): defaults to `~/.deepseek/memory.md`.
 - `snapshots.*` (optional): side-git workspace snapshots for file rollback:

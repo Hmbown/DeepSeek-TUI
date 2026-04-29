@@ -34,7 +34,7 @@ use crate::sandbox::{
 };
 
 /// Status of a shell process
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ShellStatus {
     Running,
     Completed,
@@ -81,10 +81,37 @@ pub struct ShellResult {
     pub sandbox_denied: bool,
 }
 
-struct ShellDeltaResult {
-    result: ShellResult,
-    stdout_total_len: usize,
-    stderr_total_len: usize,
+/// Compact, UI-oriented view of a tracked background shell job.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ShellJobSnapshot {
+    pub id: String,
+    pub job_id: String,
+    pub command: String,
+    pub cwd: PathBuf,
+    pub status: ShellStatus,
+    pub exit_code: Option<i32>,
+    pub elapsed_ms: u64,
+    pub stdout_tail: String,
+    pub stderr_tail: String,
+    pub stdout_len: usize,
+    pub stderr_len: usize,
+    pub stdin_available: bool,
+    pub stale: bool,
+    pub linked_task_id: Option<String>,
+}
+
+/// Full output view used by `/jobs show <id>`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShellJobDetail {
+    pub snapshot: ShellJobSnapshot,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+pub struct ShellDeltaResult {
+    pub result: ShellResult,
+    pub stdout_total_len: usize,
+    pub stderr_total_len: usize,
 }
 
 enum ShellChild {
@@ -209,14 +236,13 @@ fn spawn_reader_thread<R: Read + Send + 'static>(
 /// A background shell process being tracked
 pub struct BackgroundShell {
     pub id: String,
-    #[allow(dead_code)]
     pub command: String,
-    #[allow(dead_code)]
     pub working_dir: PathBuf,
     pub status: ShellStatus,
     pub exit_code: Option<i32>,
     pub started_at: Instant,
     pub sandbox_type: SandboxType,
+    pub linked_task_id: Option<String>,
     stdout_buffer: Arc<Mutex<Vec<u8>>>,
     stderr_buffer: Option<Arc<Mutex<Vec<u8>>>>,
     stdout_cursor: usize,
@@ -387,6 +413,35 @@ impl BackgroundShell {
             sandbox_denied: self.sandbox_denied(),
         }
     }
+
+    fn job_snapshot(&self) -> ShellJobSnapshot {
+        let (stdout_full, stderr_full, stdout_len, stderr_len) = self.full_output();
+        ShellJobSnapshot {
+            id: self.id.clone(),
+            job_id: self.id.clone(),
+            command: self.command.clone(),
+            cwd: self.working_dir.clone(),
+            status: self.status.clone(),
+            exit_code: self.exit_code,
+            elapsed_ms: u64::try_from(self.started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+            stdout_tail: tail_text(&stdout_full, 1200),
+            stderr_tail: tail_text(&stderr_full, 1200),
+            stdout_len,
+            stderr_len,
+            stdin_available: self.stdin.is_some() && self.status == ShellStatus::Running,
+            stale: false,
+            linked_task_id: self.linked_task_id.clone(),
+        }
+    }
+
+    fn job_detail(&self) -> ShellJobDetail {
+        let (stdout, stderr, _, _) = self.full_output();
+        ShellJobDetail {
+            snapshot: self.job_snapshot(),
+            stdout,
+            stderr,
+        }
+    }
 }
 
 impl Drop for BackgroundShell {
@@ -403,9 +458,21 @@ impl Drop for BackgroundShell {
 /// Manages background shell processes with optional sandboxing.
 pub struct ShellManager {
     processes: HashMap<String, BackgroundShell>,
+    stale_jobs: HashMap<String, ShellJobSnapshot>,
     default_workspace: PathBuf,
     sandbox_manager: SandboxManager,
     sandbox_policy: ExecutionSandboxPolicy,
+}
+
+impl std::fmt::Debug for ShellManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ShellManager")
+            .field("processes", &self.processes.len())
+            .field("stale_jobs", &self.stale_jobs.len())
+            .field("default_workspace", &self.default_workspace)
+            .field("sandbox_policy", &self.sandbox_policy)
+            .finish()
+    }
 }
 
 impl ShellManager {
@@ -413,6 +480,7 @@ impl ShellManager {
     pub fn new(workspace: PathBuf) -> Self {
         Self {
             processes: HashMap::new(),
+            stale_jobs: HashMap::new(),
             default_workspace: workspace,
             sandbox_manager: SandboxManager::new(),
             sandbox_policy: ExecutionSandboxPolicy::default(),
@@ -424,6 +492,7 @@ impl ShellManager {
     pub fn with_sandbox(workspace: PathBuf, policy: ExecutionSandboxPolicy) -> Self {
         Self {
             processes: HashMap::new(),
+            stale_jobs: HashMap::new(),
             default_workspace: workspace,
             sandbox_manager: SandboxManager::new(),
             sandbox_policy: policy,
@@ -898,6 +967,7 @@ impl ShellManager {
             exit_code: None,
             started_at: started,
             sandbox_type,
+            linked_task_id: None,
             stdout_buffer,
             stderr_buffer,
             stdout_cursor: 0,
@@ -1061,18 +1131,91 @@ impl ShellManager {
         Ok(shell.snapshot())
     }
 
-    /// List all background processes
-    #[allow(dead_code)]
-    pub fn list(&mut self) -> Vec<ShellResult> {
-        // Poll all processes first
+    /// Poll a background process and return incremental output.
+    pub fn poll_delta(
+        &mut self,
+        task_id: &str,
+        wait: bool,
+        timeout_ms: u64,
+    ) -> Result<ShellDeltaResult> {
+        self.get_output_delta(task_id, wait, timeout_ms)
+    }
+
+    /// Attach durable task context to a live shell job.
+    pub fn tag_linked_task(&mut self, task_id: &str, linked_task_id: Option<String>) -> Result<()> {
+        let shell = self
+            .processes
+            .get_mut(task_id)
+            .ok_or_else(|| anyhow!("Task {task_id} not found"))?;
+        shell.linked_task_id = linked_task_id;
+        Ok(())
+    }
+
+    /// Inspect full output for a live or stale job.
+    pub fn inspect_job(&mut self, task_id: &str) -> Result<ShellJobDetail> {
+        if let Some(shell) = self.processes.get_mut(task_id) {
+            shell.poll();
+            return Ok(shell.job_detail());
+        }
+        if let Some(snapshot) = self.stale_jobs.get(task_id) {
+            return Ok(ShellJobDetail {
+                snapshot: snapshot.clone(),
+                stdout: snapshot.stdout_tail.clone(),
+                stderr: snapshot.stderr_tail.clone(),
+            });
+        }
+        Err(anyhow!("Task {task_id} not found"))
+    }
+
+    /// List all live and known-stale background shell jobs for the TUI.
+    pub fn list_jobs(&mut self) -> Vec<ShellJobSnapshot> {
         for shell in self.processes.values_mut() {
             shell.poll();
         }
 
-        self.processes
+        let mut jobs = self
+            .processes
             .values()
-            .map(BackgroundShell::snapshot)
-            .collect()
+            .map(BackgroundShell::job_snapshot)
+            .collect::<Vec<_>>();
+        jobs.extend(self.stale_jobs.values().cloned());
+        jobs.sort_by(|a, b| {
+            job_status_rank(&a.status, a.stale)
+                .cmp(&job_status_rank(&b.status, b.stale))
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        jobs
+    }
+
+    /// Remember a restart-stale job so the UI can show it instead of hiding it.
+    #[allow(dead_code)]
+    pub fn remember_stale_job(
+        &mut self,
+        id: impl Into<String>,
+        command: impl Into<String>,
+        cwd: PathBuf,
+        linked_task_id: Option<String>,
+    ) {
+        let id = id.into();
+        self.stale_jobs.insert(
+            id.clone(),
+            ShellJobSnapshot {
+                id: id.clone(),
+                job_id: id,
+                command: command.into(),
+                cwd,
+                status: ShellStatus::Killed,
+                exit_code: None,
+                elapsed_ms: 0,
+                stdout_tail: String::new(),
+                stderr_tail: "Process is no longer attached to this TUI session.".to_string(),
+                stdout_len: 0,
+                stderr_len: 0,
+                stdin_available: false,
+                stale: true,
+                linked_task_id,
+            },
+        );
     }
 
     /// Clean up completed processes older than the given duration
@@ -1095,6 +1238,33 @@ fn take_delta_from_buffer(buffer: &Arc<Mutex<Vec<u8>>>, cursor: &mut usize) -> (
     let delta = data[start..].to_vec();
     *cursor = data.len();
     (delta, data.len())
+}
+
+fn tail_text(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let tail = text
+        .chars()
+        .rev()
+        .take(max_chars)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<String>();
+    format!("...{tail}")
+}
+
+fn job_status_rank(status: &ShellStatus, stale: bool) -> u8 {
+    if stale {
+        return 4;
+    }
+    match status {
+        ShellStatus::Running => 0,
+        ShellStatus::Failed | ShellStatus::TimedOut => 1,
+        ShellStatus::Killed => 2,
+        ShellStatus::Completed => 3,
+    }
 }
 
 /// Thread-safe wrapper for `ShellManager`
@@ -1229,6 +1399,10 @@ impl ToolSpec for ExecShellTool {
                     "type": "string",
                     "description": "Optional stdin data to send before waiting (non-interactive only)"
                 },
+                "cwd": {
+                    "type": "string",
+                    "description": "Optional working directory for the command"
+                },
                 "tty": {
                     "type": "boolean",
                     "description": "Allocate a pseudo-terminal for interactive programs (implies background)"
@@ -1337,12 +1511,23 @@ impl ToolSpec for ExecShellTool {
         }
 
         let policy_override = context.elevated_sandbox_policy.clone();
+        let working_dir = input
+            .get("cwd")
+            .or_else(|| input.get("working_dir"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+
         let result = if interactive {
             let mut manager = context
                 .shell_manager
                 .lock()
                 .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
-            manager.execute_interactive_with_policy(command, None, timeout_ms, policy_override)
+            manager.execute_interactive_with_policy(
+                command,
+                working_dir.as_deref(),
+                timeout_ms,
+                policy_override,
+            )
         } else if background {
             let mut manager = context
                 .shell_manager
@@ -1350,7 +1535,7 @@ impl ToolSpec for ExecShellTool {
                 .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
             manager.execute_with_options(
                 command,
-                None,
+                working_dir.as_deref(),
                 timeout_ms,
                 true,
                 stdin_data.as_deref(),
@@ -1370,6 +1555,16 @@ impl ToolSpec for ExecShellTool {
 
         match result {
             Ok(result) => {
+                if background
+                    && let (Some(shell_id), Some(task_id)) = (
+                        result.task_id.as_deref(),
+                        context.runtime.active_task_id.clone(),
+                    )
+                    && let Ok(mut manager) = context.shell_manager.lock()
+                {
+                    let _ = manager.tag_linked_task(shell_id, Some(task_id));
+                }
+
                 let was_cancelled = context
                     .cancel_token
                     .as_ref()

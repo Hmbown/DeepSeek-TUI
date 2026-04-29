@@ -26,6 +26,7 @@ enum PaletteSection {
     Command,
     Skill,
     Tool,
+    Mcp,
 }
 
 #[derive(Debug, Clone)]
@@ -44,7 +45,12 @@ pub struct CommandPaletteView {
     selected: usize,
 }
 
-pub fn build_entries(skills_dir: &Path, workspace: &Path) -> Vec<CommandPaletteEntry> {
+pub fn build_entries(
+    skills_dir: &Path,
+    workspace: &Path,
+    mcp_config_path: &Path,
+    mcp_snapshot: Option<&crate::mcp::McpManagerSnapshot>,
+) -> Vec<CommandPaletteEntry> {
     let mut entries = Vec::new();
 
     for command in commands::COMMANDS {
@@ -154,9 +160,171 @@ pub fn build_entries(skills_dir: &Path, workspace: &Path) -> Vec<CommandPaletteE
     tool_entries.sort_by(|a, b| a.label.cmp(&b.label));
     entries.extend(tool_entries);
 
+    entries.extend(build_mcp_entries(mcp_config_path, mcp_snapshot));
+
     entries.sort_by(|a, b| a.label.cmp(&b.label));
     entries.sort_by_key(|entry| entry.section);
     entries
+}
+
+fn build_mcp_entries(
+    mcp_config_path: &Path,
+    mcp_snapshot: Option<&crate::mcp::McpManagerSnapshot>,
+) -> Vec<CommandPaletteEntry> {
+    let owned_snapshot = if mcp_snapshot.is_none() {
+        crate::mcp::manager_snapshot_from_config(mcp_config_path, false).ok()
+    } else {
+        None
+    };
+    let snapshot = mcp_snapshot.or(owned_snapshot.as_ref());
+    let mut entries = vec![CommandPaletteEntry {
+        section: PaletteSection::Mcp,
+        label: "mcp:manager".to_string(),
+        description: format!("Open MCP manager ({})", mcp_config_path.display()),
+        command: "/mcp".to_string(),
+        action: CommandPaletteAction::ExecuteCommand {
+            command: "/mcp".to_string(),
+        },
+    }];
+
+    let Some(snapshot) = snapshot else {
+        return entries;
+    };
+
+    for server in &snapshot.servers {
+        let state = if server.enabled {
+            if server.connected {
+                "connected"
+            } else if server.error.is_some() {
+                "failed"
+            } else {
+                "enabled"
+            }
+        } else {
+            "disabled"
+        };
+        entries.push(CommandPaletteEntry {
+            section: PaletteSection::Mcp,
+            label: format!("mcp:{}", server.name),
+            description: format!(
+                "{} {} [{}] tools={} resources={} prompts={}",
+                server.transport,
+                server.command_or_url,
+                state,
+                server.tools.len(),
+                server.resources.len(),
+                server.prompts.len()
+            ),
+            command: format!("/mcp show {}", server.name),
+            action: CommandPaletteAction::OpenTextPager {
+                title: format!("MCP Server: {}", server.name),
+                content: format_mcp_server_details(snapshot, server),
+            },
+        });
+
+        for tool in &server.tools {
+            entries.push(CommandPaletteEntry {
+                section: PaletteSection::Mcp,
+                label: format!("mcp:{}:tool:{}", server.name, tool.name),
+                description: format!(
+                    "{}{}",
+                    tool.model_name,
+                    tool.description
+                        .as_ref()
+                        .map_or(String::new(), |desc| format!(" - {desc}"))
+                ),
+                command: tool.model_name.clone(),
+                action: CommandPaletteAction::OpenTextPager {
+                    title: format!("MCP Tool: {}", tool.model_name),
+                    content: format!(
+                        "Server: {}\nRuntime name: {}\nKind: tool\n\n{}",
+                        server.name,
+                        tool.model_name,
+                        tool.description.as_deref().unwrap_or("(no description)")
+                    ),
+                },
+            });
+        }
+
+        for resource in &server.resources {
+            entries.push(CommandPaletteEntry {
+                section: PaletteSection::Mcp,
+                label: format!("mcp:{}:resource:{}", server.name, resource.name),
+                description: resource
+                    .description
+                    .clone()
+                    .unwrap_or_else(|| "MCP resource".to_string()),
+                command: resource.name.clone(),
+                action: CommandPaletteAction::OpenTextPager {
+                    title: format!("MCP Resource: {}", resource.name),
+                    content: format!(
+                        "Server: {}\nResource: {}\nModel helper: list_mcp_resources / read_mcp_resource",
+                        server.name, resource.name
+                    ),
+                },
+            });
+        }
+
+        for prompt in &server.prompts {
+            entries.push(CommandPaletteEntry {
+                section: PaletteSection::Mcp,
+                label: format!("mcp:{}:prompt:{}", server.name, prompt.name),
+                description: format!(
+                    "{}{}",
+                    prompt.model_name,
+                    prompt
+                        .description
+                        .as_ref()
+                        .map_or(String::new(), |desc| format!(" - {desc}"))
+                ),
+                command: prompt.model_name.clone(),
+                action: CommandPaletteAction::OpenTextPager {
+                    title: format!("MCP Prompt: {}", prompt.model_name),
+                    content: format!(
+                        "Server: {}\nRuntime name: {}\nKind: prompt",
+                        server.name, prompt.model_name
+                    ),
+                },
+            });
+        }
+    }
+
+    entries
+}
+
+fn format_mcp_server_details(
+    snapshot: &crate::mcp::McpManagerSnapshot,
+    server: &crate::mcp::McpServerSnapshot,
+) -> String {
+    let mut lines = vec![
+        format!("Config: {}", snapshot.config_path.display()),
+        format!("Server: {}", server.name),
+        format!("Enabled: {}", server.enabled),
+        format!("Connected: {}", server.connected),
+        format!("Transport: {}", server.transport),
+        format!("Target: {}", server.command_or_url),
+        format!(
+            "Timeouts: connect={}s execute={}s read={}s",
+            server.connect_timeout, server.execute_timeout, server.read_timeout
+        ),
+    ];
+    if let Some(error) = server.error.as_ref() {
+        lines.push(format!("Error: {error}"));
+    }
+    lines.push(String::new());
+    lines.push(format!("Tools ({})", server.tools.len()));
+    for tool in &server.tools {
+        lines.push(format!("  - {}", tool.model_name));
+    }
+    lines.push(format!("Resources ({})", server.resources.len()));
+    for resource in &server.resources {
+        lines.push(format!("  - {}", resource.name));
+    }
+    lines.push(format!("Prompts ({})", server.prompts.len()));
+    for prompt in &server.prompts {
+        lines.push(format!("  - {}", prompt.model_name));
+    }
+    lines.join("\n")
 }
 
 fn modal_block() -> Block<'static> {
@@ -179,6 +347,7 @@ fn parse_section_term(term: &str) -> Option<(PaletteSection, String)> {
         "c" | "cmd" | "command" | "commands" => PaletteSection::Command,
         "s" | "skill" | "skills" => PaletteSection::Skill,
         "t" | "tool" | "tools" => PaletteSection::Tool,
+        "m" | "mcp" => PaletteSection::Mcp,
         _ => return None,
     };
 
@@ -190,6 +359,7 @@ fn section_tag(section: PaletteSection) -> &'static str {
         PaletteSection::Command => "command",
         PaletteSection::Skill => "skill",
         PaletteSection::Tool => "tool",
+        PaletteSection::Mcp => "mcp",
     }
 }
 
@@ -198,6 +368,7 @@ fn section_rank(section: PaletteSection) -> usize {
         PaletteSection::Command => 0,
         PaletteSection::Skill => 1,
         PaletteSection::Tool => 2,
+        PaletteSection::Mcp => 3,
     }
 }
 
@@ -231,6 +402,8 @@ fn command_runs_directly(name: &str) -> bool {
             | "settings"
             | "skills"
             | "cost"
+            | "jobs"
+            | "mcp"
             | "task"
     )
 }
@@ -360,7 +533,7 @@ impl CommandPaletteView {
     }
 
     fn scope_hint_lines() -> Line<'static> {
-        let hint = "scope: c:/cmd: , s:/skill: , t:/tool:";
+        let hint = "scope: c:/cmd: , s:/skill: , t:/tool: , m:/mcp:";
         Line::from(Span::styled(
             hint,
             Style::default()
@@ -374,6 +547,7 @@ impl CommandPaletteView {
             PaletteSection::Command => "Commands",
             PaletteSection::Skill => "Skills",
             PaletteSection::Tool => "Tools",
+            PaletteSection::Mcp => "MCP",
         };
         Line::from(vec![Span::styled(
             format!("  {title} ({count})  "),
@@ -396,6 +570,10 @@ impl CommandPaletteView {
             )),
             Line::from(Span::styled(
                 "  t:<term>  Tool-only      e.g. t:git",
+                Style::default().fg(palette::TEXT_MUTED),
+            )),
+            Line::from(Span::styled(
+                "  m:<term>  MCP-only       e.g. m:filesystem",
                 Style::default().fg(palette::TEXT_MUTED),
             )),
         ]
@@ -506,15 +684,17 @@ impl ModalView for CommandPaletteView {
         lines.extend(Self::scope_examples());
         lines.push(Line::from(""));
 
-        let visible = popup_height.saturating_sub(6) as usize;
+        let visible = popup_height.saturating_sub(7) as usize;
         let mut command_count = 0usize;
         let mut skill_count = 0usize;
         let mut tool_count = 0usize;
+        let mut mcp_count = 0usize;
         for idx in &self.filtered {
             match self.entries[*idx].section {
                 PaletteSection::Command => command_count += 1,
                 PaletteSection::Skill => skill_count += 1,
                 PaletteSection::Tool => tool_count += 1,
+                PaletteSection::Mcp => mcp_count += 1,
             }
         }
         if self.filtered.is_empty() {
@@ -540,6 +720,7 @@ impl ModalView for CommandPaletteView {
                         PaletteSection::Command => command_count,
                         PaletteSection::Skill => skill_count,
                         PaletteSection::Tool => tool_count,
+                        PaletteSection::Mcp => mcp_count,
                     };
                     lines.push(Self::format_section_label(entry.section, count));
                     active_section = Some(entry.section);
@@ -630,6 +811,7 @@ mod tests {
                 "search utility",
                 "search",
             ),
+            palette_entry(PaletteSection::Mcp, "mcp:fs", "filesystem", "mcp_fs_read"),
         ];
         let mut view = CommandPaletteView::new(entries);
 
@@ -644,6 +826,10 @@ mod tests {
         view.query = "t:search".to_string();
         view.refilter();
         assert_eq!(view.filtered, vec![3]);
+
+        view.query = "m:fs".to_string();
+        view.refilter();
+        assert_eq!(view.filtered, vec![4]);
     }
 
     #[test]
@@ -714,7 +900,7 @@ mod tests {
 
     #[test]
     fn command_palette_command_entries_include_links_and_config_but_not_removed_commands() {
-        let entries = build_entries(Path::new("."), Path::new("."));
+        let entries = build_entries(Path::new("."), Path::new("."), Path::new("mcp.json"), None);
         let command_labels = entries
             .iter()
             .filter(|entry| entry.section == PaletteSection::Command)
@@ -729,7 +915,7 @@ mod tests {
 
     #[test]
     fn command_palette_inserts_model_command_for_argument_entry() {
-        let entries = build_entries(Path::new("."), Path::new("."));
+        let entries = build_entries(Path::new("."), Path::new("."), Path::new("mcp.json"), None);
         let model = entries
             .iter()
             .find(|entry| entry.section == PaletteSection::Command && entry.label == "/model")
@@ -740,6 +926,65 @@ mod tests {
             &model.action,
             CommandPaletteAction::InsertText { text } if text == "/model "
         ));
+    }
+
+    #[test]
+    fn command_palette_includes_mcp_discovery_and_failed_servers() {
+        let snapshot = crate::mcp::McpManagerSnapshot {
+            config_path: Path::new("mcp.json").to_path_buf(),
+            config_exists: true,
+            restart_required: false,
+            servers: vec![
+                crate::mcp::McpServerSnapshot {
+                    name: "fs".to_string(),
+                    enabled: true,
+                    required: false,
+                    transport: "stdio".to_string(),
+                    command_or_url: "node server.js".to_string(),
+                    connect_timeout: 10,
+                    execute_timeout: 60,
+                    read_timeout: 120,
+                    connected: true,
+                    error: None,
+                    tools: vec![crate::mcp::McpDiscoveredItem {
+                        name: "read".to_string(),
+                        model_name: "mcp_fs_read".to_string(),
+                        description: Some("Read files".to_string()),
+                    }],
+                    resources: Vec::new(),
+                    prompts: Vec::new(),
+                },
+                crate::mcp::McpServerSnapshot {
+                    name: "broken".to_string(),
+                    enabled: true,
+                    required: false,
+                    transport: "http/sse".to_string(),
+                    command_or_url: "https://example.invalid/mcp".to_string(),
+                    connect_timeout: 10,
+                    execute_timeout: 60,
+                    read_timeout: 120,
+                    connected: false,
+                    error: Some("connect failed".to_string()),
+                    tools: Vec::new(),
+                    resources: Vec::new(),
+                    prompts: Vec::new(),
+                },
+            ],
+        };
+        let entries = build_entries(
+            Path::new("."),
+            Path::new("."),
+            Path::new("mcp.json"),
+            Some(&snapshot),
+        );
+
+        assert!(entries.iter().any(|entry| entry.label == "mcp:manager"));
+        assert!(entries.iter().any(|entry| entry.command == "mcp_fs_read"));
+        let failed = entries
+            .iter()
+            .find(|entry| entry.label == "mcp:broken")
+            .expect("failed server visible");
+        assert!(failed.description.contains("failed"));
     }
 
     #[test]

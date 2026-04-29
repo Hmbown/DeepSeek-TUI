@@ -425,11 +425,6 @@ impl ToolSpec for TaskShellStartTool {
         });
         if let Some(cwd) = optional_str(&input, "cwd") {
             let cwd = resolve_cwd(context, Some(cwd))?;
-            shell_input["command"] = json!(format!(
-                "cd {} && {}",
-                shell_escape(&cwd),
-                required_str(&input, "command")?
-            ));
             shell_input["cwd"] = json!(cwd);
         }
         if let Some(stdin) = optional_str(&input, "stdin") {
@@ -982,11 +977,6 @@ fn sanitize_filename(input: &str) -> String {
     } else {
         out
     }
-}
-
-fn shell_escape(path: &Path) -> String {
-    let raw = path.display().to_string();
-    format!("'{}'", raw.replace('\'', "'\\''"))
 }
 
 #[cfg(test)]
