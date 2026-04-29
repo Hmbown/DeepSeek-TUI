@@ -19,6 +19,9 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 use wait_timeout::ChildExt;
 
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
 use super::shell_output::{summarize_output, truncate_with_meta};
@@ -89,6 +92,26 @@ enum ShellChild {
     Pty(Box<dyn portable_pty::Child + Send>),
 }
 
+#[cfg(unix)]
+fn kill_child_process_group(child: &mut Child) -> std::io::Result<()> {
+    let pgid = child.id() as libc::pid_t;
+    if pgid <= 0 {
+        return child.kill();
+    }
+
+    let result = unsafe { libc::kill(-pgid, libc::SIGKILL) };
+    if result == 0 {
+        Ok(())
+    } else {
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() == Some(libc::ESRCH) {
+            Ok(())
+        } else {
+            child.kill()
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct ShellExitStatus {
     code: Option<i32>,
@@ -133,6 +156,9 @@ impl ShellChild {
 
     fn kill(&mut self) -> std::io::Result<()> {
         match self {
+            #[cfg(unix)]
+            ShellChild::Process(child) => kill_child_process_group(child),
+            #[cfg(not(unix))]
             ShellChild::Process(child) => child.kill(),
             ShellChild::Pty(child) => child.kill(),
         }
@@ -545,6 +571,10 @@ impl ShellManager {
             .current_dir(working_dir)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        #[cfg(unix)]
+        {
+            cmd.process_group(0);
+        }
 
         if stdin_data.is_some() {
             cmd.stdin(Stdio::piped());
@@ -626,6 +656,9 @@ impl ShellManager {
             })
         } else {
             // Timeout - kill the process
+            #[cfg(unix)]
+            let _ = kill_child_process_group(&mut child);
+            #[cfg(not(unix))]
             let _ = child.kill();
             let status = child.wait().ok();
             let stdout = stdout_thread.join().unwrap_or_default();
@@ -680,6 +713,10 @@ impl ShellManager {
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
+        #[cfg(unix)]
+        {
+            cmd.process_group(0);
+        }
 
         for (key, value) in &exec_env.env {
             cmd.env(key, value);
@@ -716,6 +753,9 @@ impl ShellManager {
                 sandbox_denied: false,
             })
         } else {
+            #[cfg(unix)]
+            let _ = kill_child_process_group(&mut child);
+            #[cfg(not(unix))]
             let _ = child.kill();
             let status = child.wait().ok();
 
@@ -817,6 +857,10 @@ impl ShellManager {
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
+            #[cfg(unix)]
+            {
+                cmd.process_group(0);
+            }
 
             for (key, value) in &exec_env.env {
                 cmd.env(key, value);
@@ -1073,6 +1117,81 @@ use crate::tools::spec::{
 use async_trait::async_trait;
 use serde_json::json;
 
+async fn execute_foreground_via_background(
+    context: &ToolContext,
+    command: &str,
+    timeout_ms: u64,
+    stdin_data: Option<&str>,
+    policy_override: Option<ExecutionSandboxPolicy>,
+) -> Result<ShellResult> {
+    let timeout_ms = timeout_ms.clamp(1000, 600_000);
+    let spawned = {
+        let mut manager = context
+            .shell_manager
+            .lock()
+            .map_err(|_| anyhow!("shell manager lock poisoned"))?;
+        manager.execute_with_options(
+            command,
+            None,
+            timeout_ms,
+            true,
+            stdin_data,
+            false,
+            policy_override,
+        )?
+    };
+    let task_id = spawned
+        .task_id
+        .ok_or_else(|| anyhow!("foreground shell did not return a process id"))?;
+
+    if stdin_data.is_some() {
+        let mut manager = context
+            .shell_manager
+            .lock()
+            .map_err(|_| anyhow!("shell manager lock poisoned"))?;
+        manager.write_stdin(&task_id, "", true)?;
+    }
+
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        if context
+            .cancel_token
+            .as_ref()
+            .is_some_and(|token| token.is_cancelled())
+        {
+            let mut manager = context
+                .shell_manager
+                .lock()
+                .map_err(|_| anyhow!("shell manager lock poisoned"))?;
+            return manager.kill(&task_id);
+        }
+
+        let snapshot = {
+            let mut manager = context
+                .shell_manager
+                .lock()
+                .map_err(|_| anyhow!("shell manager lock poisoned"))?;
+            manager.get_output(&task_id, false, 0)?
+        };
+
+        if snapshot.status != ShellStatus::Running {
+            return Ok(snapshot);
+        }
+
+        if Instant::now() >= deadline {
+            let mut manager = context
+                .shell_manager
+                .lock()
+                .map_err(|_| anyhow!("shell manager lock poisoned"))?;
+            let mut result = manager.kill(&task_id)?;
+            result.status = ShellStatus::TimedOut;
+            return Ok(result);
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 /// Tool for executing shell commands.
 pub struct ExecShellTool;
 
@@ -1218,32 +1337,43 @@ impl ToolSpec for ExecShellTool {
         }
 
         let policy_override = context.elevated_sandbox_policy.clone();
-        let mut manager = context
-            .shell_manager
-            .lock()
-            .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
-
         let result = if interactive {
-            manager.execute_interactive_with_policy(
-                command,
-                None,
-                timeout_ms,
-                policy_override.clone(),
-            )
-        } else {
+            let mut manager = context
+                .shell_manager
+                .lock()
+                .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
+            manager.execute_interactive_with_policy(command, None, timeout_ms, policy_override)
+        } else if background {
+            let mut manager = context
+                .shell_manager
+                .lock()
+                .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
             manager.execute_with_options(
                 command,
                 None,
                 timeout_ms,
-                background,
+                true,
                 stdin_data.as_deref(),
                 tty,
                 policy_override,
             )
+        } else {
+            execute_foreground_via_background(
+                context,
+                command,
+                timeout_ms,
+                stdin_data.as_deref(),
+                policy_override,
+            )
+            .await
         };
 
         match result {
             Ok(result) => {
+                let was_cancelled = context
+                    .cancel_token
+                    .as_ref()
+                    .is_some_and(|token| token.is_cancelled());
                 let task_id_str = result.task_id.clone().unwrap_or_default();
                 let stdout_summary = summarize_output(&result.stdout);
                 let stderr_summary = summarize_output(&result.stderr);
@@ -1267,6 +1397,16 @@ impl ToolSpec for ExecShellTool {
                     }
                 } else if result.status == ShellStatus::Running {
                     format!("Background task started: {task_id_str}")
+                } else if result.status == ShellStatus::Killed && was_cancelled {
+                    format!(
+                        "Command canceled; process killed.\n\nSTDOUT:\n{}\n\nSTDERR:\n{}",
+                        result.stdout, result.stderr
+                    )
+                } else if result.status == ShellStatus::TimedOut {
+                    format!(
+                        "Command timed out after {timeout_ms}ms; process killed.\n\nSTDOUT:\n{}\n\nSTDERR:\n{}",
+                        result.stdout, result.stderr
+                    )
                 } else {
                     format!(
                         "Command failed (exit code: {:?})\n\nSTDOUT:\n{}\n\nSTDERR:\n{}",
@@ -1297,6 +1437,7 @@ impl ToolSpec for ExecShellTool {
                         "stderr_summary": stderr_summary,
                         "safety_level": format!("{:?}", safety.level),
                         "interactive": interactive,
+                        "canceled": was_cancelled,
                         "execpolicy": execpolicy_decision.as_ref().map(|decision| match decision {
                             ExecPolicyDecision::Allow => json!({
                                 "decision": "allow",

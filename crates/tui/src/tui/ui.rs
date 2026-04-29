@@ -28,6 +28,7 @@ use tracing;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::audit::log_sensitive_event;
+use crate::automation_manager::{AutomationManager, AutomationSchedulerConfig, spawn_scheduler};
 use crate::client::DeepSeekClient;
 use crate::commands;
 use crate::compaction::estimate_input_tokens_conservative;
@@ -45,6 +46,7 @@ use crate::session_manager::{
     create_saved_session_with_mode, update_session,
 };
 use crate::task_manager::{NewTaskRequest, SharedTaskManager, TaskManager, TaskManagerConfig};
+use crate::tools::spec::RuntimeToolServices;
 use crate::tui::command_palette::{
     CommandPaletteView, build_entries as build_command_palette_entries,
 };
@@ -237,6 +239,40 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         }
     }
 
+    let task_manager = TaskManager::start(
+        TaskManagerConfig::from_runtime(
+            config,
+            app.workspace.clone(),
+            Some(app.model.clone()),
+            Some(app.max_subagents.clamp(1, 4)),
+        ),
+        config.clone(),
+    )
+    .await?;
+    let automations = std::sync::Arc::new(tokio::sync::Mutex::new(
+        AutomationManager::default_location()?,
+    ));
+    let automation_cancel = tokio_util::sync::CancellationToken::new();
+    let automation_scheduler = spawn_scheduler(
+        automations.clone(),
+        task_manager.clone(),
+        automation_cancel.clone(),
+        AutomationSchedulerConfig::default(),
+    );
+    app.runtime_services = RuntimeToolServices {
+        task_manager: Some(task_manager.clone()),
+        automations: Some(automations),
+        task_data_dir: Some(task_manager.data_dir()),
+        active_task_id: None,
+        active_thread_id: None,
+    };
+    app.task_panel = task_manager
+        .list_tasks(Some(10))
+        .await
+        .into_iter()
+        .map(task_summary_to_panel_entry)
+        .collect();
+
     let engine_config = build_engine_config(&app, config);
 
     // Spawn the Engine - it will handle all API communication
@@ -259,23 +295,6 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         let _ = app.execute_hooks(HookEvent::SessionStart, &context);
     }
 
-    let task_manager = TaskManager::start(
-        TaskManagerConfig::from_runtime(
-            config,
-            app.workspace.clone(),
-            Some(app.model.clone()),
-            Some(app.max_subagents.clamp(1, 4)),
-        ),
-        config.clone(),
-    )
-    .await?;
-    app.task_panel = task_manager
-        .list_tasks(Some(10))
-        .await
-        .into_iter()
-        .map(task_summary_to_panel_entry)
-        .collect();
-
     let result = run_event_loop(
         &mut terminal,
         &mut app,
@@ -285,6 +304,8 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         &event_broker,
     )
     .await;
+    automation_cancel.cancel();
+    automation_scheduler.abort();
 
     // Fire session end hook
     {
@@ -343,6 +364,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
             .lsp
             .clone()
             .map(crate::config::LspConfigToml::into_runtime),
+        runtime_services: app.runtime_services.clone(),
     }
 }
 

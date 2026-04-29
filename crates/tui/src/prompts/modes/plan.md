@@ -2,7 +2,7 @@
 
 You are running in Plan mode — design before implementing.
 
-Investigate first, act later. Use `update_plan` to lay out high-level strategy and `todo_write` for
+Investigate first, act later. Use `update_plan` to lay out high-level strategy and `checklist_write` for
 granular, verifiable steps. All writes and patches are blocked — you can read the world but you
 can't change it. Shell commands go through approval.
 

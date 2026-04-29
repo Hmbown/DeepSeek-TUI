@@ -342,6 +342,47 @@ impl ToolRegistryBuilder {
         self.with_tool(Arc::new(ValidateDataTool))
     }
 
+    /// Include durable task, gate, PR-attempt, GitHub, and automation tools.
+    #[must_use]
+    pub fn with_runtime_task_tools(self) -> Self {
+        use super::automation::{
+            AutomationCreateTool, AutomationDeleteTool, AutomationListTool, AutomationPauseTool,
+            AutomationReadTool, AutomationResumeTool, AutomationRunTool, AutomationUpdateTool,
+        };
+        use super::github::{
+            GithubCloseIssueTool, GithubCommentTool, GithubIssueContextTool, GithubPrContextTool,
+        };
+        use super::tasks::{
+            PrAttemptListTool, PrAttemptPreflightTool, PrAttemptReadTool, PrAttemptRecordTool,
+            TaskCancelTool, TaskCreateTool, TaskGateRunTool, TaskListTool, TaskReadTool,
+            TaskShellStartTool, TaskShellWaitTool,
+        };
+
+        self.with_tool(Arc::new(TaskCreateTool))
+            .with_tool(Arc::new(TaskListTool))
+            .with_tool(Arc::new(TaskReadTool))
+            .with_tool(Arc::new(TaskCancelTool))
+            .with_tool(Arc::new(TaskGateRunTool))
+            .with_tool(Arc::new(TaskShellStartTool))
+            .with_tool(Arc::new(TaskShellWaitTool))
+            .with_tool(Arc::new(GithubIssueContextTool))
+            .with_tool(Arc::new(GithubPrContextTool))
+            .with_tool(Arc::new(PrAttemptRecordTool))
+            .with_tool(Arc::new(PrAttemptListTool))
+            .with_tool(Arc::new(PrAttemptReadTool))
+            .with_tool(Arc::new(PrAttemptPreflightTool))
+            .with_tool(Arc::new(AutomationCreateTool))
+            .with_tool(Arc::new(AutomationListTool))
+            .with_tool(Arc::new(AutomationReadTool))
+            .with_tool(Arc::new(AutomationUpdateTool))
+            .with_tool(Arc::new(AutomationPauseTool))
+            .with_tool(Arc::new(AutomationResumeTool))
+            .with_tool(Arc::new(AutomationDeleteTool))
+            .with_tool(Arc::new(AutomationRunTool))
+            .with_tool(Arc::new(GithubCommentTool))
+            .with_tool(Arc::new(GithubCloseIssueTool))
+    }
+
     /// Include web search tools.
     #[must_use]
     pub fn with_web_tools(self) -> Self {
@@ -469,6 +510,7 @@ impl ToolRegistryBuilder {
             .with_project_tools()
             .with_test_runner_tool()
             .with_validation_tools()
+            .with_runtime_task_tools()
             .with_revert_turn_tool();
 
         if allow_shell {
@@ -513,7 +555,11 @@ impl ToolRegistryBuilder {
     #[must_use]
     pub fn with_todo_tool(self, todo_list: super::todo::SharedTodoList) -> Self {
         use super::todo::{TodoAddTool, TodoListTool, TodoUpdateTool, TodoWriteTool};
-        self.with_tool(Arc::new(TodoWriteTool::new(todo_list.clone())))
+        self.with_tool(Arc::new(TodoWriteTool::checklist(todo_list.clone())))
+            .with_tool(Arc::new(TodoAddTool::checklist(todo_list.clone())))
+            .with_tool(Arc::new(TodoUpdateTool::checklist(todo_list.clone())))
+            .with_tool(Arc::new(TodoListTool::checklist(todo_list.clone())))
+            .with_tool(Arc::new(TodoWriteTool::new(todo_list.clone())))
             .with_tool(Arc::new(TodoAddTool::new(todo_list.clone())))
             .with_tool(Arc::new(TodoUpdateTool::new(todo_list.clone())))
             .with_tool(Arc::new(TodoListTool::new(todo_list)))

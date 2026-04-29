@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Utc};
@@ -104,6 +104,8 @@ pub struct ThreadRecord {
     pub archived: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
     #[serde(default)]
     pub coherence_state: CoherenceState,
 }
@@ -144,6 +146,8 @@ pub struct TurnItemRecord {
     pub summary: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
     #[serde(default)]
     pub artifact_refs: Vec<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -472,6 +476,7 @@ impl RuntimeThreadStore {
 #[derive(Debug, Clone)]
 pub struct RuntimeThreadManagerConfig {
     pub data_dir: PathBuf,
+    pub task_data_dir: PathBuf,
     pub max_active_threads: usize,
 }
 
@@ -489,6 +494,7 @@ impl RuntimeThreadManagerConfig {
         };
         Self {
             data_dir,
+            task_data_dir,
             max_active_threads: MAX_ACTIVE_THREADS_DEFAULT,
         }
     }
@@ -506,6 +512,8 @@ pub struct CreateThreadRequest {
     pub archived: bool,
     #[serde(default)]
     pub system_prompt: Option<String>,
+    #[serde(default)]
+    pub task_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -589,6 +597,8 @@ pub struct RuntimeThreadManager {
     event_tx: broadcast::Sender<RuntimeEventRecord>,
     manager_cfg: RuntimeThreadManagerConfig,
     cancel_token: CancellationToken,
+    task_manager: Arc<StdMutex<Option<crate::task_manager::SharedTaskManager>>>,
+    automations: Arc<StdMutex<Option<crate::automation_manager::SharedAutomationManager>>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -614,9 +624,29 @@ impl RuntimeThreadManager {
             event_tx,
             manager_cfg,
             cancel_token: CancellationToken::new(),
+            task_manager: Arc::new(StdMutex::new(None)),
+            automations: Arc::new(StdMutex::new(None)),
         };
         manager.recover_interrupted_state()?;
         Ok(manager)
+    }
+
+    /// Attach the durable task manager so model-visible task tools work inside
+    /// runtime thread turns as well as interactive TUI turns.
+    pub fn attach_task_manager(&self, task_manager: crate::task_manager::SharedTaskManager) {
+        if let Ok(mut slot) = self.task_manager.lock() {
+            *slot = Some(task_manager);
+        }
+    }
+
+    /// Attach the automation manager for model-visible scheduling tools.
+    pub fn attach_automation_manager(
+        &self,
+        automations: crate::automation_manager::SharedAutomationManager,
+    ) {
+        if let Ok(mut slot) = self.automations.lock() {
+            *slot = Some(automations);
+        }
     }
 
     #[allow(dead_code)] // Public API for external callers (runtime API, task manager)
@@ -686,6 +716,7 @@ impl RuntimeThreadManager {
             latest_response_bookmark: None,
             archived: req.archived,
             system_prompt: req.system_prompt,
+            task_id: req.task_id,
             coherence_state: CoherenceState::default(),
         };
         self.store.save_thread(&thread)?;
@@ -1019,6 +1050,7 @@ impl RuntimeThreadManager {
                     status: TurnItemLifecycleStatus::Completed,
                     summary: summary.clone(),
                     detail: Some(user_text),
+                    metadata: None,
                     artifact_refs: Vec::new(),
                     started_at: Some(now),
                     ended_at: Some(now),
@@ -1041,6 +1073,7 @@ impl RuntimeThreadManager {
                     status: TurnItemLifecycleStatus::Completed,
                     summary: asst_summary,
                     detail: Some(assistant_text),
+                    metadata: None,
                     artifact_refs: Vec::new(),
                     started_at: Some(now),
                     ended_at: Some(now),
@@ -1127,6 +1160,7 @@ impl RuntimeThreadManager {
             status: TurnItemLifecycleStatus::Completed,
             summary: summarize_text(&prompt, SUMMARY_LIMIT),
             detail: Some(prompt.clone()),
+            metadata: None,
             artifact_refs: Vec::new(),
             started_at: Some(now),
             ended_at: Some(now),
@@ -1313,6 +1347,7 @@ impl RuntimeThreadManager {
             status: TurnItemLifecycleStatus::Completed,
             summary: summarize_text(&prompt, SUMMARY_LIMIT),
             detail: Some(prompt.clone()),
+            metadata: None,
             artifact_refs: Vec::new(),
             started_at: Some(now),
             ended_at: Some(now),
@@ -1516,6 +1551,13 @@ impl RuntimeThreadManager {
             network_policy,
             snapshots_enabled: self.config.snapshots_config().enabled,
             lsp_config,
+            runtime_services: crate::tools::spec::RuntimeToolServices {
+                task_manager: self.task_manager.lock().ok().and_then(|slot| slot.clone()),
+                automations: self.automations.lock().ok().and_then(|slot| slot.clone()),
+                task_data_dir: Some(self.manager_cfg.task_data_dir.clone()),
+                active_task_id: thread.task_id.clone(),
+                active_thread_id: Some(thread.id.clone()),
+            },
         };
 
         let engine = spawn_engine(engine_cfg, &self.config);
@@ -1638,6 +1680,7 @@ impl RuntimeThreadManager {
                         status: TurnItemLifecycleStatus::InProgress,
                         summary: String::new(),
                         detail: Some(String::new()),
+                        metadata: None,
                         artifact_refs: Vec::new(),
                         started_at: Some(Utc::now()),
                         ended_at: None,
@@ -1698,6 +1741,7 @@ impl RuntimeThreadManager {
                         status: TurnItemLifecycleStatus::InProgress,
                         summary,
                         detail: Some(serde_json::to_string(&input).unwrap_or_default()),
+                        metadata: None,
                         artifact_refs: Vec::new(),
                         started_at: Some(Utc::now()),
                         ended_at: None,
@@ -1742,6 +1786,7 @@ impl RuntimeThreadManager {
                                     SUMMARY_LIMIT,
                                 );
                                 item.detail = Some(output.content.clone());
+                                item.metadata = output.metadata.clone();
                             }
                             Err(err) => {
                                 item.status = TurnItemLifecycleStatus::Failed;
@@ -1776,6 +1821,7 @@ impl RuntimeThreadManager {
                         status: TurnItemLifecycleStatus::InProgress,
                         summary: summarize_text(&message, SUMMARY_LIMIT),
                         detail: Some(message.clone()),
+                        metadata: None,
                         artifact_refs: Vec::new(),
                         started_at: Some(Utc::now()),
                         ended_at: None,
@@ -1900,6 +1946,7 @@ impl RuntimeThreadManager {
                         status: TurnItemLifecycleStatus::Completed,
                         summary: summarize_text(&message, SUMMARY_LIMIT),
                         detail: Some(message),
+                        metadata: None,
                         artifact_refs: Vec::new(),
                         started_at: Some(Utc::now()),
                         ended_at: Some(Utc::now()),
@@ -1935,6 +1982,7 @@ impl RuntimeThreadManager {
                         status: TurnItemLifecycleStatus::Completed,
                         summary: summarize_text(&message, SUMMARY_LIMIT),
                         detail: Some(message),
+                        metadata: None,
                         artifact_refs: Vec::new(),
                         started_at: Some(Utc::now()),
                         ended_at: Some(Utc::now()),
@@ -1961,6 +2009,7 @@ impl RuntimeThreadManager {
                         status: TurnItemLifecycleStatus::Failed,
                         summary: summarize_text(&message, SUMMARY_LIMIT),
                         detail: Some(message),
+                        metadata: None,
                         artifact_refs: Vec::new(),
                         started_at: Some(Utc::now()),
                         ended_at: Some(Utc::now()),
@@ -1989,6 +2038,7 @@ impl RuntimeThreadManager {
                         status: TurnItemLifecycleStatus::Completed,
                         summary: summarize_text(&message, SUMMARY_LIMIT),
                         detail: Some(message),
+                        metadata: None,
                         artifact_refs: Vec::new(),
                         started_at: Some(Utc::now()),
                         ended_at: Some(Utc::now()),
@@ -2014,6 +2064,7 @@ impl RuntimeThreadManager {
                         status: TurnItemLifecycleStatus::Completed,
                         summary: summarize_text(&message, SUMMARY_LIMIT),
                         detail: Some(message),
+                        metadata: None,
                         artifact_refs: Vec::new(),
                         started_at: Some(Utc::now()),
                         ended_at: Some(Utc::now()),
@@ -2042,6 +2093,7 @@ impl RuntimeThreadManager {
                         status: TurnItemLifecycleStatus::Completed,
                         summary: summarize_text(&message, SUMMARY_LIMIT),
                         detail: Some(message),
+                        metadata: None,
                         artifact_refs: Vec::new(),
                         started_at: Some(Utc::now()),
                         ended_at: Some(Utc::now()),
@@ -2082,6 +2134,7 @@ impl RuntimeThreadManager {
                         status: TurnItemLifecycleStatus::Completed,
                         summary: summarize_text(&message, SUMMARY_LIMIT),
                         detail: Some(message),
+                        metadata: None,
                         artifact_refs: Vec::new(),
                         started_at: Some(Utc::now()),
                         ended_at: Some(Utc::now()),
@@ -2176,6 +2229,7 @@ impl RuntimeThreadManager {
                         status: TurnItemLifecycleStatus::Completed,
                         summary: summarize_text(&message, SUMMARY_LIMIT),
                         detail: Some(message.clone()),
+                        metadata: None,
                         artifact_refs: Vec::new(),
                         started_at: Some(Utc::now()),
                         ended_at: Some(Utc::now()),
@@ -2203,6 +2257,7 @@ impl RuntimeThreadManager {
                         status: TurnItemLifecycleStatus::Failed,
                         summary: summarize_text(&message, SUMMARY_LIMIT),
                         detail: Some(message),
+                        metadata: None,
                         artifact_refs: Vec::new(),
                         started_at: Some(Utc::now()),
                         ended_at: Some(Utc::now()),
@@ -2617,6 +2672,7 @@ mod tests {
 
     fn test_manager_config(data_dir: PathBuf) -> RuntimeThreadManagerConfig {
         RuntimeThreadManagerConfig {
+            task_data_dir: data_dir.clone(),
             data_dir,
             max_active_threads: 4,
         }
@@ -2647,6 +2703,7 @@ mod tests {
             latest_response_bookmark: None,
             archived: false,
             system_prompt: None,
+            task_id: None,
             coherence_state: CoherenceState::default(),
         }
     }
@@ -2683,6 +2740,7 @@ mod tests {
             status,
             summary: "sample item".to_string(),
             detail: None,
+            metadata: None,
             artifact_refs: Vec::new(),
             started_at: Some(Utc::now()),
             ended_at: None,
@@ -2912,6 +2970,7 @@ mod tests {
                 auto_approve: None,
                 archived: false,
                 system_prompt: None,
+                task_id: None,
             })
             .await?;
 
@@ -3015,6 +3074,7 @@ mod tests {
                 auto_approve: None,
                 archived: false,
                 system_prompt: None,
+                task_id: None,
             })
             .await?;
 
@@ -3036,6 +3096,7 @@ mod tests {
                 auto_approve: Some(false),
                 archived: false,
                 system_prompt: None,
+                task_id: None,
             })
             .await?;
 
@@ -3078,6 +3139,7 @@ mod tests {
                 auto_approve: Some(true),
                 archived: false,
                 system_prompt: None,
+                task_id: None,
             })
             .await?;
 
@@ -3120,6 +3182,7 @@ mod tests {
                 auto_approve: Some(false),
                 archived: false,
                 system_prompt: None,
+                task_id: None,
             })
             .await?;
 
@@ -3152,6 +3215,7 @@ mod tests {
                 auto_approve: None,
                 archived: false,
                 system_prompt: None,
+                task_id: None,
             })
             .await?;
 
@@ -3201,6 +3265,7 @@ mod tests {
                 auto_approve: None,
                 archived: false,
                 system_prompt: None,
+                task_id: None,
             })
             .await?;
 
@@ -3322,6 +3387,7 @@ mod tests {
                 auto_approve: None,
                 archived: false,
                 system_prompt: None,
+                task_id: None,
             })
             .await?;
 
@@ -3413,6 +3479,7 @@ mod tests {
                 auto_approve: Some(true),
                 archived: false,
                 system_prompt: None,
+                task_id: None,
             })
             .await?;
 
@@ -3493,6 +3560,7 @@ mod tests {
                 auto_approve: Some(true),
                 archived: false,
                 system_prompt: None,
+                task_id: None,
             })
             .await?;
 
@@ -3575,6 +3643,7 @@ mod tests {
                 auto_approve: None,
                 archived: false,
                 system_prompt: None,
+                task_id: None,
             })
             .await?;
 
@@ -3681,6 +3750,7 @@ mod tests {
                 auto_approve: None,
                 archived: false,
                 system_prompt: None,
+                task_id: None,
             })
             .await?;
 
@@ -3880,6 +3950,7 @@ mod tests {
             latest_response_bookmark: None,
             archived: false,
             system_prompt: None,
+            task_id: None,
             coherence_state: CoherenceState::default(),
         };
         manager.store.save_thread(&thread)?;
@@ -3892,6 +3963,7 @@ mod tests {
             status: TurnItemLifecycleStatus::Completed,
             summary: "done".to_string(),
             detail: None,
+            metadata: None,
             artifact_refs: Vec::new(),
             started_at: Some(started_at),
             ended_at: Some(started_at + chrono::Duration::seconds(1)),
@@ -3904,6 +3976,7 @@ mod tests {
             status: TurnItemLifecycleStatus::InProgress,
             summary: "running".to_string(),
             detail: None,
+            metadata: None,
             artifact_refs: Vec::new(),
             started_at: Some(started_at),
             ended_at: None,
@@ -3916,6 +3989,7 @@ mod tests {
             status: TurnItemLifecycleStatus::Queued,
             summary: "queued".to_string(),
             detail: None,
+            metadata: None,
             artifact_refs: Vec::new(),
             started_at: None,
             ended_at: None,
@@ -4130,6 +4204,7 @@ mod tests {
                 status: TurnItemLifecycleStatus::Completed,
                 summary: (*text).to_string(),
                 detail: Some((*text).to_string()),
+                metadata: None,
                 artifact_refs: Vec::new(),
                 started_at: Some(created_at),
                 ended_at: Some(created_at),
@@ -4142,6 +4217,7 @@ mod tests {
                 status: TurnItemLifecycleStatus::Completed,
                 summary: format!("reply {offset}"),
                 detail: Some(format!("reply {offset}")),
+                metadata: None,
                 artifact_refs: Vec::new(),
                 started_at: Some(created_at),
                 ended_at: Some(created_at),
@@ -4183,6 +4259,7 @@ mod tests {
                 auto_approve: None,
                 archived: false,
                 system_prompt: None,
+                task_id: None,
             })
             .await?;
         seed_turns_with_user_messages(&manager, &thread.id, &["first", "second", "third"])?;
@@ -4218,6 +4295,7 @@ mod tests {
                 auto_approve: None,
                 archived: false,
                 system_prompt: None,
+                task_id: None,
             })
             .await?;
         seed_turns_with_user_messages(&manager, &thread.id, &["a", "b", "c", "d"])?;
@@ -4246,6 +4324,7 @@ mod tests {
                 auto_approve: None,
                 archived: false,
                 system_prompt: None,
+                task_id: None,
             })
             .await?;
         seed_turns_with_user_messages(&manager, &thread.id, &["only"])?;
@@ -4271,6 +4350,7 @@ mod tests {
                 auto_approve: None,
                 archived: false,
                 system_prompt: None,
+                task_id: None,
             })
             .await?;
         let turn_ids = seed_turns_with_user_messages(&manager, &thread.id, &["x", "y", "z"])?;

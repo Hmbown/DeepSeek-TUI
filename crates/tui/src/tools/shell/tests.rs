@@ -197,3 +197,38 @@ async fn test_exec_shell_metadata_includes_summaries() {
     assert!(meta.get("stdout_len").is_some());
     assert!(meta.get("stdout_truncated").is_some());
 }
+
+#[tokio::test]
+async fn test_exec_shell_foreground_cancel_kills_process() {
+    let tmp = tempdir().expect("tempdir");
+    let cancel_token = tokio_util::sync::CancellationToken::new();
+    let ctx = ToolContext::new(tmp.path()).with_cancel_token(cancel_token.clone());
+    let command = sleep_command(30);
+
+    let task = tokio::spawn(async move {
+        ExecShellTool
+            .execute(
+                json!({
+                    "command": command,
+                    "timeout_ms": 600_000
+                }),
+                &ctx,
+            )
+            .await
+            .expect("execute")
+    });
+
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    cancel_token.cancel();
+
+    let result = tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("foreground shell should observe cancellation")
+        .expect("task should not panic");
+
+    assert!(!result.success);
+    assert!(result.content.contains("Command canceled"));
+    let meta = result.metadata.expect("metadata");
+    assert_eq!(meta.get("status").and_then(Value::as_str), Some("Killed"));
+    assert_eq!(meta.get("canceled").and_then(Value::as_bool), Some(true));
+}

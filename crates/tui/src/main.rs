@@ -2978,6 +2978,7 @@ async fn run_exec_agent(
         network_policy,
         snapshots_enabled: config.snapshots_config().enabled,
         lsp_config,
+        runtime_services: crate::tools::spec::RuntimeToolServices::default(),
     };
 
     let engine_handle = spawn_engine(engine_config, config);

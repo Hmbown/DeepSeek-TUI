@@ -28,6 +28,7 @@ The runtime uses a durable Thread/Turn/Item lifecycle.
 - `ThreadRecord`
   - `id`, `created_at`, `updated_at`
   - `model`, `workspace`, `mode`
+  - `task_id` (optional durable task link)
   - `coherence_state`: `healthy|getting_crowded|refreshing_context|verifying_recent_work|resetting_plan`
   - `system_prompt` (optional text)
   - `latest_turn_id`, `latest_response_bookmark`, `archived`
@@ -39,6 +40,7 @@ The runtime uses a durable Thread/Turn/Item lifecycle.
   - `id`, `turn_id`
   - `kind`: `user_message|agent_message|tool_call|file_change|command_execution|context_compaction|status|error`
   - lifecycle `status`: `queued|in_progress|completed|failed|interrupted|canceled`
+  - `metadata` (optional tool result metadata; used for task checklist/gate/artifact updates)
 
 The event log is append-only with global monotonic `seq` for replay/resume.
 
@@ -139,7 +141,8 @@ Create thread request example:
   "allow_shell": false,
   "trust_mode": false,
   "auto_approve": true,
-  "archived": false
+  "archived": false,
+  "task_id": "task_1234abcd"
 }
 ```
 
@@ -219,6 +222,20 @@ Tasks execute through the same runtime thread/turn pipeline and include:
 - linked `thread_id` / `turn_id`
 - runtime event count
 - timeline + tool summaries + artifact references
+- subordinate checklist state from `checklist_*` / legacy `todo_*` tools
+- structured verification gates from `task_gate_run` / completed `task_shell_wait`
+- PR attempt metadata and patch artifacts
+- guarded GitHub write events
+
+Durable tasks are the model-visible work object. Checklist/todo state is progress
+inside the active task/thread, not a parallel task system.
+
+Task-aware model-visible tools:
+- `task_create`, `task_list`, `task_read`, `task_cancel`
+- `task_gate_run`
+- `task_shell_start`, `task_shell_wait`
+- `pr_attempt_record`, `pr_attempt_list`, `pr_attempt_read`, `pr_attempt_preflight`
+- `github_issue_context`, `github_pr_context`, `github_comment`, `github_close_issue`
 
 ### Automations
 
@@ -238,6 +255,11 @@ RRULE support is intentionally constrained to:
 
 Automations are persisted under `~/.deepseek/automations` (override with `DEEPSEEK_AUTOMATIONS_DIR`).
 Each run is executed as a normal background task and links to task/thread/turn ids.
+
+The same automation manager is exposed to the model through `automation_*`
+tools. Create/update/delete/run operations require approval; `automation_run`
+and scheduled runs enqueue ordinary durable tasks rather than using a separate
+execution path.
 
 ## Persistence
 

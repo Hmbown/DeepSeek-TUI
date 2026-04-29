@@ -32,7 +32,7 @@ const DEFAULT_WORKERS: usize = 2;
 const MAX_WORKERS: usize = 8;
 const TIMELINE_SUMMARY_LIMIT: usize = 240;
 const ARTIFACT_THRESHOLD: usize = 1200;
-const CURRENT_TASK_SCHEMA_VERSION: u32 = 1;
+const CURRENT_TASK_SCHEMA_VERSION: u32 = 2;
 
 const fn default_task_schema_version() -> u32 {
     CURRENT_TASK_SCHEMA_VERSION
@@ -96,6 +96,86 @@ pub struct TaskToolCallSummary {
     pub patch_ref: Option<PathBuf>,
 }
 
+/// Checklist item stored on durable tasks. This is the durable form behind the
+/// model-visible checklist/todo compatibility tools.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskChecklistItem {
+    pub id: u32,
+    pub content: String,
+    pub status: String,
+}
+
+/// Checklist state associated with a task.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TaskChecklistState {
+    pub items: Vec<TaskChecklistItem>,
+    pub completion_pct: u8,
+    pub in_progress_id: Option<u32>,
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+/// Structured verification evidence attached to a task.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskGateRecord {
+    pub id: String,
+    pub gate: String,
+    pub command: String,
+    pub cwd: PathBuf,
+    pub exit_code: Option<i32>,
+    pub status: String,
+    pub classification: String,
+    pub duration_ms: u64,
+    pub summary: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_path: Option<PathBuf>,
+    pub recorded_at: DateTime<Utc>,
+}
+
+/// PR-attempt metadata and artifacts attached to a task.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskAttemptRecord {
+    pub id: String,
+    pub attempt_group_id: String,
+    pub attempt_index: u32,
+    pub attempt_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_sha: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub head_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub head_sha: Option<String>,
+    pub summary: String,
+    pub changed_files: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub patch_path: Option<PathBuf>,
+    pub verification: Vec<String>,
+    pub selected: bool,
+    pub recorded_at: DateTime<Utc>,
+}
+
+/// Durable artifact reference produced by task-aware tools.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskArtifactRef {
+    pub label: String,
+    pub path: PathBuf,
+    pub summary: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// GitHub write/read evidence attached to a task timeline.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskGithubEvent {
+    pub id: String,
+    pub action: String,
+    pub target: String,
+    pub number: u64,
+    pub summary: String,
+    pub url: Option<String>,
+    pub recorded_at: DateTime<Utc>,
+}
+
 /// Durable task record.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskRecord {
@@ -127,6 +207,16 @@ pub struct TaskRecord {
     pub turn_id: Option<String>,
     #[serde(default)]
     pub runtime_event_count: usize,
+    #[serde(default)]
+    pub checklist: TaskChecklistState,
+    #[serde(default)]
+    pub gates: Vec<TaskGateRecord>,
+    #[serde(default)]
+    pub attempts: Vec<TaskAttemptRecord>,
+    #[serde(default)]
+    pub artifacts: Vec<TaskArtifactRef>,
+    #[serde(default)]
+    pub github_events: Vec<TaskGithubEvent>,
     pub tool_calls: Vec<TaskToolCallSummary>,
     pub timeline: Vec<TaskTimelineEntry>,
 }
@@ -349,6 +439,7 @@ impl TaskExecutor for EngineTaskExecutor {
                 auto_approve: Some(task.auto_approve),
                 archived: false,
                 system_prompt: None,
+                task_id: Some(task.id.clone()),
             })
             .await
         {
@@ -512,12 +603,13 @@ impl TaskExecutor for EngineTaskExecutor {
                                     .and_then(Value::as_str)
                                     .unwrap_or_default()
                                     .to_string();
+                                let metadata = item.get("metadata").cloned();
                                 let _ = events.send(TaskExecutionEvent::ToolCompleted {
                                     id,
                                     name,
                                     success: event.event == "item.completed",
                                     output,
-                                    metadata: None,
+                                    metadata,
                                 });
                             } else if kind == "status" {
                                 let message = item
@@ -645,8 +737,11 @@ impl TaskManager {
         _api_config: Config,
         runtime_threads: SharedRuntimeThreadManager,
     ) -> Result<SharedTaskManager> {
-        let executor: Arc<dyn TaskExecutor> = Arc::new(EngineTaskExecutor::new(runtime_threads));
-        Self::start_with_executor(cfg, executor).await
+        let executor: Arc<dyn TaskExecutor> =
+            Arc::new(EngineTaskExecutor::new(runtime_threads.clone()));
+        let manager = Self::start_with_executor(cfg, executor).await?;
+        runtime_threads.attach_task_manager(manager.clone());
+        Ok(manager)
     }
 
     /// Start the manager with a custom executor (used for tests).
@@ -740,6 +835,11 @@ impl TaskManager {
             thread_id: None,
             turn_id: None,
             runtime_event_count: 0,
+            checklist: TaskChecklistState::default(),
+            gates: Vec::new(),
+            attempts: Vec::new(),
+            artifacts: Vec::new(),
+            github_events: Vec::new(),
             tool_calls: Vec::new(),
             timeline: vec![TaskTimelineEntry {
                 timestamp: Utc::now(),
@@ -849,6 +949,52 @@ impl TaskManager {
             }
         }
         counts
+    }
+
+    /// Root directory for durable task state.
+    #[must_use]
+    pub fn data_dir(&self) -> PathBuf {
+        self.cfg.data_dir.clone()
+    }
+
+    /// Resolve a task artifact reference to an absolute path.
+    #[must_use]
+    pub fn artifact_absolute_path(&self, path: &Path) -> PathBuf {
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.cfg.data_dir.join(path)
+        }
+    }
+
+    /// Write a durable task artifact and return the persisted path reference.
+    pub fn write_task_artifact(
+        &self,
+        task_id: &str,
+        label: &str,
+        content: &str,
+    ) -> Result<PathBuf> {
+        self.write_artifact(task_id, label, content)
+    }
+
+    /// Apply model-visible tool metadata to a task and persist it.
+    pub async fn record_tool_metadata(
+        &self,
+        id_or_prefix: &str,
+        metadata: &Value,
+    ) -> Result<TaskRecord> {
+        let mut state = self.state.lock().await;
+        let id = resolve_task_id(&state.tasks, id_or_prefix)?;
+        let updated = {
+            let task = state
+                .tasks
+                .get_mut(&id)
+                .ok_or_else(|| anyhow!("Task not found: {id}"))?;
+            self.apply_task_update_metadata(task, Some(metadata))?;
+            task.clone()
+        };
+        self.persist_task_locked(&updated)?;
+        Ok(updated)
     }
 
     async fn worker_loop(self: Arc<Self>) {
@@ -1082,6 +1228,8 @@ impl TaskManager {
                         detail_path: Some(patch_ref),
                     });
                 }
+
+                self.apply_task_update_metadata(task, metadata.as_ref())?;
             }
             TaskExecutionEvent::Error { message } => {
                 task.timeline.push(TaskTimelineEntry {
@@ -1185,6 +1333,10 @@ impl TaskManager {
         if content.len() < ARTIFACT_THRESHOLD {
             return Ok(None);
         }
+        self.write_artifact(task_id, label, content).map(Some)
+    }
+
+    fn write_artifact(&self, task_id: &str, label: &str, content: &str) -> Result<PathBuf> {
         let artifact_dir = self.artifacts_dir.join(task_id);
         fs::create_dir_all(&artifact_dir)
             .with_context(|| format!("Failed to create artifact dir {}", artifact_dir.display()))?;
@@ -1197,7 +1349,98 @@ impl TaskManager {
             .strip_prefix(&self.cfg.data_dir)
             .map(PathBuf::from)
             .unwrap_or(absolute);
-        Ok(Some(relative))
+        Ok(relative)
+    }
+
+    fn apply_task_update_metadata(
+        &self,
+        task: &mut TaskRecord,
+        metadata: Option<&Value>,
+    ) -> Result<()> {
+        let Some(updates) = metadata.and_then(|m| m.get("task_updates")) else {
+            return Ok(());
+        };
+        let now = Utc::now();
+
+        if let Some(value) = updates.get("checklist") {
+            let mut checklist: TaskChecklistState = serde_json::from_value(value.clone())
+                .context("Failed to parse checklist task update")?;
+            checklist.updated_at = checklist.updated_at.or(Some(now));
+            task.checklist = checklist;
+            task.timeline.push(TaskTimelineEntry {
+                timestamp: now,
+                kind: "checklist".to_string(),
+                summary: format!(
+                    "Checklist updated: {} item(s), {}% complete",
+                    task.checklist.items.len(),
+                    task.checklist.completion_pct
+                ),
+                detail_path: None,
+            });
+        }
+
+        if let Some(value) = updates.get("gate") {
+            let gate: TaskGateRecord = serde_json::from_value(value.clone())
+                .context("Failed to parse gate task update")?;
+            let summary = format!("Gate {} {}: {}", gate.gate, gate.status, gate.summary);
+            task.gates.retain(|existing| existing.id != gate.id);
+            task.gates.push(gate.clone());
+            task.timeline.push(TaskTimelineEntry {
+                timestamp: now,
+                kind: "gate".to_string(),
+                summary: summarize_text(&summary, TIMELINE_SUMMARY_LIMIT),
+                detail_path: gate.log_path,
+            });
+        }
+
+        if let Some(value) = updates.get("attempt") {
+            let attempt: TaskAttemptRecord = serde_json::from_value(value.clone())
+                .context("Failed to parse attempt task update")?;
+            task.attempts.retain(|existing| existing.id != attempt.id);
+            task.attempts.push(attempt.clone());
+            task.timeline.push(TaskTimelineEntry {
+                timestamp: now,
+                kind: "pr_attempt".to_string(),
+                summary: format!(
+                    "Attempt {}/{} recorded for {}",
+                    attempt.attempt_index, attempt.attempt_count, attempt.attempt_group_id
+                ),
+                detail_path: attempt.patch_path,
+            });
+        }
+
+        if let Some(value) = updates.get("artifacts")
+            && let Some(items) = value.as_array()
+        {
+            for item in items {
+                let artifact: TaskArtifactRef = serde_json::from_value(item.clone())
+                    .context("Failed to parse artifact task update")?;
+                task.timeline.push(TaskTimelineEntry {
+                    timestamp: now,
+                    kind: "artifact".to_string(),
+                    summary: format!("{}: {}", artifact.label, artifact.summary),
+                    detail_path: Some(artifact.path.clone()),
+                });
+                task.artifacts.push(artifact);
+            }
+        }
+
+        if let Some(value) = updates.get("github_event") {
+            let event: TaskGithubEvent = serde_json::from_value(value.clone())
+                .context("Failed to parse GitHub task update")?;
+            task.timeline.push(TaskTimelineEntry {
+                timestamp: now,
+                kind: "github".to_string(),
+                summary: format!(
+                    "{} {}#{}: {}",
+                    event.action, event.target, event.number, event.summary
+                ),
+                detail_path: None,
+            });
+            task.github_events.push(event);
+        }
+
+        Ok(())
     }
 
     fn persist_all_locked(&self, state: &ManagerState) -> Result<()> {
@@ -1468,7 +1711,19 @@ mod tests {
                 name: "read_file".to_string(),
                 success: true,
                 output: "read ok".to_string(),
-                metadata: Some(serde_json::json!({ "duration_ms": 10 })),
+                metadata: Some(serde_json::json!({
+                    "duration_ms": 10,
+                    "task_updates": {
+                        "checklist": {
+                            "items": [
+                                { "id": 1, "content": "read fixture", "status": "in_progress" }
+                            ],
+                            "completion_pct": 0,
+                            "in_progress_id": 1,
+                            "updated_at": null
+                        }
+                    }
+                })),
             });
             TaskExecutionResult {
                 status: TaskStatus::Completed,
@@ -1505,6 +1760,8 @@ mod tests {
         assert_eq!(finished.status, TaskStatus::Completed);
         assert_eq!(finished.thread_id.as_deref(), Some("thr_test"));
         assert_eq!(finished.turn_id.as_deref(), Some("turn_test"));
+        assert_eq!(finished.checklist.items.len(), 1);
+        assert_eq!(finished.checklist.in_progress_id, Some(1));
 
         drop(manager);
 
@@ -1514,6 +1771,45 @@ mod tests {
         let loaded = recovered.get_task(&task.id).await?;
         assert_eq!(loaded.status, TaskStatus::Completed);
         assert!(!loaded.timeline.is_empty());
+        assert_eq!(loaded.checklist.items[0].content, "read fixture");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn record_tool_metadata_updates_explicit_task() -> Result<()> {
+        let root = std::env::temp_dir().join(format!("deepseek-task-test-{}", Uuid::new_v4()));
+        let manager =
+            TaskManager::start_with_executor(test_config(root), Arc::new(MockExecutor)).await?;
+
+        let task = manager
+            .add_task(NewTaskRequest::from_prompt("test metadata"))
+            .await?;
+        let finished = wait_for_terminal_state(&manager, &task.id, Duration::from_secs(3)).await?;
+        let updated = manager
+            .record_tool_metadata(
+                &finished.id,
+                &serde_json::json!({
+                    "task_updates": {
+                        "gate": {
+                            "id": "gate_test",
+                            "gate": "test",
+                            "command": "cargo test -p deepseek-tui --lib",
+                            "cwd": ".",
+                            "exit_code": 0,
+                            "status": "passed",
+                            "classification": "passed",
+                            "duration_ms": 1,
+                            "summary": "ok",
+                            "log_path": null,
+                            "recorded_at": Utc::now()
+                        }
+                    }
+                }),
+            )
+            .await?;
+
+        assert_eq!(updated.gates.len(), 1);
+        assert_eq!(updated.gates[0].classification, "passed");
         Ok(())
     }
 

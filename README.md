@@ -25,7 +25,7 @@ DeepSeek TUI is a coding agent that runs entirely in your terminal. It gives Dee
 - **Thinking-mode streaming** — shows DeepSeek's chain-of-thought as it reasons about your code
 - **Full tool suite** — file ops, shell execution, git, web search/browse, apply-patch, sub-agents, MCP servers
 - **1M-token context** — automatic intelligent compaction when context fills up
-- **Three interaction modes** — Plan (read-only explore), Agent (interactive with approval), YOLO (auto-approved). Decomposition-first system prompts teach the model to `todo_write`, `update_plan`, and spawn sub-agents before acting
+- **Three interaction modes** — Plan (read-only explore), Agent (interactive with approval), YOLO (auto-approved). Decomposition-first system prompts teach the model to `checklist_write`, `update_plan`, and spawn sub-agents before acting
 - **Reasoning-effort tiers** — cycle through `off → high → max` with Shift+Tab
 - **Session save/resume** — checkpoint and resume long sessions
 - **Workspace rollback** — side-git pre/post-turn snapshots with `/restore` and `revert_turn`, without touching your repo's `.git`
@@ -174,9 +174,9 @@ deepseek serve --http                         # HTTP/SSE API server
 
 | Mode | Behavior |
 |---|---|
-| **Plan** 🔍 | Read-only investigation — model explores and proposes a decomposition plan (`update_plan` + `todo_write`) before making changes |
-| **Agent** 🤖 | Default interactive mode — multi-step tool use with approval gates; model outlines work via `todo_write` before requesting writes |
-| **YOLO** ⚡ | Auto-approve all tools in a trusted workspace; model still creates `todo_write`/`update_plan` to keep work visible and trackable |
+| **Plan** 🔍 | Read-only investigation — model explores and proposes a decomposition plan (`update_plan` + `checklist_write`) before making changes |
+| **Agent** 🤖 | Default interactive mode — multi-step tool use with approval gates; model outlines work via `checklist_write` before requesting writes |
+| **YOLO** ⚡ | Auto-approve all tools in a trusted workspace; model still creates `checklist_write`/`update_plan` to keep work visible and trackable |
 
 ---
 

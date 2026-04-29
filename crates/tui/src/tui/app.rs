@@ -21,6 +21,7 @@ use crate::palette::{self, UiTheme};
 use crate::session_manager::SessionContextReference;
 use crate::settings::Settings;
 use crate::tools::plan::{SharedPlanState, new_shared_plan_state};
+use crate::tools::spec::RuntimeToolServices;
 use crate::tools::subagent::SubAgentResult;
 use crate::tools::todo::{SharedTodoList, new_shared_todo_list};
 use crate::tui::active_cell::ActiveCell;
@@ -516,6 +517,8 @@ pub struct App {
     /// Todo list for `TodoWriteTool`
     #[allow(dead_code)] // For future engine integration
     pub todos: SharedTodoList,
+    /// Durable runtime services exposed to model-visible task/automation tools.
+    pub runtime_services: RuntimeToolServices,
     /// Tool execution log
     pub tool_log: Vec<String>,
     /// Session cost tracking
@@ -923,6 +926,7 @@ impl App {
             plan_prompt_pending: false,
             plan_tool_used_in_turn: false,
             todos: new_shared_todo_list(),
+            runtime_services: RuntimeToolServices::default(),
             tool_log: Vec::new(),
             session_cost: 0.0,
             subagent_cost: 0.0,

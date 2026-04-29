@@ -40,6 +40,7 @@ use crate::prompts;
 use crate::seam_manager::{SeamConfig, SeamManager};
 use crate::tools::plan::{SharedPlanState, new_shared_plan_state};
 use crate::tools::shell::{SharedShellManager, new_shared_shell_manager};
+use crate::tools::spec::RuntimeToolServices;
 use crate::tools::spec::{ApprovalRequirement, ToolError, ToolResult, required_str};
 use crate::tools::subagent::{
     Mailbox, SharedSubAgentManager, SubAgentRuntime, SubAgentType, new_shared_subagent_manager,
@@ -116,6 +117,8 @@ pub struct EngineConfig {
     /// Post-edit LSP diagnostics injection (#136). When `None`, the engine
     /// constructs a disabled manager so the field is always present.
     pub lsp_config: Option<crate::lsp::LspConfig>,
+    /// Durable runtime services exposed to model-visible tools.
+    pub runtime_services: RuntimeToolServices,
 }
 
 impl Default for EngineConfig {
@@ -139,6 +142,7 @@ impl Default for EngineConfig {
             network_policy: None,
             snapshots_enabled: true,
             lsp_config: None,
+            runtime_services: RuntimeToolServices::default(),
         }
     }
 }
@@ -499,7 +503,16 @@ fn should_default_defer_tool(name: &str, mode: AppMode) -> bool {
             | "recall_archive"
             | MULTI_TOOL_PARALLEL_NAME
             | "update_plan"
+            | "checklist_write"
             | "todo_write"
+            | "task_create"
+            | "task_list"
+            | "task_read"
+            | "task_gate_run"
+            | "task_shell_start"
+            | "task_shell_wait"
+            | "github_issue_context"
+            | "github_pr_context"
             | REQUEST_USER_INPUT_NAME
     )
 }
@@ -1690,6 +1703,7 @@ impl Engine {
                 .with_git_history_tools()
                 .with_diagnostics_tool()
                 .with_validation_tools()
+                .with_runtime_task_tools()
                 .with_todo_tool(todo_list.clone())
                 .with_plan_tool(plan_state.clone())
         } else {
@@ -2192,6 +2206,8 @@ impl Engine {
         .with_state_namespace(self.session.id.clone())
         .with_features(self.config.features.clone())
         .with_shell_manager(self.shell_manager.clone())
+        .with_runtime_services(self.config.runtime_services.clone())
+        .with_cancel_token(self.cancel_token.clone())
         .with_trusted_external_paths(trusted.paths().to_vec());
 
         if let Some(decider) = self.config.network_policy.as_ref() {

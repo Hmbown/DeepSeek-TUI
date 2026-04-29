@@ -10,6 +10,7 @@ use std::path::{Component, Path, PathBuf};
 
 use async_trait::async_trait;
 use serde_json::Value;
+use tokio_util::sync::CancellationToken;
 
 use crate::features::Features;
 use crate::network_policy::NetworkPolicyDecider;
@@ -19,6 +20,33 @@ pub use deepseek_tools::{
     ApprovalRequirement, ToolCapability, ToolError, ToolResult, optional_bool, optional_str,
     optional_u64, required_str, required_u64,
 };
+
+/// Optional durable runtime services made available to model-visible tools.
+///
+/// These are intentionally optional so existing unit tests and one-off tool
+/// contexts keep working. Tools that need durable task/automation state fail
+/// closed with a clear "not available" error when the relevant service is not
+/// attached.
+#[derive(Clone, Default)]
+pub struct RuntimeToolServices {
+    pub task_manager: Option<crate::task_manager::SharedTaskManager>,
+    pub automations: Option<crate::automation_manager::SharedAutomationManager>,
+    pub task_data_dir: Option<PathBuf>,
+    pub active_task_id: Option<String>,
+    pub active_thread_id: Option<String>,
+}
+
+impl std::fmt::Debug for RuntimeToolServices {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RuntimeToolServices")
+            .field("task_manager", &self.task_manager.is_some())
+            .field("automations", &self.automations.is_some())
+            .field("task_data_dir", &self.task_data_dir)
+            .field("active_task_id", &self.active_task_id)
+            .field("active_thread_id", &self.active_thread_id)
+            .finish()
+    }
+}
 
 /// Sandbox policy for command execution.
 #[derive(Debug, Clone, Default)]
@@ -64,6 +92,12 @@ pub struct ToolContext {
     /// to a permissive default that mirrors pre-v0.7.0 behavior so tests and
     /// other contexts that don't construct a real policy keep working.
     pub network_policy: Option<NetworkPolicyDecider>,
+    /// Durable runtime services for task, gate, PR-attempt, GitHub evidence,
+    /// and automation tools.
+    pub runtime: RuntimeToolServices,
+    /// Cancellation token for the active engine turn. Tools that may wait on
+    /// external work should observe this so UI cancel can interrupt them.
+    pub cancel_token: Option<CancellationToken>,
 }
 
 impl ToolContext {
@@ -87,6 +121,8 @@ impl ToolContext {
             state_namespace: "workspace".to_string(),
             trusted_external_paths: Vec::new(),
             network_policy: None,
+            runtime: RuntimeToolServices::default(),
+            cancel_token: None,
         }
     }
 
@@ -113,6 +149,8 @@ impl ToolContext {
             state_namespace: "workspace".to_string(),
             trusted_external_paths: Vec::new(),
             network_policy: None,
+            runtime: RuntimeToolServices::default(),
+            cancel_token: None,
         }
     }
 
@@ -139,6 +177,8 @@ impl ToolContext {
             state_namespace: "workspace".to_string(),
             trusted_external_paths: Vec::new(),
             network_policy: None,
+            runtime: RuntimeToolServices::default(),
+            cancel_token: None,
         }
     }
 
@@ -146,6 +186,20 @@ impl ToolContext {
     #[must_use]
     pub fn with_network_policy(mut self, policy: NetworkPolicyDecider) -> Self {
         self.network_policy = Some(policy);
+        self
+    }
+
+    /// Attach durable runtime services to tools.
+    #[must_use]
+    pub fn with_runtime_services(mut self, runtime: RuntimeToolServices) -> Self {
+        self.runtime = runtime;
+        self
+    }
+
+    /// Attach the active engine cancellation token.
+    #[must_use]
+    pub fn with_cancel_token(mut self, cancel_token: CancellationToken) -> Self {
+        self.cancel_token = Some(cancel_token);
         self
     }
 

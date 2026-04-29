@@ -109,7 +109,10 @@ drives turns through Chat Completions.
   - `mod.rs` - Tool registry and common types
   - `shell.rs` - Shell command execution
   - `file.rs` - File read/write operations
-  - `todo.rs` - Todo list management
+  - `todo.rs` - Checklist tools plus legacy todo aliases
+  - `tasks.rs` - Model-visible durable task, gate, background shell, and PR-attempt tools
+  - `github.rs` - Read-only GitHub context and guarded comment/closure tools backed by `gh`
+  - `automation.rs` - Model-visible scheduling tools over `AutomationManager`
   - `plan.rs` - Planning tools
   - `subagent.rs` - Sub-agent spawning
   - `spec.rs` - Tool specifications
@@ -181,7 +184,8 @@ drives turns through Chat Completions.
 4. Approval requested if needed (non-yolo mode)
 5. Tool executed (possibly sandboxed on macOS)
 6. Post-execution hooks run
-7. Result returned to agent loop
+7. Result metadata is retained on runtime item records
+8. Result returned to agent loop
 
 ### Background Tasks
 
@@ -191,7 +195,14 @@ drives turns through Chat Completions.
 4. Task creates/uses a runtime thread and starts a runtime turn
 5. `runtime_threads.rs` persists thread/turn/item records + monotonic event sequence
 6. Timeline/tool summaries/artifact references are persisted incrementally
-7. Final state (`completed|failed|canceled`) is durable and queryable via TUI/API
+7. Checklist state, verifier gates, PR attempts, and guarded GitHub events are applied from tool metadata to the active task
+8. Final state (`completed|failed|canceled`) is durable and queryable via TUI/API
+
+Model-visible durable task tools are a surface over this same manager. They do
+not introduce a parallel work system: `task_create` enqueues normal tasks,
+`checklist_*` updates task-local progress, `task_gate_run` and completed
+`task_shell_wait` attach verification evidence, and automation runs enqueue
+ordinary durable tasks.
 
 ### Runtime Thread/Turn Timeline
 

@@ -15,7 +15,7 @@ chosen over the available shell equivalent. Companion to `crates/tui/src/prompts
   for the same backing operation are a model trap — the LLM will alternate
   between them and the cache hit rate suffers.
 
-## Final surface (v0.5.1)
+## Final surface (v0.7.4)
 
 ### File operations
 
@@ -40,9 +40,11 @@ chosen over the available shell equivalent. Companion to `crates/tui/src/prompts
 
 | Tool | Niche |
 |---|---|
-| `exec_shell` | Run a shell command. Foreground or background (`background: true` returns a `task_id`). |
+| `exec_shell` | Run a shell command. Foreground runs are cancellable, but use them only for bounded commands. |
 | `exec_shell_wait` | Poll a background task for incremental output. |
 | `exec_shell_interact` | Send stdin to a running background task and read incremental output. |
+| `task_shell_start` | Start a long-running command in the background and return immediately. Preferred over foreground shell for diagnostics, tests, searches, and servers that may run for minutes. |
+| `task_shell_wait` | Poll a background command. If `gate` is supplied after completion, record structured gate evidence on the active durable task. |
 
 ### Git / diagnostics / testing
 
@@ -53,13 +55,55 @@ chosen over the available shell equivalent. Companion to `crates/tui/src/prompts
 | `diagnostics` | Workspace, git, sandbox, and toolchain info in one call. |
 | `run_tests` | `cargo test` with optional args. |
 
-### Task management
+### Task management and durable work
 
 | Tool | Niche |
 |---|---|
-| `todo_write` | Granular per-item progress. |
 | `update_plan` | Structured checklist for complex multi-step work. |
+| `task_create` | Create/enqueue a durable background task through `TaskManager`. This is the real executable work object for long-running agent work. |
+| `task_list` | List durable tasks with status and linked runtime ids. |
+| `task_read` | Read durable task detail: thread/turn linkage, timeline, checklist, gates, artifacts, PR attempts, GitHub events. |
+| `task_cancel` | Cancel a queued or running durable task. Approval-required. |
+| `checklist_write` | Granular progress under the active thread/task. Checklist state is subordinate to the durable task. |
+| `checklist_add` / `checklist_update` / `checklist_list` | Single-item checklist operations. |
+| `todo_write` / `todo_add` / `todo_update` / `todo_list` | Compatibility aliases for the checklist tools. Existing sessions keep working, but new prompts should use `checklist_*`. |
 | `note` | One-off important fact for later. |
+
+### Verification gates and artifacts
+
+| Tool | Niche |
+|---|---|
+| `task_gate_run` | Run an approved verification command and attach structured evidence to the active durable task: command, cwd, exit code, duration, classification, summary, and log artifact. |
+
+Large logs and command outputs should be artifacts with compact summaries in the transcript. `task_gate_run` handles this automatically for active durable tasks.
+
+### GitHub context and guarded writes
+
+| Tool | Niche |
+|---|---|
+| `github_issue_context` | Read-only issue context via `gh issue view`; large bodies become task artifacts when possible. |
+| `github_pr_context` | Read-only PR context via `gh pr view`; optional diff capture via `gh pr diff --patch`; large bodies/diffs become task artifacts when possible. |
+| `github_comment` | Approval-required issue/PR comment with structured evidence. |
+| `github_close_issue` | Approval-required issue closure. Requires non-empty acceptance criteria and evidence; refuses dirty worktrees unless explicitly allowed. Never close an issue merely because an agent is stopping. |
+
+### PR attempts
+
+| Tool | Niche |
+|---|---|
+| `pr_attempt_record` | Capture the current git diff as attempt metadata plus a patch artifact on a durable task. |
+| `pr_attempt_list` | List attempts recorded on a task. |
+| `pr_attempt_read` | Inspect one recorded attempt and its artifact reference. |
+| `pr_attempt_preflight` | Run `git apply --check` against an attempt patch. No worktree mutation. |
+
+### Automations
+
+| Tool | Niche |
+|---|---|
+| `automation_create` | Create a scheduled automation. Approval-required. |
+| `automation_list` / `automation_read` | Inspect durable automations and recent runs. |
+| `automation_update` | Update prompt, schedule, cwds, or status. Approval-required. |
+| `automation_pause` / `automation_resume` / `automation_delete` | Lifecycle controls. Approval-required. |
+| `automation_run` | Run an automation now; the run enqueues a normal durable task. Approval-required. |
 
 ### Sub-agents
 

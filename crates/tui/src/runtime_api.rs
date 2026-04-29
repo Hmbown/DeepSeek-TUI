@@ -250,6 +250,7 @@ pub async fn run_http_server(
         TaskManager::start_with_runtime_manager(task_cfg, config.clone(), runtime_threads.clone())
             .await?;
     let automations = Arc::new(Mutex::new(AutomationManager::default_location()?));
+    runtime_threads.attach_automation_manager(automations.clone());
     let scheduler_cancel = CancellationToken::new();
     let scheduler_handle = spawn_scheduler(
         automations.clone(),
@@ -413,6 +414,7 @@ async fn resume_session_thread(
             auto_approve: None,
             archived: false,
             system_prompt: session.system_prompt.clone(),
+            task_id: None,
         })
         .await
         .map_err(|e| ApiError::internal(format!("Failed to create thread: {e}")))?;
@@ -1069,6 +1071,7 @@ async fn stream_turn(
             auto_approve: Some(auto_approve),
             archived: true,
             system_prompt: None,
+            task_id: None,
         })
         .await
         .map_err(|e| ApiError::internal(format!("Failed to create stream thread: {e}")))?;
@@ -1555,6 +1558,11 @@ mod tests {
             PathBuf::from("."),
             RuntimeThreadManagerConfig::from_task_data_dir(root.join("runtime")),
         )?);
+        runtime_threads.attach_task_manager(manager.clone());
+        let automations = Arc::new(Mutex::new(AutomationManager::open(
+            root.join("automations"),
+        )?));
+        runtime_threads.attach_automation_manager(automations.clone());
 
         let state = RuntimeApiState {
             config: Config::default(),
@@ -1563,9 +1571,7 @@ mod tests {
             runtime_threads: runtime_threads.clone(),
             sessions_dir,
             mcp_config_path: root.join("mcp.json"),
-            automations: Arc::new(Mutex::new(AutomationManager::open(
-                root.join("automations"),
-            )?)),
+            automations,
         };
         let app = build_router(state);
         let listener = match TcpListener::bind("127.0.0.1:0").await {
