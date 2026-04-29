@@ -700,10 +700,7 @@ mod tests {
         assert_eq!(a, b, "deterministic given the same frame");
         // 750 ms → 5 ticks, crest A advances every 2 ticks → ≥2 steps.
         let c = super::footer_working_strip_string(40, 750);
-        assert_ne!(
-            a, c,
-            "advancing 4 ticks must change the strip",
-        );
+        assert_ne!(a, c, "advancing 4 ticks must change the strip",);
     }
 
     #[test]

@@ -207,9 +207,7 @@ impl HistoryCell {
             } => render_thinking(content, width, *streaming, *duration_secs, false, false),
             HistoryCell::Tool(cell) => cell.lines_with_motion(width, false),
             HistoryCell::SubAgent(cell) => cell.lines(width),
-            HistoryCell::ArchivedContext { .. } => {
-                render_archived_context(self, width, false)
-            }
+            HistoryCell::ArchivedContext { .. } => render_archived_context(self, width, false),
         }
     }
 
@@ -318,9 +316,7 @@ impl HistoryCell {
             ),
             HistoryCell::Tool(cell) => cell.transcript_lines(width),
             HistoryCell::SubAgent(cell) => cell.lines(width),
-            HistoryCell::ArchivedContext { .. } => {
-                render_archived_context(self, width, true)
-            }
+            HistoryCell::ArchivedContext { .. } => render_archived_context(self, width, true),
         }
     }
 
@@ -359,47 +355,19 @@ fn parse_archived_context(text: &str) -> Option<HistoryCell> {
     let tag_end = text.find('>')?;
     let tag = &text[..tag_end];
 
-    let level = tag
-        .split(' ')
-        .find(|part| part.starts_with("level="))
-        .and_then(|part| part.split('"').nth(1))
+    let level = archived_context_attr(tag, "level")
         .and_then(|v| v.parse::<u8>().ok())
         .unwrap_or(0);
 
-    let range = tag
-        .split(' ')
-        .find(|part| part.starts_with("range="))
-        .and_then(|part| part.split('"').nth(1))
-        .unwrap_or("")
-        .to_string();
+    let range = archived_context_attr(tag, "range").unwrap_or_default();
 
-    let tokens = tag
-        .split(' ')
-        .find(|part| part.starts_with("tokens="))
-        .and_then(|part| part.split('"').nth(1))
-        .unwrap_or("")
-        .to_string();
+    let tokens = archived_context_attr(tag, "tokens").unwrap_or_default();
 
-    let density = tag
-        .split(' ')
-        .find(|part| part.starts_with("density="))
-        .and_then(|part| part.split('"').nth(1))
-        .unwrap_or("")
-        .to_string();
+    let density = archived_context_attr(tag, "density").unwrap_or_default();
 
-    let model = tag
-        .split(' ')
-        .find(|part| part.starts_with("model="))
-        .and_then(|part| part.split('"').nth(1))
-        .unwrap_or("")
-        .to_string();
+    let model = archived_context_attr(tag, "model").unwrap_or_default();
 
-    let timestamp = tag
-        .split(' ')
-        .find(|part| part.starts_with("timestamp="))
-        .and_then(|part| part.split('"').nth(1))
-        .unwrap_or("")
-        .to_string();
+    let timestamp = archived_context_attr(tag, "timestamp").unwrap_or_default();
 
     let close_tag = text.rfind("</archived_context>")?;
     let summary_start = tag_end + 1;
@@ -416,8 +384,20 @@ fn parse_archived_context(text: &str) -> Option<HistoryCell> {
     })
 }
 
+fn archived_context_attr(tag: &str, name: &str) -> Option<String> {
+    let needle = format!("{name}=\"");
+    let start = tag.find(&needle)? + needle.len();
+    let rest = &tag[start..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
 /// Render an `<archived_context>` block with dimmed/italic styling.
-fn render_archived_context(cell: &HistoryCell, width: u16, _low_motion: bool) -> Vec<Line<'static>> {
+fn render_archived_context(
+    cell: &HistoryCell,
+    width: u16,
+    _low_motion: bool,
+) -> Vec<Line<'static>> {
     let HistoryCell::ArchivedContext {
         level,
         range,
@@ -441,9 +421,7 @@ fn render_archived_context(cell: &HistoryCell, width: u16, _low_motion: bool) ->
     let label_style = Style::default()
         .fg(palette::TEXT_DIM)
         .add_modifier(Modifier::BOLD);
-    let body_style = Style::default()
-        .fg(palette::TEXT_DIM)
-        .italic();
+    let body_style = Style::default().fg(palette::TEXT_DIM).italic();
 
     let content_width = width.saturating_sub(4).max(1);
 
@@ -493,10 +471,7 @@ fn render_archived_context(cell: &HistoryCell, width: u16, _low_motion: bool) ->
     let rendered = crate::tui::markdown_render::render_markdown(&body, content_width, body_style);
     for (idx, line) in rendered.into_iter().enumerate() {
         if idx == 0 {
-            let mut spans = vec![Span::styled(
-                "▏ ",
-                Style::default().fg(palette::TEXT_DIM),
-            )];
+            let mut spans = vec![Span::styled("▏ ", Style::default().fg(palette::TEXT_DIM))];
             spans.extend(line.spans);
             lines.push(Line::from(spans));
         } else {
@@ -527,46 +502,46 @@ pub fn history_cells_from_message(msg: &Message) -> Vec<HistoryCell> {
                     continue;
                 }
                 match msg.role.as_str() {
-                "user" => {
-                    if let Some(HistoryCell::User { content }) = cells.last_mut() {
-                        if !content.is_empty() {
-                            content.push('\n');
+                    "user" => {
+                        if let Some(HistoryCell::User { content }) = cells.last_mut() {
+                            if !content.is_empty() {
+                                content.push('\n');
+                            }
+                            content.push_str(text);
+                        } else {
+                            cells.push(HistoryCell::User {
+                                content: text.clone(),
+                            });
                         }
-                        content.push_str(text);
-                    } else {
-                        cells.push(HistoryCell::User {
-                            content: text.clone(),
-                        });
                     }
-                }
-                "assistant" => {
-                    if let Some(HistoryCell::Assistant { content, .. }) = cells.last_mut() {
-                        if !content.is_empty() {
-                            content.push('\n');
+                    "assistant" => {
+                        if let Some(HistoryCell::Assistant { content, .. }) = cells.last_mut() {
+                            if !content.is_empty() {
+                                content.push('\n');
+                            }
+                            content.push_str(text);
+                        } else {
+                            cells.push(HistoryCell::Assistant {
+                                content: text.clone(),
+                                streaming: false,
+                            });
                         }
-                        content.push_str(text);
-                    } else {
-                        cells.push(HistoryCell::Assistant {
-                            content: text.clone(),
-                            streaming: false,
-                        });
                     }
-                }
-                "system" => {
-                    if let Some(HistoryCell::System { content }) = cells.last_mut() {
-                        if !content.is_empty() {
-                            content.push('\n');
+                    "system" => {
+                        if let Some(HistoryCell::System { content }) = cells.last_mut() {
+                            if !content.is_empty() {
+                                content.push('\n');
+                            }
+                            content.push_str(text);
+                        } else {
+                            cells.push(HistoryCell::System {
+                                content: text.clone(),
+                            });
                         }
-                        content.push_str(text);
-                    } else {
-                        cells.push(HistoryCell::System {
-                            content: text.clone(),
-                        });
                     }
+                    _ => {}
                 }
-                _ => {}
             }
-            },
             ContentBlock::Thinking { thinking } => {
                 if let Some(HistoryCell::Thinking { content, .. }) = cells.last_mut() {
                     if !content.is_empty() {
@@ -2396,6 +2371,7 @@ mod tests {
         running_status_label_with_elapsed,
     };
     use crate::deepseek_theme::Theme;
+    use crate::models::{ContentBlock, Message};
     use crate::palette;
     use ratatui::style::Modifier;
     use std::time::{Duration, Instant};
@@ -2431,6 +2407,40 @@ mod tests {
         let text = "Line one\nLine two";
         let summary = extract_reasoning_summary(text).expect("summary should exist");
         assert_eq!(summary, "Line one\nLine two");
+    }
+
+    #[test]
+    fn archived_context_metadata_preserves_spaces_in_attributes() {
+        let msg = Message {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "<archived_context level=\"1\" range=\"msg 0-128\" tokens=\"2499\" density=\"~2,500 tokens\" model=\"deepseek-v4-flash\" timestamp=\"2026-04-28T00:00:00Z\">\nSummary body\n</archived_context>".to_string(),
+                cache_control: None,
+            }],
+        };
+
+        let cells = super::history_cells_from_message(&msg);
+        assert_eq!(cells.len(), 1);
+        let HistoryCell::ArchivedContext {
+            level,
+            range,
+            tokens,
+            density,
+            model,
+            timestamp,
+            summary,
+        } = &cells[0]
+        else {
+            panic!("expected archived context cell");
+        };
+
+        assert_eq!(*level, 1);
+        assert_eq!(range, "msg 0-128");
+        assert_eq!(tokens, "2499");
+        assert_eq!(density, "~2,500 tokens");
+        assert_eq!(model, "deepseek-v4-flash");
+        assert_eq!(timestamp, "2026-04-28T00:00:00Z");
+        assert_eq!(summary, "Summary body");
     }
 
     #[test]

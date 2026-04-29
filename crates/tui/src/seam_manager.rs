@@ -36,8 +36,8 @@ use chrono::{DateTime, Utc};
 use tokio::sync::Mutex;
 
 use crate::client::DeepSeekClient;
-use crate::compaction::plan_compaction;
 use crate::compaction::KEEP_RECENT_MESSAGES;
+use crate::compaction::plan_compaction;
 use crate::llm_client::LlmClient;
 use crate::models::{ContentBlock, Message, MessageRequest, SystemBlock, SystemPrompt};
 

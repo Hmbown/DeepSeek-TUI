@@ -185,26 +185,23 @@ impl ToolResult {
 
 /// Helper to extract a required string field from JSON input.
 pub fn required_str<'a>(input: &'a Value, field: &str) -> std::result::Result<&'a str, ToolError> {
-    input
-        .get(field)
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            // When the field is missing, list the fields the caller *did*
-            // supply so the model can spot the mismatch without a retry.
-            let provided: Vec<&str> = input
-                .as_object()
-                .map(|obj| obj.keys().map(|k| k.as_str()).collect())
-                .unwrap_or_default();
-            if provided.is_empty() {
-                ToolError::missing_field(field)
-            } else {
-                let hint = format!(
-                    "missing required field '{field}'. Input provided: {}",
-                    provided.join(", ")
-                );
-                ToolError::invalid_input(hint)
-            }
-        })
+    input.get(field).and_then(Value::as_str).ok_or_else(|| {
+        // When the field is missing, list the fields the caller *did*
+        // supply so the model can spot the mismatch without a retry.
+        let provided: Vec<&str> = input
+            .as_object()
+            .map(|obj| obj.keys().map(|k| k.as_str()).collect())
+            .unwrap_or_default();
+        if provided.is_empty() {
+            ToolError::missing_field(field)
+        } else {
+            let hint = format!(
+                "missing required field '{field}'. Input provided: {}",
+                provided.join(", ")
+            );
+            ToolError::invalid_input(hint)
+        }
+    })
 }
 
 /// Helper to extract an optional string field from JSON input.

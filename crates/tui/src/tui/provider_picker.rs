@@ -351,7 +351,14 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            vec!["DeepSeek", "NVIDIA NIM", "OpenRouter", "Novita AI", "Fireworks AI", "SGLang"]
+            vec![
+                "DeepSeek",
+                "NVIDIA NIM",
+                "OpenRouter",
+                "Novita AI",
+                "Fireworks AI",
+                "SGLang"
+            ]
         );
     }
 

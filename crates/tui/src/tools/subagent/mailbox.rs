@@ -19,6 +19,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
+use crate::models::Usage;
+
 use super::SubAgentType;
 
 /// Stable, structured progress envelope shared across the sub-agent surface.
@@ -62,10 +64,10 @@ pub enum MailboxMessage {
     /// Published after each turn so the parent's cost counter updates live.
     TokenUsage {
         agent_id: String,
-        /// Prompt tokens consumed (input, including cached).
-        prompt_tokens: u32,
-        /// Completion tokens consumed (output).
-        completion_tokens: u32,
+        /// Model that produced this usage, used for pricing.
+        model: String,
+        /// Provider usage payload, including cache-hit/cache-miss fields.
+        usage: Usage,
     },
 }
 
@@ -103,13 +105,13 @@ impl MailboxMessage {
 
     pub(crate) fn token_usage(
         agent_id: impl Into<String>,
-        prompt_tokens: u32,
-        completion_tokens: u32,
+        model: impl Into<String>,
+        usage: Usage,
     ) -> Self {
         Self::TokenUsage {
             agent_id: agent_id.into(),
-            prompt_tokens,
-            completion_tokens,
+            model: model.into(),
+            usage,
         }
     }
 }
@@ -459,8 +461,12 @@ mod tests {
             (
                 MailboxMessage::TokenUsage {
                     agent_id: "a9".into(),
-                    prompt_tokens: 100,
-                    completion_tokens: 50,
+                    model: "deepseek-v4-flash".into(),
+                    usage: Usage {
+                        input_tokens: 100,
+                        output_tokens: 50,
+                        ..Default::default()
+                    },
                 },
                 "a9",
             ),

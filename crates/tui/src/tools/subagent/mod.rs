@@ -2730,8 +2730,8 @@ async fn run_subagent(
         if let Some(mb) = runtime.mailbox.as_ref() {
             let _ = mb.send(MailboxMessage::token_usage(
                 &agent_id,
-                response.usage.input_tokens,
-                response.usage.output_tokens,
+                response.model.clone(),
+                response.usage.clone(),
             ));
         }
 

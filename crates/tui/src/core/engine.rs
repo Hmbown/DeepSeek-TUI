@@ -24,7 +24,6 @@ use crate::compaction::{
     CompactionConfig, compact_messages_safe, estimate_tokens, merge_system_prompts, should_compact,
 };
 use crate::config::{Config, DEFAULT_MAX_SUBAGENTS, DEFAULT_TEXT_MODEL};
-use crate::seam_manager::{SeamConfig, SeamManager};
 use crate::cycle_manager::{
     CycleBriefing, CycleConfig, StructuredState, archive_cycle, build_seed_messages,
     estimate_briefing_tokens, produce_briefing, should_advance_cycle,
@@ -38,6 +37,7 @@ use crate::models::{
     StreamEvent, SystemBlock, SystemPrompt, Tool, ToolCaller, Usage, context_window_for_model,
 };
 use crate::prompts;
+use crate::seam_manager::{SeamConfig, SeamManager};
 use crate::tools::plan::{SharedPlanState, new_shared_plan_state};
 use crate::tools::shell::{SharedShellManager, new_shared_shell_manager};
 use crate::tools::spec::{ApprovalRequirement, ToolError, ToolResult, required_str};
@@ -1264,21 +1264,26 @@ impl Engine {
         let seam_manager = deepseek_client.as_ref().map(|main_client| {
             let seam_config = SeamConfig {
                 enabled: api_config.context.enabled.unwrap_or(true),
-                verbatim_window_turns: api_config.context.verbatim_window_turns.unwrap_or(
-                    crate::seam_manager::VERBATIM_WINDOW_TURNS,
-                ),
-                l1_threshold: api_config.context.l1_threshold.unwrap_or(
-                    crate::seam_manager::DEFAULT_L1_THRESHOLD,
-                ),
-                l2_threshold: api_config.context.l2_threshold.unwrap_or(
-                    crate::seam_manager::DEFAULT_L2_THRESHOLD,
-                ),
-                l3_threshold: api_config.context.l3_threshold.unwrap_or(
-                    crate::seam_manager::DEFAULT_L3_THRESHOLD,
-                ),
-                cycle_threshold: api_config.context.cycle_threshold.unwrap_or(
-                    crate::seam_manager::DEFAULT_CYCLE_THRESHOLD,
-                ),
+                verbatim_window_turns: api_config
+                    .context
+                    .verbatim_window_turns
+                    .unwrap_or(crate::seam_manager::VERBATIM_WINDOW_TURNS),
+                l1_threshold: api_config
+                    .context
+                    .l1_threshold
+                    .unwrap_or(crate::seam_manager::DEFAULT_L1_THRESHOLD),
+                l2_threshold: api_config
+                    .context
+                    .l2_threshold
+                    .unwrap_or(crate::seam_manager::DEFAULT_L2_THRESHOLD),
+                l3_threshold: api_config
+                    .context
+                    .l3_threshold
+                    .unwrap_or(crate::seam_manager::DEFAULT_L3_THRESHOLD),
+                cycle_threshold: api_config
+                    .context
+                    .cycle_threshold
+                    .unwrap_or(crate::seam_manager::DEFAULT_CYCLE_THRESHOLD),
                 seam_model: api_config
                     .context
                     .seam_model

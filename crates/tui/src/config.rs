@@ -928,8 +928,10 @@ impl Config {
                 .as_ref()
                 .filter(|base| base.contains("integrate.api.nvidia.com"))
                 .cloned(),
-            ApiProvider::Openrouter | ApiProvider::Novita
-                | ApiProvider::Fireworks | ApiProvider::Sglang => None,
+            ApiProvider::Openrouter
+            | ApiProvider::Novita
+            | ApiProvider::Fireworks
+            | ApiProvider::Sglang => None,
         };
         let base = provider_base.or(root_base).unwrap_or_else(|| {
             match provider {
@@ -1663,9 +1665,18 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
                 .context
                 .verbatim_window_turns
                 .or(base.context.verbatim_window_turns),
-            l1_threshold: override_cfg.context.l1_threshold.or(base.context.l1_threshold),
-            l2_threshold: override_cfg.context.l2_threshold.or(base.context.l2_threshold),
-            l3_threshold: override_cfg.context.l3_threshold.or(base.context.l3_threshold),
+            l1_threshold: override_cfg
+                .context
+                .l1_threshold
+                .or(base.context.l1_threshold),
+            l2_threshold: override_cfg
+                .context
+                .l2_threshold
+                .or(base.context.l2_threshold),
+            l3_threshold: override_cfg
+                .context
+                .l3_threshold
+                .or(base.context.l3_threshold),
             cycle_threshold: override_cfg
                 .context
                 .cycle_threshold

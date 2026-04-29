@@ -157,7 +157,7 @@ pub struct ContainerInfo {
 }
 
 /// Server-side tool usage counters.
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
 pub struct ServerToolUsage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub code_execution_requests: Option<u32>,
@@ -181,7 +181,7 @@ pub struct MessageResponse {
 }
 
 /// Token usage metadata for a response.
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
 pub struct Usage {
     pub input_tokens: u32,
     pub output_tokens: u32,
