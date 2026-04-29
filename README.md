@@ -88,37 +88,56 @@ cargo install --path crates/cli --bin deepseek --locked
 
 ---
 
-## What's new in v0.6.0
+## What's new in v0.7.6
 
-### 🌊 `rlm_query` — recursive language models as a first-class tool
+### 🌐 UI Localization
 
-The model now has direct access to a native recursive-LLM primitive. Inspired by [Alex Zhang's RLM work](https://github.com/alexzhang13/rlm) and Sakana AI's published research on novelty search, but trimmed to what an agent loop actually needs: one tool, structured args, no DSL.
+DeepSeek TUI now speaks your language. The new `locale` setting
+in `settings.toml` controls UI chrome — composer, history search,
+`/config`, help overlay, and status hints — without changing model
+output language.
 
-```jsonc
-// Single child:
-rlm_query({ "prompt": "Summarise this 4k-line log: ..." })
+| Setting | Display |
+|---|---|
+| `locale = \"auto\"` | Checks `LC_ALL` → `LC_MESSAGES` → `LANG` (default) |
+| `locale = \"ja\"` | Japanese |
+| `locale = \"zh-Hans\"` | Chinese Simplified |
+| `locale = \"pt-BR\"` | Portuguese (Brazil) |
+| `locale = \"en\"` | English fallback |
 
-// 8 parallel children, indexed result:
-rlm_query({
-  "prompts": [
-    "Review src/foo.rs for race conditions: ...",
-    "Review src/foo.rs for input validation: ...",
-    "Review src/foo.rs for error-handling gaps: ...",
-    "..."
-  ]
-})
+Unsure what to pick? Run `locale` in your terminal; the first matching
+tag is used automatically.
 
-// Promote one call to Pro:
-rlm_query({ "prompt": "Hard reasoning here", "model": "deepseek-v4-pro" })
-```
+### 📋 Smarter paste handling
 
-Children run concurrently against the existing DeepSeek client via `tokio` — no external binary, no Python sandbox, no fenced-block DSL. Returns a single string for one prompt or `[i] ...` indexed blocks for many. Available in Plan / Agent / YOLO. The cost is folded into the session's running total automatically.
+Paste-burst detection catches rapid-key pastes in terminals that don't
+send bracketed-paste events — CRLF is normalized, and multiline pastes
+stay buffered until you stop typing. Configurable via `paste_burst_detection`.
 
-### Other changes
+### 🔍 Composer history search
 
-- **Scroll position survives content rewrites** — anchor fallback now clamps to the nearest surviving cell instead of teleporting to the bottom (#56)
-- **Looser command-safety chains** — `cargo build && cargo test` is no longer blocked outright; chains of known-safe commands escalate to RequiresApproval instead of Dangerous (#57)
-- **Multi-turn tool calls no longer 400 on thinking-mode models** — `reasoning_content` is replayed across user-message boundaries with a safe placeholder when the round produced none
+Forgot that prompt you wrote an hour ago? `Alt+R` opens a live search
+across input history and recovered drafts. Type to filter, `Enter` to
+accept, `Esc` to restore what you were typing.
+
+### 👁️ Pending input preview
+
+During a running turn, queued messages, pending steers, and context chips
+appear above the composer so you can see what will be sent next.
+`Alt+↑` pops the last queued message back for editing.
+
+### ⚙️ Grouped `/config` editor
+
+`/config` now groups settings by section (Model, Permissions, Display,
+...) with a live filter. `↑/↓` (or `j`/`k` when the filter is empty)
+navigate; `Enter`/`e` edit the selected row; `Esc` clears the filter
+or closes.
+
+### ⌨️ Searchable help overlay
+
+`?` (with empty input), `F1`, or `Ctrl+/` opens a searchable help
+overlay. Type to filter commands and keybindings; multi-term searches
+act as AND.
 
 Full history: [CHANGELOG.md](CHANGELOG.md).
 
@@ -174,6 +193,8 @@ deepseek mcp-server                           # run dispatcher MCP stdio server
 | `Ctrl+R` | Resume an earlier session |
 | `Alt+R` | Search prompt history and recover cleared drafts |
 | `@path` | Attach file/directory context in composer |
+| `↑` (at composer start) | Select attachment row for removal |
+| `Alt+↑` | Edit last queued message |
 | `/attach <path>` | Attach image/video media references; select the row with `↑` at composer start and remove with `Backspace`/`Delete` |
 
 ---
@@ -213,6 +234,9 @@ Quick diagnostics: `deepseek setup --status` checks API key, MCP, sandbox, and
 DeepSeek context caching is automatic — when the API returns cache hit/miss token fields, the TUI includes them in usage and cost tracking.
 
 Full reference: [docs/CONFIGURATION.md](docs/CONFIGURATION.md) and [docs/MCP.md](docs/MCP.md).
+
+UI locale is separate from model language — set `locale` in `settings.toml`
+or via the `LC_ALL`/`LANG` environment variables. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
 ---
 

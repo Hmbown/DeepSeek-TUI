@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.6] - 2026-04-29
+
+### Added
+- **UI Localization registry** — `locale` setting in `settings.toml` (`auto`, `en`, `ja`, `zh-Hans`, `pt-BR`) with `LC_ALL`/`LC_MESSAGES`/`LANG` auto-detection. Core packs shipped for English, Japanese, Chinese Simplified, and Brazilian Portuguese covering composer placeholder, history search, `/config` chrome, and help overlay. Missing/unsupported locales fall back to English. (`crates/tui/src/localization.rs`, `docs/CONFIGURATION.md`)
+- **Grouped, searchable `/config` editor** — settings organized by section (Model, Permissions, Display, Composer, Sidebar, History, MCP) with live substring filter. Typing `j`/`k` navigates when the filter is empty; otherwise they enter the filter. (`crates/tui/src/tui/views/mod.rs`)
+- **Pending input preview widget** — while a turn is running, queued messages, pending steers, rejected steers, and context chips render above the composer. Three-row-per-message truncation with ellipsis overflow. (`crates/tui/src/tui/widgets/pending_input_preview.rs`)
+- **Alt+↑ edit-last-queued** — pops the most recently queued message back into the composer for editing. No-op when the composer is dirty. (`crates/tui/src/tui/app.rs`)
+- **Composer history search and draft recovery** — `Alt+R` opens a live substring search across `input_history` and `draft_history` (max 50 entries). `Enter` accepts, `Esc` restores the pre-search draft. Unicode case-insensitive matching. (`crates/tui/src/tui/app.rs`)
+- **Paste-burst detection** — fallback rapid-key paste detection independent of terminal bracketed-paste mode. Configurable via `paste_burst_detection` setting (default on). CRLF normalization (`\r\n` → `\n`, `\r` → `\n`). (`crates/tui/src/tui/paste_burst.rs`)
+- **Composer attachment management** — `↑` at the composer start selects the attachment row; `Backspace`/`Delete` removes it without editing placeholder text. (`crates/tui/src/tui/app.rs`)
+- **Searchable help overlay** — live substring filter across slash commands and keybindings, multi-term AND matching, localized chrome. (`crates/tui/src/tui/views/help.rs`)
+- **Keyboard-binding documentation catalog** — single source of truth for help overlay rendering. Documents 38+ keyboard chords across Navigation, Editing, Submission, Modes, Sessions, Clipboard, and Help sections. (`crates/tui/src/tui/keybindings.rs`)
+- **Legacy Rust deprecation audit** — non-destructive compatibility audit covering legacy MCP sync API, prompt constants, `/compact`, `todo_*` aliases, sub-agent aliases, provider `api_key` compatibility, model alias canonicalization, and palette aliases. Tracked by #218–#221. (`docs/LEGACY_RUST_AUDIT_0_7_6.md`)
+
+### Changed
+- **Shift+Tab cycles reasoning-effort** through Off → High → Max (three behaviorally distinct tiers). Previously Tab cycled modes; Shift+Tab is now the reasoning-effort shortcut. (`crates/tui/src/tui/app.rs:1119`)
+- **Reasoning-effort `Off` now sends `"off"`** to the API (was `None`). Allows explicit thinking disable. (`crates/tui/src/tui/app.rs`)
+- **Media `@`-mentions now emit `<media-file>` hints** directing users to `/attach` instead of inlining binary bytes. Tests lock in the contract. (`crates/tui/src/tui/file_mention.rs`)
+- **`/attach` rejects non-media files** with a descriptive error pointing to `@path` for text. (`crates/tui/src/commands/attachment.rs`)
+- **Configuration reference updated** to cover all v0.7.6 settings: `locale`, `paste_burst_detection`, `reasoning_effort`, `composer_density`, `sidebar_focus`, and more. (`docs/CONFIGURATION.md`)
+
+### Fixed
+- **Unicode-safe truncation** in pending-input preview and view text — no more mid-character breaks on multi-byte UTF-8. (`crates/tui/src/tui/widgets/pending_input_preview.rs`, `crates/tui/src/tui/views/mod.rs`)
+- **CJK/emoji display-width handling** in locale tests and config view rendering. (`crates/tui/src/localization.rs`)
+- **Context preview distinguishes `@media`, `/attach`, missing, and included files** with separate kind labels and inclusion status. (`crates/tui/src/tui/file_mention.rs`)
+- **Config view filter accept `j`/`k` only when filter is empty** — typing `j` or `k` into the filter field no longer navigates away. (`crates/tui/src/tui/views/mod.rs`)
+
+### Tests
+- 7 localization tests (tag normalization, env resolution, shipped pack completeness, missing-key fallback, Unicode width truncation)
+- 11 pending-input preview tests (context buckets, truncation, URL overflow, narrow-width)
+- 13 paste tests (burst detection, CRLF normalization, clipboard images, Unicode)
+- 9 draft/history search tests (match filter, unicode, accept/cancel, recovery)
+- 93 config tests (grouping, filter, edit, j/k, localization, escape/cancel)
+- 24 workspace tests (context refresh, scroll, mention completion)
+- 7 file-mention tests (context references, media/attach distinction, removability)
+
 ## [0.7.1] - 2026-04-28
 
 ### Added
@@ -627,7 +663,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hooks system and config profiles
 - Example skills and launch assets
 
-[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.7.5...HEAD
+[0.7.6]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.7.5...v0.7.6
 [0.6.1]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.4.9...v0.6.0
 [0.4.9]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.4.8...v0.4.9
