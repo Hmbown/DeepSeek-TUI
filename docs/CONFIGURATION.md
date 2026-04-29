@@ -138,15 +138,28 @@ Common settings keys:
 
 - `theme` (default, dark, light, whale)
 - `auto_compact` (on/off, default off)
+- `paste_burst_detection` (on/off, default on): fallback rapid-key paste
+  detection for terminals that do not emit bracketed-paste events. This is
+  independent of terminal bracketed-paste mode.
 - `show_thinking` (on/off)
 - `show_tool_details` (on/off)
+- `locale` (`auto`, `en`, `ja`, `zh-Hans`, `pt-BR`; default `auto`): UI chrome
+  locale. `auto` checks `LC_ALL`, `LC_MESSAGES`, then `LANG`; unsupported or
+  missing locales fall back to English. This does not force model output
+  language.
 - `default_mode` (agent, plan, yolo; legacy `normal` is accepted and normalized to `agent`)
-- `max_history` (number of input history entries)
+- `max_history` (number of submitted input history entries; cleared drafts are
+  also kept locally for composer history search)
 - `default_model` (model name override)
 
 Only `agent`, `plan`, and `yolo` are visible modes in the UI. For compatibility,
 older settings files with `default_mode = "normal"` still load as `agent`, and
 the hidden `/normal` slash command switches to `Agent`.
+
+Localization scope is tracked in [LOCALIZATION.md](LOCALIZATION.md). The v0.7.6
+core pack covers high-visibility TUI chrome only; provider/tool schemas,
+personality prompts, and full documentation remain English unless explicitly
+translated later.
 
 Readability semantics:
 
@@ -290,6 +303,9 @@ to the next message. Use `/attach <path>` for local image/video media paths, or
 `Ctrl+V` to attach an image from the clipboard. DeepSeek's public Chat
 Completions API currently accepts text message content, so media attachments are
 sent as explicit local path references instead of native image/video payloads.
+Attachment rows appear above the composer before submit; move to the start of
+the composer, press `↑` to select an attachment row, then press `Backspace` or
+`Delete` to remove it without editing the placeholder text by hand.
 
 ## Managed Configuration and Requirements
 

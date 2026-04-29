@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{expand_path, normalize_model_name};
+use crate::localization::normalize_configured_locale;
 
 /// User settings with defaults
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,10 +26,15 @@ pub struct Settings {
     /// terminal mishandles the `\e[?2004h` escape (rare; some legacy
     /// terminals over SSH+screen multiplex without the cap).
     pub bracketed_paste: bool,
+    /// Enable rapid-key paste-burst detection for terminals that do not emit
+    /// bracketed-paste events. Independent from `bracketed_paste`.
+    pub paste_burst_detection: bool,
     /// Show thinking blocks from the model
     pub show_thinking: bool,
     /// Show detailed tool output
     pub show_tool_details: bool,
+    /// UI locale: auto, en, ja, zh-Hans, pt-BR
+    pub locale: String,
     /// Composer layout density: compact, comfortable, spacious
     pub composer_density: String,
     /// Show a border around the composer input area
@@ -55,8 +61,10 @@ impl Default for Settings {
             low_motion: false,
             fancy_animations: false,
             bracketed_paste: true,
+            paste_burst_detection: true,
             show_thinking: true,
             show_tool_details: true,
+            locale: "auto".to_string(),
             composer_density: "comfortable".to_string(),
             composer_border: true,
             transcript_spacing: "comfortable".to_string(),
@@ -108,6 +116,9 @@ impl Settings {
         settings.transcript_spacing =
             normalize_transcript_spacing(&settings.transcript_spacing).to_string();
         settings.sidebar_focus = normalize_sidebar_focus(&settings.sidebar_focus).to_string();
+        settings.locale = normalize_configured_locale(&settings.locale)
+            .unwrap_or("en")
+            .to_string();
         settings.default_model = settings
             .default_model
             .as_deref()
@@ -150,11 +161,22 @@ impl Settings {
             "bracketed_paste" | "paste" => {
                 self.bracketed_paste = parse_bool(value)?;
             }
+            "paste_burst_detection" | "paste_burst" => {
+                self.paste_burst_detection = parse_bool(value)?;
+            }
             "show_thinking" | "thinking" => {
                 self.show_thinking = parse_bool(value)?;
             }
             "show_tool_details" | "tool_details" => {
                 self.show_tool_details = parse_bool(value)?;
+            }
+            "locale" | "language" => {
+                let Some(locale) = normalize_configured_locale(value) else {
+                    anyhow::bail!(
+                        "Failed to update setting: invalid locale '{value}'. Expected: auto, en, ja, zh-Hans, pt-BR."
+                    );
+                };
+                self.locale = locale.to_string();
             }
             "composer_density" | "composer" => {
                 let normalized = normalize_composer_density(value);
@@ -260,8 +282,13 @@ impl Settings {
         lines.push(format!("  low_motion:         {}", self.low_motion));
         lines.push(format!("  fancy_animations:   {}", self.fancy_animations));
         lines.push(format!("  bracketed_paste:    {}", self.bracketed_paste));
+        lines.push(format!(
+            "  paste_burst_detect: {}",
+            self.paste_burst_detection
+        ));
         lines.push(format!("  show_thinking:      {}", self.show_thinking));
         lines.push(format!("  show_tool_details:  {}", self.show_tool_details));
+        lines.push(format!("  locale:            {}", self.locale));
         lines.push(format!("  composer_density:   {}", self.composer_density));
         lines.push(format!("  composer_border:    {}", self.composer_border));
         lines.push(format!("  transcript_spacing: {}", self.transcript_spacing));
@@ -302,8 +329,16 @@ impl Settings {
                 "bracketed_paste",
                 "Terminal bracketed-paste mode: on/off (rare to disable)",
             ),
+            (
+                "paste_burst_detection",
+                "Fallback rapid-key paste detection: on/off",
+            ),
             ("show_thinking", "Show model thinking: on/off"),
             ("show_tool_details", "Show detailed tool output: on/off"),
+            (
+                "locale",
+                "UI locale: auto, en, ja, zh-Hans, pt-BR (model output is unchanged)",
+            ),
             (
                 "composer_density",
                 "Composer density: compact, comfortable, spacious",
@@ -398,5 +433,39 @@ mod tests {
         assert!(settings.auto_compact);
         settings.set("auto_compact", "off").expect("disable");
         assert!(!settings.auto_compact);
+    }
+
+    #[test]
+    fn paste_burst_detection_is_configurable_independent_of_bracketed_paste() {
+        let mut settings = Settings::default();
+        assert!(settings.bracketed_paste);
+        assert!(settings.paste_burst_detection);
+
+        settings
+            .set("paste_burst_detection", "off")
+            .expect("disable paste burst fallback");
+        assert!(settings.bracketed_paste);
+        assert!(!settings.paste_burst_detection);
+
+        settings
+            .set("bracketed_paste", "off")
+            .expect("disable bracketed paste");
+        assert!(!settings.bracketed_paste);
+        assert!(!settings.paste_burst_detection);
+    }
+
+    #[test]
+    fn locale_normalizes_supported_values_and_rejects_unknowns() {
+        let mut settings = Settings::default();
+        settings.set("locale", "ja_JP.UTF-8").expect("set ja");
+        assert_eq!(settings.locale, "ja");
+
+        settings.set("language", "pt-PT").expect("set pt fallback");
+        assert_eq!(settings.locale, "pt-BR");
+
+        let err = settings
+            .set("locale", "ar")
+            .expect_err("Arabic is planned, not shipped");
+        assert!(err.to_string().contains("invalid locale"));
     }
 }

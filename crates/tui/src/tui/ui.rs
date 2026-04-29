@@ -750,9 +750,9 @@ async fn run_event_loop(
                         }
                         app.plan_tool_used_in_turn = false;
 
-                        // Esc-to-steer (#122): the user interrupted with input
-                        // pending. Merge every steered message into one fresh
-                        // turn so the model sees a single coherent prompt.
+                        // Legacy pending-steer recovery. Current keyboard
+                        // handling keeps Esc as cancel-only, but older saved
+                        // state may still carry pending steers.
                         if status == crate::core::events::TurnOutcomeStatus::Interrupted
                             && app.submit_pending_steers_after_interrupt
                         {
@@ -1098,7 +1098,7 @@ async fn run_event_loop(
         }
 
         let now = Instant::now();
-        app.flush_paste_burst_if_due(now);
+        app.flush_paste_burst_if_enabled(now);
         app.sync_status_message_to_toasts();
         // Expire the "Press Ctrl+C again to quit" prompt silently after its
         // window. Triggers a redraw if the prompt was visible.
@@ -1134,7 +1134,7 @@ async fn run_event_loop(
         } else {
             Duration::from_millis(idle_poll_ms(app))
         };
-        if let Some(until_flush) = app.paste_burst.next_flush_delay(now) {
+        if let Some(until_flush) = app.paste_burst_next_flush_delay_if_enabled(now) {
             poll_timeout = poll_timeout.min(until_flush);
         }
         if let Some(until_draw) = draw_wait {
@@ -1161,11 +1161,10 @@ async fn run_event_loop(
                     // Paste into API key input
                     app.insert_api_key_str(text);
                     sync_api_key_validation_status(app, false);
+                } else if app.is_history_search_active() {
+                    app.history_search_insert_str(text);
                 } else {
                     // Paste into main input
-                    if let Some(pending) = app.paste_burst.flush_before_modified_input() {
-                        app.insert_str(&pending);
-                    }
                     app.insert_paste_text(text);
                 }
                 continue;
@@ -1343,7 +1342,7 @@ async fn run_event_loop(
                 if app.view_stack.top_kind() == Some(ModalKind::Help) {
                     app.view_stack.pop();
                 } else {
-                    app.view_stack.push(HelpView::new());
+                    app.view_stack.push(HelpView::new_for_locale(app.ui_locale));
                 }
                 continue;
             }
@@ -1352,7 +1351,7 @@ async fn run_event_loop(
                 if app.view_stack.top_kind() == Some(ModalKind::Help) {
                     app.view_stack.pop();
                 } else {
-                    app.view_stack.push(HelpView::new());
+                    app.view_stack.push(HelpView::new_for_locale(app.ui_locale));
                 }
                 continue;
             }
@@ -1407,8 +1406,22 @@ async fn run_event_loop(
                 continue;
             }
 
+            if app.is_history_search_active() {
+                handle_history_search_key(app, key);
+                continue;
+            }
+
+            if matches!(key.code, KeyCode::Char('r') | KeyCode::Char('R'))
+                && key.modifiers.contains(KeyModifiers::ALT)
+                && !key.modifiers.contains(KeyModifiers::CONTROL)
+                && !key.modifiers.contains(KeyModifiers::SUPER)
+            {
+                app.start_history_search();
+                continue;
+            }
+
             let now = Instant::now();
-            app.flush_paste_burst_if_due(now);
+            app.flush_paste_burst_if_enabled(now);
 
             // On Windows, AltGr is delivered as `Ctrl+Alt`; treat
             // AltGr-typed chars (e.g. European layouts producing `@`, `\`,
@@ -1421,7 +1434,7 @@ async fn run_event_loop(
 
             if !is_plain_char
                 && !is_enter
-                && let Some(pending) = app.paste_burst.flush_before_modified_input()
+                && let Some(pending) = app.flush_paste_burst_before_modified_input_if_enabled()
             {
                 app.insert_str(&pending);
             }
@@ -1599,6 +1612,9 @@ async fn run_event_loop(
                     let _ = engine_handle.send(Op::Shutdown).await;
                     return Ok(());
                 }
+                KeyCode::Esc if app.clear_composer_attachment_selection() => {
+                    continue;
+                }
                 KeyCode::Esc if mention_menu_open => {
                     app.mention_menu_hidden = true;
                     app.mention_menu_selected = 0;
@@ -1623,24 +1639,6 @@ async fn run_event_loop(
                         app.finalize_streaming_assistant_as_interrupted();
                         app.status_message = Some("Request cancelled".to_string());
                     }
-                    EscapeAction::SteerAndAbort => {
-                        app.backtrack.reset();
-                        if let Some(input) = app.submit_input() {
-                            let queued = build_queued_message(app, input);
-                            app.push_pending_steer(queued);
-                            engine_handle.cancel();
-                            app.is_loading = false;
-                            app.streaming_state.reset();
-                            app.runtime_turn_status = None;
-                            app.finalize_streaming_assistant_as_interrupted();
-                            let count = app.pending_steers.len();
-                            app.status_message = Some(if count == 1 {
-                                "Steering: aborting turn and resending input".to_string()
-                            } else {
-                                format!("Steering: aborting turn and resending {count} input(s)")
-                            });
-                        }
-                    }
                     EscapeAction::DiscardQueuedDraft => {
                         app.backtrack.reset();
                         app.queued_draft = None;
@@ -1648,7 +1646,7 @@ async fn run_event_loop(
                     }
                     EscapeAction::ClearInput => {
                         app.backtrack.reset();
-                        app.clear_input();
+                        app.clear_input_recoverable();
                     }
                     EscapeAction::Noop => {
                         // Nothing else cares about this Esc — route it
@@ -1709,6 +1707,22 @@ async fn run_event_loop(
                 {
                     app.slash_menu_selected = app.slash_menu_selected.saturating_sub(1);
                 }
+                KeyCode::Up
+                    if key.modifiers.is_empty()
+                        && app.selected_composer_attachment_index().is_some() =>
+                {
+                    let _ = app.select_previous_composer_attachment();
+                }
+                KeyCode::Up
+                    if key.modifiers.is_empty()
+                        && app.cursor_position == 0
+                        && !mention_menu_open
+                        && !slash_menu_open
+                        && app.composer_attachment_count() > 0 =>
+                {
+                    let _ = app.select_previous_composer_attachment();
+                    continue;
+                }
                 KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => {
                     app.scroll_down(3);
                 }
@@ -1719,6 +1733,12 @@ async fn run_event_loop(
                 KeyCode::Down if key.modifiers.is_empty() && slash_menu_open => {
                     app.slash_menu_selected = (app.slash_menu_selected + 1)
                         .min(slash_menu_entries.len().saturating_sub(1));
+                }
+                KeyCode::Down
+                    if key.modifiers.is_empty()
+                        && app.selected_composer_attachment_index().is_some() =>
+                {
+                    let _ = app.select_next_composer_attachment();
                 }
                 KeyCode::PageUp => {
                     let page = app.last_transcript_visible.max(1);
@@ -1745,6 +1765,9 @@ async fn run_event_loop(
                         continue;
                     }
                     if crate::tui::file_mention::try_autocomplete_file_mention(app) {
+                        continue;
+                    }
+                    if app.is_loading && queue_current_draft_for_next_turn(app) {
                         continue;
                     }
                     let prior_model = app.model.clone();
@@ -1803,7 +1826,7 @@ async fn run_event_loop(
                         && !slash_menu_open =>
                 {
                     if app.view_stack.top_kind() != Some(ModalKind::Help) {
-                        app.view_stack.push(HelpView::new());
+                        app.view_stack.push(HelpView::new_for_locale(app.ui_locale));
                     }
                     continue;
                 }
@@ -1851,12 +1874,14 @@ async fn run_event_loop(
                         }
                     }
                 }
-                KeyCode::Backspace => {
+                KeyCode::Backspace if !app.remove_selected_composer_attachment() => {
                     app.delete_char();
                 }
-                KeyCode::Delete => {
+                KeyCode::Backspace => {}
+                KeyCode::Delete if !app.remove_selected_composer_attachment() => {
                     app.delete_char_forward();
                 }
+                KeyCode::Delete => {}
                 KeyCode::Left => {
                     app.move_cursor_left();
                 }
@@ -1941,7 +1966,7 @@ async fn run_event_loop(
                     }
                 }
                 KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    app.clear_input();
+                    app.clear_input_recoverable();
                 }
                 KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     // Emacs-style yank from the kill buffer at the cursor.
@@ -2269,9 +2294,6 @@ fn finalize_streaming_thinking_active_entry(
 enum EscapeAction {
     CloseSlashMenu,
     CancelRequest,
-    /// Composer non-empty during a running turn — capture the input as a
-    /// pending steer, abort the turn, and re-submit on TurnComplete (#122).
-    SteerAndAbort,
     DiscardQueuedDraft,
     ClearInput,
     Noop,
@@ -2281,17 +2303,54 @@ fn next_escape_action(app: &App, slash_menu_open: bool) -> EscapeAction {
     if slash_menu_open {
         EscapeAction::CloseSlashMenu
     } else if app.is_loading {
-        if app.input.trim().is_empty() {
-            EscapeAction::CancelRequest
-        } else {
-            EscapeAction::SteerAndAbort
-        }
+        EscapeAction::CancelRequest
     } else if app.queued_draft.is_some() && app.input.is_empty() {
         EscapeAction::DiscardQueuedDraft
     } else if !app.input.is_empty() {
         EscapeAction::ClearInput
     } else {
         EscapeAction::Noop
+    }
+}
+
+fn handle_history_search_key(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Enter => {
+            let _ = app.accept_history_search();
+        }
+        KeyCode::Esc => {
+            app.cancel_history_search();
+        }
+        KeyCode::Char('c') | KeyCode::Char('C')
+            if key.modifiers.contains(KeyModifiers::CONTROL) =>
+        {
+            app.cancel_history_search();
+        }
+        KeyCode::Backspace => {
+            app.history_search_backspace();
+        }
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            while app
+                .history_search_query()
+                .is_some_and(|query| !query.is_empty())
+            {
+                app.history_search_backspace();
+            }
+        }
+        KeyCode::Up => {
+            app.history_search_select_previous();
+        }
+        KeyCode::Down => {
+            app.history_search_select_next();
+        }
+        KeyCode::Char(ch)
+            if key.modifiers.is_empty()
+                || key.modifiers == KeyModifiers::SHIFT
+                || key.modifiers == KeyModifiers::NONE =>
+        {
+            app.history_search_insert_char(ch);
+        }
+        _ => {}
     }
 }
 
@@ -2348,6 +2407,24 @@ fn sync_api_key_validation_status(app: &mut App, show_empty_error: bool) {
 fn build_queued_message(app: &mut App, input: String) -> QueuedMessage {
     let skill_instruction = app.active_skill.take();
     QueuedMessage::new(input, skill_instruction)
+}
+
+fn queue_current_draft_for_next_turn(app: &mut App) -> bool {
+    let Some(input) = app.submit_input() else {
+        return false;
+    };
+    let queued = if let Some(mut draft) = app.queued_draft.take() {
+        draft.display = input;
+        draft
+    } else {
+        build_queued_message(app, input)
+    };
+    app.queue_message(queued);
+    app.status_message = Some(format!(
+        "Queued follow-up for next turn ({} queued) - /queue to review",
+        app.queued_message_count()
+    ));
+    true
 }
 
 fn queued_message_content_for_app(
@@ -3261,6 +3338,8 @@ async fn steer_user_message(
     let content = queued_message_content_for_app(app, &message, cwd);
     let message_index = app.api_messages.len();
 
+    engine_handle.steer(content.clone()).await?;
+
     // Mirror steer input in local transcript/session state.
     app.add_message(HistoryCell::User {
         content: format!("+ {}", message.display),
@@ -3275,7 +3354,6 @@ async fn steer_user_message(
         }],
     });
 
-    engine_handle.steer(content).await?;
     app.status_message = Some("Steering current turn...".to_string());
     Ok(())
 }
@@ -3459,17 +3537,30 @@ async fn handle_plan_choice(
 ///   end-of-turn.
 fn build_pending_input_preview(app: &App) -> PendingInputPreview {
     let mut preview = PendingInputPreview::new();
+    let selected_attachment = app.selected_composer_attachment_index();
+    let mut attachment_index = 0usize;
     preview.context_items = crate::tui::file_mention::pending_context_previews(
         &app.input,
         &app.workspace,
         std::env::current_dir().ok(),
     )
     .into_iter()
-    .map(|item| ContextPreviewItem {
-        kind: item.kind,
-        label: item.label,
-        detail: item.detail,
-        included: item.included,
+    .map(|item| {
+        let selected = if item.removable {
+            let selected = selected_attachment == Some(attachment_index);
+            attachment_index += 1;
+            selected
+        } else {
+            false
+        };
+        ContextPreviewItem {
+            kind: item.kind,
+            label: item.label,
+            detail: item.detail,
+            included: item.included,
+            removable: item.removable,
+            selected,
+        }
     })
     .collect();
     preview.pending_steers = app
@@ -5261,7 +5352,8 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
         MouseEventKind::Up(MouseButton::Left) if app.transcript_selection.dragging => {
             app.transcript_selection.dragging = false;
             if selection_has_content(app) {
-                copy_active_selection(app);
+                app.status_message =
+                    Some("Selection ready - press Cmd+C or Ctrl+Shift+C to copy".to_string());
             }
         }
         _ => {}
@@ -5327,12 +5419,15 @@ fn copy_active_selection(app: &mut App) {
     if !app.transcript_selection.is_active() {
         return;
     }
-    if let Some(text) = selection_to_text(app) {
+    if let Some(text) = selection_to_text(app).filter(|text| !text.is_empty()) {
         if app.clipboard.write_text(&text).is_ok() {
             app.status_message = Some("Selection copied".to_string());
         } else {
             app.status_message = Some("Copy failed".to_string());
         }
+    } else {
+        app.transcript_selection.clear();
+        app.status_message = Some("No selection to copy".to_string());
     }
 }
 

@@ -51,6 +51,7 @@ pub struct FileMentionPreview {
     pub label: String,
     pub detail: Option<String>,
     pub included: bool,
+    pub removable: bool,
 }
 
 /// Durable, compact metadata for a user-visible context reference.
@@ -338,6 +339,7 @@ pub fn pending_context_previews(
             label: reference.label,
             detail: reference.detail,
             included: reference.included,
+            removable: reference.source == ContextReferenceSource::Attachment,
         })
         .collect()
 }
@@ -477,15 +479,21 @@ fn context_reference_for_mention(
     }
 }
 
-#[derive(Debug, Clone)]
-struct MediaAttachmentReference {
-    kind: String,
-    path: String,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaAttachmentReference {
+    pub kind: String,
+    pub path: String,
+    pub start_byte: usize,
+    pub end_byte: usize,
 }
 
-fn extract_media_attachment_references(input: &str) -> Vec<MediaAttachmentReference> {
+pub fn media_attachment_references(input: &str) -> Vec<MediaAttachmentReference> {
     let mut out = Vec::new();
-    for line in input.lines() {
+    let mut offset = 0usize;
+    for line in input.split_inclusive('\n') {
+        let start_byte = offset;
+        let end_byte = offset + line.len();
+        offset = end_byte;
         let trimmed = line.trim();
         let Some(body) = trimmed
             .strip_prefix("[Attached ")
@@ -504,10 +512,16 @@ fn extract_media_attachment_references(input: &str) -> Vec<MediaAttachmentRefere
             out.push(MediaAttachmentReference {
                 kind: kind.trim().to_string(),
                 path: path.to_string(),
+                start_byte,
+                end_byte,
             });
         }
     }
     out
+}
+
+fn extract_media_attachment_references(input: &str) -> Vec<MediaAttachmentReference> {
+    media_attachment_references(input)
 }
 
 fn local_context_from_file_mentions(
@@ -916,6 +930,22 @@ mod tests {
                 .iter()
                 .any(|item| item.kind == "image" && item.included),
             "/attach media should be included: {previews:?}"
+        );
+    }
+
+    #[test]
+    fn media_attachment_references_include_removable_line_ranges() {
+        let input = "before\n[Attached image: 8x4 PNG at /tmp/pasted.png]\nafter";
+
+        let references = media_attachment_references(input);
+
+        assert_eq!(references.len(), 1);
+        let reference = &references[0];
+        assert_eq!(reference.kind, "image");
+        assert_eq!(reference.path, "/tmp/pasted.png");
+        assert_eq!(
+            &input[reference.start_byte..reference.end_byte],
+            "[Attached image: 8x4 PNG at /tmp/pasted.png]\n"
         );
     }
 

@@ -13,6 +13,7 @@ use crate::config::{ApiProvider, Config, has_api_key, save_api_key};
 use crate::core::coherence::CoherenceState;
 use crate::cycle_manager::{CycleBriefing, CycleConfig};
 use crate::hooks::{HookContext, HookEvent, HookExecutor, HookResult};
+use crate::localization::{Locale, MessageId, resolve_locale, tr};
 use crate::models::{
     Message, SystemPrompt, compaction_message_threshold_for_model,
     compaction_threshold_for_model_and_effort,
@@ -237,6 +238,25 @@ impl StatusToast {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComposerHistorySearch {
+    pre_search_input: String,
+    pre_search_cursor: usize,
+    query: String,
+    selected: usize,
+}
+
+impl ComposerHistorySearch {
+    fn new(pre_search_input: String, pre_search_cursor: usize) -> Self {
+        Self {
+            pre_search_input,
+            pre_search_cursor,
+            query: String::new(),
+            selected: 0,
+        }
+    }
+}
+
 fn char_count(text: &str) -> usize {
     text.chars().count()
 }
@@ -275,6 +295,7 @@ fn sanitize_api_key_text(text: &str) -> String {
 }
 
 const MAX_SUBMITTED_INPUT_CHARS: usize = 16_000;
+const MAX_DRAFT_HISTORY: usize = 50;
 
 impl AppMode {
     #[must_use]
@@ -423,10 +444,14 @@ pub struct App {
     pub use_alt_screen: bool,
     pub use_mouse_capture: bool,
     pub use_bracketed_paste: bool,
+    pub use_paste_burst_detection: bool,
     #[allow(dead_code)]
     pub system_prompt: Option<SystemPrompt>,
     pub input_history: Vec<String>,
+    pub draft_history: VecDeque<String>,
     pub history_index: Option<usize>,
+    pub composer_history_search: Option<ComposerHistorySearch>,
+    pub selected_attachment_index: Option<usize>,
     pub auto_compact: bool,
     pub calm_mode: bool,
     pub low_motion: bool,
@@ -436,6 +461,7 @@ pub struct App {
     pub fancy_animations: bool,
     pub show_thinking: bool,
     pub show_tool_details: bool,
+    pub ui_locale: Locale,
     pub composer_density: ComposerDensity,
     pub composer_border: bool,
     pub transcript_spacing: TranscriptSpacing,
@@ -589,11 +615,9 @@ pub struct App {
     pub queued_messages: VecDeque<QueuedMessage>,
     /// Draft queued message being edited
     pub queued_draft: Option<QueuedMessage>,
-    /// Composer inputs the user steered with Esc during a running turn. Held
-    /// here until the in-flight turn aborts; then merged into a single fresh
-    /// turn (#122). Not the same channel as the engine's mid-turn steer
-    /// (`EngineHandle::steer`) — those flow through `queued_messages`/`Steer`
-    /// disposition and never abort the current turn.
+    /// Legacy pending-steer bucket retained for session compatibility. New
+    /// in-flight input uses Enter for same-turn steering and Tab for queued
+    /// follow-ups; Esc only cancels the active turn.
     pub pending_steers: VecDeque<QueuedMessage>,
     /// Engine-rejected steers (e.g. a tool was already running and couldn't be
     /// cancelled cleanly). Surfaced in the pending-input preview so the user
@@ -601,10 +625,7 @@ pub struct App {
     /// produces these; the field is scaffolding for a future signalling
     /// channel and the bucket renders identically when populated.
     pub rejected_steers: VecDeque<String>,
-    /// Set when the user pressed Esc with non-empty input. The next
-    /// `TurnComplete::Interrupted` event drains `pending_steers`, merges them
-    /// into one user message, and dispatches a fresh turn. Cleared on drain
-    /// (or whenever the queue empties out).
+    /// Legacy resend flag for pending steer recovery.
     pub submit_pending_steers_after_interrupt: bool,
     /// Start time for current turn
     pub turn_started_at: Option<Instant>,
@@ -677,13 +698,12 @@ pub struct QueuedMessage {
 /// How a freshly-typed user input should be sent.
 ///
 /// Picked by [`App::decide_submit_disposition`] when the user hits Enter on a
-/// non-empty composer. The Esc-to-steer path (typed input + Esc during a
-/// running turn) is separate — see [`App::push_pending_steer`].
+/// non-empty composer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubmitDisposition {
-    /// Engine idle (or offline mode without a busy turn): send immediately.
+    /// Engine idle and online: send immediately.
     Immediate,
-    /// Engine busy and offline: park on `queued_messages` for end-of-turn drain.
+    /// Offline mode: park on `queued_messages`.
     Queue,
     /// Engine busy and online: forward as a mid-turn steer.
     Steer,
@@ -744,6 +764,10 @@ pub enum ApiKeyError {
 // === App State ===
 
 impl App {
+    pub fn tr(&self, id: MessageId) -> &'static str {
+        tr(self.ui_locale, id)
+    }
+
     #[allow(clippy::too_many_lines)]
     pub fn new(options: TuiOptions, config: &Config) -> Self {
         let TuiOptions {
@@ -775,12 +799,14 @@ impl App {
         let fancy_animations = settings.fancy_animations;
         let show_thinking = settings.show_thinking;
         let show_tool_details = settings.show_tool_details;
+        let ui_locale = resolve_locale(&settings.locale);
         let composer_density = ComposerDensity::from_setting(&settings.composer_density);
         let composer_border = settings.composer_border;
         let transcript_spacing = TranscriptSpacing::from_setting(&settings.transcript_spacing);
         let sidebar_width_percent = settings.sidebar_width_percent;
         let sidebar_focus = SidebarFocus::from_setting(&settings.sidebar_focus);
         let max_input_history = settings.max_input_history;
+        let use_paste_burst_detection = settings.paste_burst_detection;
         let ui_theme = palette::UI_THEME;
         let model = settings.default_model.clone().unwrap_or(model);
         let compact_threshold =
@@ -865,15 +891,20 @@ impl App {
             use_alt_screen,
             use_mouse_capture,
             use_bracketed_paste,
+            use_paste_burst_detection,
             system_prompt: None,
             input_history: Vec::new(),
+            draft_history: VecDeque::new(),
             history_index: None,
+            composer_history_search: None,
+            selected_attachment_index: None,
             auto_compact,
             calm_mode,
             low_motion,
             fancy_animations,
             show_thinking,
             show_tool_details,
+            ui_locale,
             composer_density,
             composer_border,
             transcript_spacing,
@@ -1771,6 +1802,7 @@ impl App {
         if text.is_empty() {
             return;
         }
+        self.selected_attachment_index = None;
         let cursor = self.cursor_position.min(char_count(&self.input));
         let byte_index = byte_index_at_char(&self.input, cursor);
         self.input.insert_str(byte_index, text);
@@ -1782,6 +1814,9 @@ impl App {
     }
 
     pub fn insert_paste_text(&mut self, text: &str) {
+        if let Some(pending) = self.paste_burst.flush_before_modified_input() {
+            self.insert_str(&pending);
+        }
         let normalized = normalize_paste_text(text);
         if !normalized.is_empty() {
             self.insert_str(&normalized);
@@ -1814,6 +1849,98 @@ impl App {
         self.paste_burst.clear_after_explicit_paste();
     }
 
+    pub fn composer_attachment_count(&self) -> usize {
+        crate::tui::file_mention::media_attachment_references(&self.input).len()
+    }
+
+    pub fn selected_composer_attachment_index(&self) -> Option<usize> {
+        let count = self.composer_attachment_count();
+        self.selected_attachment_index
+            .filter(|index| *index < count)
+    }
+
+    pub fn select_previous_composer_attachment(&mut self) -> bool {
+        let count = self.composer_attachment_count();
+        if count == 0 {
+            self.selected_attachment_index = None;
+            return false;
+        }
+
+        let next = self
+            .selected_composer_attachment_index()
+            .map_or(count.saturating_sub(1), |index| index.saturating_sub(1));
+        self.selected_attachment_index = Some(next);
+        self.cursor_position = 0;
+        self.status_message = Some("Attachment selected - Backspace/Delete removes it".to_string());
+        self.needs_redraw = true;
+        true
+    }
+
+    pub fn select_next_composer_attachment(&mut self) -> bool {
+        let count = self.composer_attachment_count();
+        let Some(index) = self.selected_composer_attachment_index() else {
+            return false;
+        };
+        if index + 1 < count {
+            self.selected_attachment_index = Some(index + 1);
+            self.status_message =
+                Some("Attachment selected - Backspace/Delete removes it".to_string());
+        } else {
+            self.selected_attachment_index = None;
+            self.status_message = Some("Composer focused".to_string());
+        }
+        self.needs_redraw = true;
+        true
+    }
+
+    pub fn clear_composer_attachment_selection(&mut self) -> bool {
+        if self.selected_attachment_index.take().is_some() {
+            self.status_message = Some("Composer focused".to_string());
+            self.needs_redraw = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn remove_selected_composer_attachment(&mut self) -> bool {
+        let references = crate::tui::file_mention::media_attachment_references(&self.input);
+        let Some(index) = self
+            .selected_composer_attachment_index()
+            .filter(|index| *index < references.len())
+        else {
+            self.selected_attachment_index = None;
+            return false;
+        };
+        let reference = references[index].clone();
+        let cursor_byte = byte_index_at_char(&self.input, self.cursor_position);
+        let new_cursor_byte = if cursor_byte <= reference.start_byte {
+            cursor_byte
+        } else if cursor_byte >= reference.end_byte {
+            cursor_byte.saturating_sub(reference.end_byte - reference.start_byte)
+        } else {
+            reference.start_byte
+        };
+
+        self.input
+            .replace_range(reference.start_byte..reference.end_byte, "");
+        self.cursor_position = self.input[..new_cursor_byte.min(self.input.len())]
+            .chars()
+            .count();
+        let remaining = self.composer_attachment_count();
+        self.selected_attachment_index = if remaining == 0 {
+            None
+        } else {
+            Some(index.min(remaining.saturating_sub(1)))
+        };
+        self.slash_menu_hidden = false;
+        self.mention_menu_hidden = false;
+        self.mention_menu_selected = 0;
+        self.status_message = Some(format!("Removed attachment: {}", reference.path));
+        self.needs_redraw = true;
+        true
+    }
+
     pub fn flush_paste_burst_if_due(&mut self, now: Instant) -> bool {
         match self.paste_burst.flush_if_due(now) {
             FlushResult::Paste(text) => {
@@ -1825,6 +1952,26 @@ impl App {
                 true
             }
             FlushResult::None => false,
+        }
+    }
+
+    pub fn flush_paste_burst_if_enabled(&mut self, now: Instant) -> bool {
+        self.use_paste_burst_detection && self.flush_paste_burst_if_due(now)
+    }
+
+    pub fn paste_burst_next_flush_delay_if_enabled(&self, now: Instant) -> Option<Duration> {
+        if self.use_paste_burst_detection {
+            self.paste_burst.next_flush_delay(now)
+        } else {
+            None
+        }
+    }
+
+    pub fn flush_paste_burst_before_modified_input_if_enabled(&mut self) -> Option<String> {
+        if self.use_paste_burst_detection {
+            self.paste_burst.flush_before_modified_input()
+        } else {
+            None
         }
     }
 
@@ -1859,23 +2006,19 @@ impl App {
     /// Paste from clipboard into input
     pub fn paste_from_clipboard(&mut self) {
         if let Some(content) = self.clipboard.read(self.workspace.as_path()) {
-            if let Some(pending) = self.paste_burst.flush_before_modified_input() {
-                self.insert_str(&pending);
+            self.apply_clipboard_content(content);
+        }
+    }
+
+    pub fn apply_clipboard_content(&mut self, content: ClipboardContent) {
+        match content {
+            ClipboardContent::Text(text) => {
+                self.insert_paste_text(&text);
             }
-            match content {
-                ClipboardContent::Text(text) => {
-                    self.insert_paste_text(&text);
-                }
-                ClipboardContent::Image(pasted) => {
-                    let description = format!("{} ({})", pasted.short_label(), pasted.size_label());
-                    self.insert_media_attachment("image", &pasted.path, Some(&description));
-                    self.status_message = Some(format!(
-                        "Pasted {} image ({}) -> {}",
-                        pasted.short_label(),
-                        pasted.size_label(),
-                        pasted.path.display()
-                    ));
-                }
+            ClipboardContent::Image(pasted) => {
+                let description = format!("{} ({})", pasted.short_label(), pasted.size_label());
+                self.insert_media_attachment("image", &pasted.path, Some(&description));
+                self.status_message = Some(format!("Attached image: {description}"));
             }
         }
     }
@@ -1913,6 +2056,7 @@ impl App {
     }
 
     pub fn insert_char(&mut self, c: char) {
+        self.selected_attachment_index = None;
         let cursor = self.cursor_position.min(char_count(&self.input));
         let byte_index = byte_index_at_char(&self.input, cursor);
         self.input.insert(byte_index, c);
@@ -1924,6 +2068,7 @@ impl App {
     }
 
     pub fn delete_char(&mut self) {
+        self.selected_attachment_index = None;
         if self.cursor_position == 0 {
             return;
         }
@@ -1939,6 +2084,7 @@ impl App {
     }
 
     pub fn delete_char_forward(&mut self) {
+        self.selected_attachment_index = None;
         if self.input.is_empty() {
             return;
         }
@@ -2042,9 +2188,202 @@ impl App {
     pub fn clear_input(&mut self) {
         self.input.clear();
         self.cursor_position = 0;
+        self.selected_attachment_index = None;
         self.slash_menu_selected = 0;
         self.slash_menu_hidden = false;
         self.paste_burst.clear_after_explicit_paste();
+        self.needs_redraw = true;
+    }
+
+    pub fn clear_input_recoverable(&mut self) {
+        self.stash_current_input_for_recovery();
+        self.clear_input();
+    }
+
+    pub fn stash_current_input_for_recovery(&mut self) {
+        let draft = self.input.clone();
+        self.remember_draft_for_recovery(draft);
+    }
+
+    fn remember_draft_for_recovery(&mut self, draft: String) {
+        if draft.trim().is_empty() {
+            return;
+        }
+        self.draft_history.retain(|existing| existing != &draft);
+        self.draft_history.push_back(draft);
+        while self.draft_history.len() > MAX_DRAFT_HISTORY {
+            let _ = self.draft_history.pop_front();
+        }
+    }
+
+    pub fn start_history_search(&mut self) {
+        if self.composer_history_search.is_some() {
+            return;
+        }
+        self.composer_history_search = Some(ComposerHistorySearch::new(
+            self.input.clone(),
+            self.cursor_position,
+        ));
+        self.slash_menu_hidden = true;
+        self.mention_menu_hidden = true;
+        self.paste_burst.clear_after_explicit_paste();
+        self.status_message = Some("History search: type to filter, Enter accepts".to_string());
+        self.needs_redraw = true;
+    }
+
+    pub fn is_history_search_active(&self) -> bool {
+        self.composer_history_search.is_some()
+    }
+
+    pub fn history_search_query(&self) -> Option<&str> {
+        self.composer_history_search
+            .as_ref()
+            .map(|search| search.query.as_str())
+    }
+
+    pub fn history_search_selected_index(&self) -> usize {
+        self.composer_history_search
+            .as_ref()
+            .map_or(0, |search| search.selected)
+    }
+
+    pub fn composer_display_input(&self) -> &str {
+        self.history_search_query().unwrap_or(&self.input)
+    }
+
+    pub fn composer_display_cursor(&self) -> usize {
+        self.composer_history_search
+            .as_ref()
+            .map_or(self.cursor_position, |search| char_count(&search.query))
+    }
+
+    pub fn history_search_matches(&self) -> Vec<String> {
+        let Some(query) = self.history_search_query() else {
+            return Vec::new();
+        };
+        self.history_search_matches_for_query(query)
+    }
+
+    fn history_search_matches_for_query(&self, query: &str) -> Vec<String> {
+        let normalized_query = query.trim().to_lowercase();
+        let mut seen: HashSet<&str> = HashSet::new();
+        let mut matches = Vec::new();
+
+        for candidate in self
+            .draft_history
+            .iter()
+            .rev()
+            .chain(self.input_history.iter().rev())
+        {
+            if candidate.trim().is_empty() || !seen.insert(candidate.as_str()) {
+                continue;
+            }
+            if normalized_query.is_empty() || candidate.to_lowercase().contains(&normalized_query) {
+                matches.push(candidate.clone());
+            }
+        }
+
+        matches
+    }
+
+    fn clamp_history_search_selection(&mut self) {
+        let Some(search) = self.composer_history_search.as_ref() else {
+            return;
+        };
+        let selected = search.selected;
+        let query = search.query.clone();
+        let match_count = self.history_search_matches_for_query(&query).len();
+        if let Some(search) = self.composer_history_search.as_mut() {
+            search.selected = if match_count == 0 {
+                0
+            } else {
+                selected.min(match_count.saturating_sub(1))
+            };
+        }
+    }
+
+    pub fn history_search_insert_char(&mut self, ch: char) {
+        if let Some(search) = self.composer_history_search.as_mut() {
+            search.query.push(ch);
+            search.selected = 0;
+            self.status_message = Some("History search: Enter accepts, Esc restores".to_string());
+            self.needs_redraw = true;
+        }
+    }
+
+    pub fn history_search_insert_str(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        if let Some(search) = self.composer_history_search.as_mut() {
+            search.query.push_str(&normalize_paste_text(text));
+            search.selected = 0;
+            self.status_message = Some("History search: Enter accepts, Esc restores".to_string());
+            self.needs_redraw = true;
+        }
+    }
+
+    pub fn history_search_backspace(&mut self) {
+        if let Some(search) = self.composer_history_search.as_mut() {
+            search.query.pop();
+            search.selected = 0;
+            self.needs_redraw = true;
+        }
+        self.clamp_history_search_selection();
+    }
+
+    pub fn history_search_select_previous(&mut self) {
+        if let Some(search) = self.composer_history_search.as_mut() {
+            search.selected = search.selected.saturating_sub(1);
+            self.needs_redraw = true;
+        }
+    }
+
+    pub fn history_search_select_next(&mut self) {
+        let Some(search) = self.composer_history_search.as_ref() else {
+            return;
+        };
+        let query = search.query.clone();
+        let selected = search.selected;
+        let match_count = self.history_search_matches_for_query(&query).len();
+        if let Some(search) = self.composer_history_search.as_mut()
+            && match_count > 0
+        {
+            search.selected = (selected + 1).min(match_count.saturating_sub(1));
+            self.needs_redraw = true;
+        }
+    }
+
+    pub fn accept_history_search(&mut self) -> bool {
+        let Some(search) = self.composer_history_search.take() else {
+            return false;
+        };
+        let matches = self.history_search_matches_for_query(&search.query);
+        if let Some(selected) = matches
+            .get(search.selected.min(matches.len().saturating_sub(1)))
+            .cloned()
+        {
+            self.input = selected;
+            self.cursor_position = char_count(&self.input);
+            self.history_index = None;
+            self.status_message = Some("History match inserted into composer".to_string());
+            self.needs_redraw = true;
+            true
+        } else {
+            self.composer_history_search = Some(search);
+            self.status_message = Some("No history matches".to_string());
+            self.needs_redraw = true;
+            false
+        }
+    }
+
+    pub fn cancel_history_search(&mut self) {
+        let Some(search) = self.composer_history_search.take() else {
+            return;
+        };
+        self.input = search.pre_search_input;
+        self.cursor_position = search.pre_search_cursor.min(char_count(&self.input));
+        self.status_message = Some("History search canceled".to_string());
         self.needs_redraw = true;
     }
 
@@ -2108,13 +2447,15 @@ impl App {
         };
         self.input = msg.display.clone();
         self.cursor_position = char_count(&self.input);
+        self.selected_attachment_index = None;
         self.queued_draft = Some(msg);
         self.needs_redraw = true;
         true
     }
 
-    /// Park a composer input the user steered with Esc. Re-armed each call so
-    /// rapid Esc taps accumulate rather than overwriting each other.
+    /// Park a legacy pending steer. New keyboard handling routes running-turn
+    /// drafts through Enter (same-turn steer) or Tab (next-turn follow-up).
+    #[allow(dead_code)]
     pub fn push_pending_steer(&mut self, message: QueuedMessage) {
         self.pending_steers.push_back(message);
         self.submit_pending_steers_after_interrupt = true;
@@ -2132,21 +2473,19 @@ impl App {
         self.pending_steers.drain(..).collect()
     }
 
-    /// Decide how to route a fresh composer submit. Esc-to-steer goes through
-    /// [`Self::push_pending_steer`] instead; this is the Enter path.
+    /// Decide how to route a fresh composer submit.
     ///
-    /// Truth table (preserves the pre-refactor behaviour):
+    /// Truth table:
     ///   offline=F, busy=F → Immediate
     ///   offline=F, busy=T → Steer
     ///   offline=T, busy=F → Queue
-    ///   offline=T, busy=T → Steer (in-flight turn still owns the wire; the
-    ///     steer attempt falls back to queueing on send failure)
+    ///   offline=T, busy=T → Queue
     #[must_use]
     pub fn decide_submit_disposition(&self) -> SubmitDisposition {
-        if self.is_loading {
-            SubmitDisposition::Steer
-        } else if self.offline_mode {
+        if self.offline_mode {
             SubmitDisposition::Queue
+        } else if self.is_loading {
+            SubmitDisposition::Steer
         } else {
             SubmitDisposition::Immediate
         }
@@ -2186,6 +2525,7 @@ impl App {
         self.history_index = Some(new_index);
         self.input = self.input_history[new_index].clone();
         self.cursor_position = char_count(&self.input);
+        self.selected_attachment_index = None;
         self.slash_menu_hidden = false;
         self.paste_burst.clear_after_explicit_paste();
     }
@@ -2201,6 +2541,7 @@ impl App {
                     self.history_index = Some(i + 1);
                     self.input = self.input_history[i + 1].clone();
                     self.cursor_position = char_count(&self.input);
+                    self.selected_attachment_index = None;
                     self.slash_menu_hidden = false;
                     self.paste_burst.clear_after_explicit_paste();
                 } else {
@@ -2375,6 +2716,7 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::tools::plan::{PlanItemArg, StepStatus, UpdatePlanArgs};
+    use crate::tui::clipboard::PastedImage;
 
     fn test_options(yolo: bool) -> TuiOptions {
         TuiOptions {
@@ -2644,6 +2986,199 @@ mod tests {
     }
 
     #[test]
+    fn history_search_filters_matches_and_skips_duplicates() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input_history.push("alpha one".to_string());
+        app.input_history.push("beta two".to_string());
+        app.input_history.push("alpha one".to_string());
+        app.draft_history.push_back("draft alpha".to_string());
+
+        app.start_history_search();
+        app.history_search_insert_str("alpha");
+
+        assert_eq!(
+            app.history_search_matches(),
+            vec!["draft alpha".to_string(), "alpha one".to_string()]
+        );
+    }
+
+    #[test]
+    fn history_search_matches_unicode_case_insensitively() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input_history.push("CAFÉ prompt".to_string());
+
+        app.start_history_search();
+        app.history_search_insert_str("café");
+
+        assert_eq!(
+            app.history_search_matches(),
+            vec!["CAFÉ prompt".to_string()]
+        );
+    }
+
+    #[test]
+    fn history_search_accepts_match_without_submitting() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input_history.push("older prompt".to_string());
+
+        app.start_history_search();
+        app.history_search_insert_str("older");
+
+        assert!(app.accept_history_search());
+        assert_eq!(app.input, "older prompt");
+        assert_eq!(app.cursor_position, "older prompt".chars().count());
+        assert!(app.composer_history_search.is_none());
+    }
+
+    #[test]
+    fn history_search_cancel_restores_pre_search_draft() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "current draft".to_string();
+        app.cursor_position = 7;
+        app.input_history.push("older prompt".to_string());
+
+        app.start_history_search();
+        app.history_search_insert_str("older");
+        app.cancel_history_search();
+
+        assert_eq!(app.input, "current draft");
+        assert_eq!(app.cursor_position, 7);
+        assert!(app.composer_history_search.is_none());
+    }
+
+    #[test]
+    fn recoverable_clear_stashes_nonempty_draft() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "recover this".to_string();
+        app.cursor_position = app.input.chars().count();
+
+        app.clear_input_recoverable();
+        app.start_history_search();
+        app.history_search_insert_str("recover");
+
+        assert_eq!(
+            app.history_search_matches(),
+            vec!["recover this".to_string()]
+        );
+    }
+
+    #[test]
+    fn composer_paste_flushes_pending_burst_and_normalizes_crlf() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.use_paste_burst_detection = true;
+        let now = Instant::now();
+        let key = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('x'),
+            crossterm::event::KeyModifiers::NONE,
+        );
+
+        assert!(crate::tui::paste::handle_paste_burst_key(
+            &mut app, &key, now
+        ));
+        assert!(
+            app.input.is_empty(),
+            "first burst char should stay buffered"
+        );
+
+        app.insert_paste_text("a\r\nb\rc");
+
+        assert_eq!(app.input, "xa\nbc");
+        assert_eq!(app.cursor_position, "xa\nbc".chars().count());
+        assert!(!app.paste_burst.is_active());
+    }
+
+    #[test]
+    fn clipboard_text_paste_matches_bracketed_paste_state() {
+        let text = "alpha\r\nbeta";
+        let mut bracketed = App::new(test_options(false), &Config::default());
+        let mut clipboard = App::new(test_options(false), &Config::default());
+
+        bracketed.insert_paste_text(text);
+        clipboard.apply_clipboard_content(ClipboardContent::Text(text.to_string()));
+
+        assert_eq!(clipboard.input, bracketed.input);
+        assert_eq!(clipboard.cursor_position, bracketed.cursor_position);
+        assert_eq!(clipboard.slash_menu_hidden, bracketed.slash_menu_hidden);
+        assert_eq!(clipboard.mention_menu_hidden, bracketed.mention_menu_hidden);
+    }
+
+    #[test]
+    fn clipboard_image_paste_keeps_adjacent_text_and_concise_status() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "before after".to_string();
+        app.cursor_position = "before".chars().count();
+
+        app.apply_clipboard_content(ClipboardContent::Image(PastedImage {
+            path: PathBuf::from("/tmp/pasted.png"),
+            width: 8,
+            height: 4,
+            byte_len: 2048,
+        }));
+
+        assert!(
+            app.input
+                .contains("before\n[Attached image: 8x4 PNG (2KB) at /tmp/pasted.png]")
+        );
+        assert!(app.input.contains("] after"));
+        let status = app.status_message.as_deref().expect("status message");
+        assert_eq!(status, "Attached image: 8x4 PNG (2KB)");
+    }
+
+    #[test]
+    fn pasted_text_and_image_placeholders_survive_history_and_queue_paths() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.insert_paste_text("line 1\r\nline 2");
+        app.insert_media_attachment("image", Path::new("/tmp/pasted.png"), Some("8x4 PNG (2KB)"));
+
+        let submitted = app.submit_input().expect("submitted input");
+        assert!(submitted.contains("line 1\nline 2"));
+        assert!(submitted.contains("[Attached image: 8x4 PNG (2KB) at /tmp/pasted.png]"));
+
+        app.history_up();
+        assert_eq!(app.input, submitted);
+        assert_eq!(app.composer_attachment_count(), 1);
+
+        app.clear_input();
+        app.queue_message(QueuedMessage::new(
+            submitted.clone(),
+            Some("Use this skill".to_string()),
+        ));
+        assert!(app.pop_last_queued_into_draft());
+        assert_eq!(app.input, submitted);
+        assert_eq!(app.composer_attachment_count(), 1);
+        assert_eq!(
+            app.queued_draft
+                .as_ref()
+                .and_then(|draft| draft.skill_instruction.as_deref()),
+            Some("Use this skill")
+        );
+
+        app.push_pending_steer(QueuedMessage::new(submitted.clone(), None));
+        let steers = app.drain_pending_steers();
+        assert_eq!(steers[0].display, submitted);
+    }
+
+    #[test]
+    fn selected_attachment_row_removes_placeholder_without_manual_editing() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "before".to_string();
+        app.cursor_position = "before".chars().count();
+        app.insert_media_attachment("image", Path::new("/tmp/pasted.png"), Some("8x4 PNG"));
+        app.insert_str("after");
+
+        app.move_cursor_start();
+        assert!(app.select_previous_composer_attachment());
+        assert_eq!(app.selected_composer_attachment_index(), Some(0));
+        assert!(app.remove_selected_composer_attachment());
+
+        assert!(!app.input.contains("[Attached image:"));
+        assert!(app.input.contains("before"));
+        assert!(app.input.contains("after"));
+        assert_eq!(app.composer_attachment_count(), 0);
+        assert!(app.selected_composer_attachment_index().is_none());
+    }
+
+    #[test]
     fn kill_to_end_of_line_cuts_from_middle_of_word() {
         let mut app = App::new(test_options(false), &Config::default());
         app.input = "hello world".to_string();
@@ -2780,7 +3315,7 @@ mod tests {
         assert!(deadline > Instant::now(), "fresh deadline in the future");
     }
 
-    // ---- Issue #122: Esc-to-steer + queue visibility ----
+    // ---- Issue #208: in-flight input routing ----
 
     #[test]
     fn submit_disposition_immediate_when_idle_and_online() {
@@ -2810,13 +3345,11 @@ mod tests {
     }
 
     #[test]
-    fn submit_disposition_offline_busy_still_steers() {
-        // In-flight turn owns the wire even in offline mode; steer attempt
-        // catches the send error and falls back to the queue.
+    fn submit_disposition_offline_busy_queues() {
         let mut app = App::new(test_options(false), &Config::default());
         app.is_loading = true;
         app.offline_mode = true;
-        assert_eq!(app.decide_submit_disposition(), SubmitDisposition::Steer);
+        assert_eq!(app.decide_submit_disposition(), SubmitDisposition::Queue);
     }
 
     #[test]

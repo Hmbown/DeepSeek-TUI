@@ -78,7 +78,7 @@ pub const KEYBINDINGS: &[KeybindingEntry] = &[
     // --- Navigation ---
     KeybindingEntry {
         chord: "↑ / ↓",
-        description: "Scroll transcript or navigate input history",
+        description: "Scroll transcript, navigate input history, or select composer attachments",
         section: KeybindingSection::Navigation,
     },
     KeybindingEntry {
@@ -124,12 +124,17 @@ pub const KEYBINDINGS: &[KeybindingEntry] = &[
     },
     KeybindingEntry {
         chord: "Backspace / Delete",
-        description: "Delete character before / after the cursor",
+        description: "Delete character before / after the cursor, or remove selected attachment",
         section: KeybindingSection::Editing,
     },
     KeybindingEntry {
         chord: "Ctrl+U",
         description: "Clear the current draft",
+        section: KeybindingSection::Editing,
+    },
+    KeybindingEntry {
+        chord: "Alt+R",
+        description: "Search prompt history and recover local drafts",
         section: KeybindingSection::Editing,
     },
     KeybindingEntry {
@@ -206,7 +211,7 @@ pub const KEYBINDINGS: &[KeybindingEntry] = &[
     // --- Modes ---
     KeybindingEntry {
         chord: "Tab / Shift+Tab",
-        description: "Complete /command or cycle modes (Shift+Tab cycles reasoning effort)",
+        description: "Complete /command, queue running-turn follow-up, cycle modes; Shift+Tab cycles reasoning effort",
         section: KeybindingSection::Modes,
     },
     KeybindingEntry {

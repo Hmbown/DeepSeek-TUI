@@ -69,6 +69,62 @@ fn selection_point_from_position_ignores_top_padding() {
 }
 
 #[test]
+fn selection_to_text_handles_multiline_and_reversed_endpoints() {
+    let mut app = create_test_app();
+    app.history = vec![HistoryCell::Assistant {
+        content: "alpha beta\ngamma delta".to_string(),
+        streaming: false,
+    }];
+    app.resync_history_revisions();
+    app.transcript_cache.ensure(
+        &app.history,
+        &app.history_revisions,
+        80,
+        app.transcript_render_options(),
+    );
+
+    app.transcript_selection.anchor = Some(TranscriptSelectionPoint {
+        line_index: 1,
+        column: 5,
+    });
+    app.transcript_selection.head = Some(TranscriptSelectionPoint {
+        line_index: 0,
+        column: 6,
+    });
+
+    assert_eq!(selection_to_text(&app).as_deref(), Some("a beta\n  gam"));
+}
+
+#[test]
+fn selection_has_content_rejects_zero_width_selection() {
+    let mut app = create_test_app();
+    let point = TranscriptSelectionPoint {
+        line_index: 0,
+        column: 3,
+    };
+    app.transcript_selection.anchor = Some(point);
+    app.transcript_selection.head = Some(point);
+
+    assert!(!selection_has_content(&app));
+}
+
+#[test]
+fn copy_shortcut_accepts_cmd_and_ctrl_shift_only() {
+    assert!(is_copy_shortcut(&KeyEvent::new(
+        KeyCode::Char('c'),
+        KeyModifiers::SUPER,
+    )));
+    assert!(is_copy_shortcut(&KeyEvent::new(
+        KeyCode::Char('c'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    )));
+    assert!(!is_copy_shortcut(&KeyEvent::new(
+        KeyCode::Char('c'),
+        KeyModifiers::CONTROL,
+    )));
+}
+
+#[test]
 fn parse_plan_choice_accepts_numbers() {
     assert_eq!(parse_plan_choice("1"), Some(PlanChoice::AcceptAgent));
     assert_eq!(parse_plan_choice("2"), Some(PlanChoice::AcceptYolo));
@@ -184,6 +240,38 @@ fn create_test_app() -> App {
         resume_session_id: None,
     };
     App::new(options, &Config::default())
+}
+
+#[test]
+fn backtrack_prefill_rehydrates_attachment_rows() {
+    let mut app = create_test_app();
+    let user_text = "inspect this\n[Attached image: /tmp/pasted.png]";
+    app.add_message(HistoryCell::User {
+        content: user_text.to_string(),
+    });
+    app.api_messages.push(Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: user_text.to_string(),
+            cache_control: None,
+        }],
+    });
+    app.add_message(HistoryCell::Assistant {
+        content: "done".to_string(),
+        streaming: false,
+    });
+    app.api_messages.push(Message {
+        role: "assistant".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "done".to_string(),
+            cache_control: None,
+        }],
+    });
+
+    apply_backtrack(&mut app, 0);
+
+    assert_eq!(app.input, user_text);
+    assert_eq!(app.composer_attachment_count(), 1);
 }
 
 #[test]
@@ -887,8 +975,7 @@ fn test_esc_priority_order_matches_cancel_stack() {
     app.is_loading = true;
     app.input = "draft".to_string();
     app.mode = AppMode::Yolo;
-    // #122: typing during a running turn now steers instead of cancelling.
-    assert_eq!(next_escape_action(&app, false), EscapeAction::SteerAndAbort);
+    assert_eq!(next_escape_action(&app, false), EscapeAction::CancelRequest);
 
     app.input.clear();
     assert_eq!(next_escape_action(&app, false), EscapeAction::CancelRequest);
@@ -2216,7 +2303,7 @@ fn non_recoverable_engine_error_enters_offline_mode() {
     );
 }
 
-// ---- Issue #122: Esc-to-steer routing + steer merge ----
+// ---- Issue #208: in-flight input routing ----
 
 #[test]
 fn next_escape_action_cancels_when_loading_with_empty_input() {
@@ -2227,11 +2314,11 @@ fn next_escape_action_cancels_when_loading_with_empty_input() {
 }
 
 #[test]
-fn next_escape_action_steers_when_loading_with_input() {
+fn next_escape_action_cancels_when_loading_with_input() {
     let mut app = create_test_app();
     app.is_loading = true;
     app.input = "hold on, look at this instead".to_string();
-    assert_eq!(next_escape_action(&app, false), EscapeAction::SteerAndAbort);
+    assert_eq!(next_escape_action(&app, false), EscapeAction::CancelRequest);
 }
 
 #[test]
@@ -2264,6 +2351,47 @@ fn next_escape_action_slash_menu_takes_priority() {
     app.is_loading = true;
     app.input = "anything".to_string();
     assert_eq!(next_escape_action(&app, true), EscapeAction::CloseSlashMenu);
+}
+
+#[test]
+fn tab_queues_running_turn_draft_for_next_turn() {
+    let mut app = create_test_app();
+    app.is_loading = true;
+    app.input = "follow up next".to_string();
+    app.cursor_position = app.input.chars().count();
+
+    assert!(queue_current_draft_for_next_turn(&mut app));
+
+    assert!(app.input.is_empty());
+    assert_eq!(app.queued_message_count(), 1);
+    assert_eq!(
+        app.queued_messages.front().map(|msg| msg.display.as_str()),
+        Some("follow up next")
+    );
+    assert!(
+        app.status_message
+            .as_deref()
+            .is_some_and(|msg| msg.contains("Queued follow-up"))
+    );
+}
+
+#[test]
+fn tab_queue_preserves_queued_draft_skill_instruction() {
+    let mut app = create_test_app();
+    app.is_loading = true;
+    app.input = "edited queued follow-up".to_string();
+    app.cursor_position = app.input.chars().count();
+    app.queued_draft = Some(QueuedMessage::new(
+        "original".to_string(),
+        Some("skill body".to_string()),
+    ));
+
+    assert!(queue_current_draft_for_next_turn(&mut app));
+
+    let queued = app.queued_messages.front().expect("queued message");
+    assert_eq!(queued.display, "edited queued follow-up");
+    assert_eq!(queued.skill_instruction.as_deref(), Some("skill body"));
+    assert!(app.queued_draft.is_none());
 }
 
 #[test]

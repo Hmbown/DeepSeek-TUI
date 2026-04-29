@@ -3,6 +3,7 @@ use ratatui::{buffer::Buffer, layout::Rect};
 use std::cell::Cell;
 use std::fmt;
 
+use crate::localization::{Locale, MessageId, tr};
 use crate::palette;
 use crate::settings::Settings;
 use crate::tools::UserInputResponse;
@@ -279,10 +280,42 @@ impl ConfigScope {
 
 #[derive(Debug, Clone)]
 struct ConfigRow {
+    section: ConfigSection,
     key: String,
     value: String,
     editable: bool,
     scope: ConfigScope,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfigSection {
+    Model,
+    Permissions,
+    Display,
+    Composer,
+    Sidebar,
+    History,
+    Mcp,
+}
+
+impl ConfigSection {
+    fn label(self) -> &'static str {
+        match self {
+            ConfigSection::Model => "Model",
+            ConfigSection::Permissions => "Permissions",
+            ConfigSection::Display => "Display",
+            ConfigSection::Composer => "Composer",
+            ConfigSection::Sidebar => "Sidebar",
+            ConfigSection::History => "History",
+            ConfigSection::Mcp => "MCP",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfigListItem {
+    Section(ConfigSection),
+    Row(usize),
 }
 
 #[derive(Debug, Clone)]
@@ -300,7 +333,9 @@ pub struct ConfigView {
     selected: usize,
     scroll: usize,
     editing: Option<ConfigEdit>,
+    filter: String,
     status: Option<String>,
+    locale: Locale,
     last_visible_rows: Cell<usize>,
 }
 
@@ -309,90 +344,14 @@ impl ConfigView {
         let settings = Settings::load().unwrap_or_else(|_| Settings::default());
         let rows = vec![
             ConfigRow {
+                section: ConfigSection::Model,
                 key: "model".to_string(),
                 value: app.model.clone(),
                 editable: true,
                 scope: ConfigScope::Session,
             },
             ConfigRow {
-                key: "approval_mode".to_string(),
-                value: app.approval_mode.label().to_string(),
-                editable: true,
-                scope: ConfigScope::Session,
-            },
-            ConfigRow {
-                key: "auto_compact".to_string(),
-                value: settings.auto_compact.to_string(),
-                editable: true,
-                scope: ConfigScope::Saved,
-            },
-            ConfigRow {
-                key: "calm_mode".to_string(),
-                value: settings.calm_mode.to_string(),
-                editable: true,
-                scope: ConfigScope::Saved,
-            },
-            ConfigRow {
-                key: "low_motion".to_string(),
-                value: settings.low_motion.to_string(),
-                editable: true,
-                scope: ConfigScope::Saved,
-            },
-            ConfigRow {
-                key: "show_thinking".to_string(),
-                value: settings.show_thinking.to_string(),
-                editable: true,
-                scope: ConfigScope::Saved,
-            },
-            ConfigRow {
-                key: "show_tool_details".to_string(),
-                value: settings.show_tool_details.to_string(),
-                editable: true,
-                scope: ConfigScope::Saved,
-            },
-            ConfigRow {
-                key: "composer_density".to_string(),
-                value: settings.composer_density.clone(),
-                editable: true,
-                scope: ConfigScope::Saved,
-            },
-            ConfigRow {
-                key: "composer_border".to_string(),
-                value: settings.composer_border.to_string(),
-                editable: true,
-                scope: ConfigScope::Saved,
-            },
-            ConfigRow {
-                key: "transcript_spacing".to_string(),
-                value: settings.transcript_spacing.clone(),
-                editable: true,
-                scope: ConfigScope::Saved,
-            },
-            ConfigRow {
-                key: "default_mode".to_string(),
-                value: settings.default_mode.clone(),
-                editable: true,
-                scope: ConfigScope::Saved,
-            },
-            ConfigRow {
-                key: "sidebar_width".to_string(),
-                value: settings.sidebar_width_percent.to_string(),
-                editable: true,
-                scope: ConfigScope::Saved,
-            },
-            ConfigRow {
-                key: "sidebar_focus".to_string(),
-                value: settings.sidebar_focus.clone(),
-                editable: true,
-                scope: ConfigScope::Saved,
-            },
-            ConfigRow {
-                key: "max_history".to_string(),
-                value: settings.max_input_history.to_string(),
-                editable: true,
-                scope: ConfigScope::Saved,
-            },
-            ConfigRow {
+                section: ConfigSection::Model,
                 key: "default_model".to_string(),
                 value: settings
                     .default_model
@@ -403,6 +362,112 @@ impl ConfigView {
                 scope: ConfigScope::Saved,
             },
             ConfigRow {
+                section: ConfigSection::Permissions,
+                key: "approval_mode".to_string(),
+                value: app.approval_mode.label().to_string(),
+                editable: true,
+                scope: ConfigScope::Session,
+            },
+            ConfigRow {
+                section: ConfigSection::Permissions,
+                key: "default_mode".to_string(),
+                value: settings.default_mode.clone(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                section: ConfigSection::Display,
+                key: "locale".to_string(),
+                value: settings.locale.clone(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                section: ConfigSection::Display,
+                key: "calm_mode".to_string(),
+                value: settings.calm_mode.to_string(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                section: ConfigSection::Display,
+                key: "low_motion".to_string(),
+                value: settings.low_motion.to_string(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                section: ConfigSection::Display,
+                key: "show_thinking".to_string(),
+                value: settings.show_thinking.to_string(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                section: ConfigSection::Display,
+                key: "show_tool_details".to_string(),
+                value: settings.show_tool_details.to_string(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                section: ConfigSection::Display,
+                key: "transcript_spacing".to_string(),
+                value: settings.transcript_spacing.clone(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                section: ConfigSection::Composer,
+                key: "composer_density".to_string(),
+                value: settings.composer_density.clone(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                section: ConfigSection::Composer,
+                key: "composer_border".to_string(),
+                value: settings.composer_border.to_string(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                section: ConfigSection::Composer,
+                key: "paste_burst_detection".to_string(),
+                value: settings.paste_burst_detection.to_string(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                section: ConfigSection::Sidebar,
+                key: "sidebar_width".to_string(),
+                value: settings.sidebar_width_percent.to_string(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                section: ConfigSection::Sidebar,
+                key: "sidebar_focus".to_string(),
+                value: settings.sidebar_focus.clone(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                section: ConfigSection::History,
+                key: "auto_compact".to_string(),
+                value: settings.auto_compact.to_string(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                section: ConfigSection::History,
+                key: "max_history".to_string(),
+                value: settings.max_input_history.to_string(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                section: ConfigSection::Mcp,
                 key: "mcp_config_path".to_string(),
                 value: app.mcp_config_path.display().to_string(),
                 editable: true,
@@ -415,9 +480,15 @@ impl ConfigView {
             selected: 0,
             scroll: 0,
             editing: None,
+            filter: String::new(),
             status: None,
+            locale: app.ui_locale,
             last_visible_rows: Cell::new(0),
         }
+    }
+
+    fn tr(&self, id: MessageId) -> &'static str {
+        tr(self.locale, id)
     }
 
     fn visible_rows_cached(&self) -> usize {
@@ -425,39 +496,131 @@ impl ConfigView {
         if cached == 0 { 8 } else { cached }
     }
 
-    fn adjust_scroll(&mut self, visible_rows: usize) {
-        if self.rows.is_empty() {
+    fn row_matches_filter(&self, row: &ConfigRow) -> bool {
+        let filter = self.filter.trim().to_lowercase();
+        if filter.is_empty() {
+            return true;
+        }
+
+        let section = row.section.label().to_lowercase();
+        let key = row.key.to_lowercase();
+        let value = row.value.to_lowercase();
+        let scope = row.scope.label().to_lowercase();
+
+        filter.split_whitespace().all(|term| {
+            section.contains(term)
+                || key.contains(term)
+                || value.contains(term)
+                || scope.contains(term)
+        })
+    }
+
+    fn matching_row_indices(&self) -> Vec<usize> {
+        self.rows
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, row)| self.row_matches_filter(row).then_some(idx))
+            .collect()
+    }
+
+    fn visible_items(&self) -> Vec<ConfigListItem> {
+        let mut items = Vec::new();
+        let mut current_section = None;
+
+        for (idx, row) in self.rows.iter().enumerate() {
+            if !self.row_matches_filter(row) {
+                continue;
+            }
+
+            if current_section != Some(row.section) {
+                current_section = Some(row.section);
+                items.push(ConfigListItem::Section(row.section));
+            }
+            items.push(ConfigListItem::Row(idx));
+        }
+
+        items
+    }
+
+    fn selected_row_index(&self) -> Option<usize> {
+        let selected = self.selected;
+        self.matching_row_indices()
+            .into_iter()
+            .any(|idx| idx == selected)
+            .then_some(selected)
+    }
+
+    fn selected_display_position(&self, items: &[ConfigListItem]) -> Option<usize> {
+        items
+            .iter()
+            .position(|item| matches!(item, ConfigListItem::Row(idx) if *idx == self.selected))
+    }
+
+    fn sync_selection_to_filter(&mut self) {
+        let matches = self.matching_row_indices();
+        if matches.is_empty() {
             self.selected = 0;
             self.scroll = 0;
             return;
         }
 
-        let max = self.rows.len().saturating_sub(1);
-        self.selected = self.selected.min(max);
+        if !matches.contains(&self.selected) {
+            self.selected = matches[0];
+        }
+    }
 
-        if self.selected < self.scroll {
-            self.scroll = self.selected;
+    fn update_filter(&mut self, update: impl FnOnce(&mut String)) {
+        update(&mut self.filter);
+        self.status = None;
+        self.sync_selection_to_filter();
+        self.adjust_scroll(self.visible_rows_cached());
+    }
+
+    fn adjust_scroll(&mut self, visible_rows: usize) {
+        self.sync_selection_to_filter();
+
+        let items = self.visible_items();
+        if items.is_empty() {
+            self.scroll = 0;
+            return;
         }
 
         let visible_rows = visible_rows.max(1);
-        if self.selected >= self.scroll + visible_rows {
-            self.scroll = self.selected.saturating_sub(visible_rows.saturating_sub(1));
+        let max_scroll = items.len().saturating_sub(visible_rows);
+        self.scroll = self.scroll.min(max_scroll);
+
+        let Some(selected_pos) = self.selected_display_position(&items) else {
+            self.scroll = 0;
+            return;
+        };
+
+        if selected_pos < self.scroll {
+            self.scroll = selected_pos;
+        }
+
+        if selected_pos >= self.scroll + visible_rows {
+            self.scroll = selected_pos.saturating_sub(visible_rows.saturating_sub(1));
         }
     }
 
     fn move_selection(&mut self, delta: isize) {
-        if self.rows.is_empty() {
+        let matches = self.matching_row_indices();
+        if matches.is_empty() {
             return;
         }
 
-        let max = self.rows.len().saturating_sub(1);
+        let current = matches
+            .iter()
+            .position(|idx| *idx == self.selected)
+            .unwrap_or(0);
+        let max = matches.len().saturating_sub(1);
         let next = if delta.is_negative() {
-            self.selected.saturating_sub(delta.unsigned_abs())
+            current.saturating_sub(delta.unsigned_abs())
         } else {
-            (self.selected + delta as usize).min(max)
+            (current + delta as usize).min(max)
         };
 
-        self.selected = next;
+        self.selected = matches[next];
         let visible_rows = self.visible_rows_cached();
         self.adjust_scroll(visible_rows);
     }
@@ -576,7 +739,10 @@ impl ConfigView {
     }
 
     fn start_edit(&mut self) {
-        let Some(row) = self.rows.get(self.selected) else {
+        let Some(row_idx) = self.selected_row_index() else {
+            return;
+        };
+        let Some(row) = self.rows.get(row_idx) else {
             return;
         };
         let key = row.key.clone();
@@ -598,20 +764,35 @@ impl ConfigView {
         });
         self.status = None;
     }
+
+    fn clear_filter(&mut self) {
+        if self.filter.is_empty() {
+            return;
+        }
+
+        self.update_filter(|filter| filter.clear());
+    }
 }
 
 fn config_hint_for_key(key: &str) -> &'static str {
     match key {
         "model" => "deepseek-v4-pro | deepseek-v4-flash | deepseek-*",
         "approval_mode" => "auto | suggest | never",
-        "auto_compact" | "calm_mode" | "low_motion" | "show_thinking" | "show_tool_details"
-        | "composer_border" => "on/off, true/false, yes/no, 1/0",
+        "auto_compact"
+        | "calm_mode"
+        | "low_motion"
+        | "show_thinking"
+        | "show_tool_details"
+        | "composer_border"
+        | "paste_burst_detection" => "on/off, true/false, yes/no, 1/0",
         "composer_density" | "transcript_spacing" => "compact | comfortable | spacious",
+        "locale" => "auto | en | ja | zh-Hans | pt-BR",
         "default_mode" => "agent | plan | yolo",
         "sidebar_width" => "10..=50",
         "sidebar_focus" => "auto | plan | todos | tasks | agents",
         "max_history" => "integer (0 allowed)",
         "default_model" => "deepseek-v4-pro | deepseek-v4-flash | deepseek-* | none/default",
+        "mcp_config_path" => "path to mcp.json",
         _ => "",
     }
 }
@@ -677,12 +858,28 @@ impl ModalView for ConfigView {
         }
 
         match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => ViewAction::Close,
-            KeyCode::Up | KeyCode::Char('k') => {
+            KeyCode::Esc => {
+                if self.filter.is_empty() {
+                    ViewAction::Close
+                } else {
+                    self.clear_filter();
+                    ViewAction::None
+                }
+            }
+            KeyCode::Char('q') if self.filter.is_empty() => ViewAction::Close,
+            KeyCode::Up => {
                 self.move_selection(-1);
                 ViewAction::None
             }
-            KeyCode::Down | KeyCode::Char('j') => {
+            KeyCode::Char('k') if self.filter.is_empty() => {
+                self.move_selection(-1);
+                ViewAction::None
+            }
+            KeyCode::Down => {
+                self.move_selection(1);
+                ViewAction::None
+            }
+            KeyCode::Char('j') if self.filter.is_empty() => {
                 self.move_selection(1);
                 ViewAction::None
             }
@@ -694,10 +891,42 @@ impl ModalView for ConfigView {
                 self.move_selection(5);
                 ViewAction::None
             }
-            KeyCode::Char('e') | KeyCode::Char('E') | KeyCode::Enter => {
-                if self.rows.get(self.selected).is_some_and(|row| row.editable) {
+            KeyCode::Backspace => {
+                if !self.filter.is_empty() {
+                    self.update_filter(|filter| {
+                        filter.pop();
+                    });
+                }
+                ViewAction::None
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.clear_filter();
+                ViewAction::None
+            }
+            KeyCode::Char('e') | KeyCode::Char('E') if self.filter.is_empty() => {
+                if self
+                    .selected_row_index()
+                    .and_then(|idx| self.rows.get(idx))
+                    .is_some_and(|row| row.editable)
+                {
                     self.start_edit();
                 }
+                ViewAction::None
+            }
+            KeyCode::Enter => {
+                if self
+                    .selected_row_index()
+                    .and_then(|idx| self.rows.get(idx))
+                    .is_some_and(|row| row.editable)
+                {
+                    self.start_edit();
+                }
+                ViewAction::None
+            }
+            KeyCode::Char(ch)
+                if !key.modifiers.contains(KeyModifiers::CONTROL) && !ch.is_control() =>
+            {
+                self.update_filter(|filter| filter.push(ch));
                 ViewAction::None
             }
             _ => ViewAction::None,
@@ -763,59 +992,105 @@ impl ModalView for ConfigView {
             )
         } else {
             let content_height = usize::from(inner.height);
-            let header_lines = 4usize;
+            let header_lines = 5usize;
             let bottom_lines = 1usize;
             let visible_rows = content_height
                 .saturating_sub(header_lines + bottom_lines)
                 .max(1);
             self.last_visible_rows.set(visible_rows);
 
-            let start = self.scroll.min(self.rows.len());
-            let end = (start + visible_rows).min(self.rows.len());
-            let scrollable = self.rows.len() > visible_rows;
+            let items = self.visible_items();
+            let match_count = self.matching_row_indices().len();
+            let start = self.scroll.min(items.len());
+            let end = (start + visible_rows).min(items.len());
+            let scrollable = items.len() > visible_rows;
+            let search_value = if self.filter.is_empty() {
+                self.tr(MessageId::ConfigSearchPlaceholder).to_string()
+            } else {
+                self.filter.clone()
+            };
 
             let mut lines: Vec<Line> = vec![
                 Line::from(vec![Span::styled(
-                    "Session Configuration",
+                    self.tr(MessageId::ConfigTitle),
                     Style::default().fg(palette::DEEPSEEK_BLUE).bold(),
                 )]),
+                Line::from(vec![
+                    Span::styled("  Search: ", Style::default().fg(palette::TEXT_MUTED)),
+                    Span::raw(search_value),
+                    Span::styled(
+                        format!("  ({match_count}/{})", self.rows.len()),
+                        Style::default().fg(palette::TEXT_MUTED),
+                    ),
+                ]),
                 Line::from(""),
-                Line::from("  Key               Value                                    Scope"),
-                Line::from("  ─────────────────────────────────────────────────────────────────"),
+                Line::from("  Key                 Value                                    Scope"),
+                Line::from("  ----------------------------------------------------------------"),
             ];
 
-            for (idx, row) in self.rows.iter().enumerate().skip(start).take(visible_rows) {
-                let selected = idx == self.selected;
-                let style = if selected {
-                    Style::default()
-                        .fg(palette::SELECTION_TEXT)
-                        .bg(palette::SELECTION_BG)
-                } else {
-                    Style::default().fg(palette::TEXT_PRIMARY)
-                };
-                let value = truncate_view_text(&row.value, 44);
-                let mut line = Line::from(format!(
-                    "  {:<17} {:<44} {}",
-                    row.key,
-                    value,
-                    row.scope.label()
-                ));
-                line.style = style;
-                lines.push(line);
+            for item in items.iter().skip(start).take(visible_rows) {
+                match item {
+                    ConfigListItem::Section(section) => {
+                        lines.push(Line::from(Span::styled(
+                            format!("  {}", section.label()),
+                            Style::default().fg(palette::DEEPSEEK_SKY).bold(),
+                        )));
+                    }
+                    ConfigListItem::Row(idx) => {
+                        let Some(row) = self.rows.get(*idx) else {
+                            continue;
+                        };
+                        let selected = *idx == self.selected;
+                        let style = if selected {
+                            Style::default()
+                                .fg(palette::SELECTION_TEXT)
+                                .bg(palette::SELECTION_BG)
+                        } else {
+                            Style::default().fg(palette::TEXT_PRIMARY)
+                        };
+                        let value = truncate_view_text(&row.value, 44);
+                        let mut line = Line::from(format!(
+                            "  {:<19} {:<44} {}",
+                            row.key,
+                            value,
+                            row.scope.label()
+                        ));
+                        line.style = style;
+                        lines.push(line);
+                    }
+                }
             }
 
-            if self.rows.is_empty() {
-                lines.push(Line::from("  No settings available."));
+            if items.is_empty() {
+                let message = if self.filter.is_empty() {
+                    self.tr(MessageId::ConfigNoSettings).to_string()
+                } else {
+                    format!(
+                        "{}\"{}\".",
+                        self.tr(MessageId::ConfigNoMatchesPrefix),
+                        self.filter
+                    )
+                };
+                lines.push(Line::from(Span::styled(
+                    message,
+                    Style::default().fg(palette::TEXT_MUTED),
+                )));
             }
 
             let bottom_text = if let Some(status) = self.status.as_ref() {
                 status.clone()
-            } else if scrollable && !self.rows.is_empty() {
+            } else if !self.filter.is_empty() {
                 format!(
-                    "  Showing {}-{} / {}",
+                    "{}: {match_count}",
+                    self.tr(MessageId::ConfigFilteredSettings)
+                )
+            } else if scrollable && !items.is_empty() {
+                format!(
+                    "{} {}-{} / {}",
+                    self.tr(MessageId::ConfigShowing),
                     self.scroll.saturating_add(1),
                     end,
-                    self.rows.len()
+                    items.len()
                 )
             } else {
                 String::new()
@@ -825,17 +1100,19 @@ impl ModalView for ConfigView {
                 Style::default().fg(palette::TEXT_MUTED),
             )));
 
-            let footer = if scrollable {
-                " ↑/↓=select, Enter=edit, PgUp/PgDn=scroll, Esc=close "
+            let footer = if !self.filter.is_empty() {
+                self.tr(MessageId::ConfigFooterFiltered)
+            } else if scrollable {
+                self.tr(MessageId::ConfigFooterScrollable)
             } else {
-                " ↑/↓=select, Enter=edit, Esc=close "
+                self.tr(MessageId::ConfigFooterDefault)
             };
             (lines, footer.to_string())
         };
 
         let block = Block::default()
             .title(Line::from(vec![Span::styled(
-                " Config ",
+                self.tr(MessageId::ConfigModalTitle),
                 Style::default().fg(palette::DEEPSEEK_BLUE).bold(),
             )]))
             .title_bottom(Line::from(Span::styled(
@@ -1223,10 +1500,15 @@ fn truncate_view_text(text: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{ConfigView, ModalView, ViewAction, ViewEvent, truncate_view_text};
+    use super::{
+        ConfigListItem, ConfigSection, ConfigView, ModalView, ViewAction, ViewEvent,
+        truncate_view_text,
+    };
     use crate::config::Config;
+    use crate::localization::Locale;
     use crate::tui::app::{App, TuiOptions};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::{buffer::Buffer, layout::Rect};
     use std::path::PathBuf;
 
     fn create_test_app() -> App {
@@ -1251,6 +1533,33 @@ mod tests {
         App::new(options, &Config::default())
     }
 
+    fn type_filter(view: &mut ConfigView, text: &str) {
+        for ch in text.chars() {
+            let action = view.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+            assert!(matches!(action, ViewAction::None));
+        }
+    }
+
+    fn visible_section_labels(view: &ConfigView) -> Vec<&'static str> {
+        view.visible_items()
+            .into_iter()
+            .filter_map(|item| match item {
+                ConfigListItem::Section(section) => Some(section.label()),
+                ConfigListItem::Row(_) => None,
+            })
+            .collect()
+    }
+
+    fn visible_row_keys(view: &ConfigView) -> Vec<&str> {
+        view.visible_items()
+            .into_iter()
+            .filter_map(|item| match item {
+                ConfigListItem::Row(idx) => Some(view.rows[idx].key.as_str()),
+                ConfigListItem::Section(_) => None,
+            })
+            .collect()
+    }
+
     #[test]
     fn truncate_view_text_handles_unicode() {
         let text = "abc😀é";
@@ -1259,6 +1568,24 @@ mod tests {
         assert_eq!(truncate_view_text(text, 3), "abc");
         assert_eq!(truncate_view_text(text, 4), "abc😀");
         assert_eq!(truncate_view_text(text, 5), "abc😀é");
+    }
+
+    #[test]
+    fn config_view_groups_rows_by_expected_sections() {
+        let app = create_test_app();
+        let view = ConfigView::new_for_app(&app);
+        assert_eq!(
+            visible_section_labels(&view),
+            vec![
+                ConfigSection::Model.label(),
+                ConfigSection::Permissions.label(),
+                ConfigSection::Display.label(),
+                ConfigSection::Composer.label(),
+                ConfigSection::Sidebar.label(),
+                ConfigSection::History.label(),
+                ConfigSection::Mcp.label(),
+            ]
+        );
     }
 
     #[test]
@@ -1272,9 +1599,111 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(keys.contains(&"model"));
         assert!(keys.contains(&"approval_mode"));
+        assert!(keys.contains(&"locale"));
         assert!(keys.contains(&"auto_compact"));
         assert!(keys.contains(&"composer_border"));
+        assert!(keys.contains(&"mcp_config_path"));
         assert!(view.rows.iter().all(|row| row.editable));
+    }
+
+    #[test]
+    fn config_view_filter_matches_group_and_rows() {
+        let app = create_test_app();
+        let mut view = ConfigView::new_for_app(&app);
+
+        type_filter(&mut view, "side");
+
+        assert_eq!(view.filter, "side");
+        assert_eq!(visible_section_labels(&view), vec!["Sidebar"]);
+        assert_eq!(
+            visible_row_keys(&view),
+            vec!["sidebar_width", "sidebar_focus"]
+        );
+        assert_eq!(view.rows[view.selected].key, "sidebar_width");
+    }
+
+    #[test]
+    fn config_view_filter_accepts_j_k_and_unicode_case() {
+        let app = create_test_app();
+        let mut view = ConfigView::new_for_app(&app);
+
+        type_filter(&mut view, "thinking");
+        assert_eq!(visible_row_keys(&view), vec!["show_thinking"]);
+
+        view.clear_filter();
+        view.rows[0].value = "CAFÉ".to_string();
+        type_filter(&mut view, "café");
+        assert_eq!(visible_row_keys(&view), vec!["model"]);
+    }
+
+    #[test]
+    fn localized_config_view_renders_at_narrow_width() {
+        let mut app = create_test_app();
+        app.ui_locale = Locale::PtBr;
+        let view = ConfigView::new_for_app(&app);
+        let area = Rect::new(0, 0, 60, 18);
+        let mut buf = Buffer::empty(area);
+
+        view.render(area, &mut buf);
+
+        let dump = buffer_text(&buf, area);
+        assert!(
+            dump.contains("Configuração") || dump.contains("Configura"),
+            "missing localized config title:\n{dump}"
+        );
+        assert!(
+            !dump.contains("MISSING"),
+            "missing-key marker leaked:\n{dump}"
+        );
+    }
+
+    #[test]
+    fn config_view_filter_no_match_does_not_edit_hidden_row() {
+        let app = create_test_app();
+        let mut view = ConfigView::new_for_app(&app);
+
+        type_filter(&mut view, "zzzz");
+        assert!(visible_row_keys(&view).is_empty());
+
+        let action = view.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(action, ViewAction::None));
+        assert!(view.editing.is_none());
+
+        let clear = view.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(matches!(clear, ViewAction::None));
+        assert!(view.filter.is_empty());
+        assert!(!visible_row_keys(&view).is_empty());
+    }
+
+    #[test]
+    fn config_view_can_edit_filtered_row() {
+        let app = create_test_app();
+        let mut view = ConfigView::new_for_app(&app);
+
+        type_filter(&mut view, "mcp");
+        assert_eq!(visible_row_keys(&view), vec!["mcp_config_path"]);
+
+        let start = view.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(start, ViewAction::None));
+        assert!(view.editing.is_some());
+
+        let clear = view.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        assert!(matches!(clear, ViewAction::None));
+        type_filter(&mut view, "servers.json");
+
+        let submit = view.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        match submit {
+            ViewAction::Emit(ViewEvent::ConfigUpdated {
+                key,
+                value,
+                persist,
+            }) => {
+                assert_eq!(key, "mcp_config_path");
+                assert_eq!(value, "servers.json");
+                assert!(persist);
+            }
+            other => panic!("expected config update emit, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1340,5 +1769,16 @@ mod tests {
         assert!(matches!(cancel, ViewAction::None));
         assert!(view.editing.is_none());
         assert_eq!(view.status.as_deref(), Some("Edit cancelled"));
+    }
+
+    fn buffer_text(buf: &Buffer, area: Rect) -> String {
+        let mut out = String::new();
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                out.push_str(buf[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
     }
 }

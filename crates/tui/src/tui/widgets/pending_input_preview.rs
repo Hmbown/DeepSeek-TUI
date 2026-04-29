@@ -3,21 +3,14 @@
 //! Port of `codex-rs/tui/src/bottom_pane/pending_input_preview.rs` for
 //! issue #85. Renders queued/steered messages above the composer when a
 //! turn is in flight, so user input typed during a running turn doesn't
-//! disappear silently. Three buckets:
-//!
-//! 1. **Pending steers** — messages submitted *during* a tool call boundary
-//!    (next round-trip), with hint that Esc force-sends them now.
-//! 2. **Rejected steers** — engine declined the steer (e.g., tool already
-//!    running); will be replayed at end-of-turn.
-//! 3. **Queued follow-ups** — ordinary messages held until the turn ends.
+//! disappear silently. The backing state still distinguishes queue/steer
+//! origins, but the UI renders one coherent pending-input list.
 //!
 //! Empty state renders zero rows so the composer doesn't gain wasted height
 //! when there's nothing to show.
 //!
-//! Wired into `ui.rs::render` between the chat area and the composer in
-//! v0.6.6 (Phase 2 of #85). The full Esc-to-steer flow is a follow-up
-//! (TODO_BACKEND.md §4); v0.6.6 ships the visibility half (`queued_messages`)
-//! which is the larger UX win — the user can see their input was captured.
+//! Wired into `ui.rs::render` between the chat area and the composer; the user
+//! can see when typed input has been captured for later delivery.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -45,8 +38,7 @@ impl EditBinding {
     pub const ALT_UP: EditBinding = EditBinding { label: "Alt+↑" };
 }
 
-/// Widget showing pending steers + rejected steers + queued follow-up
-/// messages while a turn is in progress.
+/// Widget showing pending input while a turn is in progress.
 #[derive(Debug, Clone)]
 pub struct PendingInputPreview {
     pub context_items: Vec<ContextPreviewItem>,
@@ -65,6 +57,8 @@ pub struct ContextPreviewItem {
     pub label: String,
     pub detail: Option<String>,
     pub included: bool,
+    pub removable: bool,
+    pub selected: bool,
 }
 
 impl PendingInputPreview {
@@ -78,16 +72,17 @@ impl PendingInputPreview {
         }
     }
 
+    fn has_pending_inputs(&self) -> bool {
+        !self.pending_steers.is_empty()
+            || !self.rejected_steers.is_empty()
+            || !self.queued_messages.is_empty()
+    }
+
     /// Build the (possibly empty) ordered line list this widget would render
     /// at `width`. Pulled out so `desired_height` can ask the same renderer
     /// without duplicating wrapping logic.
     fn lines(&self, width: u16) -> Vec<Line<'static>> {
-        if (self.context_items.is_empty()
-            && self.pending_steers.is_empty()
-            && self.rejected_steers.is_empty()
-            && self.queued_messages.is_empty())
-            || width < 4
-        {
+        if (self.context_items.is_empty() && !self.has_pending_inputs()) || width < 4 {
             return Vec::new();
         }
 
@@ -108,57 +103,29 @@ impl PendingInputPreview {
             }
         }
 
-        if !self.pending_steers.is_empty() {
+        if self.has_pending_inputs() {
             if !lines.is_empty() {
                 lines.push(Line::from(""));
             }
             push_section_header(
                 &mut lines,
-                Line::from(vec![
-                    Span::raw("• "),
-                    Span::raw("Messages to be submitted after next tool call"),
-                    Span::styled(" (press Esc to send now)", dim),
-                ]),
+                Line::from(vec![Span::raw("• "), Span::raw("Pending inputs")]),
             );
             for steer in &self.pending_steers {
                 push_truncated_item(&mut lines, steer, width, dim, "  ↳ ", "    ");
             }
-        }
-
-        if !self.rejected_steers.is_empty() {
-            if !lines.is_empty() {
-                lines.push(Line::from(""));
-            }
-            push_section_header(
-                &mut lines,
-                Line::from(vec![
-                    Span::raw("• "),
-                    Span::raw("Messages to be submitted at end of turn"),
-                ]),
-            );
             for steer in &self.rejected_steers {
                 push_truncated_item(&mut lines, steer, width, dim, "  ↳ ", "    ");
             }
-        }
-
-        if !self.queued_messages.is_empty() {
-            if !lines.is_empty() {
-                lines.push(Line::from(""));
-            }
-            push_section_header(
-                &mut lines,
-                Line::from(vec![Span::raw("• "), Span::raw("Queued follow-up inputs")]),
-            );
             for message in &self.queued_messages {
                 push_truncated_item(&mut lines, message, width, dim_italic, "  ↳ ", "    ");
             }
-            // Edit-last-queued hint only when there's actually something to
-            // pop — pending steers don't get an Alt+↑ hint because the engine
-            // owns when they get sent.
-            lines.push(Line::from(vec![Span::styled(
-                format!("    {} edit last queued message", self.edit_binding.label),
-                dim,
-            )]));
+            if !self.queued_messages.is_empty() {
+                lines.push(Line::from(vec![Span::styled(
+                    format!("    {} edit last queued message", self.edit_binding.label),
+                    dim,
+                )]));
+            }
         }
 
         lines
@@ -194,12 +161,21 @@ fn push_section_header(lines: &mut Vec<Line<'static>>, header: Line<'static>) {
 }
 
 fn push_context_item(lines: &mut Vec<Line<'static>>, item: &ContextPreviewItem, width: u16) {
-    let status_style = if item.included {
+    let status_style = if item.selected {
+        Style::default()
+            .fg(palette::SELECTION_TEXT)
+            .bg(palette::SELECTION_BG)
+            .add_modifier(Modifier::BOLD)
+    } else if item.included {
         Style::default().fg(palette::TEXT_MUTED)
     } else {
         Style::default().fg(palette::STATUS_WARNING)
     };
-    let label_style = if item.included {
+    let label_style = if item.selected {
+        Style::default()
+            .fg(palette::SELECTION_TEXT)
+            .bg(palette::SELECTION_BG)
+    } else if item.included {
         Style::default().fg(palette::TEXT_PRIMARY)
     } else {
         Style::default().fg(palette::TEXT_MUTED)
@@ -210,10 +186,21 @@ fn push_context_item(lines: &mut Vec<Line<'static>>, item: &ContextPreviewItem, 
         .filter(|detail| !detail.trim().is_empty())
         .map(|detail| format!(" · {detail}"))
         .unwrap_or_default();
-    let body = format!("[{}] {}{}", item.kind, item.label, detail);
+    let action = if item.selected {
+        " · Backspace/Delete removes"
+    } else if item.removable {
+        " · removable"
+    } else {
+        ""
+    };
+    let body = format!("[{}] {}{}{}", item.kind, item.label, detail, action);
     let body_width = width.saturating_sub(4).max(1) as usize;
     for (idx, segment) in wrap_to_width(&body, body_width).into_iter().enumerate() {
-        let prefix = if idx == 0 { "  ↳ " } else { "    " };
+        let prefix = if idx == 0 {
+            if item.selected { "  ▸ " } else { "  ↳ " }
+        } else {
+            "    "
+        };
         lines.push(Line::from(vec![
             Span::styled(prefix.to_string(), status_style),
             Span::styled(segment, label_style),
@@ -350,7 +337,7 @@ mod tests {
         let rows = render_to_string(&preview, 40);
         // Expect: header line, message line, hint line.
         assert_eq!(rows.len(), 3, "got rows: {rows:?}");
-        assert!(rows[0].contains("Queued follow-up inputs"));
+        assert!(rows[0].contains("Pending inputs"));
         assert!(rows[1].contains("Hello, world!"));
         assert!(rows[2].contains("edit last queued message"));
     }
@@ -363,12 +350,16 @@ mod tests {
             label: "src/main.rs".to_string(),
             detail: Some("included".to_string()),
             included: true,
+            removable: false,
+            selected: false,
         });
         preview.context_items.push(ContextPreviewItem {
             kind: "missing".to_string(),
             label: "nope.txt".to_string(),
             detail: Some("not found".to_string()),
             included: false,
+            removable: false,
+            selected: false,
         });
         let rows = render_to_string(&preview, 64);
         assert!(rows[0].contains("Context for next send"));
@@ -377,20 +368,38 @@ mod tests {
     }
 
     #[test]
-    fn pending_steer_shows_esc_hint_no_alt_up_hint() {
+    fn selected_removable_attachment_renders_delete_hint() {
+        let mut preview = PendingInputPreview::new();
+        preview.context_items.push(ContextPreviewItem {
+            kind: "image".to_string(),
+            label: "/tmp/pasted.png".to_string(),
+            detail: Some("attached media".to_string()),
+            included: true,
+            removable: true,
+            selected: true,
+        });
+
+        let rows = render_to_string(&preview, 96);
+
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("Backspace/Delete removes"))
+        );
+        assert!(rows.iter().any(|row| row.contains("▸")));
+    }
+
+    #[test]
+    fn pending_steer_renders_without_esc_or_alt_up_hint() {
         let mut preview = PendingInputPreview::new();
         preview.pending_steers.push("Please continue.".to_string());
-        // Use a wide-enough column budget that the section header does not
-        // wrap — keeps the assertions targeted at content rather than at
-        // wrap boundaries.
         let rows = render_to_string(&preview, 80);
         assert!(
-            rows.iter().any(|r| r.contains("after next tool call")),
-            "missing pending-steer header: {rows:?}"
+            rows.iter().any(|r| r.contains("Pending inputs")),
+            "missing pending input header: {rows:?}"
         );
         assert!(
-            rows.iter().any(|r| r.contains("Esc")),
-            "missing Esc hint: {rows:?}"
+            !rows.iter().any(|r| r.contains("Esc")),
+            "unexpected Esc hint: {rows:?}"
         );
         assert!(
             !rows.iter().any(|r| r.contains("Alt+↑")),
@@ -399,16 +408,20 @@ mod tests {
     }
 
     #[test]
-    fn three_sections_render_with_blank_line_separators() {
+    fn all_pending_inputs_render_as_one_list() {
         let mut preview = PendingInputPreview::new();
         preview.pending_steers.push("steer".to_string());
         preview.rejected_steers.push("rejected".to_string());
         preview.queued_messages.push("queued".to_string());
         let rows = render_to_string(&preview, 60);
-        // Sections are separated by blank lines + headers + items + final hint.
-        assert!(rows.iter().any(|r| r.contains("after next tool call")));
-        assert!(rows.iter().any(|r| r.contains("end of turn")));
-        assert!(rows.iter().any(|r| r.contains("Queued follow-up")));
+        assert!(rows[0].contains("Pending inputs"));
+        assert_eq!(
+            rows.iter().filter(|r| r.contains("Pending inputs")).count(),
+            1
+        );
+        assert!(rows.iter().any(|r| r.contains("steer")));
+        assert!(rows.iter().any(|r| r.contains("rejected")));
+        assert!(rows.iter().any(|r| r.contains("queued")));
         assert!(rows.iter().any(|r| r.contains("Alt+↑")));
     }
 
@@ -421,7 +434,7 @@ mod tests {
         let rows = render_to_string(&preview, 40);
         // Header + 3 visible lines + ellipsis row + hint = 6 rows.
         assert_eq!(rows.len(), 6, "got rows: {rows:?}");
-        assert!(rows[0].contains("Queued follow-up"));
+        assert!(rows[0].contains("Pending inputs"));
         assert!(rows[1].contains("line1"));
         assert!(rows[2].contains("line2"));
         assert!(rows[3].contains("line3"));

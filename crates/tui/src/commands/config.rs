@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use super::CommandResult;
 use crate::config::{COMMON_DEEPSEEK_MODELS, clear_api_key, normalize_model_name};
+use crate::localization::resolve_locale;
 use crate::settings::Settings;
 use crate::tui::app::{App, AppAction, AppMode, OnboardingState, SidebarFocus};
 use crate::tui::approval::ApprovalMode;
@@ -216,6 +217,10 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
             app.show_tool_details = settings.show_tool_details;
             app.mark_history_updated();
         }
+        "locale" | "language" => {
+            app.ui_locale = resolve_locale(&settings.locale);
+            app.needs_redraw = true;
+        }
         "composer_density" | "composer" => {
             app.composer_density =
                 crate::tui::app::ComposerDensity::from_setting(&settings.composer_density);
@@ -224,6 +229,12 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
         "composer_border" | "border" => {
             app.composer_border = settings.composer_border;
             app.needs_redraw = true;
+        }
+        "paste_burst_detection" | "paste_burst" => {
+            app.use_paste_burst_detection = settings.paste_burst_detection;
+            if !app.use_paste_burst_detection {
+                app.paste_burst.clear_after_explicit_paste();
+            }
         }
         "transcript_spacing" | "spacing" => {
             app.transcript_spacing =

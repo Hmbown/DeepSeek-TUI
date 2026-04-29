@@ -277,6 +277,14 @@ impl<'a> ComposerWidget<'a> {
         }
     }
 
+    fn active_menu_row_count(&self) -> usize {
+        if self.app.is_history_search_active() {
+            self.app.history_search_matches().len().max(1)
+        } else {
+            self.active_menu_entries().len()
+        }
+    }
+
     fn has_panel(&self, area: Rect) -> bool {
         self.app.composer_border && area.height >= 3 && area.width >= 12
     }
@@ -307,24 +315,54 @@ impl Renderable for ComposerWidget<'_> {
         let background = Style::default().bg(self.app.ui_theme.composer_bg);
         let has_panel = self.has_panel(area);
         let inner_area = self.inner_area(area);
+        let input_text = self.app.composer_display_input();
+        let input_cursor = self.app.composer_display_cursor();
+        let history_search_matches = if self.app.is_history_search_active() {
+            self.app.history_search_matches()
+        } else {
+            Vec::new()
+        };
         let menu_entries = self.active_menu_entries();
-        let menu_lines = menu_entries.len();
+        let menu_lines = if self.app.is_history_search_active() {
+            history_search_matches.len().max(1)
+        } else {
+            menu_entries.len()
+        };
         let input_rows_budget = composer_input_rows_budget(inner_area.height, menu_lines);
         let content_width = usize::from(inner_area.width.max(1));
-        let (visible_lines, _cursor_row, _cursor_col) = layout_input(
-            &self.app.input,
-            self.app.cursor_position,
-            content_width,
-            input_rows_budget,
-        );
-        let is_draft_mode = self.app.input.contains('\n') || visible_lines.len() > 1;
+        let (visible_lines, _cursor_row, _cursor_col) =
+            layout_input(input_text, input_cursor, content_width, input_rows_budget);
+        let is_draft_mode = input_text.contains('\n') || visible_lines.len() > 1;
         if has_panel {
-            let border_color = if self.app.input.trim().is_empty() {
+            let border_color = if input_text.trim().is_empty() {
                 palette::BORDER_COLOR
             } else {
                 self.mode_color()
             };
-            let hint_line = if self.slash_menu_entries.is_empty() {
+            let hint_line = if self.app.is_history_search_active() {
+                Some(Line::from(vec![
+                    Span::styled(
+                        format!(
+                            " {}  ",
+                            self.app.tr(crate::localization::MessageId::HistoryHintMove)
+                        ),
+                        Style::default().fg(palette::TEXT_MUTED),
+                    ),
+                    Span::styled(
+                        format!(
+                            "{}  ",
+                            self.app
+                                .tr(crate::localization::MessageId::HistoryHintAccept)
+                        ),
+                        Style::default().fg(palette::TEXT_MUTED),
+                    ),
+                    Span::styled(
+                        self.app
+                            .tr(crate::localization::MessageId::HistoryHintRestore),
+                        Style::default().fg(palette::TEXT_MUTED),
+                    ),
+                ]))
+            } else if self.slash_menu_entries.is_empty() {
                 None
             } else {
                 Some(Line::from(vec![
@@ -336,7 +374,14 @@ impl Renderable for ComposerWidget<'_> {
 
             let mut block = Block::default()
                 .title(Line::from(Span::styled(
-                    if is_draft_mode { "Draft" } else { "Composer" },
+                    if self.app.is_history_search_active() {
+                        self.app
+                            .tr(crate::localization::MessageId::HistorySearchTitle)
+                    } else if is_draft_mode {
+                        "Draft"
+                    } else {
+                        "Composer"
+                    },
                     Style::default().fg(palette::TEXT_MUTED),
                 )))
                 .borders(Borders::ALL)
@@ -351,9 +396,16 @@ impl Renderable for ComposerWidget<'_> {
         }
 
         let mut input_lines = Vec::new();
-        if self.app.input.is_empty() {
+        if input_text.is_empty() {
+            let placeholder = if self.app.is_history_search_active() {
+                self.app
+                    .tr(crate::localization::MessageId::HistorySearchPlaceholder)
+            } else {
+                self.app
+                    .tr(crate::localization::MessageId::ComposerPlaceholder)
+            };
             input_lines.push(Line::from(Span::styled(
-                COMPOSER_PLACEHOLDER,
+                placeholder,
                 Style::default().fg(palette::TEXT_MUTED).italic(),
             )));
         } else {
@@ -369,8 +421,15 @@ impl Renderable for ComposerWidget<'_> {
         // layout_input.  For the empty-input placeholder, Paragraph::wrap will
         // wrap the single Line at render time, so we must estimate the wrapped
         // row count ourselves to keep padding accurate on narrow widths.
-        let visual_rows = if self.app.input.is_empty() {
-            placeholder_visual_lines(content_width)
+        let visual_rows = if input_text.is_empty() {
+            let placeholder = if self.app.is_history_search_active() {
+                self.app
+                    .tr(crate::localization::MessageId::HistorySearchPlaceholder)
+            } else {
+                self.app
+                    .tr(crate::localization::MessageId::ComposerPlaceholder)
+            };
+            placeholder_visual_lines_for(placeholder, content_width)
         } else {
             input_lines.len()
         };
@@ -381,7 +440,63 @@ impl Renderable for ComposerWidget<'_> {
         }
         lines.extend(input_lines);
 
-        if !menu_entries.is_empty() {
+        if self.app.is_history_search_active() {
+            if history_search_matches.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    self.app
+                        .tr(crate::localization::MessageId::HistoryNoMatches),
+                    Style::default().fg(palette::TEXT_MUTED),
+                )));
+            } else {
+                let selected = self
+                    .app
+                    .history_search_selected_index()
+                    .min(history_search_matches.len().saturating_sub(1));
+                let menu_visible_rows = inner_area
+                    .height
+                    .saturating_sub(visual_rows as u16)
+                    .saturating_sub(top_padding as u16)
+                    .saturating_sub(1)
+                    .max(1) as usize;
+                let menu_total = history_search_matches.len();
+                let menu_top = if menu_total <= menu_visible_rows {
+                    0
+                } else {
+                    let half = menu_visible_rows / 2;
+                    if selected <= half {
+                        0
+                    } else if selected + half >= menu_total {
+                        menu_total.saturating_sub(menu_visible_rows)
+                    } else {
+                        selected.saturating_sub(half)
+                    }
+                };
+                let menu_bottom = (menu_top + menu_visible_rows).min(menu_total);
+
+                for (idx, entry) in history_search_matches
+                    .iter()
+                    .enumerate()
+                    .take(menu_bottom)
+                    .skip(menu_top)
+                {
+                    let is_selected = idx == selected;
+                    let style = if is_selected {
+                        Style::default()
+                            .fg(palette::SELECTION_TEXT)
+                            .bg(palette::SELECTION_BG)
+                    } else {
+                        Style::default().fg(palette::TEXT_MUTED)
+                    };
+                    let marker = if is_selected { "▸" } else { " " };
+                    lines.push(Line::from(vec![
+                        Span::styled(" ", Style::default()),
+                        Span::styled(marker, style),
+                        Span::styled(" ", style),
+                        Span::styled(entry.clone(), style),
+                    ]));
+                }
+            }
+        } else if !menu_entries.is_empty() {
             let selected = self
                 .active_menu_selected()
                 .min(menu_entries.len().saturating_sub(1));
@@ -450,10 +565,10 @@ impl Renderable for ComposerWidget<'_> {
 
     fn desired_height(&self, width: u16) -> u16 {
         composer_height(
-            &self.app.input,
+            self.app.composer_display_input(),
             width,
             self.max_height.min(self.max_height_cap()),
-            self.active_menu_entries().len(),
+            self.active_menu_row_count(),
             self.app.composer_density,
             self.app.composer_border,
         )
@@ -461,18 +576,23 @@ impl Renderable for ComposerWidget<'_> {
 
     fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
         let inner_area = self.inner_area(area);
+        let input_text = self.app.composer_display_input();
+        let input_cursor = self.app.composer_display_cursor();
         let content_width = usize::from(inner_area.width.max(1));
         let input_rows_budget =
-            composer_input_rows_budget(inner_area.height, self.active_menu_entries().len());
+            composer_input_rows_budget(inner_area.height, self.active_menu_row_count());
 
-        let (visible_lines, cursor_row, cursor_col) = layout_input(
-            &self.app.input,
-            self.app.cursor_position,
-            content_width,
-            input_rows_budget,
-        );
-        let visual_rows = if self.app.input.is_empty() {
-            placeholder_visual_lines(content_width)
+        let (visible_lines, cursor_row, cursor_col) =
+            layout_input(input_text, input_cursor, content_width, input_rows_budget);
+        let visual_rows = if input_text.is_empty() {
+            let placeholder = if self.app.is_history_search_active() {
+                self.app
+                    .tr(crate::localization::MessageId::HistorySearchPlaceholder)
+            } else {
+                self.app
+                    .tr(crate::localization::MessageId::ComposerPlaceholder)
+            };
+            placeholder_visual_lines_for(placeholder, content_width)
         } else {
             visible_lines.len()
         };
@@ -1241,11 +1361,17 @@ fn composer_top_padding(content_lines: usize, rows_budget: usize) -> usize {
 }
 
 /// Placeholder text shown when the composer input is empty.
+#[cfg(test)]
 const COMPOSER_PLACEHOLDER: &str = "Write a task or use /.";
 
 /// How many visual rows the empty-input placeholder occupies after wrapping.
+#[cfg(test)]
 fn placeholder_visual_lines(content_width: usize) -> usize {
-    wrap_text(COMPOSER_PLACEHOLDER, content_width).len().max(1)
+    placeholder_visual_lines_for(COMPOSER_PLACEHOLDER, content_width)
+}
+
+fn placeholder_visual_lines_for(placeholder: &str, content_width: usize) -> usize {
+    wrap_text(placeholder, content_width).len().max(1)
 }
 
 fn composer_min_input_rows(density: ComposerDensity) -> usize {
@@ -1467,6 +1593,7 @@ mod tests {
         should_render_empty_state, slash_completion_hints, wrap_input_lines, wrap_text,
     };
     use crate::config::Config;
+    use crate::localization::Locale;
     use crate::palette;
     use crate::tui::app::{App, ComposerDensity, TuiOptions};
     use crate::tui::history::{GenericToolCell, HistoryCell, ToolCell, ToolStatus};
@@ -1821,6 +1948,33 @@ mod tests {
         };
 
         assert_eq!(widget.cursor_pos(area), Some((0, 2)));
+    }
+
+    #[test]
+    fn localized_composer_placeholders_render_at_narrow_widths() {
+        for locale in [Locale::Ja, Locale::ZhHans, Locale::PtBr] {
+            let mut app = create_test_app();
+            app.ui_locale = locale;
+            app.composer_density = ComposerDensity::Comfortable;
+            let slash_menu_entries = Vec::<String>::new();
+            let mention_menu_entries = Vec::<String>::new();
+            let widget = ComposerWidget::new(&app, 5, &slash_menu_entries, &mention_menu_entries);
+            let area = Rect {
+                x: 0,
+                y: 0,
+                width: 18,
+                height: 5,
+            };
+            let mut buf = Buffer::empty(area);
+
+            widget.render(area, &mut buf);
+            let Some((cursor_x, cursor_y)) = widget.cursor_pos(area) else {
+                panic!("localized composer should expose cursor position");
+            };
+
+            assert!(cursor_x < area.width, "{locale:?} cursor x overflow");
+            assert!(cursor_y < area.height, "{locale:?} cursor y overflow");
+        }
     }
 
     #[test]
