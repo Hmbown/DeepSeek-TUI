@@ -47,6 +47,7 @@ use crate::session_manager::{
 };
 use crate::task_manager::{NewTaskRequest, SharedTaskManager, TaskManager, TaskManagerConfig};
 use crate::tools::spec::RuntimeToolServices;
+use crate::tools::subagent::SubAgentStatus;
 use crate::tui::command_palette::{
     CommandPaletteView, build_entries as build_command_palette_entries,
 };
@@ -64,8 +65,10 @@ use crate::tui::shell_job_routing::{
     add_shell_job_message, format_shell_job_list, format_shell_poll, open_shell_job_pager,
 };
 use crate::tui::subagent_routing::{
-    format_task_list, handle_subagent_mailbox, open_task_pager, reconcile_subagent_activity_state,
-    running_agent_count, sort_subagents_in_place, task_mode_label, task_summary_to_panel_entry,
+    active_fanout_counts, format_task_list, handle_subagent_mailbox, open_task_pager,
+    reconcile_subagent_activity_state, running_agent_count, seed_fanout_card_from_tool_call,
+    sort_subagents_in_place, sync_fanout_card_from_tool_result, task_mode_label,
+    task_summary_to_panel_entry,
 };
 #[cfg(test)]
 use crate::tui::tool_routing::exploring_label;
@@ -575,6 +578,7 @@ async fn run_event_loop(
                                 app.last_fanout_card_index = None;
                             }
                         }
+                        seed_fanout_card_from_tool_call(app, &name, &input);
                         handle_tool_call_started(app, &id, &name, &input);
                     }
                     EngineEvent::ToolCallComplete { id, name, result } => {
@@ -599,6 +603,7 @@ async fn run_event_loop(
                             }],
                         });
                         handle_tool_call_complete(app, &id, &name, &result);
+                        sync_fanout_card_from_tool_result(app, &name, &result);
 
                         // Immediately refresh the task panel sidebar when a
                         // tool that changes task state completes, so the
@@ -613,6 +618,18 @@ async fn run_event_loop(
                             app.task_panel =
                                 tasks.into_iter().map(task_summary_to_panel_entry).collect();
                             last_task_refresh = Instant::now();
+                        }
+                        if matches!(
+                            name.as_str(),
+                            "agent_spawn"
+                                | "agent_swarm"
+                                | "spawn_agents_on_csv"
+                                | "agent_cancel"
+                                | "agent_wait"
+                                | "agent_result"
+                                | "agent_status"
+                        ) {
+                            let _ = engine_handle.send(Op::ListSubAgents).await;
                         }
                     }
                     EngineEvent::TurnStarted { turn_id } => {
@@ -677,6 +694,13 @@ async fn run_event_loop(
                             }
                             crate::core::events::TurnOutcomeStatus::Failed => "failed".to_string(),
                         });
+                        if matches!(
+                            status,
+                            crate::core::events::TurnOutcomeStatus::Interrupted
+                                | crate::core::events::TurnOutcomeStatus::Failed
+                        ) {
+                            let _ = engine_handle.send(Op::ListSubAgents).await;
+                        }
                         let turn_tokens = usage.input_tokens + usage.output_tokens;
                         app.total_tokens = app.total_tokens.saturating_add(turn_tokens);
                         app.total_conversation_tokens =
@@ -882,12 +906,18 @@ async fn run_event_loop(
                         let _ = engine_handle.send(Op::ListSubAgents).await;
                     }
                     EngineEvent::AgentProgress { id, status } => {
-                        app.agent_progress
-                            .insert(id.clone(), summarize_tool_output(&status));
+                        let display = friendly_subagent_progress(app, &id, &status);
+                        if is_noisy_subagent_progress(&status) {
+                            app.agent_progress
+                                .entry(id.clone())
+                                .or_insert_with(|| display.clone());
+                        } else {
+                            app.agent_progress.insert(id.clone(), display.clone());
+                        }
                         if app.agent_activity_started_at.is_none() {
                             app.agent_activity_started_at = Some(Instant::now());
                         }
-                        app.status_message = Some(format!("Sub-agent {id}: {status}"));
+                        app.status_message = Some(format!("Sub-agent {id}: {display}"));
                     }
                     EngineEvent::AgentComplete { id, result } => {
                         app.agent_progress.remove(&id);
@@ -4517,7 +4547,8 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
         // Surface one compact live status row in the footer whenever a turn
         // is live. Tool turns get the current action plus active/done counts;
         // non-tool work falls back to the existing dot-pulse label.
-        props.state_label = active_tool_status_label(app)
+        props.state_label = active_subagent_status_label(app)
+            .or_else(|| active_tool_status_label(app))
             .unwrap_or_else(|| crate::tui::widgets::footer_working_label(dot_frame));
         props.state_color = palette::DEEPSEEK_SKY;
 
@@ -4551,6 +4582,76 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
 fn footer_working_strip_active(app: &App) -> bool {
     let turn_in_progress = app.runtime_turn_status.as_deref() == Some("in_progress");
     app.is_loading || app.is_compacting || running_agent_count(app) > 0 || turn_in_progress
+}
+
+fn is_noisy_subagent_progress(status: &str) -> bool {
+    let status = status.trim().to_ascii_lowercase();
+    status.contains("requesting model response")
+}
+
+fn subagent_objective_summary(app: &App, id: &str) -> Option<String> {
+    app.subagent_cache
+        .iter()
+        .find(|agent| agent.agent_id == id)
+        .map(|agent| summarize_tool_output(&agent.assignment.objective))
+        .filter(|summary| !summary.is_empty())
+}
+
+fn friendly_subagent_progress(app: &App, id: &str, status: &str) -> String {
+    if !is_noisy_subagent_progress(status) {
+        return summarize_tool_output(status);
+    }
+
+    if let Some(summary) = subagent_objective_summary(app, id) {
+        return format!("working on {summary}");
+    }
+    if let Some(existing) = app.agent_progress.get(id)
+        && !is_noisy_subagent_progress(existing)
+        && existing != "working"
+    {
+        return existing.clone();
+    }
+    "working".to_string()
+}
+
+fn active_subagent_status_label(app: &App) -> Option<String> {
+    let running = running_agent_count(app);
+    let fanout = active_fanout_counts(app);
+    let fanout_running = fanout.map_or(0, |(running, _)| running);
+    if running == 0 && fanout_running == 0 {
+        return None;
+    }
+
+    let display_running = running.max(fanout_running);
+    let total = fanout
+        .map(|(_, total)| total)
+        .unwrap_or(display_running)
+        .max(display_running);
+    let detail = app
+        .subagent_cache
+        .iter()
+        .find(|agent| matches!(agent.status, SubAgentStatus::Running))
+        .map(|agent| summarize_tool_output(&agent.assignment.objective))
+        .filter(|summary| !summary.is_empty())
+        .or_else(|| {
+            app.agent_progress
+                .values()
+                .find(|value| !is_noisy_subagent_progress(value) && value.as_str() != "working")
+                .cloned()
+        })
+        .unwrap_or_else(|| "working".to_string());
+    let detail = truncate_line_to_width(&detail, 34);
+    let elapsed = app
+        .agent_activity_started_at
+        .or(app.turn_started_at)
+        .map(|started| format!("{}s", started.elapsed().as_secs()));
+
+    let mut parts = vec![format!("agents {display_running}/{total}"), detail];
+    if let Some(elapsed) = elapsed {
+        parts.push(elapsed);
+    }
+    parts.push("Alt+4".to_string());
+    Some(parts.join(" \u{00B7} "))
 }
 
 #[derive(Default)]

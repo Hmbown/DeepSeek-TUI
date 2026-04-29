@@ -17,8 +17,8 @@ use crate::tools::spec::{
     optional_bool, optional_str, optional_u64,
 };
 use crate::tools::subagent::{
-    SharedSubAgentManager, SubAgentAssignment, SubAgentResult, SubAgentRuntime, SubAgentStatus,
-    SubAgentType,
+    MailboxMessage, SharedSubAgentManager, SubAgentAssignment, SubAgentResult, SubAgentRuntime,
+    SubAgentStatus, SubAgentType,
 };
 
 const SWARM_POLL_INTERVAL: Duration = Duration::from_millis(250);
@@ -66,6 +66,7 @@ enum SwarmTaskState {
     Done(SubAgentResult),
     Failed(String),
     Skipped(String),
+    Cancelled(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,6 +102,7 @@ enum SwarmStatus {
     Partial,
     Timeout,
     Failed,
+    Cancelled,
 }
 
 impl SwarmStatus {
@@ -115,6 +117,7 @@ impl SwarmStatus {
             Self::Partial => "partial",
             Self::Timeout => "timeout",
             Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
         }
     }
 }
@@ -614,9 +617,37 @@ async fn run_swarm(
     let mut retry_ready_at: HashMap<String, Instant> = HashMap::new();
     let mut fail_fast_triggered = false;
     let mut timed_out = false;
+    let mut cancelled = false;
 
     loop {
         let mut changed = false;
+
+        if runtime.cancel_token.is_cancelled() {
+            cancelled = true;
+            cancel_swarm_tasks(
+                shared_manager,
+                runtime,
+                &mut states,
+                &mut pending,
+                &mut running,
+                &mut running_started_at,
+                &mut retry_ready_at,
+                "Cancelled",
+            )
+            .await?;
+            if publish_progress {
+                let progress = build_progress_outcome(
+                    &swarm_id,
+                    start,
+                    &task_order,
+                    &states,
+                    SwarmStatus::Cancelled,
+                );
+                store_swarm_outcome(&progress, persistence_path.as_deref());
+                emit_swarm_status(runtime.event_tx.as_ref(), &progress);
+            }
+            break;
+        }
 
         if !running.is_empty() {
             let snapshots = {
@@ -757,6 +788,7 @@ async fn run_swarm(
         if fail_fast_triggered {
             apply_fail_fast(
                 shared_manager,
+                runtime,
                 &mut states,
                 &mut pending,
                 &mut running,
@@ -893,6 +925,7 @@ async fn run_swarm(
         if fail_fast_triggered {
             apply_fail_fast(
                 shared_manager,
+                runtime,
                 &mut states,
                 &mut pending,
                 &mut running,
@@ -920,7 +953,7 @@ async fn run_swarm(
         if Instant::now() >= deadline {
             timed_out = true;
             if !running.is_empty() {
-                cancel_running_tasks(shared_manager, &running, &mut states).await?;
+                cancel_running_tasks(shared_manager, runtime, &running, &mut states).await?;
                 running.clear();
                 running_started_at.clear();
             }
@@ -940,13 +973,19 @@ async fn run_swarm(
         }
 
         if !changed {
-            tokio::time::sleep(SWARM_POLL_INTERVAL).await;
+            tokio::select! {
+                biased;
+                () = runtime.cancel_token.cancelled() => {}
+                () = tokio::time::sleep(SWARM_POLL_INTERVAL) => {}
+            }
         }
     }
 
     let outcomes = build_task_outcomes(&task_order, &states);
     let counts = build_counts(&outcomes);
-    let status = if fail_fast_triggered {
+    let status = if cancelled {
+        SwarmStatus::Cancelled
+    } else if fail_fast_triggered {
         SwarmStatus::Failed
     } else if timed_out {
         SwarmStatus::Timeout
@@ -1225,41 +1264,76 @@ fn dependencies_failed(task: &SwarmTaskSpec, states: &HashMap<String, SwarmTaskS
             SubAgentStatus::Interrupted(_) | SubAgentStatus::Failed(_) | SubAgentStatus::Cancelled
         ),
         Some(SwarmTaskState::Failed(_)) | Some(SwarmTaskState::Skipped(_)) => true,
+        Some(SwarmTaskState::Cancelled(_)) => true,
         _ => false,
     })
 }
 
 async fn cancel_running_tasks(
     manager: &SharedSubAgentManager,
+    runtime: &SubAgentRuntime,
     running: &HashMap<String, String>,
     states: &mut HashMap<String, SwarmTaskState>,
 ) -> Result<(), ToolError> {
-    let mut manager = manager.lock().await;
-    for (task_id, agent_id) in running {
-        match manager.cancel(agent_id) {
-            Ok(snapshot) => {
-                states.insert(task_id.clone(), SwarmTaskState::Done(snapshot));
+    let mut cancelled_agents = Vec::new();
+    {
+        let mut manager = manager.lock().await;
+        for (task_id, agent_id) in running {
+            match manager.cancel(agent_id) {
+                Ok(snapshot) => {
+                    if matches!(snapshot.status, SubAgentStatus::Cancelled) {
+                        cancelled_agents.push(snapshot.agent_id.clone());
+                    }
+                    states.insert(task_id.clone(), SwarmTaskState::Done(snapshot));
+                }
+                Err(err) => {
+                    states.insert(
+                        task_id.clone(),
+                        SwarmTaskState::Failed(format!("Failed to cancel agent: {err}")),
+                    );
+                }
             }
-            Err(err) => {
-                states.insert(
-                    task_id.clone(),
-                    SwarmTaskState::Failed(format!("Failed to cancel agent: {err}")),
-                );
-            }
+        }
+    }
+    if let Some(mailbox) = runtime.mailbox.as_ref() {
+        for agent_id in cancelled_agents {
+            let _ = mailbox.send(MailboxMessage::Cancelled { agent_id });
         }
     }
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn cancel_swarm_tasks(
+    manager: &SharedSubAgentManager,
+    runtime: &SubAgentRuntime,
+    states: &mut HashMap<String, SwarmTaskState>,
+    pending: &mut HashSet<String>,
+    running: &mut HashMap<String, String>,
+    running_started_at: &mut HashMap<String, Instant>,
+    retry_ready_at: &mut HashMap<String, Instant>,
+    reason: &str,
+) -> Result<(), ToolError> {
+    cancel_running_tasks(manager, runtime, running, states).await?;
+    for task_id in pending.drain() {
+        states.insert(task_id, SwarmTaskState::Cancelled(reason.to_string()));
+    }
+    running.clear();
+    running_started_at.clear();
+    retry_ready_at.clear();
+    Ok(())
+}
+
 async fn apply_fail_fast(
     manager: &SharedSubAgentManager,
+    runtime: &SubAgentRuntime,
     states: &mut HashMap<String, SwarmTaskState>,
     pending: &mut HashSet<String>,
     running: &mut HashMap<String, String>,
     running_started_at: &mut HashMap<String, Instant>,
     retry_ready_at: &mut HashMap<String, Instant>,
 ) -> Result<(), ToolError> {
-    cancel_running_tasks(manager, running, states).await?;
+    cancel_running_tasks(manager, runtime, running, states).await?;
     for task_id in pending.drain() {
         states.insert(
             task_id,
@@ -1348,6 +1422,15 @@ fn build_task_outcomes(
                 task_id: task_id.clone(),
                 agent_id: None,
                 status: SwarmTaskStatus::Skipped,
+                result: None,
+                error: Some(message.clone()),
+                steps_taken: 0,
+                duration_ms: 0,
+            },
+            Some(SwarmTaskState::Cancelled(message)) => SwarmTaskOutcome {
+                task_id: task_id.clone(),
+                agent_id: None,
+                status: SwarmTaskStatus::Cancelled,
                 result: None,
                 error: Some(message.clone()),
                 steps_taken: 0,
@@ -1507,11 +1590,20 @@ fn visit(
 #[cfg(test)]
 mod tests {
     use super::{
-        SwarmStatus, SwarmTaskSpec, build_initial_outcome, parse_swarm_id, resolve_task_assignment,
-        retry_delay_for_attempt, task_retry_count, task_timeout, validate_swarm_tasks,
+        SwarmStatus, SwarmTaskSpec, SwarmTaskStatus, build_initial_outcome, parse_swarm_id,
+        resolve_task_assignment, retry_delay_for_attempt, run_swarm, task_retry_count,
+        task_timeout, validate_swarm_tasks,
     };
+    use crate::client::DeepSeekClient;
+    use crate::config::Config;
+    use crate::tools::spec::ToolContext;
+    use crate::tools::subagent::{SubAgentManager, SubAgentRuntime};
     use serde_json::json;
+    use std::sync::Arc;
     use std::time::Duration;
+    use tempfile::tempdir;
+    use tokio::sync::Mutex;
+    use tokio_util::sync::CancellationToken;
 
     fn task(id: &str, deps: &[&str]) -> SwarmTaskSpec {
         SwarmTaskSpec {
@@ -1606,6 +1698,57 @@ mod tests {
         assert!(matches!(outcome.status, SwarmStatus::Running));
         assert_eq!(outcome.counts.total, 2);
         assert_eq!(outcome.counts.pending, 2);
+    }
+
+    #[tokio::test]
+    async fn cancelled_runtime_returns_cancelled_swarm_without_spawning() {
+        let temp = tempdir().expect("tempdir");
+        let manager = Arc::new(Mutex::new(SubAgentManager::new(
+            temp.path().to_path_buf(),
+            2,
+        )));
+        let config = Config {
+            api_key: Some("test-key".to_string()),
+            ..Default::default()
+        };
+        let client = DeepSeekClient::new(&config).expect("client");
+        let cancel_token = CancellationToken::new();
+        cancel_token.cancel();
+        let context = ToolContext::new(temp.path()).with_cancel_token(cancel_token.clone());
+        let runtime = SubAgentRuntime::new(
+            client,
+            "deepseek-v4-flash".to_string(),
+            context,
+            true,
+            None,
+            manager.clone(),
+        )
+        .with_cancel_token(cancel_token);
+
+        let outcome = run_swarm(
+            &manager,
+            &runtime,
+            "swarm_test".to_string(),
+            vec![task("a", &[])],
+            None,
+            Duration::from_secs(60),
+            1,
+            false,
+            false,
+            None,
+        )
+        .await
+        .expect("swarm should return clean cancellation");
+
+        assert!(matches!(outcome.status, SwarmStatus::Cancelled));
+        assert_eq!(outcome.counts.cancelled, 1);
+        assert_eq!(outcome.counts.running, 0);
+        assert_eq!(outcome.counts.pending, 0);
+        assert!(matches!(
+            outcome.tasks[0].status,
+            SwarmTaskStatus::Cancelled
+        ));
+        assert!(manager.lock().await.list().is_empty());
     }
 
     #[test]

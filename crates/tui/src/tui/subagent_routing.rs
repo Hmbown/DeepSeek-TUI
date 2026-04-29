@@ -3,12 +3,13 @@
 use std::time::Instant;
 
 use crate::task_manager::{TaskRecord, TaskStatus, TaskSummary};
+use crate::tools::spec::{ToolError, ToolResult};
 use crate::tools::subagent::{MailboxMessage, SubAgentResult, SubAgentStatus};
 use crate::tui::app::{App, AppMode, TaskPanelEntry};
 use crate::tui::history::{HistoryCell, SubAgentCell, summarize_tool_output};
 use crate::tui::pager::PagerView;
 use crate::tui::widgets::agent_card::{
-    AgentLifecycle, DelegateCard, FanoutCard, apply_to_delegate, apply_to_fanout,
+    AgentLifecycle, DelegateCard, FanoutCard, WorkerSlot, apply_to_delegate, apply_to_fanout,
 };
 
 pub(super) fn running_agent_count(app: &App) -> usize {
@@ -22,6 +23,154 @@ pub(super) fn running_agent_count(app: &App) -> usize {
         ids.insert(agent.agent_id.as_str());
     }
     ids.len()
+}
+
+pub(super) fn active_fanout_counts(app: &App) -> Option<(usize, usize)> {
+    let idx = app.last_fanout_card_index?;
+    let Some(HistoryCell::SubAgent(SubAgentCell::Fanout(card))) = app.history.get(idx) else {
+        return None;
+    };
+    let running = card
+        .workers
+        .iter()
+        .filter(|slot| matches!(slot.status, AgentLifecycle::Running))
+        .count();
+    Some((running, card.worker_count()))
+}
+
+pub(super) fn seed_fanout_card_from_tool_call(
+    app: &mut App,
+    name: &str,
+    input: &serde_json::Value,
+) -> bool {
+    if name != "agent_swarm" {
+        return false;
+    }
+
+    let Some(tasks) = input.get("tasks").and_then(serde_json::Value::as_array) else {
+        return false;
+    };
+    if tasks.is_empty() {
+        return false;
+    }
+
+    let ids = tasks
+        .iter()
+        .enumerate()
+        .map(|(idx, task)| {
+            let task_id = task
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .unwrap_or_else(|| idx.to_string());
+            format!("task:{task_id}")
+        })
+        .collect::<Vec<_>>();
+
+    let history_threshold_before_push = app.history.len();
+    let active_in_flight = app.active_cell.is_some();
+    let card = FanoutCard::new(name.to_string()).with_workers(ids);
+    app.add_message(HistoryCell::SubAgent(SubAgentCell::Fanout(card)));
+    shift_active_virtual_indices_after_history_insert(
+        app,
+        active_in_flight,
+        history_threshold_before_push,
+    );
+    app.last_fanout_card_index = Some(app.history.len().saturating_sub(1));
+    app.mark_history_updated();
+    true
+}
+
+pub(super) fn sync_fanout_card_from_tool_result(
+    app: &mut App,
+    name: &str,
+    result: &Result<ToolResult, ToolError>,
+) -> bool {
+    if name != "agent_swarm" {
+        return false;
+    }
+    let Ok(tool_result) = result else {
+        return false;
+    };
+    let Ok(payload) = serde_json::from_str::<serde_json::Value>(&tool_result.content) else {
+        return false;
+    };
+    let Some(tasks) = payload
+        .get("tasks")
+        .and_then(serde_json::Value::as_array)
+        .filter(|tasks| !tasks.is_empty())
+    else {
+        return false;
+    };
+
+    let workers = tasks
+        .iter()
+        .enumerate()
+        .map(|(idx, task)| {
+            let task_id = task
+                .get("task_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .unwrap_or_else(|| idx.to_string());
+            let agent_id = task
+                .get("agent_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .unwrap_or_else(|| format!("task:{task_id}"));
+            let status = task
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                .map(status_to_lifecycle)
+                .unwrap_or(AgentLifecycle::Pending);
+            WorkerSlot { agent_id, status }
+        })
+        .collect::<Vec<_>>();
+
+    let Some(idx) = app.last_fanout_card_index else {
+        return false;
+    };
+    let Some(HistoryCell::SubAgent(SubAgentCell::Fanout(card))) = app.history.get_mut(idx) else {
+        return false;
+    };
+    card.workers = workers;
+    app.mark_history_updated();
+    true
+}
+
+fn status_to_lifecycle(status: &str) -> AgentLifecycle {
+    match status.trim().to_ascii_lowercase().as_str() {
+        "completed" => AgentLifecycle::Completed,
+        "running" => AgentLifecycle::Running,
+        "failed" | "interrupted" => AgentLifecycle::Failed,
+        "cancelled" | "canceled" | "skipped" => AgentLifecycle::Cancelled,
+        _ => AgentLifecycle::Pending,
+    }
+}
+
+fn shift_active_virtual_indices_after_history_insert(
+    app: &mut App,
+    active_in_flight: bool,
+    threshold: usize,
+) {
+    if !active_in_flight {
+        return;
+    }
+    for idx in app.tool_cells.values_mut() {
+        if *idx >= threshold {
+            *idx = idx.wrapping_add(1);
+        }
+    }
+    for (cell_idx, _) in app.exploring_entries.values_mut() {
+        if *cell_idx >= threshold {
+            *cell_idx = cell_idx.wrapping_add(1);
+        }
+    }
 }
 
 pub(super) fn reconcile_subagent_activity_state(app: &mut App) {
@@ -134,7 +283,7 @@ pub(super) fn handle_subagent_mailbox(app: &mut App, _seq: u64, message: &Mailbo
             && let Some(HistoryCell::SubAgent(SubAgentCell::Fanout(card))) =
                 app.history.get_mut(idx)
         {
-            card.upsert_worker(&agent_id, AgentLifecycle::Running);
+            card.claim_pending_worker(&agent_id, AgentLifecycle::Running);
             app.subagent_card_index.insert(agent_id, idx);
         } else {
             let mut card = FanoutCard::new(dispatch_kind.unwrap_or("fanout").to_string());

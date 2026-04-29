@@ -179,9 +179,7 @@ impl FanoutCard {
         }
     }
 
-    /// Pre-seed worker slots when the fanout size is known up front (the
-    /// `agent_swarm` tool dispatches N children atomically).
-    #[cfg(test)]
+    /// Pre-seed worker slots when the fanout size is known up front.
     pub fn with_workers<I, S>(mut self, ids: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -206,6 +204,27 @@ impl FanoutCard {
                 status,
             });
         }
+    }
+
+    /// Attach a real agent id to the first pending placeholder slot. Swarm
+    /// cards are seeded from task ids before child agents exist; when a child
+    /// starts, this keeps the dot count stable instead of appending a second
+    /// circle for the same unit of work.
+    pub fn claim_pending_worker(&mut self, agent_id: &str, status: AgentLifecycle) {
+        if let Some(slot) = self.workers.iter_mut().find(|s| s.agent_id == agent_id) {
+            slot.status = status;
+            return;
+        }
+        if let Some(slot) = self
+            .workers
+            .iter_mut()
+            .find(|s| matches!(s.status, AgentLifecycle::Pending))
+        {
+            slot.agent_id = agent_id.to_string();
+            slot.status = status;
+            return;
+        }
+        self.upsert_worker(agent_id, status);
     }
 
     fn counts(&self) -> (usize, usize, usize, usize) {
@@ -289,7 +308,6 @@ impl FanoutCard {
 
     /// Worker count (slots seeded or observed via mailbox).
     #[must_use]
-    #[cfg(test)]
     pub fn worker_count(&self) -> usize {
         self.workers.len()
     }
@@ -403,11 +421,11 @@ pub fn apply_to_fanout(card: &mut FanoutCard, msg: &MailboxMessage) -> bool {
     let id = msg.agent_id();
     match msg {
         MailboxMessage::Started { .. } => {
-            card.upsert_worker(id, AgentLifecycle::Running);
+            card.claim_pending_worker(id, AgentLifecycle::Running);
             true
         }
         MailboxMessage::Progress { .. } | MailboxMessage::ToolCallStarted { .. } => {
-            card.upsert_worker(id, AgentLifecycle::Running);
+            card.claim_pending_worker(id, AgentLifecycle::Running);
             true
         }
         MailboxMessage::ToolCallCompleted { .. } => true,
@@ -573,6 +591,21 @@ mod tests {
         assert_eq!(card.worker_count(), 1);
         assert_eq!(card.workers[0].agent_id, "agent_late");
         assert_eq!(card.workers[0].status, AgentLifecycle::Pending);
+    }
+
+    #[test]
+    fn fanout_started_claims_seeded_pending_slot_without_growing_grid() {
+        let mut card = FanoutCard::new("agent_swarm").with_workers(["task:a", "task:b"]);
+        let started =
+            MailboxMessage::started("agent_live", crate::tools::subagent::SubAgentType::General);
+
+        assert!(apply_to_fanout(&mut card, &started));
+
+        assert_eq!(card.worker_count(), 2);
+        assert_eq!(card.workers[0].agent_id, "agent_live");
+        assert_eq!(card.workers[0].status, AgentLifecycle::Running);
+        assert_eq!(card.workers[1].agent_id, "task:b");
+        assert_eq!(card.workers[1].status, AgentLifecycle::Pending);
     }
 
     #[test]

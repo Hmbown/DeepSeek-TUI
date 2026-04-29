@@ -247,12 +247,33 @@ pub(super) fn handle_tool_call_started(
     );
 }
 
-/// Extract per-child prompts from a fan-out tool's input. Currently no
-/// top-level tool exposes a prompt list — fan-out lives inside the RLM
-/// REPL via `llm_query_batched`. Kept as a stable hook for any future
-/// fan-out tool we add.
-fn extract_fanout_prompts(_name: &str, _input: &serde_json::Value) -> Option<Vec<String>> {
-    None
+/// Extract per-child prompts from a fan-out tool's input. `agent_swarm`
+/// carries a structured `tasks` list up front, so the transcript can show
+/// one readable row per child instead of a collapsed JSON args blob.
+fn extract_fanout_prompts(name: &str, input: &serde_json::Value) -> Option<Vec<String>> {
+    if name != "agent_swarm" {
+        return None;
+    }
+
+    let prompts = input
+        .get("tasks")
+        .and_then(serde_json::Value::as_array)?
+        .iter()
+        .filter_map(|task| {
+            task.get("objective")
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| task.get("prompt").and_then(serde_json::Value::as_str))
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+        })
+        .collect::<Vec<_>>();
+
+    if prompts.is_empty() {
+        None
+    } else {
+        Some(prompts)
+    }
 }
 
 /// Push a tool cell as a new entry in `active_cell`, register the tool id,

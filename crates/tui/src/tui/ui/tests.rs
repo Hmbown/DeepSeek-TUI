@@ -5,7 +5,7 @@ use crate::tui::file_mention::{
     try_autocomplete_file_mention, user_request_with_file_mentions, visible_mention_menu_entries,
 };
 use crate::tui::history::{
-    ExecCell, ExecSource, GenericToolCell, HistoryCell, ToolCell, ToolStatus,
+    ExecCell, ExecSource, GenericToolCell, HistoryCell, SubAgentCell, ToolCell, ToolStatus,
 };
 use crate::tui::views::{ModalView, ViewAction};
 use crate::working_set::Workspace;
@@ -2178,10 +2178,8 @@ fn second_thinking_block_appends_new_entry_in_same_active_cell() {
 
 // ---- per-child prompt wiring ----
 //
-// `extract_fanout_prompts` is the hook for any future fan-out tool that
-// wants its child prompts rendered as one row per child. Right now no
-// top-level tool populates it (fan-out lives inside the RLM REPL via
-// `llm_query_batched`), so the path always returns `None`.
+// `extract_fanout_prompts` keeps fan-out tools readable by rendering one
+// row per child instead of a collapsed JSON args blob.
 
 #[test]
 fn non_fanout_tool_does_not_populate_prompts() {
@@ -2204,6 +2202,190 @@ fn non_fanout_tool_does_not_populate_prompts() {
         generic.prompts.is_none(),
         "non-fan-out tool must not populate prompts"
     );
+}
+
+#[test]
+fn agent_swarm_populates_prompt_rows_from_tasks() {
+    let mut app = create_test_app();
+
+    handle_tool_call_started(
+        &mut app,
+        "swarm-1",
+        "agent_swarm",
+        &serde_json::json!({
+            "tasks": [
+                {
+                    "id": "state",
+                    "objective": "Read the current repo state",
+                    "prompt": "Inspect git status and recent commits"
+                },
+                {
+                    "id": "docs",
+                    "prompt": "Update docs for the release"
+                }
+            ]
+        }),
+    );
+
+    let active = app.active_cell.as_ref().expect("active cell present");
+    let HistoryCell::Tool(ToolCell::Generic(generic)) = &active.entries()[0] else {
+        panic!("expected GenericToolCell for agent_swarm");
+    };
+
+    assert_eq!(
+        generic.prompts.as_ref(),
+        Some(&vec![
+            "Read the current repo state".to_string(),
+            "Update docs for the release".to_string(),
+        ])
+    );
+}
+
+#[test]
+fn agent_swarm_seeded_fanout_card_uses_declared_task_count() {
+    let mut app = create_test_app();
+
+    assert!(seed_fanout_card_from_tool_call(
+        &mut app,
+        "agent_swarm",
+        &serde_json::json!({
+            "tasks": [
+                { "id": "a", "prompt": "First task" },
+                { "id": "b", "prompt": "Second task" },
+                { "id": "c", "prompt": "Third task" }
+            ]
+        }),
+    ));
+
+    let HistoryCell::SubAgent(SubAgentCell::Fanout(card)) = &app.history[0] else {
+        panic!("expected seeded fanout card");
+    };
+    assert_eq!(card.worker_count(), 3);
+    assert_eq!(active_fanout_counts(&app), Some((0, 3)));
+}
+
+#[test]
+fn seeded_fanout_card_preserves_existing_active_tool_indices() {
+    let mut app = create_test_app();
+    handle_tool_call_started(
+        &mut app,
+        "search-1",
+        "file_search",
+        &serde_json::json!({ "query": "swarm" }),
+    );
+    assert_eq!(app.tool_cells.get("search-1").copied(), Some(0));
+
+    assert!(seed_fanout_card_from_tool_call(
+        &mut app,
+        "agent_swarm",
+        &serde_json::json!({
+            "tasks": [
+                { "id": "a", "prompt": "First task" },
+                { "id": "b", "prompt": "Second task" }
+            ]
+        }),
+    ));
+
+    assert_eq!(
+        app.tool_cells.get("search-1").copied(),
+        Some(1),
+        "active tool virtual index should shift after history insertion"
+    );
+
+    let result = crate::tools::spec::ToolResult::success("done");
+    handle_tool_call_complete(&mut app, "search-1", "file_search", &Ok(result));
+    let active = app.active_cell.as_ref().expect("active cell present");
+    let HistoryCell::Tool(ToolCell::Generic(generic)) = &active.entries()[0] else {
+        panic!("expected GenericToolCell for file_search");
+    };
+    assert_eq!(generic.status, ToolStatus::Success);
+}
+
+#[test]
+fn agent_swarm_result_sync_replaces_seeded_slots_with_final_task_outcomes() {
+    let mut app = create_test_app();
+    assert!(seed_fanout_card_from_tool_call(
+        &mut app,
+        "agent_swarm",
+        &serde_json::json!({
+            "tasks": [
+                { "id": "a", "prompt": "First task" },
+                { "id": "b", "prompt": "Second task" }
+            ]
+        }),
+    ));
+
+    let result = crate::tools::spec::ToolResult::success(
+        serde_json::json!({
+            "swarm_id": "swarm_test",
+            "status": "partial",
+            "duration_ms": 100,
+            "counts": {
+                "total": 2,
+                "completed": 1,
+                "interrupted": 0,
+                "failed": 0,
+                "cancelled": 1,
+                "skipped": 0,
+                "running": 0,
+                "pending": 0
+            },
+            "tasks": [
+                {
+                    "task_id": "a",
+                    "agent_id": "agent_done",
+                    "status": "completed",
+                    "result": "ok",
+                    "steps_taken": 1,
+                    "duration_ms": 50
+                },
+                {
+                    "task_id": "b",
+                    "agent_id": null,
+                    "status": "cancelled",
+                    "error": "Cancelled",
+                    "steps_taken": 0,
+                    "duration_ms": 0
+                }
+            ]
+        })
+        .to_string(),
+    );
+
+    assert!(sync_fanout_card_from_tool_result(
+        &mut app,
+        "agent_swarm",
+        &Ok(result),
+    ));
+
+    let HistoryCell::SubAgent(SubAgentCell::Fanout(card)) = &app.history[0] else {
+        panic!("expected synced fanout card");
+    };
+    assert_eq!(card.worker_count(), 2);
+    assert_eq!(card.workers[0].agent_id, "agent_done");
+    assert_eq!(
+        card.workers[0].status,
+        crate::tui::widgets::agent_card::AgentLifecycle::Completed
+    );
+    assert_eq!(card.workers[1].agent_id, "task:b");
+    assert_eq!(
+        card.workers[1].status,
+        crate::tui::widgets::agent_card::AgentLifecycle::Cancelled
+    );
+}
+
+#[test]
+fn noisy_subagent_progress_keeps_existing_objective_summary() {
+    let mut app = create_test_app();
+    app.agent_progress.insert(
+        "agent_live".to_string(),
+        "starting: inspect release state".to_string(),
+    );
+
+    let display =
+        friendly_subagent_progress(&app, "agent_live", "step 1/8: requesting model response");
+
+    assert_eq!(display, "starting: inspect release state");
 }
 
 /// Regression for issue #65: `truncate_line_to_width` with a tiny budget
