@@ -184,6 +184,7 @@ impl TranscriptViewCache {
                             | HistoryCell::Error { .. }
                             | HistoryCell::Tool(_)
                             | HistoryCell::SubAgent(_)
+                            | HistoryCell::ArchivedContext { .. }
                     ),
                     is_tool_groupable,
                 });

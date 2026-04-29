@@ -1145,6 +1145,14 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
                     "NOVITA_API_KEY",
                     "deepseek auth set --provider novita --api-key \"...\"",
                 ),
+                crate::config::ApiProvider::Fireworks => (
+                    "FIREWORKS_API_KEY",
+                    "deepseek auth set --provider fireworks --api-key \"...\"",
+                ),
+                crate::config::ApiProvider::Sglang => (
+                    "SGLANG_API_KEY",
+                    "deepseek auth set --provider sglang --api-key \"...\"",
+                ),
                 crate::config::ApiProvider::Deepseek => {
                     ("DEEPSEEK_API_KEY", "deepseek login --api-key \"...\"")
                 }
@@ -1156,6 +1164,8 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
                     crate::config::ApiProvider::NvidiaNim => "nvidia_nim",
                     crate::config::ApiProvider::Openrouter => "openrouter",
                     crate::config::ApiProvider::Novita => "novita",
+                    crate::config::ApiProvider::Fireworks => "fireworks",
+                    crate::config::ApiProvider::Sglang => "sglang",
                     crate::config::ApiProvider::Deepseek => "deepseek",
                 }
             );

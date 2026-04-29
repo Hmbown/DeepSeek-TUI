@@ -95,13 +95,19 @@ pub struct SeamMetadata {
     /// Which level (1, 2, or 3).
     pub level: u8,
     /// Message range covered (inclusive-exclusive indices).
+    /// Reserved for future diagnostic use.
+    #[allow(dead_code)]
     pub start_idx: usize,
+    #[allow(dead_code)]
     pub end_idx: usize,
     /// Approximate token count of the summary.
+    #[allow(dead_code)]
     pub token_estimate: usize,
     /// When the seam was produced.
+    #[allow(dead_code)]
     pub timestamp: DateTime<Utc>,
     /// Model that produced it.
+    #[allow(dead_code)]
     pub model: String,
 }
 
@@ -162,7 +168,11 @@ impl SeamManager {
     }
 
     /// Check whether the hard cycle boundary is crossed.
+    ///
+    /// Note: not currently called — cycle detection uses an inline check.
+    /// Kept as the canonical boundary definition for future wiring.
     #[must_use]
+    #[allow(dead_code)]
     pub fn should_cycle(&self, cumulative_tokens: usize) -> bool {
         self.config.enabled && cumulative_tokens >= self.config.cycle_threshold
     }
@@ -542,10 +552,10 @@ impl SeamManager {
         for msg in messages {
             if msg.role == "assistant" {
                 for block in &msg.content {
-                    if let ContentBlock::Text { text, .. } = block {
-                        if text.contains("<archived_context") {
-                            texts.push(text.clone());
-                        }
+                    if let ContentBlock::Text { text, .. } = block
+                        && text.contains("<archived_context")
+                    {
+                        texts.push(text.clone());
                     }
                 }
             }
@@ -602,7 +612,7 @@ mod tests {
     fn cycle_threshold_check() {
         let config = SeamConfig::default();
         assert!(768_000 >= config.cycle_threshold);
-        assert!(!(700_000 >= config.cycle_threshold));
+        assert!(700_000 < config.cycle_threshold);
     }
 
     #[test]

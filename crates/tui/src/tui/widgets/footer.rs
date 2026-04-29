@@ -59,15 +59,16 @@ pub struct FooterProps {
 }
 
 /// One frame of the footer's water-spout animation. `col` is the cell index
-/// inside the strip, `width` the strip's total width, `frame` the discrete
-/// 150 ms tick counter. Returns the glyph that should appear in that cell on
+/// inside the strip, `width` the strip's total width, `frame` the raw
+/// millisecond counter. Returns the glyph that should appear in that cell on
 /// that frame.
 ///
 /// Visual: two crests sweep across a calm water surface (`─`). The opener
-/// `⌒` rises, then a soft `‿` trails behind. Crest A advances every 4 ticks
-/// (~600 ms), crest B every 6 ticks (~900 ms) — independent speeds give the
-/// criss-cross fountain feel. Every 17 ticks (~2.5 s) the phase of crest B
-/// jitters by one column so the pattern never settles into a strict beat.
+/// `⌒` rises, then a soft `‿` trails behind. Crest A advances one column
+/// every ~600 ms (4 × 150 ms), crest B every ~900 ms (6 × 150 ms) —
+/// independent speeds give the criss-cross fountain feel. The positions
+/// are computed from `frame / 150.0` (fractional) so crests slide smoothly
+/// rather than jumping in discrete 150 ms steps.
 ///
 /// All math is pure given (col, width, frame) so unit tests can pin frames.
 #[must_use]
@@ -76,17 +77,22 @@ pub fn footer_working_strip_glyph_at(col: usize, width: usize, frame: u64) -> ch
         return ' ';
     }
 
+    // Number of 150 ms ticks since epoch — fractional so crests move
+    // continuously rather than teleporting every 4-6 ticks.
+    let frame_f = frame as f64 / 150.0;
+
     // Crest is two glyphs wide: the leading `⌒` followed by a trailing `‿`.
     const CREST_SPAN: i64 = 2;
     // Cycle wide enough that each crest enters and exits cleanly.
     let cycle = (width as i64).max(CREST_SPAN) + CREST_SPAN * 2;
-    let frame_i = frame as i64;
-    // Crest A advances one column every 4 ticks; B every 6.
-    let pos_a = frame_i.div_euclid(4).rem_euclid(cycle) - CREST_SPAN;
-    // Phase jitter: every 17 ticks, nudge B by one column so the two crests
-    // never lock into a fixed offset.
-    let jitter = frame_i.div_euclid(17).rem_euclid(3);
-    let pos_b = (frame_i.div_euclid(6) + jitter + (cycle / 3) + 5).rem_euclid(cycle) - CREST_SPAN;
+    // Crest A advances one column every ~300 ms (2 × 150 ms ticks).
+    let pos_a = (frame_f / 2.0).round() as i64 % cycle - CREST_SPAN;
+    // Phase jitter: every ~2.5 s (17 ticks), nudge B by one column so the
+    // two crests never lock into a fixed offset.
+    let jitter = (frame_f / 17.0).round() as i64 % 3;
+    // Crest B advances one column every ~450 ms (3 × 150 ms ticks).
+    let pos_b =
+        ((frame_f / 3.0).round() as i64 + jitter + (cycle / 3) + 5).rem_euclid(cycle) - CREST_SPAN;
 
     crest_glyph_for(col as i64, pos_a)
         .or_else(|| crest_glyph_for(col as i64, pos_b))
@@ -687,16 +693,16 @@ mod tests {
 
     #[test]
     fn working_strip_glyph_is_deterministic_per_frame() {
-        // Same (col, width, frame) → same glyph. Stepping by one full
-        // crest-A tick (4 ticks ≈ 600 ms) is the minimum guaranteed
-        // animation step.
-        let a = super::footer_working_strip_string(40, 1);
-        let b = super::footer_working_strip_string(40, 1);
+        // Same (col, width, frame) → same glyph. Frames are now raw
+        // milliseconds; 150 ms apart represents one tick.
+        let a = super::footer_working_strip_string(40, 150);
+        let b = super::footer_working_strip_string(40, 150);
         assert_eq!(a, b, "deterministic given the same frame");
-        let c = super::footer_working_strip_string(40, 5);
+        // 750 ms → 5 ticks, crest A advances every 2 ticks → ≥2 steps.
+        let c = super::footer_working_strip_string(40, 750);
         assert_ne!(
             a, c,
-            "advancing one full crest-A step must change the strip",
+            "advancing 4 ticks must change the strip",
         );
     }
 
@@ -713,7 +719,7 @@ mod tests {
         FooterWidget::new(props.clone()).render(area, &mut buf);
         let idle: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
 
-        props.working_strip_frame = Some(13);
+        props.working_strip_frame = Some(600);
         let mut buf2 = ratatui::buffer::Buffer::empty(area);
         FooterWidget::new(props).render(area, &mut buf2);
         let active: String = (0..area.width).map(|x| buf2[(x, 0)].symbol()).collect();
@@ -732,12 +738,11 @@ mod tests {
 
     #[test]
     fn working_strip_advances_position_within_full_crest_step() {
-        // Crest A advances one column every 4 ticks; B every 6. Stepping by
-        // 12 ticks guarantees both have moved at least one column,
-        // independent of the jitter cadence (17).
+        // Crest A advances every 2 ticks (300 ms), B every 3 (450 ms).
+        // 900 ms (6 ticks) guarantees crest A has advanced at least 3 columns.
         let width = 60;
         let f0 = super::footer_working_strip_string(width, 0);
-        let f12 = super::footer_working_strip_string(width, 12);
+        let f900 = super::footer_working_strip_string(width, 900);
         // Collect the columns that hold a crest opener `⌒` in each frame.
         let openers = |s: &str| -> Vec<usize> {
             s.chars()
@@ -747,20 +752,20 @@ mod tests {
         };
         assert_ne!(
             openers(&f0),
-            openers(&f12),
-            "crest opener columns must shift across a 12-tick window",
+            openers(&f900),
+            "crest opener columns must shift across a 900ms window",
         );
     }
 
     #[test]
     fn working_strip_renders_paired_crest_glyphs() {
         // The `⌒‿` pair is the visual centrepiece — a soft rise followed by
-        // a gentle dip. Sweep enough ticks that a crest is guaranteed to
-        // land fully inside a 60-cell strip at some point.
+        // a gentle dip. Sweep enough time (in ms) that a crest is guaranteed
+        // to land fully inside a 60-cell strip at some point.
         let width = 60;
         let mut saw_pair = false;
-        for frame in 0..120 {
-            let s = super::footer_working_strip_string(width, frame);
+        for frame_ms in (0..24_000).step_by(150) {
+            let s = super::footer_working_strip_string(width, frame_ms);
             if s.contains("\u{2312}\u{203F}") {
                 saw_pair = true;
                 break;
@@ -768,7 +773,7 @@ mod tests {
         }
         assert!(
             saw_pair,
-            "expected `⌒‿` pair somewhere in the first 120 ticks",
+            "expected `⌒‿` pair somewhere in the first 24s of animation",
         );
     }
 

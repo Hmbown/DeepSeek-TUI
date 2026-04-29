@@ -58,6 +58,15 @@ pub enum MailboxMessage {
     Failed { agent_id: String, error: String },
     /// Cancellation propagated to this agent.
     Cancelled { agent_id: String },
+    /// Incremental token usage from a sub-agent's API call.
+    /// Published after each turn so the parent's cost counter updates live.
+    TokenUsage {
+        agent_id: String,
+        /// Prompt tokens consumed (input, including cached).
+        prompt_tokens: u32,
+        /// Completion tokens consumed (output).
+        completion_tokens: u32,
+    },
 }
 
 impl MailboxMessage {
@@ -72,7 +81,8 @@ impl MailboxMessage {
             | Self::ToolCallCompleted { agent_id, .. }
             | Self::Completed { agent_id, .. }
             | Self::Failed { agent_id, .. }
-            | Self::Cancelled { agent_id } => agent_id,
+            | Self::Cancelled { agent_id }
+            | Self::TokenUsage { agent_id, .. } => agent_id,
             Self::ChildSpawned { child_id, .. } => child_id,
         }
     }
@@ -88,6 +98,18 @@ impl MailboxMessage {
         Self::Progress {
             agent_id: agent_id.into(),
             status: status.into(),
+        }
+    }
+
+    pub(crate) fn token_usage(
+        agent_id: impl Into<String>,
+        prompt_tokens: u32,
+        completion_tokens: u32,
+    ) -> Self {
+        Self::TokenUsage {
+            agent_id: agent_id.into(),
+            prompt_tokens,
+            completion_tokens,
         }
     }
 }
@@ -433,6 +455,14 @@ mod tests {
                     agent_id: "a8".into(),
                 },
                 "a8",
+            ),
+            (
+                MailboxMessage::TokenUsage {
+                    agent_id: "a9".into(),
+                    prompt_tokens: 100,
+                    completion_tokens: 50,
+                },
+                "a9",
             ),
         ];
         for (msg, expected) in cases {

@@ -90,6 +90,8 @@ impl ProviderPickerView {
             ApiProvider::NvidiaNim => "NVIDIA_API_KEY",
             ApiProvider::Openrouter => "OPENROUTER_API_KEY",
             ApiProvider::Novita => "NOVITA_API_KEY",
+            ApiProvider::Fireworks => "FIREWORKS_API_KEY",
+            ApiProvider::Sglang => "SGLANG_API_KEY",
         }
     }
 
@@ -339,7 +341,7 @@ mod tests {
     }
 
     #[test]
-    fn picker_lists_all_four_providers() {
+    fn picker_lists_all_six_providers() {
         let config = Config::default();
         let picker = ProviderPickerView::new(ApiProvider::Deepseek, &config);
         let names: Vec<_> = picker
@@ -349,7 +351,7 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            vec!["DeepSeek", "NVIDIA NIM", "OpenRouter", "Novita AI"]
+            vec!["DeepSeek", "NVIDIA NIM", "OpenRouter", "Novita AI", "Fireworks AI", "SGLang"]
         );
     }
 

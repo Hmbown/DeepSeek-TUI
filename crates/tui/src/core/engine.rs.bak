@@ -1317,6 +1317,9 @@ impl Engine {
             pending_lsp_blocks: Vec::new(),
         };
         engine.rehydrate_latest_canonical_state();
+            pending_lsp_blocks: Vec::new(),
+        };
+        engine.rehydrate_latest_canonical_state();
 
         let handle = EngineHandle {
             tx_op,
@@ -2503,9 +2506,6 @@ impl Engine {
             return;
         }
 
-        // Capture seam count before the mutable borrow below.
-        let seam_count = seam_mgr.seam_count().await;
-
         // Append the seam as an assistant message. This is an append-only
         // operation — no messages are deleted. The prefix cache stays hot.
         self.add_session_message(Message {
@@ -2517,6 +2517,7 @@ impl Engine {
         })
         .await;
 
+        let seam_count = seam_mgr.seam_count().await;
         let _ = self
             .tx_event
             .send(Event::status(format!(
@@ -2524,6 +2525,8 @@ impl Engine {
             )))
             .await;
     }
+
+    /// Run the checkpoint-restart cycle boundary if the session has crossed
     /// its token threshold (issue #124). No-op in the common case.
     ///
     /// Caller must invoke this only at a clean turn boundary (no in-flight

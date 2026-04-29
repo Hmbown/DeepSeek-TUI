@@ -212,6 +212,12 @@ impl Engine {
             // model sees compile errors before its next reasoning step.
             self.flush_pending_lsp_diagnostics().await;
 
+            // #159: layered context seam checkpoint. Produces soft seams at
+            // 192K/384K/576K via Flash and appends <archived_context> blocks
+            // so the model can navigate deep history without losing prefix
+            // cache affinity.
+            self.layered_context_checkpoint().await;
+
             // Build the request
             let force_update_plan_this_step = force_update_plan_first && turn.tool_calls.is_empty();
             let active_tools = if tool_catalog.is_empty() {

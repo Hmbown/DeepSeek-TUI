@@ -3408,8 +3408,6 @@ fn render(f: &mut Frame, app: &mut App) {
             crate::config::ApiProvider::NvidiaNim => Some("NIM"),
             crate::config::ApiProvider::Openrouter => Some("OR"),
             crate::config::ApiProvider::Novita => Some("Novita"),
-            crate::config::ApiProvider::Fireworks => Some("Fireworks"),
-            crate::config::ApiProvider::Sglang => Some("SGLang"),
         };
         let header_data = HeaderData::new(
             app.mode,
@@ -3967,8 +3965,6 @@ async fn apply_provider_picker_api_key(
             ApiProvider::NvidiaNim => &mut providers.nvidia_nim,
             ApiProvider::Openrouter => &mut providers.openrouter,
             ApiProvider::Novita => &mut providers.novita,
-            ApiProvider::Fireworks => &mut providers.fireworks,
-            ApiProvider::Sglang => &mut providers.sglang,
         };
         entry.api_key = Some(api_key);
     }
@@ -4281,7 +4277,7 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
         // `working...` pulse stays even in low-motion mode so the user still
         // sees that something is happening.
         if !app.low_motion {
-            let strip_frame = now_ms;
+            let strip_frame = now_ms / 150;
             props.working_strip_frame = Some(strip_frame);
         }
     } else if props.state_label == "ready"
@@ -4486,9 +4482,9 @@ fn render_footer_from(
     } else {
         Vec::new()
     };
-    let cost = if has(S::Cost) && app.session_cost + app.subagent_cost > 0.001 {
+    let cost = if has(S::Cost) && app.session_cost > 0.001 {
         vec![Span::styled(
-            format!("${:.2}", app.session_cost + app.subagent_cost),
+            format!("${:.2}", app.session_cost),
             Style::default().fg(palette::TEXT_MUTED),
         )]
     } else {
@@ -4580,9 +4576,9 @@ fn footer_auxiliary_spans(app: &App, max_width: usize) -> Vec<Span<'static>> {
     let agents_spans = crate::tui::widgets::footer_agents_chip(running_agent_count(app));
     let replay_spans = footer_reasoning_replay_spans(app);
     let cache_spans = footer_cache_spans(app);
-    let cost_spans = if app.session_cost + app.subagent_cost > 0.001 {
+    let cost_spans = if app.session_cost > 0.001 {
         vec![Span::styled(
-            format!("${:.2}", app.session_cost + app.subagent_cost),
+            format!("${:.2}", app.session_cost),
             Style::default().fg(palette::TEXT_MUTED),
         )]
     } else {
@@ -4637,11 +4633,7 @@ fn footer_cache_spans(app: &App) -> Vec<Span<'static>> {
     let Some(hit_tokens) = app.last_prompt_cache_hit_tokens else {
         return Vec::new();
     };
-    let miss_tokens = app.last_prompt_cache_miss_tokens.unwrap_or_else(|| {
-        app.last_prompt_tokens
-            .unwrap_or(0)
-            .saturating_sub(hit_tokens)
-    });
+    let miss_tokens = app.last_prompt_cache_miss_tokens.unwrap_or(0);
     let total = hit_tokens.saturating_add(miss_tokens);
     if total == 0 {
         return Vec::new();
@@ -5337,7 +5329,6 @@ fn open_tool_details_pager(app: &mut App) -> bool {
         HistoryCell::Thinking { .. } => "Reasoning".to_string(),
         HistoryCell::Tool(_) => "Message".to_string(),
         HistoryCell::SubAgent(_) => "Sub-agent".to_string(),
-        HistoryCell::ArchivedContext { .. } => "Archived Context".to_string(),
     };
     let width = app
         .last_transcript_area
@@ -5500,21 +5491,6 @@ fn handle_subagent_mailbox(app: &mut App, _seq: u64, message: &MailboxMessage) {
     use crate::tui::widgets::agent_card::{
         DelegateCard, FanoutCard, apply_to_delegate, apply_to_fanout,
     };
-
-    // Accumulate sub-agent token costs for the real-time footer counter (#166).
-    if let MailboxMessage::TokenUsage {
-        prompt_tokens,
-        completion_tokens,
-        ..
-    } = message
-    {
-        if let Some(cost) =
-            crate::pricing::calculate_turn_cost(&app.model, *prompt_tokens, *completion_tokens)
-        {
-            app.subagent_cost += cost;
-        }
-        return; // No card visual change needed; the footer handles display.
-    }
 
     // Resolve (or allocate) the target cell for this envelope. ChildSpawned
     // is special — it always belongs to the active fanout card if one

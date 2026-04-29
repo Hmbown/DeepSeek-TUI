@@ -61,6 +61,11 @@ const CYCLE_ARCHIVE_SCHEMA_VERSION: u32 = 1;
 /// Bumped from 110K (pre-#159) to 768K (~75% of 1M window) in v0.7.2.
 /// The layered context manager (#159) handles intermediate thresholds via
 /// soft seams at 192K/384K/576K, so the hard cycle only fires near the wall.
+/// Default token threshold at which a cycle boundary fires.
+///
+/// Bumped from 110K (pre-#159) to 768K (~75% of 1M window) in v0.7.2.
+/// The layered context manager (#159) handles intermediate thresholds via
+/// soft seams at 192K/384K/576K, so the hard cycle only fires near the wall.
 pub const DEFAULT_CYCLE_THRESHOLD_TOKENS: usize = 768_000;
 
 /// Default cap on the model-curated briefing block.

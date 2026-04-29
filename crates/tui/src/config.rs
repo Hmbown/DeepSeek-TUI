@@ -25,6 +25,11 @@ pub const DEFAULT_OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 pub const DEFAULT_NOVITA_MODEL: &str = "deepseek/deepseek-v4-pro";
 pub const DEFAULT_NOVITA_FLASH_MODEL: &str = "deepseek/deepseek-v4-flash";
 pub const DEFAULT_NOVITA_BASE_URL: &str = "https://api.novita.ai/v1";
+pub const DEFAULT_FIREWORKS_MODEL: &str = "accounts/fireworks/models/deepseek-v4-pro";
+pub const DEFAULT_FIREWORKS_BASE_URL: &str = "https://api.fireworks.ai/inference/v1";
+pub const DEFAULT_SGLANG_MODEL: &str = "deepseek-ai/DeepSeek-V4-Pro";
+pub const DEFAULT_SGLANG_FLASH_MODEL: &str = "deepseek-ai/DeepSeek-V4-Flash";
+pub const DEFAULT_SGLANG_BASE_URL: &str = "http://localhost:30000/v1";
 const API_KEYRING_SENTINEL: &str = "__KEYRING__";
 pub const COMMON_DEEPSEEK_MODELS: &[&str] = &[
     "deepseek-v4-pro",
@@ -41,6 +46,8 @@ pub enum ApiProvider {
     NvidiaNim,
     Openrouter,
     Novita,
+    Fireworks,
+    Sglang,
 }
 
 impl ApiProvider {
@@ -51,6 +58,8 @@ impl ApiProvider {
             "nvidia" | "nvidia-nim" | "nvidia_nim" | "nim" => Some(Self::NvidiaNim),
             "openrouter" | "open_router" => Some(Self::Openrouter),
             "novita" => Some(Self::Novita),
+            "fireworks" | "fireworks-ai" => Some(Self::Fireworks),
+            "sglang" | "sg-lang" => Some(Self::Sglang),
             _ => None,
         }
     }
@@ -62,6 +71,8 @@ impl ApiProvider {
             Self::NvidiaNim => "nvidia-nim",
             Self::Openrouter => "openrouter",
             Self::Novita => "novita",
+            Self::Fireworks => "fireworks",
+            Self::Sglang => "sglang",
         }
     }
 
@@ -73,6 +84,8 @@ impl ApiProvider {
             Self::NvidiaNim => "NVIDIA NIM",
             Self::Openrouter => "OpenRouter",
             Self::Novita => "Novita AI",
+            Self::Fireworks => "Fireworks AI",
+            Self::Sglang => "SGLang",
         }
     }
 
@@ -84,6 +97,8 @@ impl ApiProvider {
             Self::NvidiaNim,
             Self::Openrouter,
             Self::Novita,
+            Self::Fireworks,
+            Self::Sglang,
         ]
     }
 }
@@ -688,6 +703,10 @@ pub struct ProvidersConfig {
     pub openrouter: ProviderConfig,
     #[serde(default)]
     pub novita: ProviderConfig,
+    #[serde(default)]
+    pub fireworks: ProviderConfig,
+    #[serde(default)]
+    pub sglang: ProviderConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -747,7 +766,7 @@ impl Config {
             && ApiProvider::parse(provider).is_none()
         {
             anyhow::bail!(
-                "Invalid provider '{provider}': expected deepseek, nvidia-nim, openrouter, or novita."
+                "Invalid provider '{provider}': expected deepseek, nvidia-nim, openrouter, novita, fireworks, or sglang."
             );
         }
         if let Some(ref key) = self.api_key
@@ -855,6 +874,8 @@ impl Config {
             ApiProvider::NvidiaNim => &providers.nvidia_nim,
             ApiProvider::Openrouter => &providers.openrouter,
             ApiProvider::Novita => &providers.novita,
+            ApiProvider::Fireworks => &providers.fireworks,
+            ApiProvider::Sglang => &providers.sglang,
         })
     }
 
@@ -883,6 +904,8 @@ impl Config {
             ApiProvider::NvidiaNim => DEFAULT_NVIDIA_NIM_MODEL,
             ApiProvider::Openrouter => DEFAULT_OPENROUTER_MODEL,
             ApiProvider::Novita => DEFAULT_NOVITA_MODEL,
+            ApiProvider::Fireworks => DEFAULT_FIREWORKS_MODEL,
+            ApiProvider::Sglang => DEFAULT_SGLANG_MODEL,
         }
         .to_string()
     }
@@ -905,7 +928,8 @@ impl Config {
                 .as_ref()
                 .filter(|base| base.contains("integrate.api.nvidia.com"))
                 .cloned(),
-            ApiProvider::Openrouter | ApiProvider::Novita => None,
+            ApiProvider::Openrouter | ApiProvider::Novita
+                | ApiProvider::Fireworks | ApiProvider::Sglang => None,
         };
         let base = provider_base.or(root_base).unwrap_or_else(|| {
             match provider {
@@ -913,6 +937,8 @@ impl Config {
                 ApiProvider::NvidiaNim => DEFAULT_NVIDIA_NIM_BASE_URL,
                 ApiProvider::Openrouter => DEFAULT_OPENROUTER_BASE_URL,
                 ApiProvider::Novita => DEFAULT_NOVITA_BASE_URL,
+                ApiProvider::Fireworks => DEFAULT_FIREWORKS_BASE_URL,
+                ApiProvider::Sglang => DEFAULT_SGLANG_BASE_URL,
             }
             .to_string()
         });
@@ -932,6 +958,8 @@ impl Config {
             ApiProvider::NvidiaNim => "nvidia-nim",
             ApiProvider::Openrouter => "openrouter",
             ApiProvider::Novita => "novita",
+            ApiProvider::Fireworks => "fireworks",
+            ApiProvider::Sglang => "sglang",
         };
 
         // 1. OS keyring + 2. environment variables (handled by Secrets).
@@ -985,6 +1013,15 @@ impl Config {
             ApiProvider::Novita => anyhow::bail!(
                 "Novita API key not found. Run 'deepseek auth set --provider novita', \
                  set NOVITA_API_KEY, or add [providers.novita] api_key in ~/.deepseek/config.toml."
+            ),
+            ApiProvider::Fireworks => anyhow::bail!(
+                "Fireworks AI API key not found. Run 'deepseek auth set --provider fireworks', \
+                 set FIREWORKS_API_KEY, or add [providers.fireworks] api_key in ~/.deepseek/config.toml."
+            ),
+            ApiProvider::Sglang => anyhow::bail!(
+                "SGLang API key not found (optional for self-hosted). Run 'deepseek auth set --provider sglang', \
+                 set SGLANG_API_KEY, or add [providers.sglang] api_key in ~/.deepseek/config.toml. \
+                 If your SGLang deployment runs without authentication, set SGLANG_API_KEY to an empty string or any placeholder."
             ),
         }
     }
@@ -1300,6 +1337,31 @@ fn apply_env_overrides(config: &mut Config) {
             .novita
             .base_url = Some(value);
     }
+    if matches!(config.api_provider(), ApiProvider::Fireworks)
+        && let Ok(value) = std::env::var("FIREWORKS_BASE_URL")
+        && !value.trim().is_empty()
+    {
+        config
+            .providers
+            .get_or_insert_with(ProvidersConfig::default)
+            .fireworks
+            .base_url = Some(value);
+    }
+    if matches!(config.api_provider(), ApiProvider::Sglang)
+        && let Ok(value) = std::env::var("SGLANG_BASE_URL")
+        && !value.trim().is_empty()
+    {
+        config
+            .providers
+            .get_or_insert_with(ProvidersConfig::default)
+            .sglang
+            .base_url = Some(value);
+    }
+    if matches!(config.api_provider(), ApiProvider::Sglang)
+        && let Ok(value) = std::env::var("SGLANG_MODEL")
+    {
+        config.default_text_model = Some(value);
+    }
     if let Ok(value) =
         std::env::var("DEEPSEEK_MODEL").or_else(|_| std::env::var("DEEPSEEK_DEFAULT_TEXT_MODEL"))
     {
@@ -1485,6 +1547,16 @@ fn normalize_model_config(config: &mut Config) {
         {
             providers.novita.model = Some(normalized);
         }
+        if let Some(model) = providers.fireworks.model.as_deref()
+            && let Some(normalized) = normalize_model_for_provider(ApiProvider::Fireworks, model)
+        {
+            providers.fireworks.model = Some(normalized);
+        }
+        if let Some(model) = providers.sglang.model.as_deref()
+            && let Some(normalized) = normalize_model_for_provider(ApiProvider::Sglang, model)
+        {
+            providers.sglang.model = Some(normalized);
+        }
     }
 }
 
@@ -1502,6 +1574,13 @@ fn model_for_provider(provider: ApiProvider, normalized: String) -> String {
         }
         (ApiProvider::Novita, "deepseek-v4-pro") => DEFAULT_NOVITA_MODEL.to_string(),
         (ApiProvider::Novita, "deepseek-v4-flash") => DEFAULT_NOVITA_FLASH_MODEL.to_string(),
+        (ApiProvider::Fireworks, "deepseek-v4-pro") => DEFAULT_FIREWORKS_MODEL.to_string(),
+        (ApiProvider::Fireworks, "deepseek-v4-flash") => {
+            // Flash not yet available on Fireworks; fall through to normalized name
+            "accounts/fireworks/models/deepseek-v4-flash".to_string()
+        }
+        (ApiProvider::Sglang, "deepseek-v4-pro") => DEFAULT_SGLANG_MODEL.to_string(),
+        (ApiProvider::Sglang, "deepseek-v4-flash") => DEFAULT_SGLANG_FLASH_MODEL.to_string(),
         _ => normalized,
     }
 }
@@ -1618,6 +1697,8 @@ fn merge_providers(
             nvidia_nim: merge_provider_config(base.nvidia_nim, override_cfg.nvidia_nim),
             openrouter: merge_provider_config(base.openrouter, override_cfg.openrouter),
             novita: merge_provider_config(base.novita, override_cfg.novita),
+            fireworks: merge_provider_config(base.fireworks, override_cfg.fireworks),
+            sglang: merge_provider_config(base.sglang, override_cfg.sglang),
         }),
     }
 }
@@ -1821,6 +1902,8 @@ pub fn has_api_key_for(config: &Config, provider: ApiProvider) -> bool {
         ApiProvider::NvidiaNim => "NVIDIA_API_KEY",
         ApiProvider::Openrouter => "OPENROUTER_API_KEY",
         ApiProvider::Novita => "NOVITA_API_KEY",
+        ApiProvider::Fireworks => "FIREWORKS_API_KEY",
+        ApiProvider::Sglang => "SGLANG_API_KEY",
     };
     if std::env::var(env_var).is_ok_and(|k| !k.trim().is_empty()) {
         return true;
@@ -1831,12 +1914,19 @@ pub fn has_api_key_for(config: &Config, provider: ApiProvider) -> bool {
         return true;
     }
 
+    // SGLang is self-hosted and typically runs without authentication.
+    if matches!(provider, ApiProvider::Sglang) {
+        return true;
+    }
+
     if let Some(providers) = config.providers.as_ref() {
         let entry = match provider {
             ApiProvider::Deepseek => &providers.deepseek,
             ApiProvider::NvidiaNim => &providers.nvidia_nim,
             ApiProvider::Openrouter => &providers.openrouter,
             ApiProvider::Novita => &providers.novita,
+            ApiProvider::Fireworks => &providers.fireworks,
+            ApiProvider::Sglang => &providers.sglang,
         };
         if entry
             .api_key
@@ -1873,6 +1963,8 @@ pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf>
         ApiProvider::NvidiaNim => "providers.nvidia_nim",
         ApiProvider::Openrouter => "providers.openrouter",
         ApiProvider::Novita => "providers.novita",
+        ApiProvider::Fireworks => "providers.fireworks",
+        ApiProvider::Sglang => "providers.sglang",
     };
 
     // Parse existing TOML (or start fresh) so we can edit the right table
@@ -1898,6 +1990,8 @@ pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf>
         ApiProvider::NvidiaNim => "nvidia_nim",
         ApiProvider::Openrouter => "openrouter",
         ApiProvider::Novita => "novita",
+        ApiProvider::Fireworks => "fireworks",
+        ApiProvider::Sglang => "sglang",
     };
     let entry = providers
         .entry(key_inside.to_string())
@@ -1987,6 +2081,11 @@ mod tests {
         openrouter_base_url: Option<OsString>,
         novita_api_key: Option<OsString>,
         novita_base_url: Option<OsString>,
+        fireworks_api_key: Option<OsString>,
+        fireworks_base_url: Option<OsString>,
+        sglang_api_key: Option<OsString>,
+        sglang_base_url: Option<OsString>,
+        sglang_model: Option<OsString>,
     }
 
     impl EnvGuard {
@@ -2012,6 +2111,11 @@ mod tests {
             let openrouter_base_url_prev = env::var_os("OPENROUTER_BASE_URL");
             let novita_api_key_prev = env::var_os("NOVITA_API_KEY");
             let novita_base_url_prev = env::var_os("NOVITA_BASE_URL");
+            let fireworks_api_key_prev = env::var_os("FIREWORKS_API_KEY");
+            let fireworks_base_url_prev = env::var_os("FIREWORKS_BASE_URL");
+            let sglang_api_key_prev = env::var_os("SGLANG_API_KEY");
+            let sglang_base_url_prev = env::var_os("SGLANG_BASE_URL");
+            let sglang_model_prev = env::var_os("SGLANG_MODEL");
             // Safety: test-only environment mutation guarded by a global mutex.
             unsafe {
                 env::set_var("HOME", &home_str);
@@ -2032,6 +2136,11 @@ mod tests {
                 env::remove_var("OPENROUTER_BASE_URL");
                 env::remove_var("NOVITA_API_KEY");
                 env::remove_var("NOVITA_BASE_URL");
+                env::remove_var("FIREWORKS_API_KEY");
+                env::remove_var("FIREWORKS_BASE_URL");
+                env::remove_var("SGLANG_API_KEY");
+                env::remove_var("SGLANG_BASE_URL");
+                env::remove_var("SGLANG_MODEL");
             }
             Self {
                 home: home_prev,
@@ -2052,6 +2161,11 @@ mod tests {
                 openrouter_base_url: openrouter_base_url_prev,
                 novita_api_key: novita_api_key_prev,
                 novita_base_url: novita_base_url_prev,
+                fireworks_api_key: fireworks_api_key_prev,
+                fireworks_base_url: fireworks_base_url_prev,
+                sglang_api_key: sglang_api_key_prev,
+                sglang_base_url: sglang_base_url_prev,
+                sglang_model: sglang_model_prev,
             }
         }
     }
@@ -2081,6 +2195,11 @@ mod tests {
                 Self::restore_var("OPENROUTER_BASE_URL", self.openrouter_base_url.take());
                 Self::restore_var("NOVITA_API_KEY", self.novita_api_key.take());
                 Self::restore_var("NOVITA_BASE_URL", self.novita_base_url.take());
+                Self::restore_var("FIREWORKS_API_KEY", self.fireworks_api_key.take());
+                Self::restore_var("FIREWORKS_BASE_URL", self.fireworks_base_url.take());
+                Self::restore_var("SGLANG_API_KEY", self.sglang_api_key.take());
+                Self::restore_var("SGLANG_BASE_URL", self.sglang_base_url.take());
+                Self::restore_var("SGLANG_MODEL", self.sglang_model.take());
             }
         }
     }

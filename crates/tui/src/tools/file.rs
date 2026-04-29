@@ -263,7 +263,7 @@ impl ToolSpec for EditFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "Replace text in a file using search/replace."
+        "Replace text in a file using search/replace. Required: 'path' (file to edit), 'search' (exact text to find), 'replace' (text to substitute)."
     }
 
     fn input_schema(&self) -> Value {
@@ -601,6 +601,39 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("not found"));
+    }
+
+    /// #157 — When the model uses `replacement` instead of `replace`,
+    /// the error should name the provided fields so the model can
+    /// self-correct without a second round-trip.
+    #[tokio::test]
+    async fn test_edit_file_wrong_param_name_shows_provided_fields() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+
+        let test_file = tmp.path().join("test.txt");
+        fs::write(&test_file, "hello world").expect("write");
+
+        let tool = EditFileTool;
+        // Model uses `replacement` instead of `replace`.
+        let result = tool
+            .execute(
+                json!({"path": "test.txt", "search": "hello", "replacement": "hi"}),
+                &ctx,
+            )
+            .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        // The error must name both the missing field AND the provided ones.
+        assert!(
+            err.contains("missing required field 'replace'"),
+            "error must name the missing field: {err}"
+        );
+        assert!(
+            err.contains("Input provided:") || err.contains("provided:"),
+            "error must list the fields the model did supply: {err}"
+        );
     }
 
     #[tokio::test]

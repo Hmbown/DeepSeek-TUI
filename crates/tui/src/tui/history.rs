@@ -97,6 +97,25 @@ pub enum HistoryCell {
         streaming: bool,
         duration_secs: Option<f32>,
     },
+    /// An `<archived_context>` seam block produced by the Flash seam manager
+    /// (issue #159). Rendered dimmed/italic with a level + range label so
+    /// the user can see at a glance where context seams exist.
+    ArchivedContext {
+        /// Seam level (1, 2, 3, or 0 for cycle-level).
+        level: u8,
+        /// Message range covered (e.g. "msg 0-128").
+        range: String,
+        /// Token estimate string (e.g. "~2500").
+        tokens: String,
+        /// Density label (e.g. "~2,500 tokens").
+        density: String,
+        /// Model that produced the summary.
+        model: String,
+        /// RFC 3339 timestamp.
+        timestamp: String,
+        /// The summary text content.
+        summary: String,
+    },
     Tool(ToolCell),
     /// Live in-transcript card for sub-agent activity (issue #128). Owns
     /// either a single `DelegateCard` or a multi-worker `FanoutCard`; the
@@ -188,6 +207,9 @@ impl HistoryCell {
             } => render_thinking(content, width, *streaming, *duration_secs, false, false),
             HistoryCell::Tool(cell) => cell.lines_with_motion(width, false),
             HistoryCell::SubAgent(cell) => cell.lines(width),
+            HistoryCell::ArchivedContext { .. } => {
+                render_archived_context(self, width, false)
+            }
         }
     }
 
@@ -249,6 +271,9 @@ impl HistoryCell {
             ),
             HistoryCell::System { .. } | HistoryCell::Error { .. } => self.lines(width),
             HistoryCell::SubAgent(cell) => cell.lines(width),
+            HistoryCell::ArchivedContext { .. } => {
+                render_archived_context(self, width, options.low_motion)
+            }
         }
     }
 
@@ -293,6 +318,9 @@ impl HistoryCell {
             ),
             HistoryCell::Tool(cell) => cell.transcript_lines(width),
             HistoryCell::SubAgent(cell) => cell.lines(width),
+            HistoryCell::ArchivedContext { .. } => {
+                render_archived_context(self, width, true)
+            }
         }
     }
 
@@ -317,6 +345,172 @@ impl HistoryCell {
     }
 }
 
+/// Parse an `<archived_context>` block from an assistant Text block.
+///
+/// Returns `Some(HistoryCell::ArchivedContext)` when the text contains a
+/// well-formed `<archived_context>...</archived_context>` block, or `None`
+/// if the text is regular assistant content.
+fn parse_archived_context(text: &str) -> Option<HistoryCell> {
+    let text = text.trim();
+    if !text.starts_with("<archived_context") || !text.ends_with("</archived_context>") {
+        return None;
+    }
+
+    let tag_end = text.find('>')?;
+    let tag = &text[..tag_end];
+
+    let level = tag
+        .split(' ')
+        .find(|part| part.starts_with("level="))
+        .and_then(|part| part.split('"').nth(1))
+        .and_then(|v| v.parse::<u8>().ok())
+        .unwrap_or(0);
+
+    let range = tag
+        .split(' ')
+        .find(|part| part.starts_with("range="))
+        .and_then(|part| part.split('"').nth(1))
+        .unwrap_or("")
+        .to_string();
+
+    let tokens = tag
+        .split(' ')
+        .find(|part| part.starts_with("tokens="))
+        .and_then(|part| part.split('"').nth(1))
+        .unwrap_or("")
+        .to_string();
+
+    let density = tag
+        .split(' ')
+        .find(|part| part.starts_with("density="))
+        .and_then(|part| part.split('"').nth(1))
+        .unwrap_or("")
+        .to_string();
+
+    let model = tag
+        .split(' ')
+        .find(|part| part.starts_with("model="))
+        .and_then(|part| part.split('"').nth(1))
+        .unwrap_or("")
+        .to_string();
+
+    let timestamp = tag
+        .split(' ')
+        .find(|part| part.starts_with("timestamp="))
+        .and_then(|part| part.split('"').nth(1))
+        .unwrap_or("")
+        .to_string();
+
+    let close_tag = text.rfind("</archived_context>")?;
+    let summary_start = tag_end + 1;
+    let summary = text[summary_start..close_tag].trim().to_string();
+
+    Some(HistoryCell::ArchivedContext {
+        level,
+        range,
+        tokens,
+        density,
+        model,
+        timestamp,
+        summary,
+    })
+}
+
+/// Render an `<archived_context>` block with dimmed/italic styling.
+fn render_archived_context(cell: &HistoryCell, width: u16, _low_motion: bool) -> Vec<Line<'static>> {
+    let HistoryCell::ArchivedContext {
+        level,
+        range,
+        tokens,
+        density,
+        model,
+        timestamp,
+        summary,
+    } = cell
+    else {
+        return Vec::new();
+    };
+
+    let body = if summary.is_empty() {
+        "(no summary)".to_string()
+    } else {
+        summary.clone()
+    };
+
+    let label = format!("Context L{level}");
+    let label_style = Style::default()
+        .fg(palette::TEXT_DIM)
+        .add_modifier(Modifier::BOLD);
+    let body_style = Style::default()
+        .fg(palette::TEXT_DIM)
+        .italic();
+
+    let content_width = width.saturating_sub(4).max(1);
+
+    let mut lines = Vec::new();
+
+    let range_display = if range.is_empty() {
+        String::new()
+    } else {
+        range.to_string()
+    };
+    let mut header = format!("{label}  {range_display}");
+    if !tokens.is_empty() {
+        header.push_str(&format!("  {tokens}"));
+    }
+    if !density.is_empty() && density != tokens {
+        header.push_str(&format!("  {density}"));
+    }
+    lines.push(Line::from(Span::styled(header, label_style)));
+
+    let model_display = if model.is_empty() {
+        String::new()
+    } else {
+        format!("via {model}")
+    };
+    let ts_display = if timestamp.is_empty() {
+        String::new()
+    } else {
+        timestamp.clone()
+    };
+    let mut sub = String::new();
+    if !model_display.is_empty() {
+        sub.push_str(&model_display);
+    }
+    if !ts_display.is_empty() {
+        if !sub.is_empty() {
+            sub.push_str(" · ");
+        }
+        sub.push_str(&ts_display);
+    }
+    if !sub.is_empty() {
+        lines.push(Line::from(Span::styled(
+            sub,
+            Style::default().fg(palette::TEXT_MUTED),
+        )));
+    }
+
+    let rendered = crate::tui::markdown_render::render_markdown(&body, content_width, body_style);
+    for (idx, line) in rendered.into_iter().enumerate() {
+        if idx == 0 {
+            let mut spans = vec![Span::styled(
+                "▏ ",
+                Style::default().fg(palette::TEXT_DIM),
+            )];
+            spans.extend(line.spans);
+            lines.push(Line::from(spans));
+        } else {
+            let mut spans = vec![Span::raw("  ")];
+            spans.extend(line.spans);
+            lines.push(Line::from(spans));
+        }
+    }
+
+    lines.push(Line::from(""));
+
+    lines
+}
+
 /// Convert a message into history cells for rendering.
 #[must_use]
 pub fn history_cells_from_message(msg: &Message) -> Vec<HistoryCell> {
@@ -324,7 +518,15 @@ pub fn history_cells_from_message(msg: &Message) -> Vec<HistoryCell> {
 
     for block in &msg.content {
         match block {
-            ContentBlock::Text { text, .. } => match msg.role.as_str() {
+            ContentBlock::Text { text, .. } => {
+                // Check if this is an `<archived_context>` block.
+                if msg.role == "assistant"
+                    && let Some(archived) = parse_archived_context(text)
+                {
+                    cells.push(archived);
+                    continue;
+                }
+                match msg.role.as_str() {
                 "user" => {
                     if let Some(HistoryCell::User { content }) = cells.last_mut() {
                         if !content.is_empty() {
@@ -363,6 +565,7 @@ pub fn history_cells_from_message(msg: &Message) -> Vec<HistoryCell> {
                     }
                 }
                 _ => {}
+            }
             },
             ContentBlock::Thinking { thinking } => {
                 if let Some(HistoryCell::Thinking { content, .. }) = cells.last_mut() {

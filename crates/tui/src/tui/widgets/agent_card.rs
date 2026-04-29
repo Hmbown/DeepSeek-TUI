@@ -387,6 +387,12 @@ pub fn apply_to_delegate(card: &mut DelegateCard, msg: &MailboxMessage) -> bool 
             // to a sibling fanout card, not this one.
             return false;
         }
+        MailboxMessage::TokenUsage { .. } => {
+            // Cost accumulation happens in handle_subagent_mailbox (ui.rs)
+            // before this apply function is called; TokenUsage never reaches
+            // this arm in practice.
+            return false;
+        }
     }
     true
 }
@@ -419,6 +425,12 @@ pub fn apply_to_fanout(card: &mut FanoutCard, msg: &MailboxMessage) -> bool {
         }
         MailboxMessage::ChildSpawned { child_id, .. } => {
             card.upsert_worker(child_id, AgentLifecycle::Pending);
+            true
+        }
+        MailboxMessage::TokenUsage { .. } => {
+            // Cost accumulation happens in handle_subagent_mailbox (ui.rs)
+            // before this apply function is called; TokenUsage never reaches
+            // this arm in practice.
             true
         }
     }

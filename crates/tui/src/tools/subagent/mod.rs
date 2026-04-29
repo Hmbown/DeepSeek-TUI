@@ -2725,6 +2725,16 @@ async fn run_subagent(
         };
 
         let mut tool_uses = Vec::new();
+
+        // Report token usage so the parent's cost counter updates live.
+        if let Some(mb) = runtime.mailbox.as_ref() {
+            let _ = mb.send(MailboxMessage::token_usage(
+                &agent_id,
+                response.usage.input_tokens,
+                response.usage.output_tokens,
+            ));
+        }
+
         for block in &response.content {
             match block {
                 ContentBlock::Text { text, .. } if !text.trim().is_empty() => {

@@ -520,6 +520,8 @@ pub struct App {
     pub tool_log: Vec<String>,
     /// Session cost tracking
     pub session_cost: f64,
+    /// Running cost from active sub-agents (updated live via mailbox).
+    pub subagent_cost: f64,
     /// Active skill to apply to next user message
     pub active_skill: Option<String>,
     /// Tool call cells by tool id (for cells already finalized in `history`).
@@ -923,6 +925,7 @@ impl App {
             todos: new_shared_todo_list(),
             tool_log: Vec::new(),
             session_cost: 0.0,
+            subagent_cost: 0.0,
             active_skill: None,
             tool_cells: HashMap::new(),
             tool_details_by_cell: HashMap::new(),
