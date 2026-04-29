@@ -200,9 +200,13 @@ exponential_base = 2.0
 [context]
 enabled = false
 verbatim_window_turns = 16
+# Thresholds are based on the active request input estimate, not lifetime
+# summed API usage.
 l1_threshold = 192000
 l2_threshold = 384000
 l3_threshold = 576000
+# Hard cycle also reserves the normal 262144-token output budget plus 1024
+# safety tokens against the model window.
 cycle_threshold = 768000
 seam_model = "deepseek-v4-flash"
 

@@ -15,7 +15,7 @@ chosen over the available shell equivalent. Companion to `crates/tui/src/prompts
   for the same backing operation are a model trap — the LLM will alternate
   between them and the cache hit rate suffers.
 
-## Final surface (v0.7.4)
+## Current surface (v0.7.5)
 
 ### File operations
 
@@ -40,19 +40,25 @@ chosen over the available shell equivalent. Companion to `crates/tui/src/prompts
 
 | Tool | Niche |
 |---|---|
-| `exec_shell` | Run a shell command. Foreground runs are cancellable, but use them only for bounded commands. |
+| `exec_shell` | Run a shell command. Foreground runs are cancellable, but use them only for bounded commands; timeout kills the process and returns a background-rerun hint. |
 | `exec_shell_wait` | Poll a background task for incremental output. |
 | `exec_shell_interact` | Send stdin to a running background task and read incremental output. |
 | `task_shell_start` | Start a long-running command in the background and return immediately. Preferred over foreground shell for diagnostics, tests, searches, and servers that may run for minutes. |
 | `task_shell_wait` | Poll a background command. If `gate` is supplied after completion, record structured gate evidence on the active durable task. |
+
+When a foreground shell command times out, the process is not continued
+silently. The tool result tells the model to rerun long work with
+`task_shell_start` or `exec_shell` with `background = true`, then poll with
+`task_shell_wait` or `exec_shell_wait`.
 
 Interactive shell jobs are also visible through `/jobs`. The TUI job center is
 fed by the same shell manager as `exec_shell`/`task_shell_start`, and shows the
 command, cwd, elapsed time, status, output tail, process-local shell id, and
 linked durable task id when available. `/jobs show`, `/jobs poll`, `/jobs wait`,
 `/jobs stdin`, and `/jobs cancel` provide inspect, polling, stdin, and cancel
-controls for live jobs. Jobs are process-local; after restart, detached entries
-are marked stale rather than presented as live processes.
+controls for live jobs. Jobs are process-local; after restart, live process
+state is not reattached, and any remembered detached entries must be marked
+stale rather than presented as live processes.
 
 ### MCP manager and palette discovery
 

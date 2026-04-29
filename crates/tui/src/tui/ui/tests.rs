@@ -575,7 +575,7 @@ fn footer_auxiliary_spans_show_cache_when_compact() {
     app.last_prompt_cache_miss_tokens = Some(12_000);
     app.session_cost = 12.34;
 
-    let compact = spans_text(&footer_auxiliary_spans(&app, 12));
+    let compact = spans_text(&footer_auxiliary_spans(&app, 14));
     assert!(compact.contains("cache"));
     assert!(!compact.contains('$'));
 }
@@ -589,7 +589,7 @@ fn footer_auxiliary_spans_show_cache_and_cost_when_roomy() {
     app.session_cost = 12.34;
 
     let roomy = spans_text(&footer_auxiliary_spans(&app, 32));
-    assert!(roomy.contains("cache 75%"));
+    assert!(roomy.contains("cache hit 75%"));
     assert!(roomy.contains("$12.34"));
     assert!(
         !roomy.contains("ctx"),

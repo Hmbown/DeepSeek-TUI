@@ -264,6 +264,47 @@ async fn test_exec_shell_metadata_includes_summaries() {
 }
 
 #[tokio::test]
+async fn test_exec_shell_foreground_timeout_guides_background_rerun() {
+    let tmp = tempdir().expect("tempdir");
+    let ctx = ToolContext::new(tmp.path());
+    let tool = ExecShellTool;
+
+    let result = tool
+        .execute(
+            json!({
+                "command": sleep_command(10),
+                "timeout_ms": 1000
+            }),
+            &ctx,
+        )
+        .await
+        .expect("execute");
+
+    assert!(!result.success);
+    assert!(result.content.contains("task_shell_start"));
+    assert!(result.content.contains("background: true"));
+    assert!(result.content.contains("process killed"));
+    let meta = result.metadata.expect("metadata");
+    assert_eq!(meta.get("status").and_then(Value::as_str), Some("TimedOut"));
+    let recovery = meta
+        .get("foreground_timeout_recovery")
+        .expect("timeout recovery metadata");
+    assert_eq!(
+        recovery
+            .get("exec_shell_background")
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+    assert!(
+        recovery
+            .get("hint")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .contains("exec_shell_wait")
+    );
+}
+
+#[tokio::test]
 async fn test_exec_shell_foreground_cancel_kills_process() {
     let tmp = tempdir().expect("tempdir");
     let cancel_token = tokio_util::sync::CancellationToken::new();

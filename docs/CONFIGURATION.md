@@ -157,6 +157,26 @@ Readability semantics:
   `crowded`, `refreshing`, `verifying`, and `resetting`; these are derived from
   capacity and compaction events without exposing internal formulas in normal UI.
 
+### Token Quantities and Drivers
+
+DeepSeek V4 prefix caching makes token labels matter. These quantities are kept
+separate:
+
+| Quantity | Meaning | Allowed to drive |
+|---|---|---|
+| Active request input estimate | Conservative estimate of the next request's live system prompt and transcript payload. | Header/footer context percent, hard-cycle trigger, opt-in Flash seam trigger, and emergency overflow preflight. |
+| Reserved response headroom | The requested `max_tokens` budget plus safety headroom. v0.7.5 keeps normal turns at `262144` output tokens and adds `1024` safety tokens for context-window checks. | Hard-cycle and emergency overflow budget checks only. |
+| Cumulative API usage | Provider-reported input plus output tokens summed across completed API calls; multi-tool turns may count the same stable prefix more than once. | Session usage and approximate cost telemetry only. |
+| Prompt cache hit/miss | Provider cache telemetry for the most recent call when available. | Cache-hit display and cost estimation only; never compaction, seam, or cycle triggers. |
+| Context percent | Active request input estimate divided by the model context window. | Display only; it mirrors the active-input basis used by context safeguards. |
+| Cost estimate | Approximate spend from provider usage and configured DeepSeek rates. | Display only. |
+
+For the default V4 path, hard cycles fire when active input reaches the smaller
+of the configured cycle threshold (`768000`) and the model window minus reserved
+response headroom. Replacement compaction remains opt-in (`auto_compact = false`
+by default), the Flash seam manager remains opt-in (`[context].enabled = false`),
+and the capacity controller remains disabled unless configured.
+
 ### Command Migration Notes
 
 If you are upgrading from older releases:
@@ -196,7 +216,9 @@ If you are upgrading from older releases:
   - `[snapshots].enabled` (bool, default `true`)
   - `[snapshots].max_age_days` (int, default `7`)
   - snapshots live under `~/.deepseek/snapshots/<project_hash>/<worktree_hash>/.git` and never use the workspace's own `.git` directory
-- `context.*` (optional): append-only Flash seam manager, currently opt-in:
+- `context.*` (optional): append-only Flash seam manager, currently opt-in.
+  Thresholds use the active request input estimate, not lifetime summed API
+  usage:
   - `[context].enabled` (bool, default `false`)
   - `[context].verbatim_window_turns` (int, default `16`)
   - `[context].l1_threshold` (int, default `192000`)

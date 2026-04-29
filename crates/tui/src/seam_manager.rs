@@ -17,7 +17,7 @@
 //!
 //! ## Soft seam levels
 //!
-//! | Level | Trigger (tokens) | Covers messages    | Density        |
+//! | Level | Active input trigger | Covers messages    | Density        |
 //! |-------|------------------|--------------------|----------------|
 //! | L1    | 192K             | 0–128K             | ~2,500 tokens  |
 //! | L2    | 384K             | 0–320K             | ~1,800 tokens  |
@@ -45,7 +45,7 @@ use crate::models::{ContentBlock, Message, MessageRequest, SystemBlock, SystemPr
 /// Default seam model — Flash is cheap and fast, ideal for summarization.
 pub const DEFAULT_SEAM_MODEL: &str = "deepseek-v4-flash";
 
-/// Default thresholds (cumulative input+output tokens).
+/// Default thresholds based on the active request input estimate.
 pub const DEFAULT_L1_THRESHOLD: usize = 192_000;
 pub const DEFAULT_L2_THRESHOLD: usize = 384_000;
 pub const DEFAULT_L3_THRESHOLD: usize = 576_000;
@@ -66,7 +66,7 @@ pub struct SeamConfig {
     pub enabled: bool,
     /// Verbatim window: last N turns never summarized.
     pub verbatim_window_turns: usize,
-    /// Soft seam thresholds.
+    /// Soft seam thresholds based on the active request input estimate.
     pub l1_threshold: usize,
     pub l2_threshold: usize,
     pub l3_threshold: usize,
@@ -143,29 +143,14 @@ impl SeamManager {
     }
 
     /// Determine which seam level (if any) should fire for the given
-    /// cumulative token count. Returns `None` when no seam is due.
+    /// active request input estimate. Returns `None` when no seam is due.
     #[must_use]
     pub fn seam_level_for(
         &self,
-        cumulative_tokens: usize,
+        active_input_tokens: usize,
         highest_existing_level: Option<u8>,
     ) -> Option<u8> {
-        if !self.config.enabled {
-            return None;
-        }
-        let highest = highest_existing_level.unwrap_or(0);
-
-        // Each level fires at most once, and only in order.
-        if highest < 1 && cumulative_tokens >= self.config.l1_threshold {
-            return Some(1);
-        }
-        if highest < 2 && cumulative_tokens >= self.config.l2_threshold {
-            return Some(2);
-        }
-        if highest < 3 && cumulative_tokens >= self.config.l3_threshold {
-            return Some(3);
-        }
-        None
+        seam_level_for_active_input(&self.config, active_input_tokens, highest_existing_level)
     }
 
     /// Check whether the hard cycle boundary is crossed.
@@ -174,8 +159,8 @@ impl SeamManager {
     /// Kept as the canonical boundary definition for future wiring.
     #[must_use]
     #[allow(dead_code)]
-    pub fn should_cycle(&self, cumulative_tokens: usize) -> bool {
-        self.config.enabled && cumulative_tokens >= self.config.cycle_threshold
+    pub fn should_cycle(&self, active_input_tokens: usize) -> bool {
+        self.config.enabled && active_input_tokens >= self.config.cycle_threshold
     }
 
     /// Compute the verbatim window: the last N message indices that must
@@ -577,6 +562,30 @@ impl SeamManager {
     }
 }
 
+#[must_use]
+pub fn seam_level_for_active_input(
+    config: &SeamConfig,
+    active_input_tokens: usize,
+    highest_existing_level: Option<u8>,
+) -> Option<u8> {
+    if !config.enabled {
+        return None;
+    }
+    let highest = highest_existing_level.unwrap_or(0);
+
+    // Each level fires at most once, and only in order.
+    if highest < 1 && active_input_tokens >= config.l1_threshold {
+        return Some(1);
+    }
+    if highest < 2 && active_input_tokens >= config.l2_threshold {
+        return Some(2);
+    }
+    if highest < 3 && active_input_tokens >= config.l3_threshold {
+        return Some(3);
+    }
+    None
+}
+
 /// Truncate a string to max_chars, respecting Unicode boundaries.
 fn truncate_chars(text: &str, max_chars: usize) -> String {
     if max_chars == 0 {
@@ -598,15 +607,29 @@ mod tests {
         // Test the pure logic functions only.
         let config = SeamConfig::default();
 
-        // Test seam_level_for logic manually.
-        // Below L1
-        assert!(config.enabled && 100_000 < config.l1_threshold);
-        // At L1
-        assert!(192_000 >= config.l1_threshold);
-        // At L2
-        assert!(384_000 >= config.l2_threshold);
-        // At L3
-        assert!(576_000 >= config.l3_threshold);
+        assert_eq!(seam_level_for_active_input(&config, 100_000, None), None);
+        assert_eq!(seam_level_for_active_input(&config, 192_000, None), Some(1));
+        assert_eq!(
+            seam_level_for_active_input(&config, 384_000, Some(1)),
+            Some(2)
+        );
+        assert_eq!(
+            seam_level_for_active_input(&config, 576_000, Some(2)),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn seam_trigger_uses_active_request_size_not_lifetime_usage() {
+        let config = SeamConfig::default();
+        let lifetime_prompt_usage = 900_000usize;
+        let active_request_input = 120_000usize;
+
+        assert!(lifetime_prompt_usage >= config.l3_threshold);
+        assert_eq!(
+            seam_level_for_active_input(&config, active_request_input, None),
+            None
+        );
     }
 
     #[test]

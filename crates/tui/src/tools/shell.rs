@@ -1287,6 +1287,10 @@ use crate::tools::spec::{
 use async_trait::async_trait;
 use serde_json::json;
 
+const FOREGROUND_TIMEOUT_RECOVERY_HINT: &str = "Foreground exec_shell is for bounded commands. \
+The timed-out process was killed; rerun long work with task_shell_start or exec_shell with \
+background: true, then poll with task_shell_wait or exec_shell_wait.";
+
 async fn execute_foreground_via_background(
     context: &ToolContext,
     command: &str,
@@ -1372,7 +1376,7 @@ impl ToolSpec for ExecShellTool {
     }
 
     fn description(&self) -> &'static str {
-        "Execute a shell command in the workspace directory. Returns stdout, stderr, and exit code."
+        "Execute a shell command in the workspace directory. Foreground mode is for bounded commands; use background=true or task_shell_start for long-running work, then poll/wait."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -1389,7 +1393,7 @@ impl ToolSpec for ExecShellTool {
                 },
                 "background": {
                     "type": "boolean",
-                    "description": "Run in background and return task_id (default: false)"
+                    "description": "Run in background and return task_id (default: false). Prefer true for commands that may run for minutes; poll with exec_shell_wait or task_shell_wait."
                 },
                 "interactive": {
                     "type": "boolean",
@@ -1599,7 +1603,7 @@ impl ToolSpec for ExecShellTool {
                     )
                 } else if result.status == ShellStatus::TimedOut {
                     format!(
-                        "Command timed out after {timeout_ms}ms; process killed.\n\nSTDOUT:\n{}\n\nSTDERR:\n{}",
+                        "Command timed out after {timeout_ms}ms; process killed.\n\n{FOREGROUND_TIMEOUT_RECOVERY_HINT}\n\nSTDOUT:\n{}\n\nSTDERR:\n{}",
                         result.stdout, result.stderr
                     )
                 } else {
@@ -1609,44 +1613,60 @@ impl ToolSpec for ExecShellTool {
                     )
                 };
 
+                let mut metadata = json!({
+                    "exit_code": result.exit_code,
+                    "status": format!("{:?}", result.status),
+                    "duration_ms": result.duration_ms,
+                    "sandboxed": result.sandboxed,
+                    "sandbox_type": result.sandbox_type,
+                    "sandbox_denied": result.sandbox_denied,
+                    "task_id": result.task_id,
+                    "stdout_len": result.stdout_len,
+                    "stderr_len": result.stderr_len,
+                    "stdout_truncated": result.stdout_truncated,
+                    "stderr_truncated": result.stderr_truncated,
+                    "stdout_omitted": result.stdout_omitted,
+                    "stderr_omitted": result.stderr_omitted,
+                    "summary": summary,
+                    "stdout_summary": stdout_summary,
+                    "stderr_summary": stderr_summary,
+                    "safety_level": format!("{:?}", safety.level),
+                    "interactive": interactive,
+                    "canceled": was_cancelled,
+                    "execpolicy": execpolicy_decision.as_ref().map(|decision| match decision {
+                        ExecPolicyDecision::Allow => json!({
+                            "decision": "allow",
+                        }),
+                        ExecPolicyDecision::Deny(reason) => json!({
+                            "decision": "deny",
+                            "reason": reason,
+                        }),
+                        ExecPolicyDecision::AskUser(reason) => json!({
+                            "decision": "ask_user",
+                            "reason": reason,
+                        }),
+                    }),
+                });
+                if result.status == ShellStatus::TimedOut && !background && !interactive {
+                    metadata["foreground_timeout_recovery"] = json!({
+                        "process_killed": true,
+                        "hint": FOREGROUND_TIMEOUT_RECOVERY_HINT,
+                        "recommended_tools": [
+                            "task_shell_start",
+                            "task_shell_wait",
+                            "exec_shell",
+                            "exec_shell_wait"
+                        ],
+                        "exec_shell_background": true,
+                        "poll_with": ["task_shell_wait", "exec_shell_wait"]
+                    });
+                }
+
                 Ok(ToolResult {
                     content: output,
                     success: result.status == ShellStatus::Completed
                         || result.status == ShellStatus::Running,
-                    metadata: Some(json!({
-                        "exit_code": result.exit_code,
-                        "status": format!("{:?}", result.status),
-                        "duration_ms": result.duration_ms,
-                        "sandboxed": result.sandboxed,
-                        "sandbox_type": result.sandbox_type,
-                        "sandbox_denied": result.sandbox_denied,
-                        "task_id": result.task_id,
-                        "stdout_len": result.stdout_len,
-                        "stderr_len": result.stderr_len,
-                        "stdout_truncated": result.stdout_truncated,
-                        "stderr_truncated": result.stderr_truncated,
-                        "stdout_omitted": result.stdout_omitted,
-                        "stderr_omitted": result.stderr_omitted,
-                        "summary": summary,
-                        "stdout_summary": stdout_summary,
-                        "stderr_summary": stderr_summary,
-                        "safety_level": format!("{:?}", safety.level),
-                        "interactive": interactive,
-                        "canceled": was_cancelled,
-                        "execpolicy": execpolicy_decision.as_ref().map(|decision| match decision {
-                            ExecPolicyDecision::Allow => json!({
-                                "decision": "allow",
-                            }),
-                            ExecPolicyDecision::Deny(reason) => json!({
-                                "decision": "deny",
-                                "reason": reason,
-                            }),
-                            ExecPolicyDecision::AskUser(reason) => json!({
-                                "decision": "ask_user",
-                                "reason": reason,
-                            }),
-                        }),
-                    })),
+                    metadata: Some(metadata),
                 })
             }
             Err(e) => Ok(ToolResult::error(format!("Shell execution failed: {e}"))),
