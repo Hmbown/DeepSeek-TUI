@@ -244,6 +244,25 @@ fn build_mcp_entries(
                     ),
                 },
             });
+            // Add a "use" entry that inserts the tool's model_name into the input
+            // so users can quickly reference the tool in their message to the AI.
+            if !tool.model_name.trim().is_empty() {
+                entries.push(CommandPaletteEntry {
+                    section: PaletteSection::Mcp,
+                    label: format!("mcp:{}:tool:{} > use", server.name, tool.name),
+                    description: format!(
+                        "Insert {} into input — type args then send{}",
+                        tool.model_name,
+                        tool.description
+                            .as_ref()
+                            .map_or(String::new(), |desc| format!(" ({})", desc))
+                    ),
+                    command: tool.model_name.clone(),
+                    action: CommandPaletteAction::InsertText {
+                        text: tool.model_name.clone(),
+                    },
+                });
+            }
         }
 
         for resource in &server.resources {
@@ -985,6 +1004,17 @@ mod tests {
             .find(|entry| entry.label == "mcp:broken")
             .expect("failed server visible");
         assert!(failed.description.contains("failed"));
+
+        // Verify the "use" insert entry for MCP tools
+        let use_entry = entries
+            .iter()
+            .find(|entry| entry.label == "mcp:fs:tool:read > use")
+            .expect("MCP tool use entry should exist");
+        assert!(matches!(
+            &use_entry.action,
+            CommandPaletteAction::InsertText { text } if text == "mcp_fs_read"
+        ));
+        assert_eq!(use_entry.command, "mcp_fs_read");
     }
 
     #[test]

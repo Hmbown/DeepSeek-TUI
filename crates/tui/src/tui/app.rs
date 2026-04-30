@@ -25,6 +25,7 @@ use crate::tools::plan::{SharedPlanState, new_shared_plan_state};
 use crate::tools::shell::new_shared_shell_manager;
 use crate::tools::spec::RuntimeToolServices;
 use crate::tools::subagent::SubAgentResult;
+use crate::tools::swarm::SwarmOutcome;
 use crate::tools::todo::{SharedTodoList, new_shared_todo_list};
 use crate::tui::active_cell::ActiveCell;
 use crate::tui::approval::ApprovalMode;
@@ -496,6 +497,11 @@ pub struct App {
     /// spawned by the same `agent_swarm` / `rlm` invocation route into
     /// this card; reset when a fresh fanout-family tool call starts.
     pub last_fanout_card_index: Option<usize>,
+    /// Canonical swarm/job snapshots by swarm id. Transcript cards, sidebar
+    /// counts, and footer status read from this model instead of recomputing
+    /// worker totals independently.
+    pub swarm_jobs: HashMap<String, SwarmOutcome>,
+    pub last_swarm_id: Option<String>,
     /// Most recently observed sub-agent dispatch tool name (set on
     /// `ToolCallStarted` for `agent_spawn` / `agent_swarm` / etc., cleared
     /// after the first `Started` mailbox envelope routes through it).
@@ -557,6 +563,8 @@ pub struct App {
     pub session_cost: f64,
     /// Running cost from active sub-agents (updated live via mailbox).
     pub subagent_cost: f64,
+    /// Mailbox TokenUsage sequence ids already accounted in subagent_cost.
+    pub subagent_cost_event_seqs: HashSet<u64>,
     /// Active skill to apply to next user message
     pub active_skill: Option<String>,
     /// Tool call cells by tool id (for cells already finalized in `history`).
@@ -924,6 +932,8 @@ impl App {
             agent_progress: HashMap::new(),
             subagent_card_index: HashMap::new(),
             last_fanout_card_index: None,
+            swarm_jobs: HashMap::new(),
+            last_swarm_id: None,
             pending_subagent_dispatch: None,
             agent_activity_started_at: None,
             ui_theme,
@@ -976,6 +986,7 @@ impl App {
             tool_log: Vec::new(),
             session_cost: 0.0,
             subagent_cost: 0.0,
+            subagent_cost_event_seqs: HashSet::new(),
             active_skill: None,
             tool_cells: HashMap::new(),
             tool_details_by_cell: HashMap::new(),

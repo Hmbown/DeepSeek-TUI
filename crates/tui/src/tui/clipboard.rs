@@ -7,10 +7,10 @@
 //! endpoint, so we materialize the bytes to disk instead of base64-embedding
 //! them in the request).
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(test)))]
 use std::io::Write;
 use std::path::{Path, PathBuf};
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(test)))]
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -52,13 +52,19 @@ pub enum ClipboardContent {
 /// Clipboard reader/writer helper.
 pub struct ClipboardHandler {
     clipboard: Option<Clipboard>,
+    #[cfg(test)]
+    written_text: Vec<String>,
 }
 
 impl ClipboardHandler {
     /// Create a new clipboard handler, falling back to a no-op when unavailable.
     pub fn new() -> Self {
         let clipboard = Clipboard::new().ok();
-        Self { clipboard }
+        Self {
+            clipboard,
+            #[cfg(test)]
+            written_text: Vec::new(),
+        }
     }
 
     /// Read the clipboard and return the parsed content.
@@ -82,36 +88,50 @@ impl ClipboardHandler {
 
     /// Write text to the clipboard (no-op if unavailable).
     pub fn write_text(&mut self, text: &str) -> Result<()> {
-        if let Some(clipboard) = self.clipboard.as_mut()
-            && clipboard.set_text(text.to_string()).is_ok()
+        #[cfg(test)]
         {
-            return Ok(());
+            self.written_text.push(text.to_string());
+            Ok(())
         }
 
-        #[cfg(target_os = "macos")]
+        #[cfg(not(test))]
         {
-            let mut child = Command::new("pbcopy")
-                .stdin(Stdio::piped())
-                .spawn()
-                .map_err(|e| anyhow::anyhow!("Failed to run pbcopy: {e}"))?;
-            if let Some(mut stdin) = child.stdin.take() {
-                stdin
-                    .write_all(text.as_bytes())
-                    .map_err(|e| anyhow::anyhow!("Failed to write to pbcopy: {e}"))?;
-            }
-            let status = child
-                .wait()
-                .map_err(|e| anyhow::anyhow!("Failed to wait for pbcopy: {e}"))?;
-            if status.success() {
+            if let Some(clipboard) = self.clipboard.as_mut()
+                && clipboard.set_text(text.to_string()).is_ok()
+            {
                 return Ok(());
             }
-            Err(anyhow::anyhow!("pbcopy failed"))
-        }
 
-        #[cfg(not(target_os = "macos"))]
-        {
-            Err(anyhow::anyhow!("Clipboard unavailable"))
+            #[cfg(target_os = "macos")]
+            {
+                let mut child = Command::new("pbcopy")
+                    .stdin(Stdio::piped())
+                    .spawn()
+                    .map_err(|e| anyhow::anyhow!("Failed to run pbcopy: {e}"))?;
+                if let Some(mut stdin) = child.stdin.take() {
+                    stdin
+                        .write_all(text.as_bytes())
+                        .map_err(|e| anyhow::anyhow!("Failed to write to pbcopy: {e}"))?;
+                }
+                let status = child
+                    .wait()
+                    .map_err(|e| anyhow::anyhow!("Failed to wait for pbcopy: {e}"))?;
+                if status.success() {
+                    return Ok(());
+                }
+                Err(anyhow::anyhow!("pbcopy failed"))
+            }
+
+            #[cfg(not(target_os = "macos"))]
+            {
+                Err(anyhow::anyhow!("Clipboard unavailable"))
+            }
         }
+    }
+
+    #[cfg(test)]
+    pub fn last_written_text(&self) -> Option<&str> {
+        self.written_text.last().map(String::as_str)
     }
 }
 

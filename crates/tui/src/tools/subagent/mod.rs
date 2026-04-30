@@ -60,6 +60,32 @@ const MAX_CSV_MAX_RUNTIME_SECONDS: u64 = 86_400;
 
 const VALID_SUBAGENT_TYPES: &str =
     "general, explore, plan, review, custom, worker, explorer, awaiter, default";
+pub const WHALE_NICKNAMES: &[&str] = &[
+    "Blue",
+    "Humpback",
+    "Sperm",
+    "Fin",
+    "Sei",
+    "Bryde's",
+    "Minke",
+    "Antarctic Minke",
+    "Gray",
+    "Bowhead",
+    "North Atlantic Right",
+    "North Pacific Right",
+    "Southern Right",
+    "Beluga",
+    "Narwhal",
+    "Orca",
+    "Pilot",
+    "False Killer",
+    "Pygmy Killer",
+    "Melon-headed",
+    "Beaked",
+    "Cuvier's Beaked",
+    "Baird's Beaked",
+    "Blainville's Beaked",
+];
 
 /// Removal version for deprecated tool aliases.
 const DEPRECATION_REMOVAL_VERSION: &str = "0.8.0";
@@ -68,6 +94,16 @@ static AGENT_JOB_REPORTS: OnceLock<StdMutex<HashMap<String, HashMap<String, Agen
     OnceLock::new();
 static AGENT_JOB_ASSIGNMENTS: OnceLock<StdMutex<HashMap<String, HashMap<String, String>>>> =
     OnceLock::new();
+
+#[must_use]
+pub fn whale_nickname_for_index(index: usize) -> String {
+    let base = WHALE_NICKNAMES[index % WHALE_NICKNAMES.len()];
+    if index < WHALE_NICKNAMES.len() {
+        base.to_string()
+    } else {
+        format!("{base} {}", index / WHALE_NICKNAMES.len() + 1)
+    }
+}
 
 // === Deprecation helpers ===
 
@@ -284,10 +320,20 @@ pub struct SubAgentResult {
     pub agent_id: String,
     pub agent_type: SubAgentType,
     pub assignment: SubAgentAssignment,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nickname: Option<String>,
     pub status: SubAgentStatus,
     pub result: Option<String>,
     pub steps_taken: u32,
     pub duration_ms: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SubAgentSpawnOptions {
+    pub model: Option<String>,
+    pub nickname: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -336,6 +382,7 @@ struct SpawnRequest {
     agent_type: SubAgentType,
     assignment: SubAgentAssignment,
     allowed_tools: Option<Vec<String>>,
+    model: Option<String>,
     /// Optional working directory for the child. Must canonicalize to a
     /// path inside the parent's workspace. Used to dispatch parallel work
     /// into separate git worktrees: parent runs `git worktree add` first,
@@ -400,6 +447,10 @@ struct PersistedSubAgent {
     agent_type: SubAgentType,
     prompt: String,
     assignment: SubAgentAssignment,
+    #[serde(default)]
+    model: String,
+    #[serde(default)]
+    nickname: Option<String>,
     status: SubAgentStatus,
     result: Option<String>,
     steps_taken: u32,
@@ -436,6 +487,7 @@ pub const DEFAULT_MAX_SPAWN_DEPTH: u32 = 3;
 pub struct SubAgentRuntime {
     pub client: DeepSeekClient,
     pub model: String,
+    pub role_models: HashMap<String, String>,
     pub context: ToolContext,
     pub allow_shell: bool,
     pub event_tx: Option<mpsc::Sender<Event>>,
@@ -475,6 +527,7 @@ impl SubAgentRuntime {
         Self {
             client,
             model,
+            role_models: HashMap::new(),
             context,
             allow_shell,
             event_tx,
@@ -515,6 +568,27 @@ impl SubAgentRuntime {
         self
     }
 
+    /// Attach raw role/type model overrides. Values are intentionally
+    /// validated at spawn time so bad config fails before a partial spawn.
+    #[must_use]
+    pub fn with_role_models(mut self, role_models: HashMap<String, String>) -> Self {
+        self.role_models = role_models;
+        self
+    }
+
+    /// Return a child runtime that is deliberately detached from the parent
+    /// turn cancellation token. Background sub-agents should keep running when
+    /// the parent turn is cancelled; explicit agent/swarm cancellation still
+    /// aborts their task handles through the manager.
+    #[must_use]
+    pub fn background_runtime(&self) -> Self {
+        let mut runtime = self.child_runtime();
+        let token = CancellationToken::new();
+        runtime.cancel_token = token.clone();
+        runtime.context.cancel_token = Some(token);
+        runtime
+    }
+
     /// Build a child runtime cloning this one, incrementing `spawn_depth`,
     /// deriving a child cancellation token, and forcing `auto_approve` on
     /// the child's `ToolContext`. Used at spawn entry to construct the
@@ -531,6 +605,7 @@ impl SubAgentRuntime {
         Self {
             client: self.client.clone(),
             model: self.model.clone(),
+            role_models: self.role_models.clone(),
             context: child_context,
             allow_shell: self.allow_shell,
             event_tx: self.event_tx.clone(),
@@ -555,6 +630,8 @@ pub struct SubAgent {
     pub agent_type: SubAgentType,
     pub prompt: String,
     pub assignment: SubAgentAssignment,
+    pub model: String,
+    pub nickname: Option<String>,
     pub status: SubAgentStatus,
     pub result: Option<String>,
     pub steps_taken: u32,
@@ -572,6 +649,8 @@ impl SubAgent {
         agent_type: SubAgentType,
         prompt: String,
         assignment: SubAgentAssignment,
+        model: String,
+        nickname: Option<String>,
         allowed_tools: Option<Vec<String>>,
         input_tx: mpsc::UnboundedSender<SubAgentInput>,
     ) -> Self {
@@ -582,6 +661,8 @@ impl SubAgent {
             agent_type,
             prompt,
             assignment,
+            model,
+            nickname,
             status: SubAgentStatus::Running,
             result: None,
             steps_taken: 0,
@@ -599,6 +680,8 @@ impl SubAgent {
             agent_id: self.id.clone(),
             agent_type: self.agent_type.clone(),
             assignment: self.assignment.clone(),
+            model: self.model.clone(),
+            nickname: self.nickname.clone(),
             status: self.status.clone(),
             result: self.result.clone(),
             steps_taken: self.steps_taken,
@@ -648,6 +731,8 @@ impl SubAgentManager {
                 agent_type: agent.agent_type.clone(),
                 prompt: agent.prompt.clone(),
                 assignment: agent.assignment.clone(),
+                model: agent.model.clone(),
+                nickname: agent.nickname.clone(),
                 status: agent.status.clone(),
                 result: agent.result.clone(),
                 steps_taken: agent.steps_taken,
@@ -711,6 +796,12 @@ impl SubAgentManager {
                 agent_type: persisted.agent_type,
                 prompt: persisted.prompt,
                 assignment: persisted.assignment,
+                model: if persisted.model.is_empty() {
+                    "unknown".to_string()
+                } else {
+                    persisted.model
+                },
+                nickname: persisted.nickname,
                 status,
                 result: persisted.result,
                 steps_taken: persisted.steps_taken,
@@ -782,6 +873,30 @@ impl SubAgentManager {
         assignment: SubAgentAssignment,
         allowed_tools: Option<Vec<String>>,
     ) -> Result<SubAgentResult> {
+        self.spawn_background_with_assignment_options(
+            manager_handle,
+            runtime,
+            agent_type,
+            prompt,
+            assignment,
+            allowed_tools,
+            SubAgentSpawnOptions::default(),
+        )
+    }
+
+    /// Spawn a new background sub-agent with explicit assignment and display
+    /// metadata.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn spawn_background_with_assignment_options(
+        &mut self,
+        manager_handle: SharedSubAgentManager,
+        mut runtime: SubAgentRuntime,
+        agent_type: SubAgentType,
+        prompt: String,
+        assignment: SubAgentAssignment,
+        allowed_tools: Option<Vec<String>>,
+        options: SubAgentSpawnOptions,
+    ) -> Result<SubAgentResult> {
         self.cleanup(COMPLETED_AGENT_RETENTION);
 
         if self.running_count() >= self.max_agents {
@@ -792,12 +907,21 @@ impl SubAgentManager {
             ));
         }
 
+        if let Some(model) = options.model.as_deref() {
+            runtime.model = model.to_string();
+        }
+        let effective_model = runtime.model.clone();
+        let nickname = options
+            .nickname
+            .or_else(|| Some(whale_nickname_for_index(self.agents.len())));
         let tools = build_allowed_tools(&agent_type, allowed_tools, runtime.allow_shell)?;
         let (input_tx, input_rx) = mpsc::unbounded_channel();
         let mut agent = SubAgent::new(
             agent_type.clone(),
             prompt.clone(),
             assignment.clone(),
+            effective_model,
+            nickname,
             tools.clone(),
             input_tx,
         );
@@ -908,9 +1032,13 @@ impl SubAgentManager {
 
             let (input_tx, input_rx) = mpsc::unbounded_channel();
             let restarted_at = Instant::now();
+            let mut restart_runtime = runtime.clone();
+            if !agent.model.trim().is_empty() && agent.model != "unknown" {
+                restart_runtime.model.clone_from(&agent.model);
+            }
             let task = SubAgentTask {
                 manager_handle,
-                runtime: runtime.clone(),
+                runtime: restart_runtime,
                 agent_id: agent.id.clone(),
                 agent_type: agent.agent_type.clone(),
                 prompt: agent.prompt.clone(),
@@ -1257,6 +1385,10 @@ impl ToolSpec for AgentSpawnTool {
                     "items": { "type": "string" },
                     "description": "Explicit tool allowlist (required for custom type). Default behavior is full registry inheritance from the parent."
                 },
+                "model": {
+                    "type": "string",
+                    "description": "Optional DeepSeek model id for this child. Explicit model wins over role/type defaults; omit to inherit."
+                },
                 "cwd": {
                     "type": "string",
                     "description": "Optional working directory for the child. Must be inside the parent's workspace (use a relative path or an absolute path under the workspace root). Used for the parallel-worktree pattern: parent runs `git worktree add .worktrees/feature-x ...` then spawns the child with `cwd: \".worktrees/feature-x\"`."
@@ -1320,32 +1452,47 @@ impl ToolSpec for AgentSpawnTool {
             None
         };
 
-        // Derive the child's runtime: increments depth, forces auto_approve,
-        // derives a cancellation token from the parent so cancelling the
-        // root cascades down. Optionally overrides cwd if the caller passed
-        // one (used for the parallel-worktree pattern).
-        let mut child_runtime = self.runtime.child_runtime();
+        // Derive the child's runtime as a durable background job: it keeps
+        // its own cancellation token, forces auto_approve, and optionally
+        // overrides cwd if the caller passed one (used for the parallel-
+        // worktree pattern).
+        let mut child_runtime = self.runtime.background_runtime();
         if let Some(cwd) = validated_cwd {
             child_runtime.context.workspace = cwd;
         }
+        let effective_model = match spawn_request.model.clone() {
+            Some(model) => model,
+            None => configured_model_for_role_or_type(
+                &self.runtime,
+                spawn_request.assignment.role.as_deref(),
+                &spawn_request.agent_type,
+            )?
+            .unwrap_or_else(|| self.runtime.model.clone()),
+        };
+        child_runtime.model = effective_model.clone();
 
         let mut manager = self.manager.lock().await;
 
         let result = manager
-            .spawn_background_with_assignment(
+            .spawn_background_with_assignment_options(
                 Arc::clone(&self.manager),
                 child_runtime,
                 spawn_request.agent_type,
                 spawn_request.prompt,
                 spawn_request.assignment,
                 spawn_request.allowed_tools,
+                SubAgentSpawnOptions {
+                    model: Some(effective_model),
+                    nickname: None,
+                },
             )
             .map_err(|e| ToolError::execution_failed(format!("Failed to spawn sub-agent: {e}")))?;
 
         let mut tool_result = if self.name == "spawn_agent" {
             let payload = json!({
                 "agent_id": result.agent_id.clone(),
-                "nickname": Value::Null
+                "nickname": result.nickname.clone(),
+                "model": result.model.clone()
             });
             ToolResult::json(&payload).map_err(|e| ToolError::execution_failed(e.to_string()))?
         } else {
@@ -2650,6 +2797,8 @@ async fn run_subagent(
                 agent_id: agent_id.clone(),
                 agent_type: agent_type.clone(),
                 assignment: assignment.clone(),
+                model: runtime.model.clone(),
+                nickname: None,
                 status: SubAgentStatus::Cancelled,
                 result: None,
                 steps_taken: steps,
@@ -2720,6 +2869,8 @@ async fn run_subagent(
                     agent_id: agent_id.clone(),
                     agent_type: agent_type.clone(),
                     assignment: assignment.clone(),
+                    model: runtime.model.clone(),
+                    nickname: None,
                     status: SubAgentStatus::Cancelled,
                     result: None,
                     steps_taken: steps,
@@ -2852,6 +3003,8 @@ async fn run_subagent(
         agent_id,
         agent_type,
         assignment,
+        model: runtime.model.clone(),
+        nickname: None,
         status: SubAgentStatus::Completed,
         result: final_result,
         steps_taken: steps,
@@ -3160,14 +3313,60 @@ fn parse_spawn_request(input: &Value) -> Result<SpawnRequest, ToolError> {
         });
 
     let cwd = parse_optional_cwd(input)?;
+    let model = parse_optional_subagent_model(input, "model")?;
 
     Ok(SpawnRequest {
         prompt: prompt.clone(),
         agent_type,
         assignment: SubAgentAssignment::new(prompt, role),
         allowed_tools,
+        model,
         cwd,
     })
+}
+
+pub(crate) fn normalize_requested_subagent_model(
+    value: &str,
+    field: &str,
+) -> Result<String, ToolError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(ToolError::invalid_input(format!("{field} cannot be blank")));
+    }
+    crate::config::normalize_model_name(trimmed).ok_or_else(|| {
+        ToolError::invalid_input(format!(
+            "Invalid {field} '{trimmed}'. Expected a DeepSeek model id such as deepseek-v4-pro or deepseek-v4-flash"
+        ))
+    })
+}
+
+pub(crate) fn configured_model_for_role_or_type(
+    runtime: &SubAgentRuntime,
+    role: Option<&str>,
+    agent_type: &SubAgentType,
+) -> Result<Option<String>, ToolError> {
+    let mut keys = Vec::new();
+    if let Some(role) = role.map(str::trim).filter(|role| !role.is_empty()) {
+        keys.push(role.to_ascii_lowercase());
+    }
+    keys.push(agent_type.as_str().to_string());
+    keys.push("default".to_string());
+
+    for key in keys {
+        if let Some(model) = runtime.role_models.get(&key) {
+            return normalize_requested_subagent_model(model, &format!("subagents.{key}.model"))
+                .map(Some);
+        }
+    }
+    Ok(None)
+}
+
+fn parse_optional_subagent_model(input: &Value, key: &str) -> Result<Option<String>, ToolError> {
+    match input.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => normalize_requested_subagent_model(value, key).map(Some),
+        Some(_) => Err(ToolError::invalid_input(format!("{key} must be a string"))),
+    }
 }
 
 /// Extract an optional `cwd: String` from spawn input and convert to a

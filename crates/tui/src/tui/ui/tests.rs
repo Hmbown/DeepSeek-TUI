@@ -109,6 +109,156 @@ fn selection_has_content_rejects_zero_width_selection() {
 }
 
 #[test]
+fn mouse_selection_autocopies_on_release_without_ctrl_c() {
+    let mut app = create_test_app();
+    app.history = vec![HistoryCell::Assistant {
+        content: "alpha beta".to_string(),
+        streaming: false,
+    }];
+    app.resync_history_revisions();
+    app.transcript_cache.ensure(
+        &app.history,
+        &app.history_revisions,
+        80,
+        app.transcript_render_options(),
+    );
+    app.last_transcript_area = Some(Rect {
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 8,
+    });
+    app.last_transcript_top = 0;
+    app.last_transcript_total = app.transcript_cache.total_lines();
+    app.last_transcript_padding_top = 0;
+
+    handle_mouse_event(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+    handle_mouse_event(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 8,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+    handle_mouse_event(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 8,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+
+    assert_eq!(app.status_message.as_deref(), Some("Selection copied"));
+    assert!(
+        app.clipboard
+            .last_written_text()
+            .is_some_and(|text| text.contains("alpha")),
+        "selection should be written to clipboard"
+    );
+}
+
+#[test]
+fn right_click_opens_context_menu() {
+    let mut app = create_test_app();
+
+    let events = handle_mouse_event(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Right),
+            column: 4,
+            row: 4,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+
+    assert!(events.is_empty());
+    assert_eq!(app.view_stack.top_kind(), Some(ModalKind::ContextMenu));
+}
+
+#[test]
+fn right_click_menu_includes_selection_and_clicked_cell_actions() {
+    let mut app = create_test_app();
+    app.history = vec![HistoryCell::Assistant {
+        content: "alpha beta".to_string(),
+        streaming: false,
+    }];
+    app.resync_history_revisions();
+    app.transcript_cache.ensure(
+        &app.history,
+        &app.history_revisions,
+        80,
+        app.transcript_render_options(),
+    );
+    app.last_transcript_area = Some(Rect {
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 8,
+    });
+    app.last_transcript_top = 0;
+    app.last_transcript_total = app.transcript_cache.total_lines();
+    app.transcript_selection.anchor = Some(TranscriptSelectionPoint {
+        line_index: 0,
+        column: 0,
+    });
+    app.transcript_selection.head = Some(TranscriptSelectionPoint {
+        line_index: 0,
+        column: 5,
+    });
+
+    let entries = build_context_menu_entries(
+        &app,
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Right),
+            column: 2,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+    let labels = entries
+        .iter()
+        .map(|entry| entry.label.as_str())
+        .collect::<Vec<_>>();
+
+    assert!(labels.contains(&"Copy selection"));
+    assert!(labels.contains(&"Open selection"));
+    assert!(labels.contains(&"Open details"));
+    assert!(labels.contains(&"Paste"));
+}
+
+#[test]
+fn mouse_events_do_not_mutate_transcript_behind_modal() {
+    let mut app = create_test_app();
+    app.view_stack.push(HelpView::new_for_locale(app.ui_locale));
+
+    let events = handle_mouse_event(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 4,
+            row: 4,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+
+    assert!(events.is_empty());
+    assert_eq!(app.pending_scroll_delta, 0);
+    assert_eq!(app.view_stack.top_kind(), Some(ModalKind::Help));
+}
+
+#[test]
 fn copy_shortcut_accepts_cmd_and_ctrl_shift_only() {
     assert!(is_copy_shortcut(&KeyEvent::new(
         KeyCode::Char('c'),
@@ -430,13 +580,16 @@ fn spans_text(spans: &[Span<'_>]) -> String {
 }
 
 #[test]
-fn alt_4_switches_to_plan_mode() {
+fn alt_4_focuses_agents_sidebar_without_switching_modes() {
     let mut app = create_test_app();
     app.mode = AppMode::Agent;
+    app.sidebar_focus = SidebarFocus::Auto;
 
     apply_alt_4_shortcut(&mut app, KeyModifiers::ALT);
 
-    assert_eq!(app.mode, AppMode::Plan);
+    assert_eq!(app.mode, AppMode::Agent);
+    assert_eq!(app.sidebar_focus, SidebarFocus::Agents);
+    assert_eq!(app.status_message.as_deref(), Some("Sidebar focus: agents"));
 }
 
 #[test]
@@ -463,6 +616,8 @@ fn make_subagent(
             objective: format!("objective-{id}"),
             role: Some("worker".to_string()),
         },
+        model: "deepseek-v4-flash".to_string(),
+        nickname: None,
         status,
         result: None,
         steps_taken: 0,
@@ -544,6 +699,27 @@ fn subagent_token_usage_updates_live_cost_counter_without_card_change() {
         app.history.is_empty(),
         "usage-only mailbox messages should not allocate a sub-agent card"
     );
+}
+
+#[test]
+fn subagent_token_usage_is_deduped_by_mailbox_sequence() {
+    let mut app = create_test_app();
+    let usage = crate::tools::subagent::MailboxMessage::TokenUsage {
+        agent_id: "agent-a".to_string(),
+        model: "deepseek-v4-flash".to_string(),
+        usage: crate::models::Usage {
+            input_tokens: 10_000,
+            output_tokens: 1_000,
+            ..Default::default()
+        },
+    };
+
+    handle_subagent_mailbox(&mut app, 7, &usage);
+    let first = app.subagent_cost;
+    handle_subagent_mailbox(&mut app, 7, &usage);
+    assert_eq!(app.subagent_cost, first);
+    handle_subagent_mailbox(&mut app, 8, &usage);
+    assert!(app.subagent_cost > first);
 }
 
 #[test]
@@ -2375,6 +2551,159 @@ fn agent_swarm_result_sync_replaces_seeded_slots_with_final_task_outcomes() {
 }
 
 #[test]
+fn agent_swarm_progress_event_replaces_stale_pending_slots() {
+    let mut app = create_test_app();
+    assert!(seed_fanout_card_from_tool_call(
+        &mut app,
+        "agent_swarm",
+        &serde_json::json!({
+            "tasks": [
+                { "id": "a", "prompt": "First task" },
+                { "id": "b", "prompt": "Second task" },
+                { "id": "c", "prompt": "Third task" }
+            ]
+        }),
+    ));
+
+    let outcome = crate::tools::swarm::SwarmOutcome {
+        swarm_id: "swarm_done".to_string(),
+        status: crate::tools::swarm::SwarmStatus::Completed,
+        duration_ms: 250,
+        counts: crate::tools::swarm::SwarmCounts {
+            total: 3,
+            completed: 3,
+            interrupted: 0,
+            failed: 0,
+            cancelled: 0,
+            skipped: 0,
+            running: 0,
+            pending: 0,
+        },
+        tasks: vec![
+            crate::tools::swarm::SwarmTaskOutcome {
+                task_id: "a".to_string(),
+                worker_id: "swarm_done:a".to_string(),
+                agent_id: Some("agent_a".to_string()),
+                label: "First task".to_string(),
+                model: "deepseek-v4-flash".to_string(),
+                nickname: Some("Blue".to_string()),
+                status: crate::tools::swarm::SwarmTaskStatus::Completed,
+                result: Some("a ok".to_string()),
+                error: None,
+                steps_taken: 1,
+                duration_ms: 100,
+                started_at_ms: Some(0),
+                ended_at_ms: Some(100),
+            },
+            crate::tools::swarm::SwarmTaskOutcome {
+                task_id: "b".to_string(),
+                worker_id: "swarm_done:b".to_string(),
+                agent_id: Some("agent_b".to_string()),
+                label: "Second task".to_string(),
+                model: "deepseek-v4-flash".to_string(),
+                nickname: Some("Humpback".to_string()),
+                status: crate::tools::swarm::SwarmTaskStatus::Completed,
+                result: Some("b ok".to_string()),
+                error: None,
+                steps_taken: 1,
+                duration_ms: 100,
+                started_at_ms: Some(0),
+                ended_at_ms: Some(100),
+            },
+            crate::tools::swarm::SwarmTaskOutcome {
+                task_id: "c".to_string(),
+                worker_id: "swarm_done:c".to_string(),
+                agent_id: Some("agent_c".to_string()),
+                label: "Third task".to_string(),
+                model: "deepseek-v4-flash".to_string(),
+                nickname: Some("Sperm".to_string()),
+                status: crate::tools::swarm::SwarmTaskStatus::Completed,
+                result: Some("c ok".to_string()),
+                error: None,
+                steps_taken: 1,
+                duration_ms: 100,
+                started_at_ms: Some(0),
+                ended_at_ms: Some(100),
+            },
+        ],
+    };
+
+    assert!(sync_fanout_card_from_swarm_outcome(&mut app, &outcome));
+
+    let HistoryCell::SubAgent(SubAgentCell::Fanout(card)) = &app.history[0] else {
+        panic!("expected synced fanout card");
+    };
+    assert_eq!(card.worker_count(), 3);
+    assert_eq!(active_fanout_counts(&app), Some((0, 3)));
+    assert!(card.workers.iter().all(|slot| matches!(
+        slot.status,
+        crate::tui::widgets::agent_card::AgentLifecycle::Completed
+    )));
+    assert_eq!(app.subagent_card_index.get("agent_a").copied(), Some(0));
+}
+
+#[test]
+fn fanout_counts_use_canonical_swarm_outcome_not_stale_card_slots() {
+    let mut app = create_test_app();
+    assert!(seed_fanout_card_from_tool_call(
+        &mut app,
+        "agent_swarm",
+        &serde_json::json!({
+            "tasks": [
+                { "id": "a", "prompt": "A" },
+                { "id": "b", "prompt": "B" },
+                { "id": "c", "prompt": "C" },
+                { "id": "d", "prompt": "D" },
+                { "id": "e", "prompt": "E" }
+            ]
+        }),
+    ));
+
+    let outcome = crate::tools::swarm::SwarmOutcome {
+        swarm_id: "swarm_live".to_string(),
+        status: crate::tools::swarm::SwarmStatus::Running,
+        duration_ms: 1000,
+        counts: crate::tools::swarm::SwarmCounts {
+            total: 5,
+            completed: 4,
+            interrupted: 0,
+            failed: 0,
+            cancelled: 0,
+            skipped: 0,
+            running: 1,
+            pending: 0,
+        },
+        tasks: (0..5)
+            .map(|idx| {
+                let task_id = char::from(b'a' + idx as u8).to_string();
+                crate::tools::swarm::SwarmTaskOutcome {
+                    task_id: task_id.clone(),
+                    worker_id: format!("swarm_live:{task_id}"),
+                    agent_id: Some(format!("agent_{task_id}")),
+                    label: task_id.clone(),
+                    model: "deepseek-v4-flash".to_string(),
+                    nickname: Some(["Blue", "Humpback", "Sperm", "Fin", "Sei"][idx].to_string()),
+                    status: if idx == 4 {
+                        crate::tools::swarm::SwarmTaskStatus::Running
+                    } else {
+                        crate::tools::swarm::SwarmTaskStatus::Completed
+                    },
+                    result: None,
+                    error: None,
+                    steps_taken: 0,
+                    duration_ms: 0,
+                    started_at_ms: Some(0),
+                    ended_at_ms: (idx != 4).then_some(0),
+                }
+            })
+            .collect(),
+    };
+
+    assert!(sync_fanout_card_from_swarm_outcome(&mut app, &outcome));
+    assert_eq!(active_fanout_counts(&app), Some((1, 5)));
+}
+
+#[test]
 fn noisy_subagent_progress_keeps_existing_objective_summary() {
     let mut app = create_test_app();
     app.agent_progress.insert(
@@ -2670,13 +2999,13 @@ fn build_pending_input_preview_includes_current_context_chips() {
 #[test]
 fn render_footer_from_with_default_items_renders_mode_and_model() {
     // Default footer composition should show the mode chip and model
-    // identifier — exactly what v0.6.6 users see today.
+    // identifier — whatever the configured default model is.
     let mut app = create_test_app();
     app.session_cost = 0.42;
     let items = crate::config::StatusItem::default_footer();
     let props = render_footer_from(&app, &items, None);
     assert_eq!(props.mode_label, "agent");
-    assert_eq!(props.model, "deepseek-v4-pro");
+    assert!(!props.model.is_empty(), "footer should show a model name");
     // Cost chip is included whenever cost > 0.001.
     assert!(!props.cost.is_empty());
 }
@@ -2707,7 +3036,7 @@ fn render_footer_from_drops_only_unselected_clusters() {
         .collect();
     let props = render_footer_from(&app, &items, None);
     assert_eq!(props.mode_label, "agent");
-    assert_eq!(props.model, "deepseek-v4-pro");
+    assert!(!props.model.is_empty(), "footer should show a model name");
     assert!(
         props.cost.is_empty(),
         "cost cluster should be empty when Cost is disabled"

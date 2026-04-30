@@ -18,12 +18,12 @@ use crate::tools::spec::{
 };
 use crate::tools::subagent::{
     MailboxMessage, SharedSubAgentManager, SubAgentAssignment, SubAgentResult, SubAgentRuntime,
-    SubAgentStatus, SubAgentType,
+    SubAgentSpawnOptions, SubAgentStatus, SubAgentType, configured_model_for_role_or_type,
+    normalize_requested_subagent_model, whale_nickname_for_index,
 };
 
 const SWARM_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const DEFAULT_SWARM_TIMEOUT_MS: u64 = 600_000;
-const DEFAULT_SWARM_TIMEOUT_NONBLOCK_MS: u64 = 600_000;
 const MAX_SWARM_TIMEOUT_MS: u64 = 3_600_000;
 const DEFAULT_SWARM_RESULT_TIMEOUT_MS: u64 = 30_000;
 const MAX_SWARM_HISTORY: usize = 256;
@@ -36,6 +36,7 @@ const MAX_TASK_RETRIES: u32 = 10;
 
 static SWARM_OUTCOMES: OnceLock<StdMutex<HashMap<String, SwarmOutcome>>> = OnceLock::new();
 static SWARM_ORDER: OnceLock<StdMutex<VecDeque<String>>> = OnceLock::new();
+static SWARM_CANCEL_REQUESTS: OnceLock<StdMutex<HashSet<String>>> = OnceLock::new();
 
 #[derive(Debug, Clone, Deserialize)]
 struct SwarmTaskSpec {
@@ -47,6 +48,8 @@ struct SwarmTaskSpec {
     role: Option<String>,
     #[serde(default)]
     objective: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
     #[serde(default)]
     retry_count: Option<u32>,
     #[serde(default)]
@@ -69,9 +72,17 @@ enum SwarmTaskState {
     Cancelled(String),
 }
 
+#[derive(Debug, Clone)]
+struct SwarmTaskMeta {
+    worker_id: String,
+    label: String,
+    model: String,
+    nickname: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum SwarmTaskStatus {
+pub enum SwarmTaskStatus {
     Pending,
     Running,
     Completed,
@@ -82,21 +93,33 @@ enum SwarmTaskStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct SwarmTaskOutcome {
-    task_id: String,
-    agent_id: Option<String>,
-    status: SwarmTaskStatus,
+pub struct SwarmTaskOutcome {
+    pub task_id: String,
+    #[serde(default)]
+    pub worker_id: String,
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nickname: Option<String>,
+    pub status: SwarmTaskStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
-    result: Option<String>,
+    pub result: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
-    steps_taken: u32,
-    duration_ms: u64,
+    pub error: Option<String>,
+    pub steps_taken: u32,
+    pub duration_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_at_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum SwarmStatus {
+pub enum SwarmStatus {
     Running,
     Completed,
     Partial,
@@ -106,7 +129,7 @@ enum SwarmStatus {
 }
 
 impl SwarmStatus {
-    fn is_terminal(&self) -> bool {
+    pub fn is_terminal(&self) -> bool {
         !matches!(self, Self::Running)
     }
 
@@ -123,24 +146,24 @@ impl SwarmStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct SwarmCounts {
-    total: usize,
-    completed: usize,
-    interrupted: usize,
-    failed: usize,
-    cancelled: usize,
-    skipped: usize,
-    running: usize,
-    pending: usize,
+pub struct SwarmCounts {
+    pub total: usize,
+    pub completed: usize,
+    pub interrupted: usize,
+    pub failed: usize,
+    pub cancelled: usize,
+    pub skipped: usize,
+    pub running: usize,
+    pub pending: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct SwarmOutcome {
-    swarm_id: String,
-    status: SwarmStatus,
-    duration_ms: u64,
-    counts: SwarmCounts,
-    tasks: Vec<SwarmTaskOutcome>,
+pub struct SwarmOutcome {
+    pub swarm_id: String,
+    pub status: SwarmStatus,
+    pub duration_ms: u64,
+    pub counts: SwarmCounts,
+    pub tasks: Vec<SwarmTaskOutcome>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -166,6 +189,31 @@ fn swarm_outcomes_store() -> &'static StdMutex<HashMap<String, SwarmOutcome>> {
 
 fn swarm_order_store() -> &'static StdMutex<VecDeque<String>> {
     SWARM_ORDER.get_or_init(|| StdMutex::new(VecDeque::new()))
+}
+
+fn swarm_cancel_store() -> &'static StdMutex<HashSet<String>> {
+    SWARM_CANCEL_REQUESTS.get_or_init(|| StdMutex::new(HashSet::new()))
+}
+
+fn request_swarm_cancel(swarm_id: &str) {
+    let mut requests = swarm_cancel_store()
+        .lock()
+        .expect("swarm cancel store lock poisoned");
+    requests.insert(swarm_id.to_string());
+}
+
+fn clear_swarm_cancel(swarm_id: &str) {
+    let mut requests = swarm_cancel_store()
+        .lock()
+        .expect("swarm cancel store lock poisoned");
+    requests.remove(swarm_id);
+}
+
+fn is_swarm_cancel_requested(swarm_id: &str) -> bool {
+    let requests = swarm_cancel_store()
+        .lock()
+        .expect("swarm cancel store lock poisoned");
+    requests.contains(swarm_id)
 }
 
 fn swarm_state_path(workspace: &Path) -> PathBuf {
@@ -284,9 +332,9 @@ impl ToolSpec for AgentSwarmTool {
     }
 
     fn description(&self) -> &'static str {
-        "Spawn multiple sub-agents in parallel, each with their own tools and optional task \
-         dependencies, and aggregate their results. Returns a swarm_id; results come back via \
-         swarm_result or wait."
+        "Spawn multiple durable background sub-agents with optional dependencies. By default this \
+         returns immediately with a swarm id while workers continue, so the parent can keep working \
+         and call swarm_status/swarm_result later. Set block:true only when the parent must wait."
     }
 
     fn input_schema(&self) -> Value {
@@ -305,6 +353,7 @@ impl ToolSpec for AgentSwarmTool {
                             "type": { "type": "string", "description": "Sub-agent type: general, explore, plan, review, custom." },
                             "role": { "type": "string", "description": "Optional role alias: worker, explorer, awaiter, default." },
                             "agent_role": { "type": "string", "description": "Alias for role." },
+                            "model": { "type": "string", "description": "Optional DeepSeek model id for this worker. Explicit task model wins over role/type config; omit to inherit." },
                             "retry_count": { "type": "integer", "description": "Retries after the initial attempt (default: 0)." },
                             "retry_delay_ms": { "type": "integer", "description": "Base retry delay in milliseconds (default: 1000, exponential backoff)." },
                             "task_timeout_ms": { "type": "integer", "description": "Per-task timeout in milliseconds; cancels and optionally retries on timeout." },
@@ -328,7 +377,7 @@ impl ToolSpec for AgentSwarmTool {
                 },
                 "block": {
                     "type": "boolean",
-                    "description": "Whether to wait for tasks to finish (default: true)."
+                    "description": "Wait for completion before returning (default: false)."
                 },
                 "timeout_ms": {
                     "type": "integer",
@@ -371,14 +420,9 @@ impl ToolSpec for AgentSwarmTool {
 
         validate_swarm_tasks(&tasks)?;
 
-        let block = optional_bool(&input, "block", true);
-        let default_timeout = if block {
-            DEFAULT_SWARM_TIMEOUT_MS
-        } else {
-            DEFAULT_SWARM_TIMEOUT_NONBLOCK_MS
-        };
-        let timeout_ms =
-            optional_u64(&input, "timeout_ms", default_timeout).clamp(1_000, MAX_SWARM_TIMEOUT_MS);
+        let requested_block = optional_bool(&input, "block", false);
+        let timeout_ms = optional_u64(&input, "timeout_ms", DEFAULT_SWARM_TIMEOUT_MS)
+            .clamp(1_000, MAX_SWARM_TIMEOUT_MS);
         let fail_fast = optional_bool(&input, "fail_fast", false);
         let shared_context = optional_str(&input, "shared_context")
             .map(str::trim)
@@ -393,57 +437,133 @@ impl ToolSpec for AgentSwarmTool {
         };
 
         let swarm_id = format!("swarm_{}", &Uuid::new_v4().to_string()[..8]);
+        let task_meta = prepare_swarm_task_meta(&swarm_id, &tasks, &self.runtime)?;
+        let initial = build_initial_outcome(&swarm_id, &tasks, &task_meta);
+        store_swarm_outcome(&initial, Some(&persistence_path));
+        emit_swarm_status(self.runtime.event_tx.as_ref(), &initial);
 
-        if block {
+        let payload = if requested_block {
             let outcome = run_swarm(
                 &self.manager,
                 &self.runtime,
                 swarm_id,
                 tasks,
-                shared_context,
-                Duration::from_millis(timeout_ms),
-                max_parallel,
-                fail_fast,
-                false,
-                Some(persistence_path.clone()),
-            )
-            .await?;
-            store_swarm_outcome(&outcome, Some(&persistence_path));
-            return ToolResult::json(&outcome)
-                .map_err(|err| ToolError::execution_failed(err.to_string()));
-        }
-
-        let initial = build_initial_outcome(&swarm_id, &tasks);
-        store_swarm_outcome(&initial, Some(&persistence_path));
-
-        let manager = self.manager.clone();
-        let runtime = self.runtime.clone();
-        let persistence_path_bg = persistence_path.clone();
-        tokio::spawn(async move {
-            let outcome = run_swarm(
-                &manager,
-                &runtime,
-                swarm_id.clone(),
-                tasks,
+                task_meta,
                 shared_context,
                 Duration::from_millis(timeout_ms),
                 max_parallel,
                 fail_fast,
                 true,
-                Some(persistence_path_bg.clone()),
+                Some(persistence_path.clone()),
             )
-            .await
-            .unwrap_or_else(|err| build_failed_outcome(&swarm_id, err.to_string()));
-            store_swarm_outcome(&outcome, Some(&persistence_path_bg));
-        });
+            .await?;
+            store_swarm_outcome(&outcome, Some(&persistence_path));
+            build_collected_swarm_payload(&outcome, requested_block)
+                .map_err(|err| ToolError::execution_failed(err.to_string()))?
+        } else {
+            let manager = Arc::clone(&self.manager);
+            let runtime = self.runtime.background_runtime();
+            let background_swarm_id = swarm_id.clone();
+            let background_persistence = persistence_path.clone();
+            tokio::spawn(async move {
+                let outcome = run_swarm(
+                    &manager,
+                    &runtime,
+                    background_swarm_id.clone(),
+                    tasks,
+                    task_meta,
+                    shared_context,
+                    Duration::from_millis(timeout_ms),
+                    max_parallel,
+                    fail_fast,
+                    true,
+                    Some(background_persistence.clone()),
+                )
+                .await
+                .unwrap_or_else(|err| failed_swarm_outcome(&background_swarm_id, err.to_string()));
+                store_swarm_outcome(&outcome, Some(&background_persistence));
+            });
+            build_background_swarm_payload(&initial, requested_block)
+                .map_err(|err| ToolError::execution_failed(err.to_string()))?
+        };
+        ToolResult::json(&payload).map_err(|err| ToolError::execution_failed(err.to_string()))
+    }
+}
 
-        let mut result = ToolResult::json(&initial)
-            .map_err(|err| ToolError::execution_failed(err.to_string()))?;
-        result.metadata = Some(json!({
-            "status": "Running",
-            "swarm_id": initial.swarm_id,
-        }));
-        Ok(result)
+fn build_collected_swarm_payload(
+    outcome: &SwarmOutcome,
+    requested_block: bool,
+) -> Result<Value, serde_json::Error> {
+    let mut payload = serde_json::to_value(outcome)?;
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("requested_block".to_string(), json!(requested_block));
+        object.insert("effective_block".to_string(), json!(true));
+        object.insert(
+            "next_action".to_string(),
+            json!(
+                "Synthesize these collected swarm results now. Do not start another swarm for the same tasks."
+            ),
+        );
+        if !requested_block {
+            object.insert(
+                "block_note".to_string(),
+                json!(
+                    "The model requested block:false, but agent_swarm collected the results in this turn to avoid detached swarm stalls."
+                ),
+            );
+        }
+    }
+    Ok(payload)
+}
+
+fn build_background_swarm_payload(
+    outcome: &SwarmOutcome,
+    requested_block: bool,
+) -> Result<Value, serde_json::Error> {
+    let mut payload = serde_json::to_value(outcome)?;
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("requested_block".to_string(), json!(requested_block));
+        object.insert("effective_block".to_string(), json!(false));
+        object.insert(
+            "next_action".to_string(),
+            json!(
+                "Continue the parent turn. The swarm is running in the background; call swarm_status or swarm_result later to collect results."
+            ),
+        );
+    }
+    Ok(payload)
+}
+
+fn failed_swarm_outcome(swarm_id: &str, error: String) -> SwarmOutcome {
+    SwarmOutcome {
+        swarm_id: swarm_id.to_string(),
+        status: SwarmStatus::Failed,
+        duration_ms: 0,
+        counts: SwarmCounts {
+            total: 0,
+            completed: 0,
+            interrupted: 0,
+            failed: 1,
+            cancelled: 0,
+            skipped: 0,
+            running: 0,
+            pending: 0,
+        },
+        tasks: vec![SwarmTaskOutcome {
+            task_id: "swarm".to_string(),
+            worker_id: format!("{swarm_id}:swarm"),
+            agent_id: None,
+            label: "swarm".to_string(),
+            model: String::new(),
+            nickname: None,
+            status: SwarmTaskStatus::Failed,
+            result: None,
+            error: Some(error),
+            steps_taken: 0,
+            duration_ms: 0,
+            started_at_ms: None,
+            ended_at_ms: None,
+        }],
     }
 }
 
@@ -585,12 +705,99 @@ impl ToolSpec for SwarmResultTool {
     }
 }
 
+/// Tool to explicitly cancel a running swarm.
+pub struct SwarmCancelTool {
+    manager: SharedSubAgentManager,
+    persistence_path: PathBuf,
+}
+
+impl SwarmCancelTool {
+    #[must_use]
+    pub fn new(manager: SharedSubAgentManager, workspace: PathBuf) -> Self {
+        Self {
+            manager,
+            persistence_path: swarm_state_path(&workspace),
+        }
+    }
+}
+
+#[async_trait]
+impl ToolSpec for SwarmCancelTool {
+    fn name(&self) -> &'static str {
+        "swarm_cancel"
+    }
+
+    fn description(&self) -> &'static str {
+        "Explicitly cancel a running background swarm and any currently running workers."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "swarm_id": { "type": "string", "description": "Swarm id returned by agent_swarm." },
+                "id": { "type": "string", "description": "Alias for swarm_id." }
+            }
+        })
+    }
+
+    fn capabilities(&self) -> Vec<ToolCapability> {
+        vec![
+            ToolCapability::ExecutesCode,
+            ToolCapability::RequiresApproval,
+        ]
+    }
+
+    fn approval_requirement(&self) -> ApprovalRequirement {
+        ApprovalRequirement::Required
+    }
+
+    async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
+        load_swarm_store(&self.persistence_path);
+        let swarm_id = parse_swarm_id(&input)?;
+        request_swarm_cancel(swarm_id);
+        let current = load_swarm_outcome(swarm_id)
+            .ok_or_else(|| ToolError::execution_failed(format!("Swarm '{swarm_id}' not found")))?;
+
+        {
+            let mut manager = self.manager.lock().await;
+            for task in &current.tasks {
+                if matches!(task.status, SwarmTaskStatus::Running)
+                    && let Some(agent_id) = task.agent_id.as_deref()
+                {
+                    let _ = manager.cancel(agent_id);
+                }
+            }
+        }
+
+        let mut outcome = current.clone();
+        if !outcome.status.is_terminal() {
+            for task in &mut outcome.tasks {
+                if matches!(
+                    task.status,
+                    SwarmTaskStatus::Pending | SwarmTaskStatus::Running
+                ) {
+                    task.status = SwarmTaskStatus::Cancelled;
+                    task.error = Some("Cancelled".to_string());
+                    task.ended_at_ms = Some(task.duration_ms);
+                }
+            }
+            outcome.counts = build_counts(&outcome.tasks);
+            outcome.status = SwarmStatus::Cancelled;
+            store_swarm_outcome(&outcome, Some(&self.persistence_path));
+        }
+
+        ToolResult::json(&outcome).map_err(|err| ToolError::execution_failed(err.to_string()))
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_swarm(
     shared_manager: &SharedSubAgentManager,
     runtime: &SubAgentRuntime,
     swarm_id: String,
     tasks: Vec<SwarmTaskSpec>,
+    task_meta: HashMap<String, SwarmTaskMeta>,
     shared_context: Option<String>,
     timeout: Duration,
     max_parallel: usize,
@@ -598,6 +805,7 @@ async fn run_swarm(
     publish_progress: bool,
     persistence_path: Option<PathBuf>,
 ) -> Result<SwarmOutcome, ToolError> {
+    clear_swarm_cancel(&swarm_id);
     let start = Instant::now();
     let deadline = start + timeout;
     let task_order = tasks.iter().map(|task| task.id.clone()).collect::<Vec<_>>();
@@ -622,7 +830,7 @@ async fn run_swarm(
     loop {
         let mut changed = false;
 
-        if runtime.cancel_token.is_cancelled() {
+        if runtime.cancel_token.is_cancelled() || is_swarm_cancel_requested(&swarm_id) {
             cancelled = true;
             cancel_swarm_tasks(
                 shared_manager,
@@ -640,6 +848,7 @@ async fn run_swarm(
                     &swarm_id,
                     start,
                     &task_order,
+                    &task_meta,
                     &states,
                     SwarmStatus::Cancelled,
                 );
@@ -801,6 +1010,7 @@ async fn run_swarm(
                     &swarm_id,
                     start,
                     &task_order,
+                    &task_meta,
                     &states,
                     SwarmStatus::Failed,
                 );
@@ -859,18 +1069,27 @@ async fn run_swarm(
                         .and_modify(|count| *count = count.saturating_add(1))
                         .or_insert(1);
                     let (agent_type, role, objective) = resolve_task_assignment(task)?;
+                    let meta = task_meta.get(&task_id).ok_or_else(|| {
+                        ToolError::execution_failed("Missing swarm task metadata")
+                    })?;
                     let prompt = format_prompt(shared_context.as_deref(), &task.prompt);
                     let assignment = SubAgentAssignment { objective, role };
 
                     let spawn_result = {
                         let mut manager = shared_manager.lock().await;
-                        manager.spawn_background_with_assignment(
+                        let mut task_runtime = runtime.background_runtime();
+                        task_runtime.model = meta.model.clone();
+                        manager.spawn_background_with_assignment_options(
                             Arc::clone(shared_manager),
-                            runtime.clone(),
+                            task_runtime,
                             agent_type,
                             prompt,
                             assignment,
                             task.allowed_tools.clone(),
+                            SubAgentSpawnOptions {
+                                model: Some(meta.model.clone()),
+                                nickname: Some(meta.nickname.clone()),
+                            },
                         )
                     };
 
@@ -938,6 +1157,7 @@ async fn run_swarm(
                     &swarm_id,
                     start,
                     &task_order,
+                    &task_meta,
                     &states,
                     SwarmStatus::Failed,
                 );
@@ -965,6 +1185,7 @@ async fn run_swarm(
                 &swarm_id,
                 start,
                 &task_order,
+                &task_meta,
                 &states,
                 SwarmStatus::Running,
             );
@@ -981,7 +1202,7 @@ async fn run_swarm(
         }
     }
 
-    let outcomes = build_task_outcomes(&task_order, &states);
+    let outcomes = build_task_outcomes(&task_order, &task_meta, &states);
     let counts = build_counts(&outcomes);
     let status = if cancelled {
         SwarmStatus::Cancelled
@@ -1008,11 +1229,19 @@ async fn run_swarm(
         counts,
         tasks: outcomes,
     };
+    if publish_progress {
+        store_swarm_outcome(&outcome, persistence_path.as_deref());
+    }
+    clear_swarm_cancel(&outcome.swarm_id);
     emit_swarm_status(runtime.event_tx.as_ref(), &outcome);
     Ok(outcome)
 }
 
-fn build_initial_outcome(swarm_id: &str, tasks: &[SwarmTaskSpec]) -> SwarmOutcome {
+fn build_initial_outcome(
+    swarm_id: &str,
+    tasks: &[SwarmTaskSpec],
+    task_meta: &HashMap<String, SwarmTaskMeta>,
+) -> SwarmOutcome {
     let task_ids = tasks.iter().map(|task| task.id.clone()).collect::<Vec<_>>();
     let states = tasks
         .iter()
@@ -1022,46 +1251,21 @@ fn build_initial_outcome(swarm_id: &str, tasks: &[SwarmTaskSpec]) -> SwarmOutcom
         swarm_id,
         Instant::now(),
         &task_ids,
+        task_meta,
         &states,
         SwarmStatus::Running,
     )
-}
-
-fn build_failed_outcome(swarm_id: &str, error: String) -> SwarmOutcome {
-    SwarmOutcome {
-        swarm_id: swarm_id.to_string(),
-        status: SwarmStatus::Failed,
-        duration_ms: 0,
-        counts: SwarmCounts {
-            total: 0,
-            completed: 0,
-            interrupted: 0,
-            failed: 1,
-            cancelled: 0,
-            skipped: 0,
-            running: 0,
-            pending: 0,
-        },
-        tasks: vec![SwarmTaskOutcome {
-            task_id: "swarm_runtime".to_string(),
-            agent_id: None,
-            status: SwarmTaskStatus::Failed,
-            result: None,
-            error: Some(error),
-            steps_taken: 0,
-            duration_ms: 0,
-        }],
-    }
 }
 
 fn build_progress_outcome(
     swarm_id: &str,
     start: Instant,
     order: &[String],
+    task_meta: &HashMap<String, SwarmTaskMeta>,
     states: &HashMap<String, SwarmTaskState>,
     status: SwarmStatus,
 ) -> SwarmOutcome {
-    let tasks = build_task_outcomes(order, states);
+    let tasks = build_task_outcomes(order, task_meta, states);
     let counts = build_counts(&tasks);
     SwarmOutcome {
         swarm_id: swarm_id.to_string(),
@@ -1072,10 +1276,45 @@ fn build_progress_outcome(
     }
 }
 
+fn prepare_swarm_task_meta(
+    swarm_id: &str,
+    tasks: &[SwarmTaskSpec],
+    runtime: &SubAgentRuntime,
+) -> Result<HashMap<String, SwarmTaskMeta>, ToolError> {
+    let mut meta = HashMap::new();
+    for (idx, task) in tasks.iter().enumerate() {
+        let (agent_type, role, objective) = resolve_task_assignment(task)?;
+        let model = match task
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            Some(model) => normalize_requested_subagent_model(model, "task.model")?,
+            None => configured_model_for_role_or_type(runtime, role.as_deref(), &agent_type)?
+                .unwrap_or_else(|| runtime.model.clone()),
+        };
+        meta.insert(
+            task.id.clone(),
+            SwarmTaskMeta {
+                worker_id: format!("{swarm_id}:{}", task.id),
+                label: objective,
+                model,
+                nickname: whale_nickname_for_index(idx),
+            },
+        );
+    }
+    Ok(meta)
+}
+
 fn emit_swarm_status(event_tx: Option<&tokio::sync::mpsc::Sender<Event>>, outcome: &SwarmOutcome) {
     let Some(event_tx) = event_tx else {
         return;
     };
+
+    let _ = event_tx.try_send(Event::SwarmProgress {
+        outcome: outcome.clone(),
+    });
 
     let message = format!(
         "Swarm {}: status={} completed={}/{} running={} interrupted={} failed={} skipped={} cancelled={}",
@@ -1348,105 +1587,150 @@ async fn apply_fail_fast(
 
 fn build_task_outcomes(
     order: &[String],
+    task_meta: &HashMap<String, SwarmTaskMeta>,
     states: &HashMap<String, SwarmTaskState>,
 ) -> Vec<SwarmTaskOutcome> {
     order
         .iter()
         .map(|task_id| match states.get(task_id) {
-            Some(SwarmTaskState::Running { agent_id }) => SwarmTaskOutcome {
-                task_id: task_id.clone(),
-                agent_id: Some(agent_id.clone()),
-                status: SwarmTaskStatus::Running,
-                result: None,
-                error: None,
-                steps_taken: 0,
-                duration_ms: 0,
-            },
+            Some(SwarmTaskState::Running { agent_id }) => swarm_task_outcome(
+                task_id,
+                task_meta.get(task_id),
+                Some(agent_id.clone()),
+                SwarmTaskStatus::Running,
+                None,
+                None,
+                0,
+                0,
+            ),
             Some(SwarmTaskState::Done(result)) => match &result.status {
-                SubAgentStatus::Completed => SwarmTaskOutcome {
-                    task_id: task_id.clone(),
-                    agent_id: Some(result.agent_id.clone()),
-                    status: SwarmTaskStatus::Completed,
-                    result: result.result.clone(),
-                    error: None,
-                    steps_taken: result.steps_taken,
-                    duration_ms: result.duration_ms,
-                },
-                SubAgentStatus::Interrupted(err) => SwarmTaskOutcome {
-                    task_id: task_id.clone(),
-                    agent_id: Some(result.agent_id.clone()),
-                    status: SwarmTaskStatus::Interrupted,
-                    result: result.result.clone(),
-                    error: Some(err.clone()),
-                    steps_taken: result.steps_taken,
-                    duration_ms: result.duration_ms,
-                },
-                SubAgentStatus::Failed(err) => SwarmTaskOutcome {
-                    task_id: task_id.clone(),
-                    agent_id: Some(result.agent_id.clone()),
-                    status: SwarmTaskStatus::Failed,
-                    result: result.result.clone(),
-                    error: Some(err.clone()),
-                    steps_taken: result.steps_taken,
-                    duration_ms: result.duration_ms,
-                },
-                SubAgentStatus::Cancelled => SwarmTaskOutcome {
-                    task_id: task_id.clone(),
-                    agent_id: Some(result.agent_id.clone()),
-                    status: SwarmTaskStatus::Cancelled,
-                    result: result.result.clone(),
-                    error: Some("Cancelled".to_string()),
-                    steps_taken: result.steps_taken,
-                    duration_ms: result.duration_ms,
-                },
-                SubAgentStatus::Running => SwarmTaskOutcome {
-                    task_id: task_id.clone(),
-                    agent_id: Some(result.agent_id.clone()),
-                    status: SwarmTaskStatus::Running,
-                    result: result.result.clone(),
-                    error: None,
-                    steps_taken: result.steps_taken,
-                    duration_ms: result.duration_ms,
-                },
+                SubAgentStatus::Completed => swarm_task_outcome(
+                    task_id,
+                    task_meta.get(task_id),
+                    Some(result.agent_id.clone()),
+                    SwarmTaskStatus::Completed,
+                    result.result.clone(),
+                    None,
+                    result.steps_taken,
+                    result.duration_ms,
+                ),
+                SubAgentStatus::Interrupted(err) => swarm_task_outcome(
+                    task_id,
+                    task_meta.get(task_id),
+                    Some(result.agent_id.clone()),
+                    SwarmTaskStatus::Interrupted,
+                    result.result.clone(),
+                    Some(err.clone()),
+                    result.steps_taken,
+                    result.duration_ms,
+                ),
+                SubAgentStatus::Failed(err) => swarm_task_outcome(
+                    task_id,
+                    task_meta.get(task_id),
+                    Some(result.agent_id.clone()),
+                    SwarmTaskStatus::Failed,
+                    result.result.clone(),
+                    Some(err.clone()),
+                    result.steps_taken,
+                    result.duration_ms,
+                ),
+                SubAgentStatus::Cancelled => swarm_task_outcome(
+                    task_id,
+                    task_meta.get(task_id),
+                    Some(result.agent_id.clone()),
+                    SwarmTaskStatus::Cancelled,
+                    result.result.clone(),
+                    Some("Cancelled".to_string()),
+                    result.steps_taken,
+                    result.duration_ms,
+                ),
+                SubAgentStatus::Running => swarm_task_outcome(
+                    task_id,
+                    task_meta.get(task_id),
+                    Some(result.agent_id.clone()),
+                    SwarmTaskStatus::Running,
+                    result.result.clone(),
+                    None,
+                    result.steps_taken,
+                    result.duration_ms,
+                ),
             },
-            Some(SwarmTaskState::Failed(message)) => SwarmTaskOutcome {
-                task_id: task_id.clone(),
-                agent_id: None,
-                status: SwarmTaskStatus::Failed,
-                result: None,
-                error: Some(message.clone()),
-                steps_taken: 0,
-                duration_ms: 0,
-            },
-            Some(SwarmTaskState::Skipped(message)) => SwarmTaskOutcome {
-                task_id: task_id.clone(),
-                agent_id: None,
-                status: SwarmTaskStatus::Skipped,
-                result: None,
-                error: Some(message.clone()),
-                steps_taken: 0,
-                duration_ms: 0,
-            },
-            Some(SwarmTaskState::Cancelled(message)) => SwarmTaskOutcome {
-                task_id: task_id.clone(),
-                agent_id: None,
-                status: SwarmTaskStatus::Cancelled,
-                result: None,
-                error: Some(message.clone()),
-                steps_taken: 0,
-                duration_ms: 0,
-            },
-            _ => SwarmTaskOutcome {
-                task_id: task_id.clone(),
-                agent_id: None,
-                status: SwarmTaskStatus::Pending,
-                result: None,
-                error: None,
-                steps_taken: 0,
-                duration_ms: 0,
-            },
+            Some(SwarmTaskState::Failed(message)) => swarm_task_outcome(
+                task_id,
+                task_meta.get(task_id),
+                None,
+                SwarmTaskStatus::Failed,
+                None,
+                Some(message.clone()),
+                0,
+                0,
+            ),
+            Some(SwarmTaskState::Skipped(message)) => swarm_task_outcome(
+                task_id,
+                task_meta.get(task_id),
+                None,
+                SwarmTaskStatus::Skipped,
+                None,
+                Some(message.clone()),
+                0,
+                0,
+            ),
+            Some(SwarmTaskState::Cancelled(message)) => swarm_task_outcome(
+                task_id,
+                task_meta.get(task_id),
+                None,
+                SwarmTaskStatus::Cancelled,
+                None,
+                Some(message.clone()),
+                0,
+                0,
+            ),
+            _ => swarm_task_outcome(
+                task_id,
+                task_meta.get(task_id),
+                None,
+                SwarmTaskStatus::Pending,
+                None,
+                None,
+                0,
+                0,
+            ),
         })
         .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn swarm_task_outcome(
+    task_id: &str,
+    meta: Option<&SwarmTaskMeta>,
+    agent_id: Option<String>,
+    status: SwarmTaskStatus,
+    result: Option<String>,
+    error: Option<String>,
+    steps_taken: u32,
+    duration_ms: u64,
+) -> SwarmTaskOutcome {
+    let is_terminal = !matches!(status, SwarmTaskStatus::Pending | SwarmTaskStatus::Running);
+    let started_at_ms = (!matches!(status, SwarmTaskStatus::Pending)).then_some(0);
+    SwarmTaskOutcome {
+        task_id: task_id.to_string(),
+        worker_id: meta
+            .map(|meta| meta.worker_id.clone())
+            .unwrap_or_else(|| format!("task:{task_id}")),
+        agent_id,
+        label: meta
+            .map(|meta| meta.label.clone())
+            .unwrap_or_else(|| task_id.to_string()),
+        model: meta.map(|meta| meta.model.clone()).unwrap_or_default(),
+        nickname: meta.map(|meta| meta.nickname.clone()),
+        status,
+        result,
+        error,
+        steps_taken,
+        duration_ms,
+        started_at_ms,
+        ended_at_ms: is_terminal.then_some(duration_ms),
+    }
 }
 
 fn build_counts(outcomes: &[SwarmTaskOutcome]) -> SwarmCounts {
@@ -1590,9 +1874,10 @@ fn visit(
 #[cfg(test)]
 mod tests {
     use super::{
-        SwarmStatus, SwarmTaskSpec, SwarmTaskStatus, build_initial_outcome, parse_swarm_id,
-        resolve_task_assignment, retry_delay_for_attempt, run_swarm, task_retry_count,
-        task_timeout, validate_swarm_tasks,
+        SwarmCounts, SwarmOutcome, SwarmStatus, SwarmTaskOutcome, SwarmTaskSpec, SwarmTaskStatus,
+        build_background_swarm_payload, build_collected_swarm_payload, build_initial_outcome,
+        parse_swarm_id, prepare_swarm_task_meta, resolve_task_assignment, retry_delay_for_attempt,
+        run_swarm, task_retry_count, task_timeout, validate_swarm_tasks,
     };
     use crate::client::DeepSeekClient;
     use crate::config::Config;
@@ -1605,6 +1890,22 @@ mod tests {
     use tokio::sync::Mutex;
     use tokio_util::sync::CancellationToken;
 
+    fn stub_runtime(workspace: &std::path::Path) -> SubAgentRuntime {
+        let config = Config {
+            api_key: Some("test-key".to_string()),
+            ..Default::default()
+        };
+        let client = DeepSeekClient::new(&config).expect("client");
+        SubAgentRuntime::new(
+            client,
+            "deepseek-v4-flash".to_string(),
+            ToolContext::new(workspace),
+            true,
+            None,
+            Arc::new(Mutex::new(SubAgentManager::new(workspace.to_path_buf(), 2))),
+        )
+    }
+
     fn task(id: &str, deps: &[&str]) -> SwarmTaskSpec {
         SwarmTaskSpec {
             id: id.to_string(),
@@ -1612,6 +1913,7 @@ mod tests {
             agent_type: None,
             role: None,
             objective: None,
+            model: None,
             retry_count: None,
             retry_delay_ms: None,
             task_timeout_ms: None,
@@ -1694,10 +1996,151 @@ mod tests {
     #[test]
     fn build_initial_outcome_marks_swarm_running() {
         let tasks = vec![task("a", &[]), task("b", &["a"])];
-        let outcome = build_initial_outcome("swarm_test", &tasks);
+        let temp = tempdir().expect("tempdir");
+        let runtime = stub_runtime(temp.path());
+        let meta = prepare_swarm_task_meta("swarm_test", &tasks, &runtime)
+            .expect("metadata should resolve");
+        let outcome = build_initial_outcome("swarm_test", &tasks, &meta);
         assert!(matches!(outcome.status, SwarmStatus::Running));
         assert_eq!(outcome.counts.total, 2);
         assert_eq!(outcome.counts.pending, 2);
+    }
+
+    #[test]
+    fn prepare_swarm_task_meta_resolves_models_and_stable_nicknames() {
+        let temp = tempdir().expect("tempdir");
+        let mut runtime = stub_runtime(temp.path());
+        runtime
+            .role_models
+            .insert("explorer".to_string(), "deepseek-v4-pro".to_string());
+
+        let mut configured = task("scan", &[]);
+        configured.role = Some("explorer".to_string());
+        let mut explicit = task("write", &[]);
+        explicit.role = Some("explorer".to_string());
+        explicit.model = Some("deepseek-v4-flash".to_string());
+
+        let tasks = vec![configured, explicit];
+        let meta = prepare_swarm_task_meta("swarm_test", &tasks, &runtime)
+            .expect("metadata should resolve");
+
+        assert_eq!(meta["scan"].model, "deepseek-v4-pro");
+        assert_eq!(meta["write"].model, "deepseek-v4-flash");
+        assert_eq!(meta["scan"].nickname, "Blue");
+        assert_eq!(meta["write"].nickname, "Humpback");
+        assert_eq!(meta["scan"].worker_id, "swarm_test:scan");
+    }
+
+    #[test]
+    fn prepare_swarm_task_meta_rejects_invalid_model_before_spawn() {
+        let temp = tempdir().expect("tempdir");
+        let runtime = stub_runtime(temp.path());
+        let mut bad = task("bad", &[]);
+        bad.model = Some("not-a-model".to_string());
+
+        let err = prepare_swarm_task_meta("swarm_test", &[bad], &runtime)
+            .expect_err("invalid model should fail");
+
+        assert!(err.to_string().contains("Invalid task.model"));
+    }
+
+    #[test]
+    fn collected_swarm_payload_overrides_block_false_for_parent_turn() {
+        let outcome = SwarmOutcome {
+            swarm_id: "swarm_test".to_string(),
+            status: SwarmStatus::Completed,
+            duration_ms: 10,
+            counts: SwarmCounts {
+                total: 1,
+                completed: 1,
+                interrupted: 0,
+                failed: 0,
+                cancelled: 0,
+                skipped: 0,
+                running: 0,
+                pending: 0,
+            },
+            tasks: vec![SwarmTaskOutcome {
+                task_id: "a".to_string(),
+                worker_id: "swarm_test:a".to_string(),
+                agent_id: Some("agent_a".to_string()),
+                label: "a".to_string(),
+                model: "deepseek-v4-flash".to_string(),
+                nickname: Some("Blue".to_string()),
+                status: SwarmTaskStatus::Completed,
+                result: Some("ok".to_string()),
+                error: None,
+                steps_taken: 1,
+                duration_ms: 10,
+                started_at_ms: Some(0),
+                ended_at_ms: Some(10),
+            }],
+        };
+
+        let payload =
+            build_collected_swarm_payload(&outcome, false).expect("payload should serialize");
+
+        assert_eq!(payload["requested_block"], false);
+        assert_eq!(payload["effective_block"], true);
+        assert_eq!(payload["counts"]["completed"], 1);
+        assert!(
+            payload["next_action"]
+                .as_str()
+                .expect("next action")
+                .contains("Synthesize")
+        );
+        assert!(
+            payload["block_note"]
+                .as_str()
+                .expect("block note")
+                .contains("block:false")
+        );
+    }
+
+    #[test]
+    fn background_swarm_payload_keeps_parent_turn_nonblocking() {
+        let outcome = SwarmOutcome {
+            swarm_id: "swarm_bg".to_string(),
+            status: SwarmStatus::Running,
+            duration_ms: 0,
+            counts: SwarmCounts {
+                total: 1,
+                completed: 0,
+                interrupted: 0,
+                failed: 0,
+                cancelled: 0,
+                skipped: 0,
+                running: 0,
+                pending: 1,
+            },
+            tasks: vec![SwarmTaskOutcome {
+                task_id: "a".to_string(),
+                worker_id: "swarm_bg:a".to_string(),
+                agent_id: None,
+                label: "do work".to_string(),
+                model: "deepseek-v4-flash".to_string(),
+                nickname: Some("Blue".to_string()),
+                status: SwarmTaskStatus::Pending,
+                result: None,
+                error: None,
+                steps_taken: 0,
+                duration_ms: 0,
+                started_at_ms: None,
+                ended_at_ms: None,
+            }],
+        };
+
+        let payload =
+            build_background_swarm_payload(&outcome, false).expect("payload should serialize");
+
+        assert_eq!(payload["requested_block"], false);
+        assert_eq!(payload["effective_block"], false);
+        assert!(
+            payload["next_action"]
+                .as_str()
+                .expect("next action")
+                .contains("Continue the parent turn")
+        );
     }
 
     #[tokio::test]
@@ -1725,11 +2168,16 @@ mod tests {
         )
         .with_cancel_token(cancel_token);
 
+        let tasks = vec![task("a", &[])];
+        let meta = prepare_swarm_task_meta("swarm_test", &tasks, &runtime)
+            .expect("metadata should resolve");
+
         let outcome = run_swarm(
             &manager,
             &runtime,
             "swarm_test".to_string(),
-            vec![task("a", &[])],
+            tasks,
+            meta,
             None,
             Duration::from_secs(60),
             1,

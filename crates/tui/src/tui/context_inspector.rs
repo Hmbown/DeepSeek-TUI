@@ -4,11 +4,17 @@ use std::collections::HashSet;
 use std::fmt::Write;
 
 use crate::compaction::estimate_input_tokens_conservative;
-use crate::models::{DEFAULT_CONTEXT_WINDOW_TOKENS, context_window_for_model};
+use crate::models::{DEFAULT_CONTEXT_WINDOW_TOKENS, SystemPrompt, context_window_for_model};
 use crate::session_manager::SessionContextReference;
 use crate::tui::app::{App, ToolDetailRecord};
 use crate::tui::file_mention::ContextReferenceSource;
 use crate::utils::estimate_message_chars;
+
+/// Marker used by the engine's `append_working_set_summary` to tag the
+/// volatile tail block in the system prompt. Replicated here so the
+/// context inspector can distinguish stable prefix blocks from the
+/// ephemeral working-set block without importing engine internals.
+const WORKING_SET_MARKER: &str = "## Repo Working Set";
 
 const CONTEXT_WARNING_THRESHOLD_PERCENT: f64 = 85.0;
 const CONTEXT_CRITICAL_THRESHOLD_PERCENT: f64 = 95.0;
@@ -48,6 +54,8 @@ pub fn build_context_inspector_text(app: &App) -> String {
     );
 
     let _ = writeln!(out);
+    push_system_prompt_structure(&mut out, app);
+    let _ = writeln!(out);
     push_references(&mut out, &app.session_context_references);
     let _ = writeln!(out);
     push_tools(&mut out, app);
@@ -73,6 +81,91 @@ fn context_status(percent: f64) -> &'static str {
     } else {
         "ok"
     }
+}
+
+/// Inspect the system prompt structure, split into cache-friendly stable
+/// prefix blocks and the volatile working-set tail block.
+fn push_system_prompt_structure(out: &mut String, app: &App) {
+    let _ = writeln!(out, "System Prompt Structure");
+    let _ = writeln!(out, "-----------------------");
+
+    // Conservative token estimate: ~3 chars per token (consistent with
+    // compaction.rs internal helpers — replicated here to avoid depending
+    // on a private function).
+    let text_tokens = |text: &str| text.chars().count().div_ceil(3);
+
+    let total_est = match &app.system_prompt {
+        Some(SystemPrompt::Text(t)) => text_tokens(t),
+        Some(SystemPrompt::Blocks(blocks)) => blocks.iter().map(|b| text_tokens(&b.text)).sum(),
+        None => 0,
+    };
+
+    match &app.system_prompt {
+        Some(SystemPrompt::Blocks(blocks)) => {
+            let working_set_idx = blocks
+                .iter()
+                .position(|b| b.text.contains(WORKING_SET_MARKER));
+            let (stable_count, working_block) = match working_set_idx {
+                Some(idx) => (idx, Some(&blocks[idx])),
+                None => (blocks.len(), None),
+            };
+
+            let stable_tokens: usize = blocks
+                .iter()
+                .take(stable_count)
+                .map(|b| text_tokens(&b.text))
+                .sum();
+            let working_tokens = working_block.map(|b| text_tokens(&b.text)).unwrap_or(0);
+
+            let _ = writeln!(
+                out,
+                "  Stable prefix: {stable_count} block(s), ~{stable_tokens} tokens  [cache-friendly]"
+            );
+            if let Some(block) = working_block {
+                let _ = writeln!(
+                    out,
+                    "  Volatile working set: 1 block, ~{working_tokens} tokens  [changes every turn]"
+                );
+                let _ = writeln!(
+                    out,
+                    "    First line: {}",
+                    block.text.lines().next().unwrap_or("(empty)")
+                );
+            } else {
+                let _ = writeln!(out, "  Volatile working set: none");
+            }
+            let _ = writeln!(
+                out,
+                "  Total: {} block(s), ~{total_est} tokens",
+                blocks.len()
+            );
+        }
+        Some(SystemPrompt::Text(text)) => {
+            // Single text blob — stable/volatile not distinguishable
+            let has_working = text.contains(WORKING_SET_MARKER);
+            if has_working {
+                let _ = writeln!(
+                    out,
+                    "  Single text blob (~{total_est} tokens) [contains working-set marker — structure unclear]"
+                );
+            } else {
+                let _ = writeln!(
+                    out,
+                    "  Single text blob (~{total_est} tokens) [stable prefix only]"
+                );
+            }
+        }
+        None => {
+            let _ = writeln!(out, "  No system prompt set.");
+        }
+    }
+
+    // Cache-economics hint
+    let _ = writeln!(
+        out,
+        "  Tip: Stable prefix blocks are DeepSeek V4 prefix-cache eligible. \
+        Volatile working-set changes break the cache only for the tail."
+    );
 }
 
 fn push_references(out: &mut String, references: &[SessionContextReference]) {
@@ -278,5 +371,89 @@ mod tests {
 
         let text = build_context_inspector_text(&app);
         assert!(text.contains("Context: critical"), "{text}");
+    }
+
+    #[test]
+    fn inspector_no_system_prompt_shows_section() {
+        let app = test_app();
+        let text = build_context_inspector_text(&app);
+        assert!(text.contains("System Prompt Structure"));
+        assert!(text.contains("No system prompt set."));
+    }
+
+    #[test]
+    fn inspector_blocks_format_shows_stable_prefix_and_working_set() {
+        let mut app = test_app();
+        use crate::models::SystemBlock;
+        app.system_prompt = Some(SystemPrompt::Blocks(vec![
+            SystemBlock {
+                block_type: "text".to_string(),
+                text: "## Stable Base\n\nYou are DeepSeek TUI.".to_string(),
+                cache_control: None,
+            },
+            SystemBlock {
+                block_type: "text".to_string(),
+                text: format!("{WORKING_SET_MARKER}\nsrc/main.rs changed"),
+                cache_control: None,
+            },
+        ]));
+
+        let text = build_context_inspector_text(&app);
+        assert!(text.contains("System Prompt Structure"));
+        assert!(
+            text.contains("Stable prefix: 1 block"),
+            "stable prefix count: {text}"
+        );
+        assert!(
+            text.contains("Volatile working set: 1 block"),
+            "working set section: {text}"
+        );
+        assert!(
+            text.contains("[cache-friendly]"),
+            "cache hint for stable: {text}"
+        );
+        assert!(
+            text.contains("[changes every turn]"),
+            "volatile marker: {text}"
+        );
+        assert!(
+            text.contains("First line: ## Repo Working Set"),
+            "first line of working set: {text}"
+        );
+    }
+
+    #[test]
+    fn inspector_blocks_without_working_set_shows_stable_only() {
+        let mut app = test_app();
+        use crate::models::SystemBlock;
+        app.system_prompt = Some(SystemPrompt::Blocks(vec![
+            SystemBlock {
+                block_type: "text".to_string(),
+                text: "## Stable Base".to_string(),
+                cache_control: None,
+            },
+            SystemBlock {
+                block_type: "text".to_string(),
+                text: "## Personality\nCalm".to_string(),
+                cache_control: None,
+            },
+        ]));
+
+        let text = build_context_inspector_text(&app);
+        assert!(text.contains("Stable prefix: 2 block(s)"));
+        assert!(text.contains("Volatile working set: none"));
+    }
+
+    #[test]
+    fn inspector_text_prompt_shows_single_blob() {
+        let mut app = test_app();
+        app.system_prompt = Some(SystemPrompt::Text(
+            "You are DeepSeek TUI.\n## Repo Working Set\nsrc/".to_string(),
+        ));
+
+        let text = build_context_inspector_text(&app);
+        assert!(text.contains("System Prompt Structure"));
+        assert!(text.contains("Single text blob"));
+        assert!(text.contains("working-set marker"));
     }
 }
