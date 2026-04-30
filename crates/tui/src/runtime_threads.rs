@@ -1559,6 +1559,7 @@ impl RuntimeThreadManager {
                 active_thread_id: Some(thread.id.clone()),
                 shell_manager: None,
             },
+            subagent_model_overrides: self.config.subagent_model_overrides(),
         };
 
         let engine = spawn_engine(engine_cfg, &self.config);

@@ -5,6 +5,10 @@ const MAX_OUTPUT_SIZE: usize = 30_000;
 /// Limits for summary strings in tool metadata.
 const SUMMARY_MAX_LINES: usize = 3;
 const SUMMARY_MAX_CHARS: usize = 240;
+/// Maximum number of preserved high-signal lines extracted from the tail
+/// when output is truncated (#242). Bounded so the preserved summary
+/// itself can never blow up the context window.
+const MAX_PRESERVED_SUMMARY_LINES: usize = 80;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct TruncationMeta {
@@ -27,19 +31,103 @@ pub(crate) fn truncate_with_meta(output: &str) -> (String, TruncationMeta) {
     }
 
     let cut_index = char_boundary_at_or_before(output, MAX_OUTPUT_SIZE);
-    let truncated = &output[..cut_index];
+    let head = &output[..cut_index];
+    let tail = &output[cut_index..];
     let omitted = original_len.saturating_sub(cut_index);
     let note =
         format!("...\n\n[Output truncated at {MAX_OUTPUT_SIZE} bytes. {omitted} bytes omitted.]");
 
+    // Preserve high-signal summary lines from the tail (cargo test results,
+    // rustc errors, panics, completion markers). Without this the agent
+    // re-runs `cargo test | tail` repeatedly to find pass/fail (#242).
+    let mut combined = format!("{head}{note}");
+    let preserved = collect_summary_lines(tail);
+    if !preserved.is_empty() {
+        combined.push_str("\n\n[Preserved summary lines from omitted tail]\n");
+        combined.push_str(&preserved.join("\n"));
+    }
+
     (
-        format!("{truncated}{note}"),
+        combined,
         TruncationMeta {
             original_len,
             omitted,
             truncated: true,
         },
     )
+}
+
+/// Extract high-signal summary lines from a chunk of output that would
+/// otherwise be discarded by truncation. Recognises Cargo/rustc output,
+/// generic test framework summaries, panic markers, exit-status lines,
+/// and `Finished`/`running ...` markers. Returns at most
+/// `MAX_PRESERVED_SUMMARY_LINES` lines, oldest-first within each match
+/// class so the most actionable signal is at the end.
+pub(crate) fn collect_summary_lines(text: &str) -> Vec<String> {
+    let mut preserved: Vec<String> = Vec::new();
+    for line in text.lines() {
+        if preserved.len() >= MAX_PRESERVED_SUMMARY_LINES {
+            break;
+        }
+        if is_summary_line(line) {
+            preserved.push(line.to_string());
+        }
+    }
+    preserved
+}
+
+/// Heuristics for "this line is worth preserving even when most of the
+/// output is dropped." Tuned for Cargo/rustc and generic test runner
+/// vocabulary. Intentionally conservative: false positives only cost a
+/// handful of bytes; false negatives force the agent to re-run gates.
+fn is_summary_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    if trimmed.is_empty() {
+        return false;
+    }
+    // Cargo / rustc canonical markers. Note `trim_start` already stripped
+    // any leading whitespace, so match the bare word — the indentation
+    // Cargo prints (e.g. "    Finished") would never reach this point.
+    if trimmed.starts_with("test result:")
+        || trimmed.starts_with("failures:")
+        || trimmed.starts_with("FAILED")
+        || trimmed.starts_with("error[")
+        || trimmed.starts_with("error:")
+        || trimmed.starts_with("warning:")
+        || trimmed.starts_with("panicked at")
+        || trimmed.starts_with("note:")
+        || trimmed.starts_with("help:")
+        || trimmed.starts_with("Finished")
+        || trimmed.starts_with("Compiling")
+        || trimmed.starts_with("Building")
+        || trimmed.starts_with("Running")
+        || trimmed.starts_with("running ")
+        || trimmed.starts_with("Doc-tests")
+        || trimmed.starts_with("---- ")
+    {
+        return true;
+    }
+    // Generic test runner vocabulary.
+    if trimmed.contains("PASS") || trimmed.contains("FAIL") || trimmed.contains("ASSERT") {
+        return true;
+    }
+    // Process-level signal lines.
+    if trimmed.starts_with("Killed")
+        || trimmed.starts_with("Aborted")
+        || trimmed.starts_with("Segmentation fault")
+        || trimmed.starts_with("Error:")
+        || trimmed.starts_with("exit status")
+        || trimmed.starts_with("exit code")
+    {
+        return true;
+    }
+    // `test some::name ... ok|FAILED|ignored` is the per-test result line in
+    // libtest. Cheap to match and useful for pinpointing the failing case.
+    if trimmed.starts_with("test ") && (trimmed.ends_with("FAILED") || trimmed.ends_with("ignored"))
+    {
+        return true;
+    }
+    false
 }
 
 fn char_boundary_at_or_before(text: &str, max_bytes: usize) -> usize {
@@ -94,5 +182,71 @@ pub(crate) fn summarize_output(text: &str) -> String {
         String::new()
     } else {
         truncate_chars(&summary, SUMMARY_MAX_CHARS)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncation_preserves_cargo_test_summary_lines_from_tail() {
+        let mut head = String::with_capacity(MAX_OUTPUT_SIZE + 4_000);
+        head.push_str("running 5 tests\n");
+        for i in 0..3_000 {
+            head.push_str(&format!("test test::case_{i} ... ok\n"));
+        }
+        // Pad to force tail truncation
+        while head.len() < MAX_OUTPUT_SIZE {
+            head.push_str("...padding line below threshold...\n");
+        }
+        head.push_str("\ntest result: ok. 1687 passed; 0 failed; 2 ignored\n");
+        head.push_str("    Finished `dev` profile target(s) in 4.87s\n");
+
+        let (truncated, meta) = truncate_with_meta(&head);
+        assert!(meta.truncated, "expected truncation");
+        assert!(
+            truncated.contains("test result: ok. 1687 passed"),
+            "summary line must be preserved\nGot: {}",
+            &truncated[truncated.len().saturating_sub(400)..]
+        );
+        assert!(
+            truncated.contains("Finished"),
+            "Finished marker must be preserved"
+        );
+    }
+
+    #[test]
+    fn truncation_preserves_failure_lines_from_tail() {
+        let mut head = String::with_capacity(MAX_OUTPUT_SIZE + 1_000);
+        for _ in 0..MAX_OUTPUT_SIZE {
+            head.push('a');
+        }
+        head.push_str("\nfailures:\n  test::flaky_thing FAILED\n");
+        head.push_str("test result: FAILED. 0 passed; 1 failed\n");
+
+        let (truncated, _meta) = truncate_with_meta(&head);
+        assert!(truncated.contains("failures:"), "must preserve failures:");
+        assert!(truncated.contains("FAILED"), "must preserve FAILED");
+    }
+
+    #[test]
+    fn collect_summary_lines_skips_noise() {
+        let body = "\nblah blah\nrandom line\nokay\n\n";
+        assert!(collect_summary_lines(body).is_empty());
+    }
+
+    #[test]
+    fn collect_summary_lines_picks_rustc_errors() {
+        let body = "\
+some preamble
+error[E0277]: the trait `Foo` is not implemented for `Bar`
+  --> src/lib.rs:42:9
+warning: unused variable
+note: see help
+";
+        let preserved = collect_summary_lines(body);
+        assert!(preserved.iter().any(|line| line.contains("error[E0277]")));
+        assert!(preserved.iter().any(|line| line.contains("warning:")));
     }
 }

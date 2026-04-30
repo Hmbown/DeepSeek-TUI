@@ -109,6 +109,156 @@ fn selection_has_content_rejects_zero_width_selection() {
 }
 
 #[test]
+fn mouse_selection_autocopies_on_release_without_ctrl_c() {
+    let mut app = create_test_app();
+    app.history = vec![HistoryCell::Assistant {
+        content: "alpha beta".to_string(),
+        streaming: false,
+    }];
+    app.resync_history_revisions();
+    app.transcript_cache.ensure(
+        &app.history,
+        &app.history_revisions,
+        80,
+        app.transcript_render_options(),
+    );
+    app.last_transcript_area = Some(Rect {
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 8,
+    });
+    app.last_transcript_top = 0;
+    app.last_transcript_total = app.transcript_cache.total_lines();
+    app.last_transcript_padding_top = 0;
+
+    handle_mouse_event(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+    handle_mouse_event(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 8,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+    handle_mouse_event(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 8,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+
+    assert_eq!(app.status_message.as_deref(), Some("Selection copied"));
+    assert!(
+        app.clipboard
+            .last_written_text()
+            .is_some_and(|text| text.contains("alpha")),
+        "selection should be written to clipboard"
+    );
+}
+
+#[test]
+fn right_click_opens_context_menu() {
+    let mut app = create_test_app();
+
+    let events = handle_mouse_event(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Right),
+            column: 4,
+            row: 4,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+
+    assert!(events.is_empty());
+    assert_eq!(app.view_stack.top_kind(), Some(ModalKind::ContextMenu));
+}
+
+#[test]
+fn right_click_menu_includes_selection_and_clicked_cell_actions() {
+    let mut app = create_test_app();
+    app.history = vec![HistoryCell::Assistant {
+        content: "alpha beta".to_string(),
+        streaming: false,
+    }];
+    app.resync_history_revisions();
+    app.transcript_cache.ensure(
+        &app.history,
+        &app.history_revisions,
+        80,
+        app.transcript_render_options(),
+    );
+    app.last_transcript_area = Some(Rect {
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 8,
+    });
+    app.last_transcript_top = 0;
+    app.last_transcript_total = app.transcript_cache.total_lines();
+    app.transcript_selection.anchor = Some(TranscriptSelectionPoint {
+        line_index: 0,
+        column: 0,
+    });
+    app.transcript_selection.head = Some(TranscriptSelectionPoint {
+        line_index: 0,
+        column: 5,
+    });
+
+    let entries = build_context_menu_entries(
+        &app,
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Right),
+            column: 2,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+    let labels = entries
+        .iter()
+        .map(|entry| entry.label.as_str())
+        .collect::<Vec<_>>();
+
+    assert!(labels.contains(&"Copy selection"));
+    assert!(labels.contains(&"Open selection"));
+    assert!(labels.contains(&"Open details"));
+    assert!(labels.contains(&"Paste"));
+}
+
+#[test]
+fn mouse_events_do_not_mutate_transcript_behind_modal() {
+    let mut app = create_test_app();
+    app.view_stack.push(HelpView::new_for_locale(app.ui_locale));
+
+    let events = handle_mouse_event(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 4,
+            row: 4,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+
+    assert!(events.is_empty());
+    assert_eq!(app.pending_scroll_delta, 0);
+    assert_eq!(app.view_stack.top_kind(), Some(ModalKind::Help));
+}
+
+#[test]
 fn copy_shortcut_accepts_cmd_and_ctrl_shift_only() {
     assert!(is_copy_shortcut(&KeyEvent::new(
         KeyCode::Char('c'),
@@ -430,13 +580,16 @@ fn spans_text(spans: &[Span<'_>]) -> String {
 }
 
 #[test]
-fn alt_4_switches_to_plan_mode() {
+fn alt_4_focuses_agents_sidebar_without_switching_modes() {
     let mut app = create_test_app();
     app.mode = AppMode::Agent;
+    app.sidebar_focus = SidebarFocus::Auto;
 
     apply_alt_4_shortcut(&mut app, KeyModifiers::ALT);
 
-    assert_eq!(app.mode, AppMode::Plan);
+    assert_eq!(app.mode, AppMode::Agent);
+    assert_eq!(app.sidebar_focus, SidebarFocus::Agents);
+    assert_eq!(app.status_message.as_deref(), Some("Sidebar focus: agents"));
 }
 
 #[test]
@@ -463,6 +616,8 @@ fn make_subagent(
             objective: format!("objective-{id}"),
             role: Some("worker".to_string()),
         },
+        model: "deepseek-v4-flash".to_string(),
+        nickname: None,
         status,
         result: None,
         steps_taken: 0,
@@ -544,6 +699,27 @@ fn subagent_token_usage_updates_live_cost_counter_without_card_change() {
         app.history.is_empty(),
         "usage-only mailbox messages should not allocate a sub-agent card"
     );
+}
+
+#[test]
+fn subagent_token_usage_is_deduped_by_mailbox_sequence() {
+    let mut app = create_test_app();
+    let usage = crate::tools::subagent::MailboxMessage::TokenUsage {
+        agent_id: "agent-a".to_string(),
+        model: "deepseek-v4-flash".to_string(),
+        usage: crate::models::Usage {
+            input_tokens: 10_000,
+            output_tokens: 1_000,
+            ..Default::default()
+        },
+    };
+
+    handle_subagent_mailbox(&mut app, 7, &usage);
+    let first = app.subagent_cost;
+    handle_subagent_mailbox(&mut app, 7, &usage);
+    assert_eq!(app.subagent_cost, first);
+    handle_subagent_mailbox(&mut app, 8, &usage);
+    assert!(app.subagent_cost > first);
 }
 
 #[test]
@@ -2375,6 +2551,159 @@ fn agent_swarm_result_sync_replaces_seeded_slots_with_final_task_outcomes() {
 }
 
 #[test]
+fn agent_swarm_progress_event_replaces_stale_pending_slots() {
+    let mut app = create_test_app();
+    assert!(seed_fanout_card_from_tool_call(
+        &mut app,
+        "agent_swarm",
+        &serde_json::json!({
+            "tasks": [
+                { "id": "a", "prompt": "First task" },
+                { "id": "b", "prompt": "Second task" },
+                { "id": "c", "prompt": "Third task" }
+            ]
+        }),
+    ));
+
+    let outcome = crate::tools::swarm::SwarmOutcome {
+        swarm_id: "swarm_done".to_string(),
+        status: crate::tools::swarm::SwarmStatus::Completed,
+        duration_ms: 250,
+        counts: crate::tools::swarm::SwarmCounts {
+            total: 3,
+            completed: 3,
+            interrupted: 0,
+            failed: 0,
+            cancelled: 0,
+            skipped: 0,
+            running: 0,
+            pending: 0,
+        },
+        tasks: vec![
+            crate::tools::swarm::SwarmTaskOutcome {
+                task_id: "a".to_string(),
+                worker_id: "swarm_done:a".to_string(),
+                agent_id: Some("agent_a".to_string()),
+                label: "First task".to_string(),
+                model: "deepseek-v4-flash".to_string(),
+                nickname: Some("Blue".to_string()),
+                status: crate::tools::swarm::SwarmTaskStatus::Completed,
+                result: Some("a ok".to_string()),
+                error: None,
+                steps_taken: 1,
+                duration_ms: 100,
+                started_at_ms: Some(0),
+                ended_at_ms: Some(100),
+            },
+            crate::tools::swarm::SwarmTaskOutcome {
+                task_id: "b".to_string(),
+                worker_id: "swarm_done:b".to_string(),
+                agent_id: Some("agent_b".to_string()),
+                label: "Second task".to_string(),
+                model: "deepseek-v4-flash".to_string(),
+                nickname: Some("Humpback".to_string()),
+                status: crate::tools::swarm::SwarmTaskStatus::Completed,
+                result: Some("b ok".to_string()),
+                error: None,
+                steps_taken: 1,
+                duration_ms: 100,
+                started_at_ms: Some(0),
+                ended_at_ms: Some(100),
+            },
+            crate::tools::swarm::SwarmTaskOutcome {
+                task_id: "c".to_string(),
+                worker_id: "swarm_done:c".to_string(),
+                agent_id: Some("agent_c".to_string()),
+                label: "Third task".to_string(),
+                model: "deepseek-v4-flash".to_string(),
+                nickname: Some("Sperm".to_string()),
+                status: crate::tools::swarm::SwarmTaskStatus::Completed,
+                result: Some("c ok".to_string()),
+                error: None,
+                steps_taken: 1,
+                duration_ms: 100,
+                started_at_ms: Some(0),
+                ended_at_ms: Some(100),
+            },
+        ],
+    };
+
+    assert!(sync_fanout_card_from_swarm_outcome(&mut app, &outcome));
+
+    let HistoryCell::SubAgent(SubAgentCell::Fanout(card)) = &app.history[0] else {
+        panic!("expected synced fanout card");
+    };
+    assert_eq!(card.worker_count(), 3);
+    assert_eq!(active_fanout_counts(&app), Some((0, 3)));
+    assert!(card.workers.iter().all(|slot| matches!(
+        slot.status,
+        crate::tui::widgets::agent_card::AgentLifecycle::Completed
+    )));
+    assert_eq!(app.subagent_card_index.get("agent_a").copied(), Some(0));
+}
+
+#[test]
+fn fanout_counts_use_canonical_swarm_outcome_not_stale_card_slots() {
+    let mut app = create_test_app();
+    assert!(seed_fanout_card_from_tool_call(
+        &mut app,
+        "agent_swarm",
+        &serde_json::json!({
+            "tasks": [
+                { "id": "a", "prompt": "A" },
+                { "id": "b", "prompt": "B" },
+                { "id": "c", "prompt": "C" },
+                { "id": "d", "prompt": "D" },
+                { "id": "e", "prompt": "E" }
+            ]
+        }),
+    ));
+
+    let outcome = crate::tools::swarm::SwarmOutcome {
+        swarm_id: "swarm_live".to_string(),
+        status: crate::tools::swarm::SwarmStatus::Running,
+        duration_ms: 1000,
+        counts: crate::tools::swarm::SwarmCounts {
+            total: 5,
+            completed: 4,
+            interrupted: 0,
+            failed: 0,
+            cancelled: 0,
+            skipped: 0,
+            running: 1,
+            pending: 0,
+        },
+        tasks: (0..5)
+            .map(|idx| {
+                let task_id = char::from(b'a' + idx as u8).to_string();
+                crate::tools::swarm::SwarmTaskOutcome {
+                    task_id: task_id.clone(),
+                    worker_id: format!("swarm_live:{task_id}"),
+                    agent_id: Some(format!("agent_{task_id}")),
+                    label: task_id.clone(),
+                    model: "deepseek-v4-flash".to_string(),
+                    nickname: Some(["Blue", "Humpback", "Sperm", "Fin", "Sei"][idx].to_string()),
+                    status: if idx == 4 {
+                        crate::tools::swarm::SwarmTaskStatus::Running
+                    } else {
+                        crate::tools::swarm::SwarmTaskStatus::Completed
+                    },
+                    result: None,
+                    error: None,
+                    steps_taken: 0,
+                    duration_ms: 0,
+                    started_at_ms: Some(0),
+                    ended_at_ms: (idx != 4).then_some(0),
+                }
+            })
+            .collect(),
+    };
+
+    assert!(sync_fanout_card_from_swarm_outcome(&mut app, &outcome));
+    assert_eq!(active_fanout_counts(&app), Some((1, 5)));
+}
+
+#[test]
 fn noisy_subagent_progress_keeps_existing_objective_summary() {
     let mut app = create_test_app();
     app.agent_progress.insert(
@@ -2670,13 +2999,13 @@ fn build_pending_input_preview_includes_current_context_chips() {
 #[test]
 fn render_footer_from_with_default_items_renders_mode_and_model() {
     // Default footer composition should show the mode chip and model
-    // identifier — exactly what v0.6.6 users see today.
+    // identifier — whatever the configured default model is.
     let mut app = create_test_app();
     app.session_cost = 0.42;
     let items = crate::config::StatusItem::default_footer();
     let props = render_footer_from(&app, &items, None);
     assert_eq!(props.mode_label, "agent");
-    assert_eq!(props.model, "deepseek-v4-pro");
+    assert!(!props.model.is_empty(), "footer should show a model name");
     // Cost chip is included whenever cost > 0.001.
     assert!(!props.cost.is_empty());
 }
@@ -2707,9 +3036,352 @@ fn render_footer_from_drops_only_unselected_clusters() {
         .collect();
     let props = render_footer_from(&app, &items, None);
     assert_eq!(props.mode_label, "agent");
-    assert_eq!(props.model, "deepseek-v4-pro");
+    assert!(!props.model.is_empty(), "footer should show a model name");
     assert!(
         props.cost.is_empty(),
         "cost cluster should be empty when Cost is disabled"
+    );
+}
+
+/// Regression for issue #244: visible session spend must not decrease.
+/// Sub-agent token usage events arrive out of order and may be reconciled
+/// later (cache adjustments, provisional → final swap). The displayed total
+/// is anchored to a high-water mark so users never see a number go down
+/// during a single session.
+#[test]
+fn displayed_session_cost_is_monotonic_under_negative_reconciliation() {
+    let mut app = create_test_app();
+    app.accrue_subagent_cost(0.50);
+    let after_first = app.displayed_session_cost();
+    assert!((after_first - 0.50).abs() < 1e-6);
+
+    // Simulate reconciliation that lowers the underlying counter (e.g. a
+    // cache discount applied after the fact). The underlying value drops,
+    // but the displayed cost must not.
+    app.subagent_cost = 0.20;
+    let after_recon = app.displayed_session_cost();
+    assert!(
+        after_recon >= after_first,
+        "displayed cost regressed: {after_recon} < {after_first}"
+    );
+
+    // Adding more cost should still bump above the high-water.
+    app.accrue_session_cost(0.10);
+    let after_add = app.displayed_session_cost();
+    assert!(after_add >= after_first);
+}
+
+/// Regression for issue #244: deduplicated mailbox events must not
+/// decrement displayed cost — they should leave it untouched and the
+/// next genuine event must extend it monotonically.
+#[test]
+fn duplicate_mailbox_token_usage_does_not_regress_displayed_cost() {
+    let mut app = create_test_app();
+    let usage = crate::tools::subagent::MailboxMessage::TokenUsage {
+        agent_id: "agent-x".to_string(),
+        model: "deepseek-v4-flash".to_string(),
+        usage: crate::models::Usage {
+            input_tokens: 10_000,
+            output_tokens: 1_000,
+            ..Default::default()
+        },
+    };
+    handle_subagent_mailbox(&mut app, 11, &usage);
+    let baseline = app.displayed_session_cost();
+    assert!(baseline > 0.0);
+
+    // Re-emit the same seq — must be deduped, displayed cost unchanged.
+    handle_subagent_mailbox(&mut app, 11, &usage);
+    assert!(
+        (app.displayed_session_cost() - baseline).abs() < 1e-9,
+        "duplicate mailbox seq must not move displayed cost"
+    );
+
+    // A fresh seq must extend the displayed cost upward.
+    handle_subagent_mailbox(&mut app, 12, &usage);
+    assert!(app.displayed_session_cost() > baseline);
+}
+
+/// Regression for issue #238: two overlapping `agent_swarm` invocations must
+/// each project to their own FanoutCard. Without per-swarm card binding,
+/// SwarmProgress for an older background swarm would clobber the freshly
+/// seeded card of a newer fanout — the contradictory state the user saw.
+#[test]
+fn overlapping_swarms_project_to_distinct_fanout_cards() {
+    use crate::tools::swarm::{SwarmCounts, SwarmOutcome, SwarmStatus, SwarmTaskStatus};
+
+    let mut app = create_test_app();
+
+    // Seed swarm A.
+    assert!(seed_fanout_card_from_tool_call(
+        &mut app,
+        "agent_swarm",
+        &serde_json::json!({"tasks": [{"id": "a1", "prompt": "A1"}, {"id": "a2", "prompt": "A2"}]}),
+    ));
+
+    let outcome_a_initial = SwarmOutcome {
+        swarm_id: "swarm_A".to_string(),
+        status: SwarmStatus::Running,
+        duration_ms: 0,
+        counts: SwarmCounts {
+            total: 2,
+            completed: 0,
+            interrupted: 0,
+            failed: 0,
+            cancelled: 0,
+            skipped: 0,
+            running: 2,
+            pending: 0,
+        },
+        tasks: vec![
+            mk_task("a1", SwarmTaskStatus::Running),
+            mk_task("a2", SwarmTaskStatus::Running),
+        ],
+    };
+    sync_fanout_card_from_swarm_outcome(&mut app, &outcome_a_initial);
+    let card_a_idx = *app
+        .swarm_card_index
+        .get("swarm_A")
+        .expect("swarm A bound to a card");
+
+    // Now seed swarm B before A finishes.
+    app.last_fanout_card_index = None;
+    app.last_swarm_id = None;
+    assert!(seed_fanout_card_from_tool_call(
+        &mut app,
+        "agent_swarm",
+        &serde_json::json!({"tasks": [{"id": "b1", "prompt": "B1"}]}),
+    ));
+    let outcome_b_initial = SwarmOutcome {
+        swarm_id: "swarm_B".to_string(),
+        status: SwarmStatus::Running,
+        duration_ms: 0,
+        counts: SwarmCounts {
+            total: 1,
+            completed: 0,
+            interrupted: 0,
+            failed: 0,
+            cancelled: 0,
+            skipped: 0,
+            running: 1,
+            pending: 0,
+        },
+        tasks: vec![mk_task("b1", SwarmTaskStatus::Running)],
+    };
+    sync_fanout_card_from_swarm_outcome(&mut app, &outcome_b_initial);
+    let card_b_idx = *app
+        .swarm_card_index
+        .get("swarm_B")
+        .expect("swarm B bound to its own card");
+    assert_ne!(card_a_idx, card_b_idx, "each swarm gets its own card");
+
+    // A's terminal SwarmProgress arrives later; it must update card A,
+    // *not* card B.
+    let outcome_a_done = SwarmOutcome {
+        swarm_id: "swarm_A".to_string(),
+        status: SwarmStatus::Completed,
+        duration_ms: 100,
+        counts: SwarmCounts {
+            total: 2,
+            completed: 2,
+            interrupted: 0,
+            failed: 0,
+            cancelled: 0,
+            skipped: 0,
+            running: 0,
+            pending: 0,
+        },
+        tasks: vec![
+            mk_task("a1", SwarmTaskStatus::Completed),
+            mk_task("a2", SwarmTaskStatus::Completed),
+        ],
+    };
+    sync_fanout_card_from_swarm_outcome(&mut app, &outcome_a_done);
+
+    // Card A reflects A's completion; card B still reflects B's pending state.
+    let HistoryCell::SubAgent(SubAgentCell::Fanout(card_a)) = &app.history[card_a_idx] else {
+        panic!("card A is not a fanout cell");
+    };
+    assert_eq!(card_a.worker_count(), 2);
+    assert!(card_a.workers.iter().all(|s| matches!(
+        s.status,
+        crate::tui::widgets::agent_card::AgentLifecycle::Completed
+    )));
+
+    let HistoryCell::SubAgent(SubAgentCell::Fanout(card_b)) = &app.history[card_b_idx] else {
+        panic!("card B is not a fanout cell");
+    };
+    assert_eq!(card_b.worker_count(), 1);
+    assert!(matches!(
+        card_b.workers[0].status,
+        crate::tui::widgets::agent_card::AgentLifecycle::Running
+    ));
+}
+
+fn mk_task(
+    id: &str,
+    status: crate::tools::swarm::SwarmTaskStatus,
+) -> crate::tools::swarm::SwarmTaskOutcome {
+    crate::tools::swarm::SwarmTaskOutcome {
+        task_id: id.to_string(),
+        worker_id: format!("task:{id}"),
+        agent_id: Some(format!("agent_{id}")),
+        label: id.to_string(),
+        model: "deepseek-v4-flash".to_string(),
+        nickname: None,
+        status,
+        result: None,
+        error: None,
+        steps_taken: 0,
+        duration_ms: 0,
+        started_at_ms: Some(0),
+        ended_at_ms: None,
+    }
+}
+
+/// Regression for issue #236/#238: the footer must not double-count a
+/// fanout-class tool. Sidebar and FanoutCard already represent the swarm,
+/// so `active_tool_status_label` skipping these tools is what keeps the
+/// "tool agent_swarm · 1 active" line from appearing simultaneously with
+/// "Agents 3 done" + "0 done · 0 running · 0 failed · 3 pending".
+#[test]
+fn footer_active_tool_label_suppresses_fanout_tools() {
+    let mut app = create_test_app();
+    app.active_cell = Some(crate::tui::active_cell::ActiveCell::new());
+    let active = app.active_cell.as_mut().unwrap();
+    active.push_tool(
+        "tool-1".to_string(),
+        HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            name: "agent_swarm".to_string(),
+            status: ToolStatus::Running,
+            input_summary: None,
+            output: None,
+            prompts: None,
+        })),
+    );
+
+    let label = active_tool_status_label(&app);
+    assert!(
+        label.is_none(),
+        "active fanout-class tools must not appear in the footer 'tool ... · X active' line, got: {label:?}"
+    );
+}
+
+/// Regression for issue #243: pressing Esc during an active fanout must
+/// leave the parent in a clean state — active_cell flushed, in-flight
+/// tool entries marked Failed/Interrupted, but the canonical
+/// `swarm_jobs` cache for background `block:false` swarms preserved so
+/// `swarm_status` / `swarm_result` / the FanoutCard stay coherent.
+#[test]
+fn esc_during_fanout_clears_active_cell_but_preserves_background_swarm() {
+    use crate::tools::swarm::{SwarmCounts, SwarmOutcome, SwarmStatus};
+
+    let mut app = create_test_app();
+
+    // Seed an in-flight fanout: a Generic tool entry in active_cell PLUS
+    // a registered swarm in swarm_jobs (the background tokio task that
+    // would keep running after Esc).
+    app.active_cell = Some(crate::tui::active_cell::ActiveCell::new());
+    let active = app.active_cell.as_mut().unwrap();
+    active.push_tool(
+        "tool-1".to_string(),
+        HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            name: "agent_swarm".to_string(),
+            status: ToolStatus::Running,
+            input_summary: None,
+            output: None,
+            prompts: None,
+        })),
+    );
+    let outcome = SwarmOutcome {
+        swarm_id: "swarm_bg".to_string(),
+        status: SwarmStatus::Running,
+        duration_ms: 0,
+        counts: SwarmCounts {
+            total: 3,
+            completed: 0,
+            interrupted: 0,
+            failed: 0,
+            cancelled: 0,
+            skipped: 0,
+            running: 3,
+            pending: 0,
+        },
+        tasks: vec![
+            mk_task("a", crate::tools::swarm::SwarmTaskStatus::Running),
+            mk_task("b", crate::tools::swarm::SwarmTaskStatus::Running),
+            mk_task("c", crate::tools::swarm::SwarmTaskStatus::Running),
+        ],
+    };
+    app.swarm_jobs
+        .insert("swarm_bg".to_string(), outcome.clone());
+    app.last_swarm_id = Some("swarm_bg".to_string());
+
+    // Apply the Esc/CancelRequest mutations the UI loop performs.
+    app.is_loading = true;
+    app.finalize_active_cell_as_interrupted();
+    app.is_loading = false;
+
+    // Active cell flushed → footer no longer reports "tool ... · X active".
+    assert!(
+        app.active_cell.is_none(),
+        "active_cell must be flushed after Esc"
+    );
+
+    // Background swarm record preserved — swarm_status / swarm_result and
+    // any future SwarmProgress event can still update the canonical store.
+    assert!(
+        app.swarm_jobs.contains_key("swarm_bg"),
+        "background swarm record must survive Esc"
+    );
+    assert_eq!(app.last_swarm_id.as_deref(), Some("swarm_bg"));
+
+    // Composer can submit the next message immediately — is_loading is
+    // false, no modal is open, runtime_turn_status is cleared.
+    assert!(!app.is_loading);
+}
+
+/// Regression for issue #241: `checklist_write` results render as a
+/// dedicated checklist card with completed/total + percent header and
+/// per-item status markers — not as a generic dumped JSON tool block.
+#[test]
+fn checklist_write_renders_dedicated_card() {
+    let cell = GenericToolCell {
+        name: "checklist_write".to_string(),
+        status: ToolStatus::Success,
+        input_summary: None,
+        output: Some(
+            "Todo list updated (3 items, 33% complete)\n{\"items\":[{\"id\":1,\"content\":\"Plan it out\",\"status\":\"completed\"},{\"id\":2,\"content\":\"Wire the thing\",\"status\":\"in_progress\"},{\"id\":3,\"content\":\"Run gates\",\"status\":\"pending\"}],\"completion_pct\":33,\"in_progress_id\":2}"
+                .to_string(),
+        ),
+        prompts: None,
+    };
+    let lines = cell.lines_with_mode(80, true, crate::tui::history::RenderMode::Live);
+    let text: Vec<String> = lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect();
+    let joined = text.join("\n");
+
+    assert!(
+        joined.contains("1/3"),
+        "header must include completed/total: {joined}"
+    );
+    assert!(
+        joined.contains("33%"),
+        "header must include percent: {joined}"
+    );
+    assert!(
+        joined.contains("Plan it out"),
+        "items must render content: {joined}"
+    );
+    assert!(
+        !joined.contains("\"items\""),
+        "raw JSON must NOT appear: {joined}"
     );
 }

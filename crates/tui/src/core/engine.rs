@@ -7,6 +7,7 @@
 //! - Proper cancellation support
 //! - Tool execution orchestration
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
@@ -120,6 +121,8 @@ pub struct EngineConfig {
     pub lsp_config: Option<crate::lsp::LspConfig>,
     /// Durable runtime services exposed to model-visible tools.
     pub runtime_services: RuntimeToolServices,
+    /// Per-role/type sub-agent model overrides already resolved from config.
+    pub subagent_model_overrides: HashMap<String, String>,
 }
 
 impl Default for EngineConfig {
@@ -144,6 +147,7 @@ impl Default for EngineConfig {
             snapshots_enabled: true,
             lsp_config: None,
             runtime_services: RuntimeToolServices::default(),
+            subagent_model_overrides: HashMap::new(),
         }
     }
 }
@@ -1424,7 +1428,9 @@ impl Engine {
                         Some(self.tx_event.clone()),
                         Arc::clone(&self.subagent_manager),
                     )
-                    .with_max_spawn_depth(self.config.max_spawn_depth);
+                    .with_role_models(self.config.subagent_model_overrides.clone())
+                    .with_max_spawn_depth(self.config.max_spawn_depth)
+                    .background_runtime();
 
                     let result = {
                         let mut manager = self.subagent_manager.lock().await;
@@ -1782,6 +1788,7 @@ impl Engine {
                             Some(self.tx_event.clone()),
                             Arc::clone(&self.subagent_manager),
                         )
+                        .with_role_models(self.config.subagent_model_overrides.clone())
                         .with_max_spawn_depth(self.config.max_spawn_depth);
                         if let Some((mailbox, cancel_token)) = mailbox_for_runtime.as_ref() {
                             rt = rt
@@ -1862,14 +1869,18 @@ impl Engine {
             })
             .await;
 
-        // Post-turn snapshot. Same non-blocking, non-fatal contract as
-        // the pre-turn hook above.
+        // Post-turn snapshot. Detached: TurnComplete is already emitted,
+        // so the UI is unblocked and the user can type / select / paste
+        // immediately. The git work proceeds on the blocking pool without
+        // forcing the engine loop to await it (#234). Snapshots are
+        // explicitly non-fatal background bookkeeping; failure logs WARN
+        // and disappears.
         if self.config.snapshots_enabled {
             let post_workspace = self.session.workspace.clone();
             let post_seq = self.turn_counter;
-            let _ =
-                tokio::task::spawn_blocking(move || post_turn_snapshot(&post_workspace, post_seq))
-                    .await;
+            tokio::task::spawn_blocking(move || {
+                post_turn_snapshot(&post_workspace, post_seq);
+            });
         }
 
         // Checkpoint-restart cycle boundary (issue #124). The turn just

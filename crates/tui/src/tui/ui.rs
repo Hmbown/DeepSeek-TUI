@@ -52,6 +52,7 @@ use crate::tui::command_palette::{
     CommandPaletteView, build_entries as build_command_palette_entries,
 };
 use crate::tui::context_inspector::build_context_inspector_text;
+use crate::tui::context_menu::{ContextMenuEntry, ContextMenuView};
 use crate::tui::event_broker::EventBroker;
 use crate::tui::live_transcript::LiveTranscriptOverlay;
 use crate::tui::mcp_routing::{add_mcp_message, open_mcp_manager_pager};
@@ -67,8 +68,8 @@ use crate::tui::shell_job_routing::{
 use crate::tui::subagent_routing::{
     active_fanout_counts, format_task_list, handle_subagent_mailbox, open_task_pager,
     reconcile_subagent_activity_state, running_agent_count, seed_fanout_card_from_tool_call,
-    sort_subagents_in_place, sync_fanout_card_from_tool_result, task_mode_label,
-    task_summary_to_panel_entry,
+    sort_subagents_in_place, sync_fanout_card_from_swarm_outcome,
+    sync_fanout_card_from_tool_result, task_mode_label, task_summary_to_panel_entry,
 };
 #[cfg(test)]
 use crate::tui::tool_routing::exploring_label;
@@ -92,7 +93,7 @@ use super::history::{
 use super::slash_menu::{
     apply_slash_menu_selection, try_autocomplete_slash_command, visible_slash_menu_entries,
 };
-use super::views::{ConfigView, HelpView, ModalKind, ViewEvent};
+use super::views::{ConfigView, ContextMenuAction, HelpView, ModalKind, ViewEvent};
 use super::widgets::pending_input_preview::{ContextPreviewItem, PendingInputPreview};
 use super::widgets::{
     ChatWidget, ComposerWidget, FooterProps, FooterToast, FooterWidget, HeaderData, HeaderWidget,
@@ -378,6 +379,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
             .clone()
             .map(crate::config::LspConfigToml::into_runtime),
         runtime_services: app.runtime_services.clone(),
+        subagent_model_overrides: config.subagent_model_overrides(),
     }
 }
 
@@ -576,6 +578,7 @@ async fn run_event_loop(
                                 // group under a fresh card, not the
                                 // previous swarm's leftover.
                                 app.last_fanout_card_index = None;
+                                app.last_swarm_id = None;
                             }
                         }
                         seed_fanout_card_from_tool_call(app, &name, &input);
@@ -718,7 +721,7 @@ async fn run_event_loop(
                         let turn_cost =
                             crate::pricing::calculate_turn_cost_from_usage(&app.model, &usage);
                         if let Some(cost) = turn_cost {
-                            app.session_cost += cost;
+                            app.accrue_session_cost(cost);
                         }
 
                         // Emit OSC 9 / BEL desktop notification for long turns.
@@ -942,6 +945,21 @@ async fn run_event_loop(
                     EngineEvent::SubAgentMailbox { seq, message } => {
                         handle_subagent_mailbox(app, seq, &message);
                         transcript_batch_updated = true;
+                    }
+                    EngineEvent::SwarmProgress { outcome } => {
+                        if sync_fanout_card_from_swarm_outcome(app, &outcome) {
+                            transcript_batch_updated = true;
+                        }
+                        app.status_message = Some(format!(
+                            "Swarm {}: {} done, {} running, {} pending",
+                            outcome.swarm_id,
+                            outcome.counts.completed,
+                            outcome.counts.running,
+                            outcome.counts.pending
+                        ));
+                        if outcome.status.is_terminal() {
+                            let _ = engine_handle.send(Op::ListSubAgents).await;
+                        }
                     }
                     EngineEvent::ApprovalRequired {
                         id,
@@ -1244,7 +1262,12 @@ async fn run_event_loop(
             if app.use_mouse_capture
                 && let Event::Mouse(mouse) = evt
             {
-                handle_mouse_event(app, mouse);
+                let events = handle_mouse_event(app, mouse);
+                if handle_view_events(app, config, &task_manager, &mut engine_handle, events)
+                    .await?
+                {
+                    return Ok(());
+                }
                 continue;
             }
 
@@ -1597,12 +1620,6 @@ async fn run_event_loop(
                     app.view_stack.push(SessionPickerView::new());
                     continue;
                 }
-                KeyCode::Char('c') | KeyCode::Char('C')
-                    if key.modifiers.contains(KeyModifiers::CONTROL)
-                        && app.transcript_selection.is_active() =>
-                {
-                    copy_active_selection(app);
-                }
                 KeyCode::Char('c') | KeyCode::Char('C') if is_copy_shortcut(&key) => {
                     copy_active_selection(app);
                 }
@@ -1666,6 +1683,16 @@ async fn run_event_loop(
                         // engine's TurnComplete will resync with the real
                         // outcome. Fixes #5a (wave kept animating after Esc).
                         app.runtime_turn_status = None;
+                        // Finalize any in-flight tool entries optimistically so
+                        // the composer regains focus and the footer's "tool ...
+                        // · X active" chip clears immediately rather than
+                        // waiting for the engine's TurnComplete echo to drain.
+                        // Idempotent with the TurnComplete handler that runs
+                        // when the engine actually echoes the cancel (#243).
+                        // Background `block:false` swarms continue running
+                        // — they are tracked in `swarm_jobs` independently and
+                        // their FanoutCard stays bound by `swarm_card_index`.
+                        app.finalize_active_cell_as_interrupted();
                         app.finalize_streaming_assistant_as_interrupted();
                         app.status_message = Some("Request cancelled".to_string());
                     }
@@ -2056,13 +2083,9 @@ async fn run_event_loop(
     }
 }
 
-fn apply_alt_4_shortcut(app: &mut App, modifiers: KeyModifiers) {
-    if modifiers.contains(KeyModifiers::CONTROL) {
-        app.set_sidebar_focus(SidebarFocus::Agents);
-        app.status_message = Some("Sidebar focus: agents".to_string());
-    } else {
-        app.set_mode(AppMode::Plan);
-    }
+fn apply_alt_4_shortcut(app: &mut App, _modifiers: KeyModifiers) {
+    app.set_sidebar_focus(SidebarFocus::Agents);
+    app.status_message = Some("Sidebar focus: agents".to_string());
 }
 
 async fn fetch_available_models(config: &Config) -> Result<Vec<String>> {
@@ -4089,6 +4112,9 @@ async fn handle_view_events(
                 app.status_message = Some("Backtrack canceled".to_string());
                 app.needs_redraw = true;
             }
+            ViewEvent::ContextMenuSelected { action } => {
+                handle_context_menu_action(app, action);
+            }
         }
     }
 
@@ -4617,16 +4643,17 @@ fn friendly_subagent_progress(app: &App, id: &str, status: &str) -> String {
 fn active_subagent_status_label(app: &App) -> Option<String> {
     let running = running_agent_count(app);
     let fanout = active_fanout_counts(app);
-    let fanout_running = fanout.map_or(0, |(running, _)| running);
-    if running == 0 && fanout_running == 0 {
-        return None;
-    }
-
-    let display_running = running.max(fanout_running);
-    let total = fanout
-        .map(|(_, total)| total)
-        .unwrap_or(display_running)
-        .max(display_running);
+    let (display_running, total) = if let Some((fanout_running, fanout_total)) = fanout {
+        if fanout_running == 0 {
+            return None;
+        }
+        (fanout_running, fanout_total)
+    } else {
+        if running == 0 {
+            return None;
+        }
+        (running, running)
+    };
     let detail = app
         .subagent_cache
         .iter()
@@ -4772,6 +4799,18 @@ fn collect_active_tool_status(cell: &HistoryCell, snapshot: &mut ActiveToolStatu
             snapshot.record(format!("search {}", search.query), search.status, None);
         }
         ToolCell::Generic(generic) => {
+            // Fanout-class dispatch tools represent themselves through the
+            // FanoutCard + Agents sidebar, both of which derive from the
+            // canonical `swarm_jobs` store. Counting them again here would
+            // produce the contradiction the user observed: footer "1 active"
+            // while the card and sidebar already showed the swarm's own
+            // worker counts (#236, #238). Skip them entirely.
+            if matches!(
+                generic.name.as_str(),
+                "agent_swarm" | "spawn_agents_on_csv" | "rlm" | "agent_spawn"
+            ) {
+                return;
+            }
             snapshot.record(format!("tool {}", generic.name), generic.status, None);
         }
     }
@@ -4831,9 +4870,10 @@ fn render_footer_from(
     } else {
         Vec::new()
     };
-    let cost = if has(S::Cost) && app.session_cost + app.subagent_cost > 0.001 {
+    let displayed_cost = app.displayed_session_cost();
+    let cost = if has(S::Cost) && displayed_cost > 0.001 {
         vec![Span::styled(
-            format!("${:.2}", app.session_cost + app.subagent_cost),
+            format!("${displayed_cost:.2}"),
             Style::default().fg(palette::TEXT_MUTED),
         )]
     } else {
@@ -4925,9 +4965,10 @@ fn footer_auxiliary_spans(app: &App, max_width: usize) -> Vec<Span<'static>> {
     let agents_spans = crate::tui::widgets::footer_agents_chip(running_agent_count(app));
     let replay_spans = footer_reasoning_replay_spans(app);
     let cache_spans = footer_cache_spans(app);
-    let cost_spans = if app.session_cost + app.subagent_cost > 0.001 {
+    let displayed_cost = app.displayed_session_cost();
+    let cost_spans = if displayed_cost > 0.001 {
         vec![Span::styled(
-            format!("${:.2}", app.session_cost + app.subagent_cost),
+            format!("${displayed_cost:.2}"),
             Style::default().fg(palette::TEXT_MUTED),
         )]
     } else {
@@ -5414,7 +5455,20 @@ pub(crate) fn truncate_line_to_width(text: &str, max_width: usize) -> String {
     out
 }
 
-fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
+fn handle_mouse_event(app: &mut App, mouse: MouseEvent) -> Vec<ViewEvent> {
+    if app.view_stack.top_kind() == Some(ModalKind::ContextMenu) {
+        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Right)) {
+            app.view_stack.pop();
+            open_context_menu(app, mouse);
+            return Vec::new();
+        }
+        return app.view_stack.handle_mouse(mouse);
+    }
+
+    if !app.view_stack.is_empty() {
+        return Vec::new();
+    }
+
     match mouse.kind {
         MouseEventKind::ScrollUp => {
             let update = app.mouse_scroll.on_scroll(ScrollDirection::Up);
@@ -5453,12 +5507,140 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
         MouseEventKind::Up(MouseButton::Left) if app.transcript_selection.dragging => {
             app.transcript_selection.dragging = false;
             if selection_has_content(app) {
-                app.status_message =
-                    Some("Selection ready - press Cmd+C or Ctrl+Shift+C to copy".to_string());
+                copy_active_selection(app);
             }
+        }
+        MouseEventKind::Down(MouseButton::Right) => {
+            open_context_menu(app, mouse);
         }
         _ => {}
     }
+
+    Vec::new()
+}
+
+fn open_context_menu(app: &mut App, mouse: MouseEvent) {
+    let entries = build_context_menu_entries(app, mouse);
+    if entries.is_empty() {
+        return;
+    }
+    app.view_stack
+        .push(ContextMenuView::new(entries, mouse.column, mouse.row));
+    app.needs_redraw = true;
+}
+
+fn build_context_menu_entries(app: &App, mouse: MouseEvent) -> Vec<ContextMenuEntry> {
+    let mut entries = Vec::new();
+
+    if selection_has_content(app) {
+        entries.push(ContextMenuEntry {
+            label: "Copy selection".to_string(),
+            description: "write selected transcript text".to_string(),
+            action: ContextMenuAction::CopySelection,
+        });
+        entries.push(ContextMenuEntry {
+            label: "Open selection".to_string(),
+            description: "show selected text in pager".to_string(),
+            action: ContextMenuAction::OpenSelection,
+        });
+        entries.push(ContextMenuEntry {
+            label: "Clear selection".to_string(),
+            description: String::new(),
+            action: ContextMenuAction::ClearSelection,
+        });
+    }
+
+    if let Some(cell_index) = transcript_cell_index_from_mouse(app, mouse) {
+        let target = detail_target_label(app, cell_index)
+            .map(|label| truncate_line_to_width(&label, 28))
+            .unwrap_or_else(|| "message".to_string());
+        entries.push(ContextMenuEntry {
+            label: "Open details".to_string(),
+            description: target,
+            action: ContextMenuAction::OpenDetails { cell_index },
+        });
+        entries.push(ContextMenuEntry {
+            label: "Copy message".to_string(),
+            description: "write clicked transcript cell".to_string(),
+            action: ContextMenuAction::CopyCell { cell_index },
+        });
+    }
+
+    entries.push(ContextMenuEntry {
+        label: "Paste".to_string(),
+        description: "insert clipboard into composer".to_string(),
+        action: ContextMenuAction::Paste,
+    });
+    entries.push(ContextMenuEntry {
+        label: "Command palette".to_string(),
+        description: "commands, skills, and tools".to_string(),
+        action: ContextMenuAction::OpenCommandPalette,
+    });
+    entries.push(ContextMenuEntry {
+        label: "Context inspector".to_string(),
+        description: "active context and cache hints".to_string(),
+        action: ContextMenuAction::OpenContextInspector,
+    });
+    entries.push(ContextMenuEntry {
+        label: "Help".to_string(),
+        description: "keybindings and commands".to_string(),
+        action: ContextMenuAction::OpenHelp,
+    });
+
+    entries
+}
+
+fn transcript_cell_index_from_mouse(app: &App, mouse: MouseEvent) -> Option<usize> {
+    let point = selection_point_from_mouse(app, mouse)?;
+    app.transcript_cache
+        .line_meta()
+        .get(point.line_index)
+        .and_then(|meta| meta.cell_line())
+        .map(|(cell_index, _)| cell_index)
+}
+
+fn handle_context_menu_action(app: &mut App, action: ContextMenuAction) {
+    match action {
+        ContextMenuAction::CopySelection => {
+            copy_active_selection(app);
+        }
+        ContextMenuAction::OpenSelection => {
+            if !open_pager_for_selection(app) {
+                app.status_message = Some("No selection to open".to_string());
+            }
+        }
+        ContextMenuAction::ClearSelection => {
+            app.transcript_selection.clear();
+            app.status_message = Some("Selection cleared".to_string());
+        }
+        ContextMenuAction::CopyCell { cell_index } => {
+            copy_cell_to_clipboard(app, cell_index);
+        }
+        ContextMenuAction::OpenDetails { cell_index } => {
+            if !open_details_pager_for_cell(app, cell_index) {
+                app.status_message = Some("No details available for that line".to_string());
+            }
+        }
+        ContextMenuAction::Paste => {
+            app.paste_from_clipboard();
+        }
+        ContextMenuAction::OpenCommandPalette => {
+            app.view_stack
+                .push(CommandPaletteView::new(build_command_palette_entries(
+                    &app.skills_dir,
+                    &app.workspace,
+                    &app.mcp_config_path,
+                    app.mcp_snapshot.as_ref(),
+                )));
+        }
+        ContextMenuAction::OpenContextInspector => {
+            open_context_inspector(app);
+        }
+        ContextMenuAction::OpenHelp => {
+            app.view_stack.push(HelpView::new_for_locale(app.ui_locale));
+        }
+    }
+    app.needs_redraw = true;
 }
 
 fn selection_point_from_mouse(app: &App, mouse: MouseEvent) -> Option<TranscriptSelectionPoint> {
@@ -5650,6 +5832,10 @@ fn open_tool_details_pager(app: &mut App) -> bool {
     let Some(cell_index) = target_cell else {
         return false;
     };
+    open_details_pager_for_cell(app, cell_index)
+}
+
+fn open_details_pager_for_cell(app: &mut App, cell_index: usize) -> bool {
     if let Some(detail) = app.tool_detail_record_for_cell(cell_index) {
         let input = serde_json::to_string_pretty(&detail.input)
             .unwrap_or_else(|_| detail.input.to_string());
@@ -5699,6 +5885,29 @@ fn open_tool_details_pager(app: &mut App) -> bool {
         width.saturating_sub(2),
     ));
     true
+}
+
+fn copy_cell_to_clipboard(app: &mut App, cell_index: usize) -> bool {
+    let Some(cell) = app.cell_at_virtual_index(cell_index) else {
+        app.status_message = Some("No message at that line".to_string());
+        return false;
+    };
+    let width = app
+        .last_transcript_area
+        .map(|area| area.width)
+        .unwrap_or(80);
+    let text = history_cell_to_text(cell, width);
+    if text.trim().is_empty() {
+        app.status_message = Some("Message is empty".to_string());
+        return false;
+    }
+    if app.clipboard.write_text(&text).is_ok() {
+        app.status_message = Some("Message copied".to_string());
+        true
+    } else {
+        app.status_message = Some("Copy failed".to_string());
+        false
+    }
 }
 
 fn detail_target_cell_index(app: &App) -> Option<usize> {

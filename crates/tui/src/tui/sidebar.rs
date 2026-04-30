@@ -378,9 +378,14 @@ pub fn subagent_navigator_lines(
         return lines;
     }
 
-    let live_running =
-        (summary.cached_running + summary.progress_only_count).max(summary.fanout_running);
-    let total = (summary.cached_total + summary.progress_only_count).max(fanout_total);
+    let (live_running, total) = if let Some(total) = summary.fanout_total {
+        (summary.fanout_running, total)
+    } else {
+        (
+            summary.cached_running + summary.progress_only_count,
+            summary.cached_total + summary.progress_only_count,
+        )
+    };
     let done = total.saturating_sub(live_running);
     let header = if live_running > 0 {
         vec![

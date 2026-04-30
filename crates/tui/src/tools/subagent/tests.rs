@@ -10,6 +10,8 @@ fn make_snapshot(status: SubAgentStatus) -> SubAgentResult {
         agent_id: "agent_test".to_string(),
         agent_type: SubAgentType::General,
         assignment: make_assignment(),
+        model: "deepseek-v4-flash".to_string(),
+        nickname: None,
         status,
         result: None,
         steps_taken: 0,
@@ -453,6 +455,8 @@ async fn test_wait_for_result_reports_timeout_when_still_running() {
         SubAgentType::Explore,
         "prompt".to_string(),
         make_assignment(),
+        "deepseek-v4-flash".to_string(),
+        Some("Blue".to_string()),
         Some(vec!["read_file".to_string()]),
         input_tx,
     );
@@ -477,6 +481,8 @@ fn test_running_count_respects_limit() {
         SubAgentType::Explore,
         "prompt".to_string(),
         make_assignment(),
+        "deepseek-v4-flash".to_string(),
+        Some("Blue".to_string()),
         Some(vec!["read_file".to_string()]),
         input_tx,
     );
@@ -494,6 +500,8 @@ async fn test_running_count_ignores_finished_task_handles() {
         SubAgentType::Explore,
         "prompt".to_string(),
         make_assignment(),
+        "deepseek-v4-flash".to_string(),
+        Some("Blue".to_string()),
         Some(vec!["read_file".to_string()]),
         input_tx,
     );
@@ -519,6 +527,8 @@ fn test_assign_updates_running_agent_and_sends_message() {
         SubAgentType::General,
         "work".to_string(),
         make_assignment(),
+        "deepseek-v4-flash".to_string(),
+        Some("Blue".to_string()),
         Some(vec!["read_file".to_string()]),
         input_tx,
     );
@@ -553,6 +563,8 @@ fn test_assign_rejects_message_for_non_running_agent() {
         SubAgentType::Explore,
         "prompt".to_string(),
         make_assignment(),
+        "deepseek-v4-flash".to_string(),
+        Some("Blue".to_string()),
         Some(vec!["read_file".to_string()]),
         input_tx,
     );
@@ -574,6 +586,8 @@ fn test_assign_updates_non_running_metadata_without_message() {
         SubAgentType::Plan,
         "prompt".to_string(),
         make_assignment(),
+        "deepseek-v4-flash".to_string(),
+        Some("Blue".to_string()),
         Some(vec!["read_file".to_string()]),
         input_tx,
     );
@@ -606,6 +620,8 @@ fn test_persist_and_reload_marks_running_agent_as_interrupted() {
         SubAgentType::General,
         "work".to_string(),
         make_assignment(),
+        "deepseek-v4-flash".to_string(),
+        Some("Blue".to_string()),
         Some(vec!["read_file".to_string()]),
         input_tx,
     );
@@ -1079,6 +1095,7 @@ fn stub_runtime() -> SubAgentRuntime {
     SubAgentRuntime {
         client: stub_client(),
         model: "deepseek-v4-flash".to_string(),
+        role_models: std::collections::HashMap::new(),
         context,
         allow_shell: true,
         event_tx: None,

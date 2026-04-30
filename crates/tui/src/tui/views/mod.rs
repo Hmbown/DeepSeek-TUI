@@ -1,4 +1,4 @@
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 use ratatui::{buffer::Buffer, layout::Rect};
 use std::cell::Cell;
 use std::fmt;
@@ -30,6 +30,7 @@ pub enum ModalKind {
     ProviderPicker,
     FilePicker,
     StatusPicker,
+    ContextMenu,
 }
 
 #[derive(Debug, Clone)]
@@ -37,6 +38,19 @@ pub enum CommandPaletteAction {
     ExecuteCommand { command: String },
     InsertText { text: String },
     OpenTextPager { title: String, content: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContextMenuAction {
+    CopySelection,
+    OpenSelection,
+    ClearSelection,
+    CopyCell { cell_index: usize },
+    OpenDetails { cell_index: usize },
+    Paste,
+    OpenCommandPalette,
+    OpenContextInspector,
+    OpenHelp,
 }
 
 #[derive(Debug, Clone)]
@@ -140,6 +154,9 @@ pub enum ViewEvent {
     /// in backtrack preview mode (#133). The handler resets
     /// `app.backtrack` and closes the overlay without trimming.
     BacktrackCancel,
+    ContextMenuSelected {
+        action: ContextMenuAction,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -153,6 +170,9 @@ pub enum ViewAction {
 pub trait ModalView: std::any::Any {
     fn kind(&self) -> ModalKind;
     fn handle_key(&mut self, key: KeyEvent) -> ViewAction;
+    fn handle_mouse(&mut self, _mouse: MouseEvent) -> ViewAction {
+        ViewAction::None
+    }
     fn render(&self, area: Rect, buf: &mut Buffer);
     fn update_subagents(&mut self, _agents: &[SubAgentResult]) -> bool {
         false
@@ -218,6 +238,15 @@ impl ViewStack {
             .views
             .last_mut()
             .map(|view| view.handle_key(key))
+            .unwrap_or(ViewAction::None);
+        self.apply_action(action)
+    }
+
+    pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Vec<ViewEvent> {
+        let action = self
+            .views
+            .last_mut()
+            .map(|view| view.handle_mouse(mouse))
             .unwrap_or(ViewAction::None);
         self.apply_action(action)
     }

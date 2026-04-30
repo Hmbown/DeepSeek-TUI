@@ -25,6 +25,7 @@ use crate::tools::plan::{SharedPlanState, new_shared_plan_state};
 use crate::tools::shell::new_shared_shell_manager;
 use crate::tools::spec::RuntimeToolServices;
 use crate::tools::subagent::SubAgentResult;
+use crate::tools::swarm::SwarmOutcome;
 use crate::tools::todo::{SharedTodoList, new_shared_todo_list};
 use crate::tui::active_cell::ActiveCell;
 use crate::tui::approval::ApprovalMode;
@@ -496,6 +497,21 @@ pub struct App {
     /// spawned by the same `agent_swarm` / `rlm` invocation route into
     /// this card; reset when a fresh fanout-family tool call starts.
     pub last_fanout_card_index: Option<usize>,
+    /// Canonical swarm/job snapshots by swarm id. Transcript cards, sidebar
+    /// counts, and footer status read from this model instead of recomputing
+    /// worker totals independently.
+    pub swarm_jobs: HashMap<String, SwarmOutcome>,
+    pub last_swarm_id: Option<String>,
+    /// Swarm-id → history index for the FanoutCard that visualises that
+    /// swarm. Bound on first sight of a SwarmProgress event, so background
+    /// swarms keep updating their *own* card even when the user starts a
+    /// second fanout in parallel. Pruned by `prune_history_state_after_clear`.
+    pub swarm_card_index: HashMap<String, usize>,
+    /// Highest cumulative session cost ever displayed. Used to keep the
+    /// footer cost monotonic across reconciliation events: provisional
+    /// estimates can be revised, but the visible total never decreases
+    /// during a single session unless explicitly reset (#244).
+    pub displayed_cost_high_water: f64,
     /// Most recently observed sub-agent dispatch tool name (set on
     /// `ToolCallStarted` for `agent_spawn` / `agent_swarm` / etc., cleared
     /// after the first `Started` mailbox envelope routes through it).
@@ -557,6 +573,8 @@ pub struct App {
     pub session_cost: f64,
     /// Running cost from active sub-agents (updated live via mailbox).
     pub subagent_cost: f64,
+    /// Mailbox TokenUsage sequence ids already accounted in subagent_cost.
+    pub subagent_cost_event_seqs: HashSet<u64>,
     /// Active skill to apply to next user message
     pub active_skill: Option<String>,
     /// Tool call cells by tool id (for cells already finalized in `history`).
@@ -924,6 +942,10 @@ impl App {
             agent_progress: HashMap::new(),
             subagent_card_index: HashMap::new(),
             last_fanout_card_index: None,
+            swarm_jobs: HashMap::new(),
+            last_swarm_id: None,
+            swarm_card_index: HashMap::new(),
+            displayed_cost_high_water: 0.0,
             pending_subagent_dispatch: None,
             agent_activity_started_at: None,
             ui_theme,
@@ -976,6 +998,7 @@ impl App {
             tool_log: Vec::new(),
             session_cost: 0.0,
             subagent_cost: 0.0,
+            subagent_cost_event_seqs: HashSet::new(),
             active_skill: None,
             tool_cells: HashMap::new(),
             tool_details_by_cell: HashMap::new(),
@@ -1166,6 +1189,37 @@ impl App {
         }
     }
 
+    /// Add `delta` to the parent-turn session cost and bump the displayed
+    /// high-water mark so the footer total never reverses (#244).
+    pub fn accrue_session_cost(&mut self, delta: f64) {
+        self.session_cost += delta;
+        self.refresh_displayed_cost_high_water();
+    }
+
+    /// Add `delta` to the running sub-agent cost and bump the displayed
+    /// high-water mark so the footer total never reverses (#244).
+    pub fn accrue_subagent_cost(&mut self, delta: f64) {
+        self.subagent_cost += delta;
+        self.refresh_displayed_cost_high_water();
+    }
+
+    /// Recompute the displayed cost high-water mark. Called any time a cost
+    /// counter is mutated; never decreases.
+    pub fn refresh_displayed_cost_high_water(&mut self) {
+        let current = self.session_cost + self.subagent_cost;
+        if current > self.displayed_cost_high_water {
+            self.displayed_cost_high_water = current;
+        }
+    }
+
+    /// Read the visible session+sub-agent cost. Guaranteed monotonic across
+    /// reconciliation events (cache adjustments, provisional → final swaps)
+    /// for the lifetime of one session (#244).
+    pub fn displayed_session_cost(&self) -> f64 {
+        let current = self.session_cost + self.subagent_cost;
+        current.max(self.displayed_cost_high_water)
+    }
+
     pub fn mark_history_updated(&mut self) {
         self.history_version = self.history_version.wrapping_add(1);
         // Resync per-cell revisions to history.len(). This is the
@@ -1293,6 +1347,7 @@ impl App {
             .retain(|idx, _| *idx < new_len);
         self.rebuild_session_context_references();
         self.subagent_card_index.retain(|_, idx| *idx < new_len);
+        self.swarm_card_index.retain(|_, idx| *idx < new_len);
         if self
             .last_fanout_card_index
             .is_some_and(|idx| idx >= new_len)

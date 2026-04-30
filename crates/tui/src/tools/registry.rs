@@ -584,7 +584,7 @@ impl ToolRegistryBuilder {
             AgentResumeTool, AgentSendInputTool, AgentSpawnTool, AgentWaitTool,
             DelegateToAgentTool, ReportAgentJobResultTool, SpawnAgentsOnCsvTool,
         };
-        use super::swarm::{AgentSwarmTool, SwarmResultTool, SwarmStatusTool};
+        use super::swarm::{AgentSwarmTool, SwarmCancelTool, SwarmResultTool, SwarmStatusTool};
 
         self.with_tool(Arc::new(AgentSpawnTool::new(
             manager.clone(),
@@ -612,6 +612,10 @@ impl ToolRegistryBuilder {
             runtime.context.workspace.clone(),
         )))
         .with_tool(Arc::new(SwarmResultTool::new(
+            runtime.context.workspace.clone(),
+        )))
+        .with_tool(Arc::new(SwarmCancelTool::new(
+            manager.clone(),
             runtime.context.workspace.clone(),
         )))
         .with_tool(Arc::new(AgentResultTool::new(manager.clone())))

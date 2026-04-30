@@ -225,8 +225,8 @@ pub const KEYBINDINGS: &[KeybindingEntry] = &[
         section: KeybindingSection::Modes,
     },
     KeybindingEntry {
-        chord: "Alt+! / Alt+@ / Alt+# / Alt+$ / Alt+)",
-        description: "Focus Plan / Todos / Tasks / Agents / Auto sidebar",
+        chord: "Alt+! / Alt+@ / Alt+# / Alt+4 / Alt+$ / Alt+0",
+        description: "Focus Plan / Todos / Tasks / Agents / Agents / Auto sidebar",
         section: KeybindingSection::Modes,
     },
     KeybindingEntry {
@@ -249,6 +249,11 @@ pub const KEYBINDINGS: &[KeybindingEntry] = &[
     KeybindingEntry {
         chord: "Ctrl+Shift+C",
         description: "Copy the current selection (Cmd+C on macOS)",
+        section: KeybindingSection::Clipboard,
+    },
+    KeybindingEntry {
+        chord: "Right click",
+        description: "Open context actions for paste, selection, message details, context, and help",
         section: KeybindingSection::Clipboard,
     },
     KeybindingEntry {

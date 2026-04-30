@@ -1815,10 +1815,51 @@ fn run_doctor_json(
             "checked": false,
             "note": "Skipped in --json mode; run `deepseek-tui doctor` for a live check.",
         },
+        "capability": provider_capability_report(config),
     });
 
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
+}
+
+/// Build the `capability` section for the machine-readable doctor report.
+///
+/// Returns a JSON value with the resolved provider, resolved model, context
+/// window, max output, thinking support, cache telemetry support, request
+/// payload mode, and any deprecation notice for legacy aliases.
+fn provider_capability_report(config: &Config) -> serde_json::Value {
+    use serde_json::json;
+
+    let provider = config.api_provider();
+    let model = config.default_model();
+
+    // Detect deprecation for the raw model name (before provider-specific mapping).
+    let raw_model = config
+        .default_text_model
+        .as_deref()
+        .unwrap_or(DEFAULT_TEXT_MODEL);
+    let raw_deprecation = crate::config::deprecation_for_model(raw_model);
+
+    let cap = crate::config::provider_capability(provider, &model);
+
+    let deprecation = raw_deprecation.map(|d| {
+        json!({
+            "alias": d.alias,
+            "replacement": d.replacement,
+            "notice": d.notice,
+        })
+    });
+
+    json!({
+        "resolved_provider": provider.as_str(),
+        "resolved_model": cap.resolved_model,
+        "context_window": cap.context_window,
+        "max_output": cap.max_output,
+        "thinking_supported": cap.thinking_supported,
+        "cache_telemetry_supported": cap.cache_telemetry_supported,
+        "request_payload_mode": serde_json::to_value(cap.request_payload_mode).unwrap_or_default(),
+        "deprecation": deprecation,
+    })
 }
 
 fn run_execpolicy_command(command: ExecpolicyCommand) -> Result<()> {
@@ -2980,6 +3021,7 @@ async fn run_exec_agent(
         snapshots_enabled: config.snapshots_config().enabled,
         lsp_config,
         runtime_services: crate::tools::spec::RuntimeToolServices::default(),
+        subagent_model_overrides: config.subagent_model_overrides(),
     };
 
     let engine_handle = spawn_engine(engine_config, config);

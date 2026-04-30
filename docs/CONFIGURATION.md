@@ -218,6 +218,14 @@ If you are upgrading from older releases:
 - `managed_config_path` (string, optional): managed config file loaded after user/env config.
 - `requirements_path` (string, optional): requirements file used to enforce allowed approval/sandbox values.
 - `max_subagents` (int, optional): defaults to `5` and is clamped to `1..=20`.
+- `subagents.*` (optional): per-role/type model defaults for `agent_spawn` and
+  `agent_swarm`. Explicit tool `model` values win, then role/type overrides,
+  then the parent runtime model. Supported convenience keys are
+  `default_model`, `worker_model`, `explorer_model`, `awaiter_model`,
+  `review_model`, `custom_model`; `[subagents.models]` accepts lower-case role
+  or type keys such as `worker`, `explorer`, `general`, `explore`, `plan`, and
+  `review`. Values must normalize to a supported DeepSeek model id before any
+  swarm worker is spawned.
 - `skills_dir` (string, optional): defaults to `~/.deepseek/skills` (each skill is a directory containing `SKILL.md`). Workspace-local `.agents/skills` or `./skills` are preferred when present.
 - `mcp_config_path` (string, optional): defaults to `~/.deepseek/mcp.json`.
   It is visible in `/config` and can be changed from the TUI. The new path is
@@ -263,7 +271,7 @@ If you are upgrading from older releases:
   - `[capacity].deepseek_v4_flash_prior` (float, default `4.2`)
   - `[capacity].fallback_default_prior` (float, default `3.8`)
 - `tui.alternate_screen` (string, optional): `auto`, `always`, or `never`. `auto` disables the alternate screen in Zellij; `--no-alt-screen` forces inline mode. Set `never` or run with `--no-alt-screen` when you want real terminal scrollback.
-- `tui.mouse_capture` (bool, optional, default `true` when the alternate screen is active): enable internal mouse scrolling/transcript selection. Set this to `false` or run with `--no-mouse-capture` for terminal-native drag selection and highlight-to-copy.
+- `tui.mouse_capture` (bool, optional, default `true` when the alternate screen is active): enable internal mouse scrolling, transcript selection, and right-click context actions. Set this to `false` or run with `--no-mouse-capture` for terminal-native drag selection and highlight-to-copy.
 - `hooks` (optional): lifecycle hooks configuration (see `config.example.toml`).
 - `features.*` (optional): feature flag overrides (see below).
 
@@ -344,9 +352,22 @@ also run `deepseek-tui setup --skills --local` to create a workspace-local
 live API connectivity probe. Top-level keys: `version`, `config_path`,
 `config_present`, `workspace`, `api_key.source`, `base_url`,
 `default_text_model`, `mcp`, `skills`, `tools`, `plugins`, `sandbox`,
-`platform`, `api_connectivity`. CI consumers should rely on `api_key.source`
+`platform`, `api_connectivity`, `capability`. CI consumers should rely on `api_key.source`
 (`env`/`config`/`missing`) rather than parsing the human-readable `doctor`
 text.
+
+The `capability` key contains per-provider capability info derived from
+static knowledge (release docs, API guides) rather than live API probes.
+Top-level sub-keys: `resolved_provider`, `resolved_model`, `context_window`,
+`max_output`, `thinking_supported`, `cache_telemetry_supported`,
+`request_payload_mode`, and `deprecation`. When the resolved model is a known
+legacy alias (e.g. `deepseek-chat`, `deepseek-reasoner`), the `deprecation`
+sub-object carries `alias`, `replacement`, and `notice` fields.
+
+Use `capability.context_window` and `capability.max_output` for context-window
+budgeting in CI scripts. Use `capability.thinking_supported` to decide whether
+to configure reasoning effort. Use `capability.deprecation` to warn users about
+legacy model aliases.
 
 ## Setup status, clean, and extension dirs
 

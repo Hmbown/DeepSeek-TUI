@@ -1186,6 +1186,12 @@ impl GenericToolCell {
         low_motion: bool,
         mode: RenderMode,
     ) -> Vec<Line<'static>> {
+        // Issue #241: when the underlying tool is a checklist/todo update and
+        // the output is parseable, render a purpose-built progress card
+        // instead of dumping the JSON into the generic tool block.
+        if let Some(lines) = self.try_render_as_checklist(width, low_motion, mode) {
+            return lines;
+        }
         let mut lines = Vec::new();
         // Map the actual tool name (e.g. `agent_spawn`, `apply_patch`) to a
         // family rather than the catch-all `"Tool"` title — this is what
@@ -1256,6 +1262,195 @@ impl GenericToolCell {
         }
         lines
     }
+
+    /// If this cell is a checklist/todo write/add/update and the output is
+    /// parseable as a checklist snapshot, render a purpose-built checklist
+    /// card instead of the generic `name: ... { json }` block (issue #241).
+    fn try_render_as_checklist(
+        &self,
+        width: u16,
+        low_motion: bool,
+        mode: RenderMode,
+    ) -> Option<Vec<Line<'static>>> {
+        if !is_checklist_tool_name(&self.name) {
+            return None;
+        }
+        let output = self.output.as_ref()?;
+        let snapshot = parse_checklist_snapshot(output)?;
+        Some(render_checklist_card(
+            &self.name,
+            self.status,
+            &snapshot,
+            width,
+            low_motion,
+            mode,
+        ))
+    }
+}
+
+fn is_checklist_tool_name(name: &str) -> bool {
+    matches!(
+        name,
+        "checklist_write"
+            | "checklist_add"
+            | "checklist_update"
+            | "todo_write"
+            | "todo_add"
+            | "todo_update"
+    )
+}
+
+#[derive(Debug, Clone)]
+struct ChecklistItemSnapshot {
+    content: String,
+    status: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ChecklistSnapshot {
+    items: Vec<ChecklistItemSnapshot>,
+    completion_pct: u8,
+    completed: usize,
+    total: usize,
+}
+
+/// Pull a structured checklist snapshot out of the tool's text output.
+/// The tool emits a leading human-readable line followed by JSON, so we
+/// scan for the first `{` and parse from there. Returns `None` if the
+/// payload is missing the expected `items` array.
+fn parse_checklist_snapshot(output: &str) -> Option<ChecklistSnapshot> {
+    let json_start = output.find('{')?;
+    let parsed: Value = serde_json::from_str(&output[json_start..]).ok()?;
+    let items_value = parsed.get("items")?.as_array()?;
+
+    let items: Vec<ChecklistItemSnapshot> = items_value
+        .iter()
+        .map(|item| ChecklistItemSnapshot {
+            content: item
+                .get("content")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            status: item
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("pending")
+                .to_string(),
+        })
+        .collect();
+
+    if items.is_empty() {
+        return None;
+    }
+
+    let completed = items
+        .iter()
+        .filter(|item| item.status.eq_ignore_ascii_case("completed"))
+        .count();
+    let total = items.len();
+    let completion_pct = parsed
+        .get("completion_pct")
+        .and_then(Value::as_u64)
+        .map(|pct| u8::try_from(pct.min(100)).unwrap_or(100))
+        .unwrap_or_else(|| {
+            (completed * 100)
+                .checked_div(total)
+                .and_then(|pct| u8::try_from(pct).ok())
+                .unwrap_or(0)
+        });
+
+    Some(ChecklistSnapshot {
+        items,
+        completion_pct,
+        completed,
+        total,
+    })
+}
+
+fn checklist_status_marker(status: &str) -> (&'static str, Color) {
+    match status.to_ascii_lowercase().as_str() {
+        "completed" | "done" => ("\u{2611}", palette::STATUS_SUCCESS), // ☑
+        "in_progress" | "inprogress" | "running" => ("\u{25D0}", palette::DEEPSEEK_SKY), // ◐
+        "blocked" | "failed" => ("\u{2717}", palette::STATUS_ERROR),   // ✗
+        "cancelled" | "canceled" | "skipped" => ("\u{2298}", palette::TEXT_MUTED), // ⊘
+        _ => ("\u{2610}", palette::TEXT_MUTED),                        // ☐ pending
+    }
+}
+
+const CHECKLIST_LIVE_ITEM_LIMIT: usize = 8;
+
+fn render_checklist_card(
+    name: &str,
+    status: ToolStatus,
+    snapshot: &ChecklistSnapshot,
+    width: u16,
+    low_motion: bool,
+    mode: RenderMode,
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    let header_summary = format!(
+        "{}/{} \u{00B7} {}%",
+        snapshot.completed, snapshot.total, snapshot.completion_pct
+    );
+    let family = crate::tui::widgets::tool_card::tool_family_for_name(name);
+    lines.push(render_tool_header_with_family_and_summary(
+        family,
+        Some(&header_summary),
+        tool_status_label(status),
+        status,
+        None,
+        low_motion,
+    ));
+    lines.extend(render_compact_kv(
+        "checklist",
+        name,
+        tool_value_style(),
+        width,
+    ));
+
+    let cap = match mode {
+        RenderMode::Live => CHECKLIST_LIVE_ITEM_LIMIT,
+        RenderMode::Transcript => snapshot.items.len(),
+    };
+    let visible: Vec<&ChecklistItemSnapshot> = snapshot.items.iter().take(cap).collect();
+    let omitted = snapshot.items.len().saturating_sub(visible.len());
+
+    for item in visible {
+        let (marker, color) = checklist_status_marker(&item.status);
+        let prefix = format!("{marker} ");
+        // Reserve room for the rail + marker prefix when wrapping content.
+        let prefix_width =
+            UnicodeWidthStr::width("\u{258F} ") + UnicodeWidthStr::width(prefix.as_str());
+        let content_width = usize::from(width).saturating_sub(prefix_width).max(1);
+        for (idx, part) in wrap_text(item.content.trim(), content_width)
+            .into_iter()
+            .enumerate()
+        {
+            let mut spans = vec![Span::styled(
+                "\u{258F} ".to_string(),
+                Style::default().fg(palette::TEXT_DIM),
+            )];
+            if idx == 0 {
+                spans.push(Span::styled(prefix.clone(), Style::default().fg(color)));
+            } else {
+                spans.push(Span::raw(
+                    " ".repeat(UnicodeWidthStr::width(prefix.as_str())),
+                ));
+            }
+            spans.push(Span::styled(part, tool_value_style()));
+            lines.push(Line::from(spans));
+        }
+    }
+
+    if omitted > 0 {
+        lines.push(render_card_detail_line_single(
+            None,
+            &format!("+{omitted} more (Alt+V for full list)"),
+            Style::default().fg(palette::TEXT_DIM),
+        ));
+    }
+
+    lines
 }
 
 fn summarize_string_value(text: &str, max_len: usize, count_only: bool) -> String {

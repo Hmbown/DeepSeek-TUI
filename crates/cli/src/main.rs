@@ -2,7 +2,7 @@ mod metrics;
 
 use std::io::{self, Read};
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use anyhow::{Context, Result, bail};
@@ -988,14 +988,7 @@ fn delegate_to_tui(
     resolved_runtime: &ResolvedRuntimeOptions,
     passthrough: Vec<String>,
 ) -> Result<()> {
-    let current = std::env::current_exe().context("failed to locate current executable path")?;
-    let tui = current.with_file_name("deepseek-tui");
-    if !tui.exists() {
-        bail!(
-            "deepseek-tui binary not found at {}. Build workspace default members to install it.",
-            tui.display()
-        );
-    }
+    let tui = locate_sibling_tui_binary()?;
 
     let mut cmd = Command::new(tui);
     if let Some(config) = cli.config.as_ref() {
@@ -1068,19 +1061,69 @@ fn delegate_to_tui(
 }
 
 fn delegate_simple_tui(args: Vec<String>) -> Result<()> {
-    let current = std::env::current_exe().context("failed to locate current executable path")?;
-    let tui = current.with_file_name("deepseek-tui");
-    if !tui.exists() {
-        bail!(
-            "deepseek-tui binary not found at {}. Build workspace default members to install it.",
-            tui.display()
-        );
-    }
+    let tui = locate_sibling_tui_binary()?;
     let status = Command::new(tui).args(args).status()?;
     match status.code() {
         Some(code) => std::process::exit(code),
         None => bail!("deepseek-tui terminated by signal"),
     }
+}
+
+/// Resolve the sibling `deepseek-tui` executable next to the running
+/// dispatcher. Honours platform executable suffix (`.exe` on Windows) so
+/// the npm-distributed Windows package — which ships
+/// `bin/downloads/deepseek-tui.exe` — is found by `Path::exists` (#247).
+///
+/// `DEEPSEEK_TUI_BIN` is consulted first as an explicit override for
+/// custom installs and CI test layouts. On Windows we additionally try
+/// the suffix-less name as a fallback for users who already manually
+/// renamed the file before this fix landed.
+fn locate_sibling_tui_binary() -> Result<PathBuf> {
+    if let Ok(override_path) = std::env::var("DEEPSEEK_TUI_BIN") {
+        let candidate = PathBuf::from(override_path);
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+        bail!(
+            "DEEPSEEK_TUI_BIN points at {}, which is not a regular file.",
+            candidate.display()
+        );
+    }
+
+    let current = std::env::current_exe().context("failed to locate current executable path")?;
+    if let Some(found) = sibling_tui_candidate(&current) {
+        return Ok(found);
+    }
+
+    // Build a stable error path so the user sees the platform-correct
+    // expected name, not "deepseek-tui" on Windows.
+    let expected = current.with_file_name(format!("deepseek-tui{}", std::env::consts::EXE_SUFFIX));
+    bail!(
+        "deepseek-tui binary not found at {}. Build workspace default members to install it, or set DEEPSEEK_TUI_BIN to its absolute path.",
+        expected.display()
+    );
+}
+
+/// Return the first existing sibling-binary path under any of the names
+/// `deepseek-tui` might use on this platform. Pure function to keep
+/// `locate_sibling_tui_binary` testable.
+fn sibling_tui_candidate(dispatcher: &Path) -> Option<PathBuf> {
+    // Primary: platform-correct name. EXE_SUFFIX is "" on Unix and ".exe"
+    // on Windows.
+    let primary =
+        dispatcher.with_file_name(format!("deepseek-tui{}", std::env::consts::EXE_SUFFIX));
+    if primary.is_file() {
+        return Some(primary);
+    }
+    // Windows fallback: a user who manually renamed `.exe` away (per the
+    // workaround in #247) still launches successfully under the new code.
+    if cfg!(windows) {
+        let suffixless = dispatcher.with_file_name("deepseek-tui");
+        if suffixless.is_file() {
+            return Some(suffixless);
+        }
+    }
+    None
 }
 
 fn run_metrics_command(args: MetricsArgs) -> Result<()> {
@@ -1752,5 +1795,79 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Regression for issue #247: on Windows the dispatcher must find the
+    /// sibling `deepseek-tui.exe`, not bail out looking for an
+    /// extension-less `deepseek-tui`. The candidate resolver also accepts
+    /// the suffix-less name on Windows so users who manually renamed the
+    /// file as a workaround keep working after the upgrade.
+    #[test]
+    fn sibling_tui_candidate_picks_platform_correct_name() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let dispatcher = dir
+            .path()
+            .join("deepseek")
+            .with_extension(std::env::consts::EXE_EXTENSION);
+        // Touch the dispatcher so its parent dir is the lookup root.
+        std::fs::write(&dispatcher, b"").unwrap();
+
+        // No sibling yet — resolver returns None.
+        assert!(sibling_tui_candidate(&dispatcher).is_none());
+
+        let target =
+            dispatcher.with_file_name(format!("deepseek-tui{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(&target, b"").unwrap();
+
+        let found = sibling_tui_candidate(&dispatcher).expect("must locate sibling");
+        assert_eq!(found, target, "primary platform-correct name wins");
+    }
+
+    /// Windows-only fallback: the user from #247 manually renamed the
+    /// file to drop `.exe`. After the fix lands, that workaround must
+    /// still resolve via the suffix-less fallback so they don't have to
+    /// rename it back.
+    #[cfg(windows)]
+    #[test]
+    fn sibling_tui_candidate_windows_falls_back_to_suffixless() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let dispatcher = dir.path().join("deepseek.exe");
+        std::fs::write(&dispatcher, b"").unwrap();
+
+        // Only the suffixless name exists — emulates the manual rename.
+        let suffixless = dispatcher.with_file_name("deepseek-tui");
+        std::fs::write(&suffixless, b"").unwrap();
+
+        let found = sibling_tui_candidate(&dispatcher)
+            .expect("Windows fallback must locate suffixless deepseek-tui");
+        assert_eq!(found, suffixless);
+    }
+
+    /// `DEEPSEEK_TUI_BIN` overrides the discovery path. Useful for
+    /// custom Windows install layouts and CI test rigs.
+    #[test]
+    fn locate_sibling_tui_binary_honours_env_override() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let custom = dir
+            .path()
+            .join(format!("custom-tui{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(&custom, b"").unwrap();
+
+        // Use a guard so even on test failure the env var clears.
+        struct EnvGuard;
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                // SAFETY: tests own this env key for the duration of the
+                // guard; clearing on drop matches the documented teardown
+                // pattern for `std::env::set_var` in single-threaded tests.
+                unsafe { std::env::remove_var("DEEPSEEK_TUI_BIN") };
+            }
+        }
+        let _g = EnvGuard;
+        // SAFETY: same single-threaded scope contract as the guard above.
+        unsafe { std::env::set_var("DEEPSEEK_TUI_BIN", &custom) };
+
+        let resolved = locate_sibling_tui_binary().expect("override must resolve");
+        assert_eq!(resolved, custom);
     }
 }

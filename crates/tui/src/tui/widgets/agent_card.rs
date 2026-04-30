@@ -154,8 +154,47 @@ impl DelegateCard {
 /// One worker slot in a fanout group.
 #[derive(Debug, Clone)]
 pub struct WorkerSlot {
+    /// Stable logical worker key. For swarms this stays tied to the task even
+    /// after a concrete sub-agent id exists.
+    pub worker_id: String,
+    /// Concrete agent id once spawned; placeholders use the worker id.
     pub agent_id: String,
+    pub label: Option<String>,
+    pub model: Option<String>,
+    pub nickname: Option<String>,
     pub status: AgentLifecycle,
+}
+
+impl WorkerSlot {
+    #[must_use]
+    pub fn new(worker_id: impl Into<String>, status: AgentLifecycle) -> Self {
+        let worker_id = worker_id.into();
+        Self {
+            agent_id: worker_id.clone(),
+            worker_id,
+            label: None,
+            model: None,
+            nickname: None,
+            status,
+        }
+    }
+
+    #[must_use]
+    pub fn with_agent(
+        worker_id: impl Into<String>,
+        agent_id: Option<String>,
+        status: AgentLifecycle,
+    ) -> Self {
+        let worker_id = worker_id.into();
+        Self {
+            agent_id: agent_id.unwrap_or_else(|| worker_id.clone()),
+            worker_id,
+            label: None,
+            model: None,
+            nickname: None,
+            status,
+        }
+    }
 }
 
 /// Card for `agent_swarm` / `rlm` fanout: dot-grid + aggregate counts.
@@ -186,23 +225,23 @@ impl FanoutCard {
         S: Into<String>,
     {
         for id in ids {
-            self.workers.push(WorkerSlot {
-                agent_id: id.into(),
-                status: AgentLifecycle::Pending,
-            });
+            self.workers
+                .push(WorkerSlot::new(id.into(), AgentLifecycle::Pending));
         }
         self
     }
 
     /// Update or insert a worker by id.
     pub fn upsert_worker(&mut self, agent_id: &str, status: AgentLifecycle) {
-        if let Some(slot) = self.workers.iter_mut().find(|s| s.agent_id == agent_id) {
+        if let Some(slot) = self
+            .workers
+            .iter_mut()
+            .find(|s| s.agent_id == agent_id || s.worker_id == agent_id)
+        {
+            slot.agent_id = agent_id.to_string();
             slot.status = status;
         } else {
-            self.workers.push(WorkerSlot {
-                agent_id: agent_id.to_string(),
-                status,
-            });
+            self.workers.push(WorkerSlot::new(agent_id, status));
         }
     }
 
@@ -247,13 +286,12 @@ impl FanoutCard {
     pub fn dot_grid(&self) -> String {
         let mut s = String::with_capacity(self.workers.len());
         for slot in &self.workers {
-            // Filled circle for "done", open for everything else; the counts
-            // line below carries the running/failed split that one glyph
-            // can't.
-            let glyph = if matches!(slot.status, AgentLifecycle::Completed) {
-                '\u{25CF}' // ●
-            } else {
-                '\u{25CB}' // ○
+            let glyph = match slot.status {
+                AgentLifecycle::Completed => '\u{25CF}', // ●
+                AgentLifecycle::Running => '\u{25D0}',   // ◐
+                AgentLifecycle::Failed => '\u{00D7}',    // ×
+                AgentLifecycle::Cancelled => '\u{2298}', // ⊘
+                AgentLifecycle::Pending => '\u{25CB}',   // ○
             };
             s.push(glyph);
         }
@@ -541,7 +579,7 @@ mod tests {
     }
 
     #[test]
-    fn fanout_card_dot_grid_renders_filled_for_done_only() {
+    fn fanout_card_dot_grid_renders_stateful_worker_slots() {
         let mut card = FanoutCard::new("swarm")
             .with_workers(["w_1", "w_2", "w_3", "w_4", "w_5", "w_6", "w_7"]);
         card.upsert_worker("w_1", AgentLifecycle::Completed);
@@ -550,10 +588,10 @@ mod tests {
         card.upsert_worker("w_4", AgentLifecycle::Failed);
         // 5/6/7 stay Pending.
 
-        // Two filled (only Completed counts as ●), five open.
+        // Completed fills; running and failed are distinct; pending stays open.
         assert_eq!(
             card.dot_grid(),
-            "\u{25CF}\u{25CF}\u{25CB}\u{25CB}\u{25CB}\u{25CB}\u{25CB}"
+            "\u{25CF}\u{25CF}\u{25D0}\u{00D7}\u{25CB}\u{25CB}\u{25CB}"
         );
     }
 

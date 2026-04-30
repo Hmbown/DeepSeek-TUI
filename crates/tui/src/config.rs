@@ -40,7 +40,8 @@ pub const COMMON_DEEPSEEK_MODELS: &[&str] = &[
     "deepseek/deepseek-v4-flash",
 ];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ApiProvider {
     Deepseek,
     NvidiaNim,
@@ -100,6 +101,157 @@ impl ApiProvider {
             Self::Fireworks,
             Self::Sglang,
         ]
+    }
+}
+
+// ============================================================================
+// Provider Capability Matrix
+// ============================================================================
+
+/// Known capabilities for a provider + resolved-model combination.
+///
+/// Returned by [`provider_capability`] to describe what a given provider
+/// supports for the resolved model string.  All fields are derived from
+/// static knowledge (release docs, API guides) rather than live API probes.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct ProviderCapability {
+    /// Canonical provider identifier.
+    pub provider: ApiProvider,
+    /// Resolved model identifier that will be sent in the API payload.
+    pub resolved_model: String,
+    /// Context window in tokens (the maximum input the model can accept).
+    pub context_window: u32,
+    /// Recommended maximum output tokens (`max_tokens`) for this combo.
+    pub max_output: u32,
+    /// Whether the provider+model supports thinking/reasoning mode.
+    pub thinking_supported: bool,
+    /// Whether the provider returns prompt-cache telemetry fields.
+    pub cache_telemetry_supported: bool,
+    /// Which request-payload dialect the provider uses.
+    pub request_payload_mode: RequestPayloadMode,
+    /// Deprecation notice for legacy model aliases (empty when not deprecated).
+    pub deprecation: Option<ModelDeprecation>,
+}
+
+/// Which request-payload dialect the provider speaks.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub enum RequestPayloadMode {
+    /// Standard OpenAI-compatible `/v1/chat/completions` payload.
+    ChatCompletions,
+    /// Anthropic-style Responses API (DeepSeek experimental).
+    ResponsesApi,
+}
+
+/// Deprecation metadata for a legacy model alias.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct ModelDeprecation {
+    /// Legacy alias that is deprecated (e.g. "deepseek-chat").
+    pub alias: String,
+    /// Canonical replacement model.
+    pub replacement: String,
+    /// Human-readable deprecation date / notice.
+    pub notice: String,
+}
+
+/// Known deprecations for legacy DeepSeek model aliases.
+fn deepseek_legacy_aliases() -> &'static [ModelDeprecation] {
+    use std::sync::OnceLock;
+    static ALIASES: OnceLock<Vec<ModelDeprecation>> = OnceLock::new();
+    ALIASES.get_or_init(|| {
+        vec![
+            ModelDeprecation {
+                alias: String::from("deepseek-chat"),
+                replacement: String::from("deepseek-v4-flash"),
+                notice: String::from("Deprecated; will be removed in a future release. Use 'deepseek-v4-flash' instead."),
+            },
+            ModelDeprecation {
+                alias: String::from("deepseek-reasoner"),
+                replacement: String::from("deepseek-v4-flash"),
+                notice: String::from("Deprecated; will be removed in a future release. Use 'deepseek-v4-flash' instead."),
+            },
+            ModelDeprecation {
+                alias: String::from("deepseek-r1"),
+                replacement: String::from("deepseek-v4-flash"),
+                notice: String::from("Deprecated; will be removed in a future release. Use 'deepseek-v4-flash' instead."),
+            },
+            ModelDeprecation {
+                alias: String::from("deepseek-v3"),
+                replacement: String::from("deepseek-v4-flash"),
+                notice: String::from("Deprecated; will be removed in a future release. Use 'deepseek-v4-flash' instead."),
+            },
+            ModelDeprecation {
+                alias: String::from("deepseek-v3.2"),
+                replacement: String::from("deepseek-v4-flash"),
+                notice: String::from("Deprecated; will be removed in a future release. Use 'deepseek-v4-flash' instead."),
+            },
+        ]
+    })
+}
+
+/// Check if a model name is a known legacy alias and return its deprecation info.
+///
+/// This matches the same list as [`canonical_model_name`] and
+/// [`normalize_model_name`], returning deprecation metadata for each alias.
+#[must_use]
+pub fn deprecation_for_model(model: &str) -> Option<&'static ModelDeprecation> {
+    let lower = model.trim().to_ascii_lowercase();
+    deepseek_legacy_aliases().iter().find(|d| d.alias == lower)
+}
+
+/// Resolve the provider capability for a given [`ApiProvider`] and resolved
+/// model string.
+///
+/// The `resolved_model` should be the final model identifier that will appear
+/// in the API payload (after normalization / provider-specific mapping).
+#[must_use]
+pub fn provider_capability(provider: ApiProvider, resolved_model: &str) -> ProviderCapability {
+    let model_lower = resolved_model.to_ascii_lowercase();
+    let is_v4_pro = model_lower.contains("v4-pro") || model_lower == "deepseek-v4pro";
+    let is_v4_flash = model_lower.contains("v4-flash")
+        || model_lower == "deepseek-v4flash"
+        || model_lower == "deepseek-v4";
+
+    // Context window: V4-class models get 1M, everything else falls through
+    // to the model's own lookup or a default.
+    let context_window = if is_v4_pro || is_v4_flash {
+        crate::models::DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS
+    } else {
+        crate::models::context_window_for_model(resolved_model)
+            .unwrap_or(crate::models::DEFAULT_CONTEXT_WINDOW_TOKENS)
+    };
+
+    // Max output tokens: DeepSeek V4 models allow 262K; others get 4096.
+    let max_output = if is_v4_pro || is_v4_flash {
+        262_144
+    } else {
+        4096
+    };
+
+    // Thinking support: V4 models support thinking on all providers, but
+    // only when the model name matches the V4 family.
+    let thinking_supported = is_v4_pro || is_v4_flash;
+
+    // Cache telemetry: returned only by DeepSeek-native and NVIDIA NIM endpoints.
+    let cache_telemetry_supported =
+        matches!(provider, ApiProvider::Deepseek | ApiProvider::NvidiaNim);
+
+    // Request payload mode: all current providers use chat completions.
+    let request_payload_mode = RequestPayloadMode::ChatCompletions;
+
+    // Deprecation: check if the original model name (before normalization)
+    // is a known legacy alias. We check the resolved model since that's what
+    // we have here; the caller should also check the user-facing model.
+    let deprecation = deprecation_for_model(resolved_model);
+
+    ProviderCapability {
+        provider,
+        resolved_model: resolved_model.to_string(),
+        context_window,
+        max_output,
+        thinking_supported,
+        cache_telemetry_supported,
+        request_payload_mode,
+        deprecation: deprecation.cloned(),
     }
 }
 
@@ -463,6 +615,27 @@ pub struct ContextConfig {
     pub per_model: Option<HashMap<String, PerModelContextConfig>>,
 }
 
+/// Sub-agent model overrides. Keys in `models` can be role names (`worker`,
+/// `explorer`, `awaiter`) or type names (`general`, `explore`, `plan`,
+/// `review`, `custom`). Per-call explicit model choices still win.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct SubagentsConfig {
+    #[serde(default)]
+    pub default_model: Option<String>,
+    #[serde(default)]
+    pub worker_model: Option<String>,
+    #[serde(default)]
+    pub explorer_model: Option<String>,
+    #[serde(default)]
+    pub awaiter_model: Option<String>,
+    #[serde(default)]
+    pub review_model: Option<String>,
+    #[serde(default)]
+    pub custom_model: Option<String>,
+    #[serde(default)]
+    pub models: Option<HashMap<String, String>>,
+}
+
 /// Per-model context tuning.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PerModelContextConfig {
@@ -541,6 +714,10 @@ pub struct Config {
     /// Append-only layered context management with Flash seam manager (#159).
     #[serde(default)]
     pub context: ContextConfig,
+
+    /// Sub-agent model overrides.
+    #[serde(default)]
+    pub subagents: Option<SubagentsConfig>,
 }
 
 /// `[skills]` table — knobs for the community-skill installer.
@@ -1065,6 +1242,43 @@ impl Config {
         self.max_subagents
             .unwrap_or(DEFAULT_MAX_SUBAGENTS)
             .clamp(1, MAX_SUBAGENTS)
+    }
+
+    /// Raw sub-agent model override map. Values are validated at spawn time
+    /// so an invalid role/type model fails before any partial swarm spawn.
+    #[must_use]
+    pub fn subagent_model_overrides(&self) -> HashMap<String, String> {
+        let mut overrides = HashMap::new();
+        let Some(cfg) = self.subagents.as_ref() else {
+            return overrides;
+        };
+
+        let mut insert = |key: &str, value: &Option<String>| {
+            if let Some(model) = value.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+                overrides.insert(key.to_string(), model.to_string());
+            }
+        };
+        insert("default", &cfg.default_model);
+        insert("worker", &cfg.worker_model);
+        insert("general", &cfg.worker_model);
+        insert("explorer", &cfg.explorer_model);
+        insert("explore", &cfg.explorer_model);
+        insert("awaiter", &cfg.awaiter_model);
+        insert("plan", &cfg.awaiter_model);
+        insert("review", &cfg.review_model);
+        insert("custom", &cfg.custom_model);
+
+        if let Some(models) = cfg.models.as_ref() {
+            for (key, model) in models {
+                let key = key.trim();
+                let model = model.trim();
+                if !key.is_empty() && !model.is_empty() {
+                    overrides.insert(key.to_ascii_lowercase(), model.to_string());
+                }
+            }
+        }
+
+        overrides
     }
 
     /// Return the configured DeepSeek reasoning-effort tier, if any.
@@ -1669,6 +1883,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
             seam_model: override_cfg.context.seam_model.or(base.context.seam_model),
             per_model: override_cfg.context.per_model.or(base.context.per_model),
         },
+        subagents: override_cfg.subagents.or(base.subagents),
     }
 }
 
@@ -3082,5 +3297,200 @@ model = "deepseek-v4-pro"
         assert_eq!(config.deepseek_base_url(), "https://nim-table.example/v1");
         assert_eq!(config.default_model(), DEFAULT_NVIDIA_NIM_MODEL);
         Ok(())
+    }
+
+    // ========================================================================
+    // Provider Capability Matrix tests
+    // ========================================================================
+
+    #[test]
+    fn deprecation_for_model_returns_notice_for_legacy_aliases() {
+        let cases = &[
+            "deepseek-chat",
+            "deepseek-reasoner",
+            "deepseek-r1",
+            "deepseek-v3",
+            "deepseek-v3.2",
+        ];
+        for alias in cases {
+            let dep = deprecation_for_model(alias);
+            assert!(dep.is_some(), "expected deprecation for '{alias}'");
+            let dep = dep.unwrap();
+            assert_eq!(dep.alias, *alias);
+            assert_eq!(dep.replacement, "deepseek-v4-flash");
+            assert!(dep.notice.contains("Deprecated"));
+            assert!(dep.notice.contains("deepseek-v4-flash"));
+        }
+    }
+
+    #[test]
+    fn deprecation_for_model_returns_none_for_current_models() {
+        assert!(deprecation_for_model("deepseek-v4-pro").is_none());
+        assert!(deprecation_for_model("deepseek-v4-flash").is_none());
+        assert!(deprecation_for_model("deepseek-ai/deepseek-v4-pro").is_none());
+    }
+
+    #[test]
+    fn deprecation_for_model_is_case_insensitive() {
+        let dep = deprecation_for_model("DeepSeek-Chat").unwrap();
+        assert_eq!(dep.alias, "deepseek-chat");
+        let dep = deprecation_for_model("DEEPSEEK-REASONER").unwrap();
+        assert_eq!(dep.alias, "deepseek-reasoner");
+    }
+
+    #[test]
+    fn provider_capability_deepseek_v4_pro_has_1m_window_and_thinking() {
+        let cap = provider_capability(ApiProvider::Deepseek, "deepseek-v4-pro");
+        assert_eq!(
+            cap.context_window,
+            crate::models::DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS
+        );
+        assert_eq!(cap.max_output, 262_144);
+        assert!(cap.thinking_supported);
+        assert!(cap.cache_telemetry_supported);
+        assert_eq!(
+            cap.request_payload_mode,
+            RequestPayloadMode::ChatCompletions
+        );
+        assert!(cap.deprecation.is_none());
+    }
+
+    #[test]
+    fn provider_capability_deepseek_v4_flash_has_1m_window_and_thinking() {
+        let cap = provider_capability(ApiProvider::Deepseek, "deepseek-v4-flash");
+        assert_eq!(
+            cap.context_window,
+            crate::models::DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS
+        );
+        assert_eq!(cap.max_output, 262_144);
+        assert!(cap.thinking_supported);
+        assert!(cap.cache_telemetry_supported);
+    }
+
+    #[test]
+    fn provider_capability_nvidia_nim_v4_pro_maps_correctly() {
+        let cap = provider_capability(ApiProvider::NvidiaNim, DEFAULT_NVIDIA_NIM_MODEL);
+        assert_eq!(
+            cap.context_window,
+            crate::models::DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS
+        );
+        assert_eq!(cap.max_output, 262_144);
+        assert!(cap.thinking_supported);
+        assert!(cap.cache_telemetry_supported);
+        assert_eq!(
+            cap.request_payload_mode,
+            RequestPayloadMode::ChatCompletions
+        );
+    }
+
+    #[test]
+    fn provider_capability_nvidia_nim_v4_flash_maps_correctly() {
+        let cap = provider_capability(ApiProvider::NvidiaNim, DEFAULT_NVIDIA_NIM_FLASH_MODEL);
+        assert_eq!(
+            cap.context_window,
+            crate::models::DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS
+        );
+        assert_eq!(cap.max_output, 262_144);
+        assert!(cap.thinking_supported);
+        assert!(cap.cache_telemetry_supported);
+    }
+
+    #[test]
+    fn provider_capability_openrouter_v4_pro_has_thinking_no_cache() {
+        let cap = provider_capability(ApiProvider::Openrouter, DEFAULT_OPENROUTER_MODEL);
+        assert_eq!(
+            cap.context_window,
+            crate::models::DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS
+        );
+        assert_eq!(cap.max_output, 262_144);
+        assert!(cap.thinking_supported);
+        // OpenRouter does not return DeepSeek prompt-cache telemetry.
+        assert!(!cap.cache_telemetry_supported);
+        assert_eq!(
+            cap.request_payload_mode,
+            RequestPayloadMode::ChatCompletions
+        );
+    }
+
+    #[test]
+    fn provider_capability_novita_v4_pro_has_thinking_no_cache() {
+        let cap = provider_capability(ApiProvider::Novita, DEFAULT_NOVITA_MODEL);
+        assert_eq!(
+            cap.context_window,
+            crate::models::DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS
+        );
+        assert_eq!(cap.max_output, 262_144);
+        assert!(cap.thinking_supported);
+        assert!(!cap.cache_telemetry_supported);
+    }
+
+    #[test]
+    fn provider_capability_fireworks_v4_pro_has_thinking_no_cache() {
+        let cap = provider_capability(ApiProvider::Fireworks, DEFAULT_FIREWORKS_MODEL);
+        assert_eq!(
+            cap.context_window,
+            crate::models::DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS
+        );
+        assert_eq!(cap.max_output, 262_144);
+        assert!(cap.thinking_supported);
+        assert!(!cap.cache_telemetry_supported);
+    }
+
+    #[test]
+    fn provider_capability_sglang_v4_pro_has_thinking_no_cache() {
+        let cap = provider_capability(ApiProvider::Sglang, DEFAULT_SGLANG_MODEL);
+        assert_eq!(
+            cap.context_window,
+            crate::models::DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS
+        );
+        assert_eq!(cap.max_output, 262_144);
+        assert!(cap.thinking_supported);
+        assert!(!cap.cache_telemetry_supported);
+    }
+
+    #[test]
+    fn provider_capability_non_v4_model_has_smaller_window() {
+        let cap = provider_capability(ApiProvider::Deepseek, "deepseek-coder");
+        assert_eq!(
+            cap.context_window,
+            crate::models::DEFAULT_CONTEXT_WINDOW_TOKENS
+        );
+        assert_eq!(cap.max_output, 4096);
+        assert!(!cap.thinking_supported);
+    }
+
+    #[test]
+    fn provider_capability_legacy_alias_shows_deprecation() {
+        let cap = provider_capability(ApiProvider::Deepseek, "deepseek-chat");
+        assert!(cap.deprecation.is_some());
+        let dep = cap.deprecation.unwrap();
+        assert_eq!(dep.alias, "deepseek-chat");
+        assert_eq!(dep.replacement, "deepseek-v4-flash");
+        assert!(dep.notice.contains("Deprecated"));
+        // Even though deprecated, it still resolves as a V4 model with 1M window.
+        assert_eq!(
+            cap.context_window,
+            crate::models::DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS
+        );
+    }
+
+    #[test]
+    fn provider_capability_roundtrip_serialization() {
+        let cap = provider_capability(ApiProvider::Deepseek, "deepseek-v4-pro");
+        let json = serde_json::to_value(&cap).unwrap();
+        let deserialized: ProviderCapability = serde_json::from_value(json).unwrap();
+        assert_eq!(cap, deserialized);
+    }
+
+    #[test]
+    fn deprecation_serialization_roundtrip() {
+        let dep = ModelDeprecation {
+            alias: "deepseek-chat".to_string(),
+            replacement: "deepseek-v4-flash".to_string(),
+            notice: "Test notice".to_string(),
+        };
+        let json = serde_json::to_value(&dep).unwrap();
+        let deserialized: ModelDeprecation = serde_json::from_value(json).unwrap();
+        assert_eq!(dep, deserialized);
     }
 }

@@ -5,6 +5,7 @@ use std::time::Instant;
 use crate::task_manager::{TaskRecord, TaskStatus, TaskSummary};
 use crate::tools::spec::{ToolError, ToolResult};
 use crate::tools::subagent::{MailboxMessage, SubAgentResult, SubAgentStatus};
+use crate::tools::swarm::{SwarmOutcome, SwarmTaskStatus};
 use crate::tui::app::{App, AppMode, TaskPanelEntry};
 use crate::tui::history::{HistoryCell, SubAgentCell, summarize_tool_output};
 use crate::tui::pager::PagerView;
@@ -26,6 +27,12 @@ pub(super) fn running_agent_count(app: &App) -> usize {
 }
 
 pub(super) fn active_fanout_counts(app: &App) -> Option<(usize, usize)> {
+    if let Some(swarm_id) = app.last_swarm_id.as_ref()
+        && let Some(outcome) = app.swarm_jobs.get(swarm_id)
+    {
+        return Some((outcome.counts.running, outcome.counts.total));
+    }
+
     let idx = app.last_fanout_card_index?;
     let Some(HistoryCell::SubAgent(SubAgentCell::Fanout(card))) = app.history.get(idx) else {
         return None;
@@ -105,6 +112,10 @@ pub(super) fn sync_fanout_card_from_tool_result(
         return false;
     };
 
+    if let Ok(outcome) = serde_json::from_value::<SwarmOutcome>(payload.clone()) {
+        return sync_fanout_card_from_swarm_outcome(app, &outcome);
+    }
+
     let workers = tasks
         .iter()
         .enumerate()
@@ -128,7 +139,21 @@ pub(super) fn sync_fanout_card_from_tool_result(
                 .and_then(serde_json::Value::as_str)
                 .map(status_to_lifecycle)
                 .unwrap_or(AgentLifecycle::Pending);
-            WorkerSlot { agent_id, status }
+            let mut slot =
+                WorkerSlot::with_agent(format!("task:{task_id}"), Some(agent_id), status);
+            slot.label = task
+                .get("label")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+            slot.model = task
+                .get("model")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+            slot.nickname = task
+                .get("nickname")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+            slot
         })
         .collect::<Vec<_>>();
 
@@ -143,6 +168,102 @@ pub(super) fn sync_fanout_card_from_tool_result(
     true
 }
 
+pub(super) fn sync_fanout_card_from_swarm_outcome(app: &mut App, outcome: &SwarmOutcome) -> bool {
+    app.swarm_jobs
+        .insert(outcome.swarm_id.clone(), outcome.clone());
+    app.last_swarm_id = Some(outcome.swarm_id.clone());
+
+    let workers = outcome
+        .tasks
+        .iter()
+        .map(worker_slot_from_swarm_task)
+        .collect::<Vec<_>>();
+
+    if workers.is_empty() {
+        return false;
+    }
+
+    // Bind this swarm to a card by id so concurrent fanouts each update
+    // their own visualization. Order of preference:
+    //   1) existing binding for this swarm_id (idempotent updates)
+    //   2) the most recently seeded card (last_fanout_card_index) — which
+    //      typically corresponds to the fresh `agent_swarm` invocation
+    //      that just emitted this outcome's initial event
+    //   3) allocate a fresh card and append it to history
+    // Once chosen, the swarm_id↔card_index pair is cached so subsequent
+    // SwarmProgress events for the *same* swarm always update the right
+    // card even if `last_fanout_card_index` has since moved to another
+    // overlapping fanout.
+    let idx = if let Some(&bound) = app.swarm_card_index.get(&outcome.swarm_id)
+        && matches!(
+            app.history.get(bound),
+            Some(HistoryCell::SubAgent(SubAgentCell::Fanout(_)))
+        ) {
+        bound
+    } else if let Some(idx) = app.last_fanout_card_index
+        && matches!(
+            app.history.get(idx),
+            Some(HistoryCell::SubAgent(SubAgentCell::Fanout(_)))
+        )
+        && !app.swarm_card_index.values().any(|bound| *bound == idx)
+    {
+        // The most recently-seeded card has no swarm bound to it yet; this
+        // outcome's first SwarmProgress claims it. Any subsequent overlapping
+        // fanout will allocate its own card below.
+        idx
+    } else {
+        let card = FanoutCard::new("agent_swarm".to_string());
+        app.add_message(HistoryCell::SubAgent(SubAgentCell::Fanout(card)));
+        let idx = app.history.len().saturating_sub(1);
+        app.last_fanout_card_index = Some(idx);
+        idx
+    };
+    app.swarm_card_index.insert(outcome.swarm_id.clone(), idx);
+
+    let Some(HistoryCell::SubAgent(SubAgentCell::Fanout(card))) = app.history.get_mut(idx) else {
+        return false;
+    };
+    card.kind = "agent_swarm".to_string();
+    card.workers = workers;
+    for task in &outcome.tasks {
+        if let Some(agent_id) = task.agent_id.as_ref() {
+            app.subagent_card_index.insert(agent_id.clone(), idx);
+        }
+    }
+
+    if outcome.status.is_terminal() {
+        app.pending_subagent_dispatch = None;
+    }
+
+    app.mark_history_updated();
+    true
+}
+
+fn worker_slot_from_swarm_task(task: &crate::tools::swarm::SwarmTaskOutcome) -> WorkerSlot {
+    let worker_id = if task.worker_id.trim().is_empty() {
+        format!("task:{}", task.task_id)
+    } else {
+        task.worker_id.clone()
+    };
+    let agent_id = task
+        .agent_id
+        .clone()
+        .or_else(|| Some(format!("task:{}", task.task_id)));
+    let mut slot = WorkerSlot::with_agent(
+        worker_id,
+        agent_id,
+        swarm_task_status_to_lifecycle(&task.status),
+    );
+    if !task.label.trim().is_empty() {
+        slot.label = Some(task.label.clone());
+    }
+    if !task.model.trim().is_empty() {
+        slot.model = Some(task.model.clone());
+    }
+    slot.nickname = task.nickname.clone();
+    slot
+}
+
 fn status_to_lifecycle(status: &str) -> AgentLifecycle {
     match status.trim().to_ascii_lowercase().as_str() {
         "completed" => AgentLifecycle::Completed,
@@ -150,6 +271,16 @@ fn status_to_lifecycle(status: &str) -> AgentLifecycle {
         "failed" | "interrupted" => AgentLifecycle::Failed,
         "cancelled" | "canceled" | "skipped" => AgentLifecycle::Cancelled,
         _ => AgentLifecycle::Pending,
+    }
+}
+
+fn swarm_task_status_to_lifecycle(status: &SwarmTaskStatus) -> AgentLifecycle {
+    match status {
+        SwarmTaskStatus::Completed => AgentLifecycle::Completed,
+        SwarmTaskStatus::Running => AgentLifecycle::Running,
+        SwarmTaskStatus::Failed | SwarmTaskStatus::Interrupted => AgentLifecycle::Failed,
+        SwarmTaskStatus::Cancelled | SwarmTaskStatus::Skipped => AgentLifecycle::Cancelled,
+        SwarmTaskStatus::Pending => AgentLifecycle::Pending,
     }
 }
 
@@ -222,11 +353,13 @@ pub(super) fn sort_subagents_in_place(agents: &mut [SubAgentResult]) {
 
 /// Route a `MailboxMessage` envelope to the matching in-transcript card,
 /// allocating a `DelegateCard` or `FanoutCard` on first sight (issue #128).
-pub(super) fn handle_subagent_mailbox(app: &mut App, _seq: u64, message: &MailboxMessage) {
+pub(super) fn handle_subagent_mailbox(app: &mut App, seq: u64, message: &MailboxMessage) {
     // Accumulate sub-agent token costs for the real-time footer counter (#166).
     if let MailboxMessage::TokenUsage { model, usage, .. } = message {
-        if let Some(cost) = crate::pricing::calculate_turn_cost_from_usage(model, usage) {
-            app.subagent_cost += cost;
+        if app.subagent_cost_event_seqs.insert(seq)
+            && let Some(cost) = crate::pricing::calculate_turn_cost_from_usage(model, usage)
+        {
+            app.accrue_subagent_cost(cost);
         }
         return; // No card visual change needed; the footer handles display.
     }
@@ -235,8 +368,15 @@ pub(super) fn handle_subagent_mailbox(app: &mut App, _seq: u64, message: &Mailbo
     // is special — it always belongs to the active fanout card if one
     // exists; otherwise it seeds a new one.
     let agent_id = message.agent_id().to_string();
+    let belongs_to_known_swarm = app.swarm_jobs.values().any(|outcome| {
+        !outcome.status.is_terminal()
+            && outcome
+                .tasks
+                .iter()
+                .any(|task| task.agent_id.as_deref() == Some(agent_id.as_str()))
+    });
 
-    if matches!(message, MailboxMessage::ChildSpawned { .. })
+    if (matches!(message, MailboxMessage::ChildSpawned { .. }) || belongs_to_known_swarm)
         && let Some(idx) = app.last_fanout_card_index
         && let Some(HistoryCell::SubAgent(SubAgentCell::Fanout(card))) = app.history.get_mut(idx)
     {
@@ -274,7 +414,7 @@ pub(super) fn handle_subagent_mailbox(app: &mut App, _seq: u64, message: &Mailbo
     let is_fanout = matches!(
         dispatch_kind,
         Some("agent_swarm" | "spawn_agents_on_csv" | "rlm")
-    );
+    ) || belongs_to_known_swarm;
 
     if is_fanout {
         // Reuse the active fanout card for sibling spawns; otherwise create
