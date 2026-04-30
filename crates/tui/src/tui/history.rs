@@ -1353,11 +1353,10 @@ fn parse_checklist_snapshot(output: &str) -> Option<ChecklistSnapshot> {
         .and_then(Value::as_u64)
         .map(|pct| u8::try_from(pct.min(100)).unwrap_or(100))
         .unwrap_or_else(|| {
-            if total == 0 {
-                0
-            } else {
-                u8::try_from((completed * 100) / total).unwrap_or(0)
-            }
+            (completed * 100)
+                .checked_div(total)
+                .and_then(|pct| u8::try_from(pct).ok())
+                .unwrap_or(0)
         });
 
     Some(ChecklistSnapshot {
@@ -1434,7 +1433,9 @@ fn render_checklist_card(
             if idx == 0 {
                 spans.push(Span::styled(prefix.clone(), Style::default().fg(color)));
             } else {
-                spans.push(Span::raw(" ".repeat(UnicodeWidthStr::width(prefix.as_str()))));
+                spans.push(Span::raw(
+                    " ".repeat(UnicodeWidthStr::width(prefix.as_str())),
+                ));
             }
             spans.push(Span::styled(part, tool_value_style()));
             lines.push(Line::from(spans));

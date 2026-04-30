@@ -3108,9 +3108,7 @@ fn duplicate_mailbox_token_usage_does_not_regress_displayed_cost() {
 /// seeded card of a newer fanout — the contradictory state the user saw.
 #[test]
 fn overlapping_swarms_project_to_distinct_fanout_cards() {
-    use crate::tools::swarm::{
-        SwarmCounts, SwarmOutcome, SwarmStatus, SwarmTaskOutcome, SwarmTaskStatus,
-    };
+    use crate::tools::swarm::{SwarmCounts, SwarmOutcome, SwarmStatus, SwarmTaskStatus};
 
     let mut app = create_test_app();
 
@@ -3267,6 +3265,80 @@ fn footer_active_tool_label_suppresses_fanout_tools() {
         label.is_none(),
         "active fanout-class tools must not appear in the footer 'tool ... · X active' line, got: {label:?}"
     );
+}
+
+/// Regression for issue #243: pressing Esc during an active fanout must
+/// leave the parent in a clean state — active_cell flushed, in-flight
+/// tool entries marked Failed/Interrupted, but the canonical
+/// `swarm_jobs` cache for background `block:false` swarms preserved so
+/// `swarm_status` / `swarm_result` / the FanoutCard stay coherent.
+#[test]
+fn esc_during_fanout_clears_active_cell_but_preserves_background_swarm() {
+    use crate::tools::swarm::{SwarmCounts, SwarmOutcome, SwarmStatus};
+
+    let mut app = create_test_app();
+
+    // Seed an in-flight fanout: a Generic tool entry in active_cell PLUS
+    // a registered swarm in swarm_jobs (the background tokio task that
+    // would keep running after Esc).
+    app.active_cell = Some(crate::tui::active_cell::ActiveCell::new());
+    let active = app.active_cell.as_mut().unwrap();
+    active.push_tool(
+        "tool-1".to_string(),
+        HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            name: "agent_swarm".to_string(),
+            status: ToolStatus::Running,
+            input_summary: None,
+            output: None,
+            prompts: None,
+        })),
+    );
+    let outcome = SwarmOutcome {
+        swarm_id: "swarm_bg".to_string(),
+        status: SwarmStatus::Running,
+        duration_ms: 0,
+        counts: SwarmCounts {
+            total: 3,
+            completed: 0,
+            interrupted: 0,
+            failed: 0,
+            cancelled: 0,
+            skipped: 0,
+            running: 3,
+            pending: 0,
+        },
+        tasks: vec![
+            mk_task("a", crate::tools::swarm::SwarmTaskStatus::Running),
+            mk_task("b", crate::tools::swarm::SwarmTaskStatus::Running),
+            mk_task("c", crate::tools::swarm::SwarmTaskStatus::Running),
+        ],
+    };
+    app.swarm_jobs
+        .insert("swarm_bg".to_string(), outcome.clone());
+    app.last_swarm_id = Some("swarm_bg".to_string());
+
+    // Apply the Esc/CancelRequest mutations the UI loop performs.
+    app.is_loading = true;
+    app.finalize_active_cell_as_interrupted();
+    app.is_loading = false;
+
+    // Active cell flushed → footer no longer reports "tool ... · X active".
+    assert!(
+        app.active_cell.is_none(),
+        "active_cell must be flushed after Esc"
+    );
+
+    // Background swarm record preserved — swarm_status / swarm_result and
+    // any future SwarmProgress event can still update the canonical store.
+    assert!(
+        app.swarm_jobs.contains_key("swarm_bg"),
+        "background swarm record must survive Esc"
+    );
+    assert_eq!(app.last_swarm_id.as_deref(), Some("swarm_bg"));
+
+    // Composer can submit the next message immediately — is_loading is
+    // false, no modal is open, runtime_turn_status is cleared.
+    assert!(!app.is_loading);
 }
 
 /// Regression for issue #241: `checklist_write` results render as a

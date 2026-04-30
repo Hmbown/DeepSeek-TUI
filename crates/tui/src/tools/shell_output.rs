@@ -123,8 +123,7 @@ fn is_summary_line(line: &str) -> bool {
     }
     // `test some::name ... ok|FAILED|ignored` is the per-test result line in
     // libtest. Cheap to match and useful for pinpointing the failing case.
-    if trimmed.starts_with("test ")
-        && (trimmed.ends_with("FAILED") || trimmed.ends_with("ignored"))
+    if trimmed.starts_with("test ") && (trimmed.ends_with("FAILED") || trimmed.ends_with("ignored"))
     {
         return true;
     }
@@ -221,7 +220,7 @@ mod tests {
     fn truncation_preserves_failure_lines_from_tail() {
         let mut head = String::with_capacity(MAX_OUTPUT_SIZE + 1_000);
         for _ in 0..MAX_OUTPUT_SIZE {
-            head.push_str("a");
+            head.push('a');
         }
         head.push_str("\nfailures:\n  test::flaky_thing FAILED\n");
         head.push_str("test result: FAILED. 0 passed; 1 failed\n");

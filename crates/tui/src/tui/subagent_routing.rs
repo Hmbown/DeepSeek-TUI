@@ -198,8 +198,7 @@ pub(super) fn sync_fanout_card_from_swarm_outcome(app: &mut App, outcome: &Swarm
         && matches!(
             app.history.get(bound),
             Some(HistoryCell::SubAgent(SubAgentCell::Fanout(_)))
-        )
-    {
+        ) {
         bound
     } else if let Some(idx) = app.last_fanout_card_index
         && matches!(

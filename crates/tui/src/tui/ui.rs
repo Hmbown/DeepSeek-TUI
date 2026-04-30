@@ -1683,6 +1683,16 @@ async fn run_event_loop(
                         // engine's TurnComplete will resync with the real
                         // outcome. Fixes #5a (wave kept animating after Esc).
                         app.runtime_turn_status = None;
+                        // Finalize any in-flight tool entries optimistically so
+                        // the composer regains focus and the footer's "tool ...
+                        // · X active" chip clears immediately rather than
+                        // waiting for the engine's TurnComplete echo to drain.
+                        // Idempotent with the TurnComplete handler that runs
+                        // when the engine actually echoes the cancel (#243).
+                        // Background `block:false` swarms continue running
+                        // — they are tracked in `swarm_jobs` independently and
+                        // their FanoutCard stays bound by `swarm_card_index`.
+                        app.finalize_active_cell_as_interrupted();
                         app.finalize_streaming_assistant_as_interrupted();
                         app.status_message = Some("Request cancelled".to_string());
                     }
