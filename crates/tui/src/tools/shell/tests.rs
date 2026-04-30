@@ -338,3 +338,179 @@ async fn test_exec_shell_foreground_cancel_kills_process() {
     assert_eq!(meta.get("status").and_then(Value::as_str), Some("Killed"));
     assert_eq!(meta.get("canceled").and_then(Value::as_bool), Some(true));
 }
+
+#[tokio::test]
+async fn test_exec_shell_foreground_can_move_to_background() {
+    let tmp = tempdir().expect("tempdir");
+    let ctx = ToolContext::new(tmp.path());
+    let shell_manager = ctx.shell_manager.clone();
+    let command = sleep_command(30);
+    let task_ctx = ctx.clone();
+
+    let task = tokio::spawn(async move {
+        ExecShellTool
+            .execute(
+                json!({
+                    "command": command,
+                    "timeout_ms": 600_000
+                }),
+                &task_ctx,
+            )
+            .await
+            .expect("execute")
+    });
+
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    shell_manager
+        .lock()
+        .expect("shell manager lock")
+        .request_foreground_background();
+
+    let result = tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("foreground shell should detach")
+        .expect("task should not panic");
+
+    assert!(result.success);
+    assert!(result.content.contains("Command moved to background"));
+    assert!(result.content.contains("exec_shell_cancel"));
+
+    let meta = result.metadata.expect("metadata");
+    assert_eq!(meta.get("status").and_then(Value::as_str), Some("Running"));
+    assert_eq!(
+        meta.get("backgrounded").and_then(Value::as_bool),
+        Some(true)
+    );
+    let task_id = meta
+        .get("task_id")
+        .and_then(Value::as_str)
+        .expect("task id")
+        .to_string();
+
+    let mut manager = shell_manager.lock().expect("shell manager lock");
+    let job = manager.inspect_job(&task_id).expect("inspect job");
+    assert_eq!(job.snapshot.status, ShellStatus::Running);
+    let killed = manager.kill(&task_id).expect("kill");
+    assert_eq!(killed.status, ShellStatus::Killed);
+}
+
+#[tokio::test]
+async fn test_exec_shell_wait_cancel_leaves_background_process_running() {
+    let tmp = tempdir().expect("tempdir");
+    let cancel_token = tokio_util::sync::CancellationToken::new();
+    let ctx = ToolContext::new(tmp.path()).with_cancel_token(cancel_token.clone());
+    let shell_manager = ctx.shell_manager.clone();
+    let started = shell_manager
+        .lock()
+        .expect("shell manager lock")
+        .execute(&sleep_command(30), None, 600_000, true)
+        .expect("execute");
+    let task_id = started.task_id.expect("task id");
+    let wait_task_id = task_id.clone();
+    let task_ctx = ctx.clone();
+
+    let task = tokio::spawn(async move {
+        ShellWaitTool::new("exec_shell_wait")
+            .execute(
+                json!({
+                    "task_id": wait_task_id,
+                    "wait": true,
+                    "timeout_ms": 600_000
+                }),
+                &task_ctx,
+            )
+            .await
+            .expect("wait")
+    });
+
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    cancel_token.cancel();
+
+    let result = tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("wait should observe cancellation")
+        .expect("task should not panic");
+
+    assert!(result.success);
+    assert!(result.content.contains("still running"));
+    let meta = result.metadata.expect("metadata");
+    assert_eq!(meta.get("status").and_then(Value::as_str), Some("Running"));
+    assert_eq!(
+        meta.get("wait_canceled").and_then(Value::as_bool),
+        Some(true)
+    );
+
+    let mut manager = shell_manager.lock().expect("shell manager lock");
+    let job = manager.inspect_job(&task_id).expect("inspect job");
+    assert_eq!(job.snapshot.status, ShellStatus::Running);
+    let killed = manager.kill(&task_id).expect("kill");
+    assert_eq!(killed.status, ShellStatus::Killed);
+}
+
+#[tokio::test]
+async fn test_exec_shell_cancel_tool_kills_background_process() {
+    let tmp = tempdir().expect("tempdir");
+    let ctx = ToolContext::new(tmp.path());
+    let shell_manager = ctx.shell_manager.clone();
+    let started = shell_manager
+        .lock()
+        .expect("shell manager lock")
+        .execute(&sleep_command(30), None, 600_000, true)
+        .expect("execute");
+    let task_id = started.task_id.expect("task id");
+
+    let result = ShellCancelTool
+        .execute(json!({ "task_id": task_id }), &ctx)
+        .await
+        .expect("cancel");
+
+    assert!(result.success);
+    assert!(result.content.contains("Canceled background shell job"));
+    let meta = result.metadata.expect("metadata");
+    assert_eq!(meta.get("status").and_then(Value::as_str), Some("Killed"));
+
+    let task_id = meta
+        .get("task_id")
+        .and_then(Value::as_str)
+        .expect("task id");
+    let mut manager = shell_manager.lock().expect("shell manager lock");
+    let job = manager.inspect_job(task_id).expect("inspect job");
+    assert_eq!(job.snapshot.status, ShellStatus::Killed);
+}
+
+#[tokio::test]
+async fn test_exec_shell_cancel_tool_can_kill_all_running_processes() {
+    let tmp = tempdir().expect("tempdir");
+    let ctx = ToolContext::new(tmp.path());
+    let shell_manager = ctx.shell_manager.clone();
+    let first = shell_manager
+        .lock()
+        .expect("shell manager lock")
+        .execute(&sleep_command(30), None, 600_000, true)
+        .expect("execute first")
+        .task_id
+        .expect("first task id");
+    let second = shell_manager
+        .lock()
+        .expect("shell manager lock")
+        .execute(&sleep_command(30), None, 600_000, true)
+        .expect("execute second")
+        .task_id
+        .expect("second task id");
+
+    let result = ShellCancelTool
+        .execute(json!({ "all": true }), &ctx)
+        .await
+        .expect("cancel all");
+
+    assert!(result.success);
+    let meta = result.metadata.expect("metadata");
+    assert_eq!(meta.get("status").and_then(Value::as_str), Some("Killed"));
+    assert_eq!(meta.get("canceled").and_then(Value::as_u64), Some(2));
+
+    let mut manager = shell_manager.lock().expect("shell manager lock");
+    let first_job = manager.inspect_job(&first).expect("inspect first");
+    let second_job = manager.inspect_job(&second).expect("inspect second");
+    assert_eq!(first_job.snapshot.status, ShellStatus::Killed);
+    assert_eq!(second_job.snapshot.status, ShellStatus::Killed);
+}

@@ -380,6 +380,15 @@ mod tests {
     }
 
     #[test]
+    fn rlm_first_class_guidance_present() {
+        let prompt = compose_prompt(AppMode::Agent, Personality::Calm);
+        assert!(prompt.contains("RLM Is First-Class"));
+        assert!(prompt.contains("independent second opinions"));
+        assert!(prompt.contains("batched issue triage"));
+        assert!(prompt.contains("rlm` output is advisory"));
+    }
+
+    #[test]
     fn subagent_done_sentinel_section_present() {
         let prompt = compose_prompt(AppMode::Agent, Personality::Calm);
         assert!(prompt.contains("Sub-agent completion sentinel"));

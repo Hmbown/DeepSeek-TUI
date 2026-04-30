@@ -280,10 +280,11 @@ impl ToolRegistryBuilder {
     /// Include shell execution tool.
     #[must_use]
     pub fn with_shell_tools(self) -> Self {
-        use super::shell::{ExecShellTool, ShellInteractTool, ShellWaitTool};
+        use super::shell::{ExecShellTool, ShellCancelTool, ShellInteractTool, ShellWaitTool};
         self.with_tool(Arc::new(ExecShellTool))
             .with_tool(Arc::new(ShellWaitTool::new("exec_shell_wait")))
             .with_tool(Arc::new(ShellInteractTool::new("exec_shell_interact")))
+            .with_tool(Arc::new(ShellCancelTool))
             .with_tool(Arc::new(ShellWaitTool::new("exec_wait")))
             .with_tool(Arc::new(ShellInteractTool::new("exec_interact")))
     }

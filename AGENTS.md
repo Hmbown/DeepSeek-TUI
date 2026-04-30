@@ -34,10 +34,12 @@ Use the **`gh` CLI** (`/opt/homebrew/bin/gh`) for all GitHub operations — issu
 - List open issues: `gh issue list --state open --limit 20`
 - View an issue: `gh issue view <number>`
 - Create an issue branch: `gh issue develop <number> --branch-name feat/issue-<number>-<slug>`
+- Close a verified issue: `gh issue close <number> --comment "..."`
 - Create a PR: `gh pr create --base feat/v0.6.2 --title "..." --body "..."`
 - Check PR status: `gh pr view <number>`
 
 Prefer `gh` over `fetch_url` or `web_search` for GitHub data — it's faster, authenticated, and avoids rate limits.
+Issues may be closed when the acceptance criteria have been verified or when the user explicitly asks for closure; avoid closing unrelated issues opportunistically.
 
 ## Important Notes
 

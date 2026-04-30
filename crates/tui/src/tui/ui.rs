@@ -93,7 +93,9 @@ use super::history::{
 use super::slash_menu::{
     apply_slash_menu_selection, try_autocomplete_slash_command, visible_slash_menu_entries,
 };
-use super::views::{ConfigView, ContextMenuAction, HelpView, ModalKind, ViewEvent};
+use super::views::{
+    ConfigView, ContextMenuAction, HelpView, ModalKind, ShellControlView, ViewEvent,
+};
 use super::widgets::pending_input_preview::{ContextPreviewItem, PendingInputPreview};
 use super::widgets::{
     ChatWidget, ComposerWidget, FooterProps, FooterToast, FooterWidget, HeaderData, HeaderWidget,
@@ -1436,6 +1438,14 @@ async fn run_event_loop(
                 && !app.is_loading
             {
                 open_file_picker(app);
+                continue;
+            }
+
+            if matches!(key.code, KeyCode::Char('b') | KeyCode::Char('B'))
+                && key.modifiers.contains(KeyModifiers::CONTROL)
+                && app.view_stack.is_empty()
+            {
+                open_shell_control(app);
                 continue;
             }
 
@@ -4115,6 +4125,19 @@ async fn handle_view_events(
             ViewEvent::ContextMenuSelected { action } => {
                 handle_context_menu_action(app, action);
             }
+            ViewEvent::ShellControlBackground => {
+                request_foreground_shell_background(app);
+            }
+            ViewEvent::ShellControlCancel => {
+                app.backtrack.reset();
+                engine_handle.cancel();
+                app.is_loading = false;
+                app.streaming_state.reset();
+                app.runtime_turn_status = None;
+                app.finalize_active_cell_as_interrupted();
+                app.finalize_streaming_assistant_as_interrupted();
+                app.status_message = Some("Request cancelled".to_string());
+            }
         }
     }
 
@@ -4748,8 +4771,55 @@ fn active_tool_status_label(app: &App) -> Option<String> {
     if let Some(elapsed) = elapsed {
         parts.push(elapsed);
     }
+    if active_foreground_shell_running(app) {
+        parts.push("Ctrl+B shell".to_string());
+    }
     parts.push("Alt+V".to_string());
     Some(parts.join(" \u{00B7} "))
+}
+
+fn open_shell_control(app: &mut App) {
+    if !app.is_loading || !active_foreground_shell_running(app) {
+        app.status_message = Some("No foreground shell command to control".to_string());
+        return;
+    }
+
+    app.view_stack.push(ShellControlView::new());
+    app.status_message = Some("Shell control opened".to_string());
+}
+
+fn request_foreground_shell_background(app: &mut App) {
+    if !app.is_loading || !active_foreground_shell_running(app) {
+        app.status_message = Some("No foreground shell command to background".to_string());
+        return;
+    }
+
+    let Some(shell_manager) = app.runtime_services.shell_manager.clone() else {
+        app.status_message = Some("Shell manager is not attached".to_string());
+        return;
+    };
+
+    match shell_manager.lock() {
+        Ok(mut manager) => {
+            manager.request_foreground_background();
+            app.status_message = Some("Backgrounding current shell command...".to_string());
+        }
+        Err(_) => {
+            app.status_message = Some("Shell manager lock is poisoned".to_string());
+        }
+    }
+}
+
+fn active_foreground_shell_running(app: &App) -> bool {
+    app.active_cell.as_ref().is_some_and(|active| {
+        active.entries().iter().any(|cell| {
+            matches!(
+                cell,
+                HistoryCell::Tool(ToolCell::Exec(exec))
+                    if exec.status == ToolStatus::Running && exec.interaction.is_none()
+            )
+        })
+    })
 }
 
 fn collect_active_tool_status(cell: &HistoryCell, snapshot: &mut ActiveToolStatusSnapshot) {

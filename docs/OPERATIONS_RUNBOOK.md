@@ -28,9 +28,11 @@ Checks:
 3. Confirm no local sandbox/permission deadlock in tool output
 
 Actions:
-1. Cancel current turn (`Esc` in TUI while loading)
-2. Retry prompt; if still failing, restart TUI
-3. On restart, verify the previous queued/in-flight runtime turn is shown as interrupted rather than left in a running state
+1. If a foreground shell command is running, press `Ctrl+B` and choose whether to background it or cancel the current turn.
+2. If the command was started in the background, ask the assistant to cancel it with `exec_shell_cancel` and the returned task id.
+3. Use `Esc` or `Ctrl+C` to interrupt the current turn when you want to stop the request itself.
+4. Retry prompt; if still failing, restart TUI.
+5. On restart, verify the previous queued/in-flight runtime turn is shown as interrupted rather than left in a running state.
 
 ## Incident: Network Outage / Offline Behavior
 

@@ -462,6 +462,7 @@ pub struct ShellManager {
     default_workspace: PathBuf,
     sandbox_manager: SandboxManager,
     sandbox_policy: ExecutionSandboxPolicy,
+    foreground_background_requested: bool,
 }
 
 impl std::fmt::Debug for ShellManager {
@@ -471,6 +472,10 @@ impl std::fmt::Debug for ShellManager {
             .field("stale_jobs", &self.stale_jobs.len())
             .field("default_workspace", &self.default_workspace)
             .field("sandbox_policy", &self.sandbox_policy)
+            .field(
+                "foreground_background_requested",
+                &self.foreground_background_requested,
+            )
             .finish()
     }
 }
@@ -484,6 +489,7 @@ impl ShellManager {
             default_workspace: workspace,
             sandbox_manager: SandboxManager::new(),
             sandbox_policy: ExecutionSandboxPolicy::default(),
+            foreground_background_requested: false,
         }
     }
 
@@ -496,6 +502,7 @@ impl ShellManager {
             default_workspace: workspace,
             sandbox_manager: SandboxManager::new(),
             sandbox_policy: policy,
+            foreground_background_requested: false,
         }
     }
 
@@ -509,6 +516,22 @@ impl ShellManager {
     #[allow(dead_code)]
     pub fn sandbox_policy(&self) -> &ExecutionSandboxPolicy {
         &self.sandbox_policy
+    }
+
+    /// Request that the active foreground shell wait detach and leave its
+    /// process running in the background job table.
+    pub fn request_foreground_background(&mut self) {
+        self.foreground_background_requested = true;
+    }
+
+    fn clear_foreground_background_request(&mut self) {
+        self.foreground_background_requested = false;
+    }
+
+    fn take_foreground_background_request(&mut self) -> bool {
+        let requested = self.foreground_background_requested;
+        self.foreground_background_requested = false;
+        requested
     }
 
     /// Check if sandboxing is available on this platform.
@@ -1131,6 +1154,22 @@ impl ShellManager {
         Ok(shell.snapshot())
     }
 
+    /// Kill every currently running background shell process.
+    pub fn kill_running(&mut self) -> Result<Vec<ShellResult>> {
+        let ids = self
+            .processes
+            .iter()
+            .filter(|(_, shell)| shell.status == ShellStatus::Running)
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+
+        let mut results = Vec::with_capacity(ids.len());
+        for id in ids {
+            results.push(self.kill(&id)?);
+        }
+        Ok(results)
+    }
+
     /// Poll a background process and return incremental output.
     pub fn poll_delta(
         &mut self,
@@ -1304,6 +1343,7 @@ async fn execute_foreground_via_background(
             .shell_manager
             .lock()
             .map_err(|_| anyhow!("shell manager lock poisoned"))?;
+        manager.clear_foreground_background_request();
         manager.execute_with_options(
             command,
             None,
@@ -1345,6 +1385,9 @@ async fn execute_foreground_via_background(
                 .shell_manager
                 .lock()
                 .map_err(|_| anyhow!("shell manager lock poisoned"))?;
+            if manager.take_foreground_background_request() {
+                return manager.get_output(&task_id, false, 0);
+            }
             manager.get_output(&task_id, false, 0)?
         };
 
@@ -1559,7 +1602,9 @@ impl ToolSpec for ExecShellTool {
 
         match result {
             Ok(result) => {
-                if background
+                let backgrounded_foreground =
+                    !background && !interactive && result.status == ShellStatus::Running;
+                if (background || backgrounded_foreground)
                     && let (Some(shell_id), Some(task_id)) = (
                         result.task_id.as_deref(),
                         context.runtime.active_task_id.clone(),
@@ -1595,7 +1640,13 @@ impl ToolSpec for ExecShellTool {
                         format!("{}\n\nSTDERR:\n{}", result.stdout, result.stderr)
                     }
                 } else if result.status == ShellStatus::Running {
-                    format!("Background task started: {task_id_str}")
+                    if backgrounded_foreground {
+                        format!(
+                            "Command moved to background: {task_id_str}\n\nPoll with exec_shell_wait or cancel with exec_shell_cancel."
+                        )
+                    } else {
+                        format!("Background task started: {task_id_str}")
+                    }
                 } else if result.status == ShellStatus::Killed && was_cancelled {
                     format!(
                         "Command canceled; process killed.\n\nSTDOUT:\n{}\n\nSTDERR:\n{}",
@@ -1647,6 +1698,7 @@ impl ToolSpec for ExecShellTool {
                         }),
                     }),
                 });
+                metadata["backgrounded"] = json!(background || backgrounded_foreground);
                 if result.status == ShellStatus::TimedOut && !background && !interactive {
                     metadata["foreground_timeout_recovery"] = json!({
                         "process_killed": true,
@@ -1753,6 +1805,222 @@ fn build_shell_delta_tool_result(delta: ShellDeltaResult) -> ToolResult {
     }
 }
 
+async fn wait_for_shell_delta_cancellable(
+    context: &ToolContext,
+    task_id: &str,
+    timeout_ms: u64,
+) -> Result<(ShellDeltaResult, bool), ToolError> {
+    let timeout_ms = timeout_ms.clamp(1000, 600_000);
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    let mut stdout_accum = String::new();
+    let mut stderr_accum = String::new();
+
+    let (result, stdout_total_len, stderr_total_len) = loop {
+        if context
+            .cancel_token
+            .as_ref()
+            .is_some_and(|token| token.is_cancelled())
+        {
+            let mut manager = context
+                .shell_manager
+                .lock()
+                .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
+            let delta = manager
+                .get_output_delta(task_id, false, 0)
+                .map_err(|err| ToolError::execution_failed(err.to_string()))?;
+            append_shell_delta_output(&mut stdout_accum, &mut stderr_accum, &delta.result);
+            return Ok((
+                shell_delta_with_accumulated_output(
+                    delta.result,
+                    &stdout_accum,
+                    &stderr_accum,
+                    delta.stdout_total_len,
+                    delta.stderr_total_len,
+                ),
+                true,
+            ));
+        }
+
+        let delta = {
+            let mut manager = context
+                .shell_manager
+                .lock()
+                .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
+            manager
+                .get_output_delta(task_id, false, 0)
+                .map_err(|err| ToolError::execution_failed(err.to_string()))?
+        };
+
+        let stdout_total_len = delta.stdout_total_len;
+        let stderr_total_len = delta.stderr_total_len;
+        append_shell_delta_output(&mut stdout_accum, &mut stderr_accum, &delta.result);
+
+        let status = delta.result.status.clone();
+        if status != ShellStatus::Running || Instant::now() >= deadline {
+            break (delta.result, stdout_total_len, stderr_total_len);
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+
+    Ok((
+        shell_delta_with_accumulated_output(
+            result,
+            &stdout_accum,
+            &stderr_accum,
+            stdout_total_len,
+            stderr_total_len,
+        ),
+        false,
+    ))
+}
+
+fn append_shell_delta_output(
+    stdout_accum: &mut String,
+    stderr_accum: &mut String,
+    result: &ShellResult,
+) {
+    if !result.stdout.is_empty() {
+        stdout_accum.push_str(&result.stdout);
+    }
+    if !result.stderr.is_empty() {
+        stderr_accum.push_str(&result.stderr);
+    }
+}
+
+fn shell_delta_with_accumulated_output(
+    mut result: ShellResult,
+    stdout_accum: &str,
+    stderr_accum: &str,
+    stdout_total_len: usize,
+    stderr_total_len: usize,
+) -> ShellDeltaResult {
+    let (stdout, stdout_meta) = truncate_with_meta(stdout_accum);
+    let (stderr, stderr_meta) = truncate_with_meta(stderr_accum);
+    result.stdout = stdout;
+    result.stderr = stderr;
+    result.stdout_len = stdout_meta.original_len;
+    result.stderr_len = stderr_meta.original_len;
+    result.stdout_omitted = stdout_meta.omitted;
+    result.stderr_omitted = stderr_meta.omitted;
+    result.stdout_truncated = stdout_meta.truncated;
+    result.stderr_truncated = stderr_meta.truncated;
+
+    ShellDeltaResult {
+        result,
+        stdout_total_len,
+        stderr_total_len,
+    }
+}
+
+pub struct ShellCancelTool;
+
+#[async_trait]
+impl ToolSpec for ShellCancelTool {
+    fn name(&self) -> &'static str {
+        "exec_shell_cancel"
+    }
+
+    fn description(&self) -> &'static str {
+        "Cancel a running background shell task by task_id, or cancel all running background shell tasks with all=true."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "Task ID returned by exec_shell or task_shell_start"
+                },
+                "id": {
+                    "type": "string",
+                    "description": "Alias for task_id"
+                },
+                "all": {
+                    "type": "boolean",
+                    "description": "Cancel all currently running background shell tasks"
+                }
+            }
+        })
+    }
+
+    fn capabilities(&self) -> Vec<ToolCapability> {
+        vec![ToolCapability::RequiresApproval]
+    }
+
+    fn approval_requirement(&self) -> ApprovalRequirement {
+        ApprovalRequirement::Required
+    }
+
+    async fn execute(
+        &self,
+        input: serde_json::Value,
+        context: &ToolContext,
+    ) -> Result<ToolResult, ToolError> {
+        let cancel_all = optional_bool(&input, "all", false);
+        let mut manager = context
+            .shell_manager
+            .lock()
+            .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
+
+        if cancel_all {
+            let results = manager
+                .kill_running()
+                .map_err(|err| ToolError::execution_failed(err.to_string()))?;
+            if results.is_empty() {
+                return Ok(ToolResult {
+                    content: "No running background shell jobs.".to_string(),
+                    success: true,
+                    metadata: Some(json!({
+                        "status": "Noop",
+                        "canceled": 0,
+                        "task_ids": [],
+                    })),
+                });
+            }
+
+            let task_ids = results
+                .iter()
+                .filter_map(|result| result.task_id.clone())
+                .collect::<Vec<_>>();
+            return Ok(ToolResult {
+                content: format!(
+                    "Canceled {} background shell job{}: {}",
+                    task_ids.len(),
+                    if task_ids.len() == 1 { "" } else { "s" },
+                    task_ids.join(", ")
+                ),
+                success: true,
+                metadata: Some(json!({
+                    "status": "Killed",
+                    "canceled": task_ids.len(),
+                    "task_ids": task_ids,
+                })),
+            });
+        }
+
+        let task_id = required_task_id(&input)?;
+        let result = manager
+            .kill(task_id)
+            .map_err(|err| ToolError::execution_failed(err.to_string()))?;
+        let task_id = result
+            .task_id
+            .clone()
+            .unwrap_or_else(|| task_id.to_string());
+        Ok(ToolResult {
+            content: format!("Canceled background shell job: {task_id}"),
+            success: true,
+            metadata: Some(json!({
+                "status": format!("{:?}", result.status),
+                "task_id": task_id,
+                "exit_code": result.exit_code,
+                "duration_ms": result.duration_ms,
+            })),
+        })
+    }
+}
+
 #[async_trait]
 impl ToolSpec for ShellWaitTool {
     fn name(&self) -> &'static str {
@@ -1760,7 +2028,7 @@ impl ToolSpec for ShellWaitTool {
     }
 
     fn description(&self) -> &'static str {
-        "Wait for a background shell task and return incremental output."
+        "Wait for a background shell task and return incremental output. Turn cancellation stops waiting but leaves the background task running."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -1801,15 +2069,36 @@ impl ToolSpec for ShellWaitTool {
         let wait = optional_bool(&input, "wait", true);
         let timeout_ms = optional_u64(&input, "timeout_ms", 5_000);
 
-        let mut manager = context
-            .shell_manager
-            .lock()
-            .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
-        let delta = manager
-            .get_output_delta(task_id, wait, timeout_ms)
-            .map_err(|err| ToolError::execution_failed(err.to_string()))?;
+        let (delta, wait_canceled) = if wait {
+            wait_for_shell_delta_cancellable(context, task_id, timeout_ms).await?
+        } else {
+            let mut manager = context
+                .shell_manager
+                .lock()
+                .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
+            let delta = manager
+                .get_output_delta(task_id, false, timeout_ms)
+                .map_err(|err| ToolError::execution_failed(err.to_string()))?;
+            (delta, false)
+        };
 
-        Ok(build_shell_delta_tool_result(delta))
+        let status = delta.result.status.clone();
+        let mut result = build_shell_delta_tool_result(delta);
+        if wait_canceled {
+            if matches!(status, ShellStatus::Running) {
+                result.content = format!(
+                    "Wait canceled; background shell task {task_id} is still running.\n\n{}",
+                    result.content
+                );
+            }
+            if let Some(metadata) = result.metadata.as_mut()
+                && let Some(object) = metadata.as_object_mut()
+            {
+                object.insert("wait_canceled".to_string(), json!(true));
+            }
+        }
+
+        Ok(result)
     }
 }
 
@@ -1893,6 +2182,27 @@ impl ToolSpec for ShellInteractTool {
 
         let mut elapsed = 0u64;
         loop {
+            if context
+                .cancel_token
+                .as_ref()
+                .is_some_and(|token| token.is_cancelled())
+            {
+                let mut manager = context
+                    .shell_manager
+                    .lock()
+                    .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
+                let delta = manager
+                    .get_output_delta(task_id, false, 0)
+                    .map_err(|err| ToolError::execution_failed(err.to_string()))?;
+                let mut result = build_shell_delta_tool_result(delta);
+                if let Some(metadata) = result.metadata.as_mut()
+                    && let Some(object) = metadata.as_object_mut()
+                {
+                    object.insert("wait_canceled".to_string(), json!(true));
+                }
+                return Ok(result);
+            }
+
             let delta = {
                 let mut manager = context
                     .shell_manager

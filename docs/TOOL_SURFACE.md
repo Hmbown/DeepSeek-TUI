@@ -41,8 +41,9 @@ chosen over the available shell equivalent. Companion to `crates/tui/src/prompts
 | Tool | Niche |
 |---|---|
 | `exec_shell` | Run a shell command. Foreground runs are cancellable, but use them only for bounded commands; timeout kills the process and returns a background-rerun hint. |
-| `exec_shell_wait` | Poll a background task for incremental output. |
+| `exec_shell_wait` | Poll a background task for incremental output. Canceling the turn stops waiting without killing the task. |
 | `exec_shell_interact` | Send stdin to a running background task and read incremental output. |
+| `exec_shell_cancel` | Cancel one running background shell task by id, or all running background shell tasks when explicitly requested. |
 | `task_shell_start` | Start a long-running command in the background and return immediately. Preferred over foreground shell for diagnostics, tests, searches, and servers that may run for minutes. |
 | `task_shell_wait` | Poll a background command. If `gate` is supplied after completion, record structured gate evidence on the active durable task. |
 

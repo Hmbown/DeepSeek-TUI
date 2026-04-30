@@ -155,7 +155,12 @@ pub const KEYBINDINGS: &[KeybindingEntry] = &[
     },
     KeybindingEntry {
         chord: "Ctrl+C",
-        description: "Cancel request, or exit when nothing is running",
+        description: "Cancel request, or exit when idle",
+        section: KeybindingSection::Submission,
+    },
+    KeybindingEntry {
+        chord: "Ctrl+B",
+        description: "Open shell controls for a running foreground command",
         section: KeybindingSection::Submission,
     },
     KeybindingEntry {

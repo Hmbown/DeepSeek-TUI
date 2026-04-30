@@ -688,6 +688,12 @@ impl ExecCell {
                     TOOL_OUTPUT_LINE_LIMIT,
                     mode,
                 ));
+            } else if self.status == ToolStatus::Running && self.source == ExecSource::Assistant {
+                lines.extend(wrap_plain_line(
+                    "  Ctrl+B opens shell controls.",
+                    Style::default().fg(palette::TEXT_MUTED),
+                    width,
+                ));
             } else if self.status != ToolStatus::Running {
                 lines.push(Line::from(Span::styled(
                     "  (no output)",
