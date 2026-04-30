@@ -7,7 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.7.6] - 2026-04-29
+## [0.7.7] - 2026-04-30
+
+### Added
+- **Checklist card rendering** — `checklist_write` / `todo_*` results now render as a purpose-built card with completed/total + percent header, per-item status markers (✅ / `●` / `○`), and a collapsing affordance for long lists. Plumbed through `GenericToolCell` so no new variant threading is needed. (#241)
+- **Context menu for transcript operations** — right-click or `Ctrl+M` opens a context-sensitive menu with Copy, Copy All, and selection-aware actions. (`crates/tui/src/tui/context_menu.rs`)
+- **Windows .exe sibling lookup** — `locate_sibling_tui_binary` in the CLI dispatcher finds `deepseek-tui.exe` on Windows, honours `DEEPSEEK_TUI_BIN` override, and falls back to suffix-less lookup. Tests lock in platform-correct name resolution and env override. (#247)
+
+### Changed
+- **Swarm/sub-agent canonical data model** — `SwarmTaskOutcome` and `SwarmOutcome` are now the single source of truth. Every UI surface (sidebar, transcript FanoutCard, footer) reads from `swarm_jobs` rather than maintaining parallel projections. (#236, #238)
+- **`swarm_card_index`** binds each swarm to its own FanoutCard by `swarm_id`, so overlapping fanouts no longer have one swarm's late progress clobber another's card. (#236, #238)
+- **Fanout-class tools suppressed from footer** — `agent_swarm`, `spawn_agents_on_csv`, `rlm`, and `agent_spawn` no longer appear as active tools in the status strip; sidebar and FanoutCard show the actual worker counts. (#236, #238)
+- **Esc clears active tool entries optimistically** — the active cell is finalized immediately on cancel rather than waiting for the engine's `TurnComplete` echo. Background `block:false` swarms remain durable and tracked through `swarm_jobs`. (#243)
+- **Post-turn workspace snapshot detached** — the snapshot still runs on `spawn_blocking` but the engine no longer awaits its `JoinHandle`, so the UI accepts input immediately after `TurnComplete`. (#234)
+- **Shell output preserves Cargo/test summaries under truncation** — high-signal tail lines (`test result:`, `failures:`, `error[E…]`, `Finished`, `Compiling`, panic markers) survive truncation so the agent doesn't re-run gates. (#242)
+- **Monotonic spend display** — `displayed_session_cost` + `displayed_cost_high_water` ensure the visible session+sub-agent total never decreases across reconciliation events (cache discounts, provisional → final). (#244)
+- Clipboard module expanded with additional platform-aware copy/paste paths. (`crates/tui/src/tui/clipboard.rs`)
+- Context inspector enriched with additional metadata columns and session-scoped agent state. (`crates/tui/src/tui/context_inspector.rs`)
+- Configuration documentation updated for v0.7.7 settings. (`docs/CONFIGURATION.md`, `docs/MODES.md`)
+
+### Fixed
+- **Windows npm install path** — the npm-distributed `deepseek` dispatcher now locates the platform-correct `deepseek-tui` binary (`.exe` suffix on Windows), fixing runtime failures for Windows users. (#247)
+- **Sidebar/transcript/footer agreement** — all three surfaces now agree on agent counts and status because they share the canonical `swarm_jobs` store. (#236, #238)
+- **Fanout card clobbering** — overlapping swarms no longer overwrite each other's progress cards. (#238)
+- **Cost display regression** — negative reconciliation events (cache-hit discount applied after provisional count) no longer briefly drop the displayed cost. (#244)
+
+### Tests
+- 65+ new/expanded tests: checklist card rendering, swarm card index binding, fanout tool suppression, Esc cancel contract, monotonic spend under reconciliation, shell summary preservation, Windows sibling binary lookup, clipboard platform paths, context menu state transitions
 
 ### Added
 - **UI Localization registry** — `locale` setting in `settings.toml` (`auto`, `en`, `ja`, `zh-Hans`, `pt-BR`) with `LC_ALL`/`LC_MESSAGES`/`LANG` auto-detection. Core packs shipped for English, Japanese, Chinese Simplified, and Brazilian Portuguese covering composer placeholder, history search, `/config` chrome, and help overlay. Missing/unsupported locales fall back to English. (`crates/tui/src/localization.rs`, `docs/CONFIGURATION.md`)
@@ -663,7 +689,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hooks system and config profiles
 - Example skills and launch assets
 
-[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.7.5...HEAD
+[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.7.7...HEAD
+[0.7.7]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.7.6...v0.7.7
 [0.7.6]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.7.5...v0.7.6
 [0.6.1]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.4.9...v0.6.0
