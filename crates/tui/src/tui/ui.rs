@@ -721,7 +721,7 @@ async fn run_event_loop(
                         let turn_cost =
                             crate::pricing::calculate_turn_cost_from_usage(&app.model, &usage);
                         if let Some(cost) = turn_cost {
-                            app.session_cost += cost;
+                            app.accrue_session_cost(cost);
                         }
 
                         // Emit OSC 9 / BEL desktop notification for long turns.
@@ -4789,6 +4789,18 @@ fn collect_active_tool_status(cell: &HistoryCell, snapshot: &mut ActiveToolStatu
             snapshot.record(format!("search {}", search.query), search.status, None);
         }
         ToolCell::Generic(generic) => {
+            // Fanout-class dispatch tools represent themselves through the
+            // FanoutCard + Agents sidebar, both of which derive from the
+            // canonical `swarm_jobs` store. Counting them again here would
+            // produce the contradiction the user observed: footer "1 active"
+            // while the card and sidebar already showed the swarm's own
+            // worker counts (#236, #238). Skip them entirely.
+            if matches!(
+                generic.name.as_str(),
+                "agent_swarm" | "spawn_agents_on_csv" | "rlm" | "agent_spawn"
+            ) {
+                return;
+            }
             snapshot.record(format!("tool {}", generic.name), generic.status, None);
         }
     }
@@ -4848,9 +4860,10 @@ fn render_footer_from(
     } else {
         Vec::new()
     };
-    let cost = if has(S::Cost) && app.session_cost + app.subagent_cost > 0.001 {
+    let displayed_cost = app.displayed_session_cost();
+    let cost = if has(S::Cost) && displayed_cost > 0.001 {
         vec![Span::styled(
-            format!("${:.2}", app.session_cost + app.subagent_cost),
+            format!("${displayed_cost:.2}"),
             Style::default().fg(palette::TEXT_MUTED),
         )]
     } else {
@@ -4942,9 +4955,10 @@ fn footer_auxiliary_spans(app: &App, max_width: usize) -> Vec<Span<'static>> {
     let agents_spans = crate::tui::widgets::footer_agents_chip(running_agent_count(app));
     let replay_spans = footer_reasoning_replay_spans(app);
     let cache_spans = footer_cache_spans(app);
-    let cost_spans = if app.session_cost + app.subagent_cost > 0.001 {
+    let displayed_cost = app.displayed_session_cost();
+    let cost_spans = if displayed_cost > 0.001 {
         vec![Span::styled(
-            format!("${:.2}", app.session_cost + app.subagent_cost),
+            format!("${displayed_cost:.2}"),
             Style::default().fg(palette::TEXT_MUTED),
         )]
     } else {

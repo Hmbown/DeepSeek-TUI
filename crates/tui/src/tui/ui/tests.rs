@@ -3042,3 +3042,274 @@ fn render_footer_from_drops_only_unselected_clusters() {
         "cost cluster should be empty when Cost is disabled"
     );
 }
+
+/// Regression for issue #244: visible session spend must not decrease.
+/// Sub-agent token usage events arrive out of order and may be reconciled
+/// later (cache adjustments, provisional → final swap). The displayed total
+/// is anchored to a high-water mark so users never see a number go down
+/// during a single session.
+#[test]
+fn displayed_session_cost_is_monotonic_under_negative_reconciliation() {
+    let mut app = create_test_app();
+    app.accrue_subagent_cost(0.50);
+    let after_first = app.displayed_session_cost();
+    assert!((after_first - 0.50).abs() < 1e-6);
+
+    // Simulate reconciliation that lowers the underlying counter (e.g. a
+    // cache discount applied after the fact). The underlying value drops,
+    // but the displayed cost must not.
+    app.subagent_cost = 0.20;
+    let after_recon = app.displayed_session_cost();
+    assert!(
+        after_recon >= after_first,
+        "displayed cost regressed: {after_recon} < {after_first}"
+    );
+
+    // Adding more cost should still bump above the high-water.
+    app.accrue_session_cost(0.10);
+    let after_add = app.displayed_session_cost();
+    assert!(after_add >= after_first);
+}
+
+/// Regression for issue #244: deduplicated mailbox events must not
+/// decrement displayed cost — they should leave it untouched and the
+/// next genuine event must extend it monotonically.
+#[test]
+fn duplicate_mailbox_token_usage_does_not_regress_displayed_cost() {
+    let mut app = create_test_app();
+    let usage = crate::tools::subagent::MailboxMessage::TokenUsage {
+        agent_id: "agent-x".to_string(),
+        model: "deepseek-v4-flash".to_string(),
+        usage: crate::models::Usage {
+            input_tokens: 10_000,
+            output_tokens: 1_000,
+            ..Default::default()
+        },
+    };
+    handle_subagent_mailbox(&mut app, 11, &usage);
+    let baseline = app.displayed_session_cost();
+    assert!(baseline > 0.0);
+
+    // Re-emit the same seq — must be deduped, displayed cost unchanged.
+    handle_subagent_mailbox(&mut app, 11, &usage);
+    assert!(
+        (app.displayed_session_cost() - baseline).abs() < 1e-9,
+        "duplicate mailbox seq must not move displayed cost"
+    );
+
+    // A fresh seq must extend the displayed cost upward.
+    handle_subagent_mailbox(&mut app, 12, &usage);
+    assert!(app.displayed_session_cost() > baseline);
+}
+
+/// Regression for issue #238: two overlapping `agent_swarm` invocations must
+/// each project to their own FanoutCard. Without per-swarm card binding,
+/// SwarmProgress for an older background swarm would clobber the freshly
+/// seeded card of a newer fanout — the contradictory state the user saw.
+#[test]
+fn overlapping_swarms_project_to_distinct_fanout_cards() {
+    use crate::tools::swarm::{
+        SwarmCounts, SwarmOutcome, SwarmStatus, SwarmTaskOutcome, SwarmTaskStatus,
+    };
+
+    let mut app = create_test_app();
+
+    // Seed swarm A.
+    assert!(seed_fanout_card_from_tool_call(
+        &mut app,
+        "agent_swarm",
+        &serde_json::json!({"tasks": [{"id": "a1", "prompt": "A1"}, {"id": "a2", "prompt": "A2"}]}),
+    ));
+
+    let outcome_a_initial = SwarmOutcome {
+        swarm_id: "swarm_A".to_string(),
+        status: SwarmStatus::Running,
+        duration_ms: 0,
+        counts: SwarmCounts {
+            total: 2,
+            completed: 0,
+            interrupted: 0,
+            failed: 0,
+            cancelled: 0,
+            skipped: 0,
+            running: 2,
+            pending: 0,
+        },
+        tasks: vec![
+            mk_task("a1", SwarmTaskStatus::Running),
+            mk_task("a2", SwarmTaskStatus::Running),
+        ],
+    };
+    sync_fanout_card_from_swarm_outcome(&mut app, &outcome_a_initial);
+    let card_a_idx = *app
+        .swarm_card_index
+        .get("swarm_A")
+        .expect("swarm A bound to a card");
+
+    // Now seed swarm B before A finishes.
+    app.last_fanout_card_index = None;
+    app.last_swarm_id = None;
+    assert!(seed_fanout_card_from_tool_call(
+        &mut app,
+        "agent_swarm",
+        &serde_json::json!({"tasks": [{"id": "b1", "prompt": "B1"}]}),
+    ));
+    let outcome_b_initial = SwarmOutcome {
+        swarm_id: "swarm_B".to_string(),
+        status: SwarmStatus::Running,
+        duration_ms: 0,
+        counts: SwarmCounts {
+            total: 1,
+            completed: 0,
+            interrupted: 0,
+            failed: 0,
+            cancelled: 0,
+            skipped: 0,
+            running: 1,
+            pending: 0,
+        },
+        tasks: vec![mk_task("b1", SwarmTaskStatus::Running)],
+    };
+    sync_fanout_card_from_swarm_outcome(&mut app, &outcome_b_initial);
+    let card_b_idx = *app
+        .swarm_card_index
+        .get("swarm_B")
+        .expect("swarm B bound to its own card");
+    assert_ne!(card_a_idx, card_b_idx, "each swarm gets its own card");
+
+    // A's terminal SwarmProgress arrives later; it must update card A,
+    // *not* card B.
+    let outcome_a_done = SwarmOutcome {
+        swarm_id: "swarm_A".to_string(),
+        status: SwarmStatus::Completed,
+        duration_ms: 100,
+        counts: SwarmCounts {
+            total: 2,
+            completed: 2,
+            interrupted: 0,
+            failed: 0,
+            cancelled: 0,
+            skipped: 0,
+            running: 0,
+            pending: 0,
+        },
+        tasks: vec![
+            mk_task("a1", SwarmTaskStatus::Completed),
+            mk_task("a2", SwarmTaskStatus::Completed),
+        ],
+    };
+    sync_fanout_card_from_swarm_outcome(&mut app, &outcome_a_done);
+
+    // Card A reflects A's completion; card B still reflects B's pending state.
+    let HistoryCell::SubAgent(SubAgentCell::Fanout(card_a)) = &app.history[card_a_idx] else {
+        panic!("card A is not a fanout cell");
+    };
+    assert_eq!(card_a.worker_count(), 2);
+    assert!(card_a.workers.iter().all(|s| matches!(
+        s.status,
+        crate::tui::widgets::agent_card::AgentLifecycle::Completed
+    )));
+
+    let HistoryCell::SubAgent(SubAgentCell::Fanout(card_b)) = &app.history[card_b_idx] else {
+        panic!("card B is not a fanout cell");
+    };
+    assert_eq!(card_b.worker_count(), 1);
+    assert!(matches!(
+        card_b.workers[0].status,
+        crate::tui::widgets::agent_card::AgentLifecycle::Running
+    ));
+}
+
+fn mk_task(
+    id: &str,
+    status: crate::tools::swarm::SwarmTaskStatus,
+) -> crate::tools::swarm::SwarmTaskOutcome {
+    crate::tools::swarm::SwarmTaskOutcome {
+        task_id: id.to_string(),
+        worker_id: format!("task:{id}"),
+        agent_id: Some(format!("agent_{id}")),
+        label: id.to_string(),
+        model: "deepseek-v4-flash".to_string(),
+        nickname: None,
+        status,
+        result: None,
+        error: None,
+        steps_taken: 0,
+        duration_ms: 0,
+        started_at_ms: Some(0),
+        ended_at_ms: None,
+    }
+}
+
+/// Regression for issue #236/#238: the footer must not double-count a
+/// fanout-class tool. Sidebar and FanoutCard already represent the swarm,
+/// so `active_tool_status_label` skipping these tools is what keeps the
+/// "tool agent_swarm · 1 active" line from appearing simultaneously with
+/// "Agents 3 done" + "0 done · 0 running · 0 failed · 3 pending".
+#[test]
+fn footer_active_tool_label_suppresses_fanout_tools() {
+    let mut app = create_test_app();
+    app.active_cell = Some(crate::tui::active_cell::ActiveCell::new());
+    let active = app.active_cell.as_mut().unwrap();
+    active.push_tool(
+        "tool-1".to_string(),
+        HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            name: "agent_swarm".to_string(),
+            status: ToolStatus::Running,
+            input_summary: None,
+            output: None,
+            prompts: None,
+        })),
+    );
+
+    let label = active_tool_status_label(&app);
+    assert!(
+        label.is_none(),
+        "active fanout-class tools must not appear in the footer 'tool ... · X active' line, got: {label:?}"
+    );
+}
+
+/// Regression for issue #241: `checklist_write` results render as a
+/// dedicated checklist card with completed/total + percent header and
+/// per-item status markers — not as a generic dumped JSON tool block.
+#[test]
+fn checklist_write_renders_dedicated_card() {
+    let cell = GenericToolCell {
+        name: "checklist_write".to_string(),
+        status: ToolStatus::Success,
+        input_summary: None,
+        output: Some(
+            "Todo list updated (3 items, 33% complete)\n{\"items\":[{\"id\":1,\"content\":\"Plan it out\",\"status\":\"completed\"},{\"id\":2,\"content\":\"Wire the thing\",\"status\":\"in_progress\"},{\"id\":3,\"content\":\"Run gates\",\"status\":\"pending\"}],\"completion_pct\":33,\"in_progress_id\":2}"
+                .to_string(),
+        ),
+        prompts: None,
+    };
+    let lines = cell.lines_with_mode(80, true, crate::tui::history::RenderMode::Live);
+    let text: Vec<String> = lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect();
+    let joined = text.join("\n");
+
+    assert!(
+        joined.contains("1/3"),
+        "header must include completed/total: {joined}"
+    );
+    assert!(
+        joined.contains("33%"),
+        "header must include percent: {joined}"
+    );
+    assert!(
+        joined.contains("Plan it out"),
+        "items must render content: {joined}"
+    );
+    assert!(
+        !joined.contains("\"items\""),
+        "raw JSON must NOT appear: {joined}"
+    );
+}

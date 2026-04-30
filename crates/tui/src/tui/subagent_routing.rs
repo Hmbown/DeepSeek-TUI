@@ -183,23 +183,43 @@ pub(super) fn sync_fanout_card_from_swarm_outcome(app: &mut App, outcome: &Swarm
         return false;
     }
 
-    let idx = match app.last_fanout_card_index {
-        Some(idx)
-            if matches!(
-                app.history.get(idx),
-                Some(HistoryCell::SubAgent(SubAgentCell::Fanout(_)))
-            ) =>
-        {
-            idx
-        }
-        _ => {
-            let card = FanoutCard::new("agent_swarm".to_string());
-            app.add_message(HistoryCell::SubAgent(SubAgentCell::Fanout(card)));
-            let idx = app.history.len().saturating_sub(1);
-            app.last_fanout_card_index = Some(idx);
-            idx
-        }
+    // Bind this swarm to a card by id so concurrent fanouts each update
+    // their own visualization. Order of preference:
+    //   1) existing binding for this swarm_id (idempotent updates)
+    //   2) the most recently seeded card (last_fanout_card_index) — which
+    //      typically corresponds to the fresh `agent_swarm` invocation
+    //      that just emitted this outcome's initial event
+    //   3) allocate a fresh card and append it to history
+    // Once chosen, the swarm_id↔card_index pair is cached so subsequent
+    // SwarmProgress events for the *same* swarm always update the right
+    // card even if `last_fanout_card_index` has since moved to another
+    // overlapping fanout.
+    let idx = if let Some(&bound) = app.swarm_card_index.get(&outcome.swarm_id)
+        && matches!(
+            app.history.get(bound),
+            Some(HistoryCell::SubAgent(SubAgentCell::Fanout(_)))
+        )
+    {
+        bound
+    } else if let Some(idx) = app.last_fanout_card_index
+        && matches!(
+            app.history.get(idx),
+            Some(HistoryCell::SubAgent(SubAgentCell::Fanout(_)))
+        )
+        && !app.swarm_card_index.values().any(|bound| *bound == idx)
+    {
+        // The most recently-seeded card has no swarm bound to it yet; this
+        // outcome's first SwarmProgress claims it. Any subsequent overlapping
+        // fanout will allocate its own card below.
+        idx
+    } else {
+        let card = FanoutCard::new("agent_swarm".to_string());
+        app.add_message(HistoryCell::SubAgent(SubAgentCell::Fanout(card)));
+        let idx = app.history.len().saturating_sub(1);
+        app.last_fanout_card_index = Some(idx);
+        idx
     };
+    app.swarm_card_index.insert(outcome.swarm_id.clone(), idx);
 
     let Some(HistoryCell::SubAgent(SubAgentCell::Fanout(card))) = app.history.get_mut(idx) else {
         return false;
@@ -340,7 +360,7 @@ pub(super) fn handle_subagent_mailbox(app: &mut App, seq: u64, message: &Mailbox
         if app.subagent_cost_event_seqs.insert(seq)
             && let Some(cost) = crate::pricing::calculate_turn_cost_from_usage(model, usage)
         {
-            app.subagent_cost += cost;
+            app.accrue_subagent_cost(cost);
         }
         return; // No card visual change needed; the footer handles display.
     }
