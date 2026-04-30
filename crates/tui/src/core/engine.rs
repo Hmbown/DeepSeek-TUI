@@ -1869,14 +1869,18 @@ impl Engine {
             })
             .await;
 
-        // Post-turn snapshot. Same non-blocking, non-fatal contract as
-        // the pre-turn hook above.
+        // Post-turn snapshot. Detached: TurnComplete is already emitted,
+        // so the UI is unblocked and the user can type / select / paste
+        // immediately. The git work proceeds on the blocking pool without
+        // forcing the engine loop to await it (#234). Snapshots are
+        // explicitly non-fatal background bookkeeping; failure logs WARN
+        // and disappears.
         if self.config.snapshots_enabled {
             let post_workspace = self.session.workspace.clone();
             let post_seq = self.turn_counter;
-            let _ =
-                tokio::task::spawn_blocking(move || post_turn_snapshot(&post_workspace, post_seq))
-                    .await;
+            tokio::task::spawn_blocking(move || {
+                post_turn_snapshot(&post_workspace, post_seq);
+            });
         }
 
         // Checkpoint-restart cycle boundary (issue #124). The turn just
