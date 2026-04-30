@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.8] - 2026-05-01
+
+### Added
+- **`exec_shell_cancel` tool** — cancel a running background shell task by id, or cancel all running tasks with `all: true`. Requires approval. (#248)
+- **Foreground-to-background shell detach** — press `Ctrl+B` while a foreground command is running to open shell controls and either detach the command to the background (where it can be polled via `exec_shell_wait`) or cancel the current turn. (#248)
+- **`exec_shell_wait` turn-cancellation awareness** — canceling a turn while `exec_shell_wait` is blocking now stops the wait but leaves the background task running, with `wait_canceled: true` in metadata. (#248)
+- **`ShellControlView` modal** (Ctrl+B) — two-option dialog (Background / Cancel) rendered as a popup over the transcript. (#248)
+
+### Changed
+- **`exec_shell` foreground path** now spawns all foreground commands through the background job table, enabling the detach-to-background flow. Metadata now includes `backgrounded: true/false`. (#248)
+- **`exec_shell_interact`** poll loop now observes the turn cancel token so stalled interactive sessions don't block turn cancellation. (#248)
+- **Transcript running-tool hint** — executing shell cells now show "Ctrl+B opens shell controls" while running. (#248)
+- **Keybinding registry** now includes `Ctrl+B` (opens shell controls) next to `Ctrl+C` (cancel/exits). (#248)
+- **OPERATIONS_RUNBOOK** and **TOOL_SURFACE** updated with new shell control paths and `exec_shell_cancel` documentation.
+
+### Tests
+- 7 new integration tests: foreground-to-background detach, wait-cancel-leaves-process, single-task cancel, bulk cancel (kill-all), foreground-cancel-kills, ShellControlView default/select states
+
 ## [0.7.7] - 2026-04-30
 
 ### Added
@@ -689,7 +707,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hooks system and config profiles
 - Example skills and launch assets
 
-[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.7.7...HEAD
+[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.7.8...HEAD
+[0.7.8]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.7.7...v0.7.8
 [0.7.7]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.7.6...v0.7.7
 [0.7.6]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.7.5...v0.7.6
 [0.6.1]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.6.0...v0.6.1
