@@ -135,7 +135,7 @@ async function loadChecksums(version, repo) {
   return parseChecksumManifest(await downloadText(checksumManifestUrl(version, repo)));
 }
 
-async function ensureBinary(targetPath, assetName, version, repo, checksums) {
+async function ensureBinary(targetPath, assetName, version, repo, getChecksums) {
   const marker = `${targetPath}.version`;
   const downloadIfNeeded =
     process.env.DEEPSEEK_TUI_FORCE_DOWNLOAD === "1" || process.env.DEEPSEEK_FORCE_DOWNLOAD === "1";
@@ -144,11 +144,11 @@ async function ensureBinary(targetPath, assetName, version, repo, checksums) {
     if (existing) {
       const markerVersion = await readLocalVersion(marker);
       if (markerVersion === String(version)) {
-        await verifyChecksum(targetPath, assetName, checksums);
         return targetPath;
       }
     }
   }
+  const checksums = await getChecksums();
   const url = releaseAssetUrl(assetName, version, repo);
   const destination = `${targetPath}.${process.pid}.${Date.now()}.download`;
   await download(url, destination);
@@ -175,11 +175,18 @@ async function run() {
   const paths = binaryPaths();
   const releaseDir = releaseBinaryDirectory();
   await mkdir(releaseDir, { recursive: true });
-  const checksums = await loadChecksums(version, repo);
+
+  let checksumsPromise;
+  const getChecksums = () => {
+    if (!checksumsPromise) {
+      checksumsPromise = loadChecksums(version, repo);
+    }
+    return checksumsPromise;
+  };
 
   await Promise.all([
-    ensureBinary(paths.deepseek.target, paths.deepseek.asset, version, repo, checksums),
-    ensureBinary(paths.tui.target, paths.tui.asset, version, repo, checksums),
+    ensureBinary(paths.deepseek.target, paths.deepseek.asset, version, repo, getChecksums),
+    ensureBinary(paths.tui.target, paths.tui.asset, version, repo, getChecksums),
   ]);
 }
 
