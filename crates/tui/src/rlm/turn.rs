@@ -836,6 +836,22 @@ mod tests {
     }
 
     #[test]
+    fn build_metadata_truncates_long_context_without_leaking_tail() {
+        let secret_tail = "DO_NOT_LEAK_CONTEXT_TAIL";
+        let prompt = format!("{}{}", "a".repeat(PROMPT_PREVIEW_LEN + 100), secret_tail);
+        let msg = build_metadata_message(&prompt, None, 0, None, None);
+        let text = extract_text_blocks(&msg.content);
+
+        assert!(text.contains(&format!("- Length: {} chars", prompt.chars().count())));
+        assert!(text.contains("- Preview: \""));
+        assert!(text.contains("..."));
+        assert!(
+            !text.contains(secret_tail),
+            "metadata leaked the non-preview tail of context"
+        );
+    }
+
+    #[test]
     fn build_metadata_with_iteration_shows_previous_code() {
         let msg = build_metadata_message("Test prompt", None, 3, Some("print('hi')"), Some("hi"));
         let text = extract_text_blocks(&msg.content);
