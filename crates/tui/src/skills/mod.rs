@@ -319,9 +319,20 @@ mod tests {
             crate::skills::render_available_skills_context(&tmpdir.path().join("skills"))
                 .expect("skill context");
 
+        let expected_path = tmpdir
+            .path()
+            .join("skills")
+            .join("test-skill")
+            .join("SKILL.md")
+            .display()
+            .to_string();
+
         assert!(rendered.contains("## Skills"));
         assert!(rendered.contains("- test-skill: A test skill"));
-        assert!(rendered.contains("test-skill/SKILL.md"));
+        assert!(
+            rendered.contains(&expected_path),
+            "expected path {expected_path:?} not in rendered output"
+        );
         assert!(rendered.contains("### How to use skills"));
     }
 
