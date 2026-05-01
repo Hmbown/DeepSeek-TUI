@@ -79,6 +79,15 @@ struct Cli {
     mouse_capture: bool,
     #[arg(long = "no-mouse-capture", conflicts_with = "mouse_capture")]
     no_mouse_capture: bool,
+    #[arg(long = "skip-onboarding")]
+    skip_onboarding: bool,
+    #[arg(
+        short = 'p',
+        long = "prompt",
+        value_name = "PROMPT",
+        conflicts_with = "prompt"
+    )]
+    prompt_flag: Option<String>,
     #[arg(value_name = "PROMPT")]
     prompt: Option<String>,
     #[command(subcommand)]
@@ -440,7 +449,7 @@ fn run() -> Result<()> {
         Some(Commands::Metrics(args)) => run_metrics_command(args),
         None => {
             let mut forwarded = Vec::new();
-            if let Some(prompt) = cli.prompt.clone() {
+            if let Some(prompt) = cli.prompt_flag.clone().or_else(|| cli.prompt.clone()) {
                 forwarded.push("--prompt".to_string());
                 forwarded.push(prompt);
             }
@@ -1005,6 +1014,9 @@ fn delegate_to_tui(
     }
     if cli.no_mouse_capture {
         cmd.arg("--no-mouse-capture");
+    }
+    if cli.skip_onboarding {
+        cmd.arg("--skip-onboarding");
     }
     cmd.args(passthrough);
 
@@ -1694,6 +1706,7 @@ mod tests {
             "sk-test",
             "--no-alt-screen",
             "--no-mouse-capture",
+            "--skip-onboarding",
             "model",
             "resolve",
             "gpt-4.1",
@@ -1713,6 +1726,15 @@ mod tests {
         assert!(cli.no_alt_screen);
         assert!(cli.no_mouse_capture);
         assert!(!cli.mouse_capture);
+        assert!(cli.skip_onboarding);
+    }
+
+    #[test]
+    fn parses_top_level_prompt_flag_for_canonical_one_shot() {
+        let cli = parse_ok(&["deepseek", "-p", "Reply with exactly OK."]);
+
+        assert_eq!(cli.prompt_flag.as_deref(), Some("Reply with exactly OK."));
+        assert_eq!(cli.prompt, None);
     }
 
     #[test]
@@ -1751,6 +1773,8 @@ mod tests {
             "--no-alt-screen",
             "--mouse-capture",
             "--no-mouse-capture",
+            "--skip-onboarding",
+            "--prompt",
         ] {
             assert!(
                 rendered.contains(token),
