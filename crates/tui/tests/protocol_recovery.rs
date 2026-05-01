@@ -23,7 +23,28 @@ use std::fs;
 #[allow(dead_code)]
 mod tool_parser;
 
-const ENGINE_SRC: &str = include_str!("../src/core/engine.rs");
+// `engine.rs` was decomposed into submodules under `core/engine/`. The
+// protocol-scrubbing strings the tests below assert on are now spread
+// across `engine.rs` and several `engine/*.rs` files. We compile-time
+// include each so a contributor moving a marker into a sibling submodule
+// does not silently break these regression checks.
+const ENGINE_SOURCES: &[&str] = &[
+    include_str!("../src/core/engine.rs"),
+    include_str!("../src/core/engine/streaming.rs"),
+    include_str!("../src/core/engine/turn_loop.rs"),
+    include_str!("../src/core/engine/dispatch.rs"),
+    include_str!("../src/core/engine/tool_setup.rs"),
+    include_str!("../src/core/engine/tool_execution.rs"),
+    include_str!("../src/core/engine/tool_catalog.rs"),
+    include_str!("../src/core/engine/context.rs"),
+    include_str!("../src/core/engine/approval.rs"),
+    include_str!("../src/core/engine/capacity_flow.rs"),
+    include_str!("../src/core/engine/lsp_hooks.rs"),
+];
+
+fn any_engine_source_contains(needle: &str) -> bool {
+    ENGINE_SOURCES.iter().any(|src| src.contains(needle))
+}
 
 const EXPECTED_START_MARKERS: &[&str] = &[
     "[TOOL_CALL]",
@@ -46,9 +67,10 @@ fn engine_keeps_known_fake_wrapper_start_markers() {
     for marker in EXPECTED_START_MARKERS {
         let needle = format!("\"{marker}\"");
         assert!(
-            ENGINE_SRC.contains(&needle),
-            "engine.rs no longer mentions start marker `{marker}` — protocol \
-             scrubbing may have regressed. Searched for {needle:?}."
+            any_engine_source_contains(&needle),
+            "no engine source file still mentions start marker `{marker}` — \
+             protocol scrubbing may have regressed. Searched for {needle:?} \
+             across engine.rs and engine/* submodules."
         );
     }
 }
@@ -58,9 +80,10 @@ fn engine_keeps_known_fake_wrapper_end_markers() {
     for marker in EXPECTED_END_MARKERS {
         let needle = format!("\"{marker}\"");
         assert!(
-            ENGINE_SRC.contains(&needle),
-            "engine.rs no longer mentions end marker `{marker}` — protocol \
-             scrubbing may have regressed. Searched for {needle:?}."
+            any_engine_source_contains(&needle),
+            "no engine source file still mentions end marker `{marker}` — \
+             protocol scrubbing may have regressed. Searched for {needle:?} \
+             across engine.rs and engine/* submodules."
         );
     }
 }
@@ -71,18 +94,18 @@ fn engine_marker_counts_stay_paired() {
     // filter able to enter tool-call mode without ever leaving it. Lock the
     // count to whatever the constants currently declare.
     assert_eq!(EXPECTED_START_MARKERS.len(), EXPECTED_END_MARKERS.len());
-    assert!(ENGINE_SRC.contains("TOOL_CALL_START_MARKERS"));
-    assert!(ENGINE_SRC.contains("TOOL_CALL_END_MARKERS"));
+    assert!(any_engine_source_contains("TOOL_CALL_START_MARKERS"));
+    assert!(any_engine_source_contains("TOOL_CALL_END_MARKERS"));
 }
 
 #[test]
 fn engine_emits_compact_fake_wrapper_notice() {
     assert!(
-        ENGINE_SRC.contains("FAKE_WRAPPER_NOTICE"),
-        "engine.rs no longer references the protocol-recovery notice constant"
+        any_engine_source_contains("FAKE_WRAPPER_NOTICE"),
+        "no engine source file references the protocol-recovery notice constant"
     );
     assert!(
-        ENGINE_SRC.contains("API tool channel"),
+        any_engine_source_contains("API tool channel"),
         "the protocol-recovery notice should mention the API tool channel"
     );
 }
