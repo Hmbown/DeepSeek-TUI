@@ -88,7 +88,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -101,35 +101,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build wrapper binaries
         run: cargo build --release --locked -p deepseek-tui-cli -p deepseek-tui
-      - name: Prepare local release assets
-        run: node scripts/release/prepare-local-release-assets.js "$RUNNER_TEMP/release-assets"
-      - name: Start local release server
-        run: |
-          python3 -m http.server 8123 --directory "$RUNNER_TEMP/release-assets" >/tmp/deepseek-release-server.log 2>&1 &
-          sleep 1
-      - name: Pack npm wrapper
-        working-directory: npm/deepseek-tui
-        env:
-          DEEPSEEK_TUI_FORCE_DOWNLOAD: "1"
-          DEEPSEEK_TUI_RELEASE_BASE_URL: http://127.0.0.1:8123/
-        run: npm pack
-      - name: Install packed wrapper
-        env:
-          DEEPSEEK_TUI_FORCE_DOWNLOAD: "1"
-          DEEPSEEK_TUI_RELEASE_BASE_URL: http://127.0.0.1:8123/
-        run: |
-          mkdir -p "$RUNNER_TEMP/npm-smoke"
-          cd "$RUNNER_TEMP/npm-smoke"
-          npm init -y
-          npm install "$GITHUB_WORKSPACE/npm/deepseek-tui"/deepseek-tui-*.tgz
-      - name: Smoke wrapper entrypoints
-        env:
-          DEEPSEEK_TUI_FORCE_DOWNLOAD: "1"
-          DEEPSEEK_TUI_RELEASE_BASE_URL: http://127.0.0.1:8123/
-        run: |
-          cd "$RUNNER_TEMP/npm-smoke"
-          npx --no-install deepseek --help
-          npx --no-install deepseek-tui --help
+      - name: Smoke wrapper install and delegated entrypoints
+        run: node scripts/release/npm-wrapper-smoke.js
 
   # Check documentation builds without warnings
   docs:

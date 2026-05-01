@@ -62,26 +62,19 @@ without unpublished workspace dependencies and a packaging preflight for depende
 workspace crates. That avoids false negatives from crates.io not yet containing the
 new workspace version while still validating package contents before publish.
 
-For npm wrapper verification:
+For npm wrapper verification, build the two shipped binaries and run the
+cross-platform smoke harness. This packs the npm wrapper, installs it into a
+clean temporary project, serves local release assets over HTTP, and checks both
+the dispatcher-to-TUI path (`deepseek doctor --help`) and the direct TUI
+entrypoint (`deepseek-tui --help`).
 
 ```bash
 cargo build --release --locked -p deepseek-tui-cli -p deepseek-tui
-node scripts/release/prepare-local-release-assets.js
-python3 -m http.server 8123 --directory target/npm-release-assets
-cd npm/deepseek-tui
-DEEPSEEK_TUI_FORCE_DOWNLOAD=1 DEEPSEEK_TUI_RELEASE_BASE_URL=http://127.0.0.1:8123/ npm pack
+node scripts/release/npm-wrapper-smoke.js
 ```
 
-Then install the generated tarball in a clean temp directory and smoke the entrypoints:
-
-```bash
-tmpdir="$(mktemp -d)"
-cd "${tmpdir}"
-npm init -y
-DEEPSEEK_TUI_FORCE_DOWNLOAD=1 DEEPSEEK_TUI_RELEASE_BASE_URL=http://127.0.0.1:8123/ npm install /path/to/deepseek-tui-*.tgz
-DEEPSEEK_TUI_FORCE_DOWNLOAD=1 DEEPSEEK_TUI_RELEASE_BASE_URL=http://127.0.0.1:8123/ npx --no-install deepseek --help
-DEEPSEEK_TUI_FORCE_DOWNLOAD=1 DEEPSEEK_TUI_RELEASE_BASE_URL=http://127.0.0.1:8123/ npx --no-install deepseek-tui --help
-```
+Set `DEEPSEEK_TUI_KEEP_SMOKE_DIR=1` to keep the temporary pack/install
+directory for inspection.
 
 To exercise `npm run release:check` locally as well, regenerate the local asset
 directory with a full asset matrix fixture before starting the server:
@@ -94,7 +87,8 @@ DEEPSEEK_TUI_VERSION=X.Y.Z DEEPSEEK_TUI_RELEASE_BASE_URL=http://127.0.0.1:8123/ 
 
 Set `DEEPSEEK_TUI_VERSION` to the npm package version you are verifying for that local run.
 
-The CI workflow runs the same tarball install + smoke test on Linux and macOS.
+The CI workflow runs the same tarball install + delegated-entrypoint smoke test
+on Linux, macOS, and Windows.
 
 ## Rust Crates Release
 
