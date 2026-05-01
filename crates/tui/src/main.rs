@@ -3008,6 +3008,7 @@ async fn run_exec_agent(
         trust_mode,
         notes_path: config.notes_path(),
         mcp_config_path: config.mcp_config_path(),
+        skills_dir: config.skills_dir(),
         max_steps: 100,
         max_subagents,
         features: config.features(),

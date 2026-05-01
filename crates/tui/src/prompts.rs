@@ -173,6 +173,16 @@ pub fn system_prompt_for_mode_with_context(
     workspace: &Path,
     working_set_summary: Option<&str>,
 ) -> SystemPrompt {
+    system_prompt_for_mode_with_context_and_skills(mode, workspace, working_set_summary, None)
+}
+
+/// Get the system prompt for a specific mode with project and skills context.
+pub fn system_prompt_for_mode_with_context_and_skills(
+    mode: AppMode,
+    workspace: &Path,
+    working_set_summary: Option<&str>,
+    skills_dir: Option<&Path>,
+) -> SystemPrompt {
     let mode_prompt = compose_mode_prompt(mode);
 
     // Load project context from workspace
@@ -195,6 +205,11 @@ pub fn system_prompt_for_mode_with_context(
         && !summary.trim().is_empty()
     {
         full_prompt = format!("{full_prompt}\n\n{summary}");
+    }
+
+    if let Some(skills_block) = skills_dir.and_then(crate::skills::render_available_skills_context)
+    {
+        full_prompt = format!("{full_prompt}\n\n{skills_block}");
     }
 
     if let Some(handoff_block) = load_handoff_block(workspace) {

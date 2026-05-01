@@ -83,6 +83,8 @@ pub struct EngineConfig {
     pub notes_path: PathBuf,
     /// Path to the MCP configuration file.
     pub mcp_config_path: PathBuf,
+    /// Directory containing discoverable skills.
+    pub skills_dir: PathBuf,
     /// Maximum number of assistant steps before stopping.
     pub max_steps: u32,
     /// Maximum number of concurrently active subagents.
@@ -134,6 +136,7 @@ impl Default for EngineConfig {
             trust_mode: false,
             notes_path: PathBuf::from("notes.txt"),
             mcp_config_path: PathBuf::from("mcp.json"),
+            skills_dir: crate::skills::default_skills_dir(),
             max_steps: 100,
             max_subagents: DEFAULT_MAX_SUBAGENTS,
             features: Features::with_defaults(),
@@ -1270,8 +1273,12 @@ impl Engine {
 
         // Set up system prompt with project context (default to agent mode)
         let working_set_summary = session.working_set.summary_block(&config.workspace);
-        let system_prompt =
-            prompts::system_prompt_for_mode_with_context(AppMode::Agent, &config.workspace, None);
+        let system_prompt = prompts::system_prompt_for_mode_with_context_and_skills(
+            AppMode::Agent,
+            &config.workspace,
+            None,
+            Some(&config.skills_dir),
+        );
         session.system_prompt =
             append_working_set_summary(Some(system_prompt), working_set_summary.as_deref());
 
@@ -2759,7 +2766,12 @@ impl Engine {
             .session
             .working_set
             .summary_block(&self.config.workspace);
-        let base = prompts::system_prompt_for_mode_with_context(mode, &self.config.workspace, None);
+        let base = prompts::system_prompt_for_mode_with_context_and_skills(
+            mode,
+            &self.config.workspace,
+            None,
+            Some(&self.config.skills_dir),
+        );
         let stable_prompt =
             merge_system_prompts(Some(&base), self.session.compaction_summary_prompt.clone());
         self.session.system_prompt =

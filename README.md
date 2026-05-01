@@ -2,6 +2,8 @@
 
 > **A terminal-native coding agent for [DeepSeek V4](https://platform.deepseek.com) models — with 1M-token context, thinking-mode reasoning, and full tool-use.**
 
+[简体中文 README](README.zh-CN.md)
+
 ```bash
 npm i -g deepseek-tui
 ```
@@ -332,8 +334,37 @@ or via the `LC_ALL`/`LANG` environment variables. See [docs/CONFIGURATION.md](do
 
 ## Publishing your own skill
 
-DeepSeek-TUI can install community skills directly from a GitHub repo, with no
-backend service in the loop:
+DeepSeek-TUI discovers skills from the active skills directory. Workspace-local
+`.agents/skills` wins when present, then `./skills`, then the configured global
+directory (`~/.deepseek/skills` by default). Each skill is a directory with a
+`SKILL.md` file:
+
+```text
+~/.deepseek/skills/my-skill/
+└── SKILL.md
+```
+
+`SKILL.md` must start with YAML frontmatter:
+
+```markdown
+---
+name: my-skill
+description: Use this when DeepSeek should follow my custom workflow.
+---
+
+# My Skill
+
+Instructions for the agent go here.
+```
+
+Run `/skills` to list discovered skills, `/skill <name>` to activate one for
+the next message, or `/skill new` to use the bundled skill-creator helper.
+Installed skills are also listed in the model-visible session context so the
+agent can choose relevant skills when the user names them or when the task
+matches their descriptions.
+
+DeepSeek-TUI can also install community skills directly from a GitHub repo,
+with no backend service in the loop:
 
 1. Create a public GitHub repo with a `SKILL.md` at the root containing the
    usual `---` frontmatter (`name`, `description`).
@@ -346,6 +377,9 @@ backend service in the loop:
    placed under `~/.deepseek/skills/<name>/`.
 5. Submit a PR to the curated `index.json` (default registry) to make the skill
    installable by name (`/skill install <name>`) instead of the GitHub spec.
+6. Use `/skill update <name>`, `/skill uninstall <name>`, or
+   `/skill trust <name>` for installed community skills. Trust is only needed
+   when you want scripts bundled with a skill to be eligible for execution.
 
 ## Documentation
 
