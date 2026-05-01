@@ -3349,6 +3349,103 @@ fn esc_during_fanout_clears_active_cell_but_preserves_background_swarm() {
     assert!(!app.is_loading);
 }
 
+/// Regression for issue #243: after Esc during fanout, a subsequent
+/// TurnComplete (Interrupted) event arriving from the engine must be
+/// handled idempotently — `finalize_active_cell_as_interrupted` and
+/// `finalize_streaming_assistant_as_interrupted` are both called by
+/// both the Esc handler and the TurnComplete handler; the second call
+/// must be a no-op (guarded by `Option::take()`).
+#[test]
+fn turn_complete_after_esc_is_idempotent() {
+    let mut app = create_test_app();
+
+    // Simulate a live fanout with an active cell and a streaming assistant.
+    let mut active = ActiveCell::new();
+    active.push_tool(
+        "tool-1".to_string(),
+        HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            name: "agent_swarm".to_string(),
+            status: ToolStatus::Running,
+            input_summary: None,
+            output: None,
+            prompts: None,
+        })),
+    );
+    app.active_cell = Some(active);
+    app.add_message(HistoryCell::Assistant {
+        content: "partial text".to_string(),
+        streaming: true,
+    });
+    let assistant_idx = app.history.len() - 1;
+    app.streaming_message_index = Some(assistant_idx);
+    app.is_loading = true;
+    app.runtime_turn_status = Some("in_progress".to_string());
+
+    // Step 1: Esc handler fires (simulated).
+    app.finalize_active_cell_as_interrupted();
+    app.finalize_streaming_assistant_as_interrupted();
+    app.runtime_turn_status = None;
+    app.is_loading = false;
+
+    // Verify first call cleared the active cell and stopped loading.
+    assert!(app.active_cell.is_none(), "active_cell cleared by Esc");
+    assert!(!app.is_loading, "is_loading false after Esc");
+    assert!(
+        app.runtime_turn_status.is_none(),
+        "runtime_turn_status cleared by Esc"
+    );
+    // Streaming assistant cell was marked interrupted.
+    if let Some(HistoryCell::Assistant { streaming, content }) = app.history.get(assistant_idx) {
+        assert!(!streaming, "streaming stopped");
+        assert!(
+            content.starts_with("[interrupted]"),
+            "content should have interruption prefix"
+        );
+    }
+
+    // Step 2: Simulate TurnComplete (Interrupted) arriving from engine.
+    // This calls the same methods again — must be a no-op.
+    app.finalize_active_cell_as_interrupted();
+    app.finalize_streaming_assistant_as_interrupted();
+    app.is_loading = false;
+    app.runtime_turn_status = Some("interrupted".to_string());
+
+    // State remains consistent — active_cell still None, streaming still
+    // stopped, no double-interruption prefix.
+    assert!(app.active_cell.is_none(), "active_cell still cleared after 2nd call");
+    assert!(!app.is_loading, "is_loading still false after 2nd call");
+    assert_eq!(
+        app.runtime_turn_status.as_deref(),
+        Some("interrupted"),
+        "runtime_turn_status reflects final outcome"
+    );
+    // The streaming assistant should still have only ONE interruption prefix.
+    if let Some(HistoryCell::Assistant { content, .. }) = app.history.get(assistant_idx) {
+        assert_eq!(
+            content.matches("[interrupted]").count(),
+            1,
+            "content must not double-prefix [interrupted]: {content}"
+        );
+    }
+
+    // Background cell in history (the flushed tool entry) must exist and
+    // have the Failed status.
+    let tool_cells: Vec<_> = app
+        .history
+        .iter()
+        .filter_map(|c| match c {
+            HistoryCell::Tool(ToolCell::Generic(g)) => Some(g),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(tool_cells.len(), 1);
+    assert_eq!(
+        tool_cells[0].status,
+        ToolStatus::Failed,
+        "interrupted tool marked Failed"
+    );
+}
+
 /// Regression for issue #241: `checklist_write` results render as a
 /// dedicated checklist card with completed/total + percent header and
 /// per-item status markers — not as a generic dumped JSON tool block.

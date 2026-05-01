@@ -730,6 +730,9 @@ pub enum SubmitDisposition {
     Queue,
     /// Engine busy and online: forward as a mid-turn steer.
     Steer,
+    /// Model is actively streaming text; park on `queued_messages` for
+    /// dispatch after TurnComplete.
+    QueueFollowUp,
 }
 
 /// Detailed tool payload attached to a history cell.
@@ -2538,17 +2541,24 @@ impl App {
     ///
     /// Truth table:
     ///   offline=F, busy=F → Immediate
-    ///   offline=F, busy=T → Steer
+    ///   offline=F, busy=T, streaming → QueueFollowUp
+    ///   offline=F, busy=T, not streaming → Steer
     ///   offline=T, busy=F → Queue
     ///   offline=T, busy=T → Queue
     #[must_use]
     pub fn decide_submit_disposition(&self) -> SubmitDisposition {
         if self.offline_mode {
-            SubmitDisposition::Queue
-        } else if self.is_loading {
-            SubmitDisposition::Steer
+            return SubmitDisposition::Queue;
+        }
+        if !self.is_loading {
+            return SubmitDisposition::Immediate;
+        }
+        // Busy + streaming text: queue for after TurnComplete.
+        // Busy + not streaming (tool execution): forward as a steer.
+        if self.streaming_message_index.is_some() {
+            SubmitDisposition::QueueFollowUp
         } else {
-            SubmitDisposition::Immediate
+            SubmitDisposition::Steer
         }
     }
 
@@ -3390,11 +3400,26 @@ mod tests {
     }
 
     #[test]
-    fn submit_disposition_steer_when_busy_and_online() {
+    fn submit_disposition_steer_when_busy_and_online_not_streaming() {
+        // Busy + not streaming (tool execution phase) → Steer
         let mut app = App::new(test_options(false), &Config::default());
         app.is_loading = true;
         app.offline_mode = false;
+        // streaming_message_index is None (default) → tool execution phase
         assert_eq!(app.decide_submit_disposition(), SubmitDisposition::Steer);
+    }
+
+    #[test]
+    fn submit_disposition_queue_follow_up_when_streaming() {
+        // Busy + actively streaming → QueueFollowUp
+        let mut app = App::new(test_options(false), &Config::default());
+        app.is_loading = true;
+        app.offline_mode = false;
+        app.streaming_message_index = Some(0);
+        assert_eq!(
+            app.decide_submit_disposition(),
+            SubmitDisposition::QueueFollowUp
+        );
     }
 
     #[test]
@@ -3410,6 +3435,8 @@ mod tests {
         let mut app = App::new(test_options(false), &Config::default());
         app.is_loading = true;
         app.offline_mode = true;
+        // Offline mode always queues, even when streaming
+        app.streaming_message_index = Some(0);
         assert_eq!(app.decide_submit_disposition(), SubmitDisposition::Queue);
     }
 

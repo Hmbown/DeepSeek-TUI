@@ -1856,10 +1856,21 @@ impl Engine {
             )
             .await;
 
+        // Checkpoint-restart cycle boundary (issue #124). Run BEFORE
+        // TurnComplete so the engine loop doesn't block the terminal after
+        // the turn signal (#234). The status chip ("↻ context refreshing...")
+        // is visible during the wait, and once TurnComplete fires the
+        // terminal is immediately responsive. No-op unless the estimated
+        // input tokens have crossed the per-cycle threshold.
+        if matches!(status, TurnOutcomeStatus::Completed) {
+            self.maybe_advance_cycle(mode).await;
+        }
+
         // Update session usage
         self.session.total_usage.add(&turn.usage);
 
-        // Emit turn complete event
+        // Emit turn complete event — after all post-turn bookkeeping so
+        // the terminal is immediately responsive when the UI receives it.
         let _ = self
             .tx_event
             .send(Event::TurnComplete {
@@ -1869,28 +1880,16 @@ impl Engine {
             })
             .await;
 
-        // Post-turn snapshot. Detached: TurnComplete is already emitted,
-        // so the UI is unblocked and the user can type / select / paste
-        // immediately. The git work proceeds on the blocking pool without
-        // forcing the engine loop to await it (#234). Snapshots are
-        // explicitly non-fatal background bookkeeping; failure logs WARN
-        // and disappears.
+        // Post-turn snapshot. Fire-and-forget: TurnComplete is already
+        // emitted, so the UI is unblocked and the user can type / select /
+        // paste immediately (#234). The git work proceeds on the blocking
+        // pool without forcing the engine loop to await it.
         if self.config.snapshots_enabled {
             let post_workspace = self.session.workspace.clone();
             let post_seq = self.turn_counter;
             tokio::task::spawn_blocking(move || {
                 post_turn_snapshot(&post_workspace, post_seq);
             });
-        }
-
-        // Checkpoint-restart cycle boundary (issue #124). The turn just
-        // settled cleanly — no in-flight tools, no streaming, no pending
-        // approval — so this is the safe phase to swap the context if we've
-        // crossed the per-cycle token threshold. We only fire on a
-        // Completed turn; Failed/Interrupted turns leave the buffer alone
-        // so the user can retry without a forced reset.
-        if matches!(status, TurnOutcomeStatus::Completed) {
-            self.maybe_advance_cycle(mode).await;
         }
     }
 
