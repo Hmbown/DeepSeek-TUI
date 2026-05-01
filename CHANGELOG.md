@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-05-01
+
+### Fixed
+- **Shell FD leak / post-send lag** — completed background shell jobs now release
+  their process, stdin, stdout, and stderr handles as soon as completion is
+  observed, while keeping the job record inspectable. This prevents long-running
+  TUI sessions from hitting `Too many open files (os error 24)`, which could
+  make checkpoint saves fail and cause shell spawning, message send, close, and
+  Esc/cancel paths to lag or fail.
+- **Windows REPL runtime CI startup** — Windows gets a longer Python bootstrap
+  readiness timeout for the REPL runtime tests, matching GitHub runner startup
+  contention without weakening bootstrap failures on other platforms.
+
+### Added
+- **China / mirror-friendly Cargo install docs** — README now documents
+  installing through the TUNA Cargo mirror and direct release assets for users
+  with slow GitHub/npm access.
+
+### Tests
+- Added a regression test proving completed background shell jobs drop their
+  live process handles after `exec_shell_wait`.
+- Re-ran the focused shell cancellation and Python REPL runtime slices.
+
 ## [0.7.9] - 2026-05-02
 
 ### Fixed
@@ -726,7 +749,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hooks system and config profiles
 - Example skills and launch assets
 
-[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.7.9...HEAD
+[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.7.9...v0.8.0
 [0.7.9]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.7.8...v0.7.9
 [0.7.8]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.7.7...v0.7.8
 [0.7.7]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.7.6...v0.7.7

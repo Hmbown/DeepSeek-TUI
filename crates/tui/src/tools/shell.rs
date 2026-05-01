@@ -292,6 +292,8 @@ impl BackgroundShell {
         if let Some(handle) = self.stderr_thread.take() {
             let _ = handle.join();
         }
+        self.stdin = None;
+        self.child = None;
     }
 
     fn write_stdin(&mut self, input: &str, close: bool) -> Result<()> {

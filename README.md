@@ -43,6 +43,34 @@ npm install -g deepseek-tui
 deepseek
 ```
 
+### China / mirror-friendly install
+
+If GitHub or npm downloads are slow from mainland China, install the Rust
+crates through a Cargo registry mirror:
+
+```toml
+# ~/.cargo/config.toml
+[source.crates-io]
+replace-with = "tuna"
+
+[source.tuna]
+registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"
+```
+
+Then install the two shipped binaries:
+
+```bash
+cargo install deepseek-tui-cli --locked
+cargo install deepseek-tui --locked
+deepseek --version
+```
+
+You can also download prebuilt binaries directly from the
+[GitHub Releases](https://github.com/Hmbown/DeepSeek-TUI/releases) page when
+GitHub release assets are reachable. TUNA, rsproxy, Tencent COS, or Aliyun OSS
+mirrors can also be used with `DEEPSEEK_TUI_RELEASE_BASE_URL` when a mirrored
+release-asset directory is available.
+
 On first launch you'll be prompted for your [DeepSeek API key](https://platform.deepseek.com/api_keys). You can also set it ahead of time:
 
 ```bash
@@ -88,33 +116,32 @@ cargo install --path crates/cli --bin deepseek --locked
 
 ---
 
-## What's new in v0.7.9
+## What's new in v0.8.0
 
-### ⚡ Post-turn responsiveness
+### ⚡ Shell stability and post-send responsiveness
 
-The checkpoint-restart cycle boundary now runs *before* `TurnComplete`
-is emitted to the UI, so the terminal is immediately responsive after
-every completed turn. The "↻ context refreshing…" status chip stays
-visible during the cycle wait instead of blocking input.
+Completed background shell jobs now release their live process and pipe
+handles as soon as completion is observed, while keeping the job record
+inspectable. This prevents long-running sessions from hitting `Too many
+open files (os error 24)`, which could make checkpoint saves fail and
+cause shell spawning, message send, close, and Esc/cancel paths to lag
+or fail.
 
-### ⌨️ Enter during streaming now queues
+### 🪟 Windows REPL runtime CI hardening
 
-When the model is actively streaming text and you press Enter, your
-message is now parked on the queue for dispatch after the turn finishes
-— no more corrupted mid-turn steering. A status line shows "Queued
-follow-up: … (N queued)" so you know what's waiting.
+Windows gets a longer Python bootstrap readiness timeout for the REPL
+runtime tests, matching GitHub runner startup contention without
+weakening bootstrap failures on other platforms.
 
-### 🛡️ Esc during fanout is robust
+### 🌏 Cargo mirror install docs
 
-Canceling a fanout (swarm/sub-agent spawn) with Esc no longer leaves
-the transcript in a broken state when the engine sends a delayed
-`TurnComplete`. Both finalization paths are now idempotent — no
-double `[interrupted]` prefixes, no stale tool cards.
+The README now includes a TUNA Cargo mirror setup and direct release
+asset guidance for users with slow GitHub/npm access.
 
 ### 🧪 Test hardening
 
-New regression tests lock in the Esc-during-fanout idempotency
-contract and the streaming vs. steer dispatch decision.
+New regression coverage proves completed background shell jobs drop
+their live process handles after `exec_shell_wait`.
 
 Full changelog: [CHANGELOG.md](CHANGELOG.md).
 

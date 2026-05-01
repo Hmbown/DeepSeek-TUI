@@ -448,6 +448,41 @@ async fn test_exec_shell_wait_cancel_leaves_background_process_running() {
 }
 
 #[tokio::test]
+async fn test_completed_background_shell_releases_process_handles() {
+    let tmp = tempdir().expect("tempdir");
+    let ctx = ToolContext::new(tmp.path());
+    let shell_manager = ctx.shell_manager.clone();
+    let started = shell_manager
+        .lock()
+        .expect("shell manager lock")
+        .execute(&echo_command("done"), None, 600_000, true)
+        .expect("execute");
+    let task_id = started.task_id.expect("task id");
+
+    let result = ShellWaitTool::new("exec_shell_wait")
+        .execute(
+            json!({
+                "task_id": task_id.clone(),
+                "wait": true,
+                "timeout_ms": 5_000
+            }),
+            &ctx,
+        )
+        .await
+        .expect("wait");
+
+    assert!(result.success);
+    let mut manager = shell_manager.lock().expect("shell manager lock");
+    let shell = manager.processes.get_mut(&task_id).expect("tracked shell");
+    shell.poll();
+    assert_eq!(shell.status, ShellStatus::Completed);
+    assert!(shell.stdin.is_none());
+    assert!(shell.child.is_none());
+    assert!(shell.stdout_thread.is_none());
+    assert!(shell.stderr_thread.is_none());
+}
+
+#[tokio::test]
 async fn test_exec_shell_cancel_tool_kills_background_process() {
     let tmp = tempdir().expect("tempdir");
     let ctx = ToolContext::new(tmp.path());

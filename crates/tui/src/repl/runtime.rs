@@ -122,7 +122,10 @@ pub trait RpcDispatcher: Send + Sync {
 
 const DEFAULT_STDOUT_LIMIT: usize = 8_192;
 const ROUND_TIMEOUT: Duration = Duration::from_secs(180);
+#[cfg(not(windows))]
 const SPAWN_READY_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(windows)]
+const SPAWN_READY_TIMEOUT: Duration = Duration::from_secs(30);
 
 // ---------------------------------------------------------------------------
 // PythonRuntime
