@@ -8,6 +8,9 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{Shell, generate};
+use deepmap::diagnostics::DiagnosticRunner;
+use deepmap::engine::RepoMapEngine;
+use deepmap::renderer;
 use deepseek_agent::ModelRegistry;
 use deepseek_app_server::{
     AppServerOptions, run as run_app_server, run_stdio as run_app_server_stdio,
@@ -153,6 +156,8 @@ enum Commands {
     },
     /// Print a usage rollup from the audit log and session store.
     Metrics(MetricsArgs),
+    /// Analyze a codebase with DeepMap (symbols, dependency graph, PageRank).
+    Deepmap(DeepmapArgs),
 }
 
 #[derive(Debug, Args)]
@@ -163,6 +168,121 @@ struct MetricsArgs {
     /// Restrict to events newer than this duration (e.g. 7d, 24h, 30m, now-2h).
     #[arg(long, value_name = "DURATION")]
     since: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct DeepmapArgs {
+    #[command(subcommand)]
+    command: DeepmapCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum DeepmapCommand {
+    /// Generate a project map overview.
+    Overview {
+        /// Project root directory (default: current directory).
+        #[arg(long, default_value = ".")]
+        project: PathBuf,
+        /// Maximum files to scan.
+        #[arg(long, default_value = "2000")]
+        max_files: usize,
+        /// Maximum output characters.
+        #[arg(long, default_value = "16000")]
+        max_chars: usize,
+    },
+    /// Trace call chain for a symbol.
+    CallChain {
+        /// Project root directory (default: current directory).
+        #[arg(long, default_value = ".")]
+        project: PathBuf,
+        /// Symbol name to trace.
+        #[arg(long)]
+        symbol: String,
+        /// Maximum traversal depth.
+        #[arg(long, default_value = "3")]
+        max_depth: usize,
+        /// Maximum output characters.
+        #[arg(long, default_value = "16000")]
+        max_chars: usize,
+    },
+    /// Show detailed file information.
+    FileDetail {
+        /// Project root directory (default: current directory).
+        #[arg(long, default_value = ".")]
+        project: PathBuf,
+        /// File path (relative to project root).
+        #[arg(long)]
+        file: String,
+        /// Maximum symbols to show.
+        #[arg(long, default_value = "12")]
+        max_symbols: usize,
+        /// Maximum output characters.
+        #[arg(long, default_value = "6000")]
+        max_chars: usize,
+    },
+    /// Search codebase by topic/keywords.
+    Query {
+        /// Project root directory (default: current directory).
+        #[arg(long, default_value = ".")]
+        project: PathBuf,
+        /// Keywords to search for (space-separated).
+        #[arg(long)]
+        keywords: String,
+        /// Maximum files to show.
+        #[arg(long, default_value = "20")]
+        max_files: usize,
+        /// Maximum output characters.
+        #[arg(long, default_value = "8000")]
+        max_chars: usize,
+    },
+    /// Analyze impact of changes on given files.
+    Impact {
+        /// Project root directory (default: current directory).
+        #[arg(long, default_value = ".")]
+        project: PathBuf,
+        /// Comma-separated list of changed files.
+        #[arg(long, value_delimiter = ',')]
+        files: Vec<String>,
+        /// Maximum output characters.
+        #[arg(long, default_value = "8000")]
+        max_chars: usize,
+    },
+    /// Assess risk of pending git changes.
+    DiffRisk {
+        /// Project root directory (default: current directory).
+        #[arg(long, default_value = ".")]
+        project: PathBuf,
+        /// Maximum output characters.
+        #[arg(long, default_value = "8000")]
+        max_chars: usize,
+    },
+    /// Run language-specific diagnostics (cargo check, ruff, tsc, go vet, etc.).
+    Check {
+        /// Project root directory (default: current directory).
+        #[arg(long, default_value = ".")]
+        project: PathBuf,
+    },
+    /// Show git blame info for a symbol in a file.
+    Blame {
+        /// Project root directory (default: current directory).
+        #[arg(long, default_value = ".")]
+        project: PathBuf,
+        /// File path (relative to project root).
+        #[arg(long)]
+        file: String,
+        /// Line number.
+        #[arg(long)]
+        line: usize,
+    },
+    /// List files changed in the last N days.
+    Recent {
+        /// Project root directory (default: current directory).
+        #[arg(long, default_value = ".")]
+        project: PathBuf,
+        /// Number of days to look back.
+        #[arg(long, default_value = "7")]
+        days: u32,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -447,6 +567,7 @@ fn run() -> Result<()> {
             Ok(())
         }
         Some(Commands::Metrics(args)) => run_metrics_command(args),
+        Some(Commands::Deepmap(ref args)) => run_deepmap_command(args),
         None => {
             let mut forwarded = Vec::new();
             if let Some(prompt) = cli.prompt_flag.clone().or_else(|| cli.prompt.clone()) {
@@ -455,6 +576,168 @@ fn run() -> Result<()> {
             }
             delegate_to_tui(&cli, &resolved_runtime, forwarded)
         }
+    }
+}
+
+fn run_deepmap_command(args: &DeepmapArgs) -> Result<()> {
+    match &args.command {
+        DeepmapCommand::Overview {
+            project,
+            max_files,
+            max_chars,
+        } => {
+            eprintln!(
+                "Scanning {} (max {} files)...",
+                project.display(),
+                max_files
+            );
+            let mut engine = RepoMapEngine::new(project);
+            engine.scan(*max_files, 300.0);
+            let report = renderer::render_overview_report(&engine, *max_chars);
+            println!("{}", report);
+        }
+        DeepmapCommand::CallChain {
+            project,
+            symbol,
+            max_depth,
+            max_chars,
+        } => {
+            eprintln!("Scanning {}...", project.display());
+            let mut engine = RepoMapEngine::new(project);
+            engine.scan(2000, 300.0);
+            let report = renderer::render_call_chain_report(&engine, symbol, *max_depth);
+            let truncated = if report.len() > *max_chars {
+                format!("{}...", &report[..*max_chars])
+            } else {
+                report
+            };
+            println!("{}", truncated);
+        }
+        DeepmapCommand::FileDetail {
+            project,
+            file,
+            max_symbols,
+            max_chars,
+        } => {
+            eprintln!("Scanning {}...", project.display());
+            let mut engine = RepoMapEngine::new(project);
+            engine.scan(2000, 300.0);
+            let report =
+                renderer::render_file_detail_report(&engine, file, *max_symbols, *max_chars);
+            println!("{}", report);
+        }
+        DeepmapCommand::Query {
+            project,
+            keywords,
+            max_files,
+            max_chars,
+        } => {
+            eprintln!("Scanning {}...", project.display());
+            let mut engine = RepoMapEngine::new(project);
+            engine.scan(2000, 300.0);
+            let report = renderer::render_query_report(&engine, keywords, *max_files, *max_chars);
+            println!("{}", report);
+        }
+        DeepmapCommand::Impact {
+            project,
+            files,
+            max_chars,
+        } => {
+            eprintln!("Scanning {}...", project.display());
+            let mut engine = RepoMapEngine::new(project);
+            engine.scan(2000, 300.0);
+            let report = renderer::render_impact_report(&engine, files, *max_chars);
+            println!("{}", report);
+        }
+        DeepmapCommand::DiffRisk { project, max_chars } => {
+            eprintln!("Scanning {}...", project.display());
+            let mut engine = RepoMapEngine::new(project);
+            engine.scan(2000, 300.0);
+
+            let changed = get_git_changed_files(project);
+            let report = renderer::render_diff_risk_report(&engine, &changed, *max_chars);
+            println!("{}", report);
+            if !changed.is_empty() {
+                eprintln!(
+                    "Changed files: {}",
+                    changed
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
+        }
+        DeepmapCommand::Check { project } => {
+            let runner = DiagnosticRunner::new(project, 50);
+            let langs = runner.detect_languages();
+            eprintln!("Detected languages: {:?}, running diagnostics...", langs);
+            let results = runner.run_all(&langs);
+            for r in &results {
+                if r.skipped {
+                    eprintln!("  {}: SKIPPED", r.tool);
+                } else {
+                    eprintln!(
+                        "  {}: {} errors, {} warnings ({}ms)",
+                        r.tool, r.errors, r.warnings, r.duration_ms
+                    );
+                }
+            }
+            // Render as JSON for programmatic consumption.
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&results).unwrap_or_default()
+            );
+        }
+        DeepmapCommand::Blame {
+            project,
+            file,
+            line,
+        } => {
+            if let Some(info) = deepmap::git::blame_symbol(project, file, *line) {
+                println!(
+                    "{} {} ({})",
+                    info.commit_hash, info.author, info.author_time
+                );
+                println!("  {}", info.summary);
+            } else {
+                eprintln!("No blame info found for {}:{}", file, line);
+            }
+        }
+        DeepmapCommand::Recent { project, days } => {
+            let files = deepmap::git::recently_changed_files(project, *days);
+            if files.is_empty() {
+                eprintln!("No files changed in the last {} days.", days);
+            } else {
+                eprintln!("{} files changed in the last {} days:", files.len(), days);
+                for f in &files {
+                    println!("{}", f);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Get list of files changed in the working tree (staged + unstaged).
+fn get_git_changed_files(project: &Path) -> Vec<String> {
+    let output = std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(project)
+        .output();
+
+    match output {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|line| {
+                if line.len() >= 4 {
+                    Some(line[3..].trim().to_string())
+                } else {
+                    None
+                }
+            })
+            .collect(),
+        _ => Vec::new(),
     }
 }
 

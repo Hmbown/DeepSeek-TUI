@@ -16,6 +16,7 @@ clap.workspace = true
 clap_complete.workspace = true
 deepseek-agent = { path = "../agent", version = "0.8.2" }
 deepseek-app-server = { path = "../app-server", version = "0.8.2" }
+deepmap = { path = "../deepmap", version = "0.8.2" }
 deepseek-config = { path = "../config", version = "0.8.2" }
 deepseek-execpolicy = { path = "../execpolicy", version = "0.8.2" }
 deepseek-mcp = { path = "../mcp", version = "0.8.2" }
@@ -27,6 +28,7 @@ serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+
 
 [dev-dependencies]
 tempfile = "3.16"

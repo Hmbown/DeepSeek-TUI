@@ -3,6 +3,7 @@
 pub mod apply_patch;
 pub mod approval_cache;
 pub mod automation;
+pub mod deepmap;
 pub mod diagnostics;
 pub mod file;
 pub mod file_search;
