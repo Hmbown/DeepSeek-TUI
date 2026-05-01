@@ -2825,6 +2825,54 @@ mod tests {
     }
 
     #[test]
+    fn store_load_turn_rejects_newer_schema_version() {
+        let dir = test_runtime_dir();
+        let store = RuntimeThreadStore::open(dir.clone()).expect("open store");
+
+        let mut turn = sample_turn("thr_t", "trn_future", RuntimeTurnStatus::InProgress);
+        turn.schema_version = CURRENT_RUNTIME_SCHEMA_VERSION + 1;
+
+        let path = store.turns_dir.join(format!("{}.json", turn.id));
+        std::fs::create_dir_all(path.parent().unwrap()).expect("mkdirs");
+        std::fs::write(&path, serde_json::to_string(&turn).expect("serialize turn"))
+            .expect("write turn");
+
+        let err = store
+            .load_turn(&turn.id)
+            .expect_err("load_turn must reject newer schema");
+        assert!(
+            format!("{err:#}").contains("newer than supported"),
+            "got: {err:#}"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn store_load_item_rejects_newer_schema_version() {
+        let dir = test_runtime_dir();
+        let store = RuntimeThreadStore::open(dir.clone()).expect("open store");
+
+        let mut item = sample_item("trn_t", "itm_future", TurnItemLifecycleStatus::InProgress);
+        item.schema_version = CURRENT_RUNTIME_SCHEMA_VERSION + 1;
+
+        let path = store.items_dir.join(format!("{}.json", item.id));
+        std::fs::create_dir_all(path.parent().unwrap()).expect("mkdirs");
+        std::fs::write(&path, serde_json::to_string(&item).expect("serialize item"))
+            .expect("write item");
+
+        let err = store
+            .load_item(&item.id)
+            .expect_err("load_item must reject newer schema");
+        assert!(
+            format!("{err:#}").contains("newer than supported"),
+            "got: {err:#}"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn enforce_lru_capacity_does_not_loop_when_all_threads_are_active() {
         let mut active = ActiveThreads::default();
         let harness_a = mock_engine_handle();

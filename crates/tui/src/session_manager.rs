@@ -809,4 +809,67 @@ mod tests {
         let err = manager.load_checkpoint().expect_err("should reject schema");
         assert!(err.to_string().contains("newer than supported"));
     }
+
+    #[test]
+    fn test_load_session_rejects_newer_schema() {
+        let tmp = tempdir().expect("tempdir");
+        let sessions_dir = tmp.path().join("sessions");
+        let manager = SessionManager::new(sessions_dir.clone()).expect("new");
+
+        let id = "future-session";
+        let path = sessions_dir.join(format!("{id}.json"));
+        fs::write(
+            &path,
+            r#"{
+                "schema_version": 999,
+                "metadata": {
+                    "id": "future-session",
+                    "title": "future",
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "updated_at": "2026-01-01T00:00:00Z",
+                    "message_count": 0,
+                    "total_tokens": 0,
+                    "model": "m",
+                    "workspace": "/tmp",
+                    "mode": null
+                },
+                "messages": [],
+                "system_prompt": null
+            }"#,
+        )
+        .expect("write session");
+
+        let err = manager.load_session(id).expect_err("should reject schema");
+        assert!(
+            err.to_string().contains("newer than supported"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_load_offline_queue_rejects_newer_schema() {
+        let tmp = tempdir().expect("tempdir");
+        let sessions_dir = tmp.path().join("sessions");
+        let manager = SessionManager::new(sessions_dir.clone()).expect("new");
+        let checkpoints = sessions_dir.join("checkpoints");
+        fs::create_dir_all(&checkpoints).expect("create checkpoints dir");
+        let path = checkpoints.join("offline_queue.json");
+        fs::write(
+            &path,
+            r#"{
+                "schema_version": 999,
+                "messages": [],
+                "draft": null
+            }"#,
+        )
+        .expect("write queue");
+
+        let err = manager
+            .load_offline_queue_state()
+            .expect_err("should reject schema");
+        assert!(
+            err.to_string().contains("newer than supported"),
+            "unexpected error: {err}"
+        );
+    }
 }
