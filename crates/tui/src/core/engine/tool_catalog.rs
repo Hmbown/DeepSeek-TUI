@@ -74,6 +74,41 @@ pub(super) fn should_default_defer_tool(name: &str, mode: AppMode) -> bool {
     )
 }
 
+pub(super) fn apply_native_tool_deferral(catalog: &mut [Tool], mode: AppMode) {
+    for tool in catalog {
+        tool.defer_loading = Some(should_default_defer_tool(&tool.name, mode));
+    }
+}
+
+fn should_keep_mcp_tool_loaded(name: &str) -> bool {
+    matches!(
+        name,
+        "list_mcp_resources"
+            | "list_mcp_resource_templates"
+            | "mcp_read_resource"
+            | "read_mcp_resource"
+            | "mcp_get_prompt"
+    )
+}
+
+pub(super) fn apply_mcp_tool_deferral(catalog: &mut [Tool], mode: AppMode) {
+    for tool in catalog {
+        tool.defer_loading =
+            Some(mode != AppMode::Yolo && !should_keep_mcp_tool_loaded(&tool.name));
+    }
+}
+
+pub(super) fn build_model_tool_catalog(
+    mut native_tools: Vec<Tool>,
+    mut mcp_tools: Vec<Tool>,
+    mode: AppMode,
+) -> Vec<Tool> {
+    apply_native_tool_deferral(&mut native_tools, mode);
+    apply_mcp_tool_deferral(&mut mcp_tools, mode);
+    native_tools.extend(mcp_tools);
+    native_tools
+}
+
 pub(super) fn ensure_advanced_tooling(catalog: &mut Vec<Tool>) {
     if !catalog.iter().any(|t| t.name == CODE_EXECUTION_TOOL_NAME) {
         catalog.push(Tool {

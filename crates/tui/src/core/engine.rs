@@ -1302,43 +1302,7 @@ impl Engine {
         let plan_state = self.config.plan_state.clone();
 
         let tool_context = self.build_tool_context(mode, auto_approve);
-        let mut builder = if mode == AppMode::Plan {
-            ToolRegistryBuilder::new()
-                .with_read_only_file_tools()
-                .with_search_tools()
-                .with_git_tools()
-                .with_git_history_tools()
-                .with_diagnostics_tool()
-                .with_validation_tools()
-                .with_runtime_task_tools()
-                .with_todo_tool(todo_list.clone())
-                .with_plan_tool(plan_state.clone())
-        } else {
-            ToolRegistryBuilder::new()
-                .with_agent_tools(self.session.allow_shell)
-                .with_todo_tool(todo_list.clone())
-                .with_plan_tool(plan_state.clone())
-        };
-
-        builder = builder
-            .with_review_tool(self.deepseek_client.clone(), self.session.model.clone())
-            .with_rlm_tool(self.deepseek_client.clone(), self.session.model.clone())
-            .with_user_input_tool()
-            .with_parallel_tool();
-
-        if self.config.features.enabled(Feature::ApplyPatch) && mode != AppMode::Plan {
-            builder = builder.with_patch_tools();
-        }
-        if self.config.features.enabled(Feature::WebSearch) {
-            builder = builder.with_web_tools();
-        }
-        // Plan mode now keeps shell available — the existing approval flow
-        // and command-safety classifier gate destructive commands. Writes
-        // and patches stay blocked above; that's the only "destructive"
-        // boundary plan mode enforces by tool registration.
-        if self.config.features.enabled(Feature::ShellTool) && self.session.allow_shell {
-            builder = builder.with_shell_tools();
-        }
+        let builder = self.build_turn_tool_registry_builder(mode, todo_list, plan_state);
 
         // Mailbox for structured sub-agent envelopes (#128/#130). One per
         // turn: the receiver is drained by a short-lived task that converts
@@ -1411,31 +1375,9 @@ impl Engine {
         } else {
             Vec::new()
         };
-        let tools = tool_registry.as_ref().map(|registry| {
-            let mut tools = registry.to_api_tools();
-            for tool in &mut tools {
-                tool.defer_loading = Some(should_default_defer_tool(&tool.name, mode));
-            }
-            let mut mcp_tools = mcp_tools;
-            for tool in &mut mcp_tools {
-                if mode == AppMode::Yolo {
-                    tool.defer_loading = Some(false);
-                    continue;
-                }
-
-                let keep_loaded = matches!(
-                    tool.name.as_str(),
-                    "list_mcp_resources"
-                        | "list_mcp_resource_templates"
-                        | "mcp_read_resource"
-                        | "read_mcp_resource"
-                        | "mcp_get_prompt"
-                );
-                tool.defer_loading = Some(!keep_loaded);
-            }
-            tools.extend(mcp_tools);
-            tools
-        });
+        let tools = tool_registry
+            .as_ref()
+            .map(|registry| build_model_tool_catalog(registry.to_api_tools(), mcp_tools, mode));
 
         // Main turn loop
         let (status, error) = self
@@ -2464,6 +2406,7 @@ mod approval;
 mod capacity_flow;
 mod dispatch;
 mod tool_catalog;
+mod tool_setup;
 mod turn_loop;
 
 use self::approval::{ApprovalDecision, ApprovalResult, UserInputDecision};
@@ -2473,14 +2416,14 @@ use self::dispatch::{
     mcp_tool_is_read_only, parse_parallel_tool_calls, parse_tool_input,
     should_force_update_plan_first, should_parallelize_tool_batch, should_stop_after_plan_tool,
 };
-#[cfg(test)]
-use self::tool_catalog::TOOL_SEARCH_BM25_NAME;
 use self::tool_catalog::{
     CODE_EXECUTION_TOOL_NAME, MULTI_TOOL_PARALLEL_NAME, REQUEST_USER_INPUT_NAME,
-    active_tools_for_step, ensure_advanced_tooling, execute_code_execution_tool,
-    execute_tool_search, initial_active_tools, is_tool_search_tool,
-    maybe_activate_requested_deferred_tool, missing_tool_error_message, should_default_defer_tool,
+    active_tools_for_step, build_model_tool_catalog, ensure_advanced_tooling,
+    execute_code_execution_tool, execute_tool_search, initial_active_tools, is_tool_search_tool,
+    maybe_activate_requested_deferred_tool, missing_tool_error_message,
 };
+#[cfg(test)]
+use self::tool_catalog::{TOOL_SEARCH_BM25_NAME, should_default_defer_tool};
 
 #[cfg(test)]
 mod tests;
