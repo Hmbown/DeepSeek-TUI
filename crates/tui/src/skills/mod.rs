@@ -364,10 +364,9 @@ mod tests {
             "---\nname: friendly-name\ndescription: drift case\n---\nbody",
         );
 
-        let rendered = crate::skills::render_available_skills_context(
-            &tmpdir.path().join("skills"),
-        )
-        .expect("skill context");
+        let rendered =
+            crate::skills::render_available_skills_context(&tmpdir.path().join("skills"))
+                .expect("skill context");
 
         let real_path = tmpdir
             .path()

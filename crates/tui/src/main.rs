@@ -1611,7 +1611,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     println!(
         "  {} selected skills dir: {}",
         "·".dimmed(),
-        crate::utils::display_path(&selected_skills_dir)
+        crate::utils::display_path(selected_skills_dir)
     );
     if !agents_skills_dir.exists() && !local_skills_dir.exists() && !global_skills_dir.exists() {
         println!("    Run `deepseek setup --skills` (or add --local for ./skills).");
