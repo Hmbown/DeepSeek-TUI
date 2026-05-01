@@ -62,7 +62,7 @@ mod working_set;
 mod workspace_trust;
 
 use crate::config::{Config, DEFAULT_TEXT_MODEL, MAX_SUBAGENTS};
-use crate::eval::{EvalHarness, EvalHarnessConfig, ScenarioStepKind};
+use crate::eval::{EvalHarness, EvalHarnessConfig, ScenarioKind, ScenarioStepKind};
 use crate::features::Feature;
 use crate::llm_client::LlmClient;
 use crate::mcp::{McpConfig, McpPool, McpServerConfig};
@@ -272,6 +272,9 @@ struct DoctorArgs {
 
 #[derive(Args, Debug, Clone)]
 struct EvalArgs {
+    /// Eval scenario to run (offline-tool-loop, multi-turn-tool-loop)
+    #[arg(long, value_name = "SCENARIO", default_value = "offline-tool-loop")]
+    scenario: String,
     /// Intentionally fail a specific step (list, read, search, edit, patch, shell)
     #[arg(long, value_name = "STEP")]
     fail_step: Option<String>,
@@ -669,6 +672,9 @@ fn generate_completions(shell: Shell) {
 
 /// Run the offline evaluation harness (no network/LLM calls).
 fn run_eval(args: EvalArgs) -> Result<()> {
+    let scenario = ScenarioKind::parse(&args.scenario)
+        .ok_or_else(|| anyhow!("invalid --scenario '{}'", args.scenario))?;
+
     let fail_step = match args.fail_step.as_deref() {
         Some(value) => ScenarioStepKind::parse(value)
             .map(Some)
@@ -677,6 +683,8 @@ fn run_eval(args: EvalArgs) -> Result<()> {
     };
 
     let config = EvalHarnessConfig {
+        scenario,
+        scenario_name: scenario.name().to_string(),
         fail_step,
         shell_command: args.shell_command,
         shell_expect_token: args.shell_expect_token,

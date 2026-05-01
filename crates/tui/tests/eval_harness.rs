@@ -5,7 +5,7 @@ use std::fs;
 #[path = "../src/eval.rs"]
 mod eval;
 
-use eval::{EvalHarness, EvalHarnessConfig, ScenarioStepKind};
+use eval::{EvalHarness, EvalHarnessConfig, ScenarioKind, ScenarioStepKind};
 use tempfile::tempdir;
 
 #[test]
@@ -101,6 +101,44 @@ fn validation_can_fail_without_tool_errors() {
 }
 
 #[test]
+fn scenario_kind_parse_accepts_documented_aliases() {
+    for alias in ["offline-tool-loop", "offline", "default"] {
+        assert_eq!(
+            ScenarioKind::parse(alias),
+            Some(ScenarioKind::OfflineToolLoop)
+        );
+    }
+
+    for alias in ["multi-turn-tool-loop", "multi-turn", "multiturn"] {
+        assert_eq!(
+            ScenarioKind::parse(alias),
+            Some(ScenarioKind::MultiTurnToolLoop)
+        );
+    }
+}
+
+#[test]
+fn runs_multi_turn_tool_loop_successfully() {
+    let harness = EvalHarness::new(EvalHarnessConfig {
+        scenario: ScenarioKind::MultiTurnToolLoop,
+        ..EvalHarnessConfig::default()
+    });
+    let run = harness
+        .run()
+        .expect("multi-turn eval harness run should succeed");
+
+    assert_eq!(run.scenario_name, "multi-turn-tool-loop");
+    assert!(run.metrics.success, "expected success metrics: {run:#?}");
+    assert_eq!(run.metrics.tool_errors, 0);
+    assert_eq!(run.metrics.steps, 6);
+
+    let notes_path = run.workspace_root().join("notes.txt");
+    let notes = fs::read_to_string(&notes_path).expect("notes.txt should exist");
+    assert!(notes.contains("edited = true"));
+    assert!(notes.contains("todo: offline metrics (patched)"));
+}
+
+#[test]
 fn record_flag_writes_one_jsonl_line_per_step() {
     let dir = tempdir().expect("tempdir");
     let config = EvalHarnessConfig {
@@ -139,4 +177,53 @@ fn record_flag_writes_one_jsonl_line_per_step() {
             .expect("response_events must be an array");
         assert!(!events.is_empty(), "every fixture must have ≥1 event");
     }
+}
+
+#[test]
+fn record_flag_writes_multi_turn_fixture_with_turn_metadata() {
+    let dir = tempdir().expect("tempdir");
+    let harness = EvalHarness::new(EvalHarnessConfig {
+        scenario: ScenarioKind::MultiTurnToolLoop,
+        record_dir: Some(dir.path().to_path_buf()),
+        ..EvalHarnessConfig::default()
+    });
+    let run = harness
+        .run()
+        .expect("multi-turn eval harness run should succeed");
+
+    let scenario_file = dir.path().join("multi-turn-tool-loop.jsonl");
+    assert!(
+        scenario_file.exists(),
+        "record_dir should contain {}",
+        scenario_file
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+    );
+
+    let contents = fs::read_to_string(&scenario_file).expect("read jsonl");
+    let lines: Vec<&str> = contents.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(lines.len(), run.metrics.steps);
+
+    let mut saw_turn_1 = false;
+    let mut saw_turn_2 = false;
+
+    for line in lines {
+        let parsed: serde_json::Value =
+            serde_json::from_str(line).expect("each fixture line is valid JSON");
+        let request = parsed.get("request").expect("missing request");
+        assert_eq!(
+            request.get("scenario").and_then(|v| v.as_str()),
+            Some("multi-turn-tool-loop")
+        );
+
+        match request.get("turn_index").and_then(|v| v.as_u64()) {
+            Some(1) => saw_turn_1 = true,
+            Some(2) => saw_turn_2 = true,
+            other => panic!("unexpected turn_index: {other:?}"),
+        }
+    }
+
+    assert!(saw_turn_1, "expected at least one turn_index=1 record");
+    assert!(saw_turn_2, "expected at least one turn_index=2 record");
 }

@@ -53,6 +53,32 @@ impl ScenarioStepKind {
     }
 }
 
+/// Deterministic offline scenarios supported by the evaluation harness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum ScenarioKind {
+    OfflineToolLoop,
+    MultiTurnToolLoop,
+}
+
+impl ScenarioKind {
+    /// Canonical scenario name used for reporting and fixture files.
+    pub fn name(self) -> &'static str {
+        match self {
+            ScenarioKind::OfflineToolLoop => "offline-tool-loop",
+            ScenarioKind::MultiTurnToolLoop => "multi-turn-tool-loop",
+        }
+    }
+
+    /// Parse a scenario kind from CLI-friendly strings.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_lowercase().as_str() {
+            "offline-tool-loop" | "offline" | "default" => Some(Self::OfflineToolLoop),
+            "multi-turn-tool-loop" | "multi-turn" | "multiturn" => Some(Self::MultiTurnToolLoop),
+            _ => None,
+        }
+    }
+}
+
 /// Aggregate statistics for a single tool kind.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct ToolStats {
@@ -93,6 +119,8 @@ pub struct WorkspaceSummary {
 /// Configuration for the offline evaluation harness.
 #[derive(Debug, Clone)]
 pub struct EvalHarnessConfig {
+    /// Structured scenario selector used by the harness dispatcher.
+    pub scenario: ScenarioKind,
     /// Human-readable scenario name for reporting.
     pub scenario_name: String,
     /// If set, the harness will intentionally fail this step to test metrics.
@@ -121,7 +149,8 @@ impl Default for EvalHarnessConfig {
             "printf eval-harness".to_string()
         };
         Self {
-            scenario_name: "offline-tool-loop".to_string(),
+            scenario: ScenarioKind::OfflineToolLoop,
+            scenario_name: ScenarioKind::OfflineToolLoop.name().to_string(),
             fail_step: None,
             shell_command,
             shell_expect_token: "eval-harness".to_string(),
@@ -129,6 +158,30 @@ impl Default for EvalHarnessConfig {
             record_dir: None,
         }
     }
+}
+
+impl EvalHarnessConfig {
+    fn resolved_scenario_name(&self) -> &str {
+        let scenario_name = self.scenario_name.trim();
+        if scenario_name.is_empty() {
+            return self.scenario.name();
+        }
+
+        if ScenarioKind::parse(scenario_name).is_some() {
+            self.scenario.name()
+        } else {
+            &self.scenario_name
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct ScenarioOutputs {
+    list_output: Option<String>,
+    search_output: Option<String>,
+    edit_output: Option<String>,
+    patch_output: Option<String>,
+    shell_output: Option<String>,
 }
 
 /// Offline harness that exercises representative tool loops in a temp workspace.
@@ -155,84 +208,27 @@ impl EvalHarness {
 
         let mut steps = Vec::new();
         let mut per_tool: BTreeMap<ScenarioStepKind, ToolStats> = BTreeMap::new();
-
-        let list_output = self.run_step(ScenarioStepKind::List, &mut steps, &mut per_tool, || {
-            let entries = list_dir(workspace.path())?;
-            Ok(entries.join(", "))
-        });
-
-        let _read_output = self.run_step(ScenarioStepKind::Read, &mut steps, &mut per_tool, || {
-            let path = if self.config.fail_step == Some(ScenarioStepKind::Read) {
-                workspace.path().join("missing.txt")
-            } else {
-                seed.notes_path.clone()
-            };
-            read_file(&path)
-        });
-
-        let search_output =
-            self.run_step(ScenarioStepKind::Search, &mut steps, &mut per_tool, || {
-                let root = if self.config.fail_step == Some(ScenarioStepKind::Search) {
-                    workspace.path().join("missing-dir")
-                } else {
-                    workspace.path().to_path_buf()
-                };
-                let result = search_files(&root, "offline")?;
-                Ok(format!("matches={}", result.matches.len()))
-            });
-
-        let edit_output = self.run_step(ScenarioStepKind::Edit, &mut steps, &mut per_tool, || {
-            let path = if self.config.fail_step == Some(ScenarioStepKind::Edit) {
-                workspace.path().join("missing.txt")
-            } else {
-                seed.notes_path.clone()
-            };
-            edit_file_append(&path, "edited = true")?;
-            Ok("appended line".to_string())
-        });
-
-        let patch_output = self.run_step(
-            ScenarioStepKind::ApplyPatch,
-            &mut steps,
-            &mut per_tool,
-            || {
-                let patch = if self.config.fail_step == Some(ScenarioStepKind::ApplyPatch) {
-                    "*** Begin Patch\n*** Update File: notes.txt\n@@\n-THIS LINE DOES NOT EXIST\n+broken\n*** End Patch\n"
-                        .to_string()
-                } else {
-                    "*** Begin Patch\n*** Update File: notes.txt\n@@\n status = \"draft\"\n-todo: offline metrics\n+todo: offline metrics (patched)\n*** End Patch\n"
-                        .to_string()
-                };
-                apply_patch(workspace.path(), &patch)?;
-                Ok("patch applied".to_string())
-            },
-        );
-
-        let shell_output = self.run_step(
-            ScenarioStepKind::ExecShell,
-            &mut steps,
-            &mut per_tool,
-            || {
-                let command = if self.config.fail_step == Some(ScenarioStepKind::ExecShell) {
-                    "command_that_does_not_exist".to_string()
-                } else {
-                    self.config.shell_command.clone()
-                };
-                exec_shell(workspace.path(), &command)
-            },
-        );
+        let outputs = match self.config.scenario {
+            ScenarioKind::OfflineToolLoop => {
+                self.run_offline_tool_loop(workspace.path(), &seed, &mut steps, &mut per_tool)
+            }
+            ScenarioKind::MultiTurnToolLoop => {
+                self.run_multi_turn_tool_loop(workspace.path(), &seed, &mut steps, &mut per_tool)
+            }
+        };
 
         let duration = started_at.elapsed();
 
-        let workspace_summary = summarize_workspace(workspace.path(), list_output.as_deref())?;
+        let workspace_summary =
+            summarize_workspace(workspace.path(), outputs.list_output.as_deref())?;
 
         let validation_success = validate_outputs(
             workspace.path(),
             &self.config.shell_expect_token,
-            search_output.as_deref(),
-            edit_output.as_deref(),
-            patch_output.as_deref(),
-            shell_output.as_deref(),
+            outputs.search_output.as_deref(),
+            outputs.edit_output.as_deref(),
+            outputs.patch_output.as_deref(),
+            outputs.shell_output.as_deref(),
         );
 
         let tool_errors = steps.iter().filter(|s| !s.success).count();
@@ -247,7 +243,7 @@ impl EvalHarness {
         };
 
         Ok(EvalRun {
-            scenario_name: self.config.scenario_name.clone(),
+            scenario_name: self.scenario_name().to_string(),
             workspace,
             workspace_summary,
             metrics,
@@ -255,9 +251,183 @@ impl EvalHarness {
         })
     }
 
+    fn scenario_name(&self) -> &str {
+        self.config.resolved_scenario_name()
+    }
+
+    fn run_offline_tool_loop(
+        &self,
+        workspace_root: &Path,
+        seed: &SeedWorkspace,
+        steps: &mut Vec<EvalStep>,
+        per_tool: &mut BTreeMap<ScenarioStepKind, ToolStats>,
+    ) -> ScenarioOutputs {
+        let list_output = self.run_list_step(workspace_root, steps, per_tool, None);
+        let _read_output = self.run_read_step(workspace_root, seed, steps, per_tool, None);
+        let search_output = self.run_search_step(workspace_root, steps, per_tool, None);
+        let edit_output = self.run_edit_step(workspace_root, seed, steps, per_tool, None);
+        let patch_output = self.run_patch_step(workspace_root, steps, per_tool, None);
+        let shell_output = self.run_shell_step(workspace_root, steps, per_tool, None);
+
+        ScenarioOutputs {
+            list_output,
+            search_output,
+            edit_output,
+            patch_output,
+            shell_output,
+        }
+    }
+
+    fn run_multi_turn_tool_loop(
+        &self,
+        workspace_root: &Path,
+        seed: &SeedWorkspace,
+        steps: &mut Vec<EvalStep>,
+        per_tool: &mut BTreeMap<ScenarioStepKind, ToolStats>,
+    ) -> ScenarioOutputs {
+        let list_output = self.run_list_step(workspace_root, steps, per_tool, Some(1));
+        let _read_output = self.run_read_step(workspace_root, seed, steps, per_tool, Some(1));
+        let search_output = self.run_search_step(workspace_root, steps, per_tool, Some(1));
+        let edit_output = self.run_edit_step(workspace_root, seed, steps, per_tool, Some(2));
+        let patch_output = self.run_patch_step(workspace_root, steps, per_tool, Some(2));
+        let shell_output = self.run_shell_step(workspace_root, steps, per_tool, Some(2));
+
+        ScenarioOutputs {
+            list_output,
+            search_output,
+            edit_output,
+            patch_output,
+            shell_output,
+        }
+    }
+
+    fn run_list_step(
+        &self,
+        workspace_root: &Path,
+        steps: &mut Vec<EvalStep>,
+        per_tool: &mut BTreeMap<ScenarioStepKind, ToolStats>,
+        turn_index: Option<usize>,
+    ) -> Option<String> {
+        self.run_step(ScenarioStepKind::List, turn_index, steps, per_tool, || {
+            let entries = list_dir(workspace_root)?;
+            Ok(entries.join(", "))
+        })
+    }
+
+    fn run_read_step(
+        &self,
+        workspace_root: &Path,
+        seed: &SeedWorkspace,
+        steps: &mut Vec<EvalStep>,
+        per_tool: &mut BTreeMap<ScenarioStepKind, ToolStats>,
+        turn_index: Option<usize>,
+    ) -> Option<String> {
+        self.run_step(ScenarioStepKind::Read, turn_index, steps, per_tool, || {
+            let path = if self.config.fail_step == Some(ScenarioStepKind::Read) {
+                workspace_root.join("missing.txt")
+            } else {
+                seed.notes_path.clone()
+            };
+            read_file(&path)
+        })
+    }
+
+    fn run_search_step(
+        &self,
+        workspace_root: &Path,
+        steps: &mut Vec<EvalStep>,
+        per_tool: &mut BTreeMap<ScenarioStepKind, ToolStats>,
+        turn_index: Option<usize>,
+    ) -> Option<String> {
+        self.run_step(
+            ScenarioStepKind::Search,
+            turn_index,
+            steps,
+            per_tool,
+            || {
+                let root = if self.config.fail_step == Some(ScenarioStepKind::Search) {
+                    workspace_root.join("missing-dir")
+                } else {
+                    workspace_root.to_path_buf()
+                };
+                let result = search_files(&root, "offline")?;
+                Ok(format!("matches={}", result.matches.len()))
+            },
+        )
+    }
+
+    fn run_edit_step(
+        &self,
+        workspace_root: &Path,
+        seed: &SeedWorkspace,
+        steps: &mut Vec<EvalStep>,
+        per_tool: &mut BTreeMap<ScenarioStepKind, ToolStats>,
+        turn_index: Option<usize>,
+    ) -> Option<String> {
+        self.run_step(ScenarioStepKind::Edit, turn_index, steps, per_tool, || {
+            let path = if self.config.fail_step == Some(ScenarioStepKind::Edit) {
+                workspace_root.join("missing.txt")
+            } else {
+                seed.notes_path.clone()
+            };
+            edit_file_append(&path, "edited = true")?;
+            Ok("appended line".to_string())
+        })
+    }
+
+    fn run_patch_step(
+        &self,
+        workspace_root: &Path,
+        steps: &mut Vec<EvalStep>,
+        per_tool: &mut BTreeMap<ScenarioStepKind, ToolStats>,
+        turn_index: Option<usize>,
+    ) -> Option<String> {
+        self.run_step(
+            ScenarioStepKind::ApplyPatch,
+            turn_index,
+            steps,
+            per_tool,
+            || {
+                let patch = if self.config.fail_step == Some(ScenarioStepKind::ApplyPatch) {
+                    "*** Begin Patch\n*** Update File: notes.txt\n@@\n-THIS LINE DOES NOT EXIST\n+broken\n*** End Patch\n"
+                        .to_string()
+                } else {
+                    "*** Begin Patch\n*** Update File: notes.txt\n@@\n status = \"draft\"\n-todo: offline metrics\n+todo: offline metrics (patched)\n*** End Patch\n"
+                        .to_string()
+                };
+                apply_patch(workspace_root, &patch)?;
+                Ok("patch applied".to_string())
+            },
+        )
+    }
+
+    fn run_shell_step(
+        &self,
+        workspace_root: &Path,
+        steps: &mut Vec<EvalStep>,
+        per_tool: &mut BTreeMap<ScenarioStepKind, ToolStats>,
+        turn_index: Option<usize>,
+    ) -> Option<String> {
+        self.run_step(
+            ScenarioStepKind::ExecShell,
+            turn_index,
+            steps,
+            per_tool,
+            || {
+                let command = if self.config.fail_step == Some(ScenarioStepKind::ExecShell) {
+                    "command_that_does_not_exist".to_string()
+                } else {
+                    self.config.shell_command.clone()
+                };
+                exec_shell(workspace_root, &command)
+            },
+        )
+    }
+
     fn run_step<T, F>(
         &self,
         kind: ScenarioStepKind,
+        turn_index: Option<usize>,
         steps: &mut Vec<EvalStep>,
         per_tool: &mut BTreeMap<ScenarioStepKind, ToolStats>,
         f: F,
@@ -288,8 +458,11 @@ impl EvalHarness {
                 if let Some(dir) = self.config.record_dir.as_deref() {
                     let _ = record_fixture(
                         dir,
-                        &self.config.scenario_name,
-                        FixtureRecord::ok(kind, &output),
+                        self.scenario_name(),
+                        FixtureRecord::ok(
+                            fixture_request(kind, self.scenario_name(), turn_index),
+                            &output,
+                        ),
                     );
                 }
                 Some(value)
@@ -308,8 +481,11 @@ impl EvalHarness {
                 if let Some(dir) = self.config.record_dir.as_deref() {
                     let _ = record_fixture(
                         dir,
-                        &self.config.scenario_name,
-                        FixtureRecord::err(kind, &err_str),
+                        self.scenario_name(),
+                        FixtureRecord::err(
+                            fixture_request(kind, self.scenario_name(), turn_index),
+                            &err_str,
+                        ),
                     );
                 }
                 None
@@ -322,7 +498,7 @@ impl EvalHarness {
 //
 // The `--record` flag writes one JSON object per line to a `.jsonl` file:
 //
-//     { "request": { "step": "list_dir", "kind": "List" },
+//     { "request": { "step": "list_dir", "kind": "List", "scenario": "offline-tool-loop" },
 //       "response_events": [{ "type": "ok", "output": "…" }] }
 //
 // The mock LLM client replays these fixtures via
@@ -343,12 +519,9 @@ pub struct FixtureRecord {
 }
 
 impl FixtureRecord {
-    fn ok(kind: ScenarioStepKind, output: &str) -> Self {
+    fn ok(request: serde_json::Value, output: &str) -> Self {
         Self {
-            request: serde_json::json!({
-                "step": kind.tool_name(),
-                "kind": format!("{kind:?}"),
-            }),
+            request,
             response_events: vec![serde_json::json!({
                 "type": "ok",
                 "output": output,
@@ -356,18 +529,33 @@ impl FixtureRecord {
         }
     }
 
-    fn err(kind: ScenarioStepKind, error: &str) -> Self {
+    fn err(request: serde_json::Value, error: &str) -> Self {
         Self {
-            request: serde_json::json!({
-                "step": kind.tool_name(),
-                "kind": format!("{kind:?}"),
-            }),
+            request,
             response_events: vec![serde_json::json!({
                 "type": "error",
                 "error": error,
             })],
         }
     }
+}
+
+fn fixture_request(
+    kind: ScenarioStepKind,
+    scenario_name: &str,
+    turn_index: Option<usize>,
+) -> serde_json::Value {
+    let mut request = serde_json::Map::from_iter([
+        ("step".to_string(), serde_json::json!(kind.tool_name())),
+        ("kind".to_string(), serde_json::json!(format!("{kind:?}"))),
+        ("scenario".to_string(), serde_json::json!(scenario_name)),
+    ]);
+
+    if let Some(turn_index) = turn_index {
+        request.insert("turn_index".to_string(), serde_json::json!(turn_index));
+    }
+
+    serde_json::Value::Object(request)
 }
 
 /// Append one fixture record to `<dir>/<scenario>.jsonl` (creating dir + file
