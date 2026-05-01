@@ -17,7 +17,7 @@
 
 use serde_json::json;
 
-use crate::models::ToolCaller;
+use crate::models::{Tool, ToolCaller};
 use crate::tools::spec::{ToolError, ToolResult};
 use crate::tui::app::AppMode;
 
@@ -69,6 +69,60 @@ pub(super) struct ParallelToolResult {
 pub(super) enum ToolExecGuard<'a> {
     Read(#[allow(dead_code)] tokio::sync::RwLockReadGuard<'a, ()>),
     Write(#[allow(dead_code)] tokio::sync::RwLockWriteGuard<'a, ()>),
+}
+
+// === Caller policy and errors ========================================
+
+pub(super) fn caller_type_for_tool_use(caller: Option<&ToolCaller>) -> &str {
+    caller.map_or("direct", |c| c.caller_type.as_str())
+}
+
+pub(super) fn caller_allowed_for_tool(
+    caller: Option<&ToolCaller>,
+    tool_def: Option<&Tool>,
+) -> bool {
+    let requested = caller_type_for_tool_use(caller);
+    if let Some(def) = tool_def
+        && let Some(allowed) = &def.allowed_callers
+    {
+        if allowed.is_empty() {
+            return requested == "direct";
+        }
+        return allowed.iter().any(|item| item == requested);
+    }
+    requested == "direct"
+}
+
+pub(super) fn format_tool_error(err: &ToolError, tool_name: &str) -> String {
+    match err {
+        ToolError::InvalidInput { message } => {
+            format!("Invalid input for tool '{tool_name}': {message}")
+        }
+        ToolError::MissingField { field } => {
+            format!("Tool '{tool_name}' is missing required field '{field}'")
+        }
+        ToolError::PathEscape { path } => format!(
+            "Path escapes workspace: {}. Use a workspace-relative path or enable trust mode.",
+            path.display()
+        ),
+        ToolError::ExecutionFailed { message } => message.clone(),
+        ToolError::Timeout { seconds } => format!(
+            "Tool '{tool_name}' timed out after {seconds}s. Try a narrower scope or a longer timeout."
+        ),
+        ToolError::NotAvailable { message } => {
+            let lower = message.to_ascii_lowercase();
+            if lower.contains("current tool catalog") || lower.contains("did you mean:") {
+                message.clone()
+            } else {
+                format!(
+                    "Tool '{tool_name}' is not available: {message}. Check mode, feature flags, or tool name."
+                )
+            }
+        }
+        ToolError::PermissionDenied { message } => format!(
+            "Tool '{tool_name}' was denied: {message}. Adjust approval mode or request permission."
+        ),
+    }
 }
 
 // === Streaming-buffer parsing =========================================
