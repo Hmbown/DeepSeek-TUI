@@ -233,7 +233,14 @@ pub fn estimate_message_chars(messages: &[Message]) -> usize {
     total
 }
 
-#[cfg(test)]
+// Tests below set `HOME` to drive `dirs::home_dir()`, which is honored on
+// Unix but not on Windows (which reads `USERPROFILE` first). The
+// `display_path` contraction logic itself is platform-identical — it
+// delegates to `dirs::home_dir()`. Gate to `cfg(unix)` so we cover the
+// behavior on the platform whose env-var contract matches the test
+// driver, instead of writing platform-specific test scaffolding for a
+// pure abstraction.
+#[cfg(all(test, unix))]
 mod tests {
     use super::display_path;
     use std::path::PathBuf;
