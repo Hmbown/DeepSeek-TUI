@@ -20,10 +20,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`exec_shell_interact`** poll loop now observes the turn cancel token so stalled interactive sessions don't block turn cancellation. (#248)
 - **Transcript running-tool hint** — executing shell cells now show "Ctrl+B opens shell controls" while running. (#248)
 - **Keybinding registry** now includes `Ctrl+B` (opens shell controls) next to `Ctrl+C` (cancel/exits). (#248)
+- **Deferred swarm card creation** — `agent_swarm` no longer pre-seeds an all-pending FanoutCard from `ToolCallStarted`; the card is created only when the first `SwarmProgress` event carries real worker state. Until then the sidebar uses the declared task count as a pending dispatch placeholder. (#236, #238)
+- **Swarm wording normalized** — fanout-family fallback labels now render as `swarm`, matching the canonical `agent_swarm` / `rlm` model and avoiding mixed `fanout` / `swarm` terminology in the transcript. (#236, #238)
 - **OPERATIONS_RUNBOOK** and **TOOL_SURFACE** updated with new shell control paths and `exec_shell_cancel` documentation.
+
+### Fixed
+- **Nonblocking swarm state drift** — the sidebar no longer falls back to `0` or a contradictory seeded placeholder before the first progress event arrives, which removes the visible `pending` vs `running/done` mismatch during early `agent_swarm` dispatch. (#236, #238)
+- **Unicode-safe search globbing** — search wildcard matching now iterates on UTF-8 char boundaries instead of raw byte offsets, preventing panics on filenames like `dialogue_line__冰糖.mp3`. (#249)
 
 ### Tests
 - 7 new integration tests: foreground-to-background detach, wait-cancel-leaves-process, single-task cancel, bulk cancel (kill-all), foreground-cancel-kills, ShellControlView default/select states
+- Expanded swarm/sidebar regression coverage for deferred card creation and pending-count fallback before first `SwarmProgress`. (#236, #238)
+- Added a Unicode filename regression test for wildcard search matching. (#249)
 
 ## [0.7.7] - 2026-04-30
 

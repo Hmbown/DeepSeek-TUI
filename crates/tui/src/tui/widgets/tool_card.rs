@@ -37,7 +37,7 @@ pub enum ToolFamily {
     Find,
     /// Single sub-agent dispatch. `◐ delegate`.
     Delegate,
-    /// Multi-agent fanout (swarm, csv). `⋮⋮ fanout`.
+    /// Multi-agent swarm (agent_swarm, csv, rlm). `⋮⋮ swarm`.
     Fanout,
     /// Reasoning / chain-of-thought. `… think`. Reasoning has its own
     /// render path (`render_thinking` in `history.rs`); the family is
@@ -153,7 +153,7 @@ pub fn family_label(family: ToolFamily) -> &'static str {
         ToolFamily::Run => "run",
         ToolFamily::Find => "find",
         ToolFamily::Delegate => "delegate",
-        ToolFamily::Fanout => "fanout",
+        ToolFamily::Fanout => "swarm",
         ToolFamily::Think => "think",
         ToolFamily::Generic => "tool",
     }

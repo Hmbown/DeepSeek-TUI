@@ -356,12 +356,18 @@ fn matches_simple_glob(text: &str, pattern: &str) -> bool {
                     return true;
                 }
 
-                // Try matching at each position
+                // Try matching at each position (use char-indices to stay on
+                // UTF-8 boundaries — byte-index slicing panics on multi-byte
+                // characters like 冰糖, see #249).
                 let remaining: String = text_chars.collect();
-                for i in 0..=remaining.len() {
+                for (i, _) in remaining.char_indices() {
                     if matches_simple_glob(&remaining[i..], &next_pattern) {
                         return true;
                     }
+                }
+                // Also try the empty suffix at end of string
+                if matches_simple_glob("", &next_pattern) {
+                    return true;
                 }
                 return false;
             }
@@ -421,6 +427,21 @@ mod tests {
     fn test_matches_glob_path() {
         assert!(matches_glob("src/main.rs", "src/*.rs"));
         assert!(!matches_glob("lib/main.rs", "src/*.rs"));
+    }
+
+    /// Regression for #249: byte-index slicing panics on multi-byte
+    /// characters inside filenames like `dialogue_line__冰糖.mp3`.
+    #[test]
+    fn test_matches_glob_unicode_filename() {
+        let filename = "dialogue_line__冰糖.mp3";
+        // The filename should match *.mp3 without panicking.
+        assert!(matches_glob(filename, "*.mp3"));
+        // Asterisk matching against multi-byte characters must succeed.
+        assert!(matches_glob(filename, "dialogue_line__*"));
+        // Literal multi-byte characters inside the pattern must match.
+        assert!(matches_glob(filename, "*冰糖*"));
+        // Non-matching pattern must not panic either.
+        assert!(!matches_glob(filename, "nonexistent*"));
     }
 
     #[tokio::test]

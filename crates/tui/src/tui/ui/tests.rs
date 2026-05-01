@@ -2433,11 +2433,18 @@ fn agent_swarm_seeded_fanout_card_uses_declared_task_count() {
         }),
     ));
 
-    let HistoryCell::SubAgent(SubAgentCell::Fanout(card)) = &app.history[0] else {
-        panic!("expected seeded fanout card");
-    };
-    assert_eq!(card.worker_count(), 3);
-    assert_eq!(active_fanout_counts(&app), Some((0, 3)));
+    // Card is deferred until first SwarmProgress (#236/#238).
+    // Before that, only the pending task count is stored.
+    assert_eq!(app.pending_swarm_task_count, Some(3));
+    assert!(
+        app.history.is_empty(),
+        "no card pre-seeded before SwarmProgress"
+    );
+    assert_eq!(
+        active_fanout_counts(&app),
+        Some((0, 3)),
+        "sidebar reads pending count"
+    );
 }
 
 #[test]
@@ -2462,10 +2469,11 @@ fn seeded_fanout_card_preserves_existing_active_tool_indices() {
         }),
     ));
 
+    // No card created → no history insertion → tool_cells indices unchanged.
     assert_eq!(
         app.tool_cells.get("search-1").copied(),
-        Some(1),
-        "active tool virtual index should shift after history insertion"
+        Some(0),
+        "active tool virtual index unchanged when card is deferred"
     );
 
     let result = crate::tools::spec::ToolResult::success("done");

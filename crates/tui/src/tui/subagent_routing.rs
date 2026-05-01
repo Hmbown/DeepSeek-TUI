@@ -27,22 +27,32 @@ pub(super) fn running_agent_count(app: &App) -> usize {
 }
 
 pub(super) fn active_fanout_counts(app: &App) -> Option<(usize, usize)> {
+    // Canonical source: the in-progress SwarmOutcome from swarm_jobs.
     if let Some(swarm_id) = app.last_swarm_id.as_ref()
         && let Some(outcome) = app.swarm_jobs.get(swarm_id)
     {
         return Some((outcome.counts.running, outcome.counts.total));
     }
 
-    let idx = app.last_fanout_card_index?;
-    let Some(HistoryCell::SubAgent(SubAgentCell::Fanout(card))) = app.history.get(idx) else {
-        return None;
-    };
-    let running = card
-        .workers
-        .iter()
-        .filter(|slot| matches!(slot.status, AgentLifecycle::Running))
-        .count();
-    Some((running, card.worker_count()))
+    // Card exists — read running count from the canonical slot states.
+    if let Some(idx) = app.last_fanout_card_index
+        && let Some(HistoryCell::SubAgent(SubAgentCell::Fanout(card))) = app.history.get(idx)
+    {
+        let running = card
+            .workers
+            .iter()
+            .filter(|slot| matches!(slot.status, AgentLifecycle::Running))
+            .count();
+        return Some((running, card.worker_count()));
+    }
+
+    // No card yet — swarm was just dispatched but no SwarmProgress has
+    // arrived. Show the declared task count so the sidebar doesn't read zero.
+    if let Some(total) = app.pending_swarm_task_count {
+        return Some((0, total));
+    }
+
+    None
 }
 
 pub(super) fn seed_fanout_card_from_tool_call(
@@ -61,32 +71,15 @@ pub(super) fn seed_fanout_card_from_tool_call(
         return false;
     }
 
-    let ids = tasks
-        .iter()
-        .enumerate()
-        .map(|(idx, task)| {
-            let task_id = task
-                .get("id")
-                .and_then(serde_json::Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned)
-                .unwrap_or_else(|| idx.to_string());
-            format!("task:{task_id}")
-        })
-        .collect::<Vec<_>>();
-
-    let history_threshold_before_push = app.history.len();
-    let active_in_flight = app.active_cell.is_some();
-    let card = FanoutCard::new(name.to_string()).with_workers(ids);
-    app.add_message(HistoryCell::SubAgent(SubAgentCell::Fanout(card)));
-    shift_active_virtual_indices_after_history_insert(
-        app,
-        active_in_flight,
-        history_threshold_before_push,
-    );
-    app.last_fanout_card_index = Some(app.history.len().saturating_sub(1));
-    app.mark_history_updated();
+    // Codex pattern: don't pre-seed a FanoutCard with all-Pending workers.
+    // The card gets created by sync_fanout_card_from_swarm_outcome when the
+    // first SwarmProgress carries real worker states. This eliminates the
+    // "0 done · 0 running · 0 failed · N pending" vs sidebar "N running"
+    // contradiction (#236/#238).
+    //
+    // Store the pending dispatch info so the transcript tool card (running
+    // state) serves as the visual placeholder until workers start.
+    app.pending_swarm_task_count = Some(tasks.len());
     true
 }
 
@@ -220,6 +213,8 @@ pub(super) fn sync_fanout_card_from_swarm_outcome(app: &mut App, outcome: &Swarm
     };
     app.swarm_card_index.insert(outcome.swarm_id.clone(), idx);
 
+    app.pending_swarm_task_count = None;
+
     let Some(HistoryCell::SubAgent(SubAgentCell::Fanout(card))) = app.history.get_mut(idx) else {
         return false;
     };
@@ -281,26 +276,6 @@ fn swarm_task_status_to_lifecycle(status: &SwarmTaskStatus) -> AgentLifecycle {
         SwarmTaskStatus::Failed | SwarmTaskStatus::Interrupted => AgentLifecycle::Failed,
         SwarmTaskStatus::Cancelled | SwarmTaskStatus::Skipped => AgentLifecycle::Cancelled,
         SwarmTaskStatus::Pending => AgentLifecycle::Pending,
-    }
-}
-
-fn shift_active_virtual_indices_after_history_insert(
-    app: &mut App,
-    active_in_flight: bool,
-    threshold: usize,
-) {
-    if !active_in_flight {
-        return;
-    }
-    for idx in app.tool_cells.values_mut() {
-        if *idx >= threshold {
-            *idx = idx.wrapping_add(1);
-        }
-    }
-    for (cell_idx, _) in app.exploring_entries.values_mut() {
-        if *cell_idx >= threshold {
-            *cell_idx = cell_idx.wrapping_add(1);
-        }
     }
 }
 
@@ -426,7 +401,7 @@ pub(super) fn handle_subagent_mailbox(app: &mut App, seq: u64, message: &Mailbox
             card.claim_pending_worker(&agent_id, AgentLifecycle::Running);
             app.subagent_card_index.insert(agent_id, idx);
         } else {
-            let mut card = FanoutCard::new(dispatch_kind.unwrap_or("fanout").to_string());
+            let mut card = FanoutCard::new(dispatch_kind.unwrap_or("swarm").to_string());
             card.upsert_worker(&agent_id, AgentLifecycle::Running);
             app.add_message(HistoryCell::SubAgent(SubAgentCell::Fanout(card)));
             let idx = app.history.len().saturating_sub(1);

@@ -497,6 +497,11 @@ pub struct App {
     /// spawned by the same `agent_swarm` / `rlm` invocation route into
     /// this card; reset when a fresh fanout-family tool call starts.
     pub last_fanout_card_index: Option<usize>,
+    /// Number of tasks declared by a pending `agent_swarm` invocation that
+    /// hasn't yet received its first SwarmProgress event. Used by the
+    /// sidebar to show "dispatching N" before the FanoutCard exists (#236/#238).
+    /// Cleared once sync_fanout_card_from_swarm_outcome creates the card.
+    pub pending_swarm_task_count: Option<usize>,
     /// Canonical swarm/job snapshots by swarm id. Transcript cards, sidebar
     /// counts, and footer status read from this model instead of recomputing
     /// worker totals independently.
@@ -942,6 +947,7 @@ impl App {
             agent_progress: HashMap::new(),
             subagent_card_index: HashMap::new(),
             last_fanout_card_index: None,
+            pending_swarm_task_count: None,
             swarm_jobs: HashMap::new(),
             last_swarm_id: None,
             swarm_card_index: HashMap::new(),
