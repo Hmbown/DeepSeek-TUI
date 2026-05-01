@@ -5,16 +5,23 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Terminal UI for DeepSeek"
+default-run = "deepseek-tui"
 
 [[bin]]
 name = "deepseek-tui"
 path = "src/main.rs"
 
+[[bin]]
+name = "deepseek"
+path = "src/bin/deepseek.rs"
+doc = false
+
 [dependencies]
 anyhow = "1.0.100"
 arboard = "3.4"
-deepseek-secrets = { path = "../secrets", version = "0.8.0" }
-deepseek-tools = { path = "../tools", version = "0.8.0" }
+deepseek-tui-cli = { path = "../cli", version = "0.8.1" }
+deepseek-secrets = { path = "../secrets", version = "0.8.1" }
+deepseek-tools = { path = "../tools", version = "0.8.1" }
 async-stream = "0.3.6"
 async-trait = "0.1"
 bytes = "1.11.0"
