@@ -3424,10 +3424,7 @@ async fn steer_user_message(
 /// Park a draft on the queued-messages bucket for dispatch after TurnComplete.
 /// Unlike a steer, the message is NOT forwarded immediately — it waits for
 /// the current turn to finish, then dispatches as a normal user message.
-async fn queue_follow_up(
-    app: &mut App,
-    message: QueuedMessage,
-) -> Result<()> {
+async fn queue_follow_up(app: &mut App, message: QueuedMessage) -> Result<()> {
     let display = message.display.clone();
     app.queue_message(message);
     app.status_message = Some(format!(
@@ -3453,9 +3450,7 @@ async fn submit_or_steer_message(
             ));
             Ok(())
         }
-        SubmitDisposition::QueueFollowUp => {
-            queue_follow_up(app, message).await
-        }
+        SubmitDisposition::QueueFollowUp => queue_follow_up(app, message).await,
         SubmitDisposition::Steer => {
             if let Err(err) = steer_user_message(app, engine_handle, message.clone()).await {
                 app.queue_message(message);

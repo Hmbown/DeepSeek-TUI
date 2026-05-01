@@ -13,8 +13,8 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1.0.100"
 arboard = "3.4"
-deepseek-secrets = { path = "../secrets", version = "0.7.8" }
-deepseek-tools = { path = "../tools", version = "0.7.8" }
+deepseek-secrets = { path = "../secrets", version = "0.7.9" }
+deepseek-tools = { path = "../tools", version = "0.7.9" }
 async-stream = "0.3.6"
 async-trait = "0.1"
 bytes = "1.11.0"

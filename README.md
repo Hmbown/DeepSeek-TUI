@@ -88,6 +88,38 @@ cargo install --path crates/cli --bin deepseek --locked
 
 ---
 
+## What's new in v0.7.9
+
+### ⚡ Post-turn responsiveness
+
+The checkpoint-restart cycle boundary now runs *before* `TurnComplete`
+is emitted to the UI, so the terminal is immediately responsive after
+every completed turn. The "↻ context refreshing…" status chip stays
+visible during the cycle wait instead of blocking input.
+
+### ⌨️ Enter during streaming now queues
+
+When the model is actively streaming text and you press Enter, your
+message is now parked on the queue for dispatch after the turn finishes
+— no more corrupted mid-turn steering. A status line shows "Queued
+follow-up: … (N queued)" so you know what's waiting.
+
+### 🛡️ Esc during fanout is robust
+
+Canceling a fanout (swarm/sub-agent spawn) with Esc no longer leaves
+the transcript in a broken state when the engine sends a delayed
+`TurnComplete`. Both finalization paths are now idempotent — no
+double `[interrupted]` prefixes, no stale tool cards.
+
+### 🧪 Test hardening
+
+New regression tests lock in the Esc-during-fanout idempotency
+contract and the streaming vs. steer dispatch decision.
+
+Full changelog: [CHANGELOG.md](CHANGELOG.md).
+
+---
+
 ## What's new in v0.7.8
 
 ### ⚡ Shell controls: foreground-to-background detach + `exec_shell_cancel`

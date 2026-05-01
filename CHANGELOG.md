@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.9] - 2026-05-02
+
+### Fixed
+- **Post-turn freeze** — the checkpoint-restart cycle boundary (`maybe_advance_cycle`) now runs *before* `TurnComplete` emission instead of after, so the terminal is immediately responsive when the UI receives the completion event. The status chip ("↻ context refreshing…") remains visible during the cycle wait. (#234)
+- **Enter during streaming no longer corrupts the turn** — a new `QueueFollowUp` submit disposition parks the draft on `queued_messages` when the model is actively streaming text. Previously, pressing Enter during streaming would forward the message as a mid-turn steer, which could interfere with the in-flight response. The message now dispatches as a normal user message after `TurnComplete`. (#234)
+- **Idempotent Esc during fanout** — `finalize_active_cell_as_interrupted` and `finalize_streaming_assistant_as_interrupted` are now guarded by `Option::take()`. When Esc cancels a turn and the engine later delivers `TurnComplete(Interrupted)`, the second call is a no-op — no double `[interrupted]` prefix, no corrupted cell state. Regression test locks in the contract. (#243)
+
+### Tests
+- 2 new tests: `submit_disposition_queue_follow_up_when_streaming` (Enter/steering fix), `turn_complete_after_esc_is_idempotent` (Esc fanout double-call hardening)
+- 1 expanded test: `submit_disposition_queue_when_offline_and_busy` now covers streaming state
+
 ## [0.7.8] - 2026-05-01
 
 ### Added
@@ -715,7 +726,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hooks system and config profiles
 - Example skills and launch assets
 
-[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.7.8...HEAD
+[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.7.9...HEAD
+[0.7.9]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.7.8...v0.7.9
 [0.7.8]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.7.7...v0.7.8
 [0.7.7]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.7.6...v0.7.7
 [0.7.6]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.7.5...v0.7.6

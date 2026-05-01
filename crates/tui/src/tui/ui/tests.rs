@@ -3412,7 +3412,10 @@ fn turn_complete_after_esc_is_idempotent() {
 
     // State remains consistent — active_cell still None, streaming still
     // stopped, no double-interruption prefix.
-    assert!(app.active_cell.is_none(), "active_cell still cleared after 2nd call");
+    assert!(
+        app.active_cell.is_none(),
+        "active_cell still cleared after 2nd call"
+    );
     assert!(!app.is_loading, "is_loading still false after 2nd call");
     assert_eq!(
         app.runtime_turn_status.as_deref(),
