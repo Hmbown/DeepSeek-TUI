@@ -11,11 +11,6 @@ default-run = "deepseek-tui"
 name = "deepseek-tui"
 path = "src/main.rs"
 
-[[bin]]
-name = "deepseek"
-path = "src/bin/deepseek.rs"
-doc = false
-
 [dependencies]
 anyhow = "1.0.100"
 arboard = "3.4"
