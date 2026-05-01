@@ -88,6 +88,39 @@ cargo install --path crates/cli --bin deepseek --locked
 
 ---
 
+## What's new in v0.7.8
+
+### ⚡ Shell controls: foreground-to-background detach + `exec_shell_cancel`
+
+A running foreground command can now be moved to the background interactive
+session — press **`Ctrl+B`** while a command is executing to open shell
+controls, then either detach it (it continues running and can be polled
+with `exec_shell_wait`) or cancel the current turn.
+
+**New tool: `exec_shell_cancel`** — cancel a specific background shell
+task by `task_id`, or cancel all running background tasks with `all: true`.
+
+**Cancel-aware `exec_shell_wait`** — canceling a turn while
+`exec_shell_wait` is blocking now stops the wait but leaves the background
+task running.
+
+### 🐛 Unicode glob search fix
+
+Filenames containing multi-byte characters (e.g., `dialogue_line__冰糖.mp3`)
+no longer panic the `matches_glob` function — byte-index slicing was replaced
+with `char_indices()` boundary-safe iteration.
+
+### 🔄 Swarm UI reconciliation
+
+The fanout card no longer pre-seeds with zero-state workers, eliminating the
+"0 done · 0 running · 0 failed · N pending" vs sidebar "N running"
+contradiction. The sidebar now shows "dispatching N" before the first progress
+event arrives from a `agent_swarm` invocation.
+
+Full changelog: [CHANGELOG.md](CHANGELOG.md).
+
+---
+
 ## What's new in v0.7.6
 
 ### 🌐 UI Localization
