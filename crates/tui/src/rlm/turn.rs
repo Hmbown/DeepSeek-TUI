@@ -2,6 +2,7 @@
 //! subprocess + stdin/stdout RPC bridge (no HTTP sidecar).
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
@@ -9,11 +10,10 @@ use uuid::Uuid;
 
 use crate::client::DeepSeekClient;
 use crate::core::events::Event;
-use crate::llm_client::LlmClient;
-use crate::models::{ContentBlock, Message, MessageRequest, Usage};
+use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt, Usage};
 use crate::repl::PythonRuntime;
 
-use super::bridge::RlmBridge;
+use super::bridge::{RlmBridge, RlmLlmClient};
 use super::prompt::rlm_system_prompt;
 
 // ---------------------------------------------------------------------------
@@ -99,7 +99,7 @@ pub async fn run_rlm_turn(
     max_depth: u32,
 ) -> RlmTurnResult {
     run_rlm_turn_inner(
-        client,
+        Arc::new(client.clone()),
         model,
         prompt,
         None,
@@ -122,7 +122,7 @@ pub async fn run_rlm_turn_with_root(
     max_depth: u32,
 ) -> RlmTurnResult {
     run_rlm_turn_inner(
-        client,
+        Arc::new(client.clone()),
         model,
         prompt,
         root_prompt,
@@ -136,15 +136,15 @@ pub async fn run_rlm_turn_with_root(
 /// Inner entry point — also used by the bridge when it recurses. Returns
 /// a boxed future to break the recursive opaque-future-type cycle:
 /// `run_rlm_turn_inner` → `RlmBridge::dispatch` → `run_rlm_turn_inner`.
-pub(crate) fn run_rlm_turn_inner<'a>(
-    client: &'a DeepSeekClient,
+pub(crate) fn run_rlm_turn_inner(
+    client: Arc<dyn RlmLlmClient>,
     model: String,
     prompt: String,
     root_prompt: Option<String>,
     child_model: String,
     tx_event: mpsc::Sender<Event>,
     max_depth: u32,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = RlmTurnResult> + Send + 'a>> {
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = RlmTurnResult> + Send>> {
     Box::pin(run_rlm_turn_impl(
         client,
         model,
@@ -161,7 +161,7 @@ pub(crate) fn run_rlm_turn_inner<'a>(
 // ---------------------------------------------------------------------------
 
 async fn run_rlm_turn_impl(
-    client: &DeepSeekClient,
+    client: Arc<dyn RlmLlmClient>,
     model: String,
     prompt: String,
     root_prompt: Option<String>,
@@ -212,7 +212,7 @@ async fn run_rlm_turn_impl(
     };
 
     // 3. Build the bridge that services llm_query / rlm_query RPCs.
-    let bridge = RlmBridge::new(client.clone(), child_model.clone(), max_depth);
+    let bridge = RlmBridge::new(Arc::clone(&client), child_model.clone(), max_depth);
     let usage_handle = bridge.usage_handle();
 
     let _ = tx_event
@@ -262,22 +262,9 @@ async fn run_rlm_turn_impl(
                 .await;
 
             // 4a. Root LLM generates code from metadata-only context.
-            let request = MessageRequest {
-                model: model.clone(),
-                messages: messages.clone(),
-                max_tokens: ROOT_MAX_TOKENS,
-                system: Some(system.clone()),
-                tools: None,
-                tool_choice: None,
-                metadata: None,
-                thinking: None,
-                reasoning_effort: None,
-                stream: Some(false),
-                temperature: Some(ROOT_TEMPERATURE),
-                top_p: Some(0.9_f32),
-            };
+            let request = build_root_request(&model, &messages, &system);
 
-            let response = match client.create_message(request).await {
+            let response = match client.create_message_boxed(request).await {
                 Ok(r) => r,
                 Err(e) => {
                     break 'turn RlmTurnResult {
@@ -549,6 +536,23 @@ fn write_context_file(prompt: &str) -> std::io::Result<PathBuf> {
     ));
     std::fs::write(&path, prompt)?;
     Ok(path)
+}
+
+fn build_root_request(model: &str, messages: &[Message], system: &SystemPrompt) -> MessageRequest {
+    MessageRequest {
+        model: model.to_string(),
+        messages: messages.to_vec(),
+        max_tokens: ROOT_MAX_TOKENS,
+        system: Some(system.clone()),
+        tools: None,
+        tool_choice: None,
+        metadata: None,
+        thinking: None,
+        reasoning_effort: None,
+        stream: Some(false),
+        temperature: Some(ROOT_TEMPERATURE),
+        top_p: Some(0.9_f32),
+    }
 }
 
 /// Build `Metadata(state)` from the paper. Surfaces:
@@ -848,6 +852,28 @@ mod tests {
         assert!(
             !text.contains(secret_tail),
             "metadata leaked the non-preview tail of context"
+        );
+    }
+
+    #[test]
+    fn build_root_request_keeps_context_tail_out_of_root_payload() {
+        let secret_tail = "DO_NOT_LEAK_ROOT_REQUEST";
+        let prompt = format!("{}{}", "a".repeat(PROMPT_PREVIEW_LEN + 100), secret_tail);
+        let messages = vec![build_metadata_message(
+            &prompt,
+            Some("answer from the long context"),
+            0,
+            None,
+            None,
+        )];
+
+        let request = build_root_request("root-model", &messages, &rlm_system_prompt());
+        let payload = serde_json::to_string(&request).expect("request should serialize");
+
+        assert!(payload.contains(&format!("- Length: {} chars", prompt.chars().count())));
+        assert!(
+            !payload.contains(secret_tail),
+            "root LLM request leaked the non-preview tail of context"
         );
     }
 

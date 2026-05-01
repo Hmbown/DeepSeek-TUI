@@ -58,7 +58,10 @@ pub trait LlmClient: Send + Sync {
     fn model(&self) -> &str;
 
     /// Creates a non-streaming message completion
-    async fn create_message(&self, request: MessageRequest) -> Result<MessageResponse>;
+    fn create_message(
+        &self,
+        request: MessageRequest,
+    ) -> impl Future<Output = Result<MessageResponse>> + Send;
 
     /// Creates a streaming message completion
     ///
