@@ -163,6 +163,36 @@ impl ToolSpec for FetchUrlTool {
             }
         }
 
+        // SSRF protection: resolve hostname and reject private/link-local/loopback IPs.
+        // Prevents LLM-prompted requests to cloud metadata (169.254.169.254),
+        // localhost services, and internal networks.
+        if let Some(host) = host_from_url(&url) {
+            if host == "localhost" || host == "localhost.localdomain" {
+                return Err(ToolError::permission_denied(
+                    "requests to localhost are not allowed",
+                ));
+            }
+            // Attempt to resolve the hostname and check all resulting IPs.
+            // For IP-literal hosts, check directly without DNS.
+            if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+                if is_restricted_ip(&ip) {
+                    return Err(ToolError::permission_denied(format!(
+                        "resolved IP {ip} is a restricted address (private/loopback/link-local)"
+                    )));
+                }
+            } else if let Ok(addrs) = tokio::net::lookup_host((&*host, 0u16)).await {
+                for addr in addrs {
+                    if is_restricted_ip(&addr.ip()) {
+                        return Err(ToolError::permission_denied(format!(
+                            "resolved IP {} is a restricted address (private/loopback/link-local)",
+                            addr.ip()
+                        )));
+                    }
+                }
+            }
+            // If DNS resolution fails, let the HTTP request proceed and fail naturally.
+        }
+
         let format = Format::parse(input.get("format").and_then(Value::as_str))?;
         let max_bytes = optional_u64(&input, "max_bytes", DEFAULT_MAX_BYTES).min(HARD_MAX_BYTES);
         let timeout_ms =
@@ -241,6 +271,37 @@ impl ToolSpec for FetchUrlTool {
 
         ToolResult::json(&response)
             .map_err(|e| ToolError::execution_failed(format!("failed to serialize response: {e}")))
+    }
+}
+
+/// Check if an IP address is loopback, private, link-local, cloud-metadata,
+/// multicast, or reserved — all addresses that should not be reachable via
+/// an LLM-initiated fetch_url request (SSRF prevention).
+fn is_restricted_ip(ip: &std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_multicast()
+                || v4.is_broadcast()
+                || v4.is_unspecified()
+                // 100.64.0.0/10 — Carrier-grade NAT (CGNAT / shared address space)
+                || matches!(v4.octets(), [100, 64..=127, ..])
+                // 169.254.169.254 — cloud metadata (AWS/GCP/Azure)
+                || *ip == std::net::IpAddr::V4(std::net::Ipv4Addr::new(169, 254, 169, 254))
+                // 198.18.0.0/15 — IETF benchmark testing
+                || matches!(v4.octets(), [198, 18..=19, ..])
+                // 240.0.0.0/4 — reserved (former Class E)
+                || v4.octets()[0] >= 240
+        }
+        std::net::IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || v6.is_multicast()
+                || matches!(v6.segments(), [0xfc00..=0xfdff, ..]) // ULA fc00::/7
+                || matches!(v6.segments(), [0xfe80, ..])          // Link-local fe80::/10
+                || matches!(v6.segments(), [0xff00..=0xffff, ..]) // Multicast ff00::/8
+        }
     }
 }
 
@@ -333,6 +394,60 @@ mod tests {
         let tool = FetchUrlTool;
         let res = tool.execute(json!({}), &ctx()).await;
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn rejects_private_localhost_literal() {
+        assert!(is_restricted_ip(&"127.0.0.1".parse().unwrap()));
+        assert!(is_restricted_ip(&"::1".parse().unwrap()));
+    }
+
+    #[test]
+    fn rejects_private_rfc1918() {
+        assert!(is_restricted_ip(&"10.0.0.1".parse().unwrap()));
+        assert!(is_restricted_ip(&"172.16.0.1".parse().unwrap()));
+        assert!(is_restricted_ip(&"192.168.1.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn rejects_cloud_metadata() {
+        assert!(is_restricted_ip(&"169.254.169.254".parse().unwrap()));
+    }
+
+    #[test]
+    fn rejects_link_local() {
+        assert!(is_restricted_ip(&"169.254.1.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn rejects_cgnat() {
+        assert!(is_restricted_ip(&"100.64.0.1".parse().unwrap()));
+        assert!(!is_restricted_ip(&"100.63.0.1".parse().unwrap()));
+        assert!(!is_restricted_ip(&"100.128.0.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn rejects_ipv6_ula() {
+        assert!(is_restricted_ip(&"fc00::1".parse().unwrap()));
+        assert!(is_restricted_ip(&"fd12:3456::1".parse().unwrap()));
+    }
+
+    #[test]
+    fn allows_public_ips() {
+        assert!(!is_restricted_ip(&"8.8.8.8".parse().unwrap()));
+        assert!(!is_restricted_ip(&"1.1.1.1".parse().unwrap()));
+        assert!(!is_restricted_ip(&"93.184.216.34".parse().unwrap()));
+        assert!(!is_restricted_ip(&"2606:4700::1".parse().unwrap()));
+    }
+
+    #[tokio::test]
+    async fn rejects_localhost_hostname() {
+        let tool = FetchUrlTool;
+        let res = tool
+            .execute(json!({"url": "http://localhost:8080/admin"}), &ctx())
+            .await;
+        let err = res.unwrap_err();
+        assert!(format!("{err}").contains("localhost"));
     }
 
     #[tokio::test]
