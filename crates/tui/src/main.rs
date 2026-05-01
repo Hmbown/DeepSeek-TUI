@@ -63,7 +63,7 @@ mod workspace_trust;
 
 use crate::config::{Config, DEFAULT_TEXT_MODEL, MAX_SUBAGENTS};
 use crate::eval::{EvalHarness, EvalHarnessConfig, ScenarioStepKind};
-use crate::features::Feature;
+use crate::features::{Feature, render_feature_table};
 use crate::llm_client::LlmClient;
 use crate::mcp::{McpConfig, McpPool, McpServerConfig};
 use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt};
@@ -1876,28 +1876,11 @@ fn run_execpolicy_command(command: ExecpolicyCommand) -> Result<()> {
 
 fn run_features_command(config: &Config, command: FeaturesCli) -> Result<()> {
     match command.command {
-        FeaturesSubcommand::List => run_features_list(config),
+        FeaturesSubcommand::List => {
+            print!("{}", render_feature_table(&config.features()));
+            Ok(())
+        }
     }
-}
-
-fn stage_str(stage: features::Stage) -> &'static str {
-    match stage {
-        features::Stage::Experimental => "experimental",
-        features::Stage::Beta => "beta",
-        features::Stage::Stable => "stable",
-        features::Stage::Deprecated => "deprecated",
-        features::Stage::Removed => "removed",
-    }
-}
-
-fn run_features_list(config: &Config) -> Result<()> {
-    let features = config.features();
-    println!("feature\tstage\tenabled");
-    for spec in features::FEATURES {
-        let enabled = features.enabled(spec.id);
-        println!("{}\t{}\t{enabled}", spec.key, stage_str(spec.stage));
-    }
-    Ok(())
 }
 
 async fn run_models(config: &Config, args: ModelsArgs) -> Result<()> {

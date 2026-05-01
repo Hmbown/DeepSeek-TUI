@@ -304,12 +304,6 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "/system",
     },
     CommandInfo {
-        name: "context",
-        aliases: &[],
-        description: "Show context window usage",
-        usage: "/context",
-    },
-    CommandInfo {
         name: "undo",
         aliases: &[],
         description: "Remove last message pair",
@@ -685,6 +679,47 @@ mod tests {
             .find(|cmd| cmd.name == "links")
             .expect("links command should exist");
         assert_eq!(links.aliases, &["dashboard", "api"]);
+    }
+
+    #[test]
+    fn command_registry_has_unique_names_and_aliases() {
+        let mut names = std::collections::BTreeSet::new();
+        for command in COMMANDS {
+            assert!(
+                names.insert(command.name),
+                "duplicate command name /{}",
+                command.name
+            );
+        }
+
+        let mut aliases = std::collections::BTreeSet::new();
+        for command in COMMANDS {
+            for alias in command.aliases {
+                assert!(
+                    !names.contains(alias),
+                    "alias /{} collides with a command name",
+                    alias
+                );
+                assert!(aliases.insert(*alias), "duplicate command alias /{alias}");
+            }
+        }
+    }
+
+    #[test]
+    fn context_command_opens_inspector_and_keeps_ctx_alias() {
+        let context = COMMANDS
+            .iter()
+            .find(|cmd| cmd.name == "context")
+            .expect("context command should exist");
+        assert_eq!(context.aliases, &["ctx"]);
+        assert!(context.description.contains("inspector"));
+
+        let mut app = create_test_app();
+        let result = execute("/ctx", &mut app);
+        assert!(matches!(
+            result.action,
+            Some(AppAction::OpenContextInspector)
+        ));
     }
 
     #[test]

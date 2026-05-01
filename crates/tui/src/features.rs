@@ -1,10 +1,9 @@
-// TODO(integrate): Wire feature flags into engine/tool registration — tracked as future work
 #![allow(dead_code)]
 
 //! Feature flags and metadata for DeepSeek TUI.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
+use std::fmt::{self, Write as _};
 
 use serde::{Deserialize, Serialize};
 
@@ -16,6 +15,18 @@ pub enum Stage {
     Stable,
     Deprecated,
     Removed,
+}
+
+impl Stage {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Experimental => "experimental",
+            Self::Beta => "beta",
+            Self::Stable => "stable",
+            Self::Deprecated => "deprecated",
+            Self::Removed => "removed",
+        }
+    }
 }
 
 /// Unique features toggled via configuration.
@@ -37,14 +48,7 @@ pub enum Feature {
 
 impl fmt::Display for Stage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let label = match self {
-            Self::Experimental => "experimental",
-            Self::Beta => "beta",
-            Self::Stable => "stable",
-            Self::Deprecated => "deprecated",
-            Self::Removed => "removed",
-        };
-        f.write_str(label)
+        f.write_str(self.as_str())
     }
 }
 
@@ -136,6 +140,20 @@ pub fn feature_spec_by_key(key: &str) -> Option<&'static FeatureSpec> {
     FEATURES.iter().find(|spec| spec.key == key)
 }
 
+pub fn render_feature_table(features: &Features) -> String {
+    let mut output = String::from("feature\tstage\tenabled\n");
+    for spec in FEATURES {
+        let _ = writeln!(
+            output,
+            "{}\t{}\t{}",
+            spec.key,
+            spec.stage,
+            features.enabled(spec.id)
+        );
+    }
+    output
+}
+
 /// Deserializable features table for TOML.
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
 pub struct FeaturesToml {
@@ -190,3 +208,37 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: true,
     },
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn apply_map_toggles_known_features_and_ignores_unknown_keys() {
+        let mut features = Features::with_defaults();
+        let entries = BTreeMap::from([
+            ("mcp".to_string(), false),
+            ("shell_tool".to_string(), false),
+            ("not_real".to_string(), false),
+        ]);
+
+        features.apply_map(&entries);
+
+        assert!(!features.enabled(Feature::Mcp));
+        assert!(!features.enabled(Feature::ShellTool));
+        assert_eq!(feature_from_key("not_real"), None);
+    }
+
+    #[test]
+    fn render_feature_table_uses_registry_order_and_effective_state() {
+        let mut features = Features::with_defaults();
+        features.disable(Feature::Mcp);
+
+        let table = render_feature_table(&features);
+        let lines = table.lines().collect::<Vec<_>>();
+
+        assert_eq!(lines.first(), Some(&"feature\tstage\tenabled"));
+        assert!(lines.contains(&"shell_tool\tstable\ttrue"));
+        assert!(lines.contains(&"mcp\texperimental\tfalse"));
+    }
+}
