@@ -63,7 +63,7 @@ mod workspace_trust;
 
 use crate::config::{Config, DEFAULT_TEXT_MODEL, MAX_SUBAGENTS};
 use crate::eval::{EvalHarness, EvalHarnessConfig, ScenarioStepKind};
-use crate::features::Feature;
+use crate::features::{Feature, render_feature_table};
 use crate::llm_client::LlmClient;
 use crate::mcp::{McpConfig, McpPool, McpServerConfig};
 use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt};
@@ -979,7 +979,7 @@ fn run_setup(config: &Config, workspace: &Path, args: SetupArgs) -> Result<()> {
         "DeepSeek Setup".truecolor(aqua_r, aqua_g, aqua_b).bold()
     );
     println!("{}", "==============".truecolor(sky_r, sky_g, sky_b));
-    println!("Workspace: {}", workspace.display());
+    println!("Workspace: {}", crate::utils::display_path(workspace));
 
     if run_mcp {
         let mcp_path = config.mcp_config_path();
@@ -1022,10 +1022,13 @@ fn run_setup(config: &Config, workspace: &Path, args: SetupArgs) -> Result<()> {
         if args.local {
             println!(
                 "    Local skills dir enabled for this workspace: {}",
-                skills_dir.display()
+                crate::utils::display_path(&skills_dir)
             );
         } else {
-            println!("    Skills dir: {}", skills_dir.display());
+            println!(
+                "    Skills dir: {}",
+                crate::utils::display_path(&skills_dir)
+            );
         }
         println!("    Next: run the TUI and use `/skills` then `/skill getting-started`.");
     }
@@ -1035,7 +1038,7 @@ fn run_setup(config: &Config, workspace: &Path, args: SetupArgs) -> Result<()> {
         let (dir, readme_status, example_status) = init_tools_dir(&tools_dir, args.force)?;
         report_write_status("Tools README", &dir.join("README.md"), readme_status);
         report_write_status("Example tool", &dir.join("example.sh"), example_status);
-        println!("    Tools dir: {}", dir.display());
+        println!("    Tools dir: {}", crate::utils::display_path(&dir));
         println!("    Next: drop scripts here; surface them via skills/MCP when ready.");
     }
 
@@ -1045,7 +1048,10 @@ fn run_setup(config: &Config, workspace: &Path, args: SetupArgs) -> Result<()> {
             init_plugins_dir(&plugins_dir, args.force)?;
         report_write_status("Plugins README", &readme_path, readme_status);
         report_write_status("Example plugin", &example_path, example_status);
-        println!("    Plugins dir: {}", plugins_dir.display());
+        println!(
+            "    Plugins dir: {}",
+            crate::utils::display_path(&plugins_dir)
+        );
         println!("    Next: copy the example dir, edit PLUGIN.md, wire via skill/MCP.");
     }
 
@@ -1200,7 +1206,7 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
     println!(
         "  · skills: {} at {}",
         skills_count_for(&skills_dir),
-        skills_dir.display()
+        crate::utils::display_path(&skills_dir)
     );
 
     let tools_dir = default_tools_dir();
@@ -1216,7 +1222,7 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
         } else {
             0
         },
-        tools_dir.display()
+        crate::utils::display_path(&tools_dir)
     );
 
     let plugins_dir = default_plugins_dir();
@@ -1232,7 +1238,7 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
         } else {
             0
         },
-        plugins_dir.display()
+        crate::utils::display_path(&plugins_dir)
     );
 
     let sandbox = crate::sandbox::get_platform_sandbox();
@@ -1348,16 +1354,16 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         println!(
             "  {} config.toml found at {}",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
-            config_path.display()
+            crate::utils::display_path(&config_path)
         );
     } else {
         println!(
             "  {} config.toml not found at {} (using defaults/env)",
             "!".truecolor(sky_r, sky_g, sky_b),
-            config_path.display()
+            crate::utils::display_path(&config_path)
         );
     }
-    println!("  workspace: {}", workspace.display());
+    println!("  workspace: {}", crate::utils::display_path(workspace));
 
     // Check API keys
     println!();
@@ -1477,7 +1483,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         println!(
             "  {} MCP config found at {}",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
-            mcp_config_path.display()
+            crate::utils::display_path(&mcp_config_path)
         );
         match load_mcp_config(&mcp_config_path) {
             Ok(cfg) if cfg.servers.is_empty() => {
@@ -1532,7 +1538,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         println!(
             "  {} MCP config not found at {}",
             "·".dimmed(),
-            mcp_config_path.display()
+            crate::utils::display_path(&mcp_config_path)
         );
         println!("    Run `deepseek mcp init` or `deepseek setup --mcp`.");
     }
@@ -1561,14 +1567,14 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         println!(
             "  {} local skills dir found at {} ({} items)",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
-            local_skills_dir.display(),
+            crate::utils::display_path(&local_skills_dir),
             describe_dir(&local_skills_dir)
         );
     } else {
         println!(
             "  {} local skills dir not found at {}",
             "·".dimmed(),
-            local_skills_dir.display()
+            crate::utils::display_path(&local_skills_dir)
         );
     }
 
@@ -1576,14 +1582,14 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         println!(
             "  {} .agents skills dir found at {} ({} items)",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
-            agents_skills_dir.display(),
+            crate::utils::display_path(&agents_skills_dir),
             describe_dir(&agents_skills_dir)
         );
     } else {
         println!(
             "  {} .agents skills dir not found at {}",
             "·".dimmed(),
-            agents_skills_dir.display()
+            crate::utils::display_path(&agents_skills_dir)
         );
     }
 
@@ -1591,21 +1597,21 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         println!(
             "  {} global skills dir found at {} ({} items)",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
-            global_skills_dir.display(),
+            crate::utils::display_path(&global_skills_dir),
             describe_dir(&global_skills_dir)
         );
     } else {
         println!(
             "  {} global skills dir not found at {}",
             "·".dimmed(),
-            global_skills_dir.display()
+            crate::utils::display_path(&global_skills_dir)
         );
     }
 
     println!(
         "  {} selected skills dir: {}",
         "·".dimmed(),
-        selected_skills_dir.display()
+        crate::utils::display_path(selected_skills_dir)
     );
     if !agents_skills_dir.exists() && !local_skills_dir.exists() && !global_skills_dir.exists() {
         println!("    Run `deepseek setup --skills` (or add --local for ./skills).");
@@ -1620,14 +1626,14 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         println!(
             "  {} tools dir found at {} ({} items)",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
-            tools_dir.display(),
+            crate::utils::display_path(&tools_dir),
             count
         );
     } else {
         println!(
             "  {} tools dir not found at {}",
             "·".dimmed(),
-            tools_dir.display()
+            crate::utils::display_path(&tools_dir)
         );
         println!("    Run `deepseek-tui setup --tools` to scaffold a starter dir.");
     }
@@ -1641,14 +1647,14 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         println!(
             "  {} plugins dir found at {} ({} items)",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
-            plugins_dir.display(),
+            crate::utils::display_path(&plugins_dir),
             count
         );
     } else {
         println!(
             "  {} plugins dir not found at {}",
             "·".dimmed(),
-            plugins_dir.display()
+            crate::utils::display_path(&plugins_dir)
         );
         println!("    Run `deepseek-tui setup --plugins` to scaffold a starter dir.");
     }
@@ -1870,28 +1876,11 @@ fn run_execpolicy_command(command: ExecpolicyCommand) -> Result<()> {
 
 fn run_features_command(config: &Config, command: FeaturesCli) -> Result<()> {
     match command.command {
-        FeaturesSubcommand::List => run_features_list(config),
+        FeaturesSubcommand::List => {
+            print!("{}", render_feature_table(&config.features()));
+            Ok(())
+        }
     }
-}
-
-fn stage_str(stage: features::Stage) -> &'static str {
-    match stage {
-        features::Stage::Experimental => "experimental",
-        features::Stage::Beta => "beta",
-        features::Stage::Stable => "stable",
-        features::Stage::Deprecated => "deprecated",
-        features::Stage::Removed => "removed",
-    }
-}
-
-fn run_features_list(config: &Config) -> Result<()> {
-    let features = config.features();
-    println!("feature\tstage\tenabled");
-    for spec in features::FEATURES {
-        let enabled = features.enabled(spec.id);
-        println!("{}\t{}\t{enabled}", spec.key, stage_str(spec.stage));
-    }
-    Ok(())
 }
 
 async fn run_models(config: &Config, args: ModelsArgs) -> Result<()> {

@@ -90,6 +90,17 @@ Set `DEEPSEEK_TUI_VERSION` to the npm package version you are verifying for that
 The CI workflow runs the same tarball install + delegated-entrypoint smoke test
 on Linux, macOS, and Windows.
 
+After publishing, prove the release is visible in both registries:
+
+```bash
+./scripts/release/check-published.sh X.Y.Z
+```
+
+Do not mark a Rust release complete until that command sees `deepseek-tui@X.Y.Z`
+on npm and every `deepseek-*` crate at `X.Y.Z` on crates.io. For a rare
+npm packaging-only release, run with `--allow-npm-binary-mismatch` and keep the
+release notes explicit that no new Rust binary version shipped.
+
 ## Rust Crates Release
 
 1. Update the workspace version in [Cargo.toml](../Cargo.toml).

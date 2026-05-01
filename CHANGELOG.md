@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-05-01
+
+### Fixed
+- **Skills prompt referenced fabricated paths** — `render_available_skills_context`
+  rendered each skill's file as `<skills_dir>/<frontmatter-name>/SKILL.md`,
+  which did not exist when the directory name differed from the frontmatter
+  `name` (community installs, manually-placed skills). `Skill` now carries the
+  real path captured at discovery and renders that.
+- **Missing-companion error was hostile to direct GitHub Release downloaders**
+  (#258) — replaced "Build workspace default members to install it" wall of
+  text with a concrete three-path checklist: `npm install -g deepseek-tui`,
+  `cargo install deepseek-tui-cli deepseek-tui --locked`, or downloading both
+  `deepseek-<platform>` AND `deepseek-tui-<platform>` from the same Release
+  page. `DEEPSEEK_TUI_BIN` stays as a power-user fallback.
+
+### Added
+- **Privacy: `$HOME` contracts to `~` in viewer-visible paths** — the TUI,
+  `deepseek doctor`, `deepseek setup`, and onboarding now contract the home
+  directory to `~` in every path shown on screen, so screenshots, screencasts,
+  and pasted help output do not leak the OS account name. Persisted state,
+  audit log, session checkpoints, and LLM-bound system prompts intentionally
+  keep absolute paths for full fidelity.
+- **`crates.io` badge** alongside the CI and npm badges in both English and
+  Simplified Chinese READMEs.
+- **Engine decomposition** (#227) — `core/engine.rs` is split into focused
+  submodules (`engine/{streaming,turn_loop,dispatch,tool_setup,tool_execution,tool_catalog,context,approval,capacity_flow,lsp_hooks,tests}.rs`).
+  No behavior change; preparation for the future agent-loop work.
+
+### Tests
+- RLM bridge: `batch_guard` extracted and tested for the empty-batch and
+  oversize-batch invariants; depth-guard fallback covered (partial #231).
+- Persistence: schema-version rejection covered for `load_session`,
+  `load_offline_queue_state`, `runtime_threads::load_turn`,
+  `runtime_threads::load_item` (partial #233).
+- Command palette: `[disabled]` server description tag (closes the
+  remaining #197 acceptance gap).
+- Protocol-recovery contract tests now scan the engine submodules in
+  addition to `engine.rs` so the decomposition refactor doesn't silently
+  hide the fake-wrapper marker assertions.
+
+### Issue triage
+- 10 issues closed with verification commits cited (#247, #235, #197,
+  #250, #234, #243, #238, #236, #239, #195).
+
 ## [0.8.2] - 2026-05-01
 
 ### Fixed

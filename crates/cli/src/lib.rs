@@ -1111,7 +1111,17 @@ fn locate_sibling_tui_binary() -> Result<PathBuf> {
     // expected name, not "deepseek-tui" on Windows.
     let expected = current.with_file_name(format!("deepseek-tui{}", std::env::consts::EXE_SUFFIX));
     bail!(
-        "deepseek-tui binary not found at {}. Build workspace default members to install it, or set DEEPSEEK_TUI_BIN to its absolute path.",
+        "Companion `deepseek-tui` binary not found at {}.\n\
+\n\
+The `deepseek` dispatcher delegates interactive sessions to a sibling \
+`deepseek-tui` binary. To fix this, install one of:\n\
+  • npm:    npm install -g deepseek-tui            (downloads both binaries)\n\
+  • cargo:  cargo install deepseek-tui-cli deepseek-tui --locked\n\
+  • GitHub Releases: download BOTH `deepseek-<platform>` AND \
+`deepseek-tui-<platform>` from https://github.com/Hmbown/DeepSeek-TUI/releases/latest \
+and place them in the same directory.\n\
+\n\
+Or set DEEPSEEK_TUI_BIN to the absolute path of an existing `deepseek-tui` binary.",
         expected.display()
     );
 }

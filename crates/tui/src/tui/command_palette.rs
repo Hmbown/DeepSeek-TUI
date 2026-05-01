@@ -1018,6 +1018,50 @@ mod tests {
     }
 
     #[test]
+    fn command_palette_marks_disabled_servers_visibly() {
+        // The healthy/failed cases are covered above; disabled was the
+        // remaining gap from #197's acceptance list. Disabled servers must
+        // appear in the palette with a `[disabled]` state tag so users can
+        // see them without opening the MCP manager.
+        let snapshot = crate::mcp::McpManagerSnapshot {
+            config_path: Path::new("mcp.json").to_path_buf(),
+            config_exists: true,
+            restart_required: false,
+            servers: vec![crate::mcp::McpServerSnapshot {
+                name: "muted".to_string(),
+                enabled: false,
+                required: false,
+                transport: "stdio".to_string(),
+                command_or_url: "node disabled.js".to_string(),
+                connect_timeout: 10,
+                execute_timeout: 60,
+                read_timeout: 120,
+                connected: false,
+                error: None,
+                tools: Vec::new(),
+                resources: Vec::new(),
+                prompts: Vec::new(),
+            }],
+        };
+        let entries = build_entries(
+            Path::new("."),
+            Path::new("."),
+            Path::new("mcp.json"),
+            Some(&snapshot),
+        );
+
+        let muted = entries
+            .iter()
+            .find(|entry| entry.label == "mcp:muted")
+            .expect("disabled server should still appear in the palette");
+        assert!(
+            muted.description.contains("[disabled]"),
+            "expected `[disabled]` state tag in description, got: {}",
+            muted.description
+        );
+    }
+
+    #[test]
     fn command_palette_emits_actions_not_raw_insertions() {
         let entries = vec![CommandPaletteEntry {
             section: PaletteSection::Command,

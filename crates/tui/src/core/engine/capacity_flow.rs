@@ -7,6 +7,8 @@
 
 use super::*;
 
+use crate::models::context_window_for_model;
+
 impl Engine {
     pub(super) async fn run_capacity_pre_request_checkpoint(
         &mut self,

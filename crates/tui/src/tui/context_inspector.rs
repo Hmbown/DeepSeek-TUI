@@ -30,7 +30,11 @@ pub fn build_context_inspector_text(app: &App) -> String {
     let _ = writeln!(out, "Session Context");
     let _ = writeln!(out, "---------------");
     let _ = writeln!(out, "Model: {}", app.model);
-    let _ = writeln!(out, "Workspace: {}", app.workspace.display());
+    let _ = writeln!(
+        out,
+        "Workspace: {}",
+        crate::utils::display_path(&app.workspace)
+    );
     if let Some(session_id) = app.current_session_id.as_deref() {
         let _ = writeln!(out, "Session: {}", session_id);
     }

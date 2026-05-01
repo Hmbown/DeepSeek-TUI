@@ -20,7 +20,7 @@ pub fn lines(app: &App) -> Vec<Line<'static>> {
         Style::default().fg(palette::TEXT_PRIMARY),
     )));
     lines.push(Line::from(Span::styled(
-        format!("Workspace: {}", app.workspace.display()),
+        format!("Workspace: {}", crate::utils::display_path(&app.workspace)),
         Style::default().fg(palette::TEXT_MUTED),
     )));
     lines.push(Line::from(""));

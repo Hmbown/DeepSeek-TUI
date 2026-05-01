@@ -1,5 +1,7 @@
 use super::*;
 
+use super::context::WORKING_SET_SUMMARY_MARKER;
+use crate::models::SystemBlock;
 use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
@@ -33,6 +35,20 @@ fn make_plan(
         supports_parallel,
         read_only,
         blocked_error: None,
+    }
+}
+
+fn api_tool(name: &str) -> Tool {
+    Tool {
+        tool_type: Some("function".to_string()),
+        name: name.to_string(),
+        description: format!("Test tool {name}"),
+        input_schema: json!({"type": "object"}),
+        allowed_callers: Some(vec!["direct".to_string()]),
+        defer_loading: None,
+        input_examples: None,
+        strict: None,
+        cache_control: None,
     }
 }
 
@@ -203,6 +219,62 @@ fn non_yolo_mode_retains_default_defer_policy() {
         "mcp_read_resource",
         AppMode::Agent
     ));
+}
+
+#[test]
+fn model_tool_catalog_applies_native_and_mcp_deferral() {
+    let catalog = build_model_tool_catalog(
+        vec![
+            api_tool("read_file"),
+            api_tool("exec_shell"),
+            api_tool("project_map"),
+        ],
+        vec![api_tool("list_mcp_resources"), api_tool("mcp_server_write")],
+        AppMode::Agent,
+    );
+
+    let defer_loading = |name: &str| {
+        catalog
+            .iter()
+            .find(|tool| tool.name == name)
+            .and_then(|tool| tool.defer_loading)
+    };
+
+    assert_eq!(defer_loading("read_file"), Some(false));
+    assert_eq!(defer_loading("exec_shell"), Some(false));
+    assert_eq!(defer_loading("project_map"), Some(true));
+    assert_eq!(defer_loading("list_mcp_resources"), Some(false));
+    assert_eq!(defer_loading("mcp_server_write"), Some(true));
+}
+
+#[test]
+fn model_tool_catalog_keeps_everything_loaded_in_yolo_mode() {
+    let catalog = build_model_tool_catalog(
+        vec![api_tool("project_map")],
+        vec![api_tool("mcp_server_write")],
+        AppMode::Yolo,
+    );
+
+    assert!(catalog.iter().all(|tool| tool.defer_loading == Some(false)));
+}
+
+#[test]
+fn turn_tool_registry_builder_keeps_plan_mode_read_only_for_files() {
+    let (engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
+    let registry = engine
+        .build_turn_tool_registry_builder(
+            AppMode::Plan,
+            engine.config.todos.clone(),
+            engine.config.plan_state.clone(),
+        )
+        .build(engine.build_tool_context(AppMode::Plan, false));
+
+    assert!(registry.contains("read_file"));
+    assert!(registry.contains("list_dir"));
+    assert!(!registry.contains("write_file"));
+    assert!(!registry.contains("edit_file"));
+    assert!(registry.contains("update_plan"));
+    assert!(registry.contains("task_create"));
 }
 
 #[test]

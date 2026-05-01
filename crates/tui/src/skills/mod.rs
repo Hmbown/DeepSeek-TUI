@@ -44,6 +44,11 @@ pub struct Skill {
     pub name: String,
     pub description: String,
     pub body: String,
+    /// On-disk path to the `SKILL.md` this was loaded from. The directory
+    /// name can differ from the frontmatter `name` for community installs
+    /// or manually-placed skills, so callers must use this rather than
+    /// reconstructing `<dir>/<name>/SKILL.md`.
+    pub path: PathBuf,
 }
 
 /// Collection of discovered skills.
@@ -70,7 +75,10 @@ impl SkillRegistry {
                     let skill_path = entry.path().join("SKILL.md");
                     match fs::read_to_string(&skill_path) {
                         Ok(content) => match Self::parse_skill(&skill_path, &content) {
-                            Ok(skill) => registry.skills.push(skill),
+                            Ok(mut skill) => {
+                                skill.path = skill_path.clone();
+                                registry.skills.push(skill);
+                            }
                             Err(reason) => registry.push_warning(format!(
                                 "Failed to parse {}: {reason}",
                                 skill_path.display()
@@ -137,6 +145,9 @@ impl SkillRegistry {
             name,
             description,
             body,
+            // Filled in by `discover` after parse succeeds; default to an
+            // empty path so direct constructors (e.g. tests) compile.
+            path: PathBuf::new(),
         })
     }
 
@@ -196,16 +207,19 @@ instructions when using a specific skill.\n\n",
 
     let mut omitted = 0usize;
     for skill in skills {
-        let path = skills_dir.join(&skill.name).join("SKILL.md");
+        // Use the real on-disk path captured at discovery — the directory
+        // name can differ from the frontmatter `name` for community
+        // installs, in which case `<dir>/<name>/SKILL.md` would not exist
+        // and the model would fail to open it.
         let description = truncate_for_prompt(&skill.description, MAX_SKILL_DESCRIPTION_CHARS);
         let line = if description.is_empty() {
-            format!("- {}: (file: {})\n", skill.name, path.display())
+            format!("- {}: (file: {})\n", skill.name, skill.path.display())
         } else {
             format!(
                 "- {}: {} (file: {})\n",
                 skill.name,
                 description,
-                path.display()
+                skill.path.display()
             )
         };
 
@@ -334,6 +348,49 @@ mod tests {
             "expected path {expected_path:?} not in rendered output"
         );
         assert!(rendered.contains("### How to use skills"));
+    }
+
+    #[test]
+    fn render_available_skills_context_uses_real_dir_name_not_frontmatter_name() {
+        // Regression: when a community-installed or manually-placed skill
+        // lives in a directory whose name differs from its frontmatter
+        // `name`, the rendered prompt must point to the real on-disk file
+        // path, not <skills_dir>/<frontmatter-name>/SKILL.md (which does
+        // not exist).
+        let tmpdir = TempDir::new().unwrap();
+        create_skill_dir(
+            &tmpdir,
+            "weird-dir-name",
+            "---\nname: friendly-name\ndescription: drift case\n---\nbody",
+        );
+
+        let rendered =
+            crate::skills::render_available_skills_context(&tmpdir.path().join("skills"))
+                .expect("skill context");
+
+        let real_path = tmpdir
+            .path()
+            .join("skills")
+            .join("weird-dir-name")
+            .join("SKILL.md")
+            .display()
+            .to_string();
+        let stale_path = tmpdir
+            .path()
+            .join("skills")
+            .join("friendly-name")
+            .join("SKILL.md")
+            .display()
+            .to_string();
+
+        assert!(
+            rendered.contains(&real_path),
+            "expected real on-disk path {real_path:?} in rendered output, got:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains(&stale_path),
+            "rendered output must not invent a path under the frontmatter name:\n{rendered}"
+        );
     }
 
     #[test]
