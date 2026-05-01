@@ -69,17 +69,18 @@ replace-with = "tuna"
 registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"
 ```
 
-然后从主包安装已发布的两个二进制文件：
+然后从对应的包安装：
 
 ```bash
-cargo install deepseek-tui --locked
+cargo install deepseek-tui-cli --locked   # 提供推荐入口 `deepseek`
+cargo install deepseek-tui     --locked   # 可选：提供 TUI 伴随二进制 `deepseek-tui`
 deepseek --version
 deepseek doctor --json
 ```
 
-从 `v0.8.1` 开始，`deepseek-tui` 这个主 Cargo 包会同时安装：
+从 `v0.8.2` 起回到分包安装：
 
-- `deepseek`：推荐使用的调度器入口。
+- `deepseek-tui-cli`：推荐使用的调度器入口（`deepseek`）。
 - `deepseek-tui`：交互式 TUI 伴随二进制。
 
 也可以直接从 [GitHub Releases](https://github.com/Hmbown/DeepSeek-TUI/releases) 下载预编译二进制。如果你有镜像后的 release 资产目录，也可以配合 `DEEPSEEK_TUI_RELEASE_BASE_URL` 使用 TUNA、rsproxy、腾讯云 COS 或阿里云 OSS 等镜像。

@@ -59,10 +59,12 @@ replace-with = "tuna"
 registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"
 ```
 
-Then install the shipped binaries from the main package:
+Then install the canonical `deepseek` dispatcher and (optionally) the
+companion TUI binary:
 
 ```bash
-cargo install deepseek-tui --locked
+cargo install deepseek-tui-cli --locked   # provides `deepseek`
+cargo install deepseek-tui     --locked   # provides `deepseek-tui` (optional)
 deepseek --version
 ```
 

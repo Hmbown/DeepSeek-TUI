@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-05-01
+
+### Fixed
+- **Windows release build (LNK1104)** — drop the `deepseek` shim binary in
+  `crates/tui` that 0.8.1 introduced for the bundled `cargo install`. It
+  produced a second `target/release/deepseek.exe` that collided with the
+  `deepseek-tui-cli` artifact during workspace builds; the second linker
+  invocation hit `LNK1104: cannot open file deepseek.exe` on Windows. The
+  cli crate is now the single source of `deepseek`; workspace default
+  members still produce both binaries (one per crate).
+- **npm wrapper offline robustness** — `bin/deepseek(-tui).js` no longer
+  re-fetches the GitHub-hosted SHA-256 checksum manifest on every invocation.
+  When the binary is already installed and its `.version` marker matches the
+  package version, the wrapper trusts the local file. The manifest is fetched
+  lazily on actual download (first install or `DEEPSEEK_TUI_FORCE_DOWNLOAD=1`),
+  so GitHub flakes, captive portals, corporate proxies, and offline state no
+  longer break every command.
+
+### Added
+- **Model-visible skills block** — installed skills (name, description, file
+  path) are now exposed in the agent's system prompt under a `## Skills`
+  section, with progressive disclosure: bodies stay on disk, the model opens a
+  specific `SKILL.md` only when it decides to use that skill. Capped at a 12k
+  prompt budget with 512-char per-description truncation. Threaded through
+  `EngineConfig.skills_dir` so the TUI app, exec agent, and runtime thread
+  manager all populate it from `Config::skills_dir()`.
+- **Simplified Chinese README** (`README.zh-CN.md`) with cross-link from the
+  English README.
+
+### Changed
+- **`cargo install` UX** — to install the canonical `deepseek` command,
+  `cargo install deepseek-tui-cli` (the historical path). The 0.8.1
+  one-command flow (`cargo install deepseek-tui` providing both binaries) is
+  reverted because it broke Windows release builds; install both packages
+  separately if you want the TUI binary too.
+
 ## [0.8.1] - 2026-05-01
 
 ### Fixed

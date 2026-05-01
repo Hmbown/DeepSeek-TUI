@@ -19,7 +19,7 @@ default-members = ["crates/cli", "crates/app-server", "crates/tui"]
 resolver = "2"
 
 [workspace.package]
-version = "0.8.1"
+version = "0.8.2"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/Hmbown/DeepSeek-TUI"

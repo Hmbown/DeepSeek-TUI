@@ -14,9 +14,9 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1.0.100"
 arboard = "3.4"
-deepseek-tui-cli = { path = "../cli", version = "0.8.1" }
-deepseek-secrets = { path = "../secrets", version = "0.8.1" }
-deepseek-tools = { path = "../tools", version = "0.8.1" }
+deepseek-tui-cli = { path = "../cli", version = "0.8.2" }
+deepseek-secrets = { path = "../secrets", version = "0.8.2" }
+deepseek-tools = { path = "../tools", version = "0.8.2" }
 async-stream = "0.3.6"
 async-trait = "0.1"
 bytes = "1.11.0"
