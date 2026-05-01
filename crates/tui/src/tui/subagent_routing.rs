@@ -489,7 +489,10 @@ fn format_task_detail(task: &TaskRecord) -> String {
     lines.push(format!("Status: {}", task_status_label(task.status)));
     lines.push(format!("Mode: {}", task.mode));
     lines.push(format!("Model: {}", task.model));
-    lines.push(format!("Workspace: {}", task.workspace.display()));
+    lines.push(format!(
+        "Workspace: {}",
+        crate::utils::display_path(&task.workspace)
+    ));
     if let Some(thread_id) = task.thread_id.as_ref() {
         lines.push(format!("Runtime Thread: {thread_id}"));
     }
