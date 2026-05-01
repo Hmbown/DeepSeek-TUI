@@ -57,10 +57,9 @@ replace-with = "tuna"
 registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"
 ```
 
-Then install the two shipped binaries:
+Then install the shipped binaries from the main package:
 
 ```bash
-cargo install deepseek-tui-cli --locked
 cargo install deepseek-tui --locked
 deepseek --version
 ```
@@ -108,8 +107,7 @@ SGLANG_BASE_URL="http://localhost:30000/v1" deepseek --provider sglang --model d
 ```bash
 git clone https://github.com/Hmbown/DeepSeek-TUI.git
 cd DeepSeek-TUI
-cargo install --path crates/tui --bin deepseek-tui --locked   # requires Rust 1.85+
-cargo install --path crates/cli --bin deepseek --locked
+cargo install --path crates/tui --locked   # requires Rust 1.85+
 ```
 
 </details>

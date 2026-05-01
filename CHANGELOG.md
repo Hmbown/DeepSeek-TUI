@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-05-01
+
+### Fixed
+- **One-command Cargo install** — `cargo install deepseek-tui --locked` now
+  provides both the canonical `deepseek` dispatcher and the `deepseek-tui`
+  companion binary from the main `deepseek-tui` package, so dispatcher
+  subcommands such as `deepseek doctor --json` work without installing
+  `deepseek-tui-cli` separately.
+
 ## [0.8.0] - 2026-05-01
 
 ### Fixed
