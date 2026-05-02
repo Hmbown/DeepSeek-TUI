@@ -380,9 +380,17 @@ impl WorkingSet {
     }
 
     /// Render a compact working-set block for the system prompt.
+    ///
+    /// Byte-stable across `next_turn()` calls when no new paths are observed
+    /// (#280): the rendered lines drop the turn-relative `touches` and
+    /// `last seen N turn(s) ago` fields, and the order is taken from
+    /// `sorted_for_prompt` (turn-agnostic) instead of `sorted_entries`.
+    /// The block lands in the system prompt before the historical
+    /// conversation; any byte that drifts here cache-misses everything that
+    /// follows in DeepSeek's KV prefix cache.
     pub fn summary_block(&self, workspace: &Path) -> Option<String> {
-        let entries = self.sorted_entries();
-        let prompt_entries: Vec<&WorkingSetEntry> = entries
+        let prompt_entries: Vec<&WorkingSetEntry> = self
+            .sorted_for_prompt()
             .into_iter()
             .take(self.config.max_prompt_entries)
             .collect();
@@ -404,12 +412,8 @@ impl WorkingSet {
         if !prompt_entries.is_empty() {
             lines.push("Active paths (prioritize these):".to_string());
             for entry in prompt_entries {
-                let age = self.turn.saturating_sub(entry.last_turn);
                 let kind = if entry.is_dir { "dir" } else { "file" };
-                lines.push(format!(
-                    "- {} ({kind}, touches: {}, last seen: {} turn(s) ago)",
-                    entry.path, entry.touches, age
-                ));
+                lines.push(format!("- {} ({kind})", entry.path));
             }
         }
 
@@ -529,6 +533,18 @@ impl WorkingSet {
             let sa = score_entry(a, self.turn);
             sb.cmp(&sa).then_with(|| a.path.cmp(&b.path))
         });
+        entries
+    }
+
+    /// Turn-agnostic ordering used when rendering the prompt summary block.
+    /// `sorted_entries` mixes in a recency bonus from `self.turn`, so its
+    /// output reorders as turns advance even when no new paths are touched —
+    /// that movement would cross `max_prompt_entries` boundaries and bust the
+    /// KV prefix cache (#280). Compaction pinning still uses the recency-aware
+    /// `sorted_entries`; only the prompt-facing surface is stabilised here.
+    fn sorted_for_prompt(&self) -> Vec<&WorkingSetEntry> {
+        let mut entries: Vec<&WorkingSetEntry> = self.entries.values().collect();
+        entries.sort_by(|a, b| b.touches.cmp(&a.touches).then_with(|| a.path.cmp(&b.path)));
         entries
     }
 }
@@ -984,6 +1000,62 @@ mod tests {
         assert!(block.contains("Cargo.toml"));
         assert!(block.contains("src"));
         assert!(block.contains("src/lib.rs"));
+    }
+
+    /// #280 regression: `summary_block` must produce byte-identical output
+    /// across `next_turn()` advances when no new paths are touched. Prior to
+    /// the fix, the rendered lines interpolated `entry.touches` and
+    /// `self.turn - entry.last_turn`, both of which drift turn-over-turn even
+    /// when the path set is unchanged. The drift busted DeepSeek's KV prefix
+    /// cache on every user message because the working-set block lands in the
+    /// system prompt before the historical conversation.
+    #[test]
+    fn summary_block_is_byte_stable_across_next_turn_when_no_new_paths_observed() {
+        use crate::test_support::assert_byte_identical;
+
+        let tmp = TempDir::new().expect("tempdir");
+        fs::write(tmp.path().join("Cargo.toml"), "[package]\nname = \"x\"").expect("write");
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).expect("mkdir");
+        fs::write(src.join("a.rs"), "a").expect("write");
+        fs::write(src.join("b.rs"), "b").expect("write");
+
+        let mut ws = WorkingSet::default();
+        ws.observe_user_message("Edit src/a.rs and src/b.rs", tmp.path());
+
+        let before = ws.summary_block(tmp.path()).expect("block before");
+        ws.next_turn();
+        let after = ws.summary_block(tmp.path()).expect("block after");
+
+        assert_byte_identical(
+            "summary_block must be stable across next_turn when no new paths touched",
+            &before,
+            &after,
+        );
+    }
+
+    /// Companion to the byte-stability test: a fresh path *should* invalidate
+    /// the block (the KV cache is allowed to miss when there's genuinely new
+    /// signal), so the model still sees newly touched paths after the block
+    /// stabilises across no-op turns.
+    #[test]
+    fn summary_block_changes_when_a_new_path_is_observed() {
+        let tmp = TempDir::new().expect("tempdir");
+        fs::write(tmp.path().join("Cargo.toml"), "[package]\nname = \"x\"").expect("write");
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).expect("mkdir");
+        fs::write(src.join("a.rs"), "a").expect("write");
+        fs::write(src.join("c.rs"), "c").expect("write");
+
+        let mut ws = WorkingSet::default();
+        ws.observe_user_message("src/a.rs", tmp.path());
+        let before = ws.summary_block(tmp.path()).expect("block before");
+
+        ws.observe_user_message("src/c.rs", tmp.path());
+        let after = ws.summary_block(tmp.path()).expect("block after");
+
+        assert_ne!(before, after, "new path must update the rendered summary");
+        assert!(after.contains("src/c.rs"));
     }
 
     #[test]
