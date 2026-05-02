@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Agent-mode shell exec could not reach the network** (#272) — the seatbelt
+  default policy denies all outbound network including DNS, so any
+  `exec_shell` command needing the network (`curl`, `yt-dlp`, package
+  managers, …) failed in Agent mode unless the user dropped to Yolo. The
+  engine now elevates the sandbox policy to `WorkspaceWrite { network_access:
+  true, … }` for both Agent and Yolo. Plan mode is unchanged (read-only
+  investigation never registers the shell tool). The application-level
+  `NetworkPolicy` (`crates/tui/src/network_policy.rs`) remains the only
+  outbound-traffic boundary.
 - **V4 Pro discount expiry extended** (#267) — DeepSeek extended the V4 Pro 75%
   promotional discount from 2026-05-05 15:59 UTC to 2026-05-31 15:59 UTC. Without
   this update the TUI would have started showing 4× the actual billed cost on
