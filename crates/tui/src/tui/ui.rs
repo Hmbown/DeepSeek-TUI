@@ -58,6 +58,7 @@ use crate::tui::live_transcript::LiveTranscriptOverlay;
 use crate::tui::mcp_routing::{add_mcp_message, open_mcp_manager_pager};
 use crate::tui::onboarding;
 use crate::tui::pager::PagerView;
+use crate::tui::persistence_actor::{self, PersistRequest};
 use crate::tui::plan_prompt::PlanPromptView;
 use crate::tui::scrolling::{ScrollDirection, TranscriptScroll};
 use crate::tui::selection::TranscriptSelectionPoint;
@@ -311,6 +312,14 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         let _ = app.execute_hooks(HookEvent::SessionStart, &context);
     }
 
+    // Spawn the persistence actor so checkpoint/session-save I/O stays off
+    // the UI thread.  The actor serialises + writes to disk in a dedicated
+    // task; the UI just `try_send`s a request and returns immediately.
+    if let Ok(persist_manager) = SessionManager::default_location() {
+        let handle = persistence_actor::spawn_persistence_actor(persist_manager);
+        persistence_actor::init_actor(handle);
+    }
+
     let result = run_event_loop(
         &mut terminal,
         &mut app,
@@ -329,8 +338,9 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         let _ = app.execute_hooks(HookEvent::SessionEnd, &context);
     }
 
-    // Clear crash-recovery checkpoint on normal exit so the next launch starts fresh.
-    clear_checkpoint();
+    // Flush the persistence actor: clear checkpoint + graceful shutdown.
+    persistence_actor::persist(PersistRequest::ClearCheckpoint);
+    persistence_actor::persist(PersistRequest::Shutdown);
 
     disable_raw_mode()?;
     if use_alt_screen {
@@ -653,7 +663,6 @@ async fn run_event_loop(
                         app.last_reasoning = None;
                         app.pending_tool_uses.clear();
                         app.plan_tool_used_in_turn = false;
-                        persist_checkpoint(app);
                         last_status_frame = Instant::now();
                     }
                     EngineEvent::TurnComplete {
@@ -769,8 +778,14 @@ async fn run_event_loop(
                         }
 
                         // Auto-save completed turn and clear crash checkpoint.
-                        persist_session_snapshot(app);
-                        clear_checkpoint();
+                        // Offloaded to the persistence actor so the UI
+                        // stays responsive.
+                        if let Ok(manager) = SessionManager::default_location() {
+                            let session = build_session_snapshot(app, &manager);
+                            app.current_session_id = Some(session.metadata.id.clone());
+                            persistence_actor::persist(PersistRequest::SessionSnapshot(session));
+                        }
+                        persistence_actor::persist(PersistRequest::ClearCheckpoint);
 
                         if app.mode == AppMode::Plan
                             && app.plan_tool_used_in_turn
@@ -833,8 +848,11 @@ async fn run_event_loop(
                         app.model = model;
                         app.update_model_compaction_budget();
                         app.workspace = workspace;
-                        if app.is_loading || app.is_compacting {
-                            persist_checkpoint(app);
+                        if (app.is_loading || app.is_compacting)
+                            && let Ok(manager) = SessionManager::default_location()
+                        {
+                            let session = build_session_snapshot(app, &manager);
+                            persistence_actor::persist(PersistRequest::Checkpoint(session));
                         }
                     }
                     EngineEvent::CompactionStarted { message, .. } => {
@@ -2158,32 +2176,6 @@ fn build_session_snapshot(app: &App, manager: &SessionManager) -> SavedSession {
     }
 }
 
-fn persist_session_snapshot(app: &mut App) {
-    if let Ok(manager) = SessionManager::default_location() {
-        let session = build_session_snapshot(app, &manager);
-        if let Err(err) = manager.save_session(&session) {
-            eprintln!("Failed to save session: {err}");
-        } else {
-            app.current_session_id = Some(session.metadata.id.clone());
-        }
-    }
-}
-
-fn persist_checkpoint(app: &mut App) {
-    if let Ok(manager) = SessionManager::default_location() {
-        let session = build_session_snapshot(app, &manager);
-        if let Err(err) = manager.save_checkpoint(&session) {
-            eprintln!("Failed to save checkpoint: {err}");
-        }
-    }
-}
-
-fn clear_checkpoint() {
-    if let Ok(manager) = SessionManager::default_location() {
-        let _ = manager.clear_checkpoint();
-    }
-}
-
 fn queued_ui_to_session(msg: &QueuedMessage) -> QueuedSessionMessage {
     QueuedSessionMessage {
         display: msg.display.clone(),
@@ -2566,7 +2558,11 @@ async fn dispatch_user_message(
     app.last_prompt_cache_miss_tokens = None;
     app.last_reasoning_replay_tokens = None;
     // Persist immediately so abrupt termination can recover this in-flight turn.
-    persist_checkpoint(app);
+    // Offloaded to the persistence actor.
+    if let Ok(manager) = SessionManager::default_location() {
+        let session = build_session_snapshot(app, &manager);
+        persistence_actor::persist(PersistRequest::Checkpoint(session));
+    }
 
     engine_handle
         .send(Op::SendMessage {
@@ -3063,8 +3059,12 @@ async fn apply_command_result(
                     })
                     .await;
                 if is_full_reset {
-                    persist_session_snapshot(app);
-                    clear_checkpoint();
+                    if let Ok(manager) = SessionManager::default_location() {
+                        let session = build_session_snapshot(app, &manager);
+                        app.current_session_id = Some(session.metadata.id.clone());
+                        persistence_actor::persist(PersistRequest::SessionSnapshot(session));
+                    }
+                    persistence_actor::persist(PersistRequest::ClearCheckpoint);
                 }
             }
             AppAction::SendMessage(content) => {
