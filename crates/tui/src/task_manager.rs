@@ -27,6 +27,7 @@ use crate::runtime_threads::{
     CreateThreadRequest, RuntimeThreadManager, RuntimeThreadManagerConfig, RuntimeTurnStatus,
     SharedRuntimeThreadManager, StartTurnRequest,
 };
+use crate::utils::spawn_supervised;
 
 const DEFAULT_WORKERS: usize = 2;
 const MAX_WORKERS: usize = 8;
@@ -787,9 +788,13 @@ impl TaskManager {
 
         for _ in 0..workers {
             let manager_clone = Arc::clone(&manager);
-            tokio::spawn(async move {
-                manager_clone.worker_loop().await;
-            });
+            spawn_supervised(
+                "task-manager-worker",
+                std::panic::Location::caller(),
+                async move {
+                    manager_clone.worker_loop().await;
+                },
+            );
         }
 
         Ok(manager)
@@ -1611,25 +1616,8 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
             .with_context(|| format!("Failed to create directory {}", parent.display()))?;
     }
     let payload = serde_json::to_string_pretty(value)?;
-    let tmp_name = format!(
-        ".{}.tmp",
-        path.file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("task_state")
-    );
-    let tmp_path = path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join(tmp_name);
-    fs::write(&tmp_path, payload)
-        .with_context(|| format!("Failed to write temp file {}", tmp_path.display()))?;
-    fs::rename(&tmp_path, path).with_context(|| {
-        format!(
-            "Failed to rename {} -> {}",
-            tmp_path.display(),
-            path.display()
-        )
-    })
+    crate::utils::write_atomic(path, payload.as_bytes())
+        .with_context(|| format!("Failed to write {}", path.display()))
 }
 
 fn default_auto_approve() -> bool {

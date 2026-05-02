@@ -25,7 +25,6 @@ pub mod shell;
 mod shell_output;
 pub mod spec;
 pub mod subagent;
-pub mod swarm;
 pub mod tasks;
 pub mod test_runner;
 pub mod todo;

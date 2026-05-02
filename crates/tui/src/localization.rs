@@ -252,6 +252,7 @@ pub enum MessageId {
     CmdSkillsDescription,
     CmdStatuslineDescription,
     CmdSubagentsDescription,
+    CmdSwarmDescription,
     CmdSystemDescription,
     CmdTaskDescription,
     CmdTokensDescription,
@@ -282,6 +283,85 @@ pub enum MessageId {
     HelpSectionModes,
     HelpSectionNavigation,
     HelpSectionSessions,
+    KbScrollTranscript,
+    KbNavigateHistory,
+    KbScrollTranscriptAlt,
+    KbScrollPage,
+    KbJumpTopBottom,
+    KbJumpTopBottomEmpty,
+    KbJumpToolBlocks,
+    KbMoveCursor,
+    KbJumpLineStartEnd,
+    KbDeleteChar,
+    KbClearDraft,
+    KbSearchHistory,
+    KbInsertNewline,
+    KbSendDraft,
+    KbCloseMenu,
+    KbCancelOrExit,
+    KbShellControls,
+    KbExitEmpty,
+    KbCommandPalette,
+    KbFuzzyFilePicker,
+    KbCompactInspector,
+    KbLastMessagePager,
+    KbSelectedDetails,
+    KbToolDetailsPager,
+    KbThinkingPager,
+    KbLiveTranscript,
+    KbBacktrackMessage,
+    KbCompleteCycleModes,
+    KbJumpPlanAgentYolo,
+    KbAltJumpPlanAgentYolo,
+    KbFocusSidebar,
+    KbTogglePlanAgent,
+    KbSessionPicker,
+    KbPasteAttach,
+    KbCopySelection,
+    KbContextMenu,
+    KbAttachPath,
+    KbHelpOverlay,
+    KbToggleHelp,
+    KbToggleHelpSlash,
+    HelpUsageLabel,
+    HelpAliasesLabel,
+    SettingsTitle,
+    SettingsConfigFile,
+    ClearConversation,
+    ClearConversationBusy,
+    ModelChanged,
+    LinksTitle,
+    LinksDashboard,
+    LinksDocs,
+    LinksTip,
+    SubagentsFetching,
+    HelpUnknownCommand,
+    HomeDashboardTitle,
+    HomeModel,
+    HomeMode,
+    HomeWorkspace,
+    HomeHistory,
+    HomeTokens,
+    HomeQueued,
+    HomeSubagents,
+    HomeSkill,
+    HomeQuickActions,
+    HomeQuickLinks,
+    HomeQuickSkills,
+    HomeQuickConfig,
+    HomeQuickSettings,
+    HomeQuickModel,
+    HomeQuickSubagents,
+    HomeQuickTaskList,
+    HomeQuickHelp,
+    HomeModeTips,
+    HomeAgentModeTip,
+    HomeAgentModeReviewTip,
+    HomeAgentModeYoloTip,
+    HomeYoloModeTip,
+    HomeYoloModeCaution,
+    HomePlanModeTip,
+    HomePlanModeChecklistTip,
 }
 
 #[allow(dead_code)]
@@ -351,6 +431,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CmdSkillsDescription,
     MessageId::CmdStatuslineDescription,
     MessageId::CmdSubagentsDescription,
+    MessageId::CmdSwarmDescription,
     MessageId::CmdSystemDescription,
     MessageId::CmdTaskDescription,
     MessageId::CmdTokensDescription,
@@ -381,6 +462,85 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::HelpSectionModes,
     MessageId::HelpSectionNavigation,
     MessageId::HelpSectionSessions,
+    MessageId::KbScrollTranscript,
+    MessageId::KbNavigateHistory,
+    MessageId::KbScrollTranscriptAlt,
+    MessageId::KbScrollPage,
+    MessageId::KbJumpTopBottom,
+    MessageId::KbJumpTopBottomEmpty,
+    MessageId::KbJumpToolBlocks,
+    MessageId::KbMoveCursor,
+    MessageId::KbJumpLineStartEnd,
+    MessageId::KbDeleteChar,
+    MessageId::KbClearDraft,
+    MessageId::KbSearchHistory,
+    MessageId::KbInsertNewline,
+    MessageId::KbSendDraft,
+    MessageId::KbCloseMenu,
+    MessageId::KbCancelOrExit,
+    MessageId::KbShellControls,
+    MessageId::KbExitEmpty,
+    MessageId::KbCommandPalette,
+    MessageId::KbFuzzyFilePicker,
+    MessageId::KbCompactInspector,
+    MessageId::KbLastMessagePager,
+    MessageId::KbSelectedDetails,
+    MessageId::KbToolDetailsPager,
+    MessageId::KbThinkingPager,
+    MessageId::KbLiveTranscript,
+    MessageId::KbBacktrackMessage,
+    MessageId::KbCompleteCycleModes,
+    MessageId::KbJumpPlanAgentYolo,
+    MessageId::KbAltJumpPlanAgentYolo,
+    MessageId::KbFocusSidebar,
+    MessageId::KbTogglePlanAgent,
+    MessageId::KbSessionPicker,
+    MessageId::KbPasteAttach,
+    MessageId::KbCopySelection,
+    MessageId::KbContextMenu,
+    MessageId::KbAttachPath,
+    MessageId::KbHelpOverlay,
+    MessageId::KbToggleHelp,
+    MessageId::KbToggleHelpSlash,
+    MessageId::HelpUsageLabel,
+    MessageId::HelpAliasesLabel,
+    MessageId::SettingsTitle,
+    MessageId::SettingsConfigFile,
+    MessageId::ClearConversation,
+    MessageId::ClearConversationBusy,
+    MessageId::ModelChanged,
+    MessageId::LinksTitle,
+    MessageId::LinksDashboard,
+    MessageId::LinksDocs,
+    MessageId::LinksTip,
+    MessageId::SubagentsFetching,
+    MessageId::HelpUnknownCommand,
+    MessageId::HomeDashboardTitle,
+    MessageId::HomeModel,
+    MessageId::HomeMode,
+    MessageId::HomeWorkspace,
+    MessageId::HomeHistory,
+    MessageId::HomeTokens,
+    MessageId::HomeQueued,
+    MessageId::HomeSubagents,
+    MessageId::HomeSkill,
+    MessageId::HomeQuickActions,
+    MessageId::HomeQuickLinks,
+    MessageId::HomeQuickSkills,
+    MessageId::HomeQuickConfig,
+    MessageId::HomeQuickSettings,
+    MessageId::HomeQuickModel,
+    MessageId::HomeQuickSubagents,
+    MessageId::HomeQuickTaskList,
+    MessageId::HomeQuickHelp,
+    MessageId::HomeModeTips,
+    MessageId::HomeAgentModeTip,
+    MessageId::HomeAgentModeReviewTip,
+    MessageId::HomeAgentModeYoloTip,
+    MessageId::HomeYoloModeTip,
+    MessageId::HomeYoloModeCaution,
+    MessageId::HomePlanModeTip,
+    MessageId::HomePlanModeChecklistTip,
 ];
 
 pub fn tr(locale: Locale, id: MessageId) -> &'static str {
@@ -590,6 +750,9 @@ fn english(id: MessageId) -> &'static str {
         }
         MessageId::CmdStatuslineDescription => "Configure which items appear in the footer",
         MessageId::CmdSubagentsDescription => "List sub-agent status",
+        MessageId::CmdSwarmDescription => {
+            "Run a multi-agent swarm turn (sequential | mixture | distill | deliberate)"
+        }
         MessageId::CmdSystemDescription => "Show current system prompt",
         MessageId::CmdTaskDescription => "Manage background tasks",
         MessageId::CmdTokensDescription => "Show token usage for session",
@@ -656,6 +819,99 @@ fn english(id: MessageId) -> &'static str {
              Chat messages:         {chat_messages}\n\
              Model:                 {model}"
         }
+        MessageId::KbScrollTranscript => {
+            "Scroll transcript, navigate input history, or select composer attachments"
+        }
+        MessageId::KbNavigateHistory => "Navigate input history",
+        MessageId::KbScrollTranscriptAlt => "Scroll transcript",
+        MessageId::KbScrollPage => "Scroll transcript by page",
+        MessageId::KbJumpTopBottom => "Jump to top / bottom of transcript",
+        MessageId::KbJumpTopBottomEmpty => "Jump to top / bottom (when input is empty)",
+        MessageId::KbJumpToolBlocks => "Jump between tool output blocks",
+        MessageId::KbMoveCursor => "Move cursor in composer",
+        MessageId::KbJumpLineStartEnd => "Jump to start / end of line",
+        MessageId::KbDeleteChar => {
+            "Delete character before / after the cursor, or remove selected attachment"
+        }
+        MessageId::KbClearDraft => "Clear the current draft",
+        MessageId::KbSearchHistory => "Search prompt history and recover local drafts",
+        MessageId::KbInsertNewline => "Insert a newline in the composer",
+        MessageId::KbSendDraft => "Send the current draft",
+        MessageId::KbCloseMenu => "Close menu, cancel request, discard draft, or clear input",
+        MessageId::KbCancelOrExit => "Cancel request, or exit when idle",
+        MessageId::KbShellControls => "Open shell controls for a running foreground command",
+        MessageId::KbExitEmpty => "Exit when input is empty",
+        MessageId::KbCommandPalette => "Open the command palette",
+        MessageId::KbFuzzyFilePicker => "Open the fuzzy file picker (insert @path on Enter)",
+        MessageId::KbCompactInspector => "Open compact session context inspector",
+        MessageId::KbLastMessagePager => "Open pager for the last message (when input is empty)",
+        MessageId::KbSelectedDetails => {
+            "Open details for the selected tool or message (when input is empty)"
+        }
+        MessageId::KbToolDetailsPager => "Open tool-details pager",
+        MessageId::KbThinkingPager => "Open thinking pager",
+        MessageId::KbLiveTranscript => "Open live transcript overlay (sticky-tail auto-scroll)",
+        MessageId::KbBacktrackMessage => {
+            "Backtrack to a previous user message (Left/Right step, Enter to rewind)"
+        }
+        MessageId::KbCompleteCycleModes => {
+            "Complete /command, queue running-turn follow-up, cycle modes; Shift+Tab cycles reasoning effort"
+        }
+        MessageId::KbJumpPlanAgentYolo => "Jump directly to Plan / Agent / YOLO mode",
+        MessageId::KbAltJumpPlanAgentYolo => "Alternative jump to Plan / Agent / YOLO mode",
+        MessageId::KbFocusSidebar => "Focus Plan / Todos / Tasks / Agents / Agents / Auto sidebar",
+        MessageId::KbTogglePlanAgent => "Toggle between Plan and Agent modes",
+        MessageId::KbSessionPicker => "Open the session picker",
+        MessageId::KbPasteAttach => "Paste text or attach a clipboard image",
+        MessageId::KbCopySelection => "Copy the current selection (Cmd+C on macOS)",
+        MessageId::KbContextMenu => {
+            "Open context actions for paste, selection, message details, context, and help"
+        }
+        MessageId::KbAttachPath => "Add a local text file or directory to context",
+        MessageId::KbHelpOverlay => "Open this help overlay (when input is empty)",
+        MessageId::KbToggleHelp => "Toggle help overlay",
+        MessageId::KbToggleHelpSlash => "Toggle help overlay",
+        MessageId::HelpUsageLabel => "Usage:",
+        MessageId::HelpAliasesLabel => "Aliases:",
+        MessageId::SettingsTitle => "Settings:",
+        MessageId::SettingsConfigFile => "Config file:",
+        MessageId::ClearConversation => "Conversation cleared",
+        MessageId::ClearConversationBusy => {
+            "Conversation cleared (plan state busy; run /clear again if needed)"
+        }
+        MessageId::ModelChanged => "Model changed: {old} \u{2192} {new}",
+        MessageId::LinksTitle => "DeepSeek Links:",
+        MessageId::LinksDashboard => "Dashboard:",
+        MessageId::LinksDocs => "Docs:",
+        MessageId::LinksTip => "Tip: API keys are available in the dashboard console.",
+        MessageId::SubagentsFetching => "Fetching sub-agent status...",
+        MessageId::HelpUnknownCommand => "Unknown command: {topic}",
+        MessageId::HomeDashboardTitle => "DeepSeek TUI Home Dashboard",
+        MessageId::HomeModel => "Model:",
+        MessageId::HomeMode => "Mode:",
+        MessageId::HomeWorkspace => "Workspace:",
+        MessageId::HomeHistory => "History:",
+        MessageId::HomeTokens => "Tokens:",
+        MessageId::HomeQueued => "Queued:",
+        MessageId::HomeSubagents => "Sub-agents:",
+        MessageId::HomeSkill => "Skill:",
+        MessageId::HomeQuickActions => "Quick Actions",
+        MessageId::HomeQuickLinks => "/links      - Dashboard & API links",
+        MessageId::HomeQuickSkills => "/skills      - List available skills",
+        MessageId::HomeQuickConfig => "/config      - Open interactive configuration editor",
+        MessageId::HomeQuickSettings => "/settings    - Show persistent settings",
+        MessageId::HomeQuickModel => "/model       - Switch or view model",
+        MessageId::HomeQuickSubagents => "/subagents   - List sub-agent status",
+        MessageId::HomeQuickTaskList => "/task list   - Show background task queue",
+        MessageId::HomeQuickHelp => "/help        - Show help",
+        MessageId::HomeModeTips => "Mode Tips",
+        MessageId::HomeAgentModeTip => "Agent mode - Use tools for autonomous tasks",
+        MessageId::HomeAgentModeReviewTip => "  Use Ctrl+X to review in Plan mode before executing",
+        MessageId::HomeAgentModeYoloTip => "  Type /yolo to enable full tool access",
+        MessageId::HomeYoloModeTip => "YOLO mode - Full tool access, no approvals",
+        MessageId::HomeYoloModeCaution => "  Be careful with destructive operations!",
+        MessageId::HomePlanModeTip => "Plan mode - Design before implementing",
+        MessageId::HomePlanModeChecklistTip => "  Use /plan to create structured checklists",
     }
 }
 
@@ -761,6 +1017,9 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         }
         MessageId::CmdStatuslineDescription => "フッターに表示する項目を設定",
         MessageId::CmdSubagentsDescription => "サブエージェントの状態を一覧表示",
+        MessageId::CmdSwarmDescription => {
+            "マルチエージェントのスワームターンを実行（sequential | mixture | distill | deliberate）"
+        }
         MessageId::CmdSystemDescription => "現在のシステムプロンプトを表示",
         MessageId::CmdTaskDescription => "バックグラウンドタスクを管理",
         MessageId::CmdTokensDescription => "セッションのトークン使用量を表示",
@@ -826,6 +1085,103 @@ fn japanese(id: MessageId) -> Option<&'static str> {
              チャットメッセージ:     {chat_messages}\n\
              モデル:                 {model}"
         }
+        MessageId::KbScrollTranscript => {
+            "会話履歴をスクロール、入力履歴を移動、または添付ファイルを選択"
+        }
+        MessageId::KbNavigateHistory => "入力履歴を移動",
+        MessageId::KbScrollTranscriptAlt => "会話履歴をスクロール",
+        MessageId::KbScrollPage => "ページ単位で会話履歴をスクロール",
+        MessageId::KbJumpTopBottom => "会話履歴の先頭/末尾へジャンプ",
+        MessageId::KbJumpTopBottomEmpty => "先頭/末尾へジャンプ（入力が空の時）",
+        MessageId::KbJumpToolBlocks => "ツール出力ブロック間をジャンプ",
+        MessageId::KbMoveCursor => "コンポーザー内でカーソルを移動",
+        MessageId::KbJumpLineStartEnd => "行の先頭/末尾へジャンプ",
+        MessageId::KbDeleteChar => "カーソル前/後の文字を削除、または選択中の添付を削除",
+        MessageId::KbClearDraft => "現在の下書きをクリア",
+        MessageId::KbSearchHistory => "プロンプト履歴を検索してローカル下書きを復元",
+        MessageId::KbInsertNewline => "コンポーザーに改行を挿入",
+        MessageId::KbSendDraft => "現在の下書きを送信",
+        MessageId::KbCloseMenu => {
+            "メニューを閉じる、リクエストをキャンセル、下書きを破棄、または入力をクリア"
+        }
+        MessageId::KbCancelOrExit => "リクエストをキャンセル、またはアイドル時に終了",
+        MessageId::KbShellControls => "実行中のフォアグラウンドコマンドのシェル制御を開く",
+        MessageId::KbExitEmpty => "入力が空の時に終了",
+        MessageId::KbCommandPalette => "コマンドパレットを開く",
+        MessageId::KbFuzzyFilePicker => "ファジーファイルピッカーを開く（Enter で @path を挿入）",
+        MessageId::KbCompactInspector => "コンパクトなセッションコンテキスト検査ツールを開く",
+        MessageId::KbLastMessagePager => "最後のメッセージのページャーを開く（入力が空の時）",
+        MessageId::KbSelectedDetails => {
+            "選択中のツールまたはメッセージの詳細を開く（入力が空の時）"
+        }
+        MessageId::KbToolDetailsPager => "ツール詳細のページャーを開く",
+        MessageId::KbThinkingPager => "思考内容のページャーを開く",
+        MessageId::KbLiveTranscript => "ライブ会話履歴オーバーレイを開く（自動追尾スクロール）",
+        MessageId::KbBacktrackMessage => {
+            "前のユーザーメッセージに戻る（左右でステップ、Enter で巻き戻し）"
+        }
+        MessageId::KbCompleteCycleModes => {
+            "/command を補完、実行中ターンのフォローアップをキュー、モードを切り替え；Shift+Tab で推論強度を切り替え"
+        }
+        MessageId::KbJumpPlanAgentYolo => "Plan / Agent / YOLO モードに直接ジャンプ",
+        MessageId::KbAltJumpPlanAgentYolo => "Plan / Agent / YOLO モードへの代替ジャンプ",
+        MessageId::KbFocusSidebar => {
+            "Plan / Todos / Tasks / Agents / Agents / Auto サイドバーにフォーカス"
+        }
+        MessageId::KbTogglePlanAgent => "Plan モードと Agent モードを切り替え",
+        MessageId::KbSessionPicker => "セッションピッカーを開く",
+        MessageId::KbPasteAttach => "テキストを貼り付けまたはクリップボード画像を添付",
+        MessageId::KbCopySelection => "現在の選択をコピー（macOS は Cmd+C）",
+        MessageId::KbContextMenu => {
+            "貼り付け、選択、メッセージ詳細、コンテキスト、ヘルプのコンテキスト操作を開く"
+        }
+        MessageId::KbAttachPath => {
+            "ローカルのテキストファイルまたはディレクトリをコンテキストに追加"
+        }
+        MessageId::KbHelpOverlay => "このヘルプオーバーレイを開く（入力が空の時）",
+        MessageId::KbToggleHelp => "ヘルプオーバーレイを切り替え",
+        MessageId::KbToggleHelpSlash => "ヘルプオーバーレイを切り替え",
+        MessageId::HelpUsageLabel => "使い方：",
+        MessageId::HelpAliasesLabel => "エイリアス：",
+        MessageId::SettingsTitle => "設定：",
+        MessageId::SettingsConfigFile => "設定ファイル：",
+        MessageId::ClearConversation => "会話履歴をクリアしました",
+        MessageId::ClearConversationBusy => {
+            "会話履歴をクリアしました（plan 状態が忙しい；必要なら /clear を再度実行）"
+        }
+        MessageId::ModelChanged => "モデルを変更しました: {old} → {new}",
+        MessageId::LinksTitle => "DeepSeek リンク：",
+        MessageId::LinksDashboard => "ダッシュボード：",
+        MessageId::LinksDocs => "ドキュメント：",
+        MessageId::LinksTip => "ヒント: API キーはダッシュボードコンソールで取得できます。",
+        MessageId::SubagentsFetching => "サブエージェントの状態を取得中...",
+        MessageId::HelpUnknownCommand => "不明なコマンド: {topic}",
+        MessageId::HomeDashboardTitle => "DeepSeek TUI ホームダッシュボード",
+        MessageId::HomeModel => "モデル：",
+        MessageId::HomeMode => "モード：",
+        MessageId::HomeWorkspace => "ワークスペース：",
+        MessageId::HomeHistory => "履歴：",
+        MessageId::HomeTokens => "トークン：",
+        MessageId::HomeQueued => "キュー：",
+        MessageId::HomeSubagents => "サブエージェント：",
+        MessageId::HomeSkill => "スキル：",
+        MessageId::HomeQuickActions => "クイックアクション",
+        MessageId::HomeQuickLinks => "/links      - ダッシュボードと API リンク",
+        MessageId::HomeQuickSkills => "/skills      - 利用可能なスキルを一覧",
+        MessageId::HomeQuickConfig => "/config      - インタラクティブな設定エディタを開く",
+        MessageId::HomeQuickSettings => "/settings    - 永続化された設定を表示",
+        MessageId::HomeQuickModel => "/model       - モデルを切り替え・確認",
+        MessageId::HomeQuickSubagents => "/subagents   - サブエージェントの状態を一覧",
+        MessageId::HomeQuickTaskList => "/task list   - バックグラウンドタスクキューを表示",
+        MessageId::HomeQuickHelp => "/help        - ヘルプを表示",
+        MessageId::HomeModeTips => "モードヒント",
+        MessageId::HomeAgentModeTip => "Agent モード - ツールを使って自律的なタスクを実行",
+        MessageId::HomeAgentModeReviewTip => "  実行前に Ctrl+X で Plan モードでレビュー",
+        MessageId::HomeAgentModeYoloTip => "  /yolo と入力して完全なツールアクセスを有効化",
+        MessageId::HomeYoloModeTip => "YOLO モード - 完全なツールアクセス、承認なし",
+        MessageId::HomeYoloModeCaution => "  破壊的な操作には注意してください！",
+        MessageId::HomePlanModeTip => "Plan モード - 実装前に設計",
+        MessageId::HomePlanModeChecklistTip => "  /plan を使って構造化されたチェックリストを作成",
     })
 }
 
@@ -906,6 +1262,9 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::CmdSkillsDescription => "列出本地技能（或使用 --remote 浏览精选注册表）",
         MessageId::CmdStatuslineDescription => "配置底栏要显示哪些条目",
         MessageId::CmdSubagentsDescription => "列出子代理状态",
+        MessageId::CmdSwarmDescription => {
+            "运行多代理集群轮次（sequential | mixture | distill | deliberate）"
+        }
         MessageId::CmdSystemDescription => "显示当前系统提示词",
         MessageId::CmdTaskDescription => "管理后台任务",
         MessageId::CmdTokensDescription => "显示本次会话的 token 用量",
@@ -967,6 +1326,89 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
              聊天消息数：       {chat_messages}\n\
              模型：             {model}"
         }
+        MessageId::KbScrollTranscript => "滚动对话记录、浏览输入历史或选择附件",
+        MessageId::KbNavigateHistory => "浏览输入历史",
+        MessageId::KbScrollTranscriptAlt => "滚动对话记录",
+        MessageId::KbScrollPage => "按页滚动对话记录",
+        MessageId::KbJumpTopBottom => "跳转到对话顶部/底部",
+        MessageId::KbJumpTopBottomEmpty => "跳转到顶部/底部（输入框为空时）",
+        MessageId::KbJumpToolBlocks => "在工具输出块之间跳转",
+        MessageId::KbMoveCursor => "在输入框中移动光标",
+        MessageId::KbJumpLineStartEnd => "跳转到行首/行尾",
+        MessageId::KbDeleteChar => "删除光标前/后的字符，或移除已选附件",
+        MessageId::KbClearDraft => "清空当前草稿",
+        MessageId::KbSearchHistory => "搜索提示历史并恢复本地草稿",
+        MessageId::KbInsertNewline => "在输入框中插入换行",
+        MessageId::KbSendDraft => "发送当前草稿",
+        MessageId::KbCloseMenu => "关闭菜单、取消请求、丢弃草稿或清空输入",
+        MessageId::KbCancelOrExit => "取消请求，或空闲时退出",
+        MessageId::KbShellControls => "打开正在运行的前台命令的 shell 控制",
+        MessageId::KbExitEmpty => "输入框为空时退出",
+        MessageId::KbCommandPalette => "打开命令面板",
+        MessageId::KbFuzzyFilePicker => "打开模糊文件选择器（按 Enter 插入 @path）",
+        MessageId::KbCompactInspector => "打开紧凑会话上下文检查器",
+        MessageId::KbLastMessagePager => "打开最后一条消息的分页器（输入框为空时）",
+        MessageId::KbSelectedDetails => "打开选中工具或消息的详情（输入框为空时）",
+        MessageId::KbToolDetailsPager => "打开工具详情分页器",
+        MessageId::KbThinkingPager => "打开思考内容分页器",
+        MessageId::KbLiveTranscript => "打开实时对话覆盖层（自动滚动尾随）",
+        MessageId::KbBacktrackMessage => "回退到之前的用户消息（左右键步进，Enter 回退）",
+        MessageId::KbCompleteCycleModes => {
+            "补全 /command、排队运行轮次跟进、切换模式；Shift+Tab 切换推理强度"
+        }
+        MessageId::KbJumpPlanAgentYolo => "直接跳转到 Plan / Agent / YOLO 模式",
+        MessageId::KbAltJumpPlanAgentYolo => "替代快捷键跳转到 Plan / Agent / YOLO 模式",
+        MessageId::KbFocusSidebar => "聚焦 Plan / 待办 / 任务 / 代理 / 代理 / 自动侧边栏",
+        MessageId::KbTogglePlanAgent => "在 Plan 和 Agent 模式之间切换",
+        MessageId::KbSessionPicker => "打开会话选择器",
+        MessageId::KbPasteAttach => "粘贴文本或附加剪贴板图片",
+        MessageId::KbCopySelection => "复制当前选中内容（macOS 为 Cmd+C）",
+        MessageId::KbContextMenu => "打开上下文操作菜单，用于粘贴、选择、消息详情、上下文和帮助",
+        MessageId::KbAttachPath => "添加本地文本文件或目录到上下文",
+        MessageId::KbHelpOverlay => "打开此帮助覆盖层（输入框为空时）",
+        MessageId::KbToggleHelp => "切换帮助覆盖层",
+        MessageId::KbToggleHelpSlash => "切换帮助覆盖层",
+        MessageId::HelpUsageLabel => "用法：",
+        MessageId::HelpAliasesLabel => "别名：",
+        MessageId::SettingsTitle => "设置：",
+        MessageId::SettingsConfigFile => "配置文件：",
+        MessageId::ClearConversation => "对话已清空",
+        MessageId::ClearConversationBusy => {
+            "对话已清空（Plan 状态忙碌；如需再次清空请运行 /clear）"
+        }
+        MessageId::ModelChanged => "模型已切换：{old} \u{2192} {new}",
+        MessageId::LinksTitle => "DeepSeek 链接：",
+        MessageId::LinksDashboard => "控制台：",
+        MessageId::LinksDocs => "文档：",
+        MessageId::LinksTip => "提示：API 密钥可在控制台中获取。",
+        MessageId::SubagentsFetching => "正在获取子代理状态...",
+        MessageId::HelpUnknownCommand => "未知命令：{topic}",
+        MessageId::HomeDashboardTitle => "DeepSeek TUI 主面板",
+        MessageId::HomeModel => "模型：",
+        MessageId::HomeMode => "模式：",
+        MessageId::HomeWorkspace => "工作区：",
+        MessageId::HomeHistory => "历史：",
+        MessageId::HomeTokens => "令牌：",
+        MessageId::HomeQueued => "队列：",
+        MessageId::HomeSubagents => "子代理：",
+        MessageId::HomeSkill => "技能：",
+        MessageId::HomeQuickActions => "快捷操作",
+        MessageId::HomeQuickLinks => "/links      - 控制台与 API 链接",
+        MessageId::HomeQuickSkills => "/skills      - 列出可用技能",
+        MessageId::HomeQuickConfig => "/config      - 打开交互式配置编辑器",
+        MessageId::HomeQuickSettings => "/settings    - 显示持久化设置",
+        MessageId::HomeQuickModel => "/model       - 切换或查看模型",
+        MessageId::HomeQuickSubagents => "/subagents   - 列出子代理状态",
+        MessageId::HomeQuickTaskList => "/task list   - 显示后台任务队列",
+        MessageId::HomeQuickHelp => "/help        - 显示帮助",
+        MessageId::HomeModeTips => "模式提示",
+        MessageId::HomeAgentModeTip => "Agent 模式 - 使用工具执行自主任务",
+        MessageId::HomeAgentModeReviewTip => "  按 Ctrl+X 可在 Plan 模式下审查后再执行",
+        MessageId::HomeAgentModeYoloTip => "  输入 /yolo 启用完整工具访问",
+        MessageId::HomeYoloModeTip => "YOLO 模式 - 完整工具访问，无需审批",
+        MessageId::HomeYoloModeCaution => "  请小心破坏性操作！",
+        MessageId::HomePlanModeTip => "Plan 模式 - 先设计再实现",
+        MessageId::HomePlanModeChecklistTip => "  使用 /plan 创建结构化检查清单",
     })
 }
 
@@ -1071,6 +1513,9 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         }
         MessageId::CmdStatuslineDescription => "Configurar quais itens aparecem no rodapé",
         MessageId::CmdSubagentsDescription => "Listar o status dos sub-agentes",
+        MessageId::CmdSwarmDescription => {
+            "Executar turno de enxame multi-agente (sequential | mixture | distill | deliberate)"
+        }
         MessageId::CmdSystemDescription => "Exibir o prompt de sistema atual",
         MessageId::CmdTaskDescription => "Gerenciar tarefas em segundo plano",
         MessageId::CmdTokensDescription => "Exibir o uso de tokens da sessão",
@@ -1138,6 +1583,111 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
              Mensagens do chat:        {chat_messages}\n\
              Modelo:                   {model}"
         }
+        MessageId::KbScrollTranscript => {
+            "Rolar transcrição, navegar histórico de entrada ou selecionar anexos do compositor"
+        }
+        MessageId::KbNavigateHistory => "Navegar histórico de entrada",
+        MessageId::KbScrollTranscriptAlt => "Rolar transcrição",
+        MessageId::KbScrollPage => "Rolar transcrição por página",
+        MessageId::KbJumpTopBottom => "Pular para topo / fim da transcrição",
+        MessageId::KbJumpTopBottomEmpty => "Pular para topo / fim (quando entrada vazia)",
+        MessageId::KbJumpToolBlocks => "Pular entre blocos de saída de ferramentas",
+        MessageId::KbMoveCursor => "Mover cursor no compositor",
+        MessageId::KbJumpLineStartEnd => "Pular para início / fim da linha",
+        MessageId::KbDeleteChar => {
+            "Excluir caractere antes / depois do cursor, ou remover anexo selecionado"
+        }
+        MessageId::KbClearDraft => "Limpar rascunho atual",
+        MessageId::KbSearchHistory => "Buscar histórico de prompts e recuperar rascunhos locais",
+        MessageId::KbInsertNewline => "Inserir nova linha no compositor",
+        MessageId::KbSendDraft => "Enviar rascunho atual",
+        MessageId::KbCloseMenu => {
+            "Fechar menu, cancelar requisição, descartar rascunho ou limpar entrada"
+        }
+        MessageId::KbCancelOrExit => "Cancelar requisição ou sair quando ocioso",
+        MessageId::KbShellControls => "Abrir controles de shell para comando em primeiro plano",
+        MessageId::KbExitEmpty => "Sair quando entrada vazia",
+        MessageId::KbCommandPalette => "Abrir paleta de comandos",
+        MessageId::KbFuzzyFilePicker => {
+            "Abrir seletor de arquivo fuzzy (insere @path ao pressionar Enter)"
+        }
+        MessageId::KbCompactInspector => "Abrir inspetor compacto de contexto da sessão",
+        MessageId::KbLastMessagePager => {
+            "Abrir paginador para última mensagem (quando entrada vazia)"
+        }
+        MessageId::KbSelectedDetails => {
+            "Abrir detalhes da ferramenta ou mensagem selecionada (quando entrada vazia)"
+        }
+        MessageId::KbToolDetailsPager => "Abrir paginador de detalhes da ferramenta",
+        MessageId::KbThinkingPager => "Abrir paginador de raciocínio",
+        MessageId::KbLiveTranscript => "Abrir sobreposição de transcrição ao vivo (auto-scroll)",
+        MessageId::KbBacktrackMessage => {
+            "Retroceder para mensagem anterior do usuário (esquerda/direita, Enter para rebobinar)"
+        }
+        MessageId::KbCompleteCycleModes => {
+            "Completar /command, enfileirar follow-up, ciclar modos; Shift+Tab cicla esforço de raciocínio"
+        }
+        MessageId::KbJumpPlanAgentYolo => "Pular direto para modo Plan / Agent / YOLO",
+        MessageId::KbAltJumpPlanAgentYolo => "Salto alternativo para modo Plan / Agent / YOLO",
+        MessageId::KbFocusSidebar => {
+            "Focar barra lateral Plan / Todos / Tasks / Agents / Agents / Auto"
+        }
+        MessageId::KbTogglePlanAgent => "Alternar entre modos Plan e Agent",
+        MessageId::KbSessionPicker => "Abrir seletor de sessões",
+        MessageId::KbPasteAttach => "Colar texto ou anexar imagem da área de transferência",
+        MessageId::KbCopySelection => "Copiar seleção atual (Cmd+C no macOS)",
+        MessageId::KbContextMenu => {
+            "Abrir ações de contexto para colar, seleção, detalhes, contexto e ajuda"
+        }
+        MessageId::KbAttachPath => "Adicionar arquivo ou diretório local ao contexto",
+        MessageId::KbHelpOverlay => "Abrir esta sobreposição de ajuda (quando entrada vazia)",
+        MessageId::KbToggleHelp => "Alternar sobreposição de ajuda",
+        MessageId::KbToggleHelpSlash => "Alternar sobreposição de ajuda",
+        MessageId::HelpUsageLabel => "Uso:",
+        MessageId::HelpAliasesLabel => "Apelidos:",
+        MessageId::SettingsTitle => "Configurações:",
+        MessageId::SettingsConfigFile => "Arquivo de configuração:",
+        MessageId::ClearConversation => "Conversa limpa",
+        MessageId::ClearConversationBusy => {
+            "Conversa limpa (estado do plano ocupado; execute /clear novamente se necessário)"
+        }
+        MessageId::ModelChanged => "Modelo alterado: {old} \u{2192} {new}",
+        MessageId::LinksTitle => "Links do DeepSeek:",
+        MessageId::LinksDashboard => "Painel:",
+        MessageId::LinksDocs => "Documentação:",
+        MessageId::LinksTip => "Dica: chaves de API estão disponíveis no console do painel.",
+        MessageId::SubagentsFetching => "Buscando status dos sub-agentes...",
+        MessageId::HelpUnknownCommand => "Comando desconhecido: {topic}",
+        MessageId::HomeDashboardTitle => "Painel Inicial do DeepSeek TUI",
+        MessageId::HomeModel => "Modelo:",
+        MessageId::HomeMode => "Modo:",
+        MessageId::HomeWorkspace => "Workspace:",
+        MessageId::HomeHistory => "Histórico:",
+        MessageId::HomeTokens => "Tokens:",
+        MessageId::HomeQueued => "Enfileirado:",
+        MessageId::HomeSubagents => "Sub-agentes:",
+        MessageId::HomeSkill => "Skill:",
+        MessageId::HomeQuickActions => "Ações Rápidas",
+        MessageId::HomeQuickLinks => "/links      - Links do painel e API",
+        MessageId::HomeQuickSkills => "/skills      - Listar skills disponíveis",
+        MessageId::HomeQuickConfig => "/config      - Abrir editor interativo de configuração",
+        MessageId::HomeQuickSettings => "/settings    - Exibir configurações persistentes",
+        MessageId::HomeQuickModel => "/model       - Alternar ou visualizar modelo",
+        MessageId::HomeQuickSubagents => "/subagents   - Listar status dos sub-agentes",
+        MessageId::HomeQuickTaskList => "/task list   - Exibir fila de tarefas em segundo plano",
+        MessageId::HomeQuickHelp => "/help        - Exibir ajuda",
+        MessageId::HomeModeTips => "Dicas de Modo",
+        MessageId::HomeAgentModeTip => "Modo Agent - Use ferramentas para tarefas autônomas",
+        MessageId::HomeAgentModeReviewTip => {
+            "  Use Ctrl+X para revisar no modo Plan antes de executar"
+        }
+        MessageId::HomeAgentModeYoloTip => {
+            "  Digite /yolo para habilitar acesso total às ferramentas"
+        }
+        MessageId::HomeYoloModeTip => "Modo YOLO - Acesso total a ferramentas, sem aprovações",
+        MessageId::HomeYoloModeCaution => "  Tenha cuidado com operações destrutivas!",
+        MessageId::HomePlanModeTip => "Modo Plan - Planeje antes de implementar",
+        MessageId::HomePlanModeChecklistTip => "  Use /plan para criar checklists estruturados",
     })
 }
 

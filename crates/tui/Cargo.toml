@@ -14,19 +14,16 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1.0.100"
 arboard = "3.4"
-deepseek-tui-cli = { path = "../cli", version = "0.8.4" }
-deepseek-secrets = { path = "../secrets", version = "0.8.4" }
-deepseek-tools = { path = "../tools", version = "0.8.4" }
+deepseek-secrets = { path = "../secrets", version = "0.8.5" }
+deepseek-tools = { path = "../tools", version = "0.8.5" }
 async-stream = "0.3.6"
 async-trait = "0.1"
-bytes = "1.11.0"
 base64 = "0.22.1"
 axum = { version = "0.8.4", features = ["json"] }
 clap = { version = "4.5.54", features = ["derive"] }
 clap_complete = "4.5"
 colored = "3.0.0"
 crossterm = "0.28"
-csv = "1.4"
 dotenvy = "0.15.7"
 dirs = "6.0.0"
 futures-util = "0.3.31"
@@ -44,7 +41,6 @@ tokio-util = { version = "0.7.16", features = ["io"] }
 unicode-width = "0.2"
 unicode-segmentation = "1.12"
 uuid = { version = "1.11", features = ["v4"] }
-tokio-stream = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 tempfile = "3.16"
 thiserror = "2.0"

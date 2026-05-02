@@ -21,6 +21,7 @@ use crate::rlm::turn::{RlmTermination, run_rlm_turn_with_root};
 use crate::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
+use crate::utils::spawn_supervised;
 
 /// Default child model — cheap and fast.
 const DEFAULT_CHILD_MODEL: &str = "deepseek-v4-flash";
@@ -53,15 +54,26 @@ impl ToolSpec for RlmTool {
     }
 
     fn description(&self) -> &'static str {
-        "Heavy-lift recursive language model. Use when you have a long input \
-         (a whole file, a long transcript, a doc) that doesn't fit in your \
-         working context. The input is loaded into a sandboxed Python REPL \
-         where a sub-agent writes code to chunk and process it via sub-LLM \
-         calls, and returns a synthesized answer. Provide `task` (what to \
-         do) plus exactly one of `file_path` (relative to workspace, \
-         preferred) or `content` (inline, capped at 200k chars). Slower and \
-         pricier than `read_file` / `rlm_query` — only reach for it when \
-         the input genuinely doesn't fit. Returns the final answer string."
+        "Specialty tool for processing long inputs that don't fit in your \
+         own context window. Loads the input into a sandboxed Python REPL \
+         as `PROMPT`; a sub-agent writes Python that chunks the input and \
+         calls in-REPL helpers (`llm_query`, `llm_query_batched`, \
+         `rlm_query`, `rlm_query_batched`) to process it, then returns a \
+         synthesized answer. \n\n\
+         DO NOT use this tool when: the input fits in your context (just \
+         use `read_file` and reason directly); a `grep_files` / \
+         `exec_shell` pipeline would answer the question; the task is a \
+         short classification or extraction; you need interactive \
+         iterative exploration (rlm is one-shot batch). \n\n\
+         Use this tool only when the input is genuinely too large to load \
+         (a whole file > 50K tokens, a long transcript, a multi-document \
+         corpus). It is slower and more expensive than direct reasoning. \n\n\
+         Provide `task` (what to do) plus exactly one of `file_path` \
+         (workspace-relative, preferred — keeps the long input out of \
+         your context entirely) or `content` (inline, capped at 200k \
+         chars). The Python helpers (`llm_query`, `rlm_query`, etc.) live \
+         INSIDE the REPL — they are not separately-callable tools. \n\n\
+         Returns the final synthesized answer as a string."
     }
 
     fn input_schema(&self) -> Value {
@@ -187,7 +199,11 @@ impl ToolSpec for RlmTool {
         // we don't want RLM's progress events to interleave with the
         // parent agent's stream. Drain into a no-op channel.
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
-        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let drain = spawn_supervised(
+            "rlm-progress-drain",
+            std::panic::Location::caller(),
+            async move { while rx.recv().await.is_some() {} },
+        );
 
         // The big body lives only in the REPL as `context`. The small
         // `task` rides along as `root_prompt` and is shown to the root

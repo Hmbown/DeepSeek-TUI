@@ -410,7 +410,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "provider" => provider::provider(app, arg),
         "queue" | "queued" => queue::queue(app, arg),
         "subagents" | "agents" => core::subagents(app),
-        "links" | "dashboard" | "api" => core::deepseek_links(),
+        "links" | "dashboard" | "api" => core::deepseek_links(app),
         "home" | "stats" | "overview" => core::home_dashboard(app),
         "note" => note::note(app, arg),
         "attach" | "image" | "media" => attachment::attach(app, arg),
@@ -429,7 +429,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "export" => session::export(app, arg),
 
         // Config commands
-        "config" => config::show_config(app),
+        "config" => config::config_command(app, arg),
         "settings" => config::show_settings(app),
         "statusline" | "status" => config::status_line(app),
         "yolo" => config::yolo(app),

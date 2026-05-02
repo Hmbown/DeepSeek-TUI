@@ -18,6 +18,7 @@ mod client;
 mod command_safety;
 mod commands;
 mod compaction;
+mod composer_history;
 mod config;
 mod core;
 mod cycle_manager;
@@ -46,6 +47,7 @@ pub mod rlm;
 mod runtime_api;
 mod runtime_threads;
 mod sandbox;
+mod schema_migration;
 mod seam_manager;
 mod session_manager;
 mod settings;
@@ -505,6 +507,46 @@ enum SandboxCommand {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Set up process panic hook before anything else — writes crash dumps
+    // to ~/.deepseek/crashes/ even if the panic happens before tokio is up,
+    // and restores the terminal so a panicked TUI doesn't leave the user's
+    // shell stuck in alt-screen mode.
+    let orig_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        // Restore the terminal first so the panic message itself, plus the
+        // user's shell after exit, are visible. Best-effort — we may not be
+        // in raw / alt-screen mode if the panic happens pre-TUI.
+        use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
+        let _ = disable_raw_mode();
+        let _ = crossterm::execute!(std::io::stdout(), LeaveAlternateScreen);
+
+        let msg = if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+            s.to_string()
+        } else if let Some(s) = panic_info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            format!("{:?}", panic_info.payload())
+        };
+        let location = panic_info
+            .location()
+            .map(|loc| loc.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        tracing::error!(target: "panic", "Process panicked at {location}: {msg}");
+        // Write crash dump best-effort
+        if let Some(home) = dirs::home_dir() {
+            let crash_dir = home.join(".deepseek").join("crashes");
+            let _ = std::fs::create_dir_all(&crash_dir);
+            use chrono::Utc;
+            let ts = Utc::now().format("%Y%m%dT%H%M%S%.3fZ");
+            let path = crash_dir.join(format!("{ts}-process-panic.log"));
+            let contents =
+                format!("Process panicked\nLocation: {location}\nTimestamp: {ts}\nPanic: {msg}\n",);
+            let _ = std::fs::write(&path, contents);
+        }
+        // Invoke the original hook (prints to stderr, etc.)
+        orig_hook(panic_info);
+    }));
+
     dotenv().ok();
     let cli = Cli::parse();
     logging::set_verbose(cli.verbose || logging::env_requests_verbose_logging());
@@ -1160,7 +1202,7 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
                     "SGLANG_API_KEY",
                     "deepseek auth set --provider sglang --api-key \"...\"",
                 ),
-                crate::config::ApiProvider::Deepseek => {
+                crate::config::ApiProvider::Deepseek | crate::config::ApiProvider::DeepseekCN => {
                     ("DEEPSEEK_API_KEY", "deepseek login --api-key \"...\"")
                 }
             };
@@ -1173,7 +1215,8 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
                     crate::config::ApiProvider::Novita => "novita",
                     crate::config::ApiProvider::Fireworks => "fireworks",
                     crate::config::ApiProvider::Sglang => "sglang",
-                    crate::config::ApiProvider::Deepseek => "deepseek",
+                    crate::config::ApiProvider::Deepseek
+                    | crate::config::ApiProvider::DeepseekCN => "deepseek",
                 }
             );
         }
@@ -2638,7 +2681,7 @@ fn save_mcp_config(path: &Path, cfg: &McpConfig) -> Result<()> {
     }
     let rendered = serde_json::to_string_pretty(cfg)
         .map_err(|e| anyhow!("Failed to serialize MCP config: {e}"))?;
-    std::fs::write(path, rendered)
+    crate::utils::write_atomic(path, rendered.as_bytes())
         .map_err(|e| anyhow!("Failed to write MCP config {}: {}", path.display(), e))?;
     Ok(())
 }

@@ -9,15 +9,101 @@ use crate::settings::Settings;
 use crate::tui::app::{App, AppAction, AppMode, OnboardingState, SidebarFocus};
 use crate::tui::approval::ApprovalMode;
 
-/// Open the interactive config editor modal.
+/// Open the interactive config editor modal, or handle `/config <key> <value>`.
 pub fn show_config(_app: &mut App) -> CommandResult {
     CommandResult::action(AppAction::OpenConfigView)
 }
 
+/// Dispatch `/config` with optional args.
+///
+/// - `/config` (no args) — opens the interactive editor modal.
+/// - `/config <key>` — shows the current value of a setting.
+/// - `/config <key> <value>` — sets a runtime value (session only, no --save).
+pub fn config_command(app: &mut App, arg: Option<&str>) -> CommandResult {
+    let raw = arg.map(str::trim).unwrap_or("");
+    if raw.is_empty() {
+        return show_config(app);
+    }
+    let parts: Vec<&str> = raw.splitn(2, ' ').collect();
+    if parts.len() == 1 {
+        // `/config <key>` — show current value
+        show_single_setting(app, parts[0])
+    } else {
+        // `/config <key> <value>` — set value
+        set_config_value(app, parts[0], parts[1], false)
+    }
+}
+
+/// Show the current value of a single setting.
+fn show_single_setting(app: &App, key: &str) -> CommandResult {
+    let key = key.to_lowercase();
+    fn locale_display(l: crate::localization::Locale) -> &'static str {
+        match l {
+            crate::localization::Locale::En => "en",
+            crate::localization::Locale::ZhHans => "zh-Hans",
+            crate::localization::Locale::Ja => "ja",
+            crate::localization::Locale::PtBr => "pt-BR",
+        }
+    }
+    fn density_display(d: crate::tui::app::ComposerDensity) -> &'static str {
+        match d {
+            crate::tui::app::ComposerDensity::Compact => "compact",
+            crate::tui::app::ComposerDensity::Comfortable => "comfortable",
+            crate::tui::app::ComposerDensity::Spacious => "spacious",
+        }
+    }
+    fn spacing_display(s: crate::tui::app::TranscriptSpacing) -> &'static str {
+        match s {
+            crate::tui::app::TranscriptSpacing::Compact => "compact",
+            crate::tui::app::TranscriptSpacing::Comfortable => "comfortable",
+            crate::tui::app::TranscriptSpacing::Spacious => "spacious",
+        }
+    }
+    let value = match key.as_str() {
+        "model" => Some(app.model.clone()),
+        "approval_mode" | "approval" => Some(app.approval_mode.label().to_string()),
+        "locale" | "language" => Some(locale_display(app.ui_locale).to_string()),
+        "auto_compact" | "compact" => {
+            Some(if app.auto_compact { "true" } else { "false" }.to_string())
+        }
+        "calm_mode" | "calm" => Some(if app.calm_mode { "true" } else { "false" }.to_string()),
+        "show_thinking" | "thinking" => {
+            Some(if app.show_thinking { "true" } else { "false" }.to_string())
+        }
+        "mode" | "default_mode" => Some(app.mode.as_setting().to_string()),
+        "max_history" | "history" => Some(app.max_input_history.to_string()),
+        "sidebar_width" | "sidebar" => Some(app.sidebar_width_percent.to_string()),
+        "sidebar_focus" | "focus" => Some(app.sidebar_focus.as_setting().to_string()),
+        "composer_density" | "composer" => Some(density_display(app.composer_density).to_string()),
+        "composer_border" | "border" => {
+            Some(if app.composer_border { "true" } else { "false" }.to_string())
+        }
+        "transcript_spacing" | "spacing" => {
+            Some(spacing_display(app.transcript_spacing).to_string())
+        }
+        _ => {
+            let known = Settings::available_settings()
+                .iter()
+                .any(|(k, _)| k == &key);
+            if known {
+                Some("(see /settings for current value)".to_string())
+            } else {
+                None
+            }
+        }
+    };
+    match value {
+        Some(v) => CommandResult::message(format!("{key} = {v}")),
+        None => CommandResult::error(format!(
+            "Unknown setting '{key}'. See `/help config` for available settings."
+        )),
+    }
+}
+
 /// Show persistent settings
-pub fn show_settings(_app: &mut App) -> CommandResult {
+pub fn show_settings(app: &mut App) -> CommandResult {
     match Settings::load() {
-        Ok(settings) => CommandResult::message(settings.display()),
+        Ok(settings) => CommandResult::message(settings.display(app.ui_locale)),
         Err(e) => CommandResult::error(format!("Failed to load settings: {e}")),
     }
 }

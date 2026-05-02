@@ -58,6 +58,7 @@ use crate::tui::live_transcript::LiveTranscriptOverlay;
 use crate::tui::mcp_routing::{add_mcp_message, open_mcp_manager_pager};
 use crate::tui::onboarding;
 use crate::tui::pager::PagerView;
+use crate::tui::persistence_actor::{self, PersistRequest};
 use crate::tui::plan_prompt::PlanPromptView;
 use crate::tui::scrolling::{ScrollDirection, TranscriptScroll};
 use crate::tui::selection::TranscriptSelectionPoint;
@@ -67,9 +68,8 @@ use crate::tui::shell_job_routing::{
 };
 use crate::tui::subagent_routing::{
     active_fanout_counts, format_task_list, handle_subagent_mailbox, open_task_pager,
-    reconcile_subagent_activity_state, running_agent_count, seed_fanout_card_from_tool_call,
-    sort_subagents_in_place, sync_fanout_card_from_swarm_outcome,
-    sync_fanout_card_from_tool_result, task_mode_label, task_summary_to_panel_entry,
+    reconcile_subagent_activity_state, running_agent_count, sort_subagents_in_place,
+    task_mode_label, task_summary_to_panel_entry,
 };
 #[cfg(test)]
 use crate::tui::tool_routing::exploring_label;
@@ -311,6 +311,14 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         let _ = app.execute_hooks(HookEvent::SessionStart, &context);
     }
 
+    // Spawn the persistence actor so checkpoint/session-save I/O stays off
+    // the UI thread.  The actor serialises + writes to disk in a dedicated
+    // task; the UI just `try_send`s a request and returns immediately.
+    if let Ok(persist_manager) = SessionManager::default_location() {
+        let handle = persistence_actor::spawn_persistence_actor(persist_manager);
+        persistence_actor::init_actor(handle);
+    }
+
     let result = run_event_loop(
         &mut terminal,
         &mut app,
@@ -329,8 +337,9 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         let _ = app.execute_hooks(HookEvent::SessionEnd, &context);
     }
 
-    // Clear crash-recovery checkpoint on normal exit so the next launch starts fresh.
-    clear_checkpoint();
+    // Flush the persistence actor: clear checkpoint + graceful shutdown.
+    persistence_actor::persist(PersistRequest::ClearCheckpoint);
+    persistence_actor::persist(PersistRequest::Shutdown);
 
     disable_raw_mode()?;
     if use_alt_screen {
@@ -564,27 +573,15 @@ async fn run_event_loop(
                         // Note this dispatch so the next sub-agent `Started`
                         // mailbox envelope routes into the right card kind
                         // (delegate vs fanout).
-                        if matches!(
-                            name.as_str(),
-                            "agent_spawn"
-                                | "agent_swarm"
-                                | "spawn_agents_on_csv"
-                                | "rlm"
-                                | "delegate"
-                        ) {
+                        if matches!(name.as_str(), "agent_spawn" | "rlm" | "delegate") {
                             app.pending_subagent_dispatch = Some(name.clone());
-                            if matches!(
-                                name.as_str(),
-                                "agent_swarm" | "spawn_agents_on_csv" | "rlm"
-                            ) {
+                            if name == "rlm" {
                                 // New fanout invocation — children should
                                 // group under a fresh card, not the
-                                // previous swarm's leftover.
+                                // previous fanout's leftover.
                                 app.last_fanout_card_index = None;
-                                app.last_swarm_id = None;
                             }
                         }
-                        seed_fanout_card_from_tool_call(app, &name, &input);
                         handle_tool_call_started(app, &id, &name, &input);
                     }
                     EngineEvent::ToolCallComplete { id, name, result } => {
@@ -609,17 +606,13 @@ async fn run_event_loop(
                             }],
                         });
                         handle_tool_call_complete(app, &id, &name, &result);
-                        sync_fanout_card_from_tool_result(app, &name, &result);
 
                         // Immediately refresh the task panel sidebar when a
                         // tool that changes task state completes, so the
                         // Tasks panel stays in sync with tool execution
                         // rather than waiting up to 2.5 s for the periodic
                         // poll.
-                        if matches!(
-                            name.as_str(),
-                            "agent_spawn" | "agent_swarm" | "agent_cancel" | "todo_write"
-                        ) {
+                        if matches!(name.as_str(), "agent_spawn" | "agent_cancel" | "todo_write") {
                             let tasks = task_manager.list_tasks(Some(10)).await;
                             app.task_panel =
                                 tasks.into_iter().map(task_summary_to_panel_entry).collect();
@@ -628,8 +621,6 @@ async fn run_event_loop(
                         if matches!(
                             name.as_str(),
                             "agent_spawn"
-                                | "agent_swarm"
-                                | "spawn_agents_on_csv"
                                 | "agent_cancel"
                                 | "agent_wait"
                                 | "agent_result"
@@ -653,7 +644,6 @@ async fn run_event_loop(
                         app.last_reasoning = None;
                         app.pending_tool_uses.clear();
                         app.plan_tool_used_in_turn = false;
-                        persist_checkpoint(app);
                         last_status_frame = Instant::now();
                     }
                     EngineEvent::TurnComplete {
@@ -769,8 +759,14 @@ async fn run_event_loop(
                         }
 
                         // Auto-save completed turn and clear crash checkpoint.
-                        persist_session_snapshot(app);
-                        clear_checkpoint();
+                        // Offloaded to the persistence actor so the UI
+                        // stays responsive.
+                        if let Ok(manager) = SessionManager::default_location() {
+                            let session = build_session_snapshot(app, &manager);
+                            app.current_session_id = Some(session.metadata.id.clone());
+                            persistence_actor::persist(PersistRequest::SessionSnapshot(session));
+                        }
+                        persistence_actor::persist(PersistRequest::ClearCheckpoint);
 
                         if app.mode == AppMode::Plan
                             && app.plan_tool_used_in_turn
@@ -833,8 +829,11 @@ async fn run_event_loop(
                         app.model = model;
                         app.update_model_compaction_budget();
                         app.workspace = workspace;
-                        if app.is_loading || app.is_compacting {
-                            persist_checkpoint(app);
+                        if (app.is_loading || app.is_compacting)
+                            && let Ok(manager) = SessionManager::default_location()
+                        {
+                            let session = build_session_snapshot(app, &manager);
+                            persistence_actor::persist(PersistRequest::Checkpoint(session));
                         }
                     }
                     EngineEvent::CompactionStarted { message, .. } => {
@@ -957,21 +956,6 @@ async fn run_event_loop(
                         handle_subagent_mailbox(app, seq, &message);
                         transcript_batch_updated = true;
                     }
-                    EngineEvent::SwarmProgress { outcome } => {
-                        if sync_fanout_card_from_swarm_outcome(app, &outcome) {
-                            transcript_batch_updated = true;
-                        }
-                        app.status_message = Some(format!(
-                            "Swarm {}: {} done, {} running, {} pending",
-                            outcome.swarm_id,
-                            outcome.counts.completed,
-                            outcome.counts.running,
-                            outcome.counts.pending
-                        ));
-                        if outcome.status.is_terminal() {
-                            let _ = engine_handle.send(Op::ListSubAgents).await;
-                        }
-                    }
                     EngineEvent::ApprovalRequired {
                         id,
                         tool_name,
@@ -981,7 +965,23 @@ async fn run_event_loop(
                         let session_approved =
                             app.approval_session_approved.contains(&approval_key)
                                 || app.approval_session_approved.contains(&tool_name);
-                        if session_approved || app.approval_mode == ApprovalMode::Auto {
+                        let session_denied = app.approval_session_denied.contains(&approval_key)
+                            || app.approval_session_denied.contains(&tool_name);
+                        if session_denied {
+                            // The user already said no to this exact tool /
+                            // approval key in this session; auto-deny so the
+                            // model's retry loop doesn't keep re-prompting
+                            // (#360).
+                            log_sensitive_event(
+                                "tool.approval.auto_deny_session",
+                                serde_json::json!({
+                                    "tool_name": tool_name,
+                                    "approval_key": approval_key,
+                                    "session_id": app.current_session_id,
+                                }),
+                            );
+                            let _ = engine_handle.deny_tool_call(id.clone()).await;
+                        } else if session_approved || app.approval_mode == ApprovalMode::Auto {
                             log_sensitive_event(
                                 "tool.approval.auto_approve",
                                 serde_json::json!({
@@ -1222,6 +1222,10 @@ async fn run_event_loop(
                     sync_api_key_validation_status(app, false);
                 } else if app.is_history_search_active() {
                     app.history_search_insert_str(text);
+                } else if app.view_stack.handle_paste(text) {
+                    // Modal consumed the paste (e.g. provider picker key entry)
+                } else if !app.view_stack.is_empty() {
+                    // A non-consumed modal is open — don't leak paste into composer
                 } else {
                     // Paste into main input
                     app.insert_paste_text(text);
@@ -1332,6 +1336,14 @@ async fn run_event_loop(
                                     // Recreate the engine so it picks up the newly saved key
                                     // without requiring a full process restart.
                                     let _ = engine_handle.send(Op::Shutdown).await;
+                                    // Stamp the new key on the long-lived
+                                    // `Config` reference so any future clone
+                                    // (e.g. a subsequent /provider switch)
+                                    // sees it; the explicit-override path
+                                    // in `deepseek_api_key` (#343) makes
+                                    // this win even if the OS keyring
+                                    // still holds a stale credential.
+                                    config.api_key = Some(key.clone());
                                     let mut refreshed_config = config.clone();
                                     refreshed_config.api_key = Some(key);
                                     let engine_config = build_engine_config(app, &refreshed_config);
@@ -1709,9 +1721,9 @@ async fn run_event_loop(
                         // waiting for the engine's TurnComplete echo to drain.
                         // Idempotent with the TurnComplete handler that runs
                         // when the engine actually echoes the cancel (#243).
-                        // Background `block:false` swarms continue running
-                        // — they are tracked in `swarm_jobs` independently and
-                        // their FanoutCard stays bound by `swarm_card_index`.
+                        // Background sub-agents continue running — they are
+                        // tracked via `subagent_cache` independently of the
+                        // foreground turn.
                         app.finalize_active_cell_as_interrupted();
                         app.finalize_streaming_assistant_as_interrupted();
                         app.status_message = Some("Request cancelled".to_string());
@@ -2158,32 +2170,6 @@ fn build_session_snapshot(app: &App, manager: &SessionManager) -> SavedSession {
     }
 }
 
-fn persist_session_snapshot(app: &mut App) {
-    if let Ok(manager) = SessionManager::default_location() {
-        let session = build_session_snapshot(app, &manager);
-        if let Err(err) = manager.save_session(&session) {
-            eprintln!("Failed to save session: {err}");
-        } else {
-            app.current_session_id = Some(session.metadata.id.clone());
-        }
-    }
-}
-
-fn persist_checkpoint(app: &mut App) {
-    if let Ok(manager) = SessionManager::default_location() {
-        let session = build_session_snapshot(app, &manager);
-        if let Err(err) = manager.save_checkpoint(&session) {
-            eprintln!("Failed to save checkpoint: {err}");
-        }
-    }
-}
-
-fn clear_checkpoint() {
-    if let Ok(manager) = SessionManager::default_location() {
-        let _ = manager.clear_checkpoint();
-    }
-}
-
 fn queued_ui_to_session(msg: &QueuedMessage) -> QueuedSessionMessage {
     QueuedSessionMessage {
         display: msg.display.clone(),
@@ -2566,7 +2552,11 @@ async fn dispatch_user_message(
     app.last_prompt_cache_miss_tokens = None;
     app.last_reasoning_replay_tokens = None;
     // Persist immediately so abrupt termination can recover this in-flight turn.
-    persist_checkpoint(app);
+    // Offloaded to the persistence actor.
+    if let Ok(manager) = SessionManager::default_location() {
+        let session = build_session_snapshot(app, &manager);
+        persistence_actor::persist(PersistRequest::Checkpoint(session));
+    }
 
     engine_handle
         .send(Op::SendMessage {
@@ -3063,8 +3053,12 @@ async fn apply_command_result(
                     })
                     .await;
                 if is_full_reset {
-                    persist_session_snapshot(app);
-                    clear_checkpoint();
+                    if let Ok(manager) = SessionManager::default_location() {
+                        let session = build_session_snapshot(app, &manager);
+                        app.current_session_id = Some(session.metadata.id.clone());
+                        persistence_actor::persist(PersistRequest::SessionSnapshot(session));
+                    }
+                    persistence_actor::persist(PersistRequest::ClearCheckpoint);
                 }
             }
             AppAction::SendMessage(content) => {
@@ -3394,6 +3388,22 @@ async fn execute_command_input(
     input: &str,
 ) -> Result<bool> {
     let result = commands::execute(input, app);
+    // After /logout: clear the in-memory api_key fields so the next
+    // onboarding round entering a new key doesn't see the stale value
+    // (#343). The on-disk + keyring side is handled by clear_api_key()
+    // inside commands::config::logout.
+    if input.trim().eq_ignore_ascii_case("/logout") {
+        config.api_key = None;
+        if let Some(providers) = config.providers.as_mut() {
+            providers.deepseek.api_key = None;
+            providers.deepseek_cn.api_key = None;
+            providers.nvidia_nim.api_key = None;
+            providers.openrouter.api_key = None;
+            providers.novita.api_key = None;
+            providers.fireworks.api_key = None;
+            providers.sglang.api_key = None;
+        }
+    }
     apply_command_result(app, engine_handle, task_manager, config, result).await
 }
 
@@ -3737,6 +3747,7 @@ fn render(f: &mut Frame, app: &mut App) {
         let effort_label = app.reasoning_effort.short_label();
         let provider_label = match app.api_provider {
             crate::config::ApiProvider::Deepseek => None,
+            crate::config::ApiProvider::DeepseekCN => None,
             crate::config::ApiProvider::NvidiaNim => Some("NIM"),
             crate::config::ApiProvider::Openrouter => Some("OR"),
             crate::config::ApiProvider::Novita => Some("Novita"),
@@ -3919,7 +3930,7 @@ async fn handle_view_events(
                     // Store both the tool name (backward compat) and the
                     // approval key (fingerprint-based).
                     app.approval_session_approved.insert(tool_name.clone());
-                    app.approval_session_approved.insert(approval_key);
+                    app.approval_session_approved.insert(approval_key.clone());
                 }
 
                 match decision {
@@ -3927,6 +3938,15 @@ async fn handle_view_events(
                         let _ = engine_handle.approve_tool_call(tool_id).await;
                     }
                     ReviewDecision::Denied | ReviewDecision::Abort => {
+                        // Cache the denial so the model retry-loop doesn't
+                        // re-prompt for the same command (#360). Only when
+                        // the user actively denied (not when the timeout
+                        // fired) — a timeout might mean the user stepped
+                        // away rather than refused.
+                        if !timed_out {
+                            app.approval_session_denied.insert(tool_name.clone());
+                            app.approval_session_denied.insert(approval_key);
+                        }
                         let _ = engine_handle.deny_tool_call(tool_id).await;
                     }
                 }
@@ -4304,14 +4324,14 @@ async fn apply_provider_picker_api_key(
 
     // Mirror the saved key into the in-memory config so the engine sees it
     // immediately without a reload — `save_api_key_for` only touches disk.
-    if matches!(provider, ApiProvider::Deepseek) {
+    if matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN) {
         config.api_key = Some(api_key);
     } else {
         let providers = config
             .providers
             .get_or_insert_with(ProvidersConfig::default);
         let entry: &mut ProviderConfig = match provider {
-            ApiProvider::Deepseek => unreachable!(),
+            ApiProvider::Deepseek | ApiProvider::DeepseekCN => unreachable!(),
             ApiProvider::NvidiaNim => &mut providers.nvidia_nim,
             ApiProvider::Openrouter => &mut providers.openrouter,
             ApiProvider::Novita => &mut providers.novita,
@@ -4899,15 +4919,11 @@ fn collect_active_tool_status(cell: &HistoryCell, snapshot: &mut ActiveToolStatu
         }
         ToolCell::Generic(generic) => {
             // Fanout-class dispatch tools represent themselves through the
-            // FanoutCard + Agents sidebar, both of which derive from the
-            // canonical `swarm_jobs` store. Counting them again here would
+            // FanoutCard + Agents sidebar. Counting them again here would
             // produce the contradiction the user observed: footer "1 active"
-            // while the card and sidebar already showed the swarm's own
+            // while the card and sidebar already showed the dispatch's own
             // worker counts (#236, #238). Skip them entirely.
-            if matches!(
-                generic.name.as_str(),
-                "agent_swarm" | "spawn_agents_on_csv" | "rlm" | "agent_spawn"
-            ) {
+            if matches!(generic.name.as_str(), "rlm" | "agent_spawn") {
                 return;
             }
             snapshot.record(format!("tool {}", generic.name), generic.status, None);

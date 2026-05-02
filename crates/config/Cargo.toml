@@ -8,9 +8,8 @@ description = "Config schema and precedence model for DeepSeek workspace archite
 
 [dependencies]
 anyhow.workspace = true
-deepseek-secrets = { path = "../secrets", version = "0.8.4" }
+deepseek-secrets = { path = "../secrets", version = "0.8.5" }
 dirs.workspace = true
 serde.workspace = true
-serde_json.workspace = true
 toml.workspace = true
 tracing.workspace = true

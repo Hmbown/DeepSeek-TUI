@@ -51,6 +51,7 @@ use crate::tools::todo::{SharedTodoList, new_shared_todo_list};
 use crate::tools::user_input::{UserInputRequest, UserInputResponse};
 use crate::tools::{ToolContext, ToolRegistryBuilder};
 use crate::tui::app::AppMode;
+use crate::utils::spawn_supervised;
 
 use super::capacity::{
     CapacityController, CapacityControllerConfig, CapacityDecision, CapacityObservationInput,
@@ -741,20 +742,24 @@ impl Engine {
             let cancel_token = self.cancel_token.child_token();
             let (mailbox, mut receiver) = Mailbox::new(cancel_token.clone());
             let tx_event_clone = self.tx_event.clone();
-            tokio::spawn(async move {
-                while let Some(envelope) = receiver.recv().await {
-                    if tx_event_clone
-                        .send(Event::SubAgentMailbox {
-                            seq: envelope.seq,
-                            message: envelope.message,
-                        })
-                        .await
-                        .is_err()
-                    {
-                        break;
+            spawn_supervised(
+                "subagent-mailbox-drainer",
+                std::panic::Location::caller(),
+                async move {
+                    while let Some(envelope) = receiver.recv().await {
+                        if tx_event_clone
+                            .send(Event::SubAgentMailbox {
+                                seq: envelope.seq,
+                                message: envelope.message,
+                            })
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
                     }
-                }
-            });
+                },
+            );
             Some((mailbox, cancel_token))
         } else {
             None
@@ -1598,9 +1603,13 @@ impl Engine {
 pub fn spawn_engine(config: EngineConfig, api_config: &Config) -> EngineHandle {
     let (engine, handle) = Engine::new(config, api_config);
 
-    tokio::spawn(async move {
-        engine.run().await;
-    });
+    spawn_supervised(
+        "engine-event-loop",
+        std::panic::Location::caller(),
+        async move {
+            engine.run().await;
+        },
+    );
 
     handle
 }

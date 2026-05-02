@@ -1,11 +1,12 @@
 //! Lightweight audit logging for sensitive operations.
 
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::PathBuf;
 
 use chrono::Utc;
 use serde_json::{Value, json};
+
+use crate::utils::{flush_and_sync, open_append};
 
 /// Append an audit event to `~/.deepseek/audit.log`.
 ///
@@ -19,16 +20,22 @@ pub fn log_sensitive_event(event: &str, details: Value) {
 
 fn append_event(event: &str, details: Value) -> anyhow::Result<()> {
     let path = default_audit_path()?;
-    if let Some(parent) = path.parent() {
+    let parent = path.parent().map(|p| p.to_path_buf());
+    if let Some(ref parent) = parent {
         fs::create_dir_all(parent)?;
     }
-    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    // Open for append with a BufWriter for buffered I/O, then flush + fsync
+    // after each event so the record is durably on disk.
+    let mut writer = open_append(&path)?;
     let record = json!({
         "ts": Utc::now().to_rfc3339(),
         "event": event,
         "details": details,
     });
-    writeln!(file, "{}", serde_json::to_string(&record)?)?;
+    let line = serde_json::to_string(&record)?;
+    use std::io::Write;
+    writeln!(writer, "{line}")?;
+    flush_and_sync(&mut writer)?;
     Ok(())
 }
 

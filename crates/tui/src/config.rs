@@ -30,6 +30,7 @@ pub const DEFAULT_FIREWORKS_BASE_URL: &str = "https://api.fireworks.ai/inference
 pub const DEFAULT_SGLANG_MODEL: &str = "deepseek-ai/DeepSeek-V4-Pro";
 pub const DEFAULT_SGLANG_FLASH_MODEL: &str = "deepseek-ai/DeepSeek-V4-Flash";
 pub const DEFAULT_SGLANG_BASE_URL: &str = "http://localhost:30000/v1";
+pub const DEFAULT_DEEPSEEKCN_BASE_URL: &str = "https://api.deepseeki.com";
 const API_KEYRING_SENTINEL: &str = "__KEYRING__";
 pub const COMMON_DEEPSEEK_MODELS: &[&str] = &[
     "deepseek-v4-pro",
@@ -44,6 +45,7 @@ pub const COMMON_DEEPSEEK_MODELS: &[&str] = &[
 #[serde(rename_all = "snake_case")]
 pub enum ApiProvider {
     Deepseek,
+    DeepseekCN,
     NvidiaNim,
     Openrouter,
     Novita,
@@ -56,6 +58,9 @@ impl ApiProvider {
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "deepseek" | "deep-seek" => Some(Self::Deepseek),
+            "deepseek-cn" | "deepseek_china" | "deepseekcn" | "deepseek-china" => {
+                Some(Self::DeepseekCN)
+            }
             "nvidia" | "nvidia-nim" | "nvidia_nim" | "nim" => Some(Self::NvidiaNim),
             "openrouter" | "open_router" => Some(Self::Openrouter),
             "novita" => Some(Self::Novita),
@@ -69,6 +74,7 @@ impl ApiProvider {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Deepseek => "deepseek",
+            Self::DeepseekCN => "deepseek-cn",
             Self::NvidiaNim => "nvidia-nim",
             Self::Openrouter => "openrouter",
             Self::Novita => "novita",
@@ -82,6 +88,7 @@ impl ApiProvider {
     pub fn display_name(self) -> &'static str {
         match self {
             Self::Deepseek => "DeepSeek",
+            Self::DeepseekCN => "DeepSeek (中国)",
             Self::NvidiaNim => "NVIDIA NIM",
             Self::Openrouter => "OpenRouter",
             Self::Novita => "Novita AI",
@@ -95,6 +102,7 @@ impl ApiProvider {
     pub fn all() -> &'static [Self] {
         &[
             Self::Deepseek,
+            Self::DeepseekCN,
             Self::NvidiaNim,
             Self::Openrouter,
             Self::Novita,
@@ -232,8 +240,10 @@ pub fn provider_capability(provider: ApiProvider, resolved_model: &str) -> Provi
     let thinking_supported = is_v4_pro || is_v4_flash;
 
     // Cache telemetry: returned only by DeepSeek-native and NVIDIA NIM endpoints.
-    let cache_telemetry_supported =
-        matches!(provider, ApiProvider::Deepseek | ApiProvider::NvidiaNim);
+    let cache_telemetry_supported = matches!(
+        provider,
+        ApiProvider::Deepseek | ApiProvider::DeepseekCN | ApiProvider::NvidiaNim
+    );
 
     // Request payload mode: all current providers use chat completions.
     let request_payload_mode = RequestPayloadMode::ChatCompletions;
@@ -861,6 +871,8 @@ pub struct ProvidersConfig {
     #[serde(default)]
     pub deepseek: ProviderConfig,
     #[serde(default)]
+    pub deepseek_cn: ProviderConfig,
+    #[serde(default)]
     pub nvidia_nim: ProviderConfig,
     #[serde(default)]
     pub openrouter: ProviderConfig,
@@ -929,7 +941,7 @@ impl Config {
             && ApiProvider::parse(provider).is_none()
         {
             anyhow::bail!(
-                "Invalid provider '{provider}': expected deepseek, nvidia-nim, openrouter, novita, fireworks, or sglang."
+                "Invalid provider '{provider}': expected deepseek, deepseek-cn, nvidia-nim, openrouter, novita, fireworks, or sglang."
             );
         }
         if let Some(ref key) = self.api_key
@@ -1026,6 +1038,12 @@ impl Config {
                     .as_deref()
                     .filter(|base| base.contains("integrate.api.nvidia.com"))
                     .map(|_| ApiProvider::NvidiaNim)
+                    .or_else(|| {
+                        self.base_url
+                            .as_deref()
+                            .filter(|base| base.contains("api.deepseeki.com"))
+                            .map(|_| ApiProvider::DeepseekCN)
+                    })
                     .unwrap_or(ApiProvider::Deepseek)
             })
     }
@@ -1034,6 +1052,7 @@ impl Config {
         let providers = self.providers.as_ref()?;
         Some(match provider {
             ApiProvider::Deepseek => &providers.deepseek,
+            ApiProvider::DeepseekCN => &providers.deepseek_cn,
             ApiProvider::NvidiaNim => &providers.nvidia_nim,
             ApiProvider::Openrouter => &providers.openrouter,
             ApiProvider::Novita => &providers.novita,
@@ -1063,7 +1082,7 @@ impl Config {
         }
 
         match provider {
-            ApiProvider::Deepseek => DEFAULT_TEXT_MODEL,
+            ApiProvider::Deepseek | ApiProvider::DeepseekCN => DEFAULT_TEXT_MODEL,
             ApiProvider::NvidiaNim => DEFAULT_NVIDIA_NIM_MODEL,
             ApiProvider::Openrouter => DEFAULT_OPENROUTER_MODEL,
             ApiProvider::Novita => DEFAULT_NOVITA_MODEL,
@@ -1085,7 +1104,7 @@ impl Config {
         // were added in v0.6.7 and require explicit `[providers.<name>]`
         // entries or the corresponding `*_BASE_URL` env var.
         let root_base = match provider {
-            ApiProvider::Deepseek => self.base_url.clone(),
+            ApiProvider::Deepseek | ApiProvider::DeepseekCN => self.base_url.clone(),
             ApiProvider::NvidiaNim => self
                 .base_url
                 .as_ref()
@@ -1099,6 +1118,7 @@ impl Config {
         let base = provider_base.or(root_base).unwrap_or_else(|| {
             match provider {
                 ApiProvider::Deepseek => "https://api.deepseek.com",
+                ApiProvider::DeepseekCN => DEFAULT_DEEPSEEKCN_BASE_URL,
                 ApiProvider::NvidiaNim => DEFAULT_NVIDIA_NIM_BASE_URL,
                 ApiProvider::Openrouter => DEFAULT_OPENROUTER_BASE_URL,
                 ApiProvider::Novita => DEFAULT_NOVITA_BASE_URL,
@@ -1112,20 +1132,37 @@ impl Config {
 
     /// Read the API key.
     ///
-    /// Precedence: **OS keyring → environment → config file**. The
-    /// keyring + env layers are collapsed by [`deepseek_secrets::Secrets::resolve`];
-    /// the config-file fallback is preserved here for users who haven't
-    /// run `deepseek auth migrate` yet.
+    /// Precedence: **explicit in-memory override → OS keyring → environment
+    /// → provider-scoped config → legacy root config**. The keyring + env
+    /// layers are collapsed by [`deepseek_secrets::Secrets::resolve`].
+    ///
+    /// The in-memory `self.api_key` override takes priority over the
+    /// keyring so a fresh key entered via `/logout` + onboarding actually
+    /// takes effect even when an old key is still cached in the OS keyring
+    /// (#343). The override is only honored when the user *explicitly* set
+    /// the field (not the legacy `API_KEYRING_SENTINEL` placeholder, not
+    /// empty whitespace).
     pub fn deepseek_api_key(&self) -> Result<String> {
         let provider = self.api_provider();
         let slot = match provider {
-            ApiProvider::Deepseek => "deepseek",
+            ApiProvider::Deepseek | ApiProvider::DeepseekCN => "deepseek",
             ApiProvider::NvidiaNim => "nvidia-nim",
             ApiProvider::Openrouter => "openrouter",
             ApiProvider::Novita => "novita",
             ApiProvider::Fireworks => "fireworks",
             ApiProvider::Sglang => "sglang",
         };
+
+        // 0. Explicit in-memory override (set by onboarding / provider
+        //    picker). Wins over keyring + env so a freshly-entered key
+        //    takes effect immediately even if a stale credential lingers
+        //    in the OS keyring (#343).
+        if let Some(configured) = self.api_key.as_ref()
+            && !configured.trim().is_empty()
+            && configured != API_KEYRING_SENTINEL
+        {
+            return Ok(configured.clone());
+        }
 
         // 1. OS keyring + 2. environment variables (handled by Secrets).
         let secrets = deepseek_secrets::Secrets::auto_detect();
@@ -1148,19 +1185,8 @@ impl Config {
             return Ok(configured);
         }
 
-        // 4. legacy root `api_key` (deepseek only).
-        if let Some(configured) = self.api_key.clone()
-            && !configured.trim().is_empty()
-            && configured != API_KEYRING_SENTINEL
-        {
-            tracing::warn!(
-                "api_key in config.toml is deprecated; run 'deepseek auth migrate' to move it to the OS keyring"
-            );
-            return Ok(configured);
-        }
-
         match provider {
-            ApiProvider::Deepseek => anyhow::bail!(
+            ApiProvider::Deepseek | ApiProvider::DeepseekCN => anyhow::bail!(
                 "DeepSeek API key not found. Set it using one of these methods:\n\
                  1. Run 'deepseek auth set --provider deepseek' to save it in the OS keyring (recommended)\n\
                  2. Set DEEPSEEK_API_KEY environment variable\n\
@@ -1733,6 +1759,11 @@ fn normalize_model_config(config: &mut Config) {
         {
             providers.deepseek.model = Some(normalized);
         }
+        if let Some(model) = providers.deepseek_cn.model.as_deref()
+            && let Some(normalized) = normalize_model_for_provider(ApiProvider::DeepseekCN, model)
+        {
+            providers.deepseek_cn.model = Some(normalized);
+        }
         if let Some(model) = providers.nvidia_nim.model.as_deref()
             && let Some(normalized) = normalize_model_for_provider(ApiProvider::NvidiaNim, model)
         {
@@ -1905,6 +1936,7 @@ fn merge_providers(
         (None, Some(override_cfg)) => Some(override_cfg),
         (Some(base), Some(override_cfg)) => Some(ProvidersConfig {
             deepseek: merge_provider_config(base.deepseek, override_cfg.deepseek),
+            deepseek_cn: merge_provider_config(base.deepseek_cn, override_cfg.deepseek_cn),
             nvidia_nim: merge_provider_config(base.nvidia_nim, override_cfg.nvidia_nim),
             openrouter: merge_provider_config(base.openrouter, override_cfg.openrouter),
             novita: merge_provider_config(base.novita, override_cfg.novita),
@@ -2109,7 +2141,7 @@ pub fn has_api_key(config: &Config) -> bool {
 #[must_use]
 pub fn has_api_key_for(config: &Config, provider: ApiProvider) -> bool {
     let env_var = match provider {
-        ApiProvider::Deepseek => "DEEPSEEK_API_KEY",
+        ApiProvider::Deepseek | ApiProvider::DeepseekCN => "DEEPSEEK_API_KEY",
         ApiProvider::NvidiaNim => "NVIDIA_API_KEY",
         ApiProvider::Openrouter => "OPENROUTER_API_KEY",
         ApiProvider::Novita => "NOVITA_API_KEY",
@@ -2132,7 +2164,7 @@ pub fn has_api_key_for(config: &Config, provider: ApiProvider) -> bool {
 
     if let Some(providers) = config.providers.as_ref() {
         let entry = match provider {
-            ApiProvider::Deepseek => &providers.deepseek,
+            ApiProvider::Deepseek | ApiProvider::DeepseekCN => &providers.deepseek,
             ApiProvider::NvidiaNim => &providers.nvidia_nim,
             ApiProvider::Openrouter => &providers.openrouter,
             ApiProvider::Novita => &providers.novita,
@@ -2148,8 +2180,8 @@ pub fn has_api_key_for(config: &Config, provider: ApiProvider) -> bool {
         }
     }
 
-    // Legacy root field is DeepSeek-only.
-    matches!(provider, ApiProvider::Deepseek)
+    // Legacy root field is DeepSeek-only (both global and CN share it).
+    matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN)
         && config
             .api_key
             .as_ref()
@@ -2170,7 +2202,7 @@ pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf>
     ensure_parent_dir(&config_path)?;
 
     let table_name = match provider {
-        ApiProvider::Deepseek => unreachable!(),
+        ApiProvider::Deepseek | ApiProvider::DeepseekCN => unreachable!(),
         ApiProvider::NvidiaNim => "providers.nvidia_nim",
         ApiProvider::Openrouter => "providers.openrouter",
         ApiProvider::Novita => "providers.novita",
@@ -2197,7 +2229,7 @@ pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf>
         .as_table_mut()
         .context("`providers` must be a table.")?;
     let key_inside = match provider {
-        ApiProvider::Deepseek => unreachable!(),
+        ApiProvider::Deepseek | ApiProvider::DeepseekCN => unreachable!(),
         ApiProvider::NvidiaNim => "nvidia_nim",
         ApiProvider::Openrouter => "openrouter",
         ApiProvider::Novita => "novita",
@@ -2229,11 +2261,49 @@ pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf>
     Ok(config_path)
 }
 
-/// Clear the API key from the config file
+/// Clear the API key from every storage layer the resolver consults.
+///
+/// `/logout` calls this to wipe credentials so the next request can't
+/// silently use a stale key (#343). The function clears:
+///
+/// 1. **OS keyring** — every known provider slot (`deepseek`, `nvidia-nim`,
+///    `openrouter`, `novita`, `fireworks`, `sglang`). A leftover keyring
+///    entry would otherwise be returned by [`Config::deepseek_api_key`]
+///    even after the user enters a new key.
+/// 2. **Config file** — strips the legacy root `api_key = ...` line *and*
+///    every `api_key` line nested in a `[providers.<name>]` table.
+///
+/// Environment variables (`DEEPSEEK_API_KEY`, etc.) are intentionally
+/// **not** unset — they are managed by the user's shell and outside the
+/// CLI's purview. `Config::deepseek_api_key`'s explicit-override path
+/// (Path 0) ensures a freshly-entered key still wins over a stale env
+/// var that lingers from a previous session.
 pub fn clear_api_key() -> Result<()> {
-    // Don't clear keychain - we're not using it anymore
-    // Just clear from config file
+    // 1. Clear every known provider slot from the OS keyring (or
+    //    file-backed fallback). Errors are warned-and-continued because
+    //    a missing entry is a no-op and a transient keyring failure
+    //    shouldn't block the rest of the wipe.
+    let secrets = deepseek_secrets::Secrets::auto_detect();
+    let backend = secrets.backend_name();
+    for slot in &[
+        "deepseek",
+        "nvidia-nim",
+        "openrouter",
+        "novita",
+        "fireworks",
+        "sglang",
+    ] {
+        if let Err(err) = secrets.delete(slot) {
+            tracing::warn!("Failed to clear keyring slot '{slot}': {err}");
+        }
+    }
+    log_sensitive_event(
+        "credential.clear",
+        json!({ "backend": backend, "scope": "keyring_all_slots" }),
+    );
 
+    // 2. Strip api_key lines from config.toml, including provider-scoped
+    //    nested entries.
     let config_path = default_config_path()
         .context("Failed to resolve config path: home directory not found.")?;
 
@@ -2245,10 +2315,17 @@ pub fn clear_api_key() -> Result<()> {
     let mut result = String::new();
 
     for line in existing.lines() {
-        if !line.trim_start().starts_with("api_key") {
-            result.push_str(line);
-            result.push('\n');
+        // Match `api_key`, `api_key =`, `  api_key=`, etc. — anywhere it
+        // appears as the leading non-whitespace token.
+        let trimmed = line.trim_start();
+        if trimmed.strip_prefix("api_key").is_some_and(|rest| {
+            let rest = rest.trim_start();
+            rest.is_empty() || rest.starts_with('=')
+        }) {
+            continue;
         }
+        result.push_str(line);
+        result.push('\n');
     }
 
     fs::write(&config_path, result)
@@ -2258,6 +2335,7 @@ pub fn clear_api_key() -> Result<()> {
         json!({
             "backend": "config_file",
             "config_path": config_path.display().to_string(),
+            "scope": "root_and_provider_keys",
         }),
     );
 
@@ -2450,6 +2528,119 @@ mod tests {
 
         let contents = fs::read_to_string(&path)?;
         assert!(contents.contains("api_key = \""));
+        Ok(())
+    }
+
+    /// Regression for #343: clear_api_key strips both the root `api_key`
+    /// and any nested `[providers.<name>].api_key` lines from config.toml
+    /// so a stale credential can't shadow a fresh login.
+    #[test]
+    fn clear_api_key_strips_root_and_provider_scoped_keys() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-clear-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        let config_dir = temp_root.join(".deepseek");
+        fs::create_dir_all(&config_dir)?;
+        let config_path = config_dir.join("config.toml");
+        fs::write(
+            &config_path,
+            r#"api_key = "old-root-key"
+default_text_model = "deepseek-v4-flash"
+
+[providers.deepseek]
+api_key = "old-provider-key"
+base_url = "https://api.deepseek.com"
+
+[providers.openrouter]
+api_key = "old-openrouter-key"
+"#,
+        )?;
+
+        clear_api_key()?;
+
+        let after = fs::read_to_string(&config_path)?;
+        assert!(
+            !after.contains("old-root-key"),
+            "root api_key must be stripped: {after}"
+        );
+        assert!(
+            !after.contains("old-provider-key"),
+            "provider-scoped deepseek key must be stripped: {after}"
+        );
+        assert!(
+            !after.contains("old-openrouter-key"),
+            "provider-scoped openrouter key must be stripped: {after}"
+        );
+        // Non-credential lines must survive.
+        assert!(after.contains("default_text_model"));
+        assert!(after.contains("base_url"));
+        Ok(())
+    }
+
+    /// Regression for #343: explicit in-memory `api_key` (non-empty,
+    /// non-sentinel) wins over the keyring/env layer so a freshly-typed
+    /// onboarding key takes effect even if a stale credential lingers.
+    #[test]
+    fn deepseek_api_key_prefers_explicit_in_memory_override() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-override-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        let config = Config {
+            api_key: Some("freshly-typed-key".to_string()),
+            ..Config::default()
+        };
+        let resolved = config
+            .deepseek_api_key()
+            .expect("explicit override must resolve");
+        assert_eq!(resolved, "freshly-typed-key");
+        Ok(())
+    }
+
+    #[test]
+    fn deepseek_api_key_ignores_sentinel_placeholder() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-sentinel-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        let config = Config {
+            api_key: Some(API_KEYRING_SENTINEL.to_string()),
+            ..Config::default()
+        };
+        // Sentinel must not be treated as a real key — the resolver should
+        // fall through to keyring / env / config-provider and ultimately
+        // bail out with a "key not found" error.
+        let _err = config
+            .deepseek_api_key()
+            .expect_err("sentinel placeholder must not satisfy the API key check");
         Ok(())
     }
 

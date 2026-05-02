@@ -1,6 +1,7 @@
 //! Utility helpers shared across the `DeepSeek` CLI.
 
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::models::{ContentBlock, Message};
@@ -149,6 +150,121 @@ pub fn project_tree(root: &Path, max_depth: usize) -> String {
 
 // === Filesystem Helpers ===
 
+/// Atomically write `contents` to `path` using a temporary file + fsync + rename.
+///
+/// 1. Creates a `NamedTempFile` in the same directory as `path` (same filesystem).
+/// 2. Writes `contents` to the temp file.
+/// 3. Calls `sync_all()` on the temp file for durability.
+/// 4. Atomically renames (persists) the temp file over `path`.
+///
+/// On filesystems that support it (`ext4`, `apfs`, `ntfs`), the rename is
+/// atomic — a concurrent reader sees either the old content or the new, never
+/// a partial write. `sync_all` ensures the data is on stable storage before
+/// the metadata change so an OS crash mid-rename doesn't lose data.
+///
+/// # Errors
+/// Returns `io::Error` if the parent directory cannot be determined, the temp
+/// file cannot be created, the write fails, or the rename fails.
+pub fn write_atomic(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("path has no parent directory: {}", path.display()),
+        )
+    })?;
+    // Use parent directory so the rename is on the same filesystem.
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+    std::io::Write::write_all(&mut tmp, contents)?;
+    tmp.as_file().sync_all()?;
+    tmp.persist(path)?;
+    Ok(())
+}
+
+/// Open or create a file for appending at `path`, optionally syncing after
+/// every write. Use this for append-only logs like `audit.log`.
+///
+/// The returned `BufWriter<fs::File>` wraps the append handle. Call
+/// `.flush()` followed by `.get_ref().sync_all()` after each batch.
+pub fn open_append(path: &Path) -> std::io::Result<std::io::BufWriter<std::fs::File>> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    Ok(std::io::BufWriter::new(file))
+}
+
+/// Flush a `BufWriter` wrapping a `File`, then `fsync` the underlying file.
+pub fn flush_and_sync(writer: &mut std::io::BufWriter<std::fs::File>) -> std::io::Result<()> {
+    writer.flush()?;
+    writer.get_ref().sync_all()
+}
+
+/// Spawn a tokio task with panic supervision.
+///
+/// Wraps the future in `AssertUnwindSafe` + `catch_unwind`. On panic:
+/// 1. Logs the panic with the task name and caller location via `tracing::error!`.
+/// 2. Writes a crash dump to `~/.deepseek/crashes/<timestamp>-<name>.log`.
+///
+/// The returned `JoinHandle` resolves to `()` — the panic is caught and
+/// handled internally so the parent process stays alive.
+pub fn spawn_supervised<F>(
+    name: &'static str,
+    location: &'static std::panic::Location<'static>,
+    future: F,
+) -> tokio::task::JoinHandle<()>
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    tokio::spawn(async move {
+        use futures_util::FutureExt;
+        let result = std::panic::AssertUnwindSafe(future).catch_unwind().await;
+        if let Err(panic_info) = result {
+            let msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
+                s.to_string()
+            } else if let Some(s) = panic_info.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "unknown panic".to_string()
+            };
+            tracing::error!(
+                target: "panic",
+                "Task '{name}' panicked at {}: {msg}",
+                location,
+            );
+            // Write crash dump (best-effort)
+            let _ = write_panic_dump(name, location, &msg);
+        }
+    })
+}
+
+/// Write a panic dump file to `~/.deepseek/crashes/`.
+///
+/// Creates the directory if needed and writes a timestamped log
+/// with the task name, caller location, and panic message.
+/// Best-effort — failures are silently ignored.
+fn write_panic_dump(
+    name: &str,
+    location: &std::panic::Location<'_>,
+    message: &str,
+) -> std::io::Result<()> {
+    use chrono::Utc;
+    let home = dirs::home_dir().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "home directory not found")
+    })?;
+    let crash_dir = home.join(".deepseek").join("crashes");
+    std::fs::create_dir_all(&crash_dir)?;
+    let timestamp = Utc::now().format("%Y%m%dT%H%M%S%.3fZ");
+    let filename = format!("{timestamp}-{name}.log");
+    let path = crash_dir.join(&filename);
+    let contents =
+        format!("Task: {name}\nLocation: {location}\nTimestamp: {timestamp}\nPanic: {message}\n");
+    std::fs::write(&path, contents)?;
+    Ok(())
+}
+
 #[allow(dead_code)]
 pub fn ensure_dir(path: &Path) -> Result<()> {
     fs::create_dir_all(path)
@@ -225,6 +341,24 @@ pub fn display_path(path: &Path) -> String {
         return format!("~{sep}{}", rest.display());
     }
     path.display().to_string()
+}
+
+/// Check whether the system locale is Chinese (zh-*).
+///
+/// Reads `LC_ALL`, `LC_MESSAGES`, and `LANG` environment variables.
+/// Used by the first-run flow to suggest `DeepseekCN` as the default
+/// provider for users in China.
+#[must_use]
+pub fn is_chinese_system_locale() -> bool {
+    for key in ["LC_ALL", "LC_MESSAGES", "LANG"] {
+        if let Ok(value) = std::env::var(key) {
+            let normalized = value.split('.').next().unwrap_or(&value).replace('_', "-");
+            if normalized.to_ascii_lowercase().starts_with("zh") {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Estimate the total character count across message content blocks.
@@ -322,6 +456,140 @@ mod tests {
                 "/Users/alice2/work"
             );
         });
+    }
+}
+
+#[cfg(test)]
+mod atomic_write_tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn write_atomic_writes_content() {
+        let tmp = tempdir().expect("tempdir");
+        let path = tmp.path().join("test.json");
+        let content = b"hello atomic world";
+
+        write_atomic(&path, content).expect("write_atomic");
+        assert!(path.exists());
+        let read = fs::read_to_string(&path).expect("read");
+        assert_eq!(read.as_bytes(), content);
+    }
+
+    #[test]
+    fn write_atomic_replaces_existing_file() {
+        let tmp = tempdir().expect("tempdir");
+        let path = tmp.path().join("existing.json");
+        fs::write(&path, b"old content").expect("write old");
+        write_atomic(&path, b"new content").expect("write_atomic");
+        let read = fs::read_to_string(&path).expect("read");
+        assert_eq!(read, "new content");
+    }
+
+    #[test]
+    fn write_atomic_no_temp_left_behind_on_success() {
+        let tmp = tempdir().expect("tempdir");
+        let path = tmp.path().join("clean.json");
+        write_atomic(&path, b"clean").expect("write_atomic");
+        // List files in dir — there should be no .tmp files left
+        let entries: Vec<_> = fs::read_dir(tmp.path())
+            .expect("read_dir")
+            .filter_map(|e| e.ok())
+            .collect();
+        let tmp_files: Vec<_> = entries
+            .iter()
+            .filter(|e| e.file_name().to_str().is_some_and(|n| n.starts_with('.')))
+            .collect();
+        assert!(
+            tmp_files.is_empty(),
+            "temp files left behind: {tmp_files:?}"
+        );
+    }
+
+    #[test]
+    fn flush_and_sync_writes_and_syncs() {
+        let tmp = tempdir().expect("tempdir");
+        let path = tmp.path().join("append.log");
+        {
+            let mut writer = open_append(&path).expect("open_append");
+            writeln!(writer, "line 1").expect("write");
+            flush_and_sync(&mut writer).expect("flush_and_sync");
+            writeln!(writer, "line 2").expect("write");
+            flush_and_sync(&mut writer).expect("flush_and_sync");
+        }
+        let content = fs::read_to_string(&path).expect("read");
+        assert_eq!(content, "line 1\nline 2\n");
+    }
+}
+
+#[cfg(test)]
+mod spawn_supervised_tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// A spawned task that panics produces a crash dump in
+    /// `~/.deepseek/crashes/` and the panic does not propagate to the
+    /// parent task — `spawn_supervised` catches it.
+    #[tokio::test]
+    async fn panicking_task_writes_crash_dump_and_does_not_kill_parent() {
+        // Redirect HOME so we don't pollute the real ~/.deepseek/crashes/.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let prev_home = std::env::var_os("HOME");
+        // SAFETY: tests in this crate run with single-threaded env mutation
+        // by harness convention; we restore on exit.
+        unsafe { std::env::set_var("HOME", tmp.path()) };
+
+        // Spawn a task that immediately panics.
+        let parent_alive = Arc::new(AtomicBool::new(false));
+        let parent_alive_clone = parent_alive.clone();
+
+        let handle = spawn_supervised(
+            "panic-test-fixture",
+            std::panic::Location::caller(),
+            async move {
+                parent_alive_clone.store(true, Ordering::SeqCst);
+                panic!("deliberate panic for crash-dump test");
+            },
+        );
+
+        // The handle resolves to () because spawn_supervised swallows the
+        // panic. Awaiting must not return Err — the caller must not see
+        // the panic.
+        let result = handle.await;
+
+        // Restore HOME before any assertions can panic.
+        match prev_home {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+
+        assert!(
+            result.is_ok(),
+            "spawn_supervised must convert panic to a normal completion"
+        );
+        assert!(
+            parent_alive.load(Ordering::SeqCst),
+            "fixture task must have run before panicking"
+        );
+
+        // A crash dump file must exist under <HOME>/.deepseek/crashes/.
+        let crash_dir = tmp.path().join(".deepseek").join("crashes");
+        let entries: Vec<_> = std::fs::read_dir(&crash_dir)
+            .expect("crashes dir exists")
+            .flatten()
+            .collect();
+        assert_eq!(entries.len(), 1, "exactly one crash dump expected");
+        let dump = std::fs::read_to_string(entries[0].path()).expect("read dump");
+        assert!(
+            dump.contains("panic-test-fixture"),
+            "dump must include the task name; got: {dump}"
+        );
+        assert!(
+            dump.contains("deliberate panic for crash-dump test"),
+            "dump must include the panic message; got: {dump}"
+        );
     }
 }
 

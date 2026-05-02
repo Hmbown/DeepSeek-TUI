@@ -273,9 +273,10 @@ impl Settings {
     }
 
     /// Get all settings as a displayable string
-    pub fn display(&self) -> String {
+    pub fn display(&self, locale: crate::localization::Locale) -> String {
+        use crate::localization::{MessageId, tr};
         let mut lines = Vec::new();
-        lines.push("Settings:".to_string());
+        lines.push(tr(locale, MessageId::SettingsTitle).to_string());
         lines.push("─────────────────────────────".to_string());
         lines.push(format!("  auto_compact:       {}", self.auto_compact));
         lines.push(format!("  calm_mode:          {}", self.calm_mode));
@@ -305,7 +306,8 @@ impl Settings {
         ));
         lines.push(String::new());
         lines.push(format!(
-            "Config file: {}",
+            "{} {}",
+            tr(locale, MessageId::SettingsConfigFile),
             Self::path().map_or_else(|_| "(unknown)".to_string(), |p| p.display().to_string())
         ));
         lines.join("\n")
@@ -467,5 +469,23 @@ mod tests {
             .set("locale", "ar")
             .expect_err("Arabic is planned, not shipped");
         assert!(err.to_string().contains("invalid locale"));
+    }
+
+    #[test]
+    fn display_localizes_header_and_config_file_label() {
+        let settings = Settings::default();
+        let en = settings.display(crate::localization::Locale::En);
+        assert!(en.contains("Settings:"), "english header missing:\n{en}");
+        assert!(
+            en.contains("Config file:"),
+            "english config label missing:\n{en}"
+        );
+
+        let zh = settings.display(crate::localization::Locale::ZhHans);
+        assert!(zh.contains("设置"), "chinese header missing:\n{zh}");
+        assert!(
+            zh.contains("配置文件"),
+            "chinese config label missing:\n{zh}"
+        );
     }
 }

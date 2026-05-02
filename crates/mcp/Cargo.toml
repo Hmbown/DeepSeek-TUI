@@ -8,6 +8,5 @@ description = "MCP server lifecycle and tool proxy compatibility for DeepSeek wo
 
 [dependencies]
 anyhow.workspace = true
-deepseek-protocol = { path = "../protocol", version = "0.8.4" }
 serde.workspace = true
 serde_json.workspace = true

@@ -25,7 +25,6 @@ use crate::tools::plan::{SharedPlanState, new_shared_plan_state};
 use crate::tools::shell::new_shared_shell_manager;
 use crate::tools::spec::RuntimeToolServices;
 use crate::tools::subagent::SubAgentResult;
-use crate::tools::swarm::SwarmOutcome;
 use crate::tools::todo::{SharedTodoList, new_shared_todo_list};
 use crate::tui::active_cell::ActiveCell;
 use crate::tui::approval::ApprovalMode;
@@ -38,6 +37,7 @@ use crate::tui::selection::TranscriptSelection;
 use crate::tui::streaming::StreamingState;
 use crate::tui::transcript::TranscriptViewCache;
 use crate::tui::views::ViewStack;
+use crate::utils::is_chinese_system_locale;
 
 // === Types ===
 
@@ -284,6 +284,12 @@ impl ComposerHistorySearch {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InputHistoryDraft {
+    input: String,
+    cursor: usize,
+}
+
 fn char_count(text: &str) -> usize {
     text.chars().count()
 }
@@ -477,6 +483,7 @@ pub struct App {
     pub input_history: Vec<String>,
     pub draft_history: VecDeque<String>,
     pub history_index: Option<usize>,
+    history_navigation_draft: Option<InputHistoryDraft>,
     pub composer_history_search: Option<ComposerHistorySearch>,
     pub selected_attachment_index: Option<usize>,
     pub auto_compact: bool,
@@ -520,31 +527,16 @@ pub struct App {
     /// than spawning duplicates.
     pub subagent_card_index: HashMap<String, usize>,
     /// History index of the most recent FanoutCard. Sibling sub-agents
-    /// spawned by the same `agent_swarm` / `rlm` invocation route into
-    /// this card; reset when a fresh fanout-family tool call starts.
+    /// spawned by the same `rlm` invocation route into this card; reset
+    /// when a fresh fanout-family tool call starts.
     pub last_fanout_card_index: Option<usize>,
-    /// Number of tasks declared by a pending `agent_swarm` invocation that
-    /// hasn't yet received its first SwarmProgress event. Used by the
-    /// sidebar to show "dispatching N" before the FanoutCard exists (#236/#238).
-    /// Cleared once sync_fanout_card_from_swarm_outcome creates the card.
-    pub pending_swarm_task_count: Option<usize>,
-    /// Canonical swarm/job snapshots by swarm id. Transcript cards, sidebar
-    /// counts, and footer status read from this model instead of recomputing
-    /// worker totals independently.
-    pub swarm_jobs: HashMap<String, SwarmOutcome>,
-    pub last_swarm_id: Option<String>,
-    /// Swarm-id → history index for the FanoutCard that visualises that
-    /// swarm. Bound on first sight of a SwarmProgress event, so background
-    /// swarms keep updating their *own* card even when the user starts a
-    /// second fanout in parallel. Pruned by `prune_history_state_after_clear`.
-    pub swarm_card_index: HashMap<String, usize>,
     /// Highest cumulative session cost ever displayed. Used to keep the
     /// footer cost monotonic across reconciliation events: provisional
     /// estimates can be revised, but the visible total never decreases
     /// during a single session unless explicitly reset (#244).
     pub displayed_cost_high_water: f64,
     /// Most recently observed sub-agent dispatch tool name (set on
-    /// `ToolCallStarted` for `agent_spawn` / `agent_swarm` / etc., cleared
+    /// `ToolCallStarted` for `agent_spawn` / `rlm` / etc., cleared
     /// after the first `Started` mailbox envelope routes through it).
     pub pending_subagent_dispatch: Option<String>,
     /// Animation anchor for status-strip active sub-agent spinner.
@@ -564,6 +556,12 @@ pub struct App {
     pub clipboard: ClipboardHandler,
     // Tool approval session allowlist
     pub approval_session_approved: HashSet<String>,
+    /// Approval keys (or tool names) the user has denied or aborted in
+    /// this session. Subsequent re-requests for the same approval key
+    /// auto-deny without re-prompting (#360) — the model can retry a
+    /// dangerous command after being told no, but the user shouldn't
+    /// have to keep dismissing the same dialog.
+    pub approval_session_denied: HashSet<String>,
     pub approval_mode: ApprovalMode,
     // Modal view stack (approval/help/etc.)
     pub view_stack: ViewStack,
@@ -856,6 +854,21 @@ impl App {
             yolo,
             resume_session_id: _,
         } = options;
+
+        // If no provider is explicitly configured AND the system locale
+        // indicates Chinese (zh-*), suggest DeepseekCN (api.deepseeki.com)
+        // as the appropriate default.
+        let provider = if config.provider.is_none() && is_chinese_system_locale() {
+            let cn_base_url = crate::config::DEFAULT_DEEPSEEKCN_BASE_URL.to_string();
+            // Store the suggested base URL in config so the first API call
+            // uses the CN endpoint. We mutate a clone to avoid writing.
+            let mut config = config.clone();
+            config.base_url = Some(cn_base_url);
+            config.api_provider()
+        } else {
+            config.api_provider()
+        };
+
         // Check if API key exists
         let needs_api_key = !has_api_key(config);
         let was_onboarded = crate::tui::onboarding::is_onboarded();
@@ -947,7 +960,7 @@ impl App {
             sticky_status: None,
             last_status_message_seen: None,
             model,
-            api_provider: config.api_provider(),
+            api_provider: provider,
             reasoning_effort: config
                 .reasoning_effort()
                 .map_or_else(ReasoningEffort::default, |s| {
@@ -961,9 +974,10 @@ impl App {
             use_bracketed_paste,
             use_paste_burst_detection,
             system_prompt: None,
-            input_history: Vec::new(),
+            input_history: crate::composer_history::load_history(),
             draft_history: VecDeque::new(),
             history_index: None,
+            history_navigation_draft: None,
             composer_history_search: None,
             selected_attachment_index: None,
             auto_compact,
@@ -992,10 +1006,6 @@ impl App {
             agent_progress: HashMap::new(),
             subagent_card_index: HashMap::new(),
             last_fanout_card_index: None,
-            pending_swarm_task_count: None,
-            swarm_jobs: HashMap::new(),
-            last_swarm_id: None,
-            swarm_card_index: HashMap::new(),
             displayed_cost_high_water: 0.0,
             pending_subagent_dispatch: None,
             agent_activity_started_at: None,
@@ -1017,6 +1027,7 @@ impl App {
             yolo_restore,
             clipboard: ClipboardHandler::new(),
             approval_session_approved: HashSet::new(),
+            approval_session_denied: HashSet::new(),
             approval_mode: if matches!(initial_mode, AppMode::Yolo) {
                 ApprovalMode::Auto
             } else {
@@ -1399,7 +1410,6 @@ impl App {
             .retain(|idx, _| *idx < new_len);
         self.rebuild_session_context_references();
         self.subagent_card_index.retain(|_, idx| *idx < new_len);
-        self.swarm_card_index.retain(|_, idx| *idx < new_len);
         if self
             .last_fanout_card_index
             .is_some_and(|idx| idx >= new_len)
@@ -2163,6 +2173,7 @@ impl App {
     }
 
     pub fn insert_char(&mut self, c: char) {
+        self.clear_input_history_navigation();
         self.selected_attachment_index = None;
         let cursor = self.cursor_position.min(char_count(&self.input));
         let byte_index = byte_index_at_char(&self.input, cursor);
@@ -2175,6 +2186,7 @@ impl App {
     }
 
     pub fn delete_char(&mut self) {
+        self.clear_input_history_navigation();
         self.selected_attachment_index = None;
         if self.cursor_position == 0 {
             return;
@@ -2191,6 +2203,7 @@ impl App {
     }
 
     pub fn delete_char_forward(&mut self) {
+        self.clear_input_history_navigation();
         self.selected_attachment_index = None;
         if self.input.is_empty() {
             return;
@@ -2213,6 +2226,7 @@ impl App {
     ///
     /// Returns `true` when bytes were moved into the kill buffer.
     pub fn kill_to_end_of_line(&mut self) -> bool {
+        self.clear_input_history_navigation();
         let total_chars = char_count(&self.input);
         let cursor = self.cursor_position.min(total_chars);
         let start_byte = byte_index_at_char(&self.input, cursor);
@@ -2258,6 +2272,7 @@ impl App {
         if self.kill_buffer.is_empty() {
             return false;
         }
+        self.clear_input_history_navigation();
         let text = self.kill_buffer.clone();
         let cursor = self.cursor_position.min(char_count(&self.input));
         let byte_index = byte_index_at_char(&self.input, cursor);
@@ -2293,6 +2308,7 @@ impl App {
     }
 
     pub fn clear_input(&mut self) {
+        self.clear_input_history_navigation();
         self.input.clear();
         self.cursor_position = 0;
         self.selected_attachment_index = None;
@@ -2515,8 +2531,13 @@ impl App {
                 let excess = self.input_history.len() - self.max_input_history;
                 self.input_history.drain(0..excess);
             }
+            // Mirror to the persisted cross-session history (#366) so
+            // arrow-up recall works across restarts. Best-effort write —
+            // see `composer_history::append_history` for failure modes.
+            crate::composer_history::append_history(&input);
         }
         self.history_index = None;
+        self.history_navigation_draft = None;
         self.clear_input();
         Some(input)
     }
@@ -2632,6 +2653,12 @@ impl App {
         if self.input_history.is_empty() {
             return;
         }
+        if self.history_index.is_none() {
+            self.history_navigation_draft = Some(InputHistoryDraft {
+                input: self.input.clone(),
+                cursor: self.cursor_position,
+            });
+        }
         let new_index = match self.history_index {
             None => self.input_history.len().saturating_sub(1),
             Some(i) => i.saturating_sub(1),
@@ -2660,10 +2687,24 @@ impl App {
                     self.paste_burst.clear_after_explicit_paste();
                 } else {
                     self.history_index = None;
-                    self.clear_input();
+                    if let Some(draft) = self.history_navigation_draft.take() {
+                        self.input = draft.input;
+                        self.cursor_position = draft.cursor.min(char_count(&self.input));
+                        self.selected_attachment_index = None;
+                        self.slash_menu_hidden = false;
+                        self.paste_burst.clear_after_explicit_paste();
+                        self.needs_redraw = true;
+                    } else {
+                        self.clear_input();
+                    }
                 }
             }
         }
+    }
+
+    fn clear_input_history_navigation(&mut self) {
+        self.history_index = None;
+        self.history_navigation_draft = None;
     }
 
     pub fn clear_todos(&mut self) -> bool {
@@ -3097,6 +3138,51 @@ mod tests {
 
         // Navigate down
         app.history_down();
+    }
+
+    #[test]
+    fn input_history_down_restores_live_draft_after_accidental_up() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input_history.push("previous prompt".to_string());
+        app.input = "careful current draft".to_string();
+        app.cursor_position = "careful".chars().count();
+
+        app.history_up();
+        assert_eq!(app.input, "previous prompt");
+
+        app.history_down();
+        assert_eq!(app.input, "careful current draft");
+        assert_eq!(app.cursor_position, "careful".chars().count());
+        assert!(app.history_index.is_none());
+    }
+
+    #[test]
+    fn input_history_restores_empty_draft_at_end_of_navigation() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input_history.push("previous prompt".to_string());
+
+        app.history_up();
+        assert_eq!(app.input, "previous prompt");
+
+        app.history_down();
+        assert!(app.input.is_empty());
+        assert_eq!(app.cursor_position, 0);
+        assert!(app.history_index.is_none());
+    }
+
+    #[test]
+    fn editing_history_entry_leaves_navigation_mode() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input_history.push("previous prompt".to_string());
+        app.input = "current draft".to_string();
+        app.cursor_position = app.input.chars().count();
+
+        app.history_up();
+        app.insert_char('!');
+        app.history_down();
+
+        assert_eq!(app.input, "previous prompt!");
+        assert!(app.history_index.is_none());
     }
 
     #[test]

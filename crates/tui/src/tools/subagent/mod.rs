@@ -4,17 +4,15 @@
 //! and retrieve results. Sub-agents run with a filtered toolset and
 //! inherit the workspace configuration from the main session.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::Mutex;
 
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
-use futures_util::stream::{FuturesUnordered, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::{sync::mpsc, task::JoinHandle};
@@ -33,6 +31,7 @@ use crate::tools::spec::{
     optional_bool, optional_u64, required_str,
 };
 use crate::tools::todo::{SharedTodoList, TodoList};
+use crate::utils::spawn_supervised;
 
 pub mod mailbox;
 #[allow(unused_imports)]
@@ -54,9 +53,6 @@ const COMPLETED_AGENT_RETENTION: Duration = Duration::from_secs(60 * 60);
 const SUBAGENT_STATE_SCHEMA_VERSION: u32 = 1;
 const SUBAGENT_STATE_FILE: &str = "subagents.v1.json";
 const SUBAGENT_RESTART_REASON: &str = "Interrupted by process restart";
-const DEFAULT_CSV_MAX_CONCURRENCY: u64 = 16;
-const DEFAULT_CSV_MAX_RUNTIME_SECONDS: u64 = 1800;
-const MAX_CSV_MAX_RUNTIME_SECONDS: u64 = 86_400;
 
 const VALID_SUBAGENT_TYPES: &str =
     "general, explore, plan, review, custom, worker, explorer, awaiter, default";
@@ -89,11 +85,6 @@ pub const WHALE_NICKNAMES: &[&str] = &[
 
 /// Removal version for deprecated tool aliases.
 const DEPRECATION_REMOVAL_VERSION: &str = "0.8.0";
-
-static AGENT_JOB_REPORTS: OnceLock<StdMutex<HashMap<String, HashMap<String, AgentJobReport>>>> =
-    OnceLock::new();
-static AGENT_JOB_ASSIGNMENTS: OnceLock<StdMutex<HashMap<String, HashMap<String, String>>>> =
-    OnceLock::new();
 
 #[must_use]
 pub fn whale_nickname_for_index(index: usize) -> String {
@@ -266,7 +257,6 @@ impl SubAgentType {
                 "todo_update",
                 "todo_list",
                 "update_plan",
-                "report_agent_job_result",
             ],
             Self::Explore => vec![
                 "list_dir",
@@ -397,48 +387,6 @@ struct AssignRequest {
     role: Option<String>,
     message: Option<String>,
     interrupt: bool,
-}
-
-#[derive(Debug, Clone)]
-struct CsvRowTask {
-    row_index: usize,
-    item_id: String,
-    values: HashMap<String, String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct CsvWorkerOutcome {
-    #[serde(skip_serializing)]
-    row_index: usize,
-    item_id: String,
-    status: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    agent_id: Option<String>,
-    duration_ms: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    result: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    result_json: Option<Value>,
-}
-
-#[derive(Debug, Clone)]
-struct AgentJobReport {
-    result: Value,
-    stop: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct SpawnAgentsOnCsvSummary {
-    job_id: String,
-    total: usize,
-    completed: usize,
-    failed: usize,
-    timed_out: usize,
-    skipped: usize,
-    output_csv_path: String,
-    results: Vec<CsvWorkerOutcome>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -832,18 +780,6 @@ impl SubAgentManager {
             .count()
     }
 
-    /// Return the maximum number of allowed agents.
-    #[must_use]
-    pub fn max_agents(&self) -> usize {
-        self.max_agents
-    }
-
-    /// Return remaining capacity for new agents.
-    #[must_use]
-    pub fn available_slots(&self) -> usize {
-        self.max_agents.saturating_sub(self.running_count())
-    }
-
     /// Spawn a new background sub-agent.
     pub fn spawn_background(
         &mut self,
@@ -948,7 +884,11 @@ impl SubAgentManager {
             max_steps,
             input_rx,
         };
-        let handle = tokio::spawn(run_subagent_task(task));
+        let handle = spawn_supervised(
+            "subagent-task",
+            std::panic::Location::caller(),
+            run_subagent_task(task),
+        );
         agent.task_handle = Some(handle);
         self.agents.insert(agent_id.clone(), agent);
         self.persist_state_best_effort();
@@ -1048,7 +988,11 @@ impl SubAgentManager {
                 max_steps: self.max_steps,
                 input_rx,
             };
-            let handle = tokio::spawn(run_subagent_task(task));
+            let handle = spawn_supervised(
+                "subagent-task-resume",
+                std::panic::Location::caller(),
+                run_subagent_task(task),
+            );
 
             agent.status = SubAgentStatus::Running;
             agent.result = None;
@@ -2280,326 +2224,6 @@ impl ToolSpec for DelegateToAgentTool {
     }
 }
 
-/// Tool to process CSV rows by spawning one worker sub-agent per row.
-pub struct SpawnAgentsOnCsvTool {
-    manager: SharedSubAgentManager,
-    runtime: SubAgentRuntime,
-}
-
-struct AgentJobReportCleanup {
-    job_id: String,
-}
-
-impl AgentJobReportCleanup {
-    fn new(job_id: String) -> Self {
-        clear_agent_job_results(&job_id);
-        Self { job_id }
-    }
-}
-
-impl Drop for AgentJobReportCleanup {
-    fn drop(&mut self) {
-        clear_agent_job_results(&self.job_id);
-    }
-}
-
-impl SpawnAgentsOnCsvTool {
-    /// Create a new CSV batch orchestration tool.
-    #[must_use]
-    pub fn new(manager: SharedSubAgentManager, runtime: SubAgentRuntime) -> Self {
-        Self { manager, runtime }
-    }
-}
-
-#[async_trait]
-impl ToolSpec for SpawnAgentsOnCsvTool {
-    fn name(&self) -> &'static str {
-        "spawn_agents_on_csv"
-    }
-
-    fn description(&self) -> &'static str {
-        "Process a CSV by spawning one worker sub-agent per row. The instruction string is a template where `{column}` placeholders are replaced with row values. Each worker must call `report_agent_job_result` with a JSON object (matching `output_schema` when provided); missing reports are treated as failures. This call blocks until all rows finish and automatically exports results to `output_csv_path` (or a default path)."
-    }
-
-    fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "csv_path": {
-                    "type": "string",
-                    "description": "Path to the input CSV file"
-                },
-                "instruction": {
-                    "type": "string",
-                    "description": "Instruction template. Use {column_name} placeholders for row values."
-                },
-                "id_column": {
-                    "type": "string",
-                    "description": "Optional CSV column name used as stable item id"
-                },
-                "max_concurrency": {
-                    "type": "integer",
-                    "description": "Maximum concurrent workers (default: 16)"
-                },
-                "max_workers": {
-                    "type": "integer",
-                    "description": "Alias for max_concurrency"
-                },
-                "max_runtime_seconds": {
-                    "type": "integer",
-                    "description": "Per-worker timeout in seconds (default: 1800)"
-                },
-                "output_csv_path": {
-                    "type": "string",
-                    "description": "Optional output CSV path for worker results"
-                },
-                "output_schema": {
-                    "type": "object",
-                    "description": "Optional JSON schema-like object used to validate worker JSON output"
-                }
-            },
-            "required": ["csv_path", "instruction"]
-        })
-    }
-
-    fn capabilities(&self) -> Vec<ToolCapability> {
-        vec![
-            ToolCapability::ExecutesCode,
-            ToolCapability::RequiresApproval,
-        ]
-    }
-
-    fn approval_requirement(&self) -> ApprovalRequirement {
-        ApprovalRequirement::Required
-    }
-
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let csv_path_raw = required_str(&input, "csv_path")?;
-        let csv_path = context.resolve_path(csv_path_raw)?;
-        let instruction_template = required_str(&input, "instruction")?;
-        if instruction_template.trim().is_empty() {
-            return Err(ToolError::invalid_input(
-                "instruction cannot be empty".to_string(),
-            ));
-        }
-
-        let id_column = optional_input_str(&input, &["id_column"]).map(str::to_string);
-        let rows = load_csv_rows(&csv_path, id_column.as_deref())?;
-        if rows.is_empty() {
-            return Err(ToolError::invalid_input(format!(
-                "CSV '{}' has no data rows",
-                csv_path.display()
-            )));
-        }
-
-        let output_schema = input.get("output_schema").cloned();
-        let output_csv_path = resolve_results_csv_path(context, &input, &csv_path)?;
-        let max_runtime_seconds = optional_u64(
-            &input,
-            "max_runtime_seconds",
-            DEFAULT_CSV_MAX_RUNTIME_SECONDS,
-        )
-        .clamp(1, MAX_CSV_MAX_RUNTIME_SECONDS);
-        let requested_concurrency = parse_csv_concurrency(&input);
-
-        let max_agents = {
-            let manager = self.manager.lock().await;
-            manager.max_agents().max(1)
-        };
-        let max_concurrency = requested_concurrency.clamp(1, max_agents as u64) as usize;
-
-        let semaphore = Arc::new(Semaphore::new(max_concurrency));
-        let timeout = Duration::from_secs(max_runtime_seconds);
-        let job_id = format!("job_{}", &Uuid::new_v4().to_string()[..8]);
-        let _cleanup = AgentJobReportCleanup::new(job_id.clone());
-        let stop_requested = Arc::new(AtomicBool::new(false));
-        let mut workers = FuturesUnordered::new();
-
-        for row in rows {
-            let permit = semaphore
-                .clone()
-                .acquire_owned()
-                .await
-                .map_err(|_| ToolError::execution_failed("Worker semaphore closed"))?;
-            let manager = self.manager.clone();
-            let runtime = self.runtime.clone();
-            let template = instruction_template.to_string();
-            let schema = output_schema.clone();
-            let job_id = job_id.clone();
-            let stop_requested = stop_requested.clone();
-
-            workers.push(tokio::spawn(async move {
-                let _permit = permit;
-                run_csv_row_agent(
-                    manager,
-                    runtime,
-                    &job_id,
-                    row,
-                    &template,
-                    timeout,
-                    schema,
-                    stop_requested,
-                )
-                .await
-            }));
-        }
-
-        let mut outcomes = Vec::new();
-        while let Some(joined) = workers.next().await {
-            match joined {
-                Ok(outcome) => outcomes.push(outcome),
-                Err(err) => outcomes.push(CsvWorkerOutcome {
-                    row_index: usize::MAX,
-                    item_id: "worker_join".to_string(),
-                    status: "failed".to_string(),
-                    agent_id: None,
-                    duration_ms: 0,
-                    error: Some(format!("Worker task failed to join: {err}")),
-                    result: None,
-                    result_json: None,
-                }),
-            }
-        }
-
-        outcomes.sort_by_key(|outcome| outcome.row_index);
-
-        write_csv_worker_outcomes(&output_csv_path, &outcomes).map_err(|err| {
-            ToolError::execution_failed(format!("Failed to write output CSV: {err}"))
-        })?;
-
-        let completed = outcomes
-            .iter()
-            .filter(|outcome| outcome.status == "completed")
-            .count();
-        let skipped = outcomes
-            .iter()
-            .filter(|outcome| outcome.status == "skipped")
-            .count();
-        let timed_out = outcomes
-            .iter()
-            .filter(|outcome| outcome.status == "timed_out")
-            .count();
-        let failed = outcomes
-            .iter()
-            .filter(|outcome| outcome.status == "failed")
-            .count()
-            + timed_out;
-
-        let summary = SpawnAgentsOnCsvSummary {
-            job_id,
-            total: outcomes.len(),
-            completed,
-            failed,
-            timed_out,
-            skipped,
-            output_csv_path: output_csv_path.display().to_string(),
-            results: outcomes,
-        };
-        let status = if summary.failed > 0 {
-            if summary.completed == 0 && summary.skipped == 0 {
-                "Failed"
-            } else {
-                "Partial"
-            }
-        } else if stop_requested.load(Ordering::Relaxed) || summary.skipped > 0 {
-            "Cancelled"
-        } else {
-            "Completed"
-        };
-        let mut result =
-            ToolResult::json(&summary).map_err(|e| ToolError::execution_failed(e.to_string()))?;
-        result.metadata = Some(json!({
-            "status": status,
-            "job_id": summary.job_id,
-            "completed": summary.completed,
-            "failed": summary.failed,
-            "timed_out": summary.timed_out,
-            "skipped": summary.skipped,
-            "stop_requested": stop_requested.load(Ordering::Relaxed),
-            "output_csv_path": summary.output_csv_path,
-        }));
-        Ok(result)
-    }
-}
-
-/// Worker-oriented tool to report structured row outcomes for CSV agent jobs.
-pub struct ReportAgentJobResultTool;
-
-#[async_trait]
-impl ToolSpec for ReportAgentJobResultTool {
-    fn name(&self) -> &'static str {
-        "report_agent_job_result"
-    }
-
-    fn description(&self) -> &'static str {
-        "Worker-only tool to report a structured result for a spawn_agents_on_csv row."
-    }
-
-    fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "job_id": {
-                    "type": "string",
-                    "description": "Identifier of the CSV job"
-                },
-                "item_id": {
-                    "type": "string",
-                    "description": "Identifier of the CSV row item"
-                },
-                "result": {
-                    "type": "object",
-                    "description": "Structured JSON result to record for the row"
-                },
-                "stop": {
-                    "type": "boolean",
-                    "description": "Optional. When true, cancels remaining unstarted CSV rows for this job."
-                }
-            },
-            "required": ["job_id", "item_id", "result"]
-        })
-    }
-
-    fn capabilities(&self) -> Vec<ToolCapability> {
-        vec![]
-    }
-
-    async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let job_id = required_str(&input, "job_id")?.trim();
-        let item_id = required_str(&input, "item_id")?.trim();
-        if job_id.is_empty() {
-            return Err(ToolError::invalid_input("job_id cannot be empty"));
-        }
-        if item_id.is_empty() {
-            return Err(ToolError::invalid_input("item_id cannot be empty"));
-        }
-        let result = input
-            .get("result")
-            .cloned()
-            .ok_or_else(|| ToolError::missing_field("result"))?;
-        if !result.is_object() {
-            return Err(ToolError::invalid_input("result must be a JSON object"));
-        }
-        let reporting_agent_id = input
-            .get("__reporting_agent_id")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        let stop = optional_bool(&input, "stop", false);
-        let accepted =
-            record_agent_job_result(job_id, item_id, result.clone(), stop, reporting_agent_id);
-
-        let payload = json!({
-            "job_id": job_id,
-            "item_id": item_id,
-            "accepted": accepted,
-            "stop": stop,
-            "result": result
-        });
-        ToolResult::json(&payload).map_err(|e| ToolError::execution_failed(e.to_string()))
-    }
-}
-
 // === Sub-agent Execution ===
 
 /// Build the system prompt for a sub-agent.
@@ -3419,563 +3043,6 @@ fn parse_assign_request(input: &Value) -> Result<AssignRequest, ToolError> {
     })
 }
 
-fn parse_csv_concurrency(input: &Value) -> u64 {
-    if input.get("max_concurrency").is_some() {
-        return optional_u64(input, "max_concurrency", DEFAULT_CSV_MAX_CONCURRENCY).max(1);
-    }
-    if input.get("max_workers").is_some() {
-        return optional_u64(input, "max_workers", DEFAULT_CSV_MAX_CONCURRENCY).max(1);
-    }
-    DEFAULT_CSV_MAX_CONCURRENCY
-}
-
-fn agent_job_reports_store() -> &'static StdMutex<HashMap<String, HashMap<String, AgentJobReport>>>
-{
-    AGENT_JOB_REPORTS.get_or_init(|| StdMutex::new(HashMap::new()))
-}
-
-fn agent_job_assignments_store() -> &'static StdMutex<HashMap<String, HashMap<String, String>>> {
-    AGENT_JOB_ASSIGNMENTS.get_or_init(|| StdMutex::new(HashMap::new()))
-}
-
-fn record_agent_job_assignment(job_id: &str, item_id: &str, agent_id: &str) {
-    let mut store = agent_job_assignments_store()
-        .lock()
-        .expect("agent job assignments lock poisoned");
-    let job = store.entry(job_id.to_string()).or_default();
-    job.insert(item_id.to_string(), agent_id.to_string());
-}
-
-fn remove_agent_job_assignment(job_id: &str, item_id: &str) {
-    let mut store = agent_job_assignments_store()
-        .lock()
-        .expect("agent job assignments lock poisoned");
-    if let Some(job) = store.get_mut(job_id) {
-        job.remove(item_id);
-        if job.is_empty() {
-            store.remove(job_id);
-        }
-    }
-}
-
-fn clear_agent_job_assignments(job_id: &str) {
-    let mut store = agent_job_assignments_store()
-        .lock()
-        .expect("agent job assignments lock poisoned");
-    store.remove(job_id);
-}
-
-fn report_matches_assignment(
-    job_id: &str,
-    item_id: &str,
-    reporting_agent_id: Option<&str>,
-) -> bool {
-    let Some(reporting_agent_id) = reporting_agent_id else {
-        return false;
-    };
-    let store = agent_job_assignments_store()
-        .lock()
-        .expect("agent job assignments lock poisoned");
-    store
-        .get(job_id)
-        .and_then(|job| job.get(item_id))
-        .is_some_and(|expected| expected == reporting_agent_id)
-}
-
-fn record_agent_job_result(
-    job_id: &str,
-    item_id: &str,
-    result: Value,
-    stop: bool,
-    reporting_agent_id: Option<&str>,
-) -> bool {
-    if !report_matches_assignment(job_id, item_id, reporting_agent_id) {
-        return false;
-    }
-    let mut store = agent_job_reports_store()
-        .lock()
-        .expect("agent job reports lock poisoned");
-    let job = store.entry(job_id.to_string()).or_default();
-    if job.contains_key(item_id) {
-        return false;
-    }
-    job.insert(item_id.to_string(), AgentJobReport { result, stop });
-    true
-}
-
-fn take_agent_job_result(job_id: &str, item_id: &str) -> Option<AgentJobReport> {
-    let mut store = agent_job_reports_store()
-        .lock()
-        .expect("agent job reports lock poisoned");
-    let result = store.get_mut(job_id).and_then(|job| job.remove(item_id));
-    if store
-        .get(job_id)
-        .is_some_and(|job_results| job_results.is_empty())
-    {
-        store.remove(job_id);
-    }
-    remove_agent_job_assignment(job_id, item_id);
-    result
-}
-
-fn clear_agent_job_results(job_id: &str) {
-    let mut store = agent_job_reports_store()
-        .lock()
-        .expect("agent job reports lock poisoned");
-    store.remove(job_id);
-    clear_agent_job_assignments(job_id);
-}
-
-fn resolve_results_csv_path(
-    context: &ToolContext,
-    input: &Value,
-    csv_path: &Path,
-) -> Result<PathBuf, ToolError> {
-    if let Some(path) = optional_input_str(input, &["output_csv_path"]) {
-        context.resolve_path(path)
-    } else {
-        Ok(default_results_csv_path(csv_path))
-    }
-}
-
-fn default_results_csv_path(csv_path: &Path) -> PathBuf {
-    let stem = csv_path
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .filter(|stem| !stem.is_empty())
-        .unwrap_or("results");
-    csv_path.with_file_name(format!("{stem}.results.csv"))
-}
-
-fn load_csv_rows(csv_path: &Path, id_column: Option<&str>) -> Result<Vec<CsvRowTask>, ToolError> {
-    let mut reader = csv::ReaderBuilder::new()
-        .from_path(csv_path)
-        .map_err(|err| {
-            ToolError::execution_failed(format!(
-                "Failed to read CSV '{}': {err}",
-                csv_path.display()
-            ))
-        })?;
-
-    let headers = reader
-        .headers()
-        .map_err(|err| {
-            ToolError::execution_failed(format!(
-                "Failed to read CSV headers '{}': {err}",
-                csv_path.display()
-            ))
-        })?
-        .clone();
-    if headers.is_empty() {
-        return Err(ToolError::invalid_input(format!(
-            "CSV '{}' has no headers",
-            csv_path.display()
-        )));
-    }
-    let mut seen_headers = HashSet::new();
-    for header in &headers {
-        if !seen_headers.insert(header.to_string()) {
-            return Err(ToolError::invalid_input(format!(
-                "CSV '{}' has duplicate header '{}'",
-                csv_path.display(),
-                header
-            )));
-        }
-    }
-
-    let id_index = if let Some(column_name) = id_column {
-        let trimmed = column_name.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            let index = headers
-                .iter()
-                .position(|header| header == trimmed)
-                .ok_or_else(|| {
-                    ToolError::invalid_input(format!(
-                        "CSV '{}' is missing id_column '{trimmed}'",
-                        csv_path.display()
-                    ))
-                })?;
-            Some(index)
-        }
-    } else {
-        None
-    };
-
-    let mut rows = Vec::new();
-    let mut seen_item_ids = HashSet::new();
-    for (row_index, row) in reader.records().enumerate() {
-        let record = row.map_err(|err| {
-            ToolError::execution_failed(format!(
-                "Failed to parse CSV row {} in '{}': {err}",
-                row_index + 1,
-                csv_path.display()
-            ))
-        })?;
-        let mut values = HashMap::new();
-        for (idx, header) in headers.iter().enumerate() {
-            values.insert(
-                header.to_string(),
-                record.get(idx).unwrap_or_default().to_string(),
-            );
-        }
-        let base_item_id = id_index
-            .and_then(|idx| record.get(idx))
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-            .unwrap_or_else(|| format!("row-{}", row_index + 1));
-        let mut item_id = base_item_id.clone();
-        let mut suffix = 2usize;
-        while !seen_item_ids.insert(item_id.clone()) {
-            item_id = format!("{base_item_id}-{suffix}");
-            suffix = suffix.saturating_add(1);
-        }
-
-        rows.push(CsvRowTask {
-            row_index,
-            item_id,
-            values,
-        });
-    }
-
-    Ok(rows)
-}
-
-fn render_instruction_template(template: &str, values: &HashMap<String, String>) -> String {
-    const OPEN_BRACE_SENTINEL: &str = "__DEEPSEEK_OPEN_BRACE__";
-    const CLOSE_BRACE_SENTINEL: &str = "__DEEPSEEK_CLOSE_BRACE__";
-
-    let mut rendered = template
-        .replace("{{", OPEN_BRACE_SENTINEL)
-        .replace("}}", CLOSE_BRACE_SENTINEL);
-    for (key, value) in values {
-        rendered = rendered.replace(&format!("{{{key}}}"), value);
-    }
-    rendered
-        .replace(OPEN_BRACE_SENTINEL, "{")
-        .replace(CLOSE_BRACE_SENTINEL, "}")
-}
-
-fn validate_output_schema(schema: &Value, payload: &Value) -> Result<(), String> {
-    let object = payload
-        .as_object()
-        .ok_or_else(|| "Expected JSON object output".to_string())?;
-    if let Some(expected_type) = schema.get("type").and_then(Value::as_str)
-        && expected_type != "object"
-    {
-        return Err("output_schema.type must be 'object' when provided".to_string());
-    }
-    if let Some(required_fields) = schema.get("required").and_then(Value::as_array) {
-        for field in required_fields {
-            let Some(field_name) = field.as_str() else {
-                continue;
-            };
-            if !object.contains_key(field_name) {
-                return Err(format!(
-                    "Worker output missing required field '{field_name}'"
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn write_csv_worker_outcomes(csv_path: &Path, outcomes: &[CsvWorkerOutcome]) -> Result<()> {
-    if let Some(parent) = csv_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let mut writer = csv::WriterBuilder::new().from_path(csv_path)?;
-    writer.write_record([
-        "item_id",
-        "status",
-        "agent_id",
-        "duration_ms",
-        "error",
-        "result",
-        "result_json",
-    ])?;
-    for outcome in outcomes {
-        let result_json = outcome
-            .result_json
-            .as_ref()
-            .map(serde_json::to_string)
-            .transpose()?
-            .unwrap_or_default();
-        writer.write_record([
-            outcome.item_id.clone(),
-            outcome.status.clone(),
-            outcome.agent_id.clone().unwrap_or_default(),
-            outcome.duration_ms.to_string(),
-            outcome.error.clone().unwrap_or_default(),
-            outcome.result.clone().unwrap_or_default(),
-            result_json,
-        ])?;
-    }
-    writer.flush()?;
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn run_csv_row_agent(
-    manager: SharedSubAgentManager,
-    runtime: SubAgentRuntime,
-    job_id: &str,
-    row: CsvRowTask,
-    instruction_template: &str,
-    timeout: Duration,
-    output_schema: Option<Value>,
-    stop_requested: Arc<AtomicBool>,
-) -> CsvWorkerOutcome {
-    let CsvRowTask {
-        row_index,
-        item_id,
-        values,
-    } = row;
-
-    if stop_requested.load(Ordering::Relaxed) {
-        return CsvWorkerOutcome {
-            row_index,
-            item_id,
-            status: "skipped".to_string(),
-            agent_id: None,
-            duration_ms: 0,
-            error: Some("Skipped because stop=true was reported by another worker".to_string()),
-            result: None,
-            result_json: None,
-        };
-    }
-
-    let schema_text = output_schema
-        .as_ref()
-        .map(serde_json::to_string_pretty)
-        .transpose()
-        .unwrap_or(None)
-        .unwrap_or_else(|| "{}".to_string());
-    let rendered_instruction = render_instruction_template(instruction_template, &values);
-    let row_json = serde_json::to_string_pretty(&values).unwrap_or_else(|_| "{}".to_string());
-    let prompt = format!(
-        "You are processing one item for a spawn_agents_on_csv job.\n\
-Job ID: {job_id}\n\
-Item ID: {item_id}\n\n\
-Task instruction:\n\
-{rendered_instruction}\n\n\
-Input row (JSON):\n\
-{row_json}\n\n\
-Expected result schema (JSON Schema or {{}}):\n\
-{schema_text}\n\n\
-You MUST call the `report_agent_job_result` tool exactly once with:\n\
-1. `job_id` = \"{job_id}\"\n\
-2. `item_id` = \"{item_id}\"\n\
-3. `result` = a JSON object for this row.\n\n\
-If you need to stop the job early, include `stop` = true in the same tool call.\n\n\
-After the tool call succeeds, stop.",
-        item_id = item_id.as_str()
-    );
-
-    let assignment = SubAgentAssignment::new(
-        format!("Process CSV item '{item_id}' for job '{job_id}'"),
-        Some("worker".to_string()),
-    );
-    let spawn_deadline = Instant::now() + timeout.min(Duration::from_secs(60));
-    let spawned = loop {
-        if stop_requested.load(Ordering::Relaxed) {
-            return CsvWorkerOutcome {
-                row_index,
-                item_id,
-                status: "skipped".to_string(),
-                agent_id: None,
-                duration_ms: 0,
-                error: Some("Skipped because stop=true was reported by another worker".to_string()),
-                result: None,
-                result_json: None,
-            };
-        }
-        let attempt = {
-            let mut manager_guard = manager.lock().await;
-            manager_guard.spawn_background_with_assignment(
-                manager.clone(),
-                runtime.clone(),
-                SubAgentType::General,
-                prompt.clone(),
-                assignment.clone(),
-                None,
-            )
-        };
-
-        match attempt {
-            Ok(snapshot) => break Ok(snapshot),
-            Err(err) => {
-                let message = err.to_string();
-                if message.contains("Sub-agent limit reached") && Instant::now() < spawn_deadline {
-                    tokio::time::sleep(RESULT_POLL_INTERVAL).await;
-                    continue;
-                }
-                break Err(message);
-            }
-        }
-    };
-
-    let spawn_snapshot = match spawned {
-        Ok(snapshot) => snapshot,
-        Err(error) => {
-            return CsvWorkerOutcome {
-                row_index,
-                item_id,
-                status: "failed".to_string(),
-                agent_id: None,
-                duration_ms: 0,
-                error: Some(error),
-                result: None,
-                result_json: None,
-            };
-        }
-    };
-
-    let agent_id = spawn_snapshot.agent_id.clone();
-    record_agent_job_assignment(job_id, item_id.as_str(), &agent_id);
-    let deadline = Instant::now() + timeout;
-    let final_snapshot = loop {
-        let snapshot = {
-            let manager = manager.lock().await;
-            manager.get_result(&agent_id)
-        };
-        match snapshot {
-            Ok(snapshot) if snapshot.status != SubAgentStatus::Running => break Ok(snapshot),
-            Ok(snapshot) => {
-                if Instant::now() >= deadline {
-                    let cancelled = {
-                        let mut manager = manager.lock().await;
-                        manager.cancel(&agent_id)
-                    };
-                    let mut outcome = CsvWorkerOutcome {
-                        row_index,
-                        item_id,
-                        status: "timed_out".to_string(),
-                        agent_id: Some(agent_id.clone()),
-                        duration_ms: snapshot.duration_ms,
-                        error: Some("Worker timed out and was cancelled".to_string()),
-                        result: snapshot.result,
-                        result_json: None,
-                    };
-                    if let Ok(cancelled_snapshot) = cancelled {
-                        outcome.duration_ms = cancelled_snapshot.duration_ms;
-                    }
-                    return outcome;
-                }
-                tokio::time::sleep(RESULT_POLL_INTERVAL).await;
-            }
-            Err(err) => break Err(err.to_string()),
-        }
-    };
-
-    let snapshot = match final_snapshot {
-        Ok(snapshot) => snapshot,
-        Err(error) => {
-            return CsvWorkerOutcome {
-                row_index,
-                item_id,
-                status: "failed".to_string(),
-                agent_id: Some(agent_id),
-                duration_ms: 0,
-                error: Some(error),
-                result: None,
-                result_json: None,
-            };
-        }
-    };
-
-    match snapshot.status {
-        SubAgentStatus::Completed => {
-            let Some(report) = take_agent_job_result(job_id, item_id.as_str()) else {
-                return CsvWorkerOutcome {
-                    row_index,
-                    item_id,
-                    status: "failed".to_string(),
-                    agent_id: Some(snapshot.agent_id),
-                    duration_ms: snapshot.duration_ms,
-                    error: Some(
-                        "Worker finished without calling report_agent_job_result".to_string(),
-                    ),
-                    result: snapshot.result,
-                    result_json: None,
-                };
-            };
-
-            if let Some(schema) = output_schema.as_ref()
-                && let Err(error) = validate_output_schema(schema, &report.result)
-            {
-                return CsvWorkerOutcome {
-                    row_index,
-                    item_id,
-                    status: "failed".to_string(),
-                    agent_id: Some(snapshot.agent_id),
-                    duration_ms: snapshot.duration_ms,
-                    error: Some(error),
-                    result: snapshot.result,
-                    result_json: Some(report.result),
-                };
-            }
-
-            if report.stop {
-                stop_requested.store(true, Ordering::Relaxed);
-            }
-
-            CsvWorkerOutcome {
-                row_index,
-                item_id,
-                status: "completed".to_string(),
-                agent_id: Some(snapshot.agent_id),
-                duration_ms: snapshot.duration_ms,
-                error: None,
-                result: snapshot.result,
-                result_json: Some(report.result),
-            }
-        }
-        SubAgentStatus::Interrupted(error) => CsvWorkerOutcome {
-            row_index,
-            item_id,
-            status: "interrupted".to_string(),
-            agent_id: Some(snapshot.agent_id),
-            duration_ms: snapshot.duration_ms,
-            error: Some(error),
-            result: snapshot.result,
-            result_json: None,
-        },
-        SubAgentStatus::Failed(error) => CsvWorkerOutcome {
-            row_index,
-            item_id,
-            status: "failed".to_string(),
-            agent_id: Some(snapshot.agent_id),
-            duration_ms: snapshot.duration_ms,
-            error: Some(error),
-            result: snapshot.result,
-            result_json: None,
-        },
-        SubAgentStatus::Cancelled => CsvWorkerOutcome {
-            row_index,
-            item_id,
-            status: "failed".to_string(),
-            agent_id: Some(snapshot.agent_id),
-            duration_ms: snapshot.duration_ms,
-            error: Some("Worker cancelled".to_string()),
-            result: snapshot.result,
-            result_json: None,
-        },
-        SubAgentStatus::Running => CsvWorkerOutcome {
-            row_index,
-            item_id,
-            status: "failed".to_string(),
-            agent_id: Some(snapshot.agent_id),
-            duration_ms: snapshot.duration_ms,
-            error: Some("Worker did not reach terminal status".to_string()),
-            result: snapshot.result,
-            result_json: None,
-        },
-    }
-}
-
 fn normalize_role_alias(input: &str) -> Option<&'static str> {
     match input.to_ascii_lowercase().as_str() {
         "default" => Some("default"),
@@ -4058,7 +3125,6 @@ impl SubAgentToolRegistry {
                 todo_list,
                 plan_state,
             )
-            .with_tool(Arc::new(ReportAgentJobResultTool))
             .build(context);
 
         Self {
@@ -4098,19 +3164,10 @@ impl SubAgentToolRegistry {
         }
     }
 
-    async fn execute(&self, agent_id: &str, name: &str, mut input: Value) -> Result<String> {
+    async fn execute(&self, _agent_id: &str, name: &str, input: Value) -> Result<String> {
         if !self.is_tool_allowed(name) {
             return Err(anyhow!("Tool {name} not allowed for this sub-agent"));
         }
-        if name == "report_agent_job_result"
-            && let Some(object) = input.as_object_mut()
-        {
-            object.insert(
-                "__reporting_agent_id".to_string(),
-                Value::String(agent_id.to_string()),
-            );
-        }
-
         self.registry
             .execute(name, input)
             .await

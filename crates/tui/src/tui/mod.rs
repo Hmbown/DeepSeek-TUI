@@ -27,6 +27,7 @@ pub mod onboarding;
 pub mod pager;
 pub mod paste;
 pub mod paste_burst;
+pub mod persistence_actor;
 pub mod plan_prompt;
 pub mod provider_picker;
 pub mod scrolling;

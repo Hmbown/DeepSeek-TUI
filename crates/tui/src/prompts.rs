@@ -417,13 +417,19 @@ mod tests {
         assert!(prompt.contains("### `rlm`"));
     }
 
+    /// #358: rlm guidance was reframed from "first-class" to "specialty
+    /// tool" — verify the new framing is present so a future change
+    /// doesn't silently regress to the encouraging language that drove
+    /// over-use.
     #[test]
-    fn rlm_first_class_guidance_present() {
+    fn rlm_specialty_tool_guidance_present() {
         let prompt = compose_prompt(AppMode::Agent, Personality::Calm);
-        assert!(prompt.contains("RLM Is First-Class"));
-        assert!(prompt.contains("independent second opinions"));
-        assert!(prompt.contains("batched issue triage"));
-        assert!(prompt.contains("rlm` output is advisory"));
+        assert!(prompt.contains("RLM Is a Specialty Tool"));
+        assert!(prompt.contains("genuinely does not fit"));
+        assert!(
+            prompt.contains("specifically a specialty tool")
+                || prompt.contains("one specific shape of work")
+        );
     }
 
     #[test]

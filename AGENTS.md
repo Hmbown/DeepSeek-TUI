@@ -44,4 +44,6 @@ Issues may be closed when the acceptance criteria have been verified or when the
 ## Important Notes
 
 - **Token/cost tracking inaccuracies**: Token counting and cost estimation may be inflated due to thinking token accounting bugs. Use `/compact` to manage context, and treat cost estimates as approximate.
-- **Modes**: Three modes — Plan (read-only investigation), Agent (tool use with approval), YOLO (auto-approved). See `docs/MODES.md` for details. All three modes can call the `rlm_query` tool for parallel/batched LLM fan-out (`crates/tui/src/tools/rlm_query.rs`).
+- **Modes**: Three modes — Plan (read-only investigation), Agent (tool use with approval), YOLO (auto-approved). See `docs/MODES.md` for details.
+- **Sub-agents**: Single model-callable surface is `agent_spawn` (returns an `agent_id` immediately; parent keeps working) plus `agent_wait` / `agent_result` / `agent_cancel` / `agent_list` / `agent_send_input` / `agent_resume` / `agent_assign`. The old `agent_swarm` / `spawn_agents_on_csv` / `/swarm` surface was removed in v0.8.5 (#336).
+- **`rlm` tool** (`crates/tui/src/tools/rlm.rs`): a sandboxed Python REPL where a sub-LLM can call in-REPL helpers (`llm_query()`, `llm_query_batched()`, `rlm_query()`, `rlm_query_batched()`) — those `*_query` names are **Python helpers inside the REPL**, not separately-registered model-visible tools. Always loaded across all modes.

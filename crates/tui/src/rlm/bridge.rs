@@ -22,6 +22,7 @@ use tokio::sync::Mutex;
 use crate::llm_client::LlmClient;
 use crate::models::{ContentBlock, Message, MessageRequest, MessageResponse, SystemPrompt, Usage};
 use crate::repl::runtime::{BatchResp, RpcDispatcher, RpcRequest, RpcResponse, SingleResp};
+use crate::utils::spawn_supervised;
 
 /// Per-child completion timeout — same as the previous sidecar default.
 const CHILD_TIMEOUT_SECS: u64 = 120;
@@ -185,7 +186,11 @@ impl RlmBridge {
         // turn (we don't surface them; this dispatch is invisible to the
         // outer agent stream).
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
-        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let drain = spawn_supervised(
+            "rlm-bridge-drain",
+            std::panic::Location::caller(),
+            async move { while rx.recv().await.is_some() {} },
+        );
 
         let child_model = model
             .filter(|m| !m.is_empty())

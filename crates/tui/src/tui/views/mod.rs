@@ -173,6 +173,9 @@ pub enum ViewAction {
 pub trait ModalView: std::any::Any {
     fn kind(&self) -> ModalKind;
     fn handle_key(&mut self, key: KeyEvent) -> ViewAction;
+    fn handle_paste(&mut self, _text: &str) -> ViewAction {
+        ViewAction::None
+    }
     fn handle_mouse(&mut self, _mouse: MouseEvent) -> ViewAction {
         ViewAction::None
     }
@@ -243,6 +246,13 @@ impl ViewStack {
             .map(|view| view.handle_key(key))
             .unwrap_or(ViewAction::None);
         self.apply_action(action)
+    }
+
+    pub fn handle_paste(&mut self, text: &str) -> bool {
+        self.views
+            .last_mut()
+            .map(|view| matches!(view.handle_paste(text), ViewAction::None))
+            .unwrap_or(false)
     }
 
     pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Vec<ViewEvent> {
