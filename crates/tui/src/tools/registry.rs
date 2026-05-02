@@ -133,10 +133,19 @@ impl ToolRegistry {
     }
 
     /// Convert all tools to API Tool format for sending to the model.
+    ///
+    /// Output is sorted by tool name for **prefix-cache stability** (#263).
+    /// Rust's `HashMap` uses a randomly-seeded hasher per process, so a raw
+    /// `self.tools.values()` iteration emits tools in a different order on
+    /// every `deepseek` launch, invalidating DeepSeek's KV prefix cache for
+    /// every cross-session resume. Sorting here matches the way Claude Code
+    /// stabilises its tool array (`assembleToolPool` in their reference).
     #[must_use]
     pub fn to_api_tools(&self) -> Vec<Tool> {
-        self.tools
-            .values()
+        let mut tools: Vec<&Arc<dyn ToolSpec>> = self.tools.values().collect();
+        tools.sort_by(|a, b| a.name().cmp(b.name()));
+        tools
+            .into_iter()
             .map(|tool| Tool {
                 tool_type: None,
                 name: tool.name().to_string(),
@@ -830,6 +839,44 @@ mod tests {
         assert_eq!(api_tools.len(), 1);
         assert_eq!(api_tools[0].name, "my_tool");
         assert_eq!(api_tools[0].description, "A test tool");
+    }
+
+    #[test]
+    fn to_api_tools_emits_alphabetical_order_regardless_of_registration_order() {
+        // Regression for #263: HashMap iteration is non-deterministic across
+        // process launches, which busts DeepSeek's KV prefix cache for every
+        // cross-session resume. `to_api_tools` must emit by name regardless
+        // of registration order so two consecutive calls (and two distinct
+        // launches) produce byte-identical output.
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+
+        let order_a = {
+            let mut registry = ToolRegistry::new(ctx.clone());
+            registry.register(make_test_tool("zebra"));
+            registry.register(make_test_tool("alpha"));
+            registry.register(make_test_tool("mango"));
+            registry
+                .to_api_tools()
+                .iter()
+                .map(|t| t.name.clone())
+                .collect::<Vec<_>>()
+        };
+
+        let order_b = {
+            let mut registry = ToolRegistry::new(ctx.clone());
+            registry.register(make_test_tool("alpha"));
+            registry.register(make_test_tool("mango"));
+            registry.register(make_test_tool("zebra"));
+            registry
+                .to_api_tools()
+                .iter()
+                .map(|t| t.name.clone())
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(order_a, vec!["alpha", "mango", "zebra"]);
+        assert_eq!(order_a, order_b);
     }
 
     #[test]
