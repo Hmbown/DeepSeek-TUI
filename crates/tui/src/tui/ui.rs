@@ -716,6 +716,14 @@ async fn run_event_loop(
                         app.last_prompt_cache_hit_tokens = usage.prompt_cache_hit_tokens;
                         app.last_prompt_cache_miss_tokens = usage.prompt_cache_miss_tokens;
                         app.last_reasoning_replay_tokens = usage.reasoning_replay_tokens;
+                        app.push_turn_cache_record(crate::tui::app::TurnCacheRecord {
+                            input_tokens: usage.input_tokens,
+                            output_tokens: usage.output_tokens,
+                            cache_hit_tokens: usage.prompt_cache_hit_tokens,
+                            cache_miss_tokens: usage.prompt_cache_miss_tokens,
+                            reasoning_replay_tokens: usage.reasoning_replay_tokens,
+                            recorded_at: Instant::now(),
+                        });
                         if let Some(error) = error {
                             app.status_message = Some(format!("Turn failed: {error}"));
                         }

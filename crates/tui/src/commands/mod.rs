@@ -372,6 +372,13 @@ pub const COMMANDS: &[CommandInfo] = &[
         description: "Show session cost breakdown",
         usage: "/cost",
     },
+    // Cache telemetry (#263)
+    CommandInfo {
+        name: "cache",
+        aliases: &[],
+        description: "Show DeepSeek prefix-cache hit/miss stats for the last N turns",
+        usage: "/cache [count]",
+    },
 ];
 
 /// Execute a slash command
@@ -423,6 +430,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         // Debug commands
         "tokens" => debug::tokens(app),
         "cost" => debug::cost(app),
+        "cache" => debug::cache(app, arg),
         "system" => debug::system_prompt(app),
         "context" | "ctx" => debug::context(app),
         "undo" => debug::undo(app),
