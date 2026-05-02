@@ -15,9 +15,9 @@ pub fn show_config(_app: &mut App) -> CommandResult {
 }
 
 /// Show persistent settings
-pub fn show_settings(_app: &mut App) -> CommandResult {
+pub fn show_settings(app: &mut App) -> CommandResult {
     match Settings::load() {
-        Ok(settings) => CommandResult::message(settings.display()),
+        Ok(settings) => CommandResult::message(settings.display(app.ui_locale)),
         Err(e) => CommandResult::error(format!("Failed to load settings: {e}")),
     }
 }

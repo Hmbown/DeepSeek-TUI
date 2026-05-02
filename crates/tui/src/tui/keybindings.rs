@@ -65,7 +65,7 @@ impl KeybindingSection {
 #[derive(Debug, Clone, Copy)]
 pub struct KeybindingEntry {
     pub chord: &'static str,
-    pub description: &'static str,
+    pub description_id: crate::localization::MessageId,
     pub section: KeybindingSection,
 }
 
@@ -80,208 +80,208 @@ pub const KEYBINDINGS: &[KeybindingEntry] = &[
     // --- Navigation ---
     KeybindingEntry {
         chord: "↑ / ↓",
-        description: "Scroll transcript, navigate input history, or select composer attachments",
+        description_id: crate::localization::MessageId::KbScrollTranscript,
         section: KeybindingSection::Navigation,
     },
     KeybindingEntry {
         chord: "Ctrl+↑ / Ctrl+↓",
-        description: "Navigate input history",
+        description_id: crate::localization::MessageId::KbNavigateHistory,
         section: KeybindingSection::Navigation,
     },
     KeybindingEntry {
         chord: "Alt+↑ / Alt+↓",
-        description: "Scroll transcript",
+        description_id: crate::localization::MessageId::KbScrollTranscriptAlt,
         section: KeybindingSection::Navigation,
     },
     KeybindingEntry {
         chord: "PgUp / PgDn",
-        description: "Scroll transcript by page",
+        description_id: crate::localization::MessageId::KbScrollPage,
         section: KeybindingSection::Navigation,
     },
     KeybindingEntry {
         chord: "Home / End",
-        description: "Jump to top / bottom of transcript",
+        description_id: crate::localization::MessageId::KbJumpTopBottom,
         section: KeybindingSection::Navigation,
     },
     KeybindingEntry {
         chord: "g / G",
-        description: "Jump to top / bottom (when input is empty)",
+        description_id: crate::localization::MessageId::KbJumpTopBottomEmpty,
         section: KeybindingSection::Navigation,
     },
     KeybindingEntry {
         chord: "[ / ]",
-        description: "Jump between tool output blocks",
+        description_id: crate::localization::MessageId::KbJumpToolBlocks,
         section: KeybindingSection::Navigation,
     },
     // --- Editing ---
     KeybindingEntry {
         chord: "← / →",
-        description: "Move cursor in composer",
+        description_id: crate::localization::MessageId::KbMoveCursor,
         section: KeybindingSection::Editing,
     },
     KeybindingEntry {
         chord: "Ctrl+A / Ctrl+E",
-        description: "Jump to start / end of line",
+        description_id: crate::localization::MessageId::KbJumpLineStartEnd,
         section: KeybindingSection::Editing,
     },
     KeybindingEntry {
         chord: "Backspace / Delete",
-        description: "Delete character before / after the cursor, or remove selected attachment",
+        description_id: crate::localization::MessageId::KbDeleteChar,
         section: KeybindingSection::Editing,
     },
     KeybindingEntry {
         chord: "Ctrl+U",
-        description: "Clear the current draft",
+        description_id: crate::localization::MessageId::KbClearDraft,
         section: KeybindingSection::Editing,
     },
     KeybindingEntry {
         chord: "Alt+R",
-        description: "Search prompt history and recover local drafts",
+        description_id: crate::localization::MessageId::KbSearchHistory,
         section: KeybindingSection::Editing,
     },
     KeybindingEntry {
         chord: "Ctrl+J / Alt+Enter",
-        description: "Insert a newline in the composer",
+        description_id: crate::localization::MessageId::KbInsertNewline,
         section: KeybindingSection::Editing,
     },
     // --- Submission / actions ---
     KeybindingEntry {
         chord: "Enter",
-        description: "Send the current draft",
+        description_id: crate::localization::MessageId::KbSendDraft,
         section: KeybindingSection::Submission,
     },
     KeybindingEntry {
         chord: "Esc",
-        description: "Close menu, cancel request, discard draft, or clear input",
+        description_id: crate::localization::MessageId::KbCloseMenu,
         section: KeybindingSection::Submission,
     },
     KeybindingEntry {
         chord: "Ctrl+C",
-        description: "Cancel request, or exit when idle",
+        description_id: crate::localization::MessageId::KbCancelOrExit,
         section: KeybindingSection::Submission,
     },
     KeybindingEntry {
         chord: "Ctrl+B",
-        description: "Open shell controls for a running foreground command",
+        description_id: crate::localization::MessageId::KbShellControls,
         section: KeybindingSection::Submission,
     },
     KeybindingEntry {
         chord: "Ctrl+D",
-        description: "Exit when input is empty",
+        description_id: crate::localization::MessageId::KbExitEmpty,
         section: KeybindingSection::Submission,
     },
     KeybindingEntry {
         chord: "Ctrl+K",
-        description: "Open the command palette",
+        description_id: crate::localization::MessageId::KbCommandPalette,
         section: KeybindingSection::Submission,
     },
     KeybindingEntry {
         chord: "Ctrl+P",
-        description: "Open the fuzzy file picker (insert @path on Enter)",
+        description_id: crate::localization::MessageId::KbFuzzyFilePicker,
         section: KeybindingSection::Submission,
     },
     KeybindingEntry {
         chord: "Alt+C",
-        description: "Open compact session context inspector",
+        description_id: crate::localization::MessageId::KbCompactInspector,
         section: KeybindingSection::Submission,
     },
     KeybindingEntry {
         chord: "l",
-        description: "Open pager for the last message (when input is empty)",
+        description_id: crate::localization::MessageId::KbLastMessagePager,
         section: KeybindingSection::Submission,
     },
     KeybindingEntry {
         chord: "v",
-        description: "Open details for the selected tool or message (when input is empty)",
+        description_id: crate::localization::MessageId::KbSelectedDetails,
         section: KeybindingSection::Submission,
     },
     KeybindingEntry {
         chord: "Alt+V",
-        description: "Open tool-details pager",
+        description_id: crate::localization::MessageId::KbToolDetailsPager,
         section: KeybindingSection::Submission,
     },
     KeybindingEntry {
         chord: "Ctrl+O",
-        description: "Open thinking pager",
+        description_id: crate::localization::MessageId::KbThinkingPager,
         section: KeybindingSection::Submission,
     },
     KeybindingEntry {
         chord: "Ctrl+T",
-        description: "Open live transcript overlay (sticky-tail auto-scroll)",
+        description_id: crate::localization::MessageId::KbLiveTranscript,
         section: KeybindingSection::Submission,
     },
     KeybindingEntry {
         chord: "Esc Esc",
-        description: "Backtrack to a previous user message (Left/Right step, Enter to rewind)",
+        description_id: crate::localization::MessageId::KbBacktrackMessage,
         section: KeybindingSection::Submission,
     },
     // --- Modes ---
     KeybindingEntry {
         chord: "Tab / Shift+Tab",
-        description: "Complete /command, queue running-turn follow-up, cycle modes; Shift+Tab cycles reasoning effort",
+        description_id: crate::localization::MessageId::KbCompleteCycleModes,
         section: KeybindingSection::Modes,
     },
     KeybindingEntry {
         chord: "Alt+1 / Alt+2 / Alt+3",
-        description: "Jump directly to Plan / Agent / YOLO mode",
+        description_id: crate::localization::MessageId::KbJumpPlanAgentYolo,
         section: KeybindingSection::Modes,
     },
     KeybindingEntry {
         chord: "Alt+P / Alt+A / Alt+Y",
-        description: "Alternative jump to Plan / Agent / YOLO mode",
+        description_id: crate::localization::MessageId::KbAltJumpPlanAgentYolo,
         section: KeybindingSection::Modes,
     },
     KeybindingEntry {
         chord: "Alt+! / Alt+@ / Alt+# / Alt+4 / Alt+$ / Alt+0",
-        description: "Focus Plan / Todos / Tasks / Agents / Agents / Auto sidebar",
+        description_id: crate::localization::MessageId::KbFocusSidebar,
         section: KeybindingSection::Modes,
     },
     KeybindingEntry {
         chord: "Ctrl+X",
-        description: "Toggle between Plan and Agent modes",
+        description_id: crate::localization::MessageId::KbTogglePlanAgent,
         section: KeybindingSection::Modes,
     },
     // --- Sessions ---
     KeybindingEntry {
         chord: "Ctrl+R",
-        description: "Open the session picker",
+        description_id: crate::localization::MessageId::KbSessionPicker,
         section: KeybindingSection::Sessions,
     },
     // --- Clipboard ---
     KeybindingEntry {
         chord: "Ctrl+V",
-        description: "Paste text or attach a clipboard image",
+        description_id: crate::localization::MessageId::KbPasteAttach,
         section: KeybindingSection::Clipboard,
     },
     KeybindingEntry {
         chord: "Ctrl+Shift+C",
-        description: "Copy the current selection (Cmd+C on macOS)",
+        description_id: crate::localization::MessageId::KbCopySelection,
         section: KeybindingSection::Clipboard,
     },
     KeybindingEntry {
         chord: "Right click",
-        description: "Open context actions for paste, selection, message details, context, and help",
+        description_id: crate::localization::MessageId::KbContextMenu,
         section: KeybindingSection::Clipboard,
     },
     KeybindingEntry {
         chord: "@path",
-        description: "Add a local text file or directory to context",
+        description_id: crate::localization::MessageId::KbAttachPath,
         section: KeybindingSection::Clipboard,
     },
     // --- Help ---
     KeybindingEntry {
         chord: "?",
-        description: "Open this help overlay (when input is empty)",
+        description_id: crate::localization::MessageId::KbHelpOverlay,
         section: KeybindingSection::Help,
     },
     KeybindingEntry {
         chord: "F1",
-        description: "Toggle help overlay",
+        description_id: crate::localization::MessageId::KbToggleHelp,
         section: KeybindingSection::Help,
     },
     KeybindingEntry {
         chord: "Ctrl+/",
-        description: "Toggle help overlay",
+        description_id: crate::localization::MessageId::KbToggleHelp,
         section: KeybindingSection::Help,
     },
 ];

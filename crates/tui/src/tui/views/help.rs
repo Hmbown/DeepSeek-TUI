@@ -186,7 +186,7 @@ fn build_entries(locale: Locale) -> Vec<HelpEntry> {
         let description = format!(
             "[{}] {}",
             binding.section.label(locale),
-            binding.description
+            tr(locale, binding.description_id)
         );
         let haystack = format!(
             "{} {}",
@@ -636,6 +636,27 @@ mod tests {
             !dump.contains("MISSING"),
             "missing-key marker leaked:\n{dump}"
         );
+    }
+
+    #[test]
+    fn localized_help_keybinding_descriptions_use_zh_hans() {
+        let entries = build_entries(Locale::ZhHans);
+        let kb_entries: Vec<_> = entries
+            .iter()
+            .filter(|e| e.section == HelpSection::Keybinding)
+            .collect();
+        assert!(!kb_entries.is_empty(), "no keybinding entries found");
+
+        for entry in &kb_entries {
+            assert!(
+                entry
+                    .description
+                    .chars()
+                    .any(|c| { ('\u{4e00}'..='\u{9fff}').contains(&c) }),
+                "keybinding description not localized: {}",
+                entry.description
+            );
+        }
     }
 
     fn buffer_text(buf: &Buffer, area: Rect) -> String {

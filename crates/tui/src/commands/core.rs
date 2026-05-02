@@ -3,6 +3,7 @@
 use std::fmt::Write;
 
 use crate::config::{COMMON_DEEPSEEK_MODELS, normalize_model_name};
+use crate::localization::{MessageId, tr};
 use crate::tui::app::{App, AppAction, AppMode};
 use crate::tui::views::{HelpView, ModalKind, SubAgentsView};
 
@@ -14,17 +15,25 @@ pub fn help(app: &mut App, topic: Option<&str>) -> CommandResult {
         // Show help for specific command
         if let Some(cmd) = super::get_command_info(topic) {
             let mut help = format!(
-                "{}\n\n  {}\n\n  Usage: {}",
+                "{}\n\n  {}\n\n  {} {}",
                 cmd.name,
                 cmd.description_for(app.ui_locale),
+                tr(app.ui_locale, MessageId::HelpUsageLabel),
                 cmd.usage
             );
             if !cmd.aliases.is_empty() {
-                let _ = write!(help, "\n  Aliases: {}", cmd.aliases.join(", "));
+                let _ = write!(
+                    help,
+                    "\n  {} {}",
+                    tr(app.ui_locale, MessageId::HelpAliasesLabel),
+                    cmd.aliases.join(", ")
+                );
             }
             return CommandResult::message(help);
         }
-        return CommandResult::error(format!("Unknown command: {topic}"));
+        return CommandResult::error(
+            tr(app.ui_locale, MessageId::HelpUnknownCommand).replace("{topic}", topic),
+        );
     }
 
     // Show help overlay
@@ -55,10 +64,11 @@ pub fn clear(app: &mut App) -> CommandResult {
     app.last_prompt_tokens = None;
     app.last_completion_tokens = None;
     app.current_session_id = None;
+    let locale = app.ui_locale;
     let message = if todos_cleared {
-        "Conversation cleared".to_string()
+        tr(locale, MessageId::ClearConversation).to_string()
     } else {
-        "Conversation cleared (plan state busy; run /clear again if needed)".to_string()
+        tr(locale, MessageId::ClearConversationBusy).to_string()
     };
     CommandResult::with_message_and_action(
         message,
@@ -93,7 +103,9 @@ pub fn model(app: &mut App, model_name: Option<&str>) -> CommandResult {
         app.last_prompt_tokens = None;
         app.last_completion_tokens = None;
         CommandResult::with_message_and_action(
-            format!("Model changed: {old_model} → {model_id}"),
+            tr(app.ui_locale, MessageId::ModelChanged)
+                .replace("{old}", &old_model)
+                .replace("{new}", &model_id),
             AppAction::UpdateCompaction(app.compaction_config()),
         )
     } else {
@@ -112,89 +124,129 @@ pub fn subagents(app: &mut App) -> CommandResult {
         app.view_stack
             .push(SubAgentsView::new(app.subagent_cache.clone()));
     }
-    app.status_message = Some("Fetching sub-agent status...".to_string());
+    app.status_message = Some(tr(app.ui_locale, MessageId::SubagentsFetching).to_string());
     CommandResult::action(AppAction::ListSubAgents)
 }
 
 /// Show `DeepSeek` dashboard and docs links
-pub fn deepseek_links() -> CommandResult {
-    CommandResult::message(
-        "DeepSeek Links:\n\
+pub fn deepseek_links(app: &mut App) -> CommandResult {
+    let locale = app.ui_locale;
+    CommandResult::message(format!(
+        "{}\n\
 ─────────────────────────────\n\
-Dashboard: https://platform.deepseek.com\n\
-Docs:      https://platform.deepseek.com/docs\n\n\
-Tip: API keys are available in the dashboard console.",
-    )
+{} https://platform.deepseek.com\n\
+{}      https://platform.deepseek.com/docs\n\n\
+{}",
+        tr(locale, MessageId::LinksTitle),
+        tr(locale, MessageId::LinksDashboard),
+        tr(locale, MessageId::LinksDocs),
+        tr(locale, MessageId::LinksTip),
+    ))
 }
 
 /// Show home dashboard with stats and quick actions
 pub fn home_dashboard(app: &mut App) -> CommandResult {
+    let locale = app.ui_locale;
     let mut stats = String::new();
 
     // Basic info
-    let _ = writeln!(stats, "DeepSeek TUI Home Dashboard");
+    let _ = writeln!(stats, "{}", tr(locale, MessageId::HomeDashboardTitle));
     let _ = writeln!(stats, "============================================");
 
     // Model & mode
-    let _ = writeln!(stats, "Model:      {}", app.model);
-    let _ = writeln!(stats, "Mode:       {}", app.mode.label());
-    let _ = writeln!(stats, "Workspace:  {}", app.workspace.display());
+    let _ = writeln!(
+        stats,
+        "{}      {}",
+        tr(locale, MessageId::HomeModel),
+        app.model
+    );
+    let _ = writeln!(
+        stats,
+        "{}       {}",
+        tr(locale, MessageId::HomeMode),
+        app.mode.label()
+    );
+    let _ = writeln!(
+        stats,
+        "{}  {}",
+        tr(locale, MessageId::HomeWorkspace),
+        app.workspace.display()
+    );
 
     // Session stats
     let history_count = app.history.len();
     let total_tokens = app.total_conversation_tokens;
     let queued_messages = app.queued_messages.len();
-    let _ = writeln!(stats, "History:    {} messages", history_count);
-    let _ = writeln!(stats, "Tokens:     {} (session)", total_tokens);
+    let _ = writeln!(
+        stats,
+        "{}    {} messages",
+        tr(locale, MessageId::HomeHistory),
+        history_count
+    );
+    let _ = writeln!(
+        stats,
+        "{}     {} (session)",
+        tr(locale, MessageId::HomeTokens),
+        total_tokens
+    );
     if queued_messages > 0 {
-        let _ = writeln!(stats, "Queued:     {} messages", queued_messages);
+        let _ = writeln!(
+            stats,
+            "{}     {} messages",
+            tr(locale, MessageId::HomeQueued),
+            queued_messages
+        );
     }
 
     // Sub-agents
     let subagent_count = app.subagent_cache.len();
     if subagent_count > 0 {
-        let _ = writeln!(stats, "Sub-agents: {} active", subagent_count);
+        let _ = writeln!(
+            stats,
+            "{} {} active",
+            tr(locale, MessageId::HomeSubagents),
+            subagent_count
+        );
     }
 
     // Active skill
     if let Some(skill) = &app.active_skill {
-        let _ = writeln!(stats, "Skill:      {} (active)", skill);
+        let _ = writeln!(
+            stats,
+            "{}      {} (active)",
+            tr(locale, MessageId::HomeSkill),
+            skill
+        );
     }
 
     // Quick actions section
-    let _ = writeln!(stats, "\nQuick Actions");
+    let _ = writeln!(stats, "\n{}", tr(locale, MessageId::HomeQuickActions));
     let _ = writeln!(stats, "--------------------------------------------");
-    let _ = writeln!(stats, "/links      - Dashboard & API links");
-    let _ = writeln!(stats, "/skills      - List available skills");
-    let _ = writeln!(
-        stats,
-        "/config      - Open interactive configuration editor"
-    );
-    let _ = writeln!(stats, "/settings    - Show persistent settings");
-    let _ = writeln!(stats, "/model       - Switch or view model");
-    let _ = writeln!(stats, "/subagents   - List sub-agent status");
-    let _ = writeln!(stats, "/task list   - Show background task queue");
-    let _ = writeln!(stats, "/help        - Show help");
+    let _ = writeln!(stats, "{}", tr(locale, MessageId::HomeQuickLinks));
+    let _ = writeln!(stats, "{}", tr(locale, MessageId::HomeQuickSkills));
+    let _ = writeln!(stats, "{}", tr(locale, MessageId::HomeQuickConfig));
+    let _ = writeln!(stats, "{}", tr(locale, MessageId::HomeQuickSettings));
+    let _ = writeln!(stats, "{}", tr(locale, MessageId::HomeQuickModel));
+    let _ = writeln!(stats, "{}", tr(locale, MessageId::HomeQuickSubagents));
+    let _ = writeln!(stats, "{}", tr(locale, MessageId::HomeQuickTaskList));
+    let _ = writeln!(stats, "{}", tr(locale, MessageId::HomeQuickHelp));
 
     // Mode-specific tips
-    let _ = writeln!(stats, "\nMode Tips");
+    let _ = writeln!(stats, "\n{}", tr(locale, MessageId::HomeModeTips));
     let _ = writeln!(stats, "--------------------------------------------");
     match app.mode {
         AppMode::Agent => {
-            let _ = writeln!(stats, "Agent mode - Use tools for autonomous tasks");
-            let _ = writeln!(
-                stats,
-                "  Use Ctrl+X to review in Plan mode before executing"
-            );
-            let _ = writeln!(stats, "  Type /yolo to enable full tool access");
+            let _ = writeln!(stats, "{}", tr(locale, MessageId::HomeAgentModeTip));
+            let _ = writeln!(stats, "{}", tr(locale, MessageId::HomeAgentModeReviewTip));
+            let _ = writeln!(stats, "{}", tr(locale, MessageId::HomeAgentModeYoloTip));
         }
         AppMode::Yolo => {
-            let _ = writeln!(stats, "YOLO mode - Full tool access, no approvals");
-            let _ = writeln!(stats, "  Be careful with destructive operations!");
+            let _ = writeln!(stats, "{}", tr(locale, MessageId::HomeYoloModeTip));
+            let _ = writeln!(stats, "{}", tr(locale, MessageId::HomeYoloModeCaution));
         }
         AppMode::Plan => {
-            let _ = writeln!(stats, "Plan mode - Design before implementing");
-            let _ = writeln!(stats, "  Use /plan to create structured checklists");
+            let _ = writeln!(stats, "{}", tr(locale, MessageId::HomePlanModeTip));
+            let _ = writeln!(stats, "{}", tr(locale, MessageId::HomePlanModeChecklistTip));
         }
     }
 
@@ -402,7 +454,8 @@ mod tests {
 
     #[test]
     fn test_deepseek_links() {
-        let result = deepseek_links();
+        let mut app = create_test_app();
+        let result = deepseek_links(&mut app);
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
         assert!(msg.contains("DeepSeek Links"));
@@ -467,5 +520,26 @@ mod tests {
                 .any(|line| line.trim_start().starts_with("/set "))
         );
         assert!(!msg.contains("/deepseek"));
+    }
+
+    #[test]
+    fn home_dashboard_localizes_in_zh_hans() {
+        use crate::localization::Locale;
+        let mut app = create_test_app();
+        app.ui_locale = Locale::ZhHans;
+        let result = home_dashboard(&mut app);
+        let msg = result
+            .message
+            .expect("home dashboard should return message");
+        assert!(msg.contains("主面板"), "missing zh-Hans title:\n{msg}");
+        assert!(msg.contains("模型"), "missing zh-Hans model label:\n{msg}");
+        assert!(
+            msg.contains("快捷操作"),
+            "missing zh-Hans quick actions:\n{msg}"
+        );
+        assert!(
+            msg.contains("模式提示"),
+            "missing zh-Hans mode tips:\n{msg}"
+        );
     }
 }
