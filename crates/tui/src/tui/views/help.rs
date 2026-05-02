@@ -183,7 +183,11 @@ fn build_entries(locale: Locale) -> Vec<HelpEntry> {
 
     for binding in KEYBINDINGS {
         let label = binding.chord.to_string();
-        let description = format!("[{}] {}", binding.section.label(), binding.description);
+        let description = format!(
+            "[{}] {}",
+            binding.section.label(locale),
+            binding.description
+        );
         let haystack = format!(
             "{} {}",
             label.to_ascii_lowercase(),
