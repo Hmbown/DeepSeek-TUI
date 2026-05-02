@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **V4 Pro discount expiry extended** (#267) — DeepSeek extended the V4 Pro 75%
+  promotional discount from 2026-05-05 15:59 UTC to 2026-05-31 15:59 UTC. Without
+  this update the TUI would have started showing 4× the actual billed cost on
+  May 6 onwards. Verified at https://api-docs.deepseek.com/quick_start/pricing.
+
 ## [0.8.3] - 2026-05-01
 
 ### Fixed
