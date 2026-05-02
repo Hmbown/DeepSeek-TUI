@@ -63,16 +63,24 @@ fn show_single_setting(app: &App, key: &str) -> CommandResult {
         "model" => Some(app.model.clone()),
         "approval_mode" | "approval" => Some(app.approval_mode.label().to_string()),
         "locale" | "language" => Some(locale_display(app.ui_locale).to_string()),
-        "auto_compact" | "compact" => Some(if app.auto_compact { "true" } else { "false" }.to_string()),
+        "auto_compact" | "compact" => {
+            Some(if app.auto_compact { "true" } else { "false" }.to_string())
+        }
         "calm_mode" | "calm" => Some(if app.calm_mode { "true" } else { "false" }.to_string()),
-        "show_thinking" | "thinking" => Some(if app.show_thinking { "true" } else { "false" }.to_string()),
+        "show_thinking" | "thinking" => {
+            Some(if app.show_thinking { "true" } else { "false" }.to_string())
+        }
         "mode" | "default_mode" => Some(app.mode.as_setting().to_string()),
         "max_history" | "history" => Some(app.max_input_history.to_string()),
         "sidebar_width" | "sidebar" => Some(app.sidebar_width_percent.to_string()),
         "sidebar_focus" | "focus" => Some(app.sidebar_focus.as_setting().to_string()),
         "composer_density" | "composer" => Some(density_display(app.composer_density).to_string()),
-        "composer_border" | "border" => Some(if app.composer_border { "true" } else { "false" }.to_string()),
-        "transcript_spacing" | "spacing" => Some(spacing_display(app.transcript_spacing).to_string()),
+        "composer_border" | "border" => {
+            Some(if app.composer_border { "true" } else { "false" }.to_string())
+        }
+        "transcript_spacing" | "spacing" => {
+            Some(spacing_display(app.transcript_spacing).to_string())
+        }
         _ => {
             let known = Settings::available_settings()
                 .iter()

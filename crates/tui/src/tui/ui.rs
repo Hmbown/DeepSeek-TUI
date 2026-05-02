@@ -612,10 +612,7 @@ async fn run_event_loop(
                         // Tasks panel stays in sync with tool execution
                         // rather than waiting up to 2.5 s for the periodic
                         // poll.
-                        if matches!(
-                            name.as_str(),
-                            "agent_spawn" | "agent_cancel" | "todo_write"
-                        ) {
+                        if matches!(name.as_str(), "agent_spawn" | "agent_cancel" | "todo_write") {
                             let tasks = task_manager.list_tasks(Some(10)).await;
                             app.task_panel =
                                 tasks.into_iter().map(task_summary_to_panel_entry).collect();
@@ -968,9 +965,8 @@ async fn run_event_loop(
                         let session_approved =
                             app.approval_session_approved.contains(&approval_key)
                                 || app.approval_session_approved.contains(&tool_name);
-                        let session_denied =
-                            app.approval_session_denied.contains(&approval_key)
-                                || app.approval_session_denied.contains(&tool_name);
+                        let session_denied = app.approval_session_denied.contains(&approval_key)
+                            || app.approval_session_denied.contains(&tool_name);
                         if session_denied {
                             // The user already said no to this exact tool /
                             // approval key in this session; auto-deny so the

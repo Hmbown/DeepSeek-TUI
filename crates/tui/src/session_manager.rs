@@ -1007,8 +1007,8 @@ mod tests {
             body = big_text
         );
 
-        let extracted = extract_top_level_metadata(json.as_bytes())
-            .expect("metadata extractable from prefix");
+        let extracted =
+            extract_top_level_metadata(json.as_bytes()).expect("metadata extractable from prefix");
         assert_eq!(extracted.id, "abc-123");
         assert_eq!(extracted.title, "Real Session");
         assert_eq!(extracted.message_count, 12);

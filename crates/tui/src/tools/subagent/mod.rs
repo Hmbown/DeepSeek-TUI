@@ -86,7 +86,6 @@ pub const WHALE_NICKNAMES: &[&str] = &[
 /// Removal version for deprecated tool aliases.
 const DEPRECATION_REMOVAL_VERSION: &str = "0.8.0";
 
-
 #[must_use]
 pub fn whale_nickname_for_index(index: usize) -> String {
     let base = WHALE_NICKNAMES[index % WHALE_NICKNAMES.len()];
@@ -389,7 +388,6 @@ struct AssignRequest {
     message: Option<String>,
     interrupt: bool,
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistedSubAgent {
@@ -2226,7 +2224,6 @@ impl ToolSpec for DelegateToAgentTool {
     }
 }
 
-
 // === Sub-agent Execution ===
 
 /// Build the system prompt for a sub-agent.
@@ -3045,7 +3042,6 @@ fn parse_assign_request(input: &Value) -> Result<AssignRequest, ToolError> {
         interrupt,
     })
 }
-
 
 fn normalize_role_alias(input: &str) -> Option<&'static str> {
     match input.to_ascii_lowercase().as_str() {

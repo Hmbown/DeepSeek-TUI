@@ -175,8 +175,7 @@ fn write_trust_file_at(file: &TrustFile, path: &Path) -> Result<()> {
             .with_context(|| format!("create dir {}", parent.display()))?;
     }
     let json = serde_json::to_string_pretty(file).context("serialize trust file")?;
-    write_atomic(path, json.as_bytes())
-        .with_context(|| format!("write {}", path.display()))?;
+    write_atomic(path, json.as_bytes()).with_context(|| format!("write {}", path.display()))?;
     Ok(())
 }
 

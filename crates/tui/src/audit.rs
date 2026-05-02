@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use chrono::Utc;
 use serde_json::{Value, json};
 
-use crate::utils::{open_append, flush_and_sync};
+use crate::utils::{flush_and_sync, open_append};
 
 /// Append an audit event to `~/.deepseek/audit.log`.
 ///

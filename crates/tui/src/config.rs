@@ -240,8 +240,10 @@ pub fn provider_capability(provider: ApiProvider, resolved_model: &str) -> Provi
     let thinking_supported = is_v4_pro || is_v4_flash;
 
     // Cache telemetry: returned only by DeepSeek-native and NVIDIA NIM endpoints.
-    let cache_telemetry_supported =
-        matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN | ApiProvider::NvidiaNim);
+    let cache_telemetry_supported = matches!(
+        provider,
+        ApiProvider::Deepseek | ApiProvider::DeepseekCN | ApiProvider::NvidiaNim
+    );
 
     // Request payload mode: all current providers use chat completions.
     let request_payload_mode = RequestPayloadMode::ChatCompletions;
@@ -2636,9 +2638,9 @@ api_key = "old-openrouter-key"
         // Sentinel must not be treated as a real key — the resolver should
         // fall through to keyring / env / config-provider and ultimately
         // bail out with a "key not found" error.
-        let _err = config.deepseek_api_key().expect_err(
-            "sentinel placeholder must not satisfy the API key check",
-        );
+        let _err = config
+            .deepseek_api_key()
+            .expect_err("sentinel placeholder must not satisfy the API key check");
         Ok(())
     }
 

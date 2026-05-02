@@ -100,25 +100,73 @@ pub fn spawn_persistence_actor(manager: SessionManager) -> PersistActorHandle {
     let (tx, mut rx) = mpsc::unbounded_channel::<PersistRequest>();
     let handle = PersistActorHandle { tx };
 
-    spawn_supervised("persistence-actor", std::panic::Location::caller(), async move {
-        let mut latest_checkpoint: Option<SavedSession> = None;
-        let mut latest_session: Option<SavedSession> = None;
-        let mut should_clear: bool = false;
+    spawn_supervised(
+        "persistence-actor",
+        std::panic::Location::caller(),
+        async move {
+            let mut latest_checkpoint: Option<SavedSession> = None;
+            let mut latest_session: Option<SavedSession> = None;
+            let mut should_clear: bool = false;
 
-        loop {
-            // Drain everything waiting, keeping only the latest of each kind.
-            while let Ok(req) = rx.try_recv() {
-                match req {
-                    PersistRequest::Checkpoint(session) => {
+            loop {
+                // Drain everything waiting, keeping only the latest of each kind.
+                while let Ok(req) = rx.try_recv() {
+                    match req {
+                        PersistRequest::Checkpoint(session) => {
+                            latest_checkpoint = Some(session);
+                        }
+                        PersistRequest::SessionSnapshot(session) => {
+                            latest_session = Some(session);
+                        }
+                        PersistRequest::ClearCheckpoint => {
+                            should_clear = true;
+                        }
+                        PersistRequest::Shutdown => {
+                            flush_inner(
+                                &manager,
+                                latest_checkpoint.as_ref(),
+                                latest_session.as_ref(),
+                                should_clear,
+                            );
+                            return;
+                        }
+                    }
+                }
+
+                // Write coalesced work.
+                if should_clear {
+                    let _ = manager.clear_checkpoint();
+                    should_clear = false;
+                }
+                if let Some(ref session) = latest_checkpoint.take() {
+                    let _ = manager.save_checkpoint(session);
+                }
+                if let Some(ref session) = latest_session.take() {
+                    let _ = manager.save_session(session);
+                }
+
+                // Block until the next request arrives.
+                match rx.recv().await {
+                    Some(PersistRequest::Checkpoint(session)) => {
                         latest_checkpoint = Some(session);
                     }
-                    PersistRequest::SessionSnapshot(session) => {
+                    Some(PersistRequest::SessionSnapshot(session)) => {
                         latest_session = Some(session);
                     }
-                    PersistRequest::ClearCheckpoint => {
+                    Some(PersistRequest::ClearCheckpoint) => {
                         should_clear = true;
                     }
-                    PersistRequest::Shutdown => {
+                    Some(PersistRequest::Shutdown) => {
+                        flush_inner(
+                            &manager,
+                            latest_checkpoint.as_ref(),
+                            latest_session.as_ref(),
+                            should_clear,
+                        );
+                        return;
+                    }
+                    None => {
+                        // Channel closed — final flush and exit.
                         flush_inner(
                             &manager,
                             latest_checkpoint.as_ref(),
@@ -129,52 +177,8 @@ pub fn spawn_persistence_actor(manager: SessionManager) -> PersistActorHandle {
                     }
                 }
             }
-
-            // Write coalesced work.
-            if should_clear {
-                let _ = manager.clear_checkpoint();
-                should_clear = false;
-            }
-            if let Some(ref session) = latest_checkpoint.take() {
-                let _ = manager.save_checkpoint(session);
-            }
-            if let Some(ref session) = latest_session.take() {
-                let _ = manager.save_session(session);
-            }
-
-            // Block until the next request arrives.
-            match rx.recv().await {
-                Some(PersistRequest::Checkpoint(session)) => {
-                    latest_checkpoint = Some(session);
-                }
-                Some(PersistRequest::SessionSnapshot(session)) => {
-                    latest_session = Some(session);
-                }
-                Some(PersistRequest::ClearCheckpoint) => {
-                    should_clear = true;
-                }
-                Some(PersistRequest::Shutdown) => {
-                    flush_inner(
-                        &manager,
-                        latest_checkpoint.as_ref(),
-                        latest_session.as_ref(),
-                        should_clear,
-                    );
-                    return;
-                }
-                None => {
-                    // Channel closed — final flush and exit.
-                    flush_inner(
-                        &manager,
-                        latest_checkpoint.as_ref(),
-                        latest_session.as_ref(),
-                        should_clear,
-                    );
-                    return;
-                }
-            }
-        }
-    });
+        },
+    );
 
     handle
 }

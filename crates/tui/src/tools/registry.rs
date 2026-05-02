@@ -621,7 +621,7 @@ impl ToolRegistryBuilder {
         use super::subagent::{
             AgentAssignTool, AgentCancelTool, AgentCloseTool, AgentListTool, AgentResultTool,
             AgentResumeTool, AgentSendInputTool, AgentSpawnTool, AgentWaitTool,
-            DelegateToAgentTool
+            DelegateToAgentTool,
         };
 
         self.with_tool(Arc::new(AgentSpawnTool::new(

@@ -105,10 +105,7 @@ pub trait SchemaMigration {
     /// Returns the final stamped version. Stamps each intermediate
     /// version onto `value["schema_version"]` so a partial migration
     /// failure leaves a record at a known state rather than mixed.
-    fn migrate(
-        value: &mut serde_json::Value,
-        version: u32,
-    ) -> Result<u32, MigrationError> {
+    fn migrate(value: &mut serde_json::Value, version: u32) -> Result<u32, MigrationError> {
         if version > Self::CURRENT_VERSION {
             // Caller's responsibility to reject newer-than-supported
             // records — the framework's job is forward migration only.

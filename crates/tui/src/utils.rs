@@ -220,9 +220,7 @@ where
 {
     tokio::spawn(async move {
         use futures_util::FutureExt;
-        let result = std::panic::AssertUnwindSafe(future)
-            .catch_unwind()
-            .await;
+        let result = std::panic::AssertUnwindSafe(future).catch_unwind().await;
         if let Err(panic_info) = result {
             let msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
                 s.to_string()
@@ -261,9 +259,8 @@ fn write_panic_dump(
     let timestamp = Utc::now().format("%Y%m%dT%H%M%S%.3fZ");
     let filename = format!("{timestamp}-{name}.log");
     let path = crash_dir.join(&filename);
-    let contents = format!(
-        "Task: {name}\nLocation: {location}\nTimestamp: {timestamp}\nPanic: {message}\n"
-    );
+    let contents =
+        format!("Task: {name}\nLocation: {location}\nTimestamp: {timestamp}\nPanic: {message}\n");
     std::fs::write(&path, contents)?;
     Ok(())
 }
@@ -502,11 +499,7 @@ mod atomic_write_tests {
             .collect();
         let tmp_files: Vec<_> = entries
             .iter()
-            .filter(|e| {
-                e.file_name()
-                    .to_str()
-                    .is_some_and(|n| n.starts_with('.'))
-            })
+            .filter(|e| e.file_name().to_str().is_some_and(|n| n.starts_with('.')))
             .collect();
         assert!(
             tmp_files.is_empty(),

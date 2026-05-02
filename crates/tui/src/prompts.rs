@@ -426,7 +426,10 @@ mod tests {
         let prompt = compose_prompt(AppMode::Agent, Personality::Calm);
         assert!(prompt.contains("RLM Is a Specialty Tool"));
         assert!(prompt.contains("genuinely does not fit"));
-        assert!(prompt.contains("specifically a specialty tool") || prompt.contains("one specific shape of work"));
+        assert!(
+            prompt.contains("specifically a specialty tool")
+                || prompt.contains("one specific shape of work")
+        );
     }
 
     #[test]

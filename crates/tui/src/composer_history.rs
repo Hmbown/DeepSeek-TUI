@@ -168,10 +168,7 @@ mod tests {
             let history = load_history();
             assert_eq!(history.len(), MAX_HISTORY_ENTRIES);
             // Newest entries survive; oldest 50 were pruned.
-            assert_eq!(
-                history.first().map(String::as_str),
-                Some("entry 50")
-            );
+            assert_eq!(history.first().map(String::as_str), Some("entry 50"));
             assert_eq!(
                 history.last().map(String::as_str),
                 Some(format!("entry {}", MAX_HISTORY_ENTRIES + 49)).as_deref()

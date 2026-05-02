@@ -539,9 +539,8 @@ async fn main() -> Result<()> {
             use chrono::Utc;
             let ts = Utc::now().format("%Y%m%dT%H%M%S%.3fZ");
             let path = crash_dir.join(format!("{ts}-process-panic.log"));
-            let contents = format!(
-                "Process panicked\nLocation: {location}\nTimestamp: {ts}\nPanic: {msg}\n",
-            );
+            let contents =
+                format!("Process panicked\nLocation: {location}\nTimestamp: {ts}\nPanic: {msg}\n",);
             let _ = std::fs::write(&path, contents);
         }
         // Invoke the original hook (prints to stderr, etc.)
@@ -1216,7 +1215,8 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
                     crate::config::ApiProvider::Novita => "novita",
                     crate::config::ApiProvider::Fireworks => "fireworks",
                     crate::config::ApiProvider::Sglang => "sglang",
-                    crate::config::ApiProvider::Deepseek | crate::config::ApiProvider::DeepseekCN => "deepseek",
+                    crate::config::ApiProvider::Deepseek
+                    | crate::config::ApiProvider::DeepseekCN => "deepseek",
                 }
             );
         }

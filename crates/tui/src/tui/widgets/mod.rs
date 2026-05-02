@@ -377,18 +377,15 @@ impl Renderable for ComposerWidget<'_> {
                 use crate::tui::app::SubmitDisposition;
                 let (label, color) = match self.app.decide_submit_disposition() {
                     SubmitDisposition::Immediate => (None, palette::TEXT_MUTED),
-                    SubmitDisposition::Steer => (
-                        Some("↵ steer into current turn"),
-                        palette::DEEPSEEK_SKY,
-                    ),
-                    SubmitDisposition::QueueFollowUp => (
-                        Some("↵ queue for next turn"),
-                        palette::TEXT_MUTED,
-                    ),
-                    SubmitDisposition::Queue => (
-                        Some("↵ offline queue (no engine)"),
-                        palette::STATUS_WARNING,
-                    ),
+                    SubmitDisposition::Steer => {
+                        (Some("↵ steer into current turn"), palette::DEEPSEEK_SKY)
+                    }
+                    SubmitDisposition::QueueFollowUp => {
+                        (Some("↵ queue for next turn"), palette::TEXT_MUTED)
+                    }
+                    SubmitDisposition::Queue => {
+                        (Some("↵ offline queue (no engine)"), palette::STATUS_WARNING)
+                    }
                 };
                 label.map(|text| {
                     Line::from(vec![Span::styled(
