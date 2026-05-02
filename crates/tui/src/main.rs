@@ -18,6 +18,7 @@ mod client;
 mod command_safety;
 mod commands;
 mod compaction;
+mod composer_history;
 mod config;
 mod core;
 mod cycle_manager;

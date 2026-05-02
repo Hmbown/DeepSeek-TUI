@@ -968,7 +968,7 @@ impl App {
             use_bracketed_paste,
             use_paste_burst_detection,
             system_prompt: None,
-            input_history: Vec::new(),
+            input_history: crate::composer_history::load_history(),
             draft_history: VecDeque::new(),
             history_index: None,
             history_navigation_draft: None,
@@ -2524,6 +2524,10 @@ impl App {
                 let excess = self.input_history.len() - self.max_input_history;
                 self.input_history.drain(0..excess);
             }
+            // Mirror to the persisted cross-session history (#366) so
+            // arrow-up recall works across restarts. Best-effort write —
+            // see `composer_history::append_history` for failure modes.
+            crate::composer_history::append_history(&input);
         }
         self.history_index = None;
         self.history_navigation_draft = None;
