@@ -284,6 +284,12 @@ impl ComposerHistorySearch {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InputHistoryDraft {
+    input: String,
+    cursor: usize,
+}
+
 fn char_count(text: &str) -> usize {
     text.chars().count()
 }
@@ -477,6 +483,7 @@ pub struct App {
     pub input_history: Vec<String>,
     pub draft_history: VecDeque<String>,
     pub history_index: Option<usize>,
+    history_navigation_draft: Option<InputHistoryDraft>,
     pub composer_history_search: Option<ComposerHistorySearch>,
     pub selected_attachment_index: Option<usize>,
     pub auto_compact: bool,
@@ -964,6 +971,7 @@ impl App {
             input_history: Vec::new(),
             draft_history: VecDeque::new(),
             history_index: None,
+            history_navigation_draft: None,
             composer_history_search: None,
             selected_attachment_index: None,
             auto_compact,
@@ -2163,6 +2171,7 @@ impl App {
     }
 
     pub fn insert_char(&mut self, c: char) {
+        self.clear_input_history_navigation();
         self.selected_attachment_index = None;
         let cursor = self.cursor_position.min(char_count(&self.input));
         let byte_index = byte_index_at_char(&self.input, cursor);
@@ -2175,6 +2184,7 @@ impl App {
     }
 
     pub fn delete_char(&mut self) {
+        self.clear_input_history_navigation();
         self.selected_attachment_index = None;
         if self.cursor_position == 0 {
             return;
@@ -2191,6 +2201,7 @@ impl App {
     }
 
     pub fn delete_char_forward(&mut self) {
+        self.clear_input_history_navigation();
         self.selected_attachment_index = None;
         if self.input.is_empty() {
             return;
@@ -2213,6 +2224,7 @@ impl App {
     ///
     /// Returns `true` when bytes were moved into the kill buffer.
     pub fn kill_to_end_of_line(&mut self) -> bool {
+        self.clear_input_history_navigation();
         let total_chars = char_count(&self.input);
         let cursor = self.cursor_position.min(total_chars);
         let start_byte = byte_index_at_char(&self.input, cursor);
@@ -2258,6 +2270,7 @@ impl App {
         if self.kill_buffer.is_empty() {
             return false;
         }
+        self.clear_input_history_navigation();
         let text = self.kill_buffer.clone();
         let cursor = self.cursor_position.min(char_count(&self.input));
         let byte_index = byte_index_at_char(&self.input, cursor);
@@ -2293,6 +2306,7 @@ impl App {
     }
 
     pub fn clear_input(&mut self) {
+        self.clear_input_history_navigation();
         self.input.clear();
         self.cursor_position = 0;
         self.selected_attachment_index = None;
@@ -2517,6 +2531,7 @@ impl App {
             }
         }
         self.history_index = None;
+        self.history_navigation_draft = None;
         self.clear_input();
         Some(input)
     }
@@ -2632,6 +2647,12 @@ impl App {
         if self.input_history.is_empty() {
             return;
         }
+        if self.history_index.is_none() {
+            self.history_navigation_draft = Some(InputHistoryDraft {
+                input: self.input.clone(),
+                cursor: self.cursor_position,
+            });
+        }
         let new_index = match self.history_index {
             None => self.input_history.len().saturating_sub(1),
             Some(i) => i.saturating_sub(1),
@@ -2660,10 +2681,24 @@ impl App {
                     self.paste_burst.clear_after_explicit_paste();
                 } else {
                     self.history_index = None;
-                    self.clear_input();
+                    if let Some(draft) = self.history_navigation_draft.take() {
+                        self.input = draft.input;
+                        self.cursor_position = draft.cursor.min(char_count(&self.input));
+                        self.selected_attachment_index = None;
+                        self.slash_menu_hidden = false;
+                        self.paste_burst.clear_after_explicit_paste();
+                        self.needs_redraw = true;
+                    } else {
+                        self.clear_input();
+                    }
                 }
             }
         }
+    }
+
+    fn clear_input_history_navigation(&mut self) {
+        self.history_index = None;
+        self.history_navigation_draft = None;
     }
 
     pub fn clear_todos(&mut self) -> bool {
@@ -3097,6 +3132,51 @@ mod tests {
 
         // Navigate down
         app.history_down();
+    }
+
+    #[test]
+    fn input_history_down_restores_live_draft_after_accidental_up() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input_history.push("previous prompt".to_string());
+        app.input = "careful current draft".to_string();
+        app.cursor_position = "careful".chars().count();
+
+        app.history_up();
+        assert_eq!(app.input, "previous prompt");
+
+        app.history_down();
+        assert_eq!(app.input, "careful current draft");
+        assert_eq!(app.cursor_position, "careful".chars().count());
+        assert!(app.history_index.is_none());
+    }
+
+    #[test]
+    fn input_history_restores_empty_draft_at_end_of_navigation() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input_history.push("previous prompt".to_string());
+
+        app.history_up();
+        assert_eq!(app.input, "previous prompt");
+
+        app.history_down();
+        assert!(app.input.is_empty());
+        assert_eq!(app.cursor_position, 0);
+        assert!(app.history_index.is_none());
+    }
+
+    #[test]
+    fn editing_history_entry_leaves_navigation_mode() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input_history.push("previous prompt".to_string());
+        app.input = "current draft".to_string();
+        app.cursor_position = app.input.chars().count();
+
+        app.history_up();
+        app.insert_char('!');
+        app.history_down();
+
+        assert_eq!(app.input, "previous prompt!");
+        assert!(app.history_index.is_none());
     }
 
     #[test]
