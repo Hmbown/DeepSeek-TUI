@@ -429,7 +429,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "export" => session::export(app, arg),
 
         // Config commands
-        "config" => config::show_config(app),
+        "config" => config::config_command(app, arg),
         "settings" => config::show_settings(app),
         "statusline" | "status" => config::status_line(app),
         "yolo" => config::yolo(app),
