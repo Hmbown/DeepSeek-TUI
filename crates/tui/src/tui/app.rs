@@ -10,6 +10,7 @@ use thiserror::Error;
 
 use crate::compaction::CompactionConfig;
 use crate::config::{ApiProvider, Config, has_api_key, save_api_key};
+use crate::config_ui::ConfigUiMode;
 use crate::core::coherence::CoherenceState;
 use crate::cycle_manager::{CycleBriefing, CycleConfig};
 use crate::hooks::{HookContext, HookEvent, HookExecutor, HookResult};
@@ -375,6 +376,8 @@ impl AppMode {
 pub struct TuiOptions {
     pub model: String,
     pub workspace: PathBuf,
+    pub config_path: Option<PathBuf>,
+    pub config_profile: Option<String>,
     pub allow_shell: bool,
     /// Use the alternate screen buffer (fullscreen TUI).
     pub use_alt_screen: bool,
@@ -472,6 +475,8 @@ pub struct App {
     /// Cycled via Shift+Tab; initialized from config at startup.
     pub reasoning_effort: ReasoningEffort,
     pub workspace: PathBuf,
+    pub config_path: Option<PathBuf>,
+    pub config_profile: Option<String>,
     pub mcp_config_path: PathBuf,
     pub skills_dir: PathBuf,
     pub use_alt_screen: bool,
@@ -839,6 +844,8 @@ impl App {
         let TuiOptions {
             model,
             workspace,
+            config_path,
+            config_profile,
             allow_shell,
             use_alt_screen,
             use_mouse_capture,
@@ -967,6 +974,8 @@ impl App {
                     ReasoningEffort::from_setting(s)
                 }),
             workspace,
+            config_path,
+            config_profile,
             mcp_config_path,
             skills_dir,
             use_alt_screen,
@@ -2768,6 +2777,7 @@ pub enum AppAction {
         model: String,
         workspace: PathBuf,
     },
+    OpenConfigEditor(ConfigUiMode),
     OpenConfigView,
     /// Open the `/model` two-pane picker (Pro/Flash + Off/High/Max).
     OpenModelPicker,
@@ -2877,6 +2887,8 @@ mod tests {
         TuiOptions {
             model: "test-model".to_string(),
             workspace: PathBuf::from("."),
+            config_path: None,
+            config_profile: None,
             allow_shell: yolo,
             use_alt_screen: true,
             use_mouse_capture: false,

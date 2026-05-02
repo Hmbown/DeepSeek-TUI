@@ -20,6 +20,7 @@ mod commands;
 mod compaction;
 mod composer_history;
 mod config;
+mod config_ui;
 mod core;
 mod cycle_manager;
 mod deepseek_theme;
@@ -2887,6 +2888,8 @@ async fn run_interactive(
         tui::TuiOptions {
             model,
             workspace,
+            config_path: cli.config.clone(),
+            config_profile: cli.profile.clone(),
             allow_shell: cli.yolo || config.allow_shell(),
             use_alt_screen,
             use_mouse_capture,
