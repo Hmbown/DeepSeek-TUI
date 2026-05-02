@@ -318,6 +318,16 @@ fn is_restricted_ip(ip: &std::net::IpAddr) -> bool {
                 || v4.octets()[0] >= 240
         }
         std::net::IpAddr::V6(v6) => {
+            // IPv4-mapped IPv6 addresses (::ffff:a.b.c.d) — unwrap and check as IPv4
+            // to prevent bypass via ::ffff:127.0.0.1 etc.
+            if v6.is_unspecified()
+                || matches!(v6.octets(), [0,0,0,0,0,0,0,0,0,0,0xff,0xff, ..])
+            {
+                return true;
+            }
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_restricted_ip(&std::net::IpAddr::V4(v4));
+            }
             v6.is_loopback()
                 || v6.is_multicast()
                 || matches!(v6.segments(), [0xfc00..=0xfdff, ..]) // ULA fc00::/7
@@ -451,6 +461,17 @@ mod tests {
     fn rejects_ipv6_ula() {
         assert!(is_restricted_ip(&"fc00::1".parse().unwrap()));
         assert!(is_restricted_ip(&"fd12:3456::1".parse().unwrap()));
+    }
+
+    #[test]
+    fn rejects_ipv4_mapped_ipv6() {
+        // ::ffff:127.0.0.1 — IPv4-mapped IPv6 loopback bypass
+        assert!(is_restricted_ip(&"::ffff:127.0.0.1".parse().unwrap()));
+        assert!(is_restricted_ip(&"::ffff:10.0.0.1".parse().unwrap()));
+        assert!(is_restricted_ip(&"::ffff:169.254.169.254".parse().unwrap()));
+        assert!(is_restricted_ip(&"::ffff:192.168.1.1".parse().unwrap()));
+        // :: (unspecified)
+        assert!(is_restricted_ip(&"::".parse().unwrap()));
     }
 
     #[test]
