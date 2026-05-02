@@ -21,6 +21,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 
 use crate::network_policy::{Decision, NetworkPolicyDecider, host_from_url};
+use crate::utils::write_atomic;
 
 // === Error diagnostics helpers (#71) ===
 
@@ -1488,7 +1489,7 @@ pub fn save_config(path: &Path, cfg: &McpConfig) -> Result<()> {
         })?;
     }
     let rendered = serde_json::to_string_pretty(cfg).context("Failed to serialize MCP config")?;
-    fs::write(path, rendered)
+    write_atomic(path, rendered.as_bytes())
         .with_context(|| format!("Failed to write MCP config {}", path.display()))?;
     Ok(())
 }
@@ -1529,7 +1530,8 @@ pub fn init_config(path: &Path, force: bool) -> Result<McpWriteStatus> {
             format!("Failed to create MCP config directory {}", parent.display())
         })?;
     }
-    fs::write(path, mcp_template_json()?)
+    let template = mcp_template_json()?;
+    write_atomic(path, template.as_bytes())
         .with_context(|| format!("Failed to write MCP config {}", path.display()))?;
     Ok(status)
 }
@@ -1981,7 +1983,7 @@ fn save_legacy(path: &Path, config: &LegacyMcpConfig) -> Result<()> {
         fs::create_dir_all(parent)?;
     }
     let contents = serde_json::to_string_pretty(config)?;
-    fs::write(path, contents)?;
+    write_atomic(path, contents.as_bytes())?;
     Ok(())
 }
 
