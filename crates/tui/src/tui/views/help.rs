@@ -88,7 +88,7 @@ impl HelpView {
     }
 
     pub fn new_for_locale(locale: Locale) -> Self {
-        let entries = build_entries();
+        let entries = build_entries(locale);
         let mut view = Self {
             locale,
             entries,
@@ -144,17 +144,18 @@ impl HelpView {
     }
 }
 
-fn build_entries() -> Vec<HelpEntry> {
+fn build_entries(locale: Locale) -> Vec<HelpEntry> {
     let mut entries = Vec::new();
 
     for command in commands::COMMANDS {
         let label = format!("/{}", command.name);
+        let localized = command.description_for(locale);
         let description = if command.aliases.is_empty() {
-            command.description.to_string()
+            localized.to_string()
         } else {
             format!(
                 "{}  (aliases: {})",
-                command.description,
+                localized,
                 command
                     .aliases
                     .iter()
