@@ -1,4 +1,3 @@
-// TODO(integrate): Wire command safety analysis into shell tool approval flow
 #![allow(dead_code)]
 
 //! Command safety analysis for shell execution

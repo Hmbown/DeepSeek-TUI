@@ -1,4 +1,3 @@
-// TODO(integrate): Wire streaming collector into TUI rendering pipeline
 #![allow(dead_code)]
 
 //! Markdown stream collector for newline-gated rendering.
