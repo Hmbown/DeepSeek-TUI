@@ -968,7 +968,24 @@ async fn run_event_loop(
                         let session_approved =
                             app.approval_session_approved.contains(&approval_key)
                                 || app.approval_session_approved.contains(&tool_name);
-                        if session_approved || app.approval_mode == ApprovalMode::Auto {
+                        let session_denied =
+                            app.approval_session_denied.contains(&approval_key)
+                                || app.approval_session_denied.contains(&tool_name);
+                        if session_denied {
+                            // The user already said no to this exact tool /
+                            // approval key in this session; auto-deny so the
+                            // model's retry loop doesn't keep re-prompting
+                            // (#360).
+                            log_sensitive_event(
+                                "tool.approval.auto_deny_session",
+                                serde_json::json!({
+                                    "tool_name": tool_name,
+                                    "approval_key": approval_key,
+                                    "session_id": app.current_session_id,
+                                }),
+                            );
+                            let _ = engine_handle.deny_tool_call(id.clone()).await;
+                        } else if session_approved || app.approval_mode == ApprovalMode::Auto {
                             log_sensitive_event(
                                 "tool.approval.auto_approve",
                                 serde_json::json!({
@@ -3917,7 +3934,7 @@ async fn handle_view_events(
                     // Store both the tool name (backward compat) and the
                     // approval key (fingerprint-based).
                     app.approval_session_approved.insert(tool_name.clone());
-                    app.approval_session_approved.insert(approval_key);
+                    app.approval_session_approved.insert(approval_key.clone());
                 }
 
                 match decision {
@@ -3925,6 +3942,15 @@ async fn handle_view_events(
                         let _ = engine_handle.approve_tool_call(tool_id).await;
                     }
                     ReviewDecision::Denied | ReviewDecision::Abort => {
+                        // Cache the denial so the model retry-loop doesn't
+                        // re-prompt for the same command (#360). Only when
+                        // the user actively denied (not when the timeout
+                        // fired) — a timeout might mean the user stepped
+                        // away rather than refused.
+                        if !timed_out {
+                            app.approval_session_denied.insert(tool_name.clone());
+                            app.approval_session_denied.insert(approval_key);
+                        }
                         let _ = engine_handle.deny_tool_call(tool_id).await;
                     }
                 }

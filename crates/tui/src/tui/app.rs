@@ -556,6 +556,12 @@ pub struct App {
     pub clipboard: ClipboardHandler,
     // Tool approval session allowlist
     pub approval_session_approved: HashSet<String>,
+    /// Approval keys (or tool names) the user has denied or aborted in
+    /// this session. Subsequent re-requests for the same approval key
+    /// auto-deny without re-prompting (#360) — the model can retry a
+    /// dangerous command after being told no, but the user shouldn't
+    /// have to keep dismissing the same dialog.
+    pub approval_session_denied: HashSet<String>,
     pub approval_mode: ApprovalMode,
     // Modal view stack (approval/help/etc.)
     pub view_stack: ViewStack,
@@ -1021,6 +1027,7 @@ impl App {
             yolo_restore,
             clipboard: ClipboardHandler::new(),
             approval_session_approved: HashSet::new(),
+            approval_session_denied: HashSet::new(),
             approval_mode: if matches!(initial_mode, AppMode::Yolo) {
                 ApprovalMode::Auto
             } else {
