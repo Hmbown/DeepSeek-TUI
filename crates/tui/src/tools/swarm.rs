@@ -1,4 +1,12 @@
 //! Swarm orchestration for spawning multiple sub-agents with dependencies.
+//!
+//! NOTE: As of #336 the model-callable swarm tool surface has been removed.
+//! The types in this file (SwarmOutcome, SwarmTaskStatus, etc.) are still
+//! consumed by `core/events.rs::Event::SwarmProgress` and the matching UI
+//! handler in `tui/ui.rs`, so the file is parked rather than deleted.
+//! Full cascade (delete this file + Event variant + UI handlers + app state
+//! + routing helpers) tracked in #357.
+#![allow(dead_code)]
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;

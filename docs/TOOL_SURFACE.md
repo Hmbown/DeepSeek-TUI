@@ -136,11 +136,9 @@ Large logs and command outputs should be artifacts with compact summaries in the
 
 ### Sub-agents
 
-`agent_spawn`, `agent_swarm`, `spawn_agents_on_csv`, plus the supporting
-tools (`agent_result` / `swarm_result` / `wait` / `send_input` /
-`agent_assign` / `agent_cancel` / `resume_agent` / `agent_list` /
-`report_agent_job_result` / `swarm_status`). See `agent.txt` for the
-delegation protocol.
+`agent_spawn` plus the supporting tools (`agent_result` / `wait` / `send_input` /
+`agent_assign` / `agent_cancel` / `resume_agent` / `agent_list`).
+See `agent.txt` for the delegation protocol.
 
 ### Parallel fan-out: cost-class caps
 
