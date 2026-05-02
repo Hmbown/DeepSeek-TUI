@@ -1323,6 +1323,14 @@ async fn run_event_loop(
                                     // Recreate the engine so it picks up the newly saved key
                                     // without requiring a full process restart.
                                     let _ = engine_handle.send(Op::Shutdown).await;
+                                    // Stamp the new key on the long-lived
+                                    // `Config` reference so any future clone
+                                    // (e.g. a subsequent /provider switch)
+                                    // sees it; the explicit-override path
+                                    // in `deepseek_api_key` (#343) makes
+                                    // this win even if the OS keyring
+                                    // still holds a stale credential.
+                                    config.api_key = Some(key.clone());
                                     let mut refreshed_config = config.clone();
                                     refreshed_config.api_key = Some(key);
                                     let engine_config = build_engine_config(app, &refreshed_config);
@@ -3367,6 +3375,22 @@ async fn execute_command_input(
     input: &str,
 ) -> Result<bool> {
     let result = commands::execute(input, app);
+    // After /logout: clear the in-memory api_key fields so the next
+    // onboarding round entering a new key doesn't see the stale value
+    // (#343). The on-disk + keyring side is handled by clear_api_key()
+    // inside commands::config::logout.
+    if input.trim().eq_ignore_ascii_case("/logout") {
+        config.api_key = None;
+        if let Some(providers) = config.providers.as_mut() {
+            providers.deepseek.api_key = None;
+            providers.deepseek_cn.api_key = None;
+            providers.nvidia_nim.api_key = None;
+            providers.openrouter.api_key = None;
+            providers.novita.api_key = None;
+            providers.fireworks.api_key = None;
+            providers.sglang.api_key = None;
+        }
+    }
     apply_command_result(app, engine_handle, task_manager, config, result).await
 }
 
