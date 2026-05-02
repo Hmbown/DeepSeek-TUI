@@ -92,18 +92,14 @@ pub fn append_history(entry: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    /// Serialise tests in this module — they all mutate the HOME env
-    /// var, so running in parallel they'd stomp on each other.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn with_temp_home<R>(f: impl FnOnce() -> R) -> R {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // Use the crate-wide test env mutex so we don't race with other
+        // tests (config, restore, etc.) that also mutate HOME.
+        let _guard = crate::test_support::lock_test_env();
         let tmp = tempfile::tempdir().expect("tempdir");
         let prev = std::env::var_os("HOME");
-        // SAFETY: tests in this crate run with single-threaded env mutation
-        // by harness convention; we restore on exit.
+        // SAFETY: env mutation is serialized by the lock above.
         unsafe { std::env::set_var("HOME", tmp.path()) };
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
         match prev {
