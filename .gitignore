@@ -73,3 +73,4 @@ apps/
 .claude/scheduled_tasks.lock
 .claude/worktrees/
 .worktrees/
+.ace-tool/

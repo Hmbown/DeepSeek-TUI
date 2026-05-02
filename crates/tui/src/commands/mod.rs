@@ -429,7 +429,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "export" => session::export(app, arg),
 
         // Config commands
-        "config" => config::show_config(app),
+        "config" => config::show_config(app, arg),
         "settings" => config::show_settings(app),
         "statusline" | "status" => config::status_line(app),
         "yolo" => config::yolo(app),
@@ -499,6 +499,11 @@ pub fn persist_status_items(
     items: &[crate::config::StatusItem],
 ) -> anyhow::Result<std::path::PathBuf> {
     config::persist_status_items(items)
+}
+
+/// Persist a root-level string key in `config.toml`.
+pub fn persist_root_string_key(key: &str, value: &str) -> anyhow::Result<std::path::PathBuf> {
+    config::persist_root_string_key(key, value)
 }
 
 /// Execute a Recursive Language Model (RLM) turn — Algorithm 1 from
@@ -665,6 +670,8 @@ mod tests {
         let options = TuiOptions {
             model: "deepseek-v4-pro".to_string(),
             workspace: PathBuf::from("."),
+            config_path: None,
+            config_profile: None,
             allow_shell: false,
             use_alt_screen: true,
             use_mouse_capture: false,
@@ -746,7 +753,12 @@ mod tests {
         let mut app = create_test_app();
         let result = execute("/config", &mut app);
         assert!(result.message.is_none());
-        assert!(matches!(result.action, Some(AppAction::OpenConfigView)));
+        assert!(matches!(
+            result.action,
+            Some(AppAction::OpenConfigEditor(
+                crate::config_ui::ConfigUiMode::Tui
+            ))
+        ));
     }
 
     #[test]
@@ -792,6 +804,8 @@ mod tests {
         let options = TuiOptions {
             model: "deepseek-v4-pro".to_string(),
             workspace: workspace.clone(),
+            config_path: None,
+            config_profile: None,
             allow_shell: false,
             use_alt_screen: true,
             use_mouse_capture: false,

@@ -33,6 +33,7 @@ use crate::client::DeepSeekClient;
 use crate::commands;
 use crate::compaction::estimate_input_tokens_conservative;
 use crate::config::{ApiProvider, Config, DEFAULT_NVIDIA_NIM_BASE_URL};
+use crate::config_ui::{self, ConfigUiMode, WebConfigSession, WebConfigSessionEvent};
 use crate::core::coherence::CoherenceState;
 use crate::core::engine::{EngineConfig, EngineHandle, spawn_engine};
 use crate::core::events::Event as EngineEvent;
@@ -409,8 +410,72 @@ async fn run_event_loop(
     // `tui::frame_rate_limiter` for the rationale; ports the small piece of
     // codex's frame coalescing that maps cleanly onto our poll-based loop.
     let mut frame_rate_limiter = crate::tui::frame_rate_limiter::FrameRateLimiter::default();
+    let mut web_config_session: Option<WebConfigSession> = None;
 
     loop {
+        if let Some(session) = web_config_session.as_mut() {
+            let mut keep_session = true;
+            while let Ok(event) = session.receiver.try_recv() {
+                match event {
+                    WebConfigSessionEvent::Draft(doc) => {
+                        match config_ui::apply_document(doc, app, config, false) {
+                            Ok(outcome) if outcome.changed => {
+                                if outcome.requires_engine_sync {
+                                    apply_model_and_compaction_update(
+                                        &engine_handle,
+                                        app.compaction_config(),
+                                    )
+                                    .await;
+                                }
+                                app.status_message = Some(format!(
+                                    "Web config draft applied: {}",
+                                    outcome.final_message
+                                ));
+                            }
+                            Ok(_) => {}
+                            Err(err) => {
+                                app.add_message(HistoryCell::System {
+                                    content: format!("Web config draft apply failed: {err}"),
+                                });
+                            }
+                        }
+                    }
+                    WebConfigSessionEvent::Committed(doc) => {
+                        keep_session = false;
+                        match config_ui::apply_document(doc, app, config, true) {
+                            Ok(outcome) => {
+                                if outcome.requires_engine_sync {
+                                    apply_model_and_compaction_update(
+                                        &engine_handle,
+                                        app.compaction_config(),
+                                    )
+                                    .await;
+                                }
+                                app.add_message(HistoryCell::System {
+                                    content: outcome.final_message.clone(),
+                                });
+                                app.status_message = Some(outcome.final_message);
+                            }
+                            Err(err) => {
+                                app.add_message(HistoryCell::System {
+                                    content: format!("Web config commit failed: {err}"),
+                                });
+                            }
+                        }
+                    }
+                    WebConfigSessionEvent::Failed(err) => {
+                        keep_session = false;
+                        app.add_message(HistoryCell::System {
+                            content: format!("Web config session failed: {err}"),
+                        });
+                    }
+                }
+            }
+            if !keep_session {
+                web_config_session = None;
+            }
+        }
+
         if last_task_refresh.elapsed() >= Duration::from_millis(2500) {
             let tasks = task_manager.list_tasks(Some(10)).await;
             app.task_panel = tasks.into_iter().map(task_summary_to_panel_entry).collect();
@@ -1134,7 +1199,17 @@ async fn run_event_loop(
             if !events.is_empty() {
                 app.needs_redraw = true;
             }
-            if handle_view_events(app, config, &task_manager, &mut engine_handle, events).await? {
+            if handle_view_events(
+                terminal,
+                app,
+                config,
+                &task_manager,
+                &mut engine_handle,
+                &mut web_config_session,
+                events,
+            )
+            .await?
+            {
                 return Ok(());
             }
         }
@@ -1274,8 +1349,16 @@ async fn run_event_loop(
                 && let Event::Mouse(mouse) = evt
             {
                 let events = handle_mouse_event(app, mouse);
-                if handle_view_events(app, config, &task_manager, &mut engine_handle, events)
-                    .await?
+                if handle_view_events(
+                    terminal,
+                    app,
+                    config,
+                    &task_manager,
+                    &mut engine_handle,
+                    &mut web_config_session,
+                    events,
+                )
+                .await?
                 {
                     return Ok(());
                 }
@@ -1471,8 +1554,16 @@ async fn run_event_loop(
 
             if !app.view_stack.is_empty() {
                 let events = app.view_stack.handle_key(key);
-                if handle_view_events(app, config, &task_manager, &mut engine_handle, events)
-                    .await?
+                if handle_view_events(
+                    terminal,
+                    app,
+                    config,
+                    &task_manager,
+                    &mut engine_handle,
+                    &mut web_config_session,
+                    events,
+                )
+                .await?
                 {
                     return Ok(());
                 }
@@ -1930,10 +2021,12 @@ async fn run_event_loop(
                         }
                         if input.starts_with('/') {
                             if execute_command_input(
+                                terminal,
                                 app,
                                 &mut engine_handle,
                                 &task_manager,
                                 config,
+                                &mut web_config_session,
                                 &input,
                             )
                             .await?
@@ -3020,10 +3113,14 @@ fn workspace_path_to_picker_string(path: &Path) -> Option<String> {
 }
 
 async fn apply_command_result(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     app: &mut App,
     engine_handle: &mut EngineHandle,
     task_manager: &SharedTaskManager,
     config: &mut Config,
+    #[cfg_attr(not(feature = "web"), allow(unused_variables))] web_config_session: &mut Option<
+        WebConfigSession,
+    >,
     result: commands::CommandResult,
 ) -> Result<bool> {
     if let Some(msg) = result.message {
@@ -3112,6 +3209,70 @@ async fn apply_command_result(
             AppAction::UpdateCompaction(compaction) => {
                 apply_model_and_compaction_update(engine_handle, compaction).await;
             }
+            AppAction::OpenConfigEditor(mode) => match mode {
+                ConfigUiMode::Native => {
+                    if app.view_stack.top_kind() != Some(ModalKind::Config) {
+                        app.view_stack.push(ConfigView::new_for_app(app));
+                    }
+                }
+                ConfigUiMode::Tui => {
+                    pause_terminal(
+                        terminal,
+                        app.use_alt_screen,
+                        app.use_mouse_capture,
+                        app.use_bracketed_paste,
+                    )?;
+                    let editor_result = config_ui::run_tui_editor(app, config)
+                        .and_then(|doc| config_ui::apply_document(doc, app, config, true));
+                    resume_terminal(
+                        terminal,
+                        app.use_alt_screen,
+                        app.use_mouse_capture,
+                        app.use_bracketed_paste,
+                    )?;
+                    match editor_result {
+                        Ok(outcome) => {
+                            if outcome.requires_engine_sync {
+                                apply_model_and_compaction_update(
+                                    engine_handle,
+                                    app.compaction_config(),
+                                )
+                                .await;
+                            }
+                            app.add_message(HistoryCell::System {
+                                content: outcome.final_message.clone(),
+                            });
+                            app.status_message = Some(outcome.final_message);
+                        }
+                        Err(err) => {
+                            app.add_message(HistoryCell::System {
+                                content: format!("Config UI failed: {err}"),
+                            });
+                        }
+                    }
+                }
+                ConfigUiMode::Web => {
+                    #[cfg(feature = "web")]
+                    {
+                        let session = config_ui::start_web_editor(app, config).await?;
+                        let url = format!("http://{}", session.addr);
+                        let open_err = config_ui::open_browser(&url).err();
+                        if let Some(err) = open_err {
+                            app.add_message(HistoryCell::System {
+                                content: format!("Failed to open browser automatically: {err}"),
+                            });
+                        }
+                        app.status_message = Some(format!("web ui listen on: {url}"));
+                        *web_config_session = Some(session);
+                    }
+                    #[cfg(not(feature = "web"))]
+                    {
+                        app.add_message(HistoryCell::System {
+                            content: "This build does not include the web config UI.".to_string(),
+                        });
+                    }
+                }
+            },
             AppAction::OpenConfigView => {
                 if app.view_stack.top_kind() != Some(ModalKind::Config) {
                     app.view_stack.push(ConfigView::new_for_app(app));
@@ -3387,14 +3548,25 @@ fn handle_shell_job_action(app: &mut App, action: crate::tui::app::ShellJobActio
 }
 
 async fn execute_command_input(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     app: &mut App,
     engine_handle: &mut EngineHandle,
     task_manager: &SharedTaskManager,
     config: &mut Config,
+    web_config_session: &mut Option<WebConfigSession>,
     input: &str,
 ) -> Result<bool> {
     let result = commands::execute(input, app);
-    apply_command_result(app, engine_handle, task_manager, config, result).await
+    apply_command_result(
+        terminal,
+        app,
+        engine_handle,
+        task_manager,
+        config,
+        web_config_session,
+        result,
+    )
+    .await
 }
 
 async fn steer_user_message(
@@ -3878,18 +4050,28 @@ fn toggle_live_transcript_overlay(app: &mut App) {
 }
 
 async fn handle_view_events(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     app: &mut App,
     config: &mut Config,
     task_manager: &SharedTaskManager,
     engine_handle: &mut EngineHandle,
+    web_config_session: &mut Option<WebConfigSession>,
     events: Vec<ViewEvent>,
 ) -> Result<bool> {
     for event in events {
         match event {
             ViewEvent::CommandPaletteSelected { action } => match action {
                 crate::tui::views::CommandPaletteAction::ExecuteCommand { command } => {
-                    if execute_command_input(app, engine_handle, task_manager, config, &command)
-                        .await?
+                    if execute_command_input(
+                        terminal,
+                        app,
+                        engine_handle,
+                        task_manager,
+                        config,
+                        &mut *web_config_session,
+                        &command,
+                    )
+                    .await?
                     {
                         return Ok(true);
                     }
