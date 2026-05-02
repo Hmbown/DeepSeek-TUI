@@ -758,12 +758,14 @@ pub struct QueuedMessage {
 pub enum SubmitDisposition {
     /// Engine idle and online: send immediately.
     Immediate,
-    /// Offline mode: park on `queued_messages`.
+    /// Park on `queued_messages` (offline, or engine busy — #382).
     Queue,
-    /// Engine busy and online: forward as a mid-turn steer.
+    /// Explicit steer via Ctrl+Enter (#382). Not returned by `decide_submit_disposition`.
+    #[allow(dead_code)]
     Steer,
-    /// Model is actively streaming text; park on `queued_messages` for
-    /// dispatch after TurnComplete.
+    /// Park on `queued_messages` for dispatch after TurnComplete.
+    /// Legacy path; #382 unified busy states under `Queue`.
+    #[allow(dead_code)]
     QueueFollowUp,
 }
 
@@ -2612,12 +2614,13 @@ impl App {
 
     /// Decide how to route a fresh composer submit.
     ///
+    /// #382: default to Queue when busy — the user shouldn't have to distinguish
+    /// "streaming" from "tool execution". Ctrl+Enter overrides to Steer.
+    ///
     /// Truth table:
     ///   offline=F, busy=F → Immediate
-    ///   offline=F, busy=T, streaming → QueueFollowUp
-    ///   offline=F, busy=T, not streaming → Steer
-    ///   offline=T, busy=F → Queue
-    ///   offline=T, busy=T → Queue
+    ///   offline=F, busy=T → Queue  (was Steer for non-streaming; now unified)
+    ///   offline=T, busy=* → Queue
     #[must_use]
     pub fn decide_submit_disposition(&self) -> SubmitDisposition {
         if self.offline_mode {
@@ -2626,13 +2629,8 @@ impl App {
         if !self.is_loading {
             return SubmitDisposition::Immediate;
         }
-        // Busy + streaming text: queue for after TurnComplete.
-        // Busy + not streaming (tool execution): forward as a steer.
-        if self.streaming_message_index.is_some() {
-            SubmitDisposition::QueueFollowUp
-        } else {
-            SubmitDisposition::Steer
-        }
+        // Busy: always queue. Ctrl+Enter routes through steer_user_message directly.
+        SubmitDisposition::Queue
     }
 
     /// Mark the in-flight streaming Assistant cell as interrupted: prepend
@@ -3541,26 +3539,23 @@ mod tests {
     }
 
     #[test]
-    fn submit_disposition_steer_when_busy_and_online_not_streaming() {
-        // Busy + not streaming (tool execution phase) → Steer
+    fn submit_disposition_queue_when_busy_and_online_not_streaming() {
+        // #382: Busy + not streaming → Queue (was Steer; now unified)
         let mut app = App::new(test_options(false), &Config::default());
         app.is_loading = true;
         app.offline_mode = false;
         // streaming_message_index is None (default) → tool execution phase
-        assert_eq!(app.decide_submit_disposition(), SubmitDisposition::Steer);
+        assert_eq!(app.decide_submit_disposition(), SubmitDisposition::Queue);
     }
 
     #[test]
-    fn submit_disposition_queue_follow_up_when_streaming() {
-        // Busy + actively streaming → QueueFollowUp
+    fn submit_disposition_queue_when_busy_and_streaming() {
+        // #382: Busy + streaming → Queue (was QueueFollowUp; now unified)
         let mut app = App::new(test_options(false), &Config::default());
         app.is_loading = true;
         app.offline_mode = false;
         app.streaming_message_index = Some(0);
-        assert_eq!(
-            app.decide_submit_disposition(),
-            SubmitDisposition::QueueFollowUp
-        );
+        assert_eq!(app.decide_submit_disposition(), SubmitDisposition::Queue);
     }
 
     #[test]

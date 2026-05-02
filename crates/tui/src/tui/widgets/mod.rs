@@ -388,16 +388,33 @@ impl Renderable for ComposerWidget<'_> {
                 // Queue. The disposition flips with engine state so this hint
                 // is the only reliable cue before pressing Enter.
                 use crate::tui::app::SubmitDisposition;
+                let queue_count = self.app.queued_message_count();
                 let (label, color) = match self.app.decide_submit_disposition() {
-                    SubmitDisposition::Immediate => (None, palette::TEXT_MUTED),
-                    SubmitDisposition::Steer => {
-                        (Some("↵ steer into current turn"), palette::DEEPSEEK_SKY)
-                    }
-                    SubmitDisposition::QueueFollowUp => {
-                        (Some("↵ queue for next turn"), palette::TEXT_MUTED)
+                    SubmitDisposition::Immediate => {
+                        if queue_count > 0 {
+                            (Some(format!("↵ send ({} queued)", queue_count)), palette::DEEPSEEK_SKY)
+                        } else {
+                            (None, palette::TEXT_MUTED)
+                        }
                     }
                     SubmitDisposition::Queue => {
-                        (Some("↵ offline queue (no engine)"), palette::STATUS_WARNING)
+                        if self.app.offline_mode {
+                            (Some("↵ offline queue".to_string()), palette::STATUS_WARNING)
+                        } else {
+                            let label = if queue_count > 0 {
+                                format!("↵ queue ({} waiting)", queue_count.saturating_add(1))
+                            } else {
+                                "↵ queue for next turn".to_string()
+                            };
+                            (Some(label), palette::TEXT_MUTED)
+                        }
+                    }
+                    // Steer and QueueFollowUp are now only reached via Ctrl+Enter override.
+                    SubmitDisposition::Steer => {
+                        (Some("↵ steering (Ctrl+Enter)".to_string()), palette::DEEPSEEK_SKY)
+                    }
+                    SubmitDisposition::QueueFollowUp => {
+                        (Some("↵ queued (Ctrl+Enter to steer)".to_string()), palette::TEXT_MUTED)
                     }
                 };
                 label.map(|text| {

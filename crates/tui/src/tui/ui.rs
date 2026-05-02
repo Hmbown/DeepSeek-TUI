@@ -83,7 +83,7 @@ use crate::tui::user_input::UserInputView;
 use super::active_cell::ActiveCell;
 use super::app::{
     App, AppAction, AppMode, OnboardingState, QueuedMessage, SidebarFocus, StatusToastLevel,
-    SubmitDisposition, ToolDetailRecord, TuiOptions,
+    SubmitDisposition, TaskPanelEntry, ToolDetailRecord, TuiOptions,
 };
 use super::approval::{
     ApprovalMode, ApprovalRequest, ApprovalView, ElevationRequest, ElevationView, ReviewDecision,
@@ -429,7 +429,31 @@ async fn run_event_loop(
 
         if last_task_refresh.elapsed() >= Duration::from_millis(2500) {
             let tasks = task_manager.list_tasks(Some(10)).await;
-            app.task_panel = tasks.into_iter().map(task_summary_to_panel_entry).collect();
+            let mut entries: Vec<TaskPanelEntry> =
+                tasks.into_iter().map(task_summary_to_panel_entry).collect();
+
+            // #373: merge live shell jobs into the Tasks panel.
+            if let Some(shell_mgr) = app.runtime_services.shell_manager.as_ref()
+                && let Ok(mut mgr) = shell_mgr.lock()
+            {
+                for job in mgr.list_jobs() {
+                    let status = match job.status {
+                        crate::tools::shell::ShellStatus::Running => "running",
+                        crate::tools::shell::ShellStatus::Completed => "completed",
+                        crate::tools::shell::ShellStatus::Failed => "failed",
+                        crate::tools::shell::ShellStatus::Killed => "canceled",
+                        crate::tools::shell::ShellStatus::TimedOut => "failed",
+                    };
+                    entries.push(TaskPanelEntry {
+                        id: job.id,
+                        status: status.to_string(),
+                        prompt_summary: format!("shell: {}", job.command),
+                        duration_ms: Some(job.elapsed_ms),
+                    });
+                }
+            }
+
+            app.task_panel = entries;
             last_task_refresh = Instant::now();
             app.needs_redraw = true;
         }
@@ -618,11 +642,31 @@ async fn run_event_loop(
                         // tool that changes task state completes, so the
                         // Tasks panel stays in sync with tool execution
                         // rather than waiting up to 2.5 s for the periodic
-                        // poll.
-                        if matches!(name.as_str(), "agent_spawn" | "agent_cancel" | "todo_write") {
+                        // poll. Also merge shell jobs (#373).
+                        if matches!(name.as_str(), "agent_spawn" | "agent_cancel" | "todo_write" | "task_shell_start" | "exec_shell") {
                             let tasks = task_manager.list_tasks(Some(10)).await;
-                            app.task_panel =
+                            let mut entries: Vec<TaskPanelEntry> =
                                 tasks.into_iter().map(task_summary_to_panel_entry).collect();
+                            if let Some(shell_mgr) = app.runtime_services.shell_manager.as_ref()
+                                && let Ok(mut mgr) = shell_mgr.lock()
+                            {
+                                for job in mgr.list_jobs() {
+                                    let status = match job.status {
+                                        crate::tools::shell::ShellStatus::Running => "running",
+                                        crate::tools::shell::ShellStatus::Completed => "completed",
+                                        crate::tools::shell::ShellStatus::Failed => "failed",
+                                        crate::tools::shell::ShellStatus::Killed => "canceled",
+                                        crate::tools::shell::ShellStatus::TimedOut => "failed",
+                                    };
+                                    entries.push(TaskPanelEntry {
+                                        id: job.id,
+                                        status: status.to_string(),
+                                        prompt_summary: format!("shell: {}", job.command),
+                                        duration_ms: Some(job.elapsed_ms),
+                                    });
+                                }
+                            }
+                            app.task_panel = entries;
                             last_task_refresh = Instant::now();
                         }
                         if matches!(
@@ -1970,6 +2014,43 @@ async fn run_event_loop(
                         ) =>
                 {
                     continue;
+                }
+                // #382: Ctrl+Enter forces a steer into the current turn.
+                KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    if let Some(input) = app.submit_input() {
+                        if input.starts_with('/') {
+                            if execute_command_input(
+                                terminal,
+                                app,
+                                &mut engine_handle,
+                                &task_manager,
+                                config,
+                                &mut web_config_session,
+                                &input,
+                            )
+                            .await?
+                            {
+                                return Ok(());
+                            }
+                        } else {
+                            let queued = if let Some(mut draft) = app.queued_draft.take() {
+                                draft.display = input;
+                                draft
+                            } else {
+                                build_queued_message(app, input)
+                            };
+                            // Force steer: bypass decide_submit_disposition.
+                            if let Err(err) =
+                                steer_user_message(app, &engine_handle, queued.clone()).await
+                            {
+                                app.queue_message(queued);
+                                app.status_message = Some(format!(
+                                    "Steer failed ({err}); queued {} message(s)",
+                                    app.queued_message_count()
+                                ));
+                            }
+                        }
+                    }
                 }
                 KeyCode::Enter => {
                     if let Some(input) = app.submit_input() {
@@ -3651,14 +3732,20 @@ async fn submit_or_steer_message(
     match app.decide_submit_disposition() {
         SubmitDisposition::Immediate => dispatch_user_message(app, engine_handle, message).await,
         SubmitDisposition::Queue => {
+            let count = app.queued_message_count().saturating_add(1);
             app.queue_message(message);
-            app.status_message = Some(format!(
-                "Offline mode: queued {} message(s) - /queue to review",
-                app.queued_message_count()
-            ));
+            if app.offline_mode {
+                app.status_message = Some(format!(
+                    "Offline mode: queued {count} message(s) - /queue to review"
+                ));
+            } else {
+                app.status_message = Some(format!(
+                    "Queued for next turn: {count} message(s) - Ctrl+Enter to steer, /queue to review"
+                ));
+            }
             Ok(())
         }
-        SubmitDisposition::QueueFollowUp => queue_follow_up(app, message).await,
+        // Steer and QueueFollowUp are now only reached via Ctrl+Enter override.
         SubmitDisposition::Steer => {
             if let Err(err) = steer_user_message(app, engine_handle, message.clone()).await {
                 app.queue_message(message);
@@ -3666,9 +3753,16 @@ async fn submit_or_steer_message(
                     "Steer failed ({err}); queued {} message(s) - /queue to view/edit",
                     app.queued_message_count()
                 ));
+            } else {
+                app.push_status_toast(
+                    "Steering into current turn",
+                    StatusToastLevel::Info,
+                    Some(1_500),
+                );
             }
             Ok(())
         }
+        SubmitDisposition::QueueFollowUp => queue_follow_up(app, message).await,
     }
 }
 
