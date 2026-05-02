@@ -202,6 +202,72 @@ pub fn flush_and_sync(writer: &mut std::io::BufWriter<std::fs::File>) -> std::io
     writer.get_ref().sync_all()
 }
 
+/// Spawn a tokio task with panic supervision.
+///
+/// Wraps the future in `AssertUnwindSafe` + `catch_unwind`. On panic:
+/// 1. Logs the panic with the task name and caller location via `tracing::error!`.
+/// 2. Writes a crash dump to `~/.deepseek/crashes/<timestamp>-<name>.log`.
+///
+/// The returned `JoinHandle` resolves to `()` — the panic is caught and
+/// handled internally so the parent process stays alive.
+pub fn spawn_supervised<F>(
+    name: &'static str,
+    location: &'static std::panic::Location<'static>,
+    future: F,
+) -> tokio::task::JoinHandle<()>
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    tokio::spawn(async move {
+        use futures_util::FutureExt;
+        let result = std::panic::AssertUnwindSafe(future)
+            .catch_unwind()
+            .await;
+        if let Err(panic_info) = result {
+            let msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
+                s.to_string()
+            } else if let Some(s) = panic_info.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "unknown panic".to_string()
+            };
+            tracing::error!(
+                target: "panic",
+                "Task '{name}' panicked at {}: {msg}",
+                location,
+            );
+            // Write crash dump (best-effort)
+            let _ = write_panic_dump(name, location, &msg);
+        }
+    })
+}
+
+/// Write a panic dump file to `~/.deepseek/crashes/`.
+///
+/// Creates the directory if needed and writes a timestamped log
+/// with the task name, caller location, and panic message.
+/// Best-effort — failures are silently ignored.
+fn write_panic_dump(
+    name: &str,
+    location: &std::panic::Location<'_>,
+    message: &str,
+) -> std::io::Result<()> {
+    use chrono::Utc;
+    let home = dirs::home_dir().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "home directory not found")
+    })?;
+    let crash_dir = home.join(".deepseek").join("crashes");
+    std::fs::create_dir_all(&crash_dir)?;
+    let timestamp = Utc::now().format("%Y%m%dT%H%M%S%.3fZ");
+    let filename = format!("{timestamp}-{name}.log");
+    let path = crash_dir.join(&filename);
+    let contents = format!(
+        "Task: {name}\nLocation: {location}\nTimestamp: {timestamp}\nPanic: {message}\n"
+    );
+    std::fs::write(&path, contents)?;
+    Ok(())
+}
+
 #[allow(dead_code)]
 pub fn ensure_dir(path: &Path) -> Result<()> {
     fs::create_dir_all(path)

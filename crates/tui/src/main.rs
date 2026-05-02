@@ -505,6 +505,38 @@ enum SandboxCommand {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Set up process panic hook before anything else — writes crash dumps
+    // to ~/.deepseek/crashes/ even if the panic happens before tokio is up.
+    let orig_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        let msg = if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+            s.to_string()
+        } else if let Some(s) = panic_info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            format!("{:?}", panic_info.payload())
+        };
+        let location = panic_info
+            .location()
+            .map(|loc| loc.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        tracing::error!(target: "panic", "Process panicked at {location}: {msg}");
+        // Write crash dump best-effort
+        if let Some(home) = dirs::home_dir() {
+            let crash_dir = home.join(".deepseek").join("crashes");
+            let _ = std::fs::create_dir_all(&crash_dir);
+            use chrono::Utc;
+            let ts = Utc::now().format("%Y%m%dT%H%M%S%.3fZ");
+            let path = crash_dir.join(format!("{ts}-process-panic.log"));
+            let contents = format!(
+                "Process panicked\nLocation: {location}\nTimestamp: {ts}\nPanic: {msg}\n",
+            );
+            let _ = std::fs::write(&path, contents);
+        }
+        // Invoke the original hook (prints to stderr, etc.)
+        orig_hook(panic_info);
+    }));
+
     dotenv().ok();
     let cli = Cli::parse();
     logging::set_verbose(cli.verbose || logging::env_requests_verbose_logging());
@@ -2638,7 +2670,7 @@ fn save_mcp_config(path: &Path, cfg: &McpConfig) -> Result<()> {
     }
     let rendered = serde_json::to_string_pretty(cfg)
         .map_err(|e| anyhow!("Failed to serialize MCP config: {e}"))?;
-    std::fs::write(path, rendered)
+    crate::utils::write_atomic(path, rendered.as_bytes())
         .map_err(|e| anyhow!("Failed to write MCP config {}: {}", path.display(), e))?;
     Ok(())
 }

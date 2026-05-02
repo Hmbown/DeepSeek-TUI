@@ -29,6 +29,7 @@ use std::sync::OnceLock;
 use tokio::sync::mpsc;
 
 use crate::session_manager::{SavedSession, SessionManager};
+use crate::utils::spawn_supervised;
 
 // ---------------------------------------------------------------------------
 // Request type
@@ -99,7 +100,7 @@ pub fn spawn_persistence_actor(manager: SessionManager) -> PersistActorHandle {
     let (tx, mut rx) = mpsc::unbounded_channel::<PersistRequest>();
     let handle = PersistActorHandle { tx };
 
-    tokio::spawn(async move {
+    spawn_supervised("persistence-actor", std::panic::Location::caller(), async move {
         let mut latest_checkpoint: Option<SavedSession> = None;
         let mut latest_session: Option<SavedSession> = None;
         let mut should_clear: bool = false;
