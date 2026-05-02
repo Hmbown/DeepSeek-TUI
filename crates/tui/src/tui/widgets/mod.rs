@@ -210,18 +210,20 @@ impl ChatWidget {
 
 impl Renderable for ChatWidget {
     fn render(&self, _area: Rect, buf: &mut Buffer) {
-        // Clear the full chat area every frame. Ratatui's `Paragraph` does
-        // not fill the area's background — it only writes the cells that
-        // contain text — so any cell the current frame's paragraph doesn't
-        // touch retains the *previous* frame's contents. With wide tool
-        // output (e.g. `gh pr list` lines containing ISO timestamps) and
-        // a narrower-on-the-next-turn paragraph, the old timestamp tails
-        // (`:24Z`, `7:29:24Z`, …) appeared to "bleed" into the right edge
-        // of the chat area, visually colliding with the sidebar (#372 vis
-        // followup).
-        Clear.render(self.content_area, buf);
+        // Repaint the full chat area with the deepseek-ink background each
+        // frame. Ratatui's `Paragraph` only writes cells that contain text,
+        // so cells the current frame's paragraph doesn't touch would
+        // otherwise hold the *previous* frame's contents (the `:24Z`
+        // timestamp-tail bleed-through reported in v0.8.5 testing). Using
+        // `Clear` reset cells to terminal default, which read as a brown-
+        // gray on most user setups; an explicit ink fill keeps the chat
+        // area on-brand.
+        Block::default()
+            .style(Style::default().bg(palette::DEEPSEEK_INK))
+            .render(self.content_area, buf);
 
-        let paragraph = Paragraph::new(self.lines.clone());
+        let paragraph = Paragraph::new(self.lines.clone())
+            .style(Style::default().bg(palette::DEEPSEEK_INK));
         paragraph.render(self.content_area, buf);
 
         if let Some(scrollbar) = self.scrollbar {
