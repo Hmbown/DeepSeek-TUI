@@ -217,17 +217,13 @@ impl ToolSpec for FetchUrlTool {
         // Pin validated IP to prevent DNS rebinding (TOCTOU) — reqwest will
         // connect to the validated IP directly instead of re-resolving.
         if let Some((hostname, validated_ip)) = dns_pinning {
-            client_builder = client_builder.resolve(
-                &hostname,
-                std::net::SocketAddr::new(validated_ip, 0),
-            );
+            client_builder =
+                client_builder.resolve(&hostname, std::net::SocketAddr::new(validated_ip, 0));
         }
 
-        let client = client_builder
-            .build()
-            .map_err(|e| {
-                ToolError::execution_failed(format!("failed to build HTTP client: {e}"))
-            })?;
+        let client = client_builder.build().map_err(|e| {
+            ToolError::execution_failed(format!("failed to build HTTP client: {e}"))
+        })?;
 
         let resp = client
             .get(&url)
@@ -321,7 +317,7 @@ fn is_restricted_ip(ip: &std::net::IpAddr) -> bool {
             // IPv4-mapped IPv6 addresses (::ffff:a.b.c.d) — unwrap and check as IPv4
             // to prevent bypass via ::ffff:127.0.0.1 etc.
             if v6.is_unspecified()
-                || matches!(v6.octets(), [0,0,0,0,0,0,0,0,0,0,0xff,0xff, ..])
+                || matches!(v6.octets(), [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, ..])
             {
                 return true;
             }
