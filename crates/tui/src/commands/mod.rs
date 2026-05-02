@@ -410,7 +410,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "provider" => provider::provider(app, arg),
         "queue" | "queued" => queue::queue(app, arg),
         "subagents" | "agents" => core::subagents(app),
-        "links" | "dashboard" | "api" => core::deepseek_links(),
+        "links" | "dashboard" | "api" => core::deepseek_links(app),
         "home" | "stats" | "overview" => core::home_dashboard(app),
         "note" => note::note(app, arg),
         "attach" | "image" | "media" => attachment::attach(app, arg),
