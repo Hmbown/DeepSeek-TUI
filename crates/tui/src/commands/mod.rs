@@ -77,8 +77,10 @@ impl CommandResult {
 
 /// Command metadata for help and autocomplete.
 ///
-/// The English description string lives in [`crate::localization::english`]
-/// keyed by `description_id`; resolve it with [`CommandInfo::description_for`].
+/// The English description lives in `localization::english` (private), keyed
+/// by `description_id`. Callers resolve a localized description through
+/// [`CommandInfo::description_for`] which delegates to
+/// [`crate::localization::tr`].
 #[derive(Debug, Clone, Copy)]
 pub struct CommandInfo {
     pub name: &'static str,
