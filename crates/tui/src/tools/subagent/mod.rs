@@ -781,18 +781,6 @@ impl SubAgentManager {
             .count()
     }
 
-    /// Return the maximum number of allowed agents.
-    #[must_use]
-    pub fn max_agents(&self) -> usize {
-        self.max_agents
-    }
-
-    /// Return remaining capacity for new agents.
-    #[must_use]
-    pub fn available_slots(&self) -> usize {
-        self.max_agents.saturating_sub(self.running_count())
-    }
-
     /// Spawn a new background sub-agent.
     pub fn spawn_background(
         &mut self,

@@ -5,8 +5,9 @@
 //!
 //! - [`DelegateCard`] — single `agent_spawn` invocation. Live tree of the
 //!   last 3 actions plus a header with status / glyph / role.
-//! - [`FanoutCard`] — `agent_swarm` / `rlm` fanout. Dot-grid of worker
-//!   slots (`●` filled, `○` pending) plus an aggregate counts line.
+//! - [`FanoutCard`] — `rlm` fanout (or any future multi-child dispatch).
+//!   Dot-grid of worker slots (`●` filled, `○` pending) plus an aggregate
+//!   counts line.
 //!
 //! Both cards are state machines updated by [`apply_to_delegate`] /
 //! [`apply_to_fanout`]. The sidebar (see `tui/sidebar.rs`) defers detail
@@ -154,14 +155,11 @@ impl DelegateCard {
 /// One worker slot in a fanout group.
 #[derive(Debug, Clone)]
 pub struct WorkerSlot {
-    /// Stable logical worker key. For swarms this stays tied to the task even
-    /// after a concrete sub-agent id exists.
+    /// Stable logical worker key. Stays tied to the worker slot even after a
+    /// concrete sub-agent id exists.
     pub worker_id: String,
     /// Concrete agent id once spawned; placeholders use the worker id.
     pub agent_id: String,
-    pub label: Option<String>,
-    pub model: Option<String>,
-    pub nickname: Option<String>,
     pub status: AgentLifecycle,
 }
 
@@ -172,32 +170,13 @@ impl WorkerSlot {
         Self {
             agent_id: worker_id.clone(),
             worker_id,
-            label: None,
-            model: None,
-            nickname: None,
-            status,
-        }
-    }
-
-    #[must_use]
-    pub fn with_agent(
-        worker_id: impl Into<String>,
-        agent_id: Option<String>,
-        status: AgentLifecycle,
-    ) -> Self {
-        let worker_id = worker_id.into();
-        Self {
-            agent_id: agent_id.unwrap_or_else(|| worker_id.clone()),
-            worker_id,
-            label: None,
-            model: None,
-            nickname: None,
             status,
         }
     }
 }
 
-/// Card for `agent_swarm` / `rlm` fanout: dot-grid + aggregate counts.
+/// Card for `rlm` (or any multi-child dispatch) fanout: dot-grid +
+/// aggregate counts.
 ///
 /// Slots are added as `ChildSpawned` envelopes arrive (or pre-allocated by
 /// the engine when the worker count is known up front); each slot

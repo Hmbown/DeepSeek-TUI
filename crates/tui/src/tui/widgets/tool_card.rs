@@ -37,7 +37,7 @@ pub enum ToolFamily {
     Find,
     /// Single sub-agent dispatch. `◐ delegate`.
     Delegate,
-    /// Multi-agent swarm (agent_swarm, csv, rlm). `⋮⋮ swarm`.
+    /// Multi-agent fanout dispatch (rlm). `⋮⋮ fanout`.
     Fanout,
     /// Reasoning / chain-of-thought. `… think`. Reasoning has its own
     /// render path (`render_thinking` in `history.rs`); the family is
@@ -78,7 +78,7 @@ pub fn tool_family_for_name(name: &str) -> ToolFamily {
         "exec_shell" | "exec_shell_wait" | "exec_shell_interact" => ToolFamily::Run,
         "grep_files" | "file_search" | "web_search" | "fetch_url" => ToolFamily::Find,
         "agent_spawn" => ToolFamily::Delegate,
-        "agent_swarm" | "spawn_agents_on_csv" | "rlm" => ToolFamily::Fanout,
+        "rlm" => ToolFamily::Fanout,
         _ => ToolFamily::Generic,
     }
 }
@@ -212,7 +212,6 @@ mod tests {
         assert_eq!(tool_family_for_name("exec_shell"), ToolFamily::Run);
         assert_eq!(tool_family_for_name("grep_files"), ToolFamily::Find);
         assert_eq!(tool_family_for_name("agent_spawn"), ToolFamily::Delegate);
-        assert_eq!(tool_family_for_name("agent_swarm"), ToolFamily::Fanout);
         assert_eq!(tool_family_for_name("rlm"), ToolFamily::Fanout);
         assert_eq!(
             tool_family_for_name("totally_new_tool"),

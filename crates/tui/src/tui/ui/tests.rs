@@ -2354,8 +2354,8 @@ fn second_thinking_block_appends_new_entry_in_same_active_cell() {
 
 // ---- per-child prompt wiring ----
 //
-// `extract_fanout_prompts` keeps fan-out tools readable by rendering one
-// row per child instead of a collapsed JSON args blob.
+// Generic tool cells default to `prompts: None`. Reserved for any future
+// fan-out tool that wants to surface per-child prompts.
 
 #[test]
 fn non_fanout_tool_does_not_populate_prompts() {

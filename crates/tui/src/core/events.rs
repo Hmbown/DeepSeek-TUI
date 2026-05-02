@@ -200,13 +200,6 @@ pub enum Event {
         message: crate::tools::subagent::MailboxMessage,
     },
 
-    /// Authoritative swarm progress/outcome snapshot. Nonblocking
-    /// `agent_swarm` returns before child agents finish, so the UI cannot
-    /// rely on the original tool result as the final lifecycle state.
-    SwarmProgress {
-        outcome: crate::tools::swarm::SwarmOutcome,
-    },
-
     // === System Events ===
     /// An error occurred
     Error {

@@ -68,9 +68,8 @@ use crate::tui::shell_job_routing::{
 };
 use crate::tui::subagent_routing::{
     active_fanout_counts, format_task_list, handle_subagent_mailbox, open_task_pager,
-    reconcile_subagent_activity_state, running_agent_count, seed_fanout_card_from_tool_call,
-    sort_subagents_in_place, sync_fanout_card_from_swarm_outcome,
-    sync_fanout_card_from_tool_result, task_mode_label, task_summary_to_panel_entry,
+    reconcile_subagent_activity_state, running_agent_count, sort_subagents_in_place,
+    task_mode_label, task_summary_to_panel_entry,
 };
 #[cfg(test)]
 use crate::tui::tool_routing::exploring_label;
@@ -574,27 +573,15 @@ async fn run_event_loop(
                         // Note this dispatch so the next sub-agent `Started`
                         // mailbox envelope routes into the right card kind
                         // (delegate vs fanout).
-                        if matches!(
-                            name.as_str(),
-                            "agent_spawn"
-                                | "agent_swarm"
-                                | "spawn_agents_on_csv"
-                                | "rlm"
-                                | "delegate"
-                        ) {
+                        if matches!(name.as_str(), "agent_spawn" | "rlm" | "delegate") {
                             app.pending_subagent_dispatch = Some(name.clone());
-                            if matches!(
-                                name.as_str(),
-                                "agent_swarm" | "spawn_agents_on_csv" | "rlm"
-                            ) {
+                            if name == "rlm" {
                                 // New fanout invocation — children should
                                 // group under a fresh card, not the
-                                // previous swarm's leftover.
+                                // previous fanout's leftover.
                                 app.last_fanout_card_index = None;
-                                app.last_swarm_id = None;
                             }
                         }
-                        seed_fanout_card_from_tool_call(app, &name, &input);
                         handle_tool_call_started(app, &id, &name, &input);
                     }
                     EngineEvent::ToolCallComplete { id, name, result } => {
@@ -619,7 +606,6 @@ async fn run_event_loop(
                             }],
                         });
                         handle_tool_call_complete(app, &id, &name, &result);
-                        sync_fanout_card_from_tool_result(app, &name, &result);
 
                         // Immediately refresh the task panel sidebar when a
                         // tool that changes task state completes, so the
@@ -628,7 +614,7 @@ async fn run_event_loop(
                         // poll.
                         if matches!(
                             name.as_str(),
-                            "agent_spawn" | "agent_swarm" | "agent_cancel" | "todo_write"
+                            "agent_spawn" | "agent_cancel" | "todo_write"
                         ) {
                             let tasks = task_manager.list_tasks(Some(10)).await;
                             app.task_panel =
@@ -638,8 +624,6 @@ async fn run_event_loop(
                         if matches!(
                             name.as_str(),
                             "agent_spawn"
-                                | "agent_swarm"
-                                | "spawn_agents_on_csv"
                                 | "agent_cancel"
                                 | "agent_wait"
                                 | "agent_result"
@@ -974,21 +958,6 @@ async fn run_event_loop(
                     EngineEvent::SubAgentMailbox { seq, message } => {
                         handle_subagent_mailbox(app, seq, &message);
                         transcript_batch_updated = true;
-                    }
-                    EngineEvent::SwarmProgress { outcome } => {
-                        if sync_fanout_card_from_swarm_outcome(app, &outcome) {
-                            transcript_batch_updated = true;
-                        }
-                        app.status_message = Some(format!(
-                            "Swarm {}: {} done, {} running, {} pending",
-                            outcome.swarm_id,
-                            outcome.counts.completed,
-                            outcome.counts.running,
-                            outcome.counts.pending
-                        ));
-                        if outcome.status.is_terminal() {
-                            let _ = engine_handle.send(Op::ListSubAgents).await;
-                        }
                     }
                     EngineEvent::ApprovalRequired {
                         id,
@@ -1731,9 +1700,9 @@ async fn run_event_loop(
                         // waiting for the engine's TurnComplete echo to drain.
                         // Idempotent with the TurnComplete handler that runs
                         // when the engine actually echoes the cancel (#243).
-                        // Background `block:false` swarms continue running
-                        // — they are tracked in `swarm_jobs` independently and
-                        // their FanoutCard stays bound by `swarm_card_index`.
+                        // Background sub-agents continue running — they are
+                        // tracked via `subagent_cache` independently of the
+                        // foreground turn.
                         app.finalize_active_cell_as_interrupted();
                         app.finalize_streaming_assistant_as_interrupted();
                         app.status_message = Some("Request cancelled".to_string());
@@ -4904,15 +4873,11 @@ fn collect_active_tool_status(cell: &HistoryCell, snapshot: &mut ActiveToolStatu
         }
         ToolCell::Generic(generic) => {
             // Fanout-class dispatch tools represent themselves through the
-            // FanoutCard + Agents sidebar, both of which derive from the
-            // canonical `swarm_jobs` store. Counting them again here would
+            // FanoutCard + Agents sidebar. Counting them again here would
             // produce the contradiction the user observed: footer "1 active"
-            // while the card and sidebar already showed the swarm's own
+            // while the card and sidebar already showed the dispatch's own
             // worker counts (#236, #238). Skip them entirely.
-            if matches!(
-                generic.name.as_str(),
-                "agent_swarm" | "spawn_agents_on_csv" | "rlm" | "agent_spawn"
-            ) {
+            if matches!(generic.name.as_str(), "rlm" | "agent_spawn") {
                 return;
             }
             snapshot.record(format!("tool {}", generic.name), generic.status, None);
