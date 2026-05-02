@@ -1195,15 +1195,25 @@ impl Engine {
             ctx = ctx.with_network_policy(decider.clone());
         }
 
-        if mode == AppMode::Yolo {
-            ctx.with_elevated_sandbox_policy(crate::sandbox::SandboxPolicy::WorkspaceWrite {
-                writable_roots: vec![self.session.workspace.clone()],
-                network_access: true,
-                exclude_tmpdir: false,
-                exclude_slash_tmp: false,
-            })
-        } else {
-            ctx
+        match mode {
+            // Plan mode is read-only investigation; the shell tool is not
+            // registered, so leaving the sandbox policy at the seatbelt-strict
+            // default is fine.
+            AppMode::Plan => ctx,
+            // Agent and Yolo both register the shell tool. The sandbox-default
+            // policy denies all outbound network — including DNS — which
+            // breaks ordinary developer commands (cargo fetch, npm install,
+            // curl, yt-dlp, …) without buying the user any safety the
+            // application-level NetworkPolicy / approval flow doesn't already
+            // provide. Elevate to workspace-write + network. (#273)
+            AppMode::Agent | AppMode::Yolo => {
+                ctx.with_elevated_sandbox_policy(crate::sandbox::SandboxPolicy::WorkspaceWrite {
+                    writable_roots: vec![self.session.workspace.clone()],
+                    network_access: true,
+                    exclude_tmpdir: false,
+                    exclude_slash_tmp: false,
+                })
+            }
         }
     }
 

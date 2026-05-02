@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-05-02
+
+### Added
+- **Localization expansion (Phase 1, #285)** — every slash command's help
+  description, the full `/tokens` / `/cost` / `/cache` debug output, the
+  footer state and chip text, and the help-overlay section headings are
+  now translated for all four shipped locales (`en`, `ja`, `zh-Hans`,
+  `pt-BR`). Set the language with `/config locale zh-Hans` (or
+  `LANG=zh_CN.UTF-8` / `LC_ALL=zh_CN.UTF-8` from the shell). Non-Latin
+  scripts render via the same `unicode_width` plumbing the existing 27
+  chrome strings already use; the `shipped_first_pack_has_no_missing_core_messages`
+  test enforces full coverage across all four locales for every new
+  `MessageId`. Tool descriptions sent to the model and the base system
+  prompt intentionally remain English (training-data alignment, prefix
+  cache stability).
+  - Phase 1a (#294): 44 new IDs covering slash commands.
+  - Phase 1b (#295): 13 new IDs covering `/tokens` / `/cost` / `/cache`
+    debug output. Templates use `{placeholder}` substitution so a
+    translator can re-order args freely.
+  - Phase 1c (#296): 11 new IDs covering footer state, sub-agent chip,
+    quit-confirmation toast, and help-overlay section labels.
+- **Stable cache prefix** (#263) — five companion fixes to keep the
+  DeepSeek prefix cache stable across turns: drop volatile fields from
+  the working-set summary block (#280, #287), place handoff and
+  working-set after the static prompt blocks (#288 → #292), memoise the
+  tool catalog so descriptions stay byte-stable (#289), sort
+  `project_tree` and `summarize_project` output (#290), and use a unique
+  fallback id for parallel streaming tool calls so downstream tool-result
+  routing doesn't match the first call twice (#291). The combined effect
+  is a meaningful jump in cache hit rate after the third turn.
+
+### Fixed
+- **Agent-mode shell exec could not reach the network** (#272) — the seatbelt
+  default policy denies all outbound network including DNS, so any
+  `exec_shell` command needing the network (`curl`, `yt-dlp`, package
+  managers, …) failed in Agent mode unless the user dropped to Yolo. The
+  engine now elevates the sandbox policy to `WorkspaceWrite { network_access:
+  true, … }` for both Agent and Yolo. Plan mode is unchanged (read-only
+  investigation never registers the shell tool). The application-level
+  `NetworkPolicy` (`crates/tui/src/network_policy.rs`) remains the only
+  outbound-traffic boundary.
+- **`/skill install <github-repo-url>` failed with `invalid gzip header`** (#269)
+  — `https://github.com/<owner>/<repo>` parsed as a raw direct URL, so the
+  installer downloaded the HTML repo page and tried to gzip-decode HTML.
+  Bare GitHub repo URLs (with or without `.git`, with or without `www.`,
+  with or without a trailing slash) now route to the `GitHubRepo` source the
+  same as `github:<owner>/<repo>`. URLs that already point at a specific
+  archive / blob / tree path still go through `DirectUrl`.
+- **V4 Pro discount expiry extended** (#267) — DeepSeek extended the V4 Pro 75%
+  promotional discount from 2026-05-05 15:59 UTC to 2026-05-31 15:59 UTC. Without
+  this update the TUI would have started showing 4× the actual billed cost on
+  May 6 onwards. Verified at https://api-docs.deepseek.com/quick_start/pricing.
+
 ## [0.8.3] - 2026-05-01
 
 ### Fixed

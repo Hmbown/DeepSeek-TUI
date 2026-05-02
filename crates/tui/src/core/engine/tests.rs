@@ -3,6 +3,7 @@ use super::*;
 use super::context::WORKING_SET_SUMMARY_MARKER;
 use crate::models::SystemBlock;
 use serde_json::json;
+use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -259,6 +260,63 @@ fn model_tool_catalog_keeps_everything_loaded_in_yolo_mode() {
 }
 
 #[test]
+fn model_tool_catalog_sorts_each_partition_for_prefix_cache_stability() {
+    // Regression for #263: deterministic byte order of the tools array is a
+    // hard requirement for DeepSeek's KV prefix cache. Built-ins stay as a
+    // contiguous prefix; MCP tools follow. Within each partition: alphabetical.
+    let catalog = build_model_tool_catalog(
+        vec![
+            api_tool("read_file"),
+            api_tool("apply_patch"),
+            api_tool("exec_shell"),
+        ],
+        vec![api_tool("mcp_zoo_b"), api_tool("mcp_aardvark_a")],
+        AppMode::Yolo,
+    );
+
+    let names: Vec<&str> = catalog.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec![
+            "apply_patch",
+            "exec_shell",
+            "read_file",
+            "mcp_aardvark_a",
+            "mcp_zoo_b",
+        ],
+        "built-ins must be alphabetical and contiguous; MCP tools follow, alphabetical",
+    );
+}
+
+#[test]
+fn active_tool_list_pushes_deferred_activations_to_the_tail() {
+    // Regression for #263: when ToolSearch activates a deferred tool mid-
+    // session, it must NOT be inserted at its catalog index — that would
+    // shift every later tool's byte offset and bust the cached prefix.
+    // Deferred-but-now-active tools belong at the tail.
+    let mut a = api_tool("a_load_now");
+    a.defer_loading = Some(false);
+    let mut search = api_tool("search_via_toolsearch");
+    search.defer_loading = Some(true);
+    let mut b = api_tool("b_load_now");
+    b.defer_loading = Some(false);
+
+    let catalog = vec![a, search, b];
+    let active: HashSet<String> = ["a_load_now", "search_via_toolsearch", "b_load_now"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+
+    let listed = active_tools_for_step(&catalog, &active, false);
+    let names: Vec<&str> = listed.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["a_load_now", "b_load_now", "search_via_toolsearch"],
+        "deferred-but-active tools must come after always-loaded tools",
+    );
+}
+
+#[test]
 fn turn_tool_registry_builder_keeps_plan_mode_read_only_for_files() {
     let (engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
     let registry = engine
@@ -288,6 +346,44 @@ fn agent_mode_can_build_auto_approved_tool_context() {
     );
     assert!(engine.build_tool_context(AppMode::Agent, true).auto_approve);
     assert!(engine.build_tool_context(AppMode::Yolo, false).auto_approve);
+}
+
+#[test]
+fn agent_and_yolo_modes_elevate_shell_sandbox_to_allow_network() {
+    // Regression for #273: the seatbelt-default policy denies all outbound
+    // network (including DNS), which broke `curl`, `yt-dlp`, package managers,
+    // and similar shell commands in Agent mode. Elevation must include
+    // network access so the application-level NetworkPolicy stays the only
+    // outbound boundary.
+    let (engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
+
+    let agent_ctx = engine.build_tool_context(AppMode::Agent, false);
+    let agent_policy = agent_ctx
+        .elevated_sandbox_policy
+        .as_ref()
+        .expect("Agent mode should elevate the sandbox policy");
+    assert!(
+        agent_policy.has_network_access(),
+        "Agent mode must allow shell network access; got {agent_policy:?}",
+    );
+
+    let yolo_ctx = engine.build_tool_context(AppMode::Yolo, false);
+    assert!(
+        yolo_ctx
+            .elevated_sandbox_policy
+            .as_ref()
+            .expect("Yolo mode should elevate the sandbox policy")
+            .has_network_access(),
+    );
+
+    // Plan mode is read-only investigation and does not register the shell
+    // tool, so it intentionally leaves the policy at the strict default.
+    assert!(
+        engine
+            .build_tool_context(AppMode::Plan, false)
+            .elevated_sandbox_policy
+            .is_none(),
+    );
 }
 
 #[tokio::test]

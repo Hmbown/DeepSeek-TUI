@@ -1,9 +1,6 @@
-// TODO(integrate): Wire sandbox into shell tool — tracked as future security feature
 #![allow(dead_code)]
 
 //! Sandbox module for secure command execution.
-//! NOTE: Not yet integrated into shell tool - planned security feature.
-
 //!
 //! This module provides sandboxing capabilities for shell commands executed by
 //! DeepSeek TUI. Sandboxing restricts what system resources a command can access,

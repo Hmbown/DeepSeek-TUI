@@ -2,82 +2,81 @@
 
 //! Debug commands: tokens, cost, system, context, undo, retry
 
+use std::time::Instant;
+
 use super::CommandResult;
 use crate::compaction::estimate_input_tokens_conservative;
+use crate::localization::{Locale, MessageId, tr};
 use crate::models::{SystemPrompt, context_window_for_model};
-use crate::tui::app::{App, AppAction};
+use crate::tui::app::{App, AppAction, TurnCacheRecord};
 use crate::tui::history::HistoryCell;
 
-fn token_count(value: Option<u32>) -> String {
-    value.map_or_else(|| "not reported".to_string(), |tokens| tokens.to_string())
+fn token_count(value: Option<u32>, locale: Locale) -> String {
+    value.map_or_else(
+        || tr(locale, MessageId::CmdTokensNotReported).to_string(),
+        |tokens| tokens.to_string(),
+    )
 }
 
-fn active_context_summary(app: &App) -> String {
+fn active_context_summary(app: &App, locale: Locale) -> String {
     let estimated =
         estimate_input_tokens_conservative(&app.api_messages, app.system_prompt.as_ref());
     match context_window_for_model(&app.model) {
         Some(window) => {
             let used = estimated.min(window as usize);
             let percent = (used as f64 / f64::from(window) * 100.0).clamp(0.0, 100.0);
-            format!("~{used} / {window} ({percent:.1}%)")
+            tr(locale, MessageId::CmdTokensContextWithWindow)
+                .replace("{used}", &used.to_string())
+                .replace("{window}", &window.to_string())
+                .replace("{percent}", &format!("{percent:.1}"))
         }
-        None => format!("~{estimated} / unknown window"),
+        None => tr(locale, MessageId::CmdTokensContextUnknownWindow)
+            .replace("{estimated}", &estimated.to_string()),
     }
 }
 
-fn cache_summary(app: &App) -> String {
+fn cache_summary(app: &App, locale: Locale) -> String {
     match (
         app.last_prompt_cache_hit_tokens,
         app.last_prompt_cache_miss_tokens,
     ) {
-        (Some(hit), Some(miss)) => format!("{hit} hit / {miss} miss"),
-        (Some(hit), None) => format!("{hit} hit / miss not reported"),
-        (None, Some(miss)) => format!("hit not reported / {miss} miss"),
-        (None, None) => "not reported".to_string(),
+        (Some(hit), Some(miss)) => tr(locale, MessageId::CmdTokensCacheBoth)
+            .replace("{hit}", &hit.to_string())
+            .replace("{miss}", &miss.to_string()),
+        (Some(hit), None) => {
+            tr(locale, MessageId::CmdTokensCacheHitOnly).replace("{hit}", &hit.to_string())
+        }
+        (None, Some(miss)) => {
+            tr(locale, MessageId::CmdTokensCacheMissOnly).replace("{miss}", &miss.to_string())
+        }
+        (None, None) => tr(locale, MessageId::CmdTokensNotReported).to_string(),
     }
 }
 
 /// Show token usage for session
 pub fn tokens(app: &mut App) -> CommandResult {
+    let locale = app.ui_locale;
     let message_count = app.api_messages.len();
     let chat_count = app.history.len();
 
-    CommandResult::message(format!(
-        "Token Usage:\n\
-         ─────────────────────────────\n\
-         Active context:        {}\n\
-         Last API input:        {} (turn telemetry; may count repeated prefix across tool rounds)\n\
-         Last API output:       {}\n\
-         Cache hit/miss:        {} (telemetry/cost only)\n\
-         Cumulative tokens:     {} (session usage telemetry)\n\
-         Approx session cost:   ${:.4}\n\
-         API messages:          {}\n\
-         Chat messages:         {}\n\
-         Model:                 {}",
-        active_context_summary(app),
-        token_count(app.last_prompt_tokens),
-        token_count(app.last_completion_tokens),
-        cache_summary(app),
-        app.total_tokens,
-        app.session_cost,
-        message_count,
-        chat_count,
-        app.model,
-    ))
+    let report = tr(locale, MessageId::CmdTokensReport)
+        .replace("{active}", &active_context_summary(app, locale))
+        .replace("{input}", &token_count(app.last_prompt_tokens, locale))
+        .replace("{output}", &token_count(app.last_completion_tokens, locale))
+        .replace("{cache}", &cache_summary(app, locale))
+        .replace("{total}", &app.total_tokens.to_string())
+        .replace("{cost}", &format!("{:.4}", app.session_cost))
+        .replace("{api_messages}", &message_count.to_string())
+        .replace("{chat_messages}", &chat_count.to_string())
+        .replace("{model}", &app.model);
+    CommandResult::message(report)
 }
 
 /// Show session cost breakdown
 pub fn cost(app: &mut App) -> CommandResult {
-    CommandResult::message(format!(
-        "Session Cost:\n\
-         ─────────────────────────────\n\
-         Approx total spent: ${:.4}\n\n\
-         Cost estimates are approximate and use provider usage telemetry when available.\n\n\
-         DeepSeek API Pricing:\n\
-         ─────────────────────────────\n\
-         Pricing details are not configured in this CLI.",
-        app.session_cost,
-    ))
+    let report = tr(app.ui_locale, MessageId::CmdCostReport)
+        .replace("{cost}", &format!("{:.4}", app.session_cost));
+    CommandResult::message(report)
 }
 
 /// Show current system prompt
@@ -119,6 +118,141 @@ pub fn system_prompt(app: &mut App) -> CommandResult {
 /// Show context window usage
 pub fn context(_app: &mut App) -> CommandResult {
     CommandResult::action(AppAction::OpenContextInspector)
+}
+
+/// Show per-turn DeepSeek prefix-cache telemetry for the last N turns (#263).
+///
+/// `arg` is parsed as a count override (default 10, capped at the ring size).
+/// Renders a fixed-width table the user can paste into a bug report.
+pub fn cache(app: &mut App, arg: Option<&str>) -> CommandResult {
+    let want = arg
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .unwrap_or(10);
+    let cap = app.turn_cache_history.len();
+    let count = want
+        .min(cap)
+        .min(crate::tui::app::App::TURN_CACHE_HISTORY_CAP);
+
+    if cap == 0 {
+        return CommandResult::message(tr(app.ui_locale, MessageId::CmdCacheNoData));
+    }
+
+    CommandResult::message(format_cache_history(app, count, app.ui_locale))
+}
+
+fn format_cache_history(app: &App, count: usize, locale: Locale) -> String {
+    let total = app.turn_cache_history.len();
+    let start = total.saturating_sub(count);
+    let rows: Vec<&TurnCacheRecord> = app.turn_cache_history.iter().skip(start).collect();
+
+    let mut totals_input: u64 = 0;
+    let mut totals_hit: u64 = 0;
+    let mut totals_miss: u64 = 0;
+    let mut header = tr(locale, MessageId::CmdCacheHeader)
+        .replace("{count}", &rows.len().to_string())
+        .replace("{total}", &total.to_string())
+        .replace("{model}", &app.model);
+    header.push_str(&"─".repeat(76));
+    header.push('\n');
+    header.push_str("turn   in    out   hit   miss   replay   ratio   age\n");
+    header.push_str(&"─".repeat(76));
+    header.push('\n');
+
+    let now = Instant::now();
+    let mut body = String::new();
+    let absolute_start = total.saturating_sub(rows.len());
+    for (i, rec) in rows.iter().enumerate() {
+        let turn_index = absolute_start + i + 1;
+        totals_input += u64::from(rec.input_tokens);
+
+        let replay_cell = rec
+            .reasoning_replay_tokens
+            .map_or_else(|| "—".to_string(), |t| t.to_string());
+        let age = humanize_age(now.saturating_duration_since(rec.recorded_at));
+
+        // No cache telemetry → render `—` everywhere and don't pollute totals
+        // with inferred zeros. Some providers (and some routes inside DeepSeek)
+        // skip the cache fields; including a synthesized 0/N for those turns
+        // would make every aggregate ratio look broken.
+        let Some(hit) = rec.cache_hit_tokens else {
+            body.push_str(&format!(
+                "{turn:>4}  {input:>5}  {output:>5}  {hit:>5}  {miss:>5}  {replay:>6}   {ratio:>6}   {age}\n",
+                turn = turn_index,
+                input = rec.input_tokens,
+                output = rec.output_tokens,
+                hit = "—",
+                miss = "—",
+                replay = replay_cell,
+                ratio = "—",
+                age = age,
+            ));
+            continue;
+        };
+
+        let miss_reported = rec.cache_miss_tokens;
+        let miss = miss_reported.unwrap_or_else(|| rec.input_tokens.saturating_sub(hit));
+        let accounted = u64::from(hit) + u64::from(miss);
+        let ratio = if accounted == 0 {
+            "    —".to_string()
+        } else {
+            format!("{:>5.1}%", 100.0 * f64::from(hit) / accounted as f64)
+        };
+        totals_hit += u64::from(hit);
+        totals_miss += u64::from(miss);
+
+        let miss_cell = match miss_reported {
+            Some(_) => format!("{miss}"),
+            None => format!("{miss}*"),
+        };
+
+        body.push_str(&format!(
+            "{turn:>4}  {input:>5}  {output:>5}  {hit:>5}  {miss:>5}  {replay:>6}   {ratio}   {age}\n",
+            turn = turn_index,
+            input = rec.input_tokens,
+            output = rec.output_tokens,
+            hit = hit,
+            miss = miss_cell,
+            replay = replay_cell,
+            ratio = ratio,
+            age = age,
+        ));
+    }
+
+    let totals_accounted = totals_hit + totals_miss;
+    let avg_ratio = if totals_accounted == 0 {
+        "—".to_string()
+    } else {
+        format!(
+            "{:.1}%",
+            100.0 * totals_hit as f64 / totals_accounted as f64
+        )
+    };
+
+    let mut footer = String::new();
+    footer.push_str(&"─".repeat(76));
+    footer.push('\n');
+    footer.push_str(
+        &tr(locale, MessageId::CmdCacheTotals)
+            .replace("{sum_in}", &totals_input.to_string())
+            .replace("{sum_hit}", &totals_hit.to_string())
+            .replace("{sum_miss}", &totals_miss.to_string())
+            .replace("{avg}", &avg_ratio),
+    );
+    footer.push_str(tr(locale, MessageId::CmdCacheFootnote));
+    footer.push_str(tr(locale, MessageId::CmdCacheAdvice));
+
+    format!("{header}{body}{footer}")
+}
+
+fn humanize_age(d: std::time::Duration) -> String {
+    let secs = d.as_secs();
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m{:02}s", secs / 60, secs % 60)
+    } else {
+        format!("{}h{:02}m", secs / 3600, (secs % 3600) / 60)
+    }
 }
 
 #[cfg(test)]
@@ -254,6 +388,115 @@ mod tests {
         let msg = result.message.unwrap();
         assert!(msg.contains("..."));
         assert!(msg.contains("chars total"));
+    }
+
+    #[test]
+    fn cache_command_reports_no_data_before_first_turn() {
+        let mut app = create_test_app();
+        let result = cache(&mut app, None);
+        let msg = result.message.expect("cache produces a message");
+        assert!(msg.contains("no turns recorded yet"), "got: {msg}");
+    }
+
+    #[test]
+    fn cache_command_renders_recorded_turns_with_ratio() {
+        let mut app = create_test_app();
+        let now = Instant::now();
+        // Three turns: 75% hit, 50% hit, miss-only (provider didn't report hit).
+        app.push_turn_cache_record(TurnCacheRecord {
+            input_tokens: 4_000,
+            output_tokens: 200,
+            cache_hit_tokens: Some(3_000),
+            cache_miss_tokens: Some(1_000),
+            reasoning_replay_tokens: None,
+            recorded_at: now,
+        });
+        app.push_turn_cache_record(TurnCacheRecord {
+            input_tokens: 6_000,
+            output_tokens: 250,
+            cache_hit_tokens: Some(3_000),
+            cache_miss_tokens: Some(3_000),
+            reasoning_replay_tokens: Some(150),
+            recorded_at: now,
+        });
+        // Turn 3: hit reported but provider didn't report miss separately —
+        // infer miss = input − hit and mark with `*`.
+        app.push_turn_cache_record(TurnCacheRecord {
+            input_tokens: 5_000,
+            output_tokens: 100,
+            cache_hit_tokens: Some(2_500),
+            cache_miss_tokens: None,
+            reasoning_replay_tokens: None,
+            recorded_at: now,
+        });
+        // Turn 4: no telemetry at all — must not pollute aggregate ratios.
+        app.push_turn_cache_record(TurnCacheRecord {
+            input_tokens: 1_000,
+            output_tokens: 50,
+            cache_hit_tokens: None,
+            cache_miss_tokens: None,
+            reasoning_replay_tokens: None,
+            recorded_at: now,
+        });
+
+        let result = cache(&mut app, None);
+        let msg = result.message.expect("cache produces a message");
+
+        // Header reflects total rows and model.
+        assert!(msg.contains("last 4 of 4 turn(s)"), "got: {msg}");
+        // Per-turn ratios are rendered.
+        assert!(msg.contains("75.0%"), "got: {msg}");
+        assert!(msg.contains("50.0%"), "got: {msg}");
+        // Turn 3: hit=2500, inferred miss=2500 → 50.0% with `*`-marked miss.
+        assert!(msg.contains("2500*"), "got: {msg}");
+        // Turn 4 (no telemetry) shows em-dashes and is excluded from totals.
+        // Aggregate over turns 1-3: hit=8500, miss=6500 → 56.7%.
+        assert!(msg.contains("avg hit ratio: 56.7%"), "got: {msg}");
+        // Footer guidance is present.
+        assert!(msg.contains("70%"), "got: {msg}");
+    }
+
+    #[test]
+    fn cache_command_count_argument_clamps_to_history() {
+        let mut app = create_test_app();
+        for _ in 0..3 {
+            app.push_turn_cache_record(TurnCacheRecord {
+                input_tokens: 1_000,
+                output_tokens: 100,
+                cache_hit_tokens: Some(500),
+                cache_miss_tokens: Some(500),
+                reasoning_replay_tokens: None,
+                recorded_at: Instant::now(),
+            });
+        }
+        let result = cache(&mut app, Some("100"));
+        let msg = result.message.expect("cache produces a message");
+        // Asked for 100 turns, only 3 exist — should report "last 3 of 3".
+        assert!(msg.contains("last 3 of 3 turn(s)"), "got: {msg}");
+    }
+
+    #[test]
+    fn turn_cache_history_is_capped_at_50() {
+        let mut app = create_test_app();
+        for i in 0..(crate::tui::app::App::TURN_CACHE_HISTORY_CAP + 12) {
+            app.push_turn_cache_record(TurnCacheRecord {
+                input_tokens: i as u32,
+                output_tokens: 1,
+                cache_hit_tokens: Some(i as u32),
+                cache_miss_tokens: Some(0),
+                reasoning_replay_tokens: None,
+                recorded_at: Instant::now(),
+            });
+        }
+        assert_eq!(
+            app.turn_cache_history.len(),
+            crate::tui::app::App::TURN_CACHE_HISTORY_CAP
+        );
+        // Oldest record was evicted; newest record is still at the back.
+        assert_eq!(
+            app.turn_cache_history.back().unwrap().input_tokens,
+            (crate::tui::app::App::TURN_CACHE_HISTORY_CAP + 11) as u32
+        );
     }
 
     #[test]

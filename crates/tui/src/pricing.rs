@@ -14,7 +14,7 @@ struct ModelPricing {
 }
 
 fn v4_pro_discount_ends_at() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 5, 5, 15, 59, 0)
+    Utc.with_ymd_and_hms(2026, 5, 31, 15, 59, 0)
         .single()
         .expect("valid DeepSeek V4 Pro discount end timestamp")
 }
@@ -37,7 +37,7 @@ fn pricing_for_model_at(model: &str, now: DateTime<Utc>) -> Option<ModelPricing>
     if lower.contains("v4-pro") || lower.contains("v4pro") {
         if now <= v4_pro_discount_ends_at() {
             // DeepSeek lists these as a limited-time 75% discount through
-            // 2026-05-05 15:59 UTC.
+            // 2026-05-31 15:59 UTC.
             return Some(ModelPricing {
                 input_cache_hit_per_million: 0.003625,
                 input_cache_miss_per_million: 0.435,
@@ -131,7 +131,7 @@ mod tests {
     #[test]
     fn v4_pro_uses_limited_time_discount_before_expiry() {
         let before_expiry = Utc
-            .with_ymd_and_hms(2026, 5, 5, 15, 58, 59)
+            .with_ymd_and_hms(2026, 5, 31, 15, 58, 59)
             .single()
             .unwrap();
         let pricing = pricing_for_model_at("deepseek-v4-pro", before_expiry).unwrap();
@@ -143,12 +143,26 @@ mod tests {
 
     #[test]
     fn v4_pro_returns_to_base_rates_after_discount_expiry() {
-        let after_expiry = Utc.with_ymd_and_hms(2026, 5, 5, 16, 0, 0).single().unwrap();
+        let after_expiry = Utc
+            .with_ymd_and_hms(2026, 5, 31, 16, 0, 0)
+            .single()
+            .unwrap();
         let pricing = pricing_for_model_at("deepseek-v4-pro", after_expiry).unwrap();
 
         assert_eq!(pricing.input_cache_hit_per_million, 0.0145);
         assert_eq!(pricing.input_cache_miss_per_million, 1.74);
         assert_eq!(pricing.output_per_million, 3.48);
+    }
+
+    #[test]
+    fn v4_pro_discount_still_applies_just_before_old_may5_expiry() {
+        // Regression for #267: extension to 2026-05-31 15:59 UTC.
+        let after_old_expiry = Utc.with_ymd_and_hms(2026, 5, 6, 0, 0, 0).single().unwrap();
+        let pricing = pricing_for_model_at("deepseek-v4-pro", after_old_expiry).unwrap();
+
+        assert_eq!(pricing.input_cache_hit_per_million, 0.003625);
+        assert_eq!(pricing.input_cache_miss_per_million, 0.435);
+        assert_eq!(pricing.output_per_million, 0.87);
     }
 
     #[test]

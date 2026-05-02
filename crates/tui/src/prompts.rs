@@ -177,6 +177,22 @@ pub fn system_prompt_for_mode_with_context(
 }
 
 /// Get the system prompt for a specific mode with project and skills context.
+///
+/// **Volatile-content-last invariant.** Blocks are appended in order from
+/// most-static to most-volatile so DeepSeek's KV prefix cache hits the
+/// longest possible byte prefix turn-over-turn:
+///
+///   1. mode prompt (compile-time constant)
+///   2. project context / fallback (workspace-static)
+///   3. skills block (skills-dir-static)
+///   4. `## Context Management` (compile-time constant, Agent/Yolo only)
+///   5. compaction handoff template (compile-time constant)
+///   6. handoff block — file-backed; rewritten by `/compact` and on exit
+///   7. working-set summary — drifts when a new path is observed
+///
+/// Anything appended after a volatile block forfeits the cache for the rest
+/// of the request. New blocks belong above the handoff/working-set boundary
+/// unless they themselves are turn-volatile.
 pub fn system_prompt_for_mode_with_context_and_skills(
     mode: AppMode,
     workspace: &Path,
@@ -188,7 +204,7 @@ pub fn system_prompt_for_mode_with_context_and_skills(
     // Load project context from workspace
     let project_context = load_project_context_with_parents(workspace);
 
-    // Combine base prompt with project context
+    // 1–2. Mode prompt + project context (or fallback automap).
     let mut full_prompt = if let Some(project_block) = project_context.as_system_block() {
         format!("{}\n\n{}", mode_prompt, project_block)
     } else {
@@ -201,22 +217,13 @@ pub fn system_prompt_for_mode_with_context_and_skills(
         )
     };
 
-    if let Some(summary) = working_set_summary
-        && !summary.trim().is_empty()
-    {
-        full_prompt = format!("{full_prompt}\n\n{summary}");
-    }
-
+    // 3. Skills block.
     if let Some(skills_block) = skills_dir.and_then(crate::skills::render_available_skills_context)
     {
         full_prompt = format!("{full_prompt}\n\n{skills_block}");
     }
 
-    if let Some(handoff_block) = load_handoff_block(workspace) {
-        full_prompt = format!("{full_prompt}\n\n{handoff_block}");
-    }
-
-    // Add compaction instruction for agent modes
+    // 4. Context Management (Agent / Yolo only).
     if matches!(mode, AppMode::Agent | AppMode::Yolo) {
         full_prompt.push_str(
             "\n\n## Context Management\n\n\
@@ -228,10 +235,26 @@ pub fn system_prompt_for_mode_with_context_and_skills(
         );
     }
 
-    // Append the compaction handoff template so the model knows the format
-    // to use when writing `.deepseek/handoff.md` on exit / `/compact`.
+    // 5. Compaction handoff template — so the model knows the format to use
+    //    when writing `.deepseek/handoff.md` on exit / `/compact`.
     full_prompt.push_str("\n\n");
     full_prompt.push_str(COMPACT_TEMPLATE);
+
+    // ── Volatile-content boundary ─────────────────────────────────────────
+    // Everything below drifts mid-session and busts the prefix cache for
+    // bytes that follow. Keep new static blocks above this comment.
+
+    // 6. Previous-session handoff (file-backed, rewritten by `/compact`).
+    if let Some(handoff_block) = load_handoff_block(workspace) {
+        full_prompt = format!("{full_prompt}\n\n{handoff_block}");
+    }
+
+    // 7. Working-set summary (drifts when a new path is observed).
+    if let Some(summary) = working_set_summary
+        && !summary.trim().is_empty()
+    {
+        full_prompt = format!("{full_prompt}\n\n{summary}");
+    }
 
     SystemPrompt::Text(full_prompt)
 }
@@ -424,5 +447,170 @@ mod tests {
         assert!(!AGENT_PROMPT.is_empty());
         assert!(!YOLO_PROMPT.is_empty());
         assert!(!PLAN_PROMPT.is_empty());
+    }
+
+    // ── Cache-prefix stability harness (#263 step 2) ───────────────────────
+    //
+    // These tests pin the byte-stability invariant required for DeepSeek's
+    // KV prefix cache to hit: any prompt-construction surface that ends up
+    // in the cached prefix must produce identical bytes given identical
+    // inputs across calls.
+
+    use crate::test_support::assert_byte_identical;
+
+    #[test]
+    fn compose_prompt_is_byte_stable_across_calls() {
+        // Suspect #4 from #263: mode prompt churn within a single mode.
+        // Two calls with identical (mode, personality) inputs must produce
+        // identical bytes — anything else is a cache buster.
+        for mode in [AppMode::Agent, AppMode::Yolo, AppMode::Plan] {
+            for personality in [Personality::Calm, Personality::Playful] {
+                let a = compose_prompt(mode, personality);
+                let b = compose_prompt(mode, personality);
+                assert_byte_identical(
+                    &format!("compose_prompt(mode={mode:?}, personality={personality:?})"),
+                    &a,
+                    &b,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn system_prompt_for_mode_with_context_is_byte_stable_for_unchanged_workspace() {
+        // Same workspace, no working_set / skills churn between calls →
+        // identical bytes. This pins the most representative production
+        // surface (engine.rs builds the system prompt via this fn or
+        // its sibling _and_skills variant on every turn).
+        let tmp = tempdir().expect("tempdir");
+        let workspace = tmp.path();
+
+        for mode in [AppMode::Agent, AppMode::Yolo, AppMode::Plan] {
+            let a = match system_prompt_for_mode_with_context(mode, workspace, None) {
+                SystemPrompt::Text(text) => text,
+                SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
+            };
+            let b = match system_prompt_for_mode_with_context(mode, workspace, None) {
+                SystemPrompt::Text(text) => text,
+                SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
+            };
+            assert_byte_identical(
+                &format!("system_prompt_for_mode_with_context(mode={mode:?}) on empty workspace"),
+                &a,
+                &b,
+            );
+        }
+    }
+
+    #[test]
+    fn system_prompt_with_working_set_summary_is_byte_stable_for_constant_summary() {
+        // The `working_set_summary` argument is the volatile surface (suspect
+        // #1 in #263). Independently verifying THIS surface needs a separate
+        // test in working_set.rs; here we just pin that the surrounding
+        // prompt construction faithfully embeds whatever summary it's given
+        // without injecting any non-determinism on its own.
+        let tmp = tempdir().expect("tempdir");
+        let workspace = tmp.path();
+        let summary = "## Repo Working Set\nWorkspace: /tmp/x\n";
+
+        let a = match system_prompt_for_mode_with_context(AppMode::Agent, workspace, Some(summary))
+        {
+            SystemPrompt::Text(text) => text,
+            SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
+        };
+        let b = match system_prompt_for_mode_with_context(AppMode::Agent, workspace, Some(summary))
+        {
+            SystemPrompt::Text(text) => text,
+            SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
+        };
+        assert_byte_identical(
+            "system_prompt_for_mode_with_context with constant working_set summary",
+            &a,
+            &b,
+        );
+        assert!(a.contains(summary), "summary must be embedded as-is");
+    }
+
+    #[test]
+    fn system_prompt_with_handoff_file_is_byte_stable_when_file_is_unchanged() {
+        // Companion to the working-set stability test: if `.deepseek/handoff.md`
+        // hasn't moved between two builds, the rendered prompt must produce
+        // identical bytes. The handoff block is the second volatile surface
+        // (the first is the working-set summary) — both land below the static
+        // boundary in `system_prompt_for_mode_with_context_and_skills`.
+        let tmp = tempdir().expect("tempdir");
+        let workspace = tmp.path();
+        let handoff_dir = workspace.join(".deepseek");
+        std::fs::create_dir_all(&handoff_dir).unwrap();
+        std::fs::write(
+            handoff_dir.join("handoff.md"),
+            "# Session handoff\n\n## Active task\nFinish #280.\n\n## Open blockers\n- [ ] none\n",
+        )
+        .unwrap();
+
+        let a = match system_prompt_for_mode_with_context(AppMode::Agent, workspace, None) {
+            SystemPrompt::Text(text) => text,
+            SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
+        };
+        let b = match system_prompt_for_mode_with_context(AppMode::Agent, workspace, None) {
+            SystemPrompt::Text(text) => text,
+            SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
+        };
+        assert_byte_identical(
+            "system_prompt_for_mode_with_context with constant handoff file",
+            &a,
+            &b,
+        );
+        assert!(a.contains(HANDOFF_BLOCK_MARKER), "handoff must be embedded");
+        assert!(a.contains("Finish #280."), "handoff body must be present");
+    }
+
+    #[test]
+    fn handoff_and_working_set_appear_after_static_blocks() {
+        // Cache-prefix invariant: the volatile blocks (handoff, working_set)
+        // must come *after* the static `## Context Management` and the
+        // compaction handoff template (`## Compaction Handoff`) so a churn
+        // in either volatile section doesn't drag the static blocks out of
+        // the cached prefix. Pre-fix ordering placed handoff between the
+        // skills block and `## Context Management`, which busted the cache
+        // every time `/compact` rewrote the file.
+        let tmp = tempdir().expect("tempdir");
+        let workspace = tmp.path();
+        let handoff_dir = workspace.join(".deepseek");
+        std::fs::create_dir_all(&handoff_dir).unwrap();
+        std::fs::write(handoff_dir.join("handoff.md"), "# handoff body\n").unwrap();
+
+        let summary = "## Repo Working Set\nWorkspace: /tmp/x\n";
+        let prompt =
+            match system_prompt_for_mode_with_context(AppMode::Agent, workspace, Some(summary)) {
+                SystemPrompt::Text(text) => text,
+                SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
+            };
+
+        let context_pos = prompt
+            .find("## Context Management")
+            .expect("Context Management section present in Agent mode");
+        let compact_pos = prompt
+            .find("## Compaction Handoff")
+            .expect("compaction handoff template present");
+        let handoff_pos = prompt
+            .find(HANDOFF_BLOCK_MARKER)
+            .expect("handoff block present when fixture file exists");
+        let working_set_pos = prompt
+            .find("## Repo Working Set")
+            .expect("working-set summary present when supplied");
+
+        assert!(
+            context_pos < handoff_pos,
+            "## Context Management must precede the handoff block"
+        );
+        assert!(
+            compact_pos < handoff_pos,
+            "## Compaction Handoff must precede the handoff block"
+        );
+        assert!(
+            handoff_pos < working_set_pos,
+            "handoff block must precede the working-set summary (most-volatile last)"
+        );
     }
 }

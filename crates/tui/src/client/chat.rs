@@ -1178,11 +1178,21 @@ pub(super) fn parse_sse_chunk(
                                 *thinking_started = false;
                             }
 
+                            let block_index = *content_index;
                             let id = tc
                                 .get("id")
                                 .and_then(Value::as_str)
-                                .unwrap_or("tool_call")
-                                .to_string();
+                                .map(str::to_string)
+                                // Some upstream gateways (and the responses-API
+                                // bridge) elide the `id` on the first chunk of a
+                                // tool call. Falling back to a constant string
+                                // collides when the model emits parallel tool
+                                // calls in the same delta — every call ended up
+                                // with the same id and downstream tool-result
+                                // routing matched the first one twice. Index by
+                                // the content-block position to keep the
+                                // fallback unique within the response.
+                                .unwrap_or_else(|| format!("call_{block_index}"));
                             let name = tc
                                 .get("function")
                                 .and_then(|f| f.get("name"))
@@ -1201,7 +1211,6 @@ pub(super) fn parse_sse_chunk(
                                 })
                             });
 
-                            let block_index = *content_index;
                             events.push(StreamEvent::ContentBlockStart {
                                 index: block_index,
                                 content_block: ContentBlockStart::ToolUse {
@@ -1470,5 +1479,65 @@ mod stream_decoder_tests {
             )),
             "should yield InputJsonDelta carrying the tool args; got {events:?}"
         );
+    }
+
+    /// Regression for the parallel-tool-calls-without-id collision (audit
+    /// Finding 8): when the upstream chunk omits the `id` field, the
+    /// fallback used to be the literal string `"tool_call"` for every
+    /// parallel call, so two tool calls in one delta ended up sharing an
+    /// id. Downstream routing then matched the first call's tool_result
+    /// twice and the second call hung. The fallback is now indexed by the
+    /// content-block position, keeping each call unique within the
+    /// response.
+    #[test]
+    fn decoder_assigns_unique_fallback_ids_to_parallel_tool_calls_missing_id() {
+        let events = decode_chunk(
+            r#"{"choices":[{"delta":{"tool_calls":[
+                {"index":0,"function":{"name":"grep_files","arguments":"{\"pattern\":\"a\"}"}},
+                {"index":1,"function":{"name":"read_file","arguments":"{\"path\":\"x\"}"}}
+            ]}}]}"#,
+        );
+
+        let ids: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match e {
+                StreamEvent::ContentBlockStart {
+                    content_block: ContentBlockStart::ToolUse { id, .. },
+                    ..
+                } => Some(id.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(
+            ids.len(),
+            2,
+            "expected two tool-use blocks for parallel tool calls; got {events:?}"
+        );
+        assert_ne!(
+            ids[0], ids[1],
+            "parallel tool calls without upstream `id` must get distinct fallback ids; got {ids:?}"
+        );
+    }
+
+    #[test]
+    fn decoder_preserves_upstream_tool_call_id_when_present() {
+        // Counter-test to the fallback regression: when the upstream chunk
+        // does include `id`, we forward it verbatim — we shouldn't quietly
+        // rewrite ids the API gave us just because we have a fallback path.
+        let events = decode_chunk(
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_xyz","function":{"name":"grep_files","arguments":"{}"}}]}}]}"#,
+        );
+        let id = events
+            .iter()
+            .find_map(|e| match e {
+                StreamEvent::ContentBlockStart {
+                    content_block: ContentBlockStart::ToolUse { id, .. },
+                    ..
+                } => Some(id.as_str()),
+                _ => None,
+            })
+            .expect("tool-use block present");
+        assert_eq!(id, "call_xyz");
     }
 }
