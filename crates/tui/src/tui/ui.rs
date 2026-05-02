@@ -1240,6 +1240,10 @@ async fn run_event_loop(
                     sync_api_key_validation_status(app, false);
                 } else if app.is_history_search_active() {
                     app.history_search_insert_str(text);
+                } else if app.view_stack.handle_paste(text) {
+                    // Modal consumed the paste (e.g. provider picker key entry)
+                } else if !app.view_stack.is_empty() {
+                    // A non-consumed modal is open — don't leak paste into composer
                 } else {
                     // Paste into main input
                     app.insert_paste_text(text);
