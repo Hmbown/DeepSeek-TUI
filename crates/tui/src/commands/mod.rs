@@ -390,6 +390,12 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "/cache [count]",
         description_id: MessageId::CmdCacheDescription,
     },
+    CommandInfo {
+        name: "swarm",
+        aliases: &[],
+        usage: "/swarm <sequential|mixture|distill|deliberate> [description]",
+        description_id: MessageId::CmdSwarmDescription,
+    },
 ];
 
 /// Execute a slash command
@@ -410,6 +416,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "provider" => provider::provider(app, arg),
         "queue" | "queued" => queue::queue(app, arg),
         "subagents" | "agents" => core::subagents(app),
+        "swarm" => core::swarm(app, arg),
         "links" | "dashboard" | "api" => core::deepseek_links(app),
         "home" | "stats" | "overview" => core::home_dashboard(app),
         "note" => note::note(app, arg),

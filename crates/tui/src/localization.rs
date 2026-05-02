@@ -252,6 +252,7 @@ pub enum MessageId {
     CmdSkillsDescription,
     CmdStatuslineDescription,
     CmdSubagentsDescription,
+    CmdSwarmDescription,
     CmdSystemDescription,
     CmdTaskDescription,
     CmdTokensDescription,
@@ -430,6 +431,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CmdSkillsDescription,
     MessageId::CmdStatuslineDescription,
     MessageId::CmdSubagentsDescription,
+    MessageId::CmdSwarmDescription,
     MessageId::CmdSystemDescription,
     MessageId::CmdTaskDescription,
     MessageId::CmdTokensDescription,
@@ -748,6 +750,9 @@ fn english(id: MessageId) -> &'static str {
         }
         MessageId::CmdStatuslineDescription => "Configure which items appear in the footer",
         MessageId::CmdSubagentsDescription => "List sub-agent status",
+        MessageId::CmdSwarmDescription => {
+            "Run a multi-agent swarm turn (sequential | mixture | distill | deliberate)"
+        }
         MessageId::CmdSystemDescription => "Show current system prompt",
         MessageId::CmdTaskDescription => "Manage background tasks",
         MessageId::CmdTokensDescription => "Show token usage for session",
@@ -1012,6 +1017,9 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         }
         MessageId::CmdStatuslineDescription => "フッターに表示する項目を設定",
         MessageId::CmdSubagentsDescription => "サブエージェントの状態を一覧表示",
+        MessageId::CmdSwarmDescription => {
+            "マルチエージェントのスワームターンを実行（sequential | mixture | distill | deliberate）"
+        }
         MessageId::CmdSystemDescription => "現在のシステムプロンプトを表示",
         MessageId::CmdTaskDescription => "バックグラウンドタスクを管理",
         MessageId::CmdTokensDescription => "セッションのトークン使用量を表示",
@@ -1254,6 +1262,9 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::CmdSkillsDescription => "列出本地技能（或使用 --remote 浏览精选注册表）",
         MessageId::CmdStatuslineDescription => "配置底栏要显示哪些条目",
         MessageId::CmdSubagentsDescription => "列出子代理状态",
+        MessageId::CmdSwarmDescription => {
+            "运行多代理集群轮次（sequential | mixture | distill | deliberate）"
+        }
         MessageId::CmdSystemDescription => "显示当前系统提示词",
         MessageId::CmdTaskDescription => "管理后台任务",
         MessageId::CmdTokensDescription => "显示本次会话的 token 用量",
@@ -1502,6 +1513,9 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         }
         MessageId::CmdStatuslineDescription => "Configurar quais itens aparecem no rodapé",
         MessageId::CmdSubagentsDescription => "Listar o status dos sub-agentes",
+        MessageId::CmdSwarmDescription => {
+            "Executar turno de enxame multi-agente (sequential | mixture | distill | deliberate)"
+        }
         MessageId::CmdSystemDescription => "Exibir o prompt de sistema atual",
         MessageId::CmdTaskDescription => "Gerenciar tarefas em segundo plano",
         MessageId::CmdTokensDescription => "Exibir o uso de tokens da sessão",
