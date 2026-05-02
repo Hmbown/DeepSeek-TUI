@@ -210,6 +210,17 @@ impl ChatWidget {
 
 impl Renderable for ChatWidget {
     fn render(&self, _area: Rect, buf: &mut Buffer) {
+        // Clear the full chat area every frame. Ratatui's `Paragraph` does
+        // not fill the area's background — it only writes the cells that
+        // contain text — so any cell the current frame's paragraph doesn't
+        // touch retains the *previous* frame's contents. With wide tool
+        // output (e.g. `gh pr list` lines containing ISO timestamps) and
+        // a narrower-on-the-next-turn paragraph, the old timestamp tails
+        // (`:24Z`, `7:29:24Z`, …) appeared to "bleed" into the right edge
+        // of the chat area, visually colliding with the sidebar (#372 vis
+        // followup).
+        Clear.render(self.content_area, buf);
+
         let paragraph = Paragraph::new(self.lines.clone());
         paragraph.render(self.content_area, buf);
 
