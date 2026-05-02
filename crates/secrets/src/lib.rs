@@ -273,13 +273,20 @@ impl KeyringStore for FileKeyringStore {
     }
 
     fn set(&self, key: &str, value: &str) -> Result<(), SecretsError> {
-        let mut blob = self.load_unlocked().unwrap_or_default();
+        // load_unlocked already returns Ok(default) for a missing file, so the
+        // first-write-creates-the-file path is preserved. Any other Err
+        // (insecure permissions, corrupt JSON, transient I/O) MUST surface to
+        // the caller — propagating it via `unwrap_or_default()` silently
+        // wipes every previously stored secret on the next `store_unlocked`.
+        let mut blob = self.load_unlocked()?;
         blob.entries.insert(key.to_string(), value.to_string());
         self.store_unlocked(&blob)
     }
 
     fn delete(&self, key: &str) -> Result<(), SecretsError> {
-        let mut blob = self.load_unlocked().unwrap_or_default();
+        // Same invariant as `set`: never fall back to an empty blob on read
+        // error, or `delete <one-key>` becomes `delete <every-key>`.
+        let mut blob = self.load_unlocked()?;
         blob.entries.remove(key);
         self.store_unlocked(&blob)
     }
@@ -562,6 +569,98 @@ mod tests {
             matches!(err, SecretsError::InsecurePermissions { .. }),
             "unexpected error: {err}"
         );
+    }
+
+    // Regression for #281: `set` and `delete` used to call
+    // `load_unlocked().unwrap_or_default()`, which silently wiped every
+    // existing secret whenever the read failed (insecure permissions,
+    // corrupt JSON, or any other I/O error).
+
+    #[cfg(unix)]
+    #[test]
+    fn file_store_set_does_not_clobber_secrets_when_perms_are_bad() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("secrets.json");
+        let original = "{\"entries\":{\"deepseek\":\"sk-keep\",\"nvidia\":\"nv-keep\"}}";
+        fs::write(&path, original).unwrap();
+        let mut perms = fs::metadata(&path).unwrap().permissions();
+        perms.set_mode(0o644);
+        fs::set_permissions(&path, perms).unwrap();
+
+        let store = FileKeyringStore::new(path.clone());
+        let err = store.set("openrouter", "or-new").unwrap_err();
+        assert!(
+            matches!(err, SecretsError::InsecurePermissions { .. }),
+            "set must surface the read error rather than overwriting; got: {err}"
+        );
+
+        let on_disk = fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            on_disk, original,
+            "set must not modify the file when load_unlocked errored"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_store_delete_does_not_clobber_secrets_when_perms_are_bad() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("secrets.json");
+        let original = "{\"entries\":{\"deepseek\":\"sk-keep\",\"nvidia\":\"nv-keep\"}}";
+        fs::write(&path, original).unwrap();
+        let mut perms = fs::metadata(&path).unwrap().permissions();
+        perms.set_mode(0o644);
+        fs::set_permissions(&path, perms).unwrap();
+
+        let store = FileKeyringStore::new(path.clone());
+        let err = store.delete("nvidia").unwrap_err();
+        assert!(
+            matches!(err, SecretsError::InsecurePermissions { .. }),
+            "delete must surface the read error rather than wiping the file; got: {err}"
+        );
+        let on_disk = fs::read_to_string(&path).unwrap();
+        assert_eq!(on_disk, original);
+    }
+
+    #[test]
+    fn file_store_set_does_not_clobber_secrets_when_json_is_corrupt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("secrets.json");
+        // Corrupt JSON. Permissions ok where unix; on Windows the perm-check
+        // doesn't run so we exercise the json-error path directly.
+        fs::write(&path, "{ this is not valid json").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&path).unwrap().permissions();
+            perms.set_mode(0o600);
+            fs::set_permissions(&path, perms).unwrap();
+        }
+
+        let store = FileKeyringStore::new(path.clone());
+        let err = store.set("deepseek", "sk-new").unwrap_err();
+        assert!(
+            matches!(err, SecretsError::Json(_)),
+            "set must surface the parse error rather than wiping the file; got: {err}"
+        );
+        let on_disk = fs::read_to_string(&path).unwrap();
+        assert_eq!(on_disk, "{ this is not valid json");
+    }
+
+    #[test]
+    fn file_store_set_still_creates_file_when_missing() {
+        // Regression guard: the #281 fix removed `unwrap_or_default()` from
+        // the load call. Make sure the original first-write-creates-the-file
+        // ergonomic still works — `load_unlocked` returns `Ok(default)` for
+        // a missing file, so the `?` should pass through cleanly.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("nested").join("secrets.json");
+        let store = FileKeyringStore::new(path.clone());
+
+        store.set("deepseek", "sk-fresh").unwrap();
+        assert_eq!(store.get("deepseek").unwrap(), Some("sk-fresh".to_string()));
     }
 
     #[test]
