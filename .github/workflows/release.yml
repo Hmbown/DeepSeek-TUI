@@ -128,6 +128,53 @@ jobs:
         with:
           files: artifacts/*/*
           prerelease: false
+          body: |
+            ## Install
+
+            ### Recommended — npm (one command, both binaries)
+
+            ```bash
+            npm install -g deepseek-tui
+            ```
+
+            The wrapper downloads both binaries from this Release and places them in the same directory.
+
+            ### Cargo (Linux / macOS)
+
+            ```bash
+            cargo install deepseek-tui-cli deepseek-tui --locked
+            ```
+
+            Both crates are required — `deepseek-tui-cli` produces the `deepseek` dispatcher and `deepseek-tui` produces the interactive runtime that the dispatcher delegates to. Installing only one binary will fail at runtime with a `MISSING_COMPANION_BINARY` error.
+
+            ### Manual download
+
+            **Both** binaries below must be downloaded for your platform and dropped into the same directory (e.g. `~/.local/bin/`):
+
+            | Platform | Dispatcher | TUI runtime |
+            |---|---|---|
+            | Linux x64 | `deepseek-linux-x64` | `deepseek-tui-linux-x64` |
+            | macOS x64 | `deepseek-macos-x64` | `deepseek-tui-macos-x64` |
+            | macOS ARM | `deepseek-macos-arm64` | `deepseek-tui-macos-arm64` |
+            | Windows x64 | `deepseek-windows-x64.exe` | `deepseek-tui-windows-x64.exe` |
+
+            Then `chmod +x` both (Unix) and run `./deepseek`.
+
+            ### Verify (recommended)
+
+            Download `deepseek-artifacts-sha256.txt` from this Release and verify:
+
+            ```bash
+            # Linux
+            sha256sum -c deepseek-artifacts-sha256.txt
+
+            # macOS
+            shasum -a 256 -c deepseek-artifacts-sha256.txt
+            ```
+
+            ## Changelog
+
+            See [CHANGELOG.md](https://github.com/Hmbown/DeepSeek-TUI/blob/main/CHANGELOG.md) for the full notes for this release.
 
 # npm publish is intentionally not automated. The npm account requires 2FA OTP
 # on every publish, and a granular automation token that bypasses 2FA has not
