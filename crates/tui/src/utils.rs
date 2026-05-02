@@ -531,6 +531,76 @@ mod atomic_write_tests {
 }
 
 #[cfg(test)]
+mod spawn_supervised_tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// A spawned task that panics produces a crash dump in
+    /// `~/.deepseek/crashes/` and the panic does not propagate to the
+    /// parent task — `spawn_supervised` catches it.
+    #[tokio::test]
+    async fn panicking_task_writes_crash_dump_and_does_not_kill_parent() {
+        // Redirect HOME so we don't pollute the real ~/.deepseek/crashes/.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let prev_home = std::env::var_os("HOME");
+        // SAFETY: tests in this crate run with single-threaded env mutation
+        // by harness convention; we restore on exit.
+        unsafe { std::env::set_var("HOME", tmp.path()) };
+
+        // Spawn a task that immediately panics.
+        let parent_alive = Arc::new(AtomicBool::new(false));
+        let parent_alive_clone = parent_alive.clone();
+
+        let handle = spawn_supervised(
+            "panic-test-fixture",
+            std::panic::Location::caller(),
+            async move {
+                parent_alive_clone.store(true, Ordering::SeqCst);
+                panic!("deliberate panic for crash-dump test");
+            },
+        );
+
+        // The handle resolves to () because spawn_supervised swallows the
+        // panic. Awaiting must not return Err — the caller must not see
+        // the panic.
+        let result = handle.await;
+
+        // Restore HOME before any assertions can panic.
+        match prev_home {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+
+        assert!(
+            result.is_ok(),
+            "spawn_supervised must convert panic to a normal completion"
+        );
+        assert!(
+            parent_alive.load(Ordering::SeqCst),
+            "fixture task must have run before panicking"
+        );
+
+        // A crash dump file must exist under <HOME>/.deepseek/crashes/.
+        let crash_dir = tmp.path().join(".deepseek").join("crashes");
+        let entries: Vec<_> = std::fs::read_dir(&crash_dir)
+            .expect("crashes dir exists")
+            .flatten()
+            .collect();
+        assert_eq!(entries.len(), 1, "exactly one crash dump expected");
+        let dump = std::fs::read_to_string(entries[0].path()).expect("read dump");
+        assert!(
+            dump.contains("panic-test-fixture"),
+            "dump must include the task name; got: {dump}"
+        );
+        assert!(
+            dump.contains("deliberate panic for crash-dump test"),
+            "dump must include the panic message; got: {dump}"
+        );
+    }
+}
+
+#[cfg(test)]
 mod project_mapping_tests {
     use super::{project_tree, summarize_project};
     use std::fs;

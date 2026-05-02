@@ -40,6 +40,7 @@ use tokio::time::timeout;
 
 use super::diagnostics::{Diagnostic, Severity};
 use super::registry::Language;
+use crate::utils::spawn_supervised;
 
 /// Trait the LSP manager talks to. A real LSP server speaks this via stdio;
 /// tests use an in-process fake.
@@ -124,15 +125,27 @@ impl StdioLspTransport {
         let (tx_diag, rx_diag) = mpsc::channel::<(PathBuf, Vec<Diagnostic>)>(64);
 
         // Writer task: drain outbound channel, frame with Content-Length, write to stdin.
-        tokio::spawn(writer_task(stdin, rx_outbound));
+        spawn_supervised(
+            "lsp-writer",
+            std::panic::Location::caller(),
+            writer_task(stdin, rx_outbound),
+        );
         // Reader task: parse Content-Length frames from stdout, push to inbound queue.
-        tokio::spawn(reader_task(stdout, tx_inbound));
+        spawn_supervised(
+            "lsp-reader",
+            std::panic::Location::caller(),
+            reader_task(stdout, tx_inbound),
+        );
         // Inbound dispatcher: routes notifications to `tx_diag`, replies to a
         // pending map. We keep the pending map for completeness even though
         // diagnostics polling itself does not reuse it.
         let pending: Arc<AsyncMutex<HashMap<i64, oneshot::Sender<Value>>>> =
             Arc::new(AsyncMutex::new(HashMap::new()));
-        tokio::spawn(dispatcher_task(rx_inbound, tx_diag, pending.clone()));
+        spawn_supervised(
+            "lsp-dispatcher",
+            std::panic::Location::caller(),
+            dispatcher_task(rx_inbound, tx_diag, pending.clone()),
+        );
 
         // Send `initialize` and wait for `initialized`. We synthesize id=1.
         let init_payload = json!({

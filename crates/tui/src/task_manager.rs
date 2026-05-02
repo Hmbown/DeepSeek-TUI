@@ -27,6 +27,7 @@ use crate::runtime_threads::{
     CreateThreadRequest, RuntimeThreadManager, RuntimeThreadManagerConfig, RuntimeTurnStatus,
     SharedRuntimeThreadManager, StartTurnRequest,
 };
+use crate::utils::spawn_supervised;
 
 const DEFAULT_WORKERS: usize = 2;
 const MAX_WORKERS: usize = 8;
@@ -787,9 +788,13 @@ impl TaskManager {
 
         for _ in 0..workers {
             let manager_clone = Arc::clone(&manager);
-            tokio::spawn(async move {
-                manager_clone.worker_loop().await;
-            });
+            spawn_supervised(
+                "task-manager-worker",
+                std::panic::Location::caller(),
+                async move {
+                    manager_clone.worker_loop().await;
+                },
+            );
         }
 
         Ok(manager)

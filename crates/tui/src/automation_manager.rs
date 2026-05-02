@@ -18,6 +18,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::task_manager::{NewTaskRequest, SharedTaskManager, TaskStatus};
+use crate::utils::spawn_supervised;
 
 const CURRENT_AUTOMATION_SCHEMA_VERSION: u32 = 1;
 const CURRENT_RUN_SCHEMA_VERSION: u32 = 1;
@@ -819,7 +820,10 @@ pub fn spawn_scheduler(
     cancel: CancellationToken,
     config: AutomationSchedulerConfig,
 ) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
+    spawn_supervised(
+        "automation-scheduler",
+        std::panic::Location::caller(),
+        async move {
         let interval = config.tick_interval_secs.max(5);
         loop {
             if cancel.is_cancelled() {
@@ -841,7 +845,8 @@ pub fn spawn_scheduler(
                 _ = sleep(std::time::Duration::from_secs(interval)) => {}
             }
         }
-    })
+        },
+    )
 }
 
 #[cfg(test)]

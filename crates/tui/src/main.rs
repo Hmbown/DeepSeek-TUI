@@ -506,9 +506,18 @@ enum SandboxCommand {
 #[tokio::main]
 async fn main() -> Result<()> {
     // Set up process panic hook before anything else — writes crash dumps
-    // to ~/.deepseek/crashes/ even if the panic happens before tokio is up.
+    // to ~/.deepseek/crashes/ even if the panic happens before tokio is up,
+    // and restores the terminal so a panicked TUI doesn't leave the user's
+    // shell stuck in alt-screen mode.
     let orig_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
+        // Restore the terminal first so the panic message itself, plus the
+        // user's shell after exit, are visible. Best-effort — we may not be
+        // in raw / alt-screen mode if the panic happens pre-TUI.
+        use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
+        let _ = disable_raw_mode();
+        let _ = crossterm::execute!(std::io::stdout(), LeaveAlternateScreen);
+
         let msg = if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
             s.to_string()
         } else if let Some(s) = panic_info.payload().downcast_ref::<String>() {

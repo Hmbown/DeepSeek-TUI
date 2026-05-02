@@ -21,6 +21,7 @@ use crate::rlm::turn::{RlmTermination, run_rlm_turn_with_root};
 use crate::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
+use crate::utils::spawn_supervised;
 
 /// Default child model — cheap and fast.
 const DEFAULT_CHILD_MODEL: &str = "deepseek-v4-flash";
@@ -187,7 +188,11 @@ impl ToolSpec for RlmTool {
         // we don't want RLM's progress events to interleave with the
         // parent agent's stream. Drain into a no-op channel.
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
-        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let drain = spawn_supervised(
+            "rlm-progress-drain",
+            std::panic::Location::caller(),
+            async move { while rx.recv().await.is_some() {} },
+        );
 
         // The big body lives only in the REPL as `context`. The small
         // `task` rides along as `root_prompt` and is shown to the root

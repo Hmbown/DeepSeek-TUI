@@ -31,6 +31,7 @@ use crate::tools::spec::{
     optional_bool, optional_u64, required_str,
 };
 use crate::tools::todo::{SharedTodoList, TodoList};
+use crate::utils::spawn_supervised;
 
 pub mod mailbox;
 #[allow(unused_imports)]
@@ -885,7 +886,11 @@ impl SubAgentManager {
             max_steps,
             input_rx,
         };
-        let handle = tokio::spawn(run_subagent_task(task));
+        let handle = spawn_supervised(
+            "subagent-task",
+            std::panic::Location::caller(),
+            run_subagent_task(task),
+        );
         agent.task_handle = Some(handle);
         self.agents.insert(agent_id.clone(), agent);
         self.persist_state_best_effort();
@@ -985,7 +990,11 @@ impl SubAgentManager {
                 max_steps: self.max_steps,
                 input_rx,
             };
-            let handle = tokio::spawn(run_subagent_task(task));
+            let handle = spawn_supervised(
+                "subagent-task-resume",
+                std::panic::Location::caller(),
+                run_subagent_task(task),
+            );
 
             agent.status = SubAgentStatus::Running;
             agent.result = None;
