@@ -102,6 +102,26 @@ pub struct WebConfigSession {
     pub receiver: tokio::sync::mpsc::UnboundedReceiver<WebConfigSessionEvent>,
 }
 
+#[cfg(test)]
+impl WebConfigSession {
+    pub(crate) fn for_test(
+        receiver: tokio::sync::mpsc::UnboundedReceiver<WebConfigSessionEvent>,
+    ) -> Self {
+        #[cfg(feature = "web")]
+        {
+            Self {
+                task: tokio::spawn(async {}),
+                receiver,
+                addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+            }
+        }
+        #[cfg(not(feature = "web"))]
+        {
+            Self { receiver }
+        }
+    }
+}
+
 #[cfg_attr(not(feature = "web"), allow(dead_code))]
 #[derive(Debug, Clone)]
 pub enum WebConfigSessionEvent {
@@ -369,6 +389,8 @@ pub fn apply_document(
 ) -> Result<ConfigUiApplyOutcome> {
     validate_document(&doc)?;
     let mut notes = Vec::new();
+    let previous_compaction = app.compaction_config();
+    let previous_reasoning_effort = app.reasoning_effort;
 
     for (key, value) in [
         ("model", doc.runtime.model.as_str()),
@@ -407,17 +429,22 @@ pub fn apply_document(
         ("mcp_config_path", doc.config.mcp_config_path.as_str()),
     ] {
         let result = commands::set_config_value(app, key, value, persist);
+        if result.is_error {
+            bail!(
+                "{}",
+                result
+                    .message
+                    .unwrap_or_else(|| "config update failed".to_string())
+            );
+        }
         if let Some(message) = result.message {
-            if !message.starts_with("Error:") {
-                notes.push(message);
-            } else {
-                bail!(message);
-            }
+            notes.push(message);
         }
     }
 
     apply_reasoning_effort(app, config, doc.config.reasoning_effort, persist)?;
-    let requires_engine_sync = true;
+    let requires_engine_sync = app.compaction_config() != previous_compaction
+        || app.reasoning_effort != previous_reasoning_effort;
 
     let new_status_items = parse_status_items(&doc.config.status_items);
     if app.status_items != new_status_items {
@@ -431,8 +458,10 @@ pub fn apply_document(
         }
     }
 
-    reload_runtime_config(app, config)?;
-    notes.extend(config_reload_notes(app, config, persist));
+    if persist {
+        reload_runtime_config(app, config)?;
+        notes.extend(config_reload_notes(app, config));
+    }
     let changed = !notes.is_empty();
     let final_message = if notes.is_empty() {
         if persist {
@@ -514,10 +543,9 @@ fn reload_runtime_config(app: &mut App, config: &mut Config) -> Result<()> {
     Ok(())
 }
 
-fn config_reload_notes(app: &App, config: &Config, persist: bool) -> Vec<String> {
+fn config_reload_notes(app: &App, config: &Config) -> Vec<String> {
     let mut notes = Vec::new();
-    let mode = if persist { "saved" } else { "session" };
-    notes.push(format!("Config {mode} and reloaded"));
+    notes.push("Config saved and reloaded".to_string());
     if app.mcp_restart_required {
         notes.push(format!(
             "MCP tool pool still requires restart after {}",
@@ -759,7 +787,9 @@ mod tests {
     use crate::config::Config;
     use crate::test_support::lock_test_env;
     use crate::tui::app::{App, TuiOptions};
+    use std::fs;
     use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn app() -> App {
         let options = TuiOptions {
@@ -819,5 +849,73 @@ mod tests {
         let value = serde_json::to_value(doc.clone()).expect("json");
         let parsed = parse_document(value).expect("parsed");
         assert_eq!(parsed, doc);
+    }
+
+    #[test]
+    fn session_only_apply_keeps_runtime_overrides_and_skips_reload() {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let temp_root = std::env::temp_dir().join(format!(
+            "deepseek-config-ui-session-only-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(temp_root.join(".deepseek")).expect("config dir");
+        let config_path = temp_root.join(".deepseek").join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+model = "deepseek-v4-pro"
+reasoning_effort = "max"
+mcp_config_path = "disk-mcp.json"
+"#,
+        )
+        .expect("seed config");
+
+        let mut app = app();
+        app.config_path = Some(config_path.clone());
+        app.model = "deepseek-v4-pro".to_string();
+        app.mcp_config_path = PathBuf::from("disk-mcp.json");
+        app.reasoning_effort = ReasoningEffort::Max;
+        let mut config = Config::load(Some(config_path), None).expect("load config");
+
+        let mut doc = build_document(&app, &config).expect("document");
+        doc.runtime.model = "deepseek-v4-flash".to_string();
+        doc.config.reasoning_effort = ReasoningEffortValue::Low;
+        doc.config.mcp_config_path = "session-mcp.json".to_string();
+
+        let outcome = apply_document(doc, &mut app, &mut config, false).expect("apply");
+
+        assert!(outcome.changed);
+        assert!(outcome.requires_engine_sync);
+        assert_eq!(app.model, "deepseek-v4-flash");
+        assert_eq!(app.reasoning_effort, ReasoningEffort::Low);
+        assert_eq!(app.mcp_config_path, PathBuf::from("session-mcp.json"));
+        assert_eq!(
+            config.reasoning_effort.as_deref(),
+            Some(ReasoningEffort::Low.as_setting())
+        );
+        assert_eq!(
+            config.mcp_config_path.as_deref(),
+            Some("disk-mcp.json"),
+            "session-only apply must not reload persisted config back into runtime state"
+        );
+    }
+
+    #[test]
+    fn status_item_only_apply_does_not_require_engine_sync() {
+        let _lock = lock_test_env();
+        let mut app = app();
+        let mut config = Config::default();
+        let mut doc = build_document(&app, &config).expect("document");
+        doc.config.status_items = vec![StatusItemValue::Cost, StatusItemValue::Model];
+
+        let outcome = apply_document(doc, &mut app, &mut config, false).expect("apply");
+
+        assert!(outcome.changed);
+        assert!(!outcome.requires_engine_sync);
     }
 }

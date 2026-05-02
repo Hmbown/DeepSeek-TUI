@@ -119,6 +119,7 @@ const CONTEXT_WARNING_THRESHOLD_PERCENT: f64 = 85.0;
 const CONTEXT_CRITICAL_THRESHOLD_PERCENT: f64 = 95.0;
 const UI_IDLE_POLL_MS: u64 = 48;
 const UI_ACTIVE_POLL_MS: u64 = 24;
+const WEB_CONFIG_POLL_MS: u64 = 16;
 // Forced repaint cadence while a turn is live (model loading, compacting,
 // sub-agents running). Drives the footer water-spout animation as well as
 // the per-tool spinner pulse — keep this fast enough that the spout reads as
@@ -413,67 +414,8 @@ async fn run_event_loop(
     let mut web_config_session: Option<WebConfigSession> = None;
 
     loop {
-        if let Some(session) = web_config_session.as_mut() {
-            let mut keep_session = true;
-            while let Ok(event) = session.receiver.try_recv() {
-                match event {
-                    WebConfigSessionEvent::Draft(doc) => {
-                        match config_ui::apply_document(doc, app, config, false) {
-                            Ok(outcome) if outcome.changed => {
-                                if outcome.requires_engine_sync {
-                                    apply_model_and_compaction_update(
-                                        &engine_handle,
-                                        app.compaction_config(),
-                                    )
-                                    .await;
-                                }
-                                app.status_message = Some(format!(
-                                    "Web config draft applied: {}",
-                                    outcome.final_message
-                                ));
-                            }
-                            Ok(_) => {}
-                            Err(err) => {
-                                app.add_message(HistoryCell::System {
-                                    content: format!("Web config draft apply failed: {err}"),
-                                });
-                            }
-                        }
-                    }
-                    WebConfigSessionEvent::Committed(doc) => {
-                        keep_session = false;
-                        match config_ui::apply_document(doc, app, config, true) {
-                            Ok(outcome) => {
-                                if outcome.requires_engine_sync {
-                                    apply_model_and_compaction_update(
-                                        &engine_handle,
-                                        app.compaction_config(),
-                                    )
-                                    .await;
-                                }
-                                app.add_message(HistoryCell::System {
-                                    content: outcome.final_message.clone(),
-                                });
-                                app.status_message = Some(outcome.final_message);
-                            }
-                            Err(err) => {
-                                app.add_message(HistoryCell::System {
-                                    content: format!("Web config commit failed: {err}"),
-                                });
-                            }
-                        }
-                    }
-                    WebConfigSessionEvent::Failed(err) => {
-                        keep_session = false;
-                        app.add_message(HistoryCell::System {
-                            content: format!("Web config session failed: {err}"),
-                        });
-                    }
-                }
-            }
-            if !keep_session {
-                web_config_session = None;
-            }
+        if !drain_web_config_events(&mut web_config_session, app, config, &engine_handle).await {
+            web_config_session = None;
         }
 
         if last_task_refresh.elapsed() >= Duration::from_millis(2500) {
@@ -1273,6 +1215,9 @@ async fn run_event_loop(
         }
         if let Some(until_draw) = draw_wait {
             poll_timeout = poll_timeout.min(until_draw);
+        }
+        if web_config_session.is_some() {
+            poll_timeout = poll_timeout.min(Duration::from_millis(WEB_CONFIG_POLL_MS));
         }
         // While the quit-confirmation prompt is armed, ensure we wake up to
         // expire it on time even if no input event arrives.
@@ -2688,6 +2633,77 @@ async fn apply_model_and_compaction_update(
     let _ = engine_handle
         .send(Op::SetCompaction { config: compaction })
         .await;
+}
+
+async fn drain_web_config_events(
+    web_config_session: &mut Option<WebConfigSession>,
+    app: &mut App,
+    config: &mut Config,
+    engine_handle: &EngineHandle,
+) -> bool {
+    let Some(session) = web_config_session.as_mut() else {
+        return true;
+    };
+
+    let mut keep_session = true;
+    while let Ok(event) = session.receiver.try_recv() {
+        match event {
+            WebConfigSessionEvent::Draft(doc) => {
+                match config_ui::apply_document(doc, app, config, false) {
+                    Ok(outcome) if outcome.changed => {
+                        if outcome.requires_engine_sync {
+                            apply_model_and_compaction_update(
+                                engine_handle,
+                                app.compaction_config(),
+                            )
+                            .await;
+                        }
+                        app.status_message = Some(format!(
+                            "Web config draft applied: {}",
+                            outcome.final_message
+                        ));
+                    }
+                    Ok(_) => {}
+                    Err(err) => {
+                        app.add_message(HistoryCell::System {
+                            content: format!("Web config draft apply failed: {err}"),
+                        });
+                    }
+                }
+            }
+            WebConfigSessionEvent::Committed(doc) => {
+                keep_session = false;
+                match config_ui::apply_document(doc, app, config, true) {
+                    Ok(outcome) => {
+                        if outcome.requires_engine_sync {
+                            apply_model_and_compaction_update(
+                                engine_handle,
+                                app.compaction_config(),
+                            )
+                            .await;
+                        }
+                        app.add_message(HistoryCell::System {
+                            content: outcome.final_message.clone(),
+                        });
+                        app.status_message = Some(outcome.final_message);
+                    }
+                    Err(err) => {
+                        app.add_message(HistoryCell::System {
+                            content: format!("Web config commit failed: {err}"),
+                        });
+                    }
+                }
+            }
+            WebConfigSessionEvent::Failed(err) => {
+                keep_session = false;
+                app.add_message(HistoryCell::System {
+                    content: format!("Web config session failed: {err}"),
+                });
+            }
+        }
+    }
+
+    keep_session
 }
 
 /// Apply the choice made in the `/model` picker (#39): mutate App state so

@@ -30,6 +30,8 @@ pub struct CommandResult {
     pub message: Option<String>,
     /// Optional action for the app to take
     pub action: Option<AppAction>,
+    /// Whether the command failed.
+    pub is_error: bool,
 }
 
 impl CommandResult {
@@ -38,6 +40,7 @@ impl CommandResult {
         Self {
             message: None,
             action: None,
+            is_error: false,
         }
     }
 
@@ -46,6 +49,7 @@ impl CommandResult {
         Self {
             message: Some(msg.into()),
             action: None,
+            is_error: false,
         }
     }
 
@@ -54,6 +58,7 @@ impl CommandResult {
         Self {
             message: None,
             action: Some(action),
+            is_error: false,
         }
     }
 
@@ -63,6 +68,7 @@ impl CommandResult {
         Self {
             message: Some(msg.into()),
             action: Some(action),
+            is_error: false,
         }
     }
 
@@ -71,6 +77,7 @@ impl CommandResult {
         Self {
             message: Some(format!("Error: {}", msg.into())),
             action: None,
+            is_error: true,
         }
     }
 }

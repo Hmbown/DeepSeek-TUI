@@ -298,6 +298,7 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
     CommandResult {
         message: Some(message),
         action,
+        is_error: false,
     }
 }
 
