@@ -11,6 +11,5 @@ anyhow.workspace = true
 deepseek-secrets = { path = "../secrets", version = "0.8.4" }
 dirs.workspace = true
 serde.workspace = true
-serde_json.workspace = true
 toml.workspace = true
 tracing.workspace = true
