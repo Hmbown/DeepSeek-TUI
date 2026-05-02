@@ -317,17 +317,47 @@ impl SessionManager {
         Ok(sessions)
     }
 
-    /// Load only the metadata from a session file (faster than loading full session)
+    /// Load only the metadata from a session file.
+    ///
+    /// Optimization for #337: previously this called
+    /// `serde_json::from_reader` which forces serde to scan every token in
+    /// the file just to validate JSON structure — including the
+    /// (potentially many MB of) `messages` and `tool_log` arrays we're
+    /// going to discard. For a user with hundreds of long sessions, a
+    /// single `list_sessions()` call could chew through tens of MB of
+    /// JSON per startup.
+    ///
+    /// We now read at most 64 KB up front and string-extract the
+    /// top-level `metadata` object, which is invariably tiny (~500 B)
+    /// and appears before any large `messages`/`tool_log` payload. We
+    /// fall back to a full-file read only if the prefix doesn't yield a
+    /// parseable metadata block (e.g. an oddly-formatted legacy file).
     fn load_session_metadata(path: &Path) -> std::io::Result<SessionMetadata> {
-        #[derive(Deserialize)]
-        struct SavedSessionMetadata {
-            metadata: SessionMetadata,
+        use std::io::Read;
+
+        const PREFIX_BYTES: usize = 64 * 1024;
+        let mut file = fs::File::open(path)?;
+        let mut buf = Vec::with_capacity(PREFIX_BYTES);
+        file.by_ref()
+            .take(PREFIX_BYTES as u64)
+            .read_to_end(&mut buf)?;
+
+        if let Some(metadata) = extract_top_level_metadata(&buf) {
+            return Ok(metadata);
         }
 
-        let file = fs::File::open(path)?;
-        let session: SavedSessionMetadata = serde_json::from_reader(file)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        Ok(session.metadata)
+        // Metadata wasn't extractable from the prefix (truncated mid-block,
+        // unusual key ordering, etc.). Read the rest and try again with the
+        // full buffer before giving up.
+        let mut rest = Vec::new();
+        file.read_to_end(&mut rest)?;
+        buf.extend_from_slice(&rest);
+        extract_top_level_metadata(&buf).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "session file missing parseable `metadata` block",
+            )
+        })
     }
 
     /// Delete a session by ID
@@ -467,6 +497,110 @@ pub fn update_session(
     session.metadata.total_tokens = total_tokens;
     session.system_prompt = system_prompt_to_string(system_prompt).or(session.system_prompt);
     session
+}
+
+/// String-scan a JSON byte buffer for the top-level `"metadata":{...}`
+/// block and return it parsed. Returns `None` if no balanced metadata
+/// object is present in the buffer.
+///
+/// Supports the optimisation in `SessionManager::load_session_metadata`
+/// (#337). The scanner is brace-balanced and string-aware so a `{` or
+/// `}` appearing inside a string literal doesn't perturb the depth
+/// count.
+fn extract_top_level_metadata(buf: &[u8]) -> Option<SessionMetadata> {
+    let s = std::str::from_utf8(buf).ok()?;
+    let bytes = s.as_bytes();
+
+    // Find the FIRST `"metadata"` key that appears outside of any string
+    // literal. Walking with brace/string awareness costs almost nothing
+    // and avoids matching `metadata` inside an earlier message body.
+    let key_pat = b"\"metadata\"";
+    let mut idx = 0usize;
+    let mut in_string = false;
+    let mut escape = false;
+    let key_offset = loop {
+        if idx >= bytes.len() {
+            return None;
+        }
+        let c = bytes[idx];
+        if escape {
+            escape = false;
+            idx += 1;
+            continue;
+        }
+        if c == b'\\' {
+            escape = true;
+            idx += 1;
+            continue;
+        }
+        if c == b'"' {
+            // If we're already in a string, this closes it; otherwise it
+            // opens one. But before flipping we check for the key match
+            // when we're entering a string at exactly this position.
+            if !in_string && bytes[idx..].starts_with(key_pat) {
+                break idx;
+            }
+            in_string = !in_string;
+            idx += 1;
+            continue;
+        }
+        idx += 1;
+    };
+
+    // Position past the key.
+    let after_key = key_offset + key_pat.len();
+    // Find the colon that separates key from value (skip whitespace).
+    let mut after_colon = after_key;
+    while after_colon < bytes.len() && (bytes[after_colon] as char).is_whitespace() {
+        after_colon += 1;
+    }
+    if after_colon >= bytes.len() || bytes[after_colon] != b':' {
+        return None;
+    }
+    after_colon += 1;
+    while after_colon < bytes.len() && (bytes[after_colon] as char).is_whitespace() {
+        after_colon += 1;
+    }
+    if after_colon >= bytes.len() || bytes[after_colon] != b'{' {
+        return None;
+    }
+
+    // Walk the object, balancing braces.
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escape = false;
+    let mut end = None;
+    for (i, &c) in bytes[after_colon..].iter().enumerate() {
+        let abs = after_colon + i;
+        if escape {
+            escape = false;
+            continue;
+        }
+        if c == b'\\' {
+            escape = true;
+            continue;
+        }
+        if c == b'"' {
+            in_string = !in_string;
+            continue;
+        }
+        if in_string {
+            continue;
+        }
+        match c {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = Some(abs + 1);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let end = end?;
+    serde_json::from_str::<SessionMetadata>(&s[after_colon..end]).ok()
 }
 
 fn system_prompt_to_string(system_prompt: Option<&SystemPrompt>) -> Option<String> {
@@ -838,6 +972,69 @@ mod tests {
             err.to_string().contains("newer than supported"),
             "unexpected error: {err}"
         );
+    }
+
+    /// Regression for #337: metadata extraction skips the (potentially
+    /// huge) `messages` array — it must succeed even when the messages
+    /// array is megabytes long, and it must NOT confuse a `"metadata"`
+    /// substring inside a message body for the real top-level key.
+    #[test]
+    fn extract_top_level_metadata_skips_huge_messages_array() {
+        // Build a session JSON with a large `messages` payload that
+        // contains the literal string `"metadata"` in a user message —
+        // a naive `find("\"metadata\"")` would mis-target this.
+        let big_text = format!(
+            r#"this message references "metadata" inside it, repeated:{}"#,
+            "x".repeat(20_000)
+        );
+        let json = format!(
+            r#"{{
+                "schema_version": 1,
+                "metadata": {{
+                    "id": "abc-123",
+                    "title": "Real Session",
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "updated_at": "2026-01-02T00:00:00Z",
+                    "message_count": 12,
+                    "total_tokens": 4096,
+                    "model": "deepseek-v4-flash",
+                    "workspace": "/tmp"
+                }},
+                "messages": [
+                    {{ "role": "user", "content": [ {{ "Text": {{ "text": {body:?} }} }} ] }}
+                ]
+            }}"#,
+            body = big_text
+        );
+
+        let extracted = extract_top_level_metadata(json.as_bytes())
+            .expect("metadata extractable from prefix");
+        assert_eq!(extracted.id, "abc-123");
+        assert_eq!(extracted.title, "Real Session");
+        assert_eq!(extracted.message_count, 12);
+        assert_eq!(extracted.total_tokens, 4096);
+    }
+
+    #[test]
+    fn extract_top_level_metadata_handles_braces_inside_strings() {
+        // A title containing `{` and `}` inside the metadata block must
+        // not throw off the brace counter.
+        let json = r#"{
+            "metadata": {
+                "id": "x",
+                "title": "weird { title } with braces",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "message_count": 0,
+                "total_tokens": 0,
+                "model": "m",
+                "workspace": "/tmp"
+            },
+            "messages": []
+        }"#;
+        let extracted = extract_top_level_metadata(json.as_bytes())
+            .expect("brace-in-string survives the scanner");
+        assert_eq!(extracted.title, "weird { title } with braces");
     }
 
     #[test]
