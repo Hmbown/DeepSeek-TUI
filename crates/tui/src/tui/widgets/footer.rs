@@ -15,6 +15,7 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
+use crate::localization::{Locale, MessageId, tr};
 use crate::palette;
 use crate::tui::app::{App, AppMode};
 
@@ -123,16 +124,18 @@ pub fn footer_working_strip_string(width: usize, frame: u64) -> String {
     out
 }
 
-/// Pulse `working` through `working`, `working.`, `working..`, `working...`
+/// Pulse the localized "working" label through 0–3 trailing ASCII dots
 /// keyed off `frame`. The cycle period is 4 frames (matching the four
-/// states), so adjacent ticks visibly differ. Returns a static-friendly
+/// states), so adjacent ticks visibly differ. Dots stay ASCII regardless
+/// of locale so the animation reads identically across scripts. Returns a
 /// `String` so callers can drop it into a `Span::styled` without lifetime
 /// gymnastics.
 #[must_use]
-pub fn footer_working_label(frame: u64) -> String {
+pub fn footer_working_label(frame: u64, locale: Locale) -> String {
     let dots = (frame % 4) as usize;
-    let mut out = String::with_capacity(7 + dots);
-    out.push_str("working");
+    let base = tr(locale, MessageId::FooterWorking);
+    let mut out = String::with_capacity(base.len() + dots);
+    out.push_str(base);
     for _ in 0..dots {
         out.push('.');
     }
@@ -141,16 +144,18 @@ pub fn footer_working_label(frame: u64) -> String {
 
 /// Build a "N agents" chip span list when there are sub-agents in flight.
 /// Empty list when N == 0 hides the chip entirely. Singular for N == 1
-/// reads naturally; plural otherwise.
+/// reads naturally; plural otherwise. The pluralization template lives in
+/// the locale registry so CJK locales can render the count without the
+/// English plural-`s` artefact.
 #[must_use]
-pub fn footer_agents_chip(running: usize) -> Vec<Span<'static>> {
+pub fn footer_agents_chip(running: usize, locale: Locale) -> Vec<Span<'static>> {
     if running == 0 {
         return Vec::new();
     }
     let text = if running == 1 {
-        "1 agent".to_string()
+        tr(locale, MessageId::FooterAgentSingular).to_string()
     } else {
-        format!("{running} agents")
+        tr(locale, MessageId::FooterAgentsPlural).replace("{count}", &running.to_string())
     };
     vec![Span::styled(
         text,
@@ -508,6 +513,7 @@ fn truncate_to_width(text: &str, max_width: usize) -> String {
 mod tests {
     use super::{FooterProps, FooterWidget, Renderable};
     use crate::config::Config;
+    use crate::localization::Locale;
     use crate::palette;
     use crate::tui::app::{App, AppMode, TuiOptions};
     use ratatui::{
@@ -597,20 +603,20 @@ mod tests {
     // ---- agents chip wording ----
     #[test]
     fn footer_agents_chip_is_empty_when_no_agents_running() {
-        let chip = super::footer_agents_chip(0);
+        let chip = super::footer_agents_chip(0, Locale::En);
         assert!(chip.is_empty(), "0 agents in flight → no chip");
     }
 
     #[test]
     fn footer_agents_chip_uses_singular_for_one() {
-        let chip = super::footer_agents_chip(1);
+        let chip = super::footer_agents_chip(1, Locale::En);
         assert_eq!(chip.len(), 1);
         assert_eq!(chip[0].content.as_ref(), "1 agent");
     }
 
     #[test]
     fn footer_agents_chip_uses_plural_for_many() {
-        let chip = super::footer_agents_chip(3);
+        let chip = super::footer_agents_chip(3, Locale::En);
         assert_eq!(chip.len(), 1);
         assert_eq!(chip[0].content.as_ref(), "3 agents");
     }
@@ -618,7 +624,7 @@ mod tests {
     #[test]
     fn footer_agents_chip_renders_into_widget() {
         let app = make_app();
-        let agents = super::footer_agents_chip(2);
+        let agents = super::footer_agents_chip(2, Locale::En);
         let props = FooterProps::from_app(
             &app,
             None,
@@ -779,16 +785,16 @@ mod tests {
         // The label sequence `working` → `working.` → `working..` →
         // `working...` then wraps back. Each frame is a discrete tick;
         // the cycle is exactly 4 frames so adjacent ticks visibly differ.
-        assert_eq!(super::footer_working_label(0), "working");
-        assert_eq!(super::footer_working_label(1), "working.");
-        assert_eq!(super::footer_working_label(2), "working..");
-        assert_eq!(super::footer_working_label(3), "working...");
+        assert_eq!(super::footer_working_label(0, Locale::En), "working");
+        assert_eq!(super::footer_working_label(1, Locale::En), "working.");
+        assert_eq!(super::footer_working_label(2, Locale::En), "working..");
+        assert_eq!(super::footer_working_label(3, Locale::En), "working...");
         assert_eq!(
-            super::footer_working_label(4),
+            super::footer_working_label(4, Locale::En),
             "working",
             "wraps back at frame 4",
         );
-        assert_eq!(super::footer_working_label(7), "working...");
+        assert_eq!(super::footer_working_label(7, Locale::En), "working...");
     }
 
     /// Render the footer at `width` and return the visible single-line text.

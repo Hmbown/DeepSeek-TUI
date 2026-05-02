@@ -33,16 +33,18 @@ pub enum KeybindingSection {
 }
 
 impl KeybindingSection {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Navigation => "Navigation",
-            Self::Editing => "Input editing",
-            Self::Submission => "Actions",
-            Self::Modes => "Modes",
-            Self::Sessions => "Sessions",
-            Self::Clipboard => "Clipboard",
-            Self::Help => "Help",
-        }
+    pub fn label(self, locale: crate::localization::Locale) -> &'static str {
+        use crate::localization::{MessageId, tr};
+        let id = match self {
+            Self::Navigation => MessageId::HelpSectionNavigation,
+            Self::Editing => MessageId::HelpSectionEditing,
+            Self::Submission => MessageId::HelpSectionActions,
+            Self::Modes => MessageId::HelpSectionModes,
+            Self::Sessions => MessageId::HelpSectionSessions,
+            Self::Clipboard => MessageId::HelpSectionClipboard,
+            Self::Help => MessageId::HelpSectionHelp,
+        };
+        tr(locale, id)
     }
 
     /// Stable ordering for help rendering — matches the variant declaration

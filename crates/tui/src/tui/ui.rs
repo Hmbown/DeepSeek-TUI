@@ -4584,7 +4584,11 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
     // within ~2s. Mirrors codex-rs's `FooterMode::QuitShortcutReminder`.
     let quit_prompt = if app.quit_is_armed() {
         Some(FooterToast {
-            text: "Press Ctrl+C again to quit".to_string(),
+            text: crate::localization::tr(
+                app.ui_locale,
+                crate::localization::MessageId::FooterPressCtrlCAgain,
+            )
+            .to_string(),
             color: palette::STATUS_WARNING,
         })
     } else {
@@ -4623,7 +4627,7 @@ fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
         // non-tool work falls back to the existing dot-pulse label.
         props.state_label = active_subagent_status_label(app)
             .or_else(|| active_tool_status_label(app))
-            .unwrap_or_else(|| crate::tui::widgets::footer_working_label(dot_frame));
+            .unwrap_or_else(|| crate::tui::widgets::footer_working_label(dot_frame, app.ui_locale));
         props.state_color = palette::DEEPSEEK_SKY;
 
         // Spout drift: only animate when low_motion is off. The textual
@@ -4951,7 +4955,7 @@ fn render_footer_from(
         Vec::new()
     };
     let agents = if has(S::Agents) {
-        crate::tui::widgets::footer_agents_chip(running_agent_count(app))
+        crate::tui::widgets::footer_agents_chip(running_agent_count(app), app.ui_locale)
     } else {
         Vec::new()
     };
@@ -5057,7 +5061,8 @@ fn footer_auxiliary_spans(app: &App, max_width: usize) -> Vec<Span<'static>> {
     // coherence, in-flight sub-agents, reasoning replay tokens, cache hit
     // rate, and session cost.
     let coherence_spans = footer_coherence_spans(app);
-    let agents_spans = crate::tui::widgets::footer_agents_chip(running_agent_count(app));
+    let agents_spans =
+        crate::tui::widgets::footer_agents_chip(running_agent_count(app), app.ui_locale);
     let replay_spans = footer_reasoning_replay_spans(app);
     let cache_spans = footer_cache_spans(app);
     let displayed_cost = app.displayed_session_cost();
