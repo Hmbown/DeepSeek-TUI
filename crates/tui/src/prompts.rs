@@ -425,4 +425,120 @@ mod tests {
         assert!(!YOLO_PROMPT.is_empty());
         assert!(!PLAN_PROMPT.is_empty());
     }
+
+    // ── Cache-prefix stability harness (#263 step 2) ───────────────────────
+    //
+    // These tests pin the byte-stability invariant required for DeepSeek's
+    // KV prefix cache to hit: any prompt-construction surface that ends up
+    // in the cached prefix must produce identical bytes given identical
+    // inputs across calls.
+
+    /// Find the byte position of the first divergence between two strings,
+    /// returning a windowed view (`±32 bytes` around the divergence) for
+    /// human-readable failure output.
+    fn first_divergence(a: &str, b: &str) -> Option<(usize, String, String)> {
+        let a_bytes = a.as_bytes();
+        let b_bytes = b.as_bytes();
+        let max = a_bytes.len().min(b_bytes.len());
+        for i in 0..max {
+            if a_bytes[i] != b_bytes[i] {
+                let lo = i.saturating_sub(32);
+                let a_hi = (i + 32).min(a_bytes.len());
+                let b_hi = (i + 32).min(b_bytes.len());
+                let a_ctx = String::from_utf8_lossy(&a_bytes[lo..a_hi]).into_owned();
+                let b_ctx = String::from_utf8_lossy(&b_bytes[lo..b_hi]).into_owned();
+                return Some((i, a_ctx, b_ctx));
+            }
+        }
+        if a_bytes.len() != b_bytes.len() {
+            return Some((
+                max,
+                format!("(len={})", a_bytes.len()),
+                format!("(len={})", b_bytes.len()),
+            ));
+        }
+        None
+    }
+
+    fn assert_byte_identical(label: &str, a: &str, b: &str) {
+        if let Some((pos, a_ctx, b_ctx)) = first_divergence(a, b) {
+            panic!(
+                "{label}: prompt construction is non-deterministic — first diff at byte {pos}\n\
+                 ── side A (±32B) ──\n{a_ctx:?}\n── side B (±32B) ──\n{b_ctx:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn compose_prompt_is_byte_stable_across_calls() {
+        // Suspect #4 from #263: mode prompt churn within a single mode.
+        // Two calls with identical (mode, personality) inputs must produce
+        // identical bytes — anything else is a cache buster.
+        for mode in [AppMode::Agent, AppMode::Yolo, AppMode::Plan] {
+            for personality in [Personality::Calm, Personality::Playful] {
+                let a = compose_prompt(mode, personality);
+                let b = compose_prompt(mode, personality);
+                assert_byte_identical(
+                    &format!("compose_prompt(mode={mode:?}, personality={personality:?})"),
+                    &a,
+                    &b,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn system_prompt_for_mode_with_context_is_byte_stable_for_unchanged_workspace() {
+        // Same workspace, no working_set / skills churn between calls →
+        // identical bytes. This pins the most representative production
+        // surface (engine.rs builds the system prompt via this fn or
+        // its sibling _and_skills variant on every turn).
+        let tmp = tempdir().expect("tempdir");
+        let workspace = tmp.path();
+
+        for mode in [AppMode::Agent, AppMode::Yolo, AppMode::Plan] {
+            let a = match system_prompt_for_mode_with_context(mode, workspace, None) {
+                SystemPrompt::Text(text) => text,
+                SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
+            };
+            let b = match system_prompt_for_mode_with_context(mode, workspace, None) {
+                SystemPrompt::Text(text) => text,
+                SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
+            };
+            assert_byte_identical(
+                &format!("system_prompt_for_mode_with_context(mode={mode:?}) on empty workspace"),
+                &a,
+                &b,
+            );
+        }
+    }
+
+    #[test]
+    fn system_prompt_with_working_set_summary_is_byte_stable_for_constant_summary() {
+        // The `working_set_summary` argument is the volatile surface (suspect
+        // #1 in #263). Independently verifying THIS surface needs a separate
+        // test in working_set.rs; here we just pin that the surrounding
+        // prompt construction faithfully embeds whatever summary it's given
+        // without injecting any non-determinism on its own.
+        let tmp = tempdir().expect("tempdir");
+        let workspace = tmp.path();
+        let summary = "## Repo Working Set\nWorkspace: /tmp/x\n";
+
+        let a = match system_prompt_for_mode_with_context(AppMode::Agent, workspace, Some(summary))
+        {
+            SystemPrompt::Text(text) => text,
+            SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
+        };
+        let b = match system_prompt_for_mode_with_context(AppMode::Agent, workspace, Some(summary))
+        {
+            SystemPrompt::Text(text) => text,
+            SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
+        };
+        assert_byte_identical(
+            "system_prompt_for_mode_with_context with constant working_set summary",
+            &a,
+            &b,
+        );
+        assert!(a.contains(summary), "summary must be embedded as-is");
+    }
 }
