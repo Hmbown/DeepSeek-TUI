@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   investigation never registers the shell tool). The application-level
   `NetworkPolicy` (`crates/tui/src/network_policy.rs`) remains the only
   outbound-traffic boundary.
+- **`/skill install <github-repo-url>` failed with `invalid gzip header`** (#269)
+  — `https://github.com/<owner>/<repo>` parsed as a raw direct URL, so the
+  installer downloaded the HTML repo page and tried to gzip-decode HTML.
+  Bare GitHub repo URLs (with or without `.git`, with or without `www.`,
+  with or without a trailing slash) now route to the `GitHubRepo` source the
+  same as `github:<owner>/<repo>`. URLs that already point at a specific
+  archive / blob / tree path still go through `DirectUrl`.
 - **V4 Pro discount expiry extended** (#267) — DeepSeek extended the V4 Pro 75%
   promotional discount from 2026-05-05 15:59 UTC to 2026-05-31 15:59 UTC. Without
   this update the TUI would have started showing 4× the actual billed cost on

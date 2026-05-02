@@ -82,7 +82,9 @@ impl InstallSource {
     /// Parse a user-supplied spec. Empty / whitespace-only input is rejected.
     ///
     /// * `github:owner/repo` → [`InstallSource::GitHubRepo`]
-    /// * `http://` or `https://` prefix → [`InstallSource::DirectUrl`]
+    /// * `https://github.com/owner/repo[.git]` (no path past the repo) →
+    ///   [`InstallSource::GitHubRepo`]
+    /// * any other `http://` or `https://` prefix → [`InstallSource::DirectUrl`]
     /// * anything else → [`InstallSource::Registry`]
     pub fn parse(spec: &str) -> Result<Self> {
         let trimmed = spec.trim();
@@ -107,10 +109,41 @@ impl InstallSource {
             return Ok(Self::GitHubRepo(format!("{owner}/{repo}")));
         }
         if trimmed.starts_with("https://") || trimmed.starts_with("http://") {
+            if let Some(repo) = parse_github_browser_url(trimmed) {
+                return Ok(Self::GitHubRepo(repo));
+            }
             return Ok(Self::DirectUrl(trimmed.to_string()));
         }
         Ok(Self::Registry(trimmed.to_string()))
     }
+}
+
+/// Detect bare `https://github.com/<owner>/<repo>` URLs (with or without a
+/// trailing `.git`) and return `owner/repo`. Returns `None` for any URL that
+/// already points at a specific archive / blob / tree path — those are real
+/// direct URLs and the caller fetches them as-is.
+fn parse_github_browser_url(url: &str) -> Option<String> {
+    let after_scheme = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))?;
+    let (host, rest) = after_scheme.split_once('/')?;
+    if !host.eq_ignore_ascii_case("github.com") && !host.eq_ignore_ascii_case("www.github.com") {
+        return None;
+    }
+    let trimmed = rest.trim_end_matches('/');
+    let mut parts = trimmed.splitn(3, '/');
+    let owner = parts.next()?.trim();
+    let repo = parts.next()?.trim().trim_end_matches(".git");
+    if owner.is_empty() || repo.is_empty() {
+        return None;
+    }
+    // If there is a third segment, the URL points at a sub-resource
+    // (`/archive/...`, `/blob/...`, `/tree/...`). Treat that as a real direct
+    // URL — the user explicitly wants whatever lives at that path.
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(format!("{owner}/{repo}"))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1032,6 +1065,47 @@ mod tests {
             s,
             InstallSource::DirectUrl("http://example.com/skill.tar.gz".to_string())
         );
+    }
+
+    #[test]
+    fn parse_github_browser_url_routes_to_github_repo() {
+        // Regression for #269: `https://github.com/<owner>/<repo>` was being
+        // parsed as a DirectUrl, so the installer downloaded the HTML repo
+        // page and tried to gzip-decode HTML ("invalid gzip header").
+        for spec in [
+            "https://github.com/obra/superpowers",
+            "https://github.com/obra/superpowers/",
+            "https://github.com/obra/superpowers.git",
+            "https://github.com/obra/superpowers.git/",
+            "https://www.github.com/obra/superpowers",
+            "http://github.com/obra/superpowers",
+            "  https://github.com/obra/superpowers  ",
+        ] {
+            let parsed = InstallSource::parse(spec)
+                .unwrap_or_else(|err| panic!("parse({spec}) failed: {err}"));
+            assert_eq!(
+                parsed,
+                InstallSource::GitHubRepo("obra/superpowers".to_string()),
+                "spec {spec} must route to GitHubRepo",
+            );
+        }
+    }
+
+    #[test]
+    fn parse_github_archive_url_stays_direct() {
+        // URLs that point at a specific subresource (archive tarball, blob,
+        // tree) are real direct URLs — the user picked that exact path.
+        for spec in [
+            "https://github.com/obra/superpowers/archive/refs/heads/main.tar.gz",
+            "https://github.com/obra/superpowers/blob/main/README.md",
+            "https://github.com/obra/superpowers/tree/main",
+        ] {
+            let parsed = InstallSource::parse(spec).unwrap();
+            assert!(
+                matches!(parsed, InstallSource::DirectUrl(_)),
+                "spec {spec} must stay DirectUrl, got {parsed:?}",
+            );
+        }
     }
 
     #[test]
