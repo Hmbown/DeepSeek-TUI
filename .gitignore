@@ -74,3 +74,9 @@ apps/
 .claude/worktrees/
 .worktrees/
 .ace-tool/
+
+# Vendored schemaui — exclude bulky web frontend artefacts
+# (built bundle is small; node_modules is 15MB and unneeded for the Rust build).
+vendor/schemaui-0.12.0/web/ui/node_modules/
+vendor/schemaui-0.12.0/web/ui/.vite/
+vendor/schemaui-0.12.0/Cargo.lock

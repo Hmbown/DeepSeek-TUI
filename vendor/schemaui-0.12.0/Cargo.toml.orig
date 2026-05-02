@@ -1,0 +1,116 @@
+[workspace]
+members = ["schemaui-cli"]
+
+[package]
+name = "schemaui"
+authors = ["unic <yuniqueunic@gmail.com>"]
+version = "0.12.0"
+edition = "2024"
+keywords = ["tui", "schema", "configuration", "terminal", "cross-platform"]
+categories = ["command-line-interface", "config"]
+repository = "https://github.com/yuniqueunic/schemaui"
+documentation = "https://docs.rs/schemaui"
+description = "A Rust library for generating TUI and Web UIs from JSON Schemas for configuration management."
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+exclude = [
+  "web/ui/node_modules/**",
+  "web/ui/.vite/**",
+  "web/ui/.tmp/**",
+  "web/ui/.DS_Store",
+  "docs/**/*.gif",
+  "docs/**/*.mp4",
+]
+include = [
+  "Cargo.toml",
+  "build.rs",
+  "keymap/default.keymap.json",
+  "src/**",
+  "web/dist/**",
+  "README.md",
+  "README.ZH.md",
+  "LICENSE*",
+]
+
+[features]
+default = ["tui", "json"]
+full = ["all_formats", "tui", "web"]
+tui = ["dep:crossterm", "dep:ratatui", "dep:unicode-width"]
+web = ["dep:include_dir", "dep:axum", "dep:tokio"]
+web-types = ["dep:ts-rs"]
+
+all_formats = ["json", "yaml", "toml"]
+json = []
+yaml = ["dep:serde_yaml"]
+toml = ["dep:toml"]
+
+precompile = []
+
+# use debug features for debugging which is more flexible than debug_assertions
+debug = []
+
+
+[dependencies]
+anyhow = "1"
+crossterm = { version = "0", optional = true }
+jsonschema = { version = "0.46", default-features = false }
+indexmap = { version = "2", default-features = false, features = ["serde", "std"] }
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"], optional = true }
+serde = { version = "1", default-features = false, features = ["derive"] }
+percent-encoding = { version = "2", default-features = false, features = ["alloc"] }
+sha2 = { version = "0.11", default-features = false }
+unicode-width = { version = "0.2", optional = true }
+regex = "1"
+include_dir = { version = "0.7", optional = true }
+axum = { version = "0.8", default-features = false, features = ["json", "http1", "tokio", "original-uri"], optional = true }
+tokio = { version = "1", features = [
+  "rt-multi-thread",
+  "net",
+  "sync",
+], optional = true }
+ts-rs = { version = "12", optional = true, features = ["serde-compat"] }
+
+# For serialization formats
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_yaml = { version = "0.9", optional = true }
+toml = { version = "1", optional = true }
+
+[[example]]
+name = "demo"
+path = "examples/demo.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "tui_artifact_codegen"
+path = "examples/tui_artifact_codegen.rs"
+required-features = ["tui", "precompile"]
+
+[[example]]
+name = "tui_artifact_demo"
+path = "examples/tui_artifact_demo.rs"
+required-features = ["tui", "precompile"]
+
+[[example]]
+name = "ui_layout_dump"
+path = "examples/ui_layout_dump.rs"
+
+[[example]]
+name = "web_snapshot_codegen"
+path = "examples/web_snapshot_codegen.rs"
+required-features = ["web", "precompile"]
+
+[dev-dependencies]
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+
+[build-dependencies]
+serde = { version = "1", default-features = false, features = ["derive"] }
+serde_json = "1"
+unicode-width = "0.2"
+
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "debuginfo"

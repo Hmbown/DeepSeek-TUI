@@ -42,3 +42,6 @@ toml = "0.9.7"
 tower-http = { version = "0.6", features = ["cors"] }
 tracing = "0.1"
 uuid = { version = "1.11", features = ["v4"] }
+
+[patch.crates-io]
+schemaui = { path = "vendor/schemaui-0.12.0" }
