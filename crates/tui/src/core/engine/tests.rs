@@ -290,6 +290,44 @@ fn agent_mode_can_build_auto_approved_tool_context() {
     assert!(engine.build_tool_context(AppMode::Yolo, false).auto_approve);
 }
 
+#[test]
+fn agent_and_yolo_modes_elevate_shell_sandbox_to_allow_network() {
+    // Regression for #273: the seatbelt-default policy denies all outbound
+    // network (including DNS), which broke `curl`, `yt-dlp`, package managers,
+    // and similar shell commands in Agent mode. Elevation must include
+    // network access so the application-level NetworkPolicy stays the only
+    // outbound boundary.
+    let (engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
+
+    let agent_ctx = engine.build_tool_context(AppMode::Agent, false);
+    let agent_policy = agent_ctx
+        .elevated_sandbox_policy
+        .as_ref()
+        .expect("Agent mode should elevate the sandbox policy");
+    assert!(
+        agent_policy.has_network_access(),
+        "Agent mode must allow shell network access; got {agent_policy:?}",
+    );
+
+    let yolo_ctx = engine.build_tool_context(AppMode::Yolo, false);
+    assert!(
+        yolo_ctx
+            .elevated_sandbox_policy
+            .as_ref()
+            .expect("Yolo mode should elevate the sandbox policy")
+            .has_network_access(),
+    );
+
+    // Plan mode is read-only investigation and does not register the shell
+    // tool, so it intentionally leaves the policy at the strict default.
+    assert!(
+        engine
+            .build_tool_context(AppMode::Plan, false)
+            .elevated_sandbox_policy
+            .is_none(),
+    );
+}
+
 #[tokio::test]
 async fn session_update_preserves_reasoning_tool_only_turn() {
     let (mut engine, handle) = Engine::new(EngineConfig::default(), &Config::default());
