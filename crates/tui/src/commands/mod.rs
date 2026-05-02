@@ -30,6 +30,8 @@ pub struct CommandResult {
     pub message: Option<String>,
     /// Optional action for the app to take
     pub action: Option<AppAction>,
+    /// Whether the command failed.
+    pub is_error: bool,
 }
 
 impl CommandResult {
@@ -38,6 +40,7 @@ impl CommandResult {
         Self {
             message: None,
             action: None,
+            is_error: false,
         }
     }
 
@@ -46,6 +49,7 @@ impl CommandResult {
         Self {
             message: Some(msg.into()),
             action: None,
+            is_error: false,
         }
     }
 
@@ -54,6 +58,7 @@ impl CommandResult {
         Self {
             message: None,
             action: Some(action),
+            is_error: false,
         }
     }
 
@@ -63,6 +68,7 @@ impl CommandResult {
         Self {
             message: Some(msg.into()),
             action: Some(action),
+            is_error: false,
         }
     }
 
@@ -71,6 +77,7 @@ impl CommandResult {
         Self {
             message: Some(format!("Error: {}", msg.into())),
             action: None,
+            is_error: true,
         }
     }
 }
@@ -501,6 +508,11 @@ pub fn persist_status_items(
     config::persist_status_items(items)
 }
 
+/// Persist a root-level string key in `config.toml`.
+pub fn persist_root_string_key(key: &str, value: &str) -> anyhow::Result<std::path::PathBuf> {
+    config::persist_root_string_key(key, value)
+}
+
 /// Execute a Recursive Language Model (RLM) turn — Algorithm 1 from
 /// Zhang et al. (arXiv:2512.24601).
 ///
@@ -665,6 +677,8 @@ mod tests {
         let options = TuiOptions {
             model: "deepseek-v4-pro".to_string(),
             workspace: PathBuf::from("."),
+            config_path: None,
+            config_profile: None,
             allow_shell: false,
             use_alt_screen: true,
             use_mouse_capture: false,
@@ -792,6 +806,8 @@ mod tests {
         let options = TuiOptions {
             model: "deepseek-v4-pro".to_string(),
             workspace: workspace.clone(),
+            config_path: None,
+            config_profile: None,
             allow_shell: false,
             use_alt_screen: true,
             use_mouse_capture: false,

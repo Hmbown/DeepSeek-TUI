@@ -4,30 +4,59 @@ use std::path::{Path, PathBuf};
 
 use super::CommandResult;
 use crate::config::{COMMON_DEEPSEEK_MODELS, clear_api_key, normalize_model_name};
+use crate::config_ui::{ConfigUiMode, parse_mode};
 use crate::localization::resolve_locale;
 use crate::settings::Settings;
 use crate::tui::app::{App, AppAction, AppMode, OnboardingState, SidebarFocus};
 use crate::tui::approval::ApprovalMode;
 
-/// Open the interactive config editor modal, or handle `/config <key> <value>`.
-pub fn show_config(_app: &mut App) -> CommandResult {
-    CommandResult::action(AppAction::OpenConfigView)
+/// Open the interactive config editor.
+///
+/// Bare `/config` opens the legacy Native modal (the `OpenConfigView` action),
+/// preserving the v0.8.4 behaviour. `/config tui` opens the new
+/// schemaui-driven TUI editor; `/config web` launches the web editor (only
+/// available in builds compiled with the `web` feature).
+pub fn show_config(_app: &mut App, arg: Option<&str>) -> CommandResult {
+    let mode = match parse_mode(arg) {
+        Ok(mode) => mode,
+        Err(err) => return CommandResult::error(err),
+    };
+    if mode == ConfigUiMode::Web && !cfg!(feature = "web") {
+        return CommandResult::error(
+            "This build does not include the web config UI. Rebuild with the `web` feature.",
+        );
+    }
+    let action = match mode {
+        ConfigUiMode::Native => AppAction::OpenConfigView,
+        ConfigUiMode::Tui | ConfigUiMode::Web => AppAction::OpenConfigEditor(mode),
+    };
+    CommandResult::action(action)
 }
 
 /// Dispatch `/config` with optional args.
 ///
-/// - `/config` (no args) — opens the interactive editor modal.
+/// - `/config` (no args) — opens the schemaui-driven TUI editor.
+/// - `/config tui` / `/config web` / `/config native` — open a specific
+///   editor mode (web requires the `web` build feature).
 /// - `/config <key>` — shows the current value of a setting.
 /// - `/config <key> <value>` — sets a runtime value (session only, no --save).
 pub fn config_command(app: &mut App, arg: Option<&str>) -> CommandResult {
     let raw = arg.map(str::trim).unwrap_or("");
     if raw.is_empty() {
-        return show_config(app);
+        return show_config(app, None);
     }
     let parts: Vec<&str> = raw.splitn(2, ' ').collect();
     if parts.len() == 1 {
+        // Single arg: editor-mode shortcut OR show-value request.
+        let token = parts[0];
+        if matches!(
+            token.to_ascii_lowercase().as_str(),
+            "tui" | "web" | "native"
+        ) {
+            return show_config(app, Some(token));
+        }
         // `/config <key>` — show current value
-        show_single_setting(app, parts[0])
+        show_single_setting(app, token)
     } else {
         // `/config <key> <value>` — set value
         set_config_value(app, parts[0], parts[1], false)
@@ -159,7 +188,7 @@ pub fn persist_status_items(items: &[crate::config::StatusItem]) -> anyhow::Resu
     Ok(path)
 }
 
-fn persist_root_string_key(key: &str, value: &str) -> anyhow::Result<PathBuf> {
+pub fn persist_root_string_key(key: &str, value: &str) -> anyhow::Result<PathBuf> {
     use anyhow::Context;
     use std::fs;
 
@@ -370,6 +399,7 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
     CommandResult {
         message: Some(message),
         action,
+        is_error: false,
     }
 }
 
@@ -648,6 +678,8 @@ mod tests {
         let options = TuiOptions {
             model: "test-model".to_string(),
             workspace: PathBuf::from("."),
+            config_path: None,
+            config_profile: None,
             allow_shell: false,
             use_alt_screen: true,
             use_mouse_capture: false,
@@ -689,10 +721,18 @@ mod tests {
     }
 
     #[test]
-    fn test_show_config_opens_config_editor() {
+    fn test_show_config_defaults_to_native() {
         let mut app = create_test_app();
         app.total_tokens = 1234;
-        let result = show_config(&mut app);
+        let result = show_config(&mut app, None);
+        assert!(result.message.is_none());
+        assert!(matches!(result.action, Some(AppAction::OpenConfigView)));
+    }
+
+    #[test]
+    fn test_show_config_native_opens_legacy_editor() {
+        let mut app = create_test_app();
+        let result = show_config(&mut app, Some("native"));
         assert!(result.message.is_none());
         assert!(matches!(result.action, Some(AppAction::OpenConfigView)));
     }

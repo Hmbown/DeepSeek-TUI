@@ -1,5 +1,7 @@
 use super::*;
 use crate::config::Config;
+use crate::config_ui::{self, WebConfigSession, WebConfigSessionEvent};
+use crate::core::engine::mock_engine_handle;
 use crate::tui::file_mention::{
     apply_mention_menu_selection, find_file_mention_completions, partial_file_mention_at_cursor,
     try_autocomplete_file_mention, user_request_with_file_mentions, visible_mention_menu_entries,
@@ -374,6 +376,8 @@ fn create_test_app() -> App {
     let options = TuiOptions {
         model: "deepseek-v4-pro".to_string(),
         workspace: PathBuf::from("."),
+        config_path: None,
+        config_profile: None,
         allow_shell: false,
         use_alt_screen: true,
         use_mouse_capture: false,
@@ -390,6 +394,39 @@ fn create_test_app() -> App {
         resume_session_id: None,
     };
     App::new(options, &Config::default())
+}
+
+#[tokio::test]
+async fn drain_web_config_events_applies_draft_without_closing_session() {
+    let mut app = create_test_app();
+    let mut config = Config::default();
+    let engine = mock_engine_handle();
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let doc = config_ui::build_document(&app, &config).expect("document");
+    tx.send(WebConfigSessionEvent::Draft(doc))
+        .expect("send draft");
+    let mut session = Some(WebConfigSession::for_test(rx));
+
+    let keep = drain_web_config_events(&mut session, &mut app, &mut config, &engine.handle).await;
+
+    assert!(keep);
+    assert!(session.is_some());
+}
+
+#[tokio::test]
+async fn drain_web_config_events_closes_session_after_commit() {
+    let mut app = create_test_app();
+    let mut config = Config::default();
+    let engine = mock_engine_handle();
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let doc = config_ui::build_document(&app, &config).expect("document");
+    tx.send(WebConfigSessionEvent::Committed(doc))
+        .expect("send commit");
+    let mut session = Some(WebConfigSession::for_test(rx));
+
+    let keep = drain_web_config_events(&mut session, &mut app, &mut config, &engine.handle).await;
+
+    assert!(!keep);
 }
 
 #[test]

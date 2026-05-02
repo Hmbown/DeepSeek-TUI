@@ -309,6 +309,8 @@ mod tests {
             TuiOptions {
                 model: "unknown-model".to_string(),
                 workspace: PathBuf::from("/tmp/project"),
+                config_path: None,
+                config_profile: None,
                 allow_shell: false,
                 use_alt_screen: true,
                 use_mouse_capture: false,

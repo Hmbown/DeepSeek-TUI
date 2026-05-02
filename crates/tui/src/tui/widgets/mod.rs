@@ -210,7 +210,20 @@ impl ChatWidget {
 
 impl Renderable for ChatWidget {
     fn render(&self, _area: Rect, buf: &mut Buffer) {
-        let paragraph = Paragraph::new(self.lines.clone());
+        // Repaint the full chat area with the deepseek-ink background each
+        // frame. Ratatui's `Paragraph` only writes cells that contain text,
+        // so cells the current frame's paragraph doesn't touch would
+        // otherwise hold the *previous* frame's contents (the `:24Z`
+        // timestamp-tail bleed-through reported in v0.8.5 testing). Using
+        // `Clear` reset cells to terminal default, which read as a brown-
+        // gray on most user setups; an explicit ink fill keeps the chat
+        // area on-brand.
+        Block::default()
+            .style(Style::default().bg(palette::DEEPSEEK_INK))
+            .render(self.content_area, buf);
+
+        let paragraph =
+            Paragraph::new(self.lines.clone()).style(Style::default().bg(palette::DEEPSEEK_INK));
         paragraph.render(self.content_area, buf);
 
         if let Some(scrollbar) = self.scrollbar {
@@ -1635,6 +1648,8 @@ mod tests {
         let options = TuiOptions {
             model: "deepseek-v4-flash".to_string(),
             workspace: PathBuf::from("."),
+            config_path: None,
+            config_profile: None,
             allow_shell: false,
             use_alt_screen: true,
             use_mouse_capture: false,

@@ -12,7 +12,7 @@
 
 use std::fs;
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Hard cap on persisted history. Keeps the file small (typical entries
 /// are < 200 chars, so 1000 entries ≈ 200 KB) and bounds startup load
@@ -21,7 +21,7 @@ pub const MAX_HISTORY_ENTRIES: usize = 1000;
 
 const HISTORY_FILE_NAME: &str = "composer_history.txt";
 
-fn history_path() -> Option<PathBuf> {
+fn default_history_path() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(".deepseek").join(HISTORY_FILE_NAME))
 }
 
@@ -29,10 +29,14 @@ fn history_path() -> Option<PathBuf> {
 /// file doesn't exist or can't be parsed — this is best-effort.
 #[must_use]
 pub fn load_history() -> Vec<String> {
-    let Some(path) = history_path() else {
+    let Some(path) = default_history_path() else {
         return Vec::new();
     };
-    let Ok(file) = fs::File::open(&path) else {
+    load_history_from(&path)
+}
+
+fn load_history_from(path: &Path) -> Vec<String> {
+    let Ok(file) = fs::File::open(path) else {
         return Vec::new();
     };
     BufReader::new(file)
@@ -49,13 +53,17 @@ pub fn load_history() -> Vec<String> {
 /// Best-effort — failures are logged via `tracing` but not propagated
 /// because composer history is a UX nicety, not a correctness concern.
 pub fn append_history(entry: &str) {
+    let Some(path) = default_history_path() else {
+        return;
+    };
+    append_history_to(&path, entry);
+}
+
+fn append_history_to(path: &Path, entry: &str) {
     let trimmed = entry.trim();
     if trimmed.is_empty() || trimmed.starts_with('/') {
         return;
     }
-    let Some(path) = history_path() else {
-        return;
-    };
     if let Some(parent) = path.parent()
         && let Err(err) = fs::create_dir_all(parent)
     {
@@ -68,7 +76,7 @@ pub fn append_history(entry: &str) {
 
     // Read existing entries, append the new one, prune from the front
     // until under the cap, then atomically rewrite.
-    let mut entries = load_history();
+    let mut entries = load_history_from(path);
     if entries.last().map(String::as_str) == Some(trimmed) {
         // De-dupe consecutive duplicates — repeated submission of the
         // same prompt shouldn't bloat the file.
@@ -81,7 +89,7 @@ pub fn append_history(entry: &str) {
     }
 
     let payload = entries.join("\n") + "\n";
-    if let Err(err) = crate::utils::write_atomic(&path, payload.as_bytes()) {
+    if let Err(err) = crate::utils::write_atomic(path, payload.as_bytes()) {
         tracing::warn!(
             "Failed to persist composer history at {}: {err}",
             path.display()
@@ -93,94 +101,75 @@ pub fn append_history(entry: &str) {
 mod tests {
     use super::*;
 
-    fn with_temp_home<R>(f: impl FnOnce() -> R) -> R {
-        // Use the crate-wide test env mutex so we don't race with other
-        // tests (config, restore, etc.) that also mutate HOME.
-        let _guard = crate::test_support::lock_test_env();
+    /// Tests use the path-injecting `*_from` / `*_to` helpers so they
+    /// don't have to mutate `HOME` (which is not honored by
+    /// `dirs::home_dir()` on Windows — it reads `USERPROFILE` /
+    /// `SHGetKnownFolderPath` instead). This makes the suite portable
+    /// across all three CI runners without per-platform env juggling.
+    fn temp_history_path() -> (tempfile::TempDir, PathBuf) {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let prev = std::env::var_os("HOME");
-        // SAFETY: env mutation is serialized by the lock above.
-        unsafe { std::env::set_var("HOME", tmp.path()) };
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
-        match prev {
-            Some(v) => unsafe { std::env::set_var("HOME", v) },
-            None => unsafe { std::env::remove_var("HOME") },
-        }
-        match result {
-            Ok(r) => r,
-            Err(p) => std::panic::resume_unwind(p),
-        }
+        let path = tmp.path().join(HISTORY_FILE_NAME);
+        (tmp, path)
     }
 
     #[test]
     fn append_and_load_round_trip() {
-        with_temp_home(|| {
-            append_history("first");
-            append_history("second");
-            append_history("third");
-            let history = load_history();
-            assert_eq!(history, vec!["first", "second", "third"]);
-        });
+        let (_tmp, path) = temp_history_path();
+        append_history_to(&path, "first");
+        append_history_to(&path, "second");
+        append_history_to(&path, "third");
+        assert_eq!(load_history_from(&path), vec!["first", "second", "third"]);
     }
 
     #[test]
     fn slash_commands_skipped() {
-        with_temp_home(|| {
-            append_history("/help");
-            append_history("real prompt");
-            append_history("/cost");
-            let history = load_history();
-            assert_eq!(history, vec!["real prompt"]);
-        });
+        let (_tmp, path) = temp_history_path();
+        append_history_to(&path, "/help");
+        append_history_to(&path, "real prompt");
+        append_history_to(&path, "/cost");
+        assert_eq!(load_history_from(&path), vec!["real prompt"]);
     }
 
     #[test]
     fn empty_and_whitespace_skipped() {
-        with_temp_home(|| {
-            append_history("");
-            append_history("   ");
-            append_history("\n\t");
-            append_history("real");
-            let history = load_history();
-            assert_eq!(history, vec!["real"]);
-        });
+        let (_tmp, path) = temp_history_path();
+        append_history_to(&path, "");
+        append_history_to(&path, "   ");
+        append_history_to(&path, "\n\t");
+        append_history_to(&path, "real");
+        assert_eq!(load_history_from(&path), vec!["real"]);
     }
 
     #[test]
     fn consecutive_duplicates_deduped() {
-        with_temp_home(|| {
-            append_history("same");
-            append_history("same");
-            append_history("same");
-            append_history("different");
-            append_history("same");
-            let history = load_history();
-            assert_eq!(history, vec!["same", "different", "same"]);
-        });
+        let (_tmp, path) = temp_history_path();
+        append_history_to(&path, "same");
+        append_history_to(&path, "same");
+        append_history_to(&path, "same");
+        append_history_to(&path, "different");
+        append_history_to(&path, "same");
+        assert_eq!(load_history_from(&path), vec!["same", "different", "same"]);
     }
 
     #[test]
     fn pruned_to_cap_at_append_time() {
-        with_temp_home(|| {
-            for i in 0..(MAX_HISTORY_ENTRIES + 50) {
-                append_history(&format!("entry {i}"));
-            }
-            let history = load_history();
-            assert_eq!(history.len(), MAX_HISTORY_ENTRIES);
-            // Newest entries survive; oldest 50 were pruned.
-            assert_eq!(history.first().map(String::as_str), Some("entry 50"));
-            assert_eq!(
-                history.last().map(String::as_str),
-                Some(format!("entry {}", MAX_HISTORY_ENTRIES + 49)).as_deref()
-            );
-        });
+        let (_tmp, path) = temp_history_path();
+        for i in 0..(MAX_HISTORY_ENTRIES + 50) {
+            append_history_to(&path, &format!("entry {i}"));
+        }
+        let history = load_history_from(&path);
+        assert_eq!(history.len(), MAX_HISTORY_ENTRIES);
+        // Newest entries survive; oldest 50 were pruned.
+        assert_eq!(history.first().map(String::as_str), Some("entry 50"));
+        assert_eq!(
+            history.last().map(String::as_str),
+            Some(format!("entry {}", MAX_HISTORY_ENTRIES + 49)).as_deref()
+        );
     }
 
     #[test]
     fn missing_file_loads_empty() {
-        with_temp_home(|| {
-            let history = load_history();
-            assert!(history.is_empty());
-        });
+        let (_tmp, path) = temp_history_path();
+        assert!(load_history_from(&path).is_empty());
     }
 }

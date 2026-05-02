@@ -7,6 +7,13 @@ repository.workspace = true
 description = "Terminal UI for DeepSeek"
 default-run = "deepseek-tui"
 
+[features]
+default = ["tui", "json", "toml"]
+tui = ["dep:schemaui", "schemaui/tui", "json", "toml"]
+web = ["dep:schemaui", "schemaui/web", "json", "toml"]
+json = ["schemaui/json"]
+toml = ["schemaui/toml"]
+
 [[bin]]
 name = "deepseek-tui"
 path = "src/main.rs"
@@ -16,6 +23,7 @@ anyhow = "1.0.100"
 arboard = "3.4"
 deepseek-secrets = { path = "../secrets", version = "0.8.5" }
 deepseek-tools = { path = "../tools", version = "0.8.5" }
+schemaui = { version = "0.12.0", default-features = false, optional = true }
 async-stream = "0.3.6"
 async-trait = "0.1"
 base64 = "0.22.1"
@@ -33,7 +41,8 @@ regex = "1.11"
 reqwest = { version = "0.13.1", default-features = false, features = ["blocking", "json", "stream", "multipart", "native-tls", "http2"] }
 rustyline = "15.0.0"
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
+serde_json = { version = "1.0.149", features = ["preserve_order"] }
+schemars = { version = "1.2.1", features = ["derive", "preserve_order"] }
 shellexpand = "3"
 toml = "0.9.7"
 tokio = { version = "1.49.0", features = ["full"] }
