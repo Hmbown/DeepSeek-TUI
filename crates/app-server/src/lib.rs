@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use axum::extract::State;
+use axum::http::{HeaderMap, Method, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use deepseek_agent::ModelRegistry;
@@ -30,12 +31,64 @@ pub struct AppServerOptions {
     pub config_path: Option<PathBuf>,
 }
 
+#/// Generate a random bearer token for authenticating HTTP app-server requests.
+/// Printed to stderr at startup so the TUI (or operator) can connect.
+fn generate_bearer_token() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    // Fast, no extra deps: XOR OS RNG seed with timestamp, hex-encode.
+    // For a production-grade token, consider replacing with `getrandom` crate.
+    let t = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
+    let pid = std::process::id() as u64;
+    let mut buf = [0u64; 4];
+    // Mix in the address of a stack variable for ASLR entropy
+    buf[0] = t;
+    buf[1] = t.wrapping_mul(0x5851f42d4c957f2d).wrapping_add(pid);
+    buf[2] = &buf as *const _ as u64;
+    buf[3] = t.wrapping_add(buf[1] ^ 0xdeadbeefcafebabe);
+    // Hex-encode
+    let token: String = buf.iter().map(|b| format!("{b:016x}")).collect();
+    token
+}
+
+fn require_bearer(
+    headers: &HeaderMap,
+    expected: &str,
+) -> std::result::Result<(), (StatusCode, String)> {
+    let auth = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let provided = auth.strip_prefix("Bearer ").unwrap_or(auth).trim();
+    if provided.is_empty() {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "missing Authorization header".to_string(),
+        ));
+    }
+    // Constant-time comparison
+    if provided.len() != expected.len()
+        || provided.bytes().zip(expected.bytes()).fold(0, |acc, (a, b)| acc | (a ^ b))
+            != 0
+    {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "invalid bearer token".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Clone)]
 struct AppState {
     config_path: Option<PathBuf>,
     config: Arc<RwLock<deepseek_config::ConfigToml>>,
     runtime: Arc<Mutex<Runtime>>,
     registry: ModelRegistry,
+    /// Bearer token required on all non-healthz HTTP endpoints.
+    bearer_token: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,6 +147,30 @@ struct ThreadMessageParams {
 pub async fn run(options: AppServerOptions) -> Result<()> {
     let state = build_state(options.config_path.clone())?;
 
+    // Generate a per-process bearer token and print to stderr.
+    eprintln!(
+        "[app-server] Bearer token: {}",
+        state.bearer_token
+    );
+    eprintln!(
+        "[app-server] Pass via header: Authorization: Bearer {}",
+        state.bearer_token
+    );
+
+    let bearer = state.bearer_token.clone();
+    // Restrict CORS to localhost origins only. External websites should not
+    // be able to call the app-server API (which can execute tools and read config).
+    let localhost_only: [axum::http::HeaderValue; 4] = [
+        "http://localhost:3000".parse().unwrap(),
+        "http://127.0.0.1:3000".parse().unwrap(),
+        "http://localhost:8080".parse().unwrap(),
+        "http://127.0.0.1:8080".parse().unwrap(),
+    ];
+    let cors = CorsLayer::new()
+        .allow_origin(localhost_only)
+        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_headers(["authorization", "content-type"].map(|h| h.parse().unwrap()));
+
     let app = Router::new()
         .route("/healthz", get(healthz))
         .route("/thread", post(thread_handler))
@@ -102,10 +179,24 @@ pub async fn run(options: AppServerOptions) -> Result<()> {
         .route("/tool", post(tool_handler))
         .route("/jobs", get(jobs_handler))
         .route("/mcp/startup", post(mcp_startup_handler))
-        .layer(CorsLayer::permissive())
-        .with_state(state);
+        .with_state(state)
+        .layer(cors)
+        .layer(axum::middleware::from_fn(move |req: axum::http::Request<axum::body::Body>, next: axum::middleware::Next| {
+            let expected = bearer.clone();
+            async move {
+                // Skip auth for /healthz (unauthenticated health check)
+                if req.uri().path() == "/healthz" {
+                    return next.run(req).await;
+                }
+                if let Err((status, msg)) = require_bearer(req.headers(), &expected) {
+                    return (status, Json(json!({"error": msg}))).into_response();
+                }
+                next.run(req).await
+            }
+        }));
 
     let listener = tokio::net::TcpListener::bind(options.listen).await?;
+    eprintln!("[app-server] Listening on {}", options.listen);
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -294,6 +385,7 @@ fn build_state(config_path: Option<PathBuf>) -> Result<AppState> {
         config: Arc::new(RwLock::new(config)),
         runtime: Arc::new(Mutex::new(runtime)),
         registry,
+        bearer_token: generate_bearer_token(),
     })
 }
 
