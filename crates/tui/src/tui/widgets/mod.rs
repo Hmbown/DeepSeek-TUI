@@ -222,8 +222,8 @@ impl Renderable for ChatWidget {
             .style(Style::default().bg(palette::DEEPSEEK_INK))
             .render(self.content_area, buf);
 
-        let paragraph = Paragraph::new(self.lines.clone())
-            .style(Style::default().bg(palette::DEEPSEEK_INK));
+        let paragraph =
+            Paragraph::new(self.lines.clone()).style(Style::default().bg(palette::DEEPSEEK_INK));
         paragraph.render(self.content_area, buf);
 
         if let Some(scrollbar) = self.scrollbar {

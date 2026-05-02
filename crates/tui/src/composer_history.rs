@@ -148,10 +148,7 @@ mod tests {
         append_history_to(&path, "same");
         append_history_to(&path, "different");
         append_history_to(&path, "same");
-        assert_eq!(
-            load_history_from(&path),
-            vec!["same", "different", "same"]
-        );
+        assert_eq!(load_history_from(&path), vec!["same", "different", "same"]);
     }
 
     #[test]
