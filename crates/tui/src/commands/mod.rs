@@ -20,6 +20,7 @@ mod session;
 mod skills;
 mod task;
 
+use crate::localization::{Locale, MessageId, tr};
 use crate::tui::app::{App, AppAction};
 
 /// Result of executing a command
@@ -74,13 +75,16 @@ impl CommandResult {
     }
 }
 
-/// Command metadata for help and autocomplete
+/// Command metadata for help and autocomplete.
+///
+/// The English description string lives in [`crate::localization::english`]
+/// keyed by `description_id`; resolve it with [`CommandInfo::description_for`].
 #[derive(Debug, Clone, Copy)]
 pub struct CommandInfo {
     pub name: &'static str,
     pub aliases: &'static [&'static str],
-    pub description: &'static str,
     pub usage: &'static str,
+    pub description_id: MessageId,
 }
 
 impl CommandInfo {
@@ -96,11 +100,16 @@ impl CommandInfo {
         }
     }
 
-    pub fn palette_description(&self) -> String {
+    pub fn description_for(&self, locale: Locale) -> &'static str {
+        tr(locale, self.description_id)
+    }
+
+    pub fn palette_description_for(&self, locale: Locale) -> String {
+        let desc = self.description_for(locale);
         if self.aliases.is_empty() {
-            self.description.to_string()
+            desc.to_string()
         } else {
-            format!("{}  aliases: {}", self.description, self.aliases.join(", "))
+            format!("{}  aliases: {}", desc, self.aliases.join(", "))
         }
     }
 }
@@ -111,273 +120,273 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "help",
         aliases: &["?"],
-        description: "Show help information",
         usage: "/help [command]",
+        description_id: MessageId::CmdHelpDescription,
     },
     CommandInfo {
         name: "clear",
         aliases: &[],
-        description: "Clear conversation history",
         usage: "/clear",
+        description_id: MessageId::CmdClearDescription,
     },
     CommandInfo {
         name: "exit",
         aliases: &["quit", "q"],
-        description: "Exit the application",
         usage: "/exit",
+        description_id: MessageId::CmdExitDescription,
     },
     CommandInfo {
         name: "model",
         aliases: &[],
-        description: "Switch or view current model",
         usage: "/model [name]",
+        description_id: MessageId::CmdModelDescription,
     },
     CommandInfo {
         name: "models",
         aliases: &[],
-        description: "List available models from API",
         usage: "/models",
+        description_id: MessageId::CmdModelsDescription,
     },
     CommandInfo {
         name: "provider",
         aliases: &[],
-        description: "Switch or view the active LLM backend (deepseek | nvidia-nim)",
         usage: "/provider [name]",
+        description_id: MessageId::CmdProviderDescription,
     },
     CommandInfo {
         name: "queue",
         aliases: &["queued"],
-        description: "View or edit queued messages",
         usage: "/queue [list|edit <n>|drop <n>|clear]",
+        description_id: MessageId::CmdQueueDescription,
     },
     CommandInfo {
         name: "subagents",
         aliases: &["agents"],
-        description: "List sub-agent status",
         usage: "/subagents",
+        description_id: MessageId::CmdSubagentsDescription,
     },
     CommandInfo {
         name: "links",
         aliases: &["dashboard", "api"],
-        description: "Show DeepSeek dashboard and docs links",
         usage: "/links",
+        description_id: MessageId::CmdLinksDescription,
     },
     CommandInfo {
         name: "home",
         aliases: &["stats", "overview"],
-        description: "Show home dashboard with stats and quick actions",
         usage: "/home",
+        description_id: MessageId::CmdHomeDescription,
     },
     CommandInfo {
         name: "note",
         aliases: &[],
-        description: "Append note to persistent notes file (.deepseek/notes.md)",
         usage: "/note <text>",
+        description_id: MessageId::CmdNoteDescription,
     },
     CommandInfo {
         name: "attach",
         aliases: &["image", "media"],
-        description: "Attach image/video media; use @path for text files or directories",
         usage: "/attach <path>",
+        description_id: MessageId::CmdAttachDescription,
     },
     CommandInfo {
         name: "task",
         aliases: &["tasks"],
-        description: "Manage background tasks",
         usage: "/task [add <prompt>|list|show <id>|cancel <id>]",
+        description_id: MessageId::CmdTaskDescription,
     },
     CommandInfo {
         name: "jobs",
         aliases: &["job"],
-        description: "Inspect and control background shell jobs",
         usage: "/jobs [list|show <id>|poll <id>|wait <id>|stdin <id> <input>|cancel <id>]",
+        description_id: MessageId::CmdJobsDescription,
     },
     CommandInfo {
         name: "mcp",
         aliases: &[],
-        description: "Open or manage MCP servers",
         usage: "/mcp [init|add stdio <name> <command> [args...]|add http <name> <url>|enable <name>|disable <name>|remove <name>|validate|reload]",
+        description_id: MessageId::CmdMcpDescription,
     },
     // Session commands
     CommandInfo {
         name: "save",
         aliases: &[],
-        description: "Save session to file",
         usage: "/save [path]",
+        description_id: MessageId::CmdSaveDescription,
     },
     CommandInfo {
         name: "sessions",
         aliases: &["resume"],
-        description: "Open session picker",
         usage: "/sessions",
+        description_id: MessageId::CmdSessionsDescription,
     },
     CommandInfo {
         name: "load",
         aliases: &[],
-        description: "Load session from file",
         usage: "/load [path]",
+        description_id: MessageId::CmdLoadDescription,
     },
     CommandInfo {
         name: "compact",
         aliases: &[],
-        description: "Trigger context compaction to free up space (legacy; v0.6.6 prefers cycle restart)",
         usage: "/compact",
+        description_id: MessageId::CmdCompactDescription,
     },
     CommandInfo {
         name: "context",
         aliases: &["ctx"],
-        description: "Open compact session context inspector",
         usage: "/context",
+        description_id: MessageId::CmdContextDescription,
     },
     CommandInfo {
         name: "cycles",
         aliases: &[],
-        description: "List checkpoint-restart cycle handoffs in this session",
         usage: "/cycles",
+        description_id: MessageId::CmdCyclesDescription,
     },
     CommandInfo {
         name: "cycle",
         aliases: &[],
-        description: "Show the carry-forward briefing for a specific cycle",
         usage: "/cycle <n>",
+        description_id: MessageId::CmdCycleDescription,
     },
     CommandInfo {
         name: "recall",
         aliases: &[],
-        description: "Search prior cycle archives (BM25 over message text)",
         usage: "/recall <query>",
+        description_id: MessageId::CmdRecallDescription,
     },
     CommandInfo {
         name: "export",
         aliases: &[],
-        description: "Export conversation to markdown",
         usage: "/export [path]",
+        description_id: MessageId::CmdExportDescription,
     },
     // Config commands
     CommandInfo {
         name: "config",
         aliases: &[],
-        description: "Open interactive configuration editor",
         usage: "/config",
+        description_id: MessageId::CmdConfigDescription,
     },
     CommandInfo {
         name: "yolo",
         aliases: &[],
-        description: "Enable YOLO mode (shell + trust + auto-approve)",
         usage: "/yolo",
+        description_id: MessageId::CmdYoloDescription,
     },
     CommandInfo {
         name: "agent",
         aliases: &[],
-        description: "Switch to agent mode",
         usage: "/agent",
+        description_id: MessageId::CmdAgentDescription,
     },
     CommandInfo {
         name: "plan",
         aliases: &[],
-        description: "Switch to plan mode and review suggested implementation steps",
         usage: "/plan",
+        description_id: MessageId::CmdPlanDescription,
     },
     CommandInfo {
         name: "trust",
         aliases: &[],
-        description: "Manage workspace trust and per-path allowlist (`/trust add <path>`, `/trust list`, `/trust on|off`)",
         usage: "/trust [on|off|add <path>|remove <path>|list]",
+        description_id: MessageId::CmdTrustDescription,
     },
     CommandInfo {
         name: "logout",
         aliases: &[],
-        description: "Clear API key and return to setup",
         usage: "/logout",
+        description_id: MessageId::CmdLogoutDescription,
     },
     // Debug commands
     CommandInfo {
         name: "tokens",
         aliases: &[],
-        description: "Show token usage for session",
         usage: "/tokens",
+        description_id: MessageId::CmdTokensDescription,
     },
     CommandInfo {
         name: "system",
         aliases: &[],
-        description: "Show current system prompt",
         usage: "/system",
+        description_id: MessageId::CmdSystemDescription,
     },
     CommandInfo {
         name: "undo",
         aliases: &[],
-        description: "Remove last message pair",
         usage: "/undo",
+        description_id: MessageId::CmdUndoDescription,
     },
     CommandInfo {
         name: "retry",
         aliases: &[],
-        description: "Retry the last request",
         usage: "/retry",
+        description_id: MessageId::CmdRetryDescription,
     },
     CommandInfo {
         name: "init",
         aliases: &[],
-        description: "Generate AGENTS.md for project",
         usage: "/init",
+        description_id: MessageId::CmdInitDescription,
     },
     CommandInfo {
         name: "settings",
         aliases: &[],
-        description: "Show persistent settings",
         usage: "/settings",
+        description_id: MessageId::CmdSettingsDescription,
     },
     CommandInfo {
         name: "statusline",
         aliases: &["status"],
-        description: "Configure which items appear in the footer",
         usage: "/statusline",
+        description_id: MessageId::CmdStatuslineDescription,
     },
     // Skills commands
     CommandInfo {
         name: "skills",
         aliases: &[],
-        description: "List local skills (or --remote to browse the curated registry)",
         usage: "/skills [--remote]",
+        description_id: MessageId::CmdSkillsDescription,
     },
     CommandInfo {
         name: "skill",
         aliases: &[],
-        description: "Activate a skill, or install/update/uninstall/trust a community skill",
         usage: "/skill <name|install <spec>|update <name>|uninstall <name>|trust <name>>",
+        description_id: MessageId::CmdSkillDescription,
     },
     CommandInfo {
         name: "review",
         aliases: &[],
-        description: "Run a structured code review on a file, diff, or PR",
         usage: "/review <target>",
+        description_id: MessageId::CmdReviewDescription,
     },
     CommandInfo {
         name: "restore",
         aliases: &[],
-        description: "Roll back the workspace to a prior pre/post-turn snapshot. With no arg, lists recent snapshots.",
         usage: "/restore [N]",
+        description_id: MessageId::CmdRestoreDescription,
     },
     // RLM command
     CommandInfo {
         name: "rlm",
         aliases: &["recursive"],
-        description: "Recursive Language Model (RLM) turn — store the prompt in a Python REPL and let the model write code to process it, with `llm_query()` / `sub_rlm()` for sub-LLM calls.",
         usage: "/rlm <prompt>",
+        description_id: MessageId::CmdRlmDescription,
     },
     // Debug/cost command
     CommandInfo {
         name: "cost",
         aliases: &[],
-        description: "Show session cost breakdown",
         usage: "/cost",
+        description_id: MessageId::CmdCostDescription,
     },
     // Cache telemetry (#263)
     CommandInfo {
         name: "cache",
         aliases: &[],
-        description: "Show DeepSeek prefix-cache hit/miss stats for the last N turns",
         usage: "/cache [count]",
+        description_id: MessageId::CmdCacheDescription,
     },
 ];
 
@@ -720,7 +729,7 @@ mod tests {
             .find(|cmd| cmd.name == "context")
             .expect("context command should exist");
         assert_eq!(context.aliases, &["ctx"]);
-        assert!(context.description.contains("inspector"));
+        assert!(context.description_for(Locale::En).contains("inspector"));
 
         let mut app = create_test_app();
         let result = execute("/ctx", &mut app);

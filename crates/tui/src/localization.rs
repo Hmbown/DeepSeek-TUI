@@ -214,6 +214,50 @@ pub enum MessageId {
     HelpFooterMove,
     HelpFooterJump,
     HelpFooterClose,
+    CmdAgentDescription,
+    CmdAttachDescription,
+    CmdCacheDescription,
+    CmdClearDescription,
+    CmdCompactDescription,
+    CmdConfigDescription,
+    CmdContextDescription,
+    CmdCostDescription,
+    CmdCycleDescription,
+    CmdCyclesDescription,
+    CmdExitDescription,
+    CmdExportDescription,
+    CmdHelpDescription,
+    CmdHomeDescription,
+    CmdInitDescription,
+    CmdJobsDescription,
+    CmdLinksDescription,
+    CmdLoadDescription,
+    CmdLogoutDescription,
+    CmdMcpDescription,
+    CmdModelDescription,
+    CmdModelsDescription,
+    CmdNoteDescription,
+    CmdPlanDescription,
+    CmdProviderDescription,
+    CmdQueueDescription,
+    CmdRecallDescription,
+    CmdRestoreDescription,
+    CmdRetryDescription,
+    CmdReviewDescription,
+    CmdRlmDescription,
+    CmdSaveDescription,
+    CmdSessionsDescription,
+    CmdSettingsDescription,
+    CmdSkillDescription,
+    CmdSkillsDescription,
+    CmdStatuslineDescription,
+    CmdSubagentsDescription,
+    CmdSystemDescription,
+    CmdTaskDescription,
+    CmdTokensDescription,
+    CmdTrustDescription,
+    CmdUndoDescription,
+    CmdYoloDescription,
 }
 
 #[allow(dead_code)]
@@ -245,6 +289,50 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::HelpFooterMove,
     MessageId::HelpFooterJump,
     MessageId::HelpFooterClose,
+    MessageId::CmdAgentDescription,
+    MessageId::CmdAttachDescription,
+    MessageId::CmdCacheDescription,
+    MessageId::CmdClearDescription,
+    MessageId::CmdCompactDescription,
+    MessageId::CmdConfigDescription,
+    MessageId::CmdContextDescription,
+    MessageId::CmdCostDescription,
+    MessageId::CmdCycleDescription,
+    MessageId::CmdCyclesDescription,
+    MessageId::CmdExitDescription,
+    MessageId::CmdExportDescription,
+    MessageId::CmdHelpDescription,
+    MessageId::CmdHomeDescription,
+    MessageId::CmdInitDescription,
+    MessageId::CmdJobsDescription,
+    MessageId::CmdLinksDescription,
+    MessageId::CmdLoadDescription,
+    MessageId::CmdLogoutDescription,
+    MessageId::CmdMcpDescription,
+    MessageId::CmdModelDescription,
+    MessageId::CmdModelsDescription,
+    MessageId::CmdNoteDescription,
+    MessageId::CmdPlanDescription,
+    MessageId::CmdProviderDescription,
+    MessageId::CmdQueueDescription,
+    MessageId::CmdRecallDescription,
+    MessageId::CmdRestoreDescription,
+    MessageId::CmdRetryDescription,
+    MessageId::CmdReviewDescription,
+    MessageId::CmdRlmDescription,
+    MessageId::CmdSaveDescription,
+    MessageId::CmdSessionsDescription,
+    MessageId::CmdSettingsDescription,
+    MessageId::CmdSkillDescription,
+    MessageId::CmdSkillsDescription,
+    MessageId::CmdStatuslineDescription,
+    MessageId::CmdSubagentsDescription,
+    MessageId::CmdSystemDescription,
+    MessageId::CmdTaskDescription,
+    MessageId::CmdTokensDescription,
+    MessageId::CmdTrustDescription,
+    MessageId::CmdUndoDescription,
+    MessageId::CmdYoloDescription,
 ];
 
 pub fn tr(locale: Locale, id: MessageId) -> &'static str {
@@ -396,6 +484,72 @@ fn english(id: MessageId) -> &'static str {
         MessageId::HelpFooterMove => "  Up/Down move ",
         MessageId::HelpFooterJump => " PgUp/PgDn jump ",
         MessageId::HelpFooterClose => " Esc close ",
+        MessageId::CmdAgentDescription => "Switch to agent mode",
+        MessageId::CmdAttachDescription => {
+            "Attach image/video media; use @path for text files or directories"
+        }
+        MessageId::CmdCacheDescription => {
+            "Show DeepSeek prefix-cache hit/miss stats for the last N turns"
+        }
+        MessageId::CmdClearDescription => "Clear conversation history",
+        MessageId::CmdCompactDescription => {
+            "Trigger context compaction to free up space (legacy; v0.6.6 prefers cycle restart)"
+        }
+        MessageId::CmdConfigDescription => "Open interactive configuration editor",
+        MessageId::CmdContextDescription => "Open compact session context inspector",
+        MessageId::CmdCostDescription => "Show session cost breakdown",
+        MessageId::CmdCycleDescription => "Show the carry-forward briefing for a specific cycle",
+        MessageId::CmdCyclesDescription => "List checkpoint-restart cycle handoffs in this session",
+        MessageId::CmdExitDescription => "Exit the application",
+        MessageId::CmdExportDescription => "Export conversation to markdown",
+        MessageId::CmdHelpDescription => "Show help information",
+        MessageId::CmdHomeDescription => "Show home dashboard with stats and quick actions",
+        MessageId::CmdInitDescription => "Generate AGENTS.md for project",
+        MessageId::CmdJobsDescription => "Inspect and control background shell jobs",
+        MessageId::CmdLinksDescription => "Show DeepSeek dashboard and docs links",
+        MessageId::CmdLoadDescription => "Load session from file",
+        MessageId::CmdLogoutDescription => "Clear API key and return to setup",
+        MessageId::CmdMcpDescription => "Open or manage MCP servers",
+        MessageId::CmdModelDescription => "Switch or view current model",
+        MessageId::CmdModelsDescription => "List available models from API",
+        MessageId::CmdNoteDescription => {
+            "Append note to persistent notes file (.deepseek/notes.md)"
+        }
+        MessageId::CmdPlanDescription => {
+            "Switch to plan mode and review suggested implementation steps"
+        }
+        MessageId::CmdProviderDescription => {
+            "Switch or view the active LLM backend (deepseek | nvidia-nim)"
+        }
+        MessageId::CmdQueueDescription => "View or edit queued messages",
+        MessageId::CmdRecallDescription => "Search prior cycle archives (BM25 over message text)",
+        MessageId::CmdRestoreDescription => {
+            "Roll back the workspace to a prior pre/post-turn snapshot. With no arg, lists recent snapshots."
+        }
+        MessageId::CmdRetryDescription => "Retry the last request",
+        MessageId::CmdReviewDescription => "Run a structured code review on a file, diff, or PR",
+        MessageId::CmdRlmDescription => {
+            "Recursive Language Model (RLM) turn — store the prompt in a Python REPL and let the model write code to process it, with `llm_query()` / `sub_rlm()` for sub-LLM calls."
+        }
+        MessageId::CmdSaveDescription => "Save session to file",
+        MessageId::CmdSessionsDescription => "Open session picker",
+        MessageId::CmdSettingsDescription => "Show persistent settings",
+        MessageId::CmdSkillDescription => {
+            "Activate a skill, or install/update/uninstall/trust a community skill"
+        }
+        MessageId::CmdSkillsDescription => {
+            "List local skills (or --remote to browse the curated registry)"
+        }
+        MessageId::CmdStatuslineDescription => "Configure which items appear in the footer",
+        MessageId::CmdSubagentsDescription => "List sub-agent status",
+        MessageId::CmdSystemDescription => "Show current system prompt",
+        MessageId::CmdTaskDescription => "Manage background tasks",
+        MessageId::CmdTokensDescription => "Show token usage for session",
+        MessageId::CmdTrustDescription => {
+            "Manage workspace trust and per-path allowlist (`/trust add <path>`, `/trust list`, `/trust on|off`)"
+        }
+        MessageId::CmdUndoDescription => "Remove last message pair",
+        MessageId::CmdYoloDescription => "Enable YOLO mode (shell + trust + auto-approve)",
     }
 }
 
@@ -443,6 +597,72 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::HelpFooterMove => "  Up/Down 移動 ",
         MessageId::HelpFooterJump => " PgUp/PgDn ジャンプ ",
         MessageId::HelpFooterClose => " Esc 閉じる ",
+        MessageId::CmdAgentDescription => "Agent モードに切り替え",
+        MessageId::CmdAttachDescription => {
+            "画像・動画メディアを添付（テキストファイルやディレクトリは @path）"
+        }
+        MessageId::CmdCacheDescription => {
+            "直近 N ターンの DeepSeek プレフィックスキャッシュのヒット/ミス統計を表示"
+        }
+        MessageId::CmdClearDescription => "会話履歴をクリア",
+        MessageId::CmdCompactDescription => {
+            "コンテキスト圧縮で容量を確保（旧式：v0.6.6 以降はサイクル再起動を推奨）"
+        }
+        MessageId::CmdConfigDescription => "インタラクティブな設定エディタを開く",
+        MessageId::CmdContextDescription => "コンパクトなセッションコンテキスト検査ツールを開く",
+        MessageId::CmdCostDescription => "セッションのコスト内訳を表示",
+        MessageId::CmdCycleDescription => "指定したサイクルの引き継ぎブリーフィングを表示",
+        MessageId::CmdCyclesDescription => {
+            "セッション内のチェックポイント再起動サイクルの引き継ぎを一覧表示"
+        }
+        MessageId::CmdExitDescription => "アプリを終了",
+        MessageId::CmdExportDescription => "会話を Markdown にエクスポート",
+        MessageId::CmdHelpDescription => "ヘルプを表示",
+        MessageId::CmdHomeDescription => "統計とクイックアクション付きのホームダッシュボードを表示",
+        MessageId::CmdInitDescription => "プロジェクト用に AGENTS.md を生成",
+        MessageId::CmdJobsDescription => "バックグラウンドのシェルジョブを確認・制御",
+        MessageId::CmdLinksDescription => "DeepSeek ダッシュボードとドキュメントへのリンクを表示",
+        MessageId::CmdLoadDescription => "ファイルからセッションを読み込み",
+        MessageId::CmdLogoutDescription => "API キーを消去してセットアップに戻る",
+        MessageId::CmdMcpDescription => "MCP サーバを開く・管理する",
+        MessageId::CmdModelDescription => "現在のモデルを切り替え・確認",
+        MessageId::CmdModelsDescription => "API から利用可能なモデルを一覧表示",
+        MessageId::CmdNoteDescription => "永続ノートファイル（.deepseek/notes.md）に追記",
+        MessageId::CmdPlanDescription => "Plan モードに切り替え、推奨される実装手順を確認",
+        MessageId::CmdProviderDescription => {
+            "現在の LLM バックエンドを切り替え・確認（deepseek | nvidia-nim）"
+        }
+        MessageId::CmdQueueDescription => "キューされたメッセージを確認・編集",
+        MessageId::CmdRecallDescription => {
+            "過去のサイクルアーカイブを検索（メッセージ本文への BM25 検索）"
+        }
+        MessageId::CmdRestoreDescription => {
+            "ワークスペースを以前のターン前/後スナップショットへロールバック。引数なしで最近のスナップショットを一覧表示。"
+        }
+        MessageId::CmdRetryDescription => "直前のリクエストを再試行",
+        MessageId::CmdReviewDescription => "ファイル・diff・PR に対して構造化コードレビューを実行",
+        MessageId::CmdRlmDescription => {
+            "再帰言語モデル（RLM）ターン — プロンプトを Python REPL に格納し、モデルが処理コードを記述。サブ LLM 呼び出しは `llm_query()` / `sub_rlm()`。"
+        }
+        MessageId::CmdSaveDescription => "セッションをファイルに保存",
+        MessageId::CmdSessionsDescription => "セッションピッカーを開く",
+        MessageId::CmdSettingsDescription => "永続化された設定を表示",
+        MessageId::CmdSkillDescription => {
+            "スキルを有効化、またはコミュニティスキルをインストール／更新／アンインストール／信頼"
+        }
+        MessageId::CmdSkillsDescription => {
+            "ローカルスキルを一覧表示（--remote で精選レジストリを参照）"
+        }
+        MessageId::CmdStatuslineDescription => "フッターに表示する項目を設定",
+        MessageId::CmdSubagentsDescription => "サブエージェントの状態を一覧表示",
+        MessageId::CmdSystemDescription => "現在のシステムプロンプトを表示",
+        MessageId::CmdTaskDescription => "バックグラウンドタスクを管理",
+        MessageId::CmdTokensDescription => "セッションのトークン使用量を表示",
+        MessageId::CmdTrustDescription => {
+            "ワークスペースの信頼設定とパス別許可リストを管理（`/trust add <path>`、`/trust list`、`/trust on|off`）"
+        }
+        MessageId::CmdUndoDescription => "最後のメッセージ対を削除",
+        MessageId::CmdYoloDescription => "YOLO モードを有効化（shell + 信頼 + 自動承認）",
     })
 }
 
@@ -479,6 +699,58 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::HelpFooterMove => "  Up/Down 移动 ",
         MessageId::HelpFooterJump => " PgUp/PgDn 跳转 ",
         MessageId::HelpFooterClose => " Esc 关闭 ",
+        MessageId::CmdAgentDescription => "切换到 Agent 模式",
+        MessageId::CmdAttachDescription => "附加图片或视频媒体；文本文件或目录请使用 @path",
+        MessageId::CmdCacheDescription => "显示最近 N 轮的 DeepSeek 前缀缓存命中/未命中统计",
+        MessageId::CmdClearDescription => "清除对话历史",
+        MessageId::CmdCompactDescription => {
+            "触发上下文压缩以释放空间（旧版命令；v0.6.6 起建议改用循环重启）"
+        }
+        MessageId::CmdConfigDescription => "打开交互式配置编辑器",
+        MessageId::CmdContextDescription => "打开紧凑会话上下文检查器",
+        MessageId::CmdCostDescription => "显示本次会话的费用明细",
+        MessageId::CmdCycleDescription => "显示指定循环的延续简报",
+        MessageId::CmdCyclesDescription => "列出本次会话中的检查点重启循环交接",
+        MessageId::CmdExitDescription => "退出应用",
+        MessageId::CmdExportDescription => "将对话导出为 Markdown",
+        MessageId::CmdHelpDescription => "显示帮助信息",
+        MessageId::CmdHomeDescription => "显示主页面板，含统计与快捷操作",
+        MessageId::CmdInitDescription => "为项目生成 AGENTS.md",
+        MessageId::CmdJobsDescription => "查看并管理后台 shell 作业",
+        MessageId::CmdLinksDescription => "显示 DeepSeek 控制台与文档链接",
+        MessageId::CmdLoadDescription => "从文件加载会话",
+        MessageId::CmdLogoutDescription => "清除 API 密钥并返回设置",
+        MessageId::CmdMcpDescription => "打开或管理 MCP 服务器",
+        MessageId::CmdModelDescription => "切换或查看当前模型",
+        MessageId::CmdModelsDescription => "列出 API 中可用的模型",
+        MessageId::CmdNoteDescription => "将笔记追加到持久笔记文件（.deepseek/notes.md）",
+        MessageId::CmdPlanDescription => "切换到 Plan 模式并查看建议的实现步骤",
+        MessageId::CmdProviderDescription => "切换或查看当前 LLM 后端（deepseek | nvidia-nim）",
+        MessageId::CmdQueueDescription => "查看或编辑已排队的消息",
+        MessageId::CmdRecallDescription => "搜索此前的循环归档（基于消息文本的 BM25 检索）",
+        MessageId::CmdRestoreDescription => {
+            "将工作区回滚到此前的轮次前/后快照。不带参数时列出最近的快照。"
+        }
+        MessageId::CmdRetryDescription => "重试上一次请求",
+        MessageId::CmdReviewDescription => "对文件、diff 或 PR 进行结构化代码审查",
+        MessageId::CmdRlmDescription => {
+            "递归语言模型（RLM）轮次 —— 将提示词存入 Python REPL，让模型编写代码进行处理；可用 `llm_query()` / `sub_rlm()` 调用子 LLM。"
+        }
+        MessageId::CmdSaveDescription => "将会话保存到文件",
+        MessageId::CmdSessionsDescription => "打开会话选择器",
+        MessageId::CmdSettingsDescription => "显示持久化设置",
+        MessageId::CmdSkillDescription => "激活技能，或安装/更新/卸载/信任社区技能",
+        MessageId::CmdSkillsDescription => "列出本地技能（或使用 --remote 浏览精选注册表）",
+        MessageId::CmdStatuslineDescription => "配置底栏要显示哪些条目",
+        MessageId::CmdSubagentsDescription => "列出子代理状态",
+        MessageId::CmdSystemDescription => "显示当前系统提示词",
+        MessageId::CmdTaskDescription => "管理后台任务",
+        MessageId::CmdTokensDescription => "显示本次会话的 token 用量",
+        MessageId::CmdTrustDescription => {
+            "管理工作区信任与按路径的白名单（`/trust add <path>`、`/trust list`、`/trust on|off`）"
+        }
+        MessageId::CmdUndoDescription => "移除最后一组消息对",
+        MessageId::CmdYoloDescription => "启用 YOLO 模式（shell + 信任 + 自动批准）",
     })
 }
 
@@ -517,6 +789,82 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         MessageId::HelpFooterMove => "  Up/Down move ",
         MessageId::HelpFooterJump => " PgUp/PgDn salta ",
         MessageId::HelpFooterClose => " Esc fecha ",
+        MessageId::CmdAgentDescription => "Mudar para o modo agent",
+        MessageId::CmdAttachDescription => {
+            "Anexar imagem ou vídeo; use @path para arquivos de texto ou diretórios"
+        }
+        MessageId::CmdCacheDescription => {
+            "Exibir estatísticas de hit/miss do cache de prefixo DeepSeek nas últimas N rodadas"
+        }
+        MessageId::CmdClearDescription => "Limpar o histórico da conversa",
+        MessageId::CmdCompactDescription => {
+            "Compactar o contexto para liberar espaço (legado; a v0.6.6 prefere o reinício de ciclo)"
+        }
+        MessageId::CmdConfigDescription => "Abrir o editor interativo de configuração",
+        MessageId::CmdContextDescription => "Abrir o inspetor compacto de contexto da sessão",
+        MessageId::CmdCostDescription => "Exibir o detalhamento de custo da sessão",
+        MessageId::CmdCycleDescription => {
+            "Exibir o briefing de continuidade de um ciclo específico"
+        }
+        MessageId::CmdCyclesDescription => {
+            "Listar as transferências dos ciclos checkpoint-restart desta sessão"
+        }
+        MessageId::CmdExitDescription => "Sair do aplicativo",
+        MessageId::CmdExportDescription => "Exportar a conversa para markdown",
+        MessageId::CmdHelpDescription => "Exibir informações de ajuda",
+        MessageId::CmdHomeDescription => "Exibir o painel inicial com estatísticas e ações rápidas",
+        MessageId::CmdInitDescription => "Gerar AGENTS.md para o projeto",
+        MessageId::CmdJobsDescription => "Inspecionar e controlar jobs de shell em segundo plano",
+        MessageId::CmdLinksDescription => "Exibir links do painel e da documentação do DeepSeek",
+        MessageId::CmdLoadDescription => "Carregar a sessão de um arquivo",
+        MessageId::CmdLogoutDescription => "Limpar a chave de API e voltar à configuração",
+        MessageId::CmdMcpDescription => "Abrir ou gerenciar servidores MCP",
+        MessageId::CmdModelDescription => "Trocar ou exibir o modelo atual",
+        MessageId::CmdModelsDescription => "Listar os modelos disponíveis pela API",
+        MessageId::CmdNoteDescription => {
+            "Adicionar nota ao arquivo persistente (.deepseek/notes.md)"
+        }
+        MessageId::CmdPlanDescription => {
+            "Mudar para o modo plan e revisar os passos de implementação sugeridos"
+        }
+        MessageId::CmdProviderDescription => {
+            "Trocar ou exibir o backend LLM ativo (deepseek | nvidia-nim)"
+        }
+        MessageId::CmdQueueDescription => "Ver ou editar mensagens enfileiradas",
+        MessageId::CmdRecallDescription => {
+            "Buscar arquivos de ciclos anteriores (BM25 sobre o texto das mensagens)"
+        }
+        MessageId::CmdRestoreDescription => {
+            "Reverter o workspace a um snapshot pré/pós-turno anterior. Sem argumento, lista os snapshots recentes."
+        }
+        MessageId::CmdRetryDescription => "Repetir a última requisição",
+        MessageId::CmdReviewDescription => {
+            "Executar uma revisão de código estruturada em um arquivo, diff ou PR"
+        }
+        MessageId::CmdRlmDescription => {
+            "Turno do Recursive Language Model (RLM) — guarda o prompt em um REPL Python e deixa o modelo escrever o código que o processa; use `llm_query()` / `sub_rlm()` para chamadas a sub-LLMs."
+        }
+        MessageId::CmdSaveDescription => "Salvar a sessão em arquivo",
+        MessageId::CmdSessionsDescription => "Abrir o seletor de sessões",
+        MessageId::CmdSettingsDescription => "Exibir as configurações persistidas",
+        MessageId::CmdSkillDescription => {
+            "Ativar uma skill, ou instalar/atualizar/desinstalar/confiar em uma skill da comunidade"
+        }
+        MessageId::CmdSkillsDescription => {
+            "Listar skills locais (ou --remote para navegar pelo registro curado)"
+        }
+        MessageId::CmdStatuslineDescription => "Configurar quais itens aparecem no rodapé",
+        MessageId::CmdSubagentsDescription => "Listar o status dos sub-agentes",
+        MessageId::CmdSystemDescription => "Exibir o prompt de sistema atual",
+        MessageId::CmdTaskDescription => "Gerenciar tarefas em segundo plano",
+        MessageId::CmdTokensDescription => "Exibir o uso de tokens da sessão",
+        MessageId::CmdTrustDescription => {
+            "Gerenciar a confiança do workspace e a allowlist por caminho (`/trust add <path>`, `/trust list`, `/trust on|off`)"
+        }
+        MessageId::CmdUndoDescription => "Remover o último par de mensagens",
+        MessageId::CmdYoloDescription => {
+            "Ativar o modo YOLO (shell + confiança + aprovação automática)"
+        }
     })
 }
 

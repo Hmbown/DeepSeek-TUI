@@ -15,7 +15,9 @@ pub fn help(app: &mut App, topic: Option<&str>) -> CommandResult {
         if let Some(cmd) = super::get_command_info(topic) {
             let mut help = format!(
                 "{}\n\n  {}\n\n  Usage: {}",
-                cmd.name, cmd.description, cmd.usage
+                cmd.name,
+                cmd.description_for(app.ui_locale),
+                cmd.usage
             );
             if !cmd.aliases.is_empty() {
                 let _ = write!(help, "\n  Aliases: {}", cmd.aliases.join(", "));

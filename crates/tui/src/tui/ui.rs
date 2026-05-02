@@ -1430,6 +1430,7 @@ async fn run_event_loop(
                 }
                 app.view_stack
                     .push(CommandPaletteView::new(build_command_palette_entries(
+                        app.ui_locale,
                         &app.skills_dir,
                         &app.workspace,
                         &app.mcp_config_path,
@@ -5721,6 +5722,7 @@ fn handle_context_menu_action(app: &mut App, action: ContextMenuAction) {
         ContextMenuAction::OpenCommandPalette => {
             app.view_stack
                 .push(CommandPaletteView::new(build_command_palette_entries(
+                    app.ui_locale,
                     &app.skills_dir,
                     &app.workspace,
                     &app.mcp_config_path,

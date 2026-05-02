@@ -14,6 +14,7 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::commands;
+use crate::localization::Locale;
 use crate::palette;
 use crate::skills::SkillRegistry;
 use crate::tools::spec::ApprovalRequirement;
@@ -46,6 +47,7 @@ pub struct CommandPaletteView {
 }
 
 pub fn build_entries(
+    locale: Locale,
     skills_dir: &Path,
     workspace: &Path,
     mcp_config_path: &Path,
@@ -54,7 +56,7 @@ pub fn build_entries(
     let mut entries = Vec::new();
 
     for command in commands::COMMANDS {
-        let mut description = command.palette_description();
+        let mut description = command.palette_description_for(locale);
         if command.requires_argument() {
             description.push_str("  ");
             description.push_str(command.usage);
@@ -919,7 +921,13 @@ mod tests {
 
     #[test]
     fn command_palette_command_entries_include_links_and_config_but_not_removed_commands() {
-        let entries = build_entries(Path::new("."), Path::new("."), Path::new("mcp.json"), None);
+        let entries = build_entries(
+            Locale::En,
+            Path::new("."),
+            Path::new("."),
+            Path::new("mcp.json"),
+            None,
+        );
         let command_labels = entries
             .iter()
             .filter(|entry| entry.section == PaletteSection::Command)
@@ -934,7 +942,13 @@ mod tests {
 
     #[test]
     fn command_palette_inserts_model_command_for_argument_entry() {
-        let entries = build_entries(Path::new("."), Path::new("."), Path::new("mcp.json"), None);
+        let entries = build_entries(
+            Locale::En,
+            Path::new("."),
+            Path::new("."),
+            Path::new("mcp.json"),
+            None,
+        );
         let model = entries
             .iter()
             .find(|entry| entry.section == PaletteSection::Command && entry.label == "/model")
@@ -991,6 +1005,7 @@ mod tests {
             ],
         };
         let entries = build_entries(
+            Locale::En,
             Path::new("."),
             Path::new("."),
             Path::new("mcp.json"),
@@ -1044,6 +1059,7 @@ mod tests {
             }],
         };
         let entries = build_entries(
+            Locale::En,
             Path::new("."),
             Path::new("."),
             Path::new("mcp.json"),
