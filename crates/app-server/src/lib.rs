@@ -31,26 +31,13 @@ pub struct AppServerOptions {
     pub config_path: Option<PathBuf>,
 }
 
-#/// Generate a random bearer token for authenticating HTTP app-server requests.
-/// Printed to stderr at startup so the TUI (or operator) can connect.
+/// Generate a cryptographically random bearer token for authenticating
+/// HTTP app-server requests. Printed to stderr at startup so the TUI
+/// (or operator) can connect.
 fn generate_bearer_token() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    // Fast, no extra deps: XOR OS RNG seed with timestamp, hex-encode.
-    // For a production-grade token, consider replacing with `getrandom` crate.
-    let t = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64;
-    let pid = std::process::id() as u64;
-    let mut buf = [0u64; 4];
-    // Mix in the address of a stack variable for ASLR entropy
-    buf[0] = t;
-    buf[1] = t.wrapping_mul(0x5851f42d4c957f2d).wrapping_add(pid);
-    buf[2] = &buf as *const _ as u64;
-    buf[3] = t.wrapping_add(buf[1] ^ 0xdeadbeefcafebabe);
-    // Hex-encode
-    let token: String = buf.iter().map(|b| format!("{b:016x}")).collect();
-    token
+    let mut buf = [0u8; 32];
+    getrandom::fill(&mut buf).expect("failed to generate bearer token");
+    buf.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 fn require_bearer(
@@ -68,13 +55,20 @@ fn require_bearer(
             "missing Authorization header".to_string(),
         ));
     }
-    // Constant-time comparison
-    if provided.len() != expected.len()
-        || provided.bytes().zip(expected.bytes()).fold(0, |acc, (a, b)| acc | (a ^ b))
-            != 0
-    {
+    // Constant-time comparison — compare all bytes regardless of length
+    // to avoid timing leaks. Pad the shorter with zeros.
+    let expected_bytes = expected.as_bytes();
+    let provided_bytes = provided.as_bytes();
+    let max_len = expected_bytes.len().max(provided_bytes.len());
+    let diff = provided_bytes
+        .iter()
+        .chain(std::iter::repeat(&0))
+        .zip(expected_bytes.iter().chain(std::iter::repeat(&0)))
+        .take(max_len)
+        .fold(0u8, |acc, (a, b)| acc | (a ^ b));
+    if diff != 0 {
         return Err((
-            StatusCode::FORBIDDEN,
+            StatusCode::UNAUTHORIZED,
             "invalid bearer token".to_string(),
         ));
     }
@@ -180,7 +174,6 @@ pub async fn run(options: AppServerOptions) -> Result<()> {
         .route("/jobs", get(jobs_handler))
         .route("/mcp/startup", post(mcp_startup_handler))
         .with_state(state)
-        .layer(cors)
         .layer(axum::middleware::from_fn(move |req: axum::http::Request<axum::body::Body>, next: axum::middleware::Next| {
             let expected = bearer.clone();
             async move {
@@ -193,7 +186,8 @@ pub async fn run(options: AppServerOptions) -> Result<()> {
                 }
                 next.run(req).await
             }
-        }));
+        }))
+        .layer(cors);
 
     let listener = tokio::net::TcpListener::bind(options.listen).await?;
     eprintln!("[app-server] Listening on {}", options.listen);

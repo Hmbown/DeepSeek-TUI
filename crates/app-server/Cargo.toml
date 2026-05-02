@@ -10,6 +10,7 @@ description = "Codex-style app-server transport for DeepSeek workspace architect
 anyhow.workspace = true
 axum.workspace = true
 clap.workspace = true
+getrandom = "0.3"
 deepseek-agent = { path = "../agent", version = "0.8.4" }
 deepseek-config = { path = "../config", version = "0.8.4" }
 deepseek-core = { path = "../core", version = "0.8.4" }
