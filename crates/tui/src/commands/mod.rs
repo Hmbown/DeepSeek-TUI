@@ -781,6 +781,113 @@ mod tests {
         assert!(deepseek_result.action.is_none());
     }
 
+    /// Build an App scoped to an isolated tempdir so dispatch-side-effects
+    /// (e.g. `/init` writing AGENTS.md, `/export` writing chat transcripts)
+    /// don't pollute the repo working tree when the smoke tests run.
+    fn create_isolated_test_app() -> (App, tempfile::TempDir) {
+        let tmpdir = tempfile::TempDir::new().expect("tempdir for smoke test");
+        let workspace = tmpdir.path().to_path_buf();
+        let options = TuiOptions {
+            model: "deepseek-v4-pro".to_string(),
+            workspace: workspace.clone(),
+            allow_shell: false,
+            use_alt_screen: true,
+            use_mouse_capture: false,
+            use_bracketed_paste: true,
+            max_subagents: 1,
+            skills_dir: workspace.join("skills"),
+            memory_path: workspace.join("memory.md"),
+            notes_path: workspace.join("notes.txt"),
+            mcp_config_path: workspace.join("mcp.json"),
+            use_memory: false,
+            start_in_agent_mode: false,
+            skip_onboarding: true,
+            yolo: false,
+            resume_session_id: None,
+        };
+        let app = App::new(options, &Config::default());
+        (app, tmpdir)
+    }
+
+    /// Smoke test: every entry in `COMMANDS` must dispatch to a real handler.
+    /// A dispatch miss surfaces as the fall-through `Unknown command:` error
+    /// message in `execute`. This catches the case where a new command is
+    /// added to `COMMANDS` (so it shows up in `/help` and the palette) but
+    /// the matching arm in `execute` is forgotten — the user would type the
+    /// command, see it autocomplete, and then get an unhelpful "did you
+    /// mean" suggestion. Also catches panics in handlers because the test
+    /// runner unwinds the panic and reports the offending command.
+    /// `/save` and `/export` default their output paths to `cwd`-relative
+    /// filenames when no arg is supplied, which would scribble files into
+    /// `crates/tui/` when CI runs from there. Pass an explicit tempdir-
+    /// relative path for those two so the dispatch test stays sandboxed.
+    fn invocation_for(command_name: &str, alias_or_name: &str, tmpdir: &std::path::Path) -> String {
+        match command_name {
+            "save" => format!("/{alias_or_name} {}", tmpdir.join("session.json").display()),
+            "export" => format!("/{alias_or_name} {}", tmpdir.join("chat.md").display()),
+            _ => format!("/{alias_or_name}"),
+        }
+    }
+
+    /// `/restore` is covered by its own dedicated tests in
+    /// `commands/restore.rs` that serialize on the global env mutex via
+    /// `scoped_home` (snapshot repo init shells out to git, which races
+    /// against parallel-running tests). Skip it here so this smoke test
+    /// stays parallel-safe.
+    fn skip_in_dispatch_smoke(name: &str) -> bool {
+        name == "restore"
+    }
+
+    /// Smoke test: every entry in `COMMANDS` must dispatch to a real handler.
+    /// A dispatch miss surfaces as the fall-through `Unknown command:` error
+    /// message in `execute`. This catches the case where a new command is
+    /// added to `COMMANDS` (so it shows up in `/help` and the palette) but
+    /// the matching arm in `execute` is forgotten — the user would type the
+    /// command, see it autocomplete, and then get an unhelpful "did you
+    /// mean" suggestion. Also catches panics in handlers because the test
+    /// runner unwinds the panic and reports the offending command.
+    #[test]
+    fn every_registered_command_dispatches_to_a_handler() {
+        for command in COMMANDS {
+            if skip_in_dispatch_smoke(command.name) {
+                continue;
+            }
+            let (mut app, tmpdir) = create_isolated_test_app();
+            let invocation = invocation_for(command.name, command.name, tmpdir.path());
+            let result = execute(&invocation, &mut app);
+            if let Some(msg) = &result.message {
+                assert!(
+                    !msg.contains("Unknown command"),
+                    "/{} fell through to the unknown-command branch: {msg}",
+                    command.name,
+                );
+            }
+        }
+    }
+
+    /// Same check, but for declared aliases — `/q` should not fall through
+    /// just because the registry lists it as an alias of `/exit`.
+    #[test]
+    fn every_command_alias_dispatches_to_a_handler() {
+        for command in COMMANDS {
+            if skip_in_dispatch_smoke(command.name) {
+                continue;
+            }
+            for alias in command.aliases {
+                let (mut app, tmpdir) = create_isolated_test_app();
+                let invocation = invocation_for(command.name, alias, tmpdir.path());
+                let result = execute(&invocation, &mut app);
+                if let Some(msg) = &result.message {
+                    assert!(
+                        !msg.contains("Unknown command"),
+                        "/{alias} (alias of /{}) fell through to unknown: {msg}",
+                        command.name,
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn unknown_command_suggests_nearest_match() {
         let mut app = create_test_app();
