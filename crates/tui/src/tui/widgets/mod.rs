@@ -362,14 +362,42 @@ impl Renderable for ComposerWidget<'_> {
                         Style::default().fg(palette::TEXT_MUTED),
                     ),
                 ]))
-            } else if self.slash_menu_entries.is_empty() {
-                None
-            } else {
+            } else if !self.slash_menu_entries.is_empty() {
                 Some(Line::from(vec![
                     Span::styled(" Up/Down move  ", Style::default().fg(palette::TEXT_MUTED)),
                     Span::styled("Tab accept  ", Style::default().fg(palette::TEXT_MUTED)),
                     Span::styled("Esc close", Style::default().fg(palette::TEXT_MUTED)),
                 ]))
+            } else if !input_text.trim().is_empty() {
+                // Live disambiguation for #345: when there's content in the
+                // composer, show what `Enter` will do RIGHT NOW so the user
+                // never has to guess between Immediate / Steer / QueueFollowUp /
+                // Queue. The disposition flips with engine state so this hint
+                // is the only reliable cue before pressing Enter.
+                use crate::tui::app::SubmitDisposition;
+                let (label, color) = match self.app.decide_submit_disposition() {
+                    SubmitDisposition::Immediate => (None, palette::TEXT_MUTED),
+                    SubmitDisposition::Steer => (
+                        Some("↵ steer into current turn"),
+                        palette::DEEPSEEK_SKY,
+                    ),
+                    SubmitDisposition::QueueFollowUp => (
+                        Some("↵ queue for next turn"),
+                        palette::TEXT_MUTED,
+                    ),
+                    SubmitDisposition::Queue => (
+                        Some("↵ offline queue (no engine)"),
+                        palette::STATUS_WARNING,
+                    ),
+                };
+                label.map(|text| {
+                    Line::from(vec![Span::styled(
+                        format!(" {text} "),
+                        Style::default().fg(color),
+                    )])
+                })
+            } else {
+                None
             };
 
             let mut block = Block::default()
