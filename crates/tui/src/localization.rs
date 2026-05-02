@@ -258,6 +258,19 @@ pub enum MessageId {
     CmdTrustDescription,
     CmdUndoDescription,
     CmdYoloDescription,
+    CmdCacheAdvice,
+    CmdCacheFootnote,
+    CmdCacheHeader,
+    CmdCacheNoData,
+    CmdCacheTotals,
+    CmdCostReport,
+    CmdTokensCacheBoth,
+    CmdTokensCacheHitOnly,
+    CmdTokensCacheMissOnly,
+    CmdTokensContextUnknownWindow,
+    CmdTokensContextWithWindow,
+    CmdTokensNotReported,
+    CmdTokensReport,
 }
 
 #[allow(dead_code)]
@@ -333,6 +346,19 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CmdTrustDescription,
     MessageId::CmdUndoDescription,
     MessageId::CmdYoloDescription,
+    MessageId::CmdCacheAdvice,
+    MessageId::CmdCacheFootnote,
+    MessageId::CmdCacheHeader,
+    MessageId::CmdCacheNoData,
+    MessageId::CmdCacheTotals,
+    MessageId::CmdCostReport,
+    MessageId::CmdTokensCacheBoth,
+    MessageId::CmdTokensCacheHitOnly,
+    MessageId::CmdTokensCacheMissOnly,
+    MessageId::CmdTokensContextUnknownWindow,
+    MessageId::CmdTokensContextWithWindow,
+    MessageId::CmdTokensNotReported,
+    MessageId::CmdTokensReport,
 ];
 
 pub fn tr(locale: Locale, id: MessageId) -> &'static str {
@@ -550,6 +576,53 @@ fn english(id: MessageId) -> &'static str {
         }
         MessageId::CmdUndoDescription => "Remove last message pair",
         MessageId::CmdYoloDescription => "Enable YOLO mode (shell + trust + auto-approve)",
+        MessageId::CmdCacheAdvice => {
+            "Hit/miss ratios over ~70% after the third turn indicate a stable cache prefix; \n\
+             lower than that on long sessions suggests prefix churn worth investigating (#263)."
+        }
+        MessageId::CmdCacheFootnote => {
+            "* miss inferred from input − hit when the provider did not report it explicitly.\n"
+        }
+        MessageId::CmdCacheHeader => {
+            "Cache telemetry — last {count} of {total} turn(s) (model: {model})\n"
+        }
+        MessageId::CmdCacheNoData => {
+            "Cache history: no turns recorded yet.\n\n\
+             DeepSeek surfaces `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens` \
+             on every API turn that the model supports it (V4 family). Run a turn \
+             and try /cache again."
+        }
+        MessageId::CmdCacheTotals => {
+            "Σ in: {sum_in}   Σ hit: {sum_hit}   Σ miss: {sum_miss}   avg hit ratio: {avg}\n"
+        }
+        MessageId::CmdCostReport => {
+            "Session Cost:\n\
+             ─────────────────────────────\n\
+             Approx total spent: ${cost}\n\n\
+             Cost estimates are approximate and use provider usage telemetry when available.\n\n\
+             DeepSeek API Pricing:\n\
+             ─────────────────────────────\n\
+             Pricing details are not configured in this CLI."
+        }
+        MessageId::CmdTokensCacheBoth => "{hit} hit / {miss} miss",
+        MessageId::CmdTokensCacheHitOnly => "{hit} hit / miss not reported",
+        MessageId::CmdTokensCacheMissOnly => "hit not reported / {miss} miss",
+        MessageId::CmdTokensContextUnknownWindow => "~{estimated} / unknown window",
+        MessageId::CmdTokensContextWithWindow => "~{used} / {window} ({percent}%)",
+        MessageId::CmdTokensNotReported => "not reported",
+        MessageId::CmdTokensReport => {
+            "Token Usage:\n\
+             ─────────────────────────────\n\
+             Active context:        {active}\n\
+             Last API input:        {input} (turn telemetry; may count repeated prefix across tool rounds)\n\
+             Last API output:       {output}\n\
+             Cache hit/miss:        {cache} (telemetry/cost only)\n\
+             Cumulative tokens:     {total} (session usage telemetry)\n\
+             Approx session cost:   ${cost}\n\
+             API messages:          {api_messages}\n\
+             Chat messages:         {chat_messages}\n\
+             Model:                 {model}"
+        }
     }
 }
 
@@ -663,6 +736,52 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         }
         MessageId::CmdUndoDescription => "最後のメッセージ対を削除",
         MessageId::CmdYoloDescription => "YOLO モードを有効化（shell + 信頼 + 自動承認）",
+        MessageId::CmdCacheAdvice => {
+            "3 ターン目以降にヒット率が ~70% 以上で安定していれば、プレフィックスキャッシュは健全。\n\
+             長いセッションでこれを下回る場合はプレフィックスのドリフトの可能性あり (#263)。"
+        }
+        MessageId::CmdCacheFootnote => {
+            "* プロバイダがミスを単独で報告しない場合は「入力 − ヒット」から推定。\n"
+        }
+        MessageId::CmdCacheHeader => {
+            "キャッシュテレメトリ — 直近 {count} / {total} ターン（モデル: {model}）\n"
+        }
+        MessageId::CmdCacheNoData => {
+            "キャッシュ履歴: まだターンを記録していません。\n\n\
+             DeepSeek は対応モデル (V4 系) の各 API ターンで `prompt_cache_hit_tokens` / \
+             `prompt_cache_miss_tokens` を返します。1 ターン実行してから /cache を再度試してください。"
+        }
+        MessageId::CmdCacheTotals => {
+            "Σ 入力: {sum_in}   Σ ヒット: {sum_hit}   Σ ミス: {sum_miss}   平均ヒット率: {avg}\n"
+        }
+        MessageId::CmdCostReport => {
+            "セッション費用:\n\
+             ─────────────────────────────\n\
+             累計概算: ${cost}\n\n\
+             費用は概算値。プロバイダの使用量テレメトリがあれば優先して使用します。\n\n\
+             DeepSeek API 料金:\n\
+             ─────────────────────────────\n\
+             本 CLI には詳細な料金表は組み込まれていません。"
+        }
+        MessageId::CmdTokensCacheBoth => "ヒット {hit} / ミス {miss}",
+        MessageId::CmdTokensCacheHitOnly => "ヒット {hit} / ミスは未報告",
+        MessageId::CmdTokensCacheMissOnly => "ヒットは未報告 / ミス {miss}",
+        MessageId::CmdTokensContextUnknownWindow => "~{estimated} / コンテキスト窓不明",
+        MessageId::CmdTokensContextWithWindow => "~{used} / {window} ({percent}%)",
+        MessageId::CmdTokensNotReported => "未報告",
+        MessageId::CmdTokensReport => {
+            "トークン使用量:\n\
+             ─────────────────────────────\n\
+             アクティブコンテキスト: {active}\n\
+             直近の API 入力:        {input}（ターン単位のテレメトリ。複数回のツール往復で同じプレフィックスが重複してカウントされる場合あり）\n\
+             直近の API 出力:        {output}\n\
+             キャッシュヒット/ミス:  {cache}（テレメトリ/コスト用のみ）\n\
+             累計トークン:           {total}（セッション使用量テレメトリ）\n\
+             セッション費用概算:     ${cost}\n\
+             API メッセージ:         {api_messages}\n\
+             チャットメッセージ:     {chat_messages}\n\
+             モデル:                 {model}"
+        }
     })
 }
 
@@ -751,6 +870,48 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         }
         MessageId::CmdUndoDescription => "移除最后一组消息对",
         MessageId::CmdYoloDescription => "启用 YOLO 模式（shell + 信任 + 自动批准）",
+        MessageId::CmdCacheAdvice => {
+            "第 3 轮起命中率稳定在 ~70% 以上即表示前缀缓存稳定；\n\
+             长会话中明显偏低则意味着前缀有抖动，值得排查（#263）。"
+        }
+        MessageId::CmdCacheFootnote => "* 当提供方未单独上报未命中时，由「输入 − 命中」推算。\n",
+        MessageId::CmdCacheHeader => "缓存遥测 —— 最近 {count} / {total} 轮（模型：{model}）\n",
+        MessageId::CmdCacheNoData => {
+            "缓存历史：尚未记录任何轮次。\n\n\
+             DeepSeek 在受支持的模型（V4 系列）每个 API 轮次都会返回 `prompt_cache_hit_tokens` / \
+             `prompt_cache_miss_tokens`。请先运行一个轮次再试 /cache。"
+        }
+        MessageId::CmdCacheTotals => {
+            "Σ 输入：{sum_in}   Σ 命中：{sum_hit}   Σ 未命中：{sum_miss}   平均命中率：{avg}\n"
+        }
+        MessageId::CmdCostReport => {
+            "会话费用：\n\
+             ─────────────────────────────\n\
+             预估累计消耗：${cost}\n\n\
+             费用为估算值；如有提供方用量遥测会优先使用。\n\n\
+             DeepSeek API 计费：\n\
+             ─────────────────────────────\n\
+             此 CLI 中未配置详细计费规则。"
+        }
+        MessageId::CmdTokensCacheBoth => "命中 {hit} / 未命中 {miss}",
+        MessageId::CmdTokensCacheHitOnly => "命中 {hit} / 未命中未上报",
+        MessageId::CmdTokensCacheMissOnly => "命中未上报 / 未命中 {miss}",
+        MessageId::CmdTokensContextUnknownWindow => "~{estimated} / 窗口未知",
+        MessageId::CmdTokensContextWithWindow => "~{used} / {window}（{percent}%）",
+        MessageId::CmdTokensNotReported => "未上报",
+        MessageId::CmdTokensReport => {
+            "令牌用量：\n\
+             ─────────────────────────────\n\
+             活动上下文：       {active}\n\
+             上次 API 输入：    {input}（来自轮次遥测；多轮工具调用中相同前缀可能被重复计入）\n\
+             上次 API 输出：    {output}\n\
+             缓存命中/未命中：  {cache}（仅用于遥测/计费）\n\
+             累计令牌：         {total}（会话用量遥测）\n\
+             预估会话费用：     ${cost}\n\
+             API 消息数：       {api_messages}\n\
+             聊天消息数：       {chat_messages}\n\
+             模型：             {model}"
+        }
     })
 }
 
@@ -864,6 +1025,52 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         MessageId::CmdUndoDescription => "Remover o último par de mensagens",
         MessageId::CmdYoloDescription => {
             "Ativar o modo YOLO (shell + confiança + aprovação automática)"
+        }
+        MessageId::CmdCacheAdvice => {
+            "Taxas de hit/miss acima de ~70% a partir do terceiro turno indicam um prefixo de cache estável;\n\
+             valores menores em sessões longas sugerem instabilidade no prefixo, vale investigar (#263)."
+        }
+        MessageId::CmdCacheFootnote => {
+            "* miss inferido a partir de entrada − hit quando o provedor não o reporta separadamente.\n"
+        }
+        MessageId::CmdCacheHeader => {
+            "Telemetria do cache — últimos {count} de {total} turno(s) (modelo: {model})\n"
+        }
+        MessageId::CmdCacheNoData => {
+            "Histórico do cache: nenhum turno registrado ainda.\n\n\
+             O DeepSeek expõe `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens` em cada turno \
+             da API onde o modelo suporta (família V4). Execute um turno e tente /cache de novo."
+        }
+        MessageId::CmdCacheTotals => {
+            "Σ entrada: {sum_in}   Σ hit: {sum_hit}   Σ miss: {sum_miss}   taxa média de hit: {avg}\n"
+        }
+        MessageId::CmdCostReport => {
+            "Custo da sessão:\n\
+             ─────────────────────────────\n\
+             Total aproximado: ${cost}\n\n\
+             Estimativas de custo são aproximadas e usam a telemetria de uso do provedor quando disponível.\n\n\
+             Preços da API DeepSeek:\n\
+             ─────────────────────────────\n\
+             Os detalhes de preço não estão configurados nesta CLI."
+        }
+        MessageId::CmdTokensCacheBoth => "{hit} hit / {miss} miss",
+        MessageId::CmdTokensCacheHitOnly => "{hit} hit / miss não reportado",
+        MessageId::CmdTokensCacheMissOnly => "hit não reportado / {miss} miss",
+        MessageId::CmdTokensContextUnknownWindow => "~{estimated} / janela desconhecida",
+        MessageId::CmdTokensContextWithWindow => "~{used} / {window} ({percent}%)",
+        MessageId::CmdTokensNotReported => "não reportado",
+        MessageId::CmdTokensReport => {
+            "Uso de tokens:\n\
+             ─────────────────────────────\n\
+             Contexto ativo:           {active}\n\
+             Última entrada da API:    {input} (telemetria por turno; pode contar o mesmo prefixo várias vezes em rodadas com ferramentas)\n\
+             Última saída da API:      {output}\n\
+             Hit/miss do cache:        {cache} (apenas para telemetria/custo)\n\
+             Tokens acumulados:        {total} (telemetria de uso da sessão)\n\
+             Custo aproximado:         ${cost}\n\
+             Mensagens da API:         {api_messages}\n\
+             Mensagens do chat:        {chat_messages}\n\
+             Modelo:                   {model}"
         }
     })
 }
