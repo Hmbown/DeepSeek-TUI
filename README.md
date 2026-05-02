@@ -119,6 +119,56 @@ cargo install --path crates/tui --locked   # requires Rust 1.85+
 
 ---
 
+## What's new in v0.8.5
+
+### 🛡️ SSRF protection for fetch_url
+
+`fetch_url` now validates target hostnames and IPs before connecting —
+localhost-only HTTP for loopback, DNS pinning for remote hosts, and
+blocked internal IP ranges. Contributed by Hafeez Pizofreude (#261)
+and Jason.
+
+### 🖥️ Schema-driven config editor
+
+`/config tui` opens a forms-style config editor powered by schemaui.
+Bare `/config` opens the legacy native modal; `/config web` launches a
+browser surface (requires the `web` feature). Contributed by Unic
+(YuniqueUnic) via #365.
+
+### 🏷️ DeepseekCN provider
+
+`ApiProvider::DeepseekCN` targets `api.deepseeki.com` for China-based
+users. Auto-detects when `zh-*` is the system locale on first run.
+
+### 🔐 Atomic file writes
+
+All writes to `~/.deepseek/` now go through `write_atomic` (tempfile +
+fsync + rename), preventing corruption from mid-write crashes.
+
+### 🧵 Panic safety foundations
+
+`spawn_supervised` catches and logs task panics with crash dumps instead
+of silently dropping the task.
+
+### ⌨️ `/config <key> <value>` wiring
+
+`/config model deepseek-v4-flash`, `/config locale zh-Hans`, etc. change
+settings live in-session without opening the editor.
+
+Full changelog: [CHANGELOG.md](CHANGELOG.md).
+
+---
+
+## Thanks
+
+v0.8.5 shipped with help from these contributors:
+
+- **[Hafeez Pizofreude](https://github.com/pizofreude)** — SSRF protection in `fetch_url` and Star History chart
+- **[Unic (YuniqueUnic)](https://github.com/YuniqueUnic)** — Schema-driven config UI (TUI + web)
+- **[Jason](mailto:jason@aveoresearchlabs.com)** — SSRF security hardening
+
+---
+
 ## What's new in v0.8.0
 
 ### ⚡ Shell stability and post-send responsiveness
