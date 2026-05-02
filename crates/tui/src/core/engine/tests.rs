@@ -3,6 +3,7 @@ use super::*;
 use super::context::WORKING_SET_SUMMARY_MARKER;
 use crate::models::SystemBlock;
 use serde_json::json;
+use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -256,6 +257,63 @@ fn model_tool_catalog_keeps_everything_loaded_in_yolo_mode() {
     );
 
     assert!(catalog.iter().all(|tool| tool.defer_loading == Some(false)));
+}
+
+#[test]
+fn model_tool_catalog_sorts_each_partition_for_prefix_cache_stability() {
+    // Regression for #263: deterministic byte order of the tools array is a
+    // hard requirement for DeepSeek's KV prefix cache. Built-ins stay as a
+    // contiguous prefix; MCP tools follow. Within each partition: alphabetical.
+    let catalog = build_model_tool_catalog(
+        vec![
+            api_tool("read_file"),
+            api_tool("apply_patch"),
+            api_tool("exec_shell"),
+        ],
+        vec![api_tool("mcp_zoo_b"), api_tool("mcp_aardvark_a")],
+        AppMode::Yolo,
+    );
+
+    let names: Vec<&str> = catalog.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec![
+            "apply_patch",
+            "exec_shell",
+            "read_file",
+            "mcp_aardvark_a",
+            "mcp_zoo_b",
+        ],
+        "built-ins must be alphabetical and contiguous; MCP tools follow, alphabetical",
+    );
+}
+
+#[test]
+fn active_tool_list_pushes_deferred_activations_to_the_tail() {
+    // Regression for #263: when ToolSearch activates a deferred tool mid-
+    // session, it must NOT be inserted at its catalog index — that would
+    // shift every later tool's byte offset and bust the cached prefix.
+    // Deferred-but-now-active tools belong at the tail.
+    let mut a = api_tool("a_load_now");
+    a.defer_loading = Some(false);
+    let mut search = api_tool("search_via_toolsearch");
+    search.defer_loading = Some(true);
+    let mut b = api_tool("b_load_now");
+    b.defer_loading = Some(false);
+
+    let catalog = vec![a, search, b];
+    let active: HashSet<String> = ["a_load_now", "search_via_toolsearch", "b_load_now"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+
+    let listed = active_tools_for_step(&catalog, &active, false);
+    let names: Vec<&str> = listed.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["a_load_now", "b_load_now", "search_via_toolsearch"],
+        "deferred-but-active tools must come after always-loaded tools",
+    );
 }
 
 #[test]

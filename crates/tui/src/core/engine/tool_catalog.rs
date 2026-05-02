@@ -105,6 +105,14 @@ pub(super) fn build_model_tool_catalog(
 ) -> Vec<Tool> {
     apply_native_tool_deferral(&mut native_tools, mode);
     apply_mcp_tool_deferral(&mut mcp_tools, mode);
+    // Sort each partition by name for prefix-cache stability (#263). The
+    // upstream `to_api_tools()` already sorts the registry's HashMap output;
+    // this catalog is built from caller-supplied Vecs which the test harness
+    // and (future) caller refactors may not pre-sort. Built-ins stay as a
+    // contiguous prefix ahead of MCP tools so adding/removing an MCP tool
+    // never shifts a built-in's position.
+    native_tools.sort_by(|a, b| a.name.cmp(&b.name));
+    mcp_tools.sort_by(|a, b| a.name.cmp(&b.name));
     native_tools.extend(mcp_tools);
     native_tools
 }
@@ -188,11 +196,25 @@ pub(super) fn initial_active_tools(catalog: &[Tool]) -> HashSet<String> {
 }
 
 fn active_tool_list_from_catalog(catalog: &[Tool], active: &HashSet<String>) -> Vec<Tool> {
-    catalog
-        .iter()
-        .filter(|tool| active.contains(&tool.name))
-        .cloned()
-        .collect()
+    // Two-pass for prefix-cache stability (#263). Always-loaded tools come
+    // first in their stable catalog order; tools that started life deferred
+    // and were activated mid-conversation by ToolSearch get appended at the
+    // tail. Otherwise activating a deferred tool shifts every later tool's
+    // byte offset and busts the cached prefix from that point onwards.
+    let mut head: Vec<Tool> = Vec::new();
+    let mut tail: Vec<Tool> = Vec::new();
+    for tool in catalog {
+        if !active.contains(&tool.name) {
+            continue;
+        }
+        if tool.defer_loading.unwrap_or(false) {
+            tail.push(tool.clone());
+        } else {
+            head.push(tool.clone());
+        }
+    }
+    head.extend(tail);
+    head
 }
 
 pub(super) fn active_tools_for_step(
