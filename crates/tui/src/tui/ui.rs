@@ -3737,6 +3737,7 @@ fn render(f: &mut Frame, app: &mut App) {
         let effort_label = app.reasoning_effort.short_label();
         let provider_label = match app.api_provider {
             crate::config::ApiProvider::Deepseek => None,
+            crate::config::ApiProvider::DeepseekCN => None,
             crate::config::ApiProvider::NvidiaNim => Some("NIM"),
             crate::config::ApiProvider::Openrouter => Some("OR"),
             crate::config::ApiProvider::Novita => Some("Novita"),
@@ -4304,14 +4305,14 @@ async fn apply_provider_picker_api_key(
 
     // Mirror the saved key into the in-memory config so the engine sees it
     // immediately without a reload — `save_api_key_for` only touches disk.
-    if matches!(provider, ApiProvider::Deepseek) {
+    if matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN) {
         config.api_key = Some(api_key);
     } else {
         let providers = config
             .providers
             .get_or_insert_with(ProvidersConfig::default);
         let entry: &mut ProviderConfig = match provider {
-            ApiProvider::Deepseek => unreachable!(),
+            ApiProvider::Deepseek | ApiProvider::DeepseekCN => unreachable!(),
             ApiProvider::NvidiaNim => &mut providers.nvidia_nim,
             ApiProvider::Openrouter => &mut providers.openrouter,
             ApiProvider::Novita => &mut providers.novita,

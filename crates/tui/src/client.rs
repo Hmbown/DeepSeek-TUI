@@ -753,6 +753,7 @@ pub(super) fn apply_reasoning_effort(
             // OpenRouter / Novita relay the same DeepSeek V4 payload shape
             // as DeepSeek native; they pass through `thinking` / `reasoning_effort`.
             ApiProvider::Deepseek
+            | ApiProvider::DeepseekCN
             | ApiProvider::Openrouter
             | ApiProvider::Novita
             | ApiProvider::Fireworks
@@ -767,6 +768,7 @@ pub(super) fn apply_reasoning_effort(
         },
         "low" | "minimal" | "medium" | "mid" | "high" | "" => match provider {
             ApiProvider::Deepseek
+            | ApiProvider::DeepseekCN
             | ApiProvider::Openrouter
             | ApiProvider::Novita
             | ApiProvider::Fireworks
@@ -783,6 +785,7 @@ pub(super) fn apply_reasoning_effort(
         },
         "xhigh" | "max" | "highest" => match provider {
             ApiProvider::Deepseek
+            | ApiProvider::DeepseekCN
             | ApiProvider::Openrouter
             | ApiProvider::Novita
             | ApiProvider::Fireworks

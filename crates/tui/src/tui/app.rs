@@ -38,6 +38,7 @@ use crate::tui::selection::TranscriptSelection;
 use crate::tui::streaming::StreamingState;
 use crate::tui::transcript::TranscriptViewCache;
 use crate::tui::views::ViewStack;
+use crate::utils::is_chinese_system_locale;
 
 // === Types ===
 
@@ -863,6 +864,21 @@ impl App {
             yolo,
             resume_session_id: _,
         } = options;
+
+        // If no provider is explicitly configured AND the system locale
+        // indicates Chinese (zh-*), suggest DeepseekCN (api.deepseeki.com)
+        // as the appropriate default.
+        let provider = if config.provider.is_none() && is_chinese_system_locale() {
+            let cn_base_url = crate::config::DEFAULT_DEEPSEEKCN_BASE_URL.to_string();
+            // Store the suggested base URL in config so the first API call
+            // uses the CN endpoint. We mutate a clone to avoid writing.
+            let mut config = config.clone();
+            config.base_url = Some(cn_base_url);
+            config.api_provider()
+        } else {
+            config.api_provider()
+        };
+
         // Check if API key exists
         let needs_api_key = !has_api_key(config);
         let was_onboarded = crate::tui::onboarding::is_onboarded();
@@ -954,7 +970,7 @@ impl App {
             sticky_status: None,
             last_status_message_seen: None,
             model,
-            api_provider: config.api_provider(),
+            api_provider: provider,
             reasoning_effort: config
                 .reasoning_effort()
                 .map_or_else(ReasoningEffort::default, |s| {

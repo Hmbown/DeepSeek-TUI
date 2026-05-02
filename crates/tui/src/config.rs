@@ -30,6 +30,7 @@ pub const DEFAULT_FIREWORKS_BASE_URL: &str = "https://api.fireworks.ai/inference
 pub const DEFAULT_SGLANG_MODEL: &str = "deepseek-ai/DeepSeek-V4-Pro";
 pub const DEFAULT_SGLANG_FLASH_MODEL: &str = "deepseek-ai/DeepSeek-V4-Flash";
 pub const DEFAULT_SGLANG_BASE_URL: &str = "http://localhost:30000/v1";
+pub const DEFAULT_DEEPSEEKCN_BASE_URL: &str = "https://api.deepseeki.com";
 const API_KEYRING_SENTINEL: &str = "__KEYRING__";
 pub const COMMON_DEEPSEEK_MODELS: &[&str] = &[
     "deepseek-v4-pro",
@@ -44,6 +45,7 @@ pub const COMMON_DEEPSEEK_MODELS: &[&str] = &[
 #[serde(rename_all = "snake_case")]
 pub enum ApiProvider {
     Deepseek,
+    DeepseekCN,
     NvidiaNim,
     Openrouter,
     Novita,
@@ -56,6 +58,9 @@ impl ApiProvider {
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "deepseek" | "deep-seek" => Some(Self::Deepseek),
+            "deepseek-cn" | "deepseek_china" | "deepseekcn" | "deepseek-china" => {
+                Some(Self::DeepseekCN)
+            }
             "nvidia" | "nvidia-nim" | "nvidia_nim" | "nim" => Some(Self::NvidiaNim),
             "openrouter" | "open_router" => Some(Self::Openrouter),
             "novita" => Some(Self::Novita),
@@ -69,6 +74,7 @@ impl ApiProvider {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Deepseek => "deepseek",
+            Self::DeepseekCN => "deepseek-cn",
             Self::NvidiaNim => "nvidia-nim",
             Self::Openrouter => "openrouter",
             Self::Novita => "novita",
@@ -82,6 +88,7 @@ impl ApiProvider {
     pub fn display_name(self) -> &'static str {
         match self {
             Self::Deepseek => "DeepSeek",
+            Self::DeepseekCN => "DeepSeek (中国)",
             Self::NvidiaNim => "NVIDIA NIM",
             Self::Openrouter => "OpenRouter",
             Self::Novita => "Novita AI",
@@ -95,6 +102,7 @@ impl ApiProvider {
     pub fn all() -> &'static [Self] {
         &[
             Self::Deepseek,
+            Self::DeepseekCN,
             Self::NvidiaNim,
             Self::Openrouter,
             Self::Novita,
@@ -233,7 +241,7 @@ pub fn provider_capability(provider: ApiProvider, resolved_model: &str) -> Provi
 
     // Cache telemetry: returned only by DeepSeek-native and NVIDIA NIM endpoints.
     let cache_telemetry_supported =
-        matches!(provider, ApiProvider::Deepseek | ApiProvider::NvidiaNim);
+        matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN | ApiProvider::NvidiaNim);
 
     // Request payload mode: all current providers use chat completions.
     let request_payload_mode = RequestPayloadMode::ChatCompletions;
@@ -861,6 +869,8 @@ pub struct ProvidersConfig {
     #[serde(default)]
     pub deepseek: ProviderConfig,
     #[serde(default)]
+    pub deepseek_cn: ProviderConfig,
+    #[serde(default)]
     pub nvidia_nim: ProviderConfig,
     #[serde(default)]
     pub openrouter: ProviderConfig,
@@ -929,7 +939,7 @@ impl Config {
             && ApiProvider::parse(provider).is_none()
         {
             anyhow::bail!(
-                "Invalid provider '{provider}': expected deepseek, nvidia-nim, openrouter, novita, fireworks, or sglang."
+                "Invalid provider '{provider}': expected deepseek, deepseek-cn, nvidia-nim, openrouter, novita, fireworks, or sglang."
             );
         }
         if let Some(ref key) = self.api_key
@@ -1026,6 +1036,12 @@ impl Config {
                     .as_deref()
                     .filter(|base| base.contains("integrate.api.nvidia.com"))
                     .map(|_| ApiProvider::NvidiaNim)
+                    .or_else(|| {
+                        self.base_url
+                            .as_deref()
+                            .filter(|base| base.contains("api.deepseeki.com"))
+                            .map(|_| ApiProvider::DeepseekCN)
+                    })
                     .unwrap_or(ApiProvider::Deepseek)
             })
     }
@@ -1034,6 +1050,7 @@ impl Config {
         let providers = self.providers.as_ref()?;
         Some(match provider {
             ApiProvider::Deepseek => &providers.deepseek,
+            ApiProvider::DeepseekCN => &providers.deepseek_cn,
             ApiProvider::NvidiaNim => &providers.nvidia_nim,
             ApiProvider::Openrouter => &providers.openrouter,
             ApiProvider::Novita => &providers.novita,
@@ -1063,7 +1080,7 @@ impl Config {
         }
 
         match provider {
-            ApiProvider::Deepseek => DEFAULT_TEXT_MODEL,
+            ApiProvider::Deepseek | ApiProvider::DeepseekCN => DEFAULT_TEXT_MODEL,
             ApiProvider::NvidiaNim => DEFAULT_NVIDIA_NIM_MODEL,
             ApiProvider::Openrouter => DEFAULT_OPENROUTER_MODEL,
             ApiProvider::Novita => DEFAULT_NOVITA_MODEL,
@@ -1085,7 +1102,7 @@ impl Config {
         // were added in v0.6.7 and require explicit `[providers.<name>]`
         // entries or the corresponding `*_BASE_URL` env var.
         let root_base = match provider {
-            ApiProvider::Deepseek => self.base_url.clone(),
+            ApiProvider::Deepseek | ApiProvider::DeepseekCN => self.base_url.clone(),
             ApiProvider::NvidiaNim => self
                 .base_url
                 .as_ref()
@@ -1099,6 +1116,7 @@ impl Config {
         let base = provider_base.or(root_base).unwrap_or_else(|| {
             match provider {
                 ApiProvider::Deepseek => "https://api.deepseek.com",
+                ApiProvider::DeepseekCN => DEFAULT_DEEPSEEKCN_BASE_URL,
                 ApiProvider::NvidiaNim => DEFAULT_NVIDIA_NIM_BASE_URL,
                 ApiProvider::Openrouter => DEFAULT_OPENROUTER_BASE_URL,
                 ApiProvider::Novita => DEFAULT_NOVITA_BASE_URL,
@@ -1119,7 +1137,7 @@ impl Config {
     pub fn deepseek_api_key(&self) -> Result<String> {
         let provider = self.api_provider();
         let slot = match provider {
-            ApiProvider::Deepseek => "deepseek",
+            ApiProvider::Deepseek | ApiProvider::DeepseekCN => "deepseek",
             ApiProvider::NvidiaNim => "nvidia-nim",
             ApiProvider::Openrouter => "openrouter",
             ApiProvider::Novita => "novita",
@@ -1160,7 +1178,7 @@ impl Config {
         }
 
         match provider {
-            ApiProvider::Deepseek => anyhow::bail!(
+            ApiProvider::Deepseek | ApiProvider::DeepseekCN => anyhow::bail!(
                 "DeepSeek API key not found. Set it using one of these methods:\n\
                  1. Run 'deepseek auth set --provider deepseek' to save it in the OS keyring (recommended)\n\
                  2. Set DEEPSEEK_API_KEY environment variable\n\
@@ -1733,6 +1751,11 @@ fn normalize_model_config(config: &mut Config) {
         {
             providers.deepseek.model = Some(normalized);
         }
+        if let Some(model) = providers.deepseek_cn.model.as_deref()
+            && let Some(normalized) = normalize_model_for_provider(ApiProvider::DeepseekCN, model)
+        {
+            providers.deepseek_cn.model = Some(normalized);
+        }
         if let Some(model) = providers.nvidia_nim.model.as_deref()
             && let Some(normalized) = normalize_model_for_provider(ApiProvider::NvidiaNim, model)
         {
@@ -1905,6 +1928,7 @@ fn merge_providers(
         (None, Some(override_cfg)) => Some(override_cfg),
         (Some(base), Some(override_cfg)) => Some(ProvidersConfig {
             deepseek: merge_provider_config(base.deepseek, override_cfg.deepseek),
+            deepseek_cn: merge_provider_config(base.deepseek_cn, override_cfg.deepseek_cn),
             nvidia_nim: merge_provider_config(base.nvidia_nim, override_cfg.nvidia_nim),
             openrouter: merge_provider_config(base.openrouter, override_cfg.openrouter),
             novita: merge_provider_config(base.novita, override_cfg.novita),
@@ -2109,7 +2133,7 @@ pub fn has_api_key(config: &Config) -> bool {
 #[must_use]
 pub fn has_api_key_for(config: &Config, provider: ApiProvider) -> bool {
     let env_var = match provider {
-        ApiProvider::Deepseek => "DEEPSEEK_API_KEY",
+        ApiProvider::Deepseek | ApiProvider::DeepseekCN => "DEEPSEEK_API_KEY",
         ApiProvider::NvidiaNim => "NVIDIA_API_KEY",
         ApiProvider::Openrouter => "OPENROUTER_API_KEY",
         ApiProvider::Novita => "NOVITA_API_KEY",
@@ -2132,7 +2156,7 @@ pub fn has_api_key_for(config: &Config, provider: ApiProvider) -> bool {
 
     if let Some(providers) = config.providers.as_ref() {
         let entry = match provider {
-            ApiProvider::Deepseek => &providers.deepseek,
+            ApiProvider::Deepseek | ApiProvider::DeepseekCN => &providers.deepseek,
             ApiProvider::NvidiaNim => &providers.nvidia_nim,
             ApiProvider::Openrouter => &providers.openrouter,
             ApiProvider::Novita => &providers.novita,
@@ -2148,8 +2172,8 @@ pub fn has_api_key_for(config: &Config, provider: ApiProvider) -> bool {
         }
     }
 
-    // Legacy root field is DeepSeek-only.
-    matches!(provider, ApiProvider::Deepseek)
+    // Legacy root field is DeepSeek-only (both global and CN share it).
+    matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN)
         && config
             .api_key
             .as_ref()
@@ -2170,7 +2194,7 @@ pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf>
     ensure_parent_dir(&config_path)?;
 
     let table_name = match provider {
-        ApiProvider::Deepseek => unreachable!(),
+        ApiProvider::Deepseek | ApiProvider::DeepseekCN => unreachable!(),
         ApiProvider::NvidiaNim => "providers.nvidia_nim",
         ApiProvider::Openrouter => "providers.openrouter",
         ApiProvider::Novita => "providers.novita",
@@ -2197,7 +2221,7 @@ pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf>
         .as_table_mut()
         .context("`providers` must be a table.")?;
     let key_inside = match provider {
-        ApiProvider::Deepseek => unreachable!(),
+        ApiProvider::Deepseek | ApiProvider::DeepseekCN => unreachable!(),
         ApiProvider::NvidiaNim => "nvidia_nim",
         ApiProvider::Openrouter => "openrouter",
         ApiProvider::Novita => "novita",

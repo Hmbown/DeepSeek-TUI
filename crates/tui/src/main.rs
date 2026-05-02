@@ -1192,7 +1192,7 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
                     "SGLANG_API_KEY",
                     "deepseek auth set --provider sglang --api-key \"...\"",
                 ),
-                crate::config::ApiProvider::Deepseek => {
+                crate::config::ApiProvider::Deepseek | crate::config::ApiProvider::DeepseekCN => {
                     ("DEEPSEEK_API_KEY", "deepseek login --api-key \"...\"")
                 }
             };
@@ -1205,7 +1205,7 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
                     crate::config::ApiProvider::Novita => "novita",
                     crate::config::ApiProvider::Fireworks => "fireworks",
                     crate::config::ApiProvider::Sglang => "sglang",
-                    crate::config::ApiProvider::Deepseek => "deepseek",
+                    crate::config::ApiProvider::Deepseek | crate::config::ApiProvider::DeepseekCN => "deepseek",
                 }
             );
         }
