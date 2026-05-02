@@ -220,16 +220,20 @@ pub enum StatusItemValue {
 
 pub fn parse_mode(arg: Option<&str>) -> Result<ConfigUiMode, String> {
     let raw = arg.unwrap_or("").trim();
-    if raw.is_empty() || raw.eq_ignore_ascii_case("tui") {
-        return Ok(ConfigUiMode::Tui);
-    }
-    if raw.eq_ignore_ascii_case("native") {
+    // Bare `/config` opens the legacy native modal — it matches the rest
+    // of the deepseek-tui navy chrome out of the box. Power users can
+    // opt into the schemaui-driven editor with `/config tui`, or the
+    // browser surface with `/config web` (web feature only).
+    if raw.is_empty() || raw.eq_ignore_ascii_case("native") {
         return Ok(ConfigUiMode::Native);
+    }
+    if raw.eq_ignore_ascii_case("tui") {
+        return Ok(ConfigUiMode::Tui);
     }
     if raw.eq_ignore_ascii_case("web") {
         return Ok(ConfigUiMode::Web);
     }
-    Err("Usage: /config [tui|web|native]".to_string())
+    Err("Usage: /config [native|tui|web]".to_string())
 }
 
 pub fn build_document(app: &App, config: &Config) -> Result<ConfigUiDocument> {
