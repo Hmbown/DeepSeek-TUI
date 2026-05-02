@@ -74,10 +74,7 @@ fn require_bearer(
         .take(max_len)
         .fold(0u8, |acc, (a, b)| acc | (a ^ b));
     if diff != 0 {
-        return Err((
-            StatusCode::UNAUTHORIZED,
-            "invalid bearer token".to_string(),
-        ));
+        return Err((StatusCode::UNAUTHORIZED, "invalid bearer token".to_string()));
     }
     Ok(())
 }
@@ -149,10 +146,7 @@ pub async fn run(options: AppServerOptions) -> Result<()> {
     let state = build_state(options.config_path.clone())?;
 
     // Generate a per-process bearer token and print to stderr.
-    eprintln!(
-        "[app-server] Bearer token: {}",
-        state.bearer_token
-    );
+    eprintln!("[app-server] Bearer token: {}", state.bearer_token);
     eprintln!(
         "[app-server] Pass via header: Authorization: Bearer {}",
         state.bearer_token
@@ -182,19 +176,21 @@ pub async fn run(options: AppServerOptions) -> Result<()> {
         .route("/jobs", get(jobs_handler))
         .route("/mcp/startup", post(mcp_startup_handler))
         .with_state(state)
-        .layer(axum::middleware::from_fn(move |req: axum::http::Request<axum::body::Body>, next: axum::middleware::Next| {
-            let expected = bearer.clone();
-            async move {
-                // Skip auth for /healthz (unauthenticated health check)
-                if req.uri().path() == "/healthz" {
-                    return next.run(req).await;
+        .layer(axum::middleware::from_fn(
+            move |req: axum::http::Request<axum::body::Body>, next: axum::middleware::Next| {
+                let expected = bearer.clone();
+                async move {
+                    // Skip auth for /healthz (unauthenticated health check)
+                    if req.uri().path() == "/healthz" {
+                        return next.run(req).await;
+                    }
+                    if let Err((status, msg)) = require_bearer(req.headers(), &expected) {
+                        return (status, Json(json!({"error": msg}))).into_response();
+                    }
+                    next.run(req).await
                 }
-                if let Err((status, msg)) = require_bearer(req.headers(), &expected) {
-                    return (status, Json(json!({"error": msg}))).into_response();
-                }
-                next.run(req).await
-            }
-        }))
+            },
+        ))
         .layer(cors);
 
     let listener = tokio::net::TcpListener::bind(options.listen).await?;
