@@ -1,7 +1,7 @@
 //! Utility helpers shared across the `DeepSeek` CLI.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::models::{ContentBlock, Message};
 use anyhow::{Context, Result};
@@ -38,6 +38,13 @@ pub fn is_key_file(path: &Path) -> bool {
 }
 
 /// Generate a high-level summary of the project based on key files.
+///
+/// Output is byte-stable across calls: `WalkBuilder` doesn't sort siblings
+/// (the OS readdir order leaks through), so the joined `key_files` list
+/// would otherwise reorder run-to-run on filesystems that don't pre-sort.
+/// Only matters when the workspace has no `AGENTS.md` / `CLAUDE.md`, since
+/// the system prompt routes through `ProjectContext::as_system_block` first
+/// and only falls back here when no project-context document exists.
 #[must_use]
 pub fn summarize_project(root: &Path) -> String {
     let mut key_files = Vec::new();
@@ -57,6 +64,8 @@ pub fn summarize_project(root: &Path) -> String {
             key_files.push(rel.to_string_lossy().to_string());
         }
     }
+
+    key_files.sort();
 
     if key_files.is_empty() {
         return "Unknown project type".to_string();
@@ -90,38 +99,43 @@ pub fn summarize_project(root: &Path) -> String {
 }
 
 /// Generate a tree-like view of the project structure.
+///
+/// Sibling order is fixed by sorting collected paths — the underlying
+/// `WalkBuilder` follows the OS readdir order, which is non-deterministic
+/// across filesystems. Sorting by full path preserves the tree shape (a
+/// directory still precedes its children because `"src" < "src/lib.rs"`)
+/// while making the rendered output byte-stable across runs.
 #[must_use]
 pub fn project_tree(root: &Path, max_depth: usize) -> String {
-    let mut tree_lines = Vec::new();
+    let mut entries: Vec<(PathBuf, bool)> = Vec::new();
 
     let mut builder = WalkBuilder::new(root);
     builder
         .hidden(false)
         .follow_links(true)
         .max_depth(Some(max_depth + 1));
-    let walker = builder.build();
 
-    for entry in walker {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(_) => continue,
-        };
-
-        let path = entry.path();
+    for entry in builder.build().flatten() {
         let depth = entry.depth();
-
         if depth == 0 || depth > max_depth {
             continue;
         }
+        let rel_path = entry
+            .path()
+            .strip_prefix(root)
+            .unwrap_or(entry.path())
+            .to_path_buf();
+        let is_dir = entry.file_type().is_some_and(|ft| ft.is_dir());
+        entries.push((rel_path, is_dir));
+    }
 
-        let rel_path = path.strip_prefix(root).unwrap_or(path);
-        let indent = "  ".repeat(depth - 1);
-        let prefix = if entry.file_type().is_some_and(|ft| ft.is_dir()) {
-            "DIR: "
-        } else {
-            "FILE: "
-        };
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
 
+    let mut tree_lines = Vec::with_capacity(entries.len());
+    for (rel_path, is_dir) in entries {
+        let depth = rel_path.components().count();
+        let indent = "  ".repeat(depth.saturating_sub(1));
+        let prefix = if is_dir { "DIR: " } else { "FILE: " };
         tree_lines.push(format!(
             "{}{}{}",
             indent,
@@ -308,5 +322,104 @@ mod tests {
                 "/Users/alice2/work"
             );
         });
+    }
+}
+
+#[cfg(test)]
+mod project_mapping_tests {
+    use super::{project_tree, summarize_project};
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn project_tree_sorts_siblings_alphabetically() {
+        // Cross-platform readdir doesn't guarantee alphabetical order — on
+        // ext4 with htree it's hash order, on APFS it's roughly insertion
+        // order, on ZFS it's storage-class dependent. The system prompt
+        // embeds this string in the cached prefix when a workspace has no
+        // AGENTS.md / CLAUDE.md, so the function has to be byte-stable
+        // across runs regardless of host filesystem.
+        let tmp = tempdir().expect("tempdir");
+        let root = tmp.path();
+        // Create files in a deliberately scrambled order to make the
+        // hosting filesystem's pre-sort (if any) less likely to mask a
+        // missing sort in our code.
+        fs::write(root.join("zebra.txt"), "z").expect("write zebra");
+        fs::write(root.join("apple.txt"), "a").expect("write apple");
+        fs::write(root.join("mango.txt"), "m").expect("write mango");
+
+        let tree = project_tree(root, 1);
+        let lines: Vec<&str> = tree.lines().collect();
+        let apple_pos = lines
+            .iter()
+            .position(|l| l.contains("apple.txt"))
+            .expect("apple line");
+        let mango_pos = lines
+            .iter()
+            .position(|l| l.contains("mango.txt"))
+            .expect("mango line");
+        let zebra_pos = lines
+            .iter()
+            .position(|l| l.contains("zebra.txt"))
+            .expect("zebra line");
+
+        assert!(apple_pos < mango_pos);
+        assert!(mango_pos < zebra_pos);
+    }
+
+    #[test]
+    fn project_tree_keeps_directory_before_its_children() {
+        // Sorting siblings by full path is enough to preserve tree shape:
+        // `"src" < "src/lib.rs"` because the shorter string compares less.
+        let tmp = tempdir().expect("tempdir");
+        let root = tmp.path();
+        let src = root.join("src");
+        fs::create_dir_all(&src).expect("mkdir src");
+        fs::write(src.join("lib.rs"), "lib").expect("write lib");
+        fs::write(src.join("main.rs"), "main").expect("write main");
+
+        let tree = project_tree(root, 2);
+        let src_pos = tree.find("DIR: src").expect("src dir line");
+        let lib_pos = tree.find("FILE: lib.rs").expect("lib file line");
+        let main_pos = tree.find("FILE: main.rs").expect("main file line");
+
+        assert!(src_pos < lib_pos, "directory must precede its children");
+        assert!(lib_pos < main_pos, "siblings sorted by name");
+    }
+
+    #[test]
+    fn project_tree_is_byte_stable_across_calls() {
+        let tmp = tempdir().expect("tempdir");
+        let root = tmp.path();
+        fs::write(root.join("z.txt"), "z").expect("write");
+        fs::write(root.join("a.txt"), "a").expect("write");
+
+        assert_eq!(project_tree(root, 1), project_tree(root, 1));
+    }
+
+    #[test]
+    fn summarize_project_sorts_key_files_in_fallback() {
+        // When `summarize_project` can't classify a project type it falls
+        // back to listing the discovered key files. That joined list must
+        // be deterministic so the system prompt that embeds it doesn't
+        // drift between runs on filesystems that emit readdir in a
+        // non-alphabetical order.
+        let tmp = tempdir().expect("tempdir");
+        let root = tmp.path();
+        // Use key files that don't trigger any of the type detectors
+        // (Cargo.toml / package.json / requirements.txt) so the function
+        // hits the `Project with key files: …` branch.
+        fs::write(root.join("Makefile"), "all:").expect("write makefile");
+        fs::write(root.join("README.md"), "# x").expect("write readme");
+
+        let summary = summarize_project(root);
+        assert!(
+            summary.starts_with("Project with key files: "),
+            "expected fallback branch; got: {summary}"
+        );
+        let suffix = summary
+            .strip_prefix("Project with key files: ")
+            .expect("prefix");
+        assert_eq!(suffix, "Makefile, README.md");
     }
 }
