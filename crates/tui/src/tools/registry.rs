@@ -7,7 +7,7 @@
 //! - Filtering by capability
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use serde_json::Value;
 
@@ -24,6 +24,11 @@ use super::spec::{
 pub struct ToolRegistry {
     tools: HashMap<String, Arc<dyn ToolSpec>>,
     context: ToolContext,
+    /// Memoised serialised tool catalog. Rebuilt lazily on first
+    /// `to_api_tools` call after a mutation; pinned across reads so the
+    /// description and schema bytes stay byte-stable for DeepSeek's KV
+    /// prefix cache. Invalidated on `register` / `remove` / `clear`.
+    api_cache: OnceLock<Vec<Tool>>,
 }
 
 impl ToolRegistry {
@@ -33,6 +38,7 @@ impl ToolRegistry {
         Self {
             tools: HashMap::new(),
             context,
+            api_cache: OnceLock::new(),
         }
     }
 
@@ -42,6 +48,7 @@ impl ToolRegistry {
         if self.tools.insert(name.clone(), tool).is_some() {
             tracing::warn!("Overwriting existing tool: {}", name);
         }
+        self.invalidate_api_cache();
     }
 
     /// Register multiple tools at once.
@@ -140,8 +147,21 @@ impl ToolRegistry {
     /// every `deepseek` launch, invalidating DeepSeek's KV prefix cache for
     /// every cross-session resume. Sorting here matches the way Claude Code
     /// stabilises its tool array (`assembleToolPool` in their reference).
+    ///
+    /// The serialised catalog is memoised on first call and pinned across
+    /// reads so each tool's `description()` and `input_schema()` are sampled
+    /// exactly once per registration. MCP adapters whose upstream description
+    /// drifts on reconnect would otherwise rewrite the catalog mid-session
+    /// and bust the prefix cache. The cache is invalidated on `register`,
+    /// `remove`, and `clear`.
     #[must_use]
     pub fn to_api_tools(&self) -> Vec<Tool> {
+        self.api_cache
+            .get_or_init(|| self.build_api_tools())
+            .clone()
+    }
+
+    fn build_api_tools(&self) -> Vec<Tool> {
         let mut tools: Vec<&Arc<dyn ToolSpec>> = self.tools.values().collect();
         tools.sort_by(|a, b| a.name().cmp(b.name()));
         tools
@@ -158,6 +178,10 @@ impl ToolRegistry {
                 cache_control: None,
             })
             .collect()
+    }
+
+    fn invalidate_api_cache(&mut self) {
+        self.api_cache = OnceLock::new();
     }
 
     /// Convert tools to API Tool format with optional cache control on the last tool.
@@ -239,13 +263,18 @@ impl ToolRegistry {
     #[must_use]
     #[allow(dead_code)]
     pub fn remove(&mut self, name: &str) -> Option<Arc<dyn ToolSpec>> {
-        self.tools.remove(name)
+        let removed = self.tools.remove(name);
+        if removed.is_some() {
+            self.invalidate_api_cache();
+        }
+        removed
     }
 
     /// Clear all tools from the registry.
     #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.tools.clear();
+        self.invalidate_api_cache();
     }
 }
 
@@ -839,6 +868,137 @@ mod tests {
         assert_eq!(api_tools.len(), 1);
         assert_eq!(api_tools[0].name, "my_tool");
         assert_eq!(api_tools[0].description, "A test tool");
+    }
+
+    /// Tool whose `description()` advances through a script of pre-built
+    /// strings, one per call. Used to demonstrate that the api-tools cache
+    /// pins the description bytes on first read instead of re-sampling them
+    /// each turn (#263 follow-up; mirrors reference-cc's `getToolSchemaCache`).
+    struct VaryingDescriptionTool {
+        name: String,
+        descriptions: Vec<String>,
+        next: std::sync::atomic::AtomicUsize,
+    }
+
+    impl VaryingDescriptionTool {
+        fn new(name: &str, descriptions: &[&str]) -> Self {
+            Self {
+                name: name.to_string(),
+                descriptions: descriptions.iter().map(|s| (*s).to_string()).collect(),
+                next: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ToolSpec for VaryingDescriptionTool {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn description(&self) -> &str {
+            let idx = self
+                .next
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                .min(self.descriptions.len() - 1);
+            &self.descriptions[idx]
+        }
+
+        fn input_schema(&self) -> Value {
+            json!({"type": "object", "properties": {}, "required": []})
+        }
+
+        fn capabilities(&self) -> Vec<ToolCapability> {
+            vec![ToolCapability::ReadOnly]
+        }
+
+        async fn execute(
+            &self,
+            _input: Value,
+            _context: &ToolContext,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::success("ok".to_string()))
+        }
+    }
+
+    #[test]
+    fn to_api_tools_pins_description_bytes_across_calls() {
+        // Regression for the cache-stability follow-up: an MCP adapter that
+        // returns a different `description()` on reconnect (or any other
+        // tool whose description isn't a `&'static str`) would otherwise
+        // rewrite the catalog bytes mid-session and miss the prefix cache.
+        // The registry pins the first call's value until it's mutated.
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let mut registry = ToolRegistry::new(ctx);
+        registry.register(Arc::new(VaryingDescriptionTool::new(
+            "varying",
+            &["first description", "second description"],
+        )));
+
+        let first = registry.to_api_tools();
+        let second = registry.to_api_tools();
+
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].description, "first description");
+        assert_eq!(
+            first, second,
+            "api-tools catalog must be byte-identical across reads with no mutation in between"
+        );
+    }
+
+    #[test]
+    fn register_invalidates_api_tools_cache() {
+        // Counter-test: when a real change happens (a new tool registers,
+        // an existing one is removed, or `clear` is called), the cache must
+        // be discarded so the next read reflects the live registry.
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let mut registry = ToolRegistry::new(ctx);
+        registry.register(Arc::new(VaryingDescriptionTool::new(
+            "varying",
+            &["first description", "second description"],
+        )));
+
+        let before = registry.to_api_tools();
+        assert_eq!(before.len(), 1);
+
+        registry.register(make_test_tool("late_arrival"));
+
+        let after = registry.to_api_tools();
+        assert_eq!(after.len(), 2, "cache must rebuild after register");
+        assert!(after.iter().any(|t| t.name == "varying"));
+        assert!(after.iter().any(|t| t.name == "late_arrival"));
+        // The varying tool's description advances on cache rebuild — the
+        // first read above sampled `first description`; this rebuild samples
+        // `second description`. The point is just that the bytes *can*
+        // change after a real mutation, not that they always do.
+        let varying_after = after
+            .iter()
+            .find(|t| t.name == "varying")
+            .expect("varying tool present");
+        assert_eq!(varying_after.description, "second description");
+    }
+
+    #[test]
+    fn remove_and_clear_invalidate_api_tools_cache() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let mut registry = ToolRegistry::new(ctx);
+        registry.register(make_test_tool("alpha"));
+        registry.register(make_test_tool("beta"));
+
+        let before = registry.to_api_tools();
+        assert_eq!(before.len(), 2);
+
+        let _ = registry.remove("alpha");
+        let after_remove = registry.to_api_tools();
+        assert_eq!(after_remove.len(), 1);
+        assert_eq!(after_remove[0].name, "beta");
+
+        registry.clear();
+        let after_clear = registry.to_api_tools();
+        assert!(after_clear.is_empty(), "cache must clear with the registry");
     }
 
     #[test]
