@@ -40,3 +40,7 @@ Model notes: DeepSeek V4 models emit *thinking tokens* (`ContentBlock::Thinking`
 - **Other**: `code_execution` (Python sandbox), `validate_data` (JSON/TOML), `request_user_input`, `finance` (market quotes), `tool_search_tool_regex`, `tool_search_tool_bm25` (deferred tool discovery).
 
 Multiple `tool_calls` in one turn run in parallel. `web_search` returns `ref_id`s — cite as `(ref_id)`.
+
+## Output formatting
+
+You're rendering into a terminal, not a browser. Markdown tables almost never render correctly — monospace fonts plus variable-width content (especially CJK characters) can't reliably align column borders. Prefer plain prose, bulleted or numbered lists, code blocks, or `- **Label**: value` definition-style pairs over tables. If column-aligned data is genuinely necessary, keep columns narrow, ASCII-only, and limit to 2–3 columns.

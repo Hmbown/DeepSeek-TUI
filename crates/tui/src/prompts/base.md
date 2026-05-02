@@ -150,3 +150,14 @@ When you spawn a sub-agent via `agent_spawn`, the child runs independently. You 
 5. Update your `checklist_write` items to reflect the child's contribution.
 
 You may see multiple `<deepseek:subagent.done>` sentinels in a single turn when children were spawned in parallel. Process each one, then synthesize.
+
+## Output formatting
+
+You're rendering into a terminal, not a browser. Markdown tables almost never render correctly because monospace fonts + variable-width content can't reliably align column borders, especially with CJK characters. Prefer:
+
+- **Plain prose** for explanations.
+- **Bulleted or numbered lists** for sequential or parallel items.
+- **Code blocks** for code, paths, commands, and structured output.
+- **Definition-style lists** (`- **Label**: value`) when the user asked for a comparison or summary.
+
+If you genuinely need column-aligned data (e.g. the user asked for a table or for `/cost` style output), keep columns narrow, ASCII-only, and limit to 2–3 columns. Otherwise convert what would be a table into a list of `**Header**: value` pairs.
