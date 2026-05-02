@@ -142,12 +142,15 @@ impl ToolSpec for FetchUrlTool {
             ));
         }
 
+        // Extract host once for reuse across network policy + SSRF checks.
+        let url_host = host_from_url(&url);
+
         // Per-domain network policy gate (#135). If no policy is attached
         // (e.g. ad-hoc tests), behavior is permissive — match pre-v0.7.0.
         if let Some(decider) = context.network_policy.as_ref()
-            && let Some(host) = host_from_url(&url)
+            && let Some(ref host) = url_host
         {
-            match decider.evaluate(&host, "fetch_url") {
+            match decider.evaluate(host, "fetch_url") {
                 Decision::Allow => {}
                 Decision::Deny => {
                     return Err(ToolError::permission_denied(format!(
@@ -166,21 +169,23 @@ impl ToolSpec for FetchUrlTool {
         // SSRF protection: resolve hostname and reject private/link-local/loopback IPs.
         // Prevents LLM-prompted requests to cloud metadata (169.254.169.254),
         // localhost services, and internal networks.
-        if let Some(host) = host_from_url(&url) {
+        // Pin the validated IP via ClientBuilder::resolve() to close the DNS rebinding
+        // TOCTOU window — reqwest will use the pinned IP instead of re-resolving.
+        let mut dns_pinning = None; // (hostname, validated_ip)
+        if let Some(host) = &url_host {
             if host == "localhost" || host == "localhost.localdomain" {
                 return Err(ToolError::permission_denied(
                     "requests to localhost are not allowed",
                 ));
             }
-            // Attempt to resolve the hostname and check all resulting IPs.
-            // For IP-literal hosts, check directly without DNS.
             if let Ok(ip) = host.parse::<std::net::IpAddr>() {
                 if is_restricted_ip(&ip) {
                     return Err(ToolError::permission_denied(format!(
-                        "resolved IP {ip} is a restricted address (private/loopback/link-local)"
+                        "IP {ip} is a restricted address (private/loopback/link-local)"
                     )));
                 }
-            } else if let Ok(addrs) = tokio::net::lookup_host((&*host, 0u16)).await {
+            } else if let Ok(addrs) = tokio::net::lookup_host((&**host, 0u16)).await {
+                let mut first_valid: Option<std::net::IpAddr> = None;
                 for addr in addrs {
                     if is_restricted_ip(&addr.ip()) {
                         return Err(ToolError::permission_denied(format!(
@@ -188,6 +193,12 @@ impl ToolSpec for FetchUrlTool {
                             addr.ip()
                         )));
                     }
+                    if first_valid.is_none() {
+                        first_valid = Some(addr.ip());
+                    }
+                }
+                if let Some(validated_ip) = first_valid {
+                    dns_pinning = Some((host.clone(), validated_ip));
                 }
             }
             // If DNS resolution fails, let the HTTP request proceed and fail naturally.
@@ -198,10 +209,21 @@ impl ToolSpec for FetchUrlTool {
         let timeout_ms =
             optional_u64(&input, "timeout_ms", DEFAULT_TIMEOUT_MS).min(HARD_MAX_TIMEOUT_MS);
 
-        let client = reqwest::Client::builder()
+        let mut client_builder = reqwest::Client::builder()
             .timeout(Duration::from_millis(timeout_ms))
             .user_agent(USER_AGENT)
-            .redirect(reqwest::redirect::Policy::limited(MAX_REDIRECTS))
+            .redirect(reqwest::redirect::Policy::limited(MAX_REDIRECTS));
+
+        // Pin validated IP to prevent DNS rebinding (TOCTOU) — reqwest will
+        // connect to the validated IP directly instead of re-resolving.
+        if let Some((hostname, validated_ip)) = dns_pinning {
+            client_builder = client_builder.resolve(
+                &hostname,
+                std::net::SocketAddr::new(validated_ip, 0),
+            );
+        }
+
+        let client = client_builder
             .build()
             .map_err(|e| {
                 ToolError::execution_failed(format!("failed to build HTTP client: {e}"))
@@ -299,8 +321,7 @@ fn is_restricted_ip(ip: &std::net::IpAddr) -> bool {
             v6.is_loopback()
                 || v6.is_multicast()
                 || matches!(v6.segments(), [0xfc00..=0xfdff, ..]) // ULA fc00::/7
-                || matches!(v6.segments(), [0xfe80, ..])          // Link-local fe80::/10
-                || matches!(v6.segments(), [0xff00..=0xffff, ..]) // Multicast ff00::/8
+                || matches!(v6.segments(), [0xfe80..=0xfebf, ..]) // Link-local fe80::/10
         }
     }
 }
