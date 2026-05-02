@@ -721,15 +721,12 @@ mod tests {
     }
 
     #[test]
-    fn test_show_config_defaults_to_schema_tui() {
+    fn test_show_config_defaults_to_native() {
         let mut app = create_test_app();
         app.total_tokens = 1234;
         let result = show_config(&mut app, None);
         assert!(result.message.is_none());
-        assert!(matches!(
-            result.action,
-            Some(AppAction::OpenConfigEditor(ConfigUiMode::Tui))
-        ));
+        assert!(matches!(result.action, Some(AppAction::OpenConfigView)));
     }
 
     #[test]

@@ -760,12 +760,7 @@ mod tests {
         let mut app = create_test_app();
         let result = execute("/config", &mut app);
         assert!(result.message.is_none());
-        assert!(matches!(
-            result.action,
-            Some(AppAction::OpenConfigEditor(
-                crate::config_ui::ConfigUiMode::Tui
-            ))
-        ));
+        assert!(matches!(result.action, Some(AppAction::OpenConfigView)));
     }
 
     #[test]

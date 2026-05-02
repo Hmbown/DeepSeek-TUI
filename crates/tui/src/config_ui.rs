@@ -426,10 +426,6 @@ pub fn apply_document(
         ("sidebar_width", &doc.settings.sidebar_width.to_string()),
         ("sidebar_focus", doc.settings.sidebar_focus.as_setting()),
         ("max_history", &doc.settings.max_history.to_string()),
-        (
-            "default_model",
-            doc.settings.default_model.as_deref().unwrap_or("default"),
-        ),
         ("mcp_config_path", doc.config.mcp_config_path.as_str()),
     ] {
         let result = commands::set_config_value(app, key, value, persist);
@@ -439,6 +435,29 @@ pub fn apply_document(
                 result
                     .message
                     .unwrap_or_else(|| "config update failed".to_string())
+            );
+        }
+        if let Some(message) = result.message {
+            notes.push(message);
+        }
+    }
+
+    // default_model is only applied when persisting (it controls the model
+    // for future sessions).  Processing it in the main loop would overwrite
+    // the runtime model the user just chose when persist=false (#346-fix).
+    if persist {
+        let default_model_val = doc
+            .settings
+            .default_model
+            .as_deref()
+            .unwrap_or("default");
+        let result = commands::set_config_value(app, "default_model", default_model_val, true);
+        if result.is_error {
+            bail!(
+                "{}",
+                result
+                    .message
+                    .unwrap_or_else(|| "default_model update failed".to_string())
             );
         }
         if let Some(message) = result.message {
