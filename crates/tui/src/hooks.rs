@@ -521,6 +521,24 @@ impl HookExecutor {
                 self.execute_sync(hook, &env_vars)
             };
 
+            // Log failures via tracing so operators tailing
+            // `deepseek` with `RUST_LOG=warn` can see hook errors
+            // without instrumenting each call site. Successful runs
+            // log nothing (would be too noisy on per-tool events).
+            if !result.success {
+                let label = result.name.as_deref().unwrap_or("(unnamed)");
+                tracing::warn!(
+                    target: "hooks",
+                    hook = label,
+                    event = event.as_str(),
+                    exit_code = ?result.exit_code,
+                    duration_ms = result.duration.as_millis() as u64,
+                    error = result.error.as_deref().unwrap_or(""),
+                    stderr_head = %result.stderr.lines().next().unwrap_or(""),
+                    "hook failed"
+                );
+            }
+
             let should_continue = result.success || hook.continue_on_error;
             results.push(result);
 
