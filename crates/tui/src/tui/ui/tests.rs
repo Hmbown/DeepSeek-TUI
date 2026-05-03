@@ -592,6 +592,7 @@ fn terminal_probe_timeout_uses_tui_config_and_clamps() {
             mouse_capture: None,
             terminal_probe_timeout_ms: Some(750),
             status_items: None,
+            osc8_links: None,
         }),
         ..Config::default()
     };

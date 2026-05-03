@@ -32,6 +32,7 @@ use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
 use crate::palette;
+use crate::tui::osc8;
 
 // Thread-local counter incremented every time `parse` runs. Used by tests to
 // prove that width-only changes hit the cached-AST path and skip parsing.
@@ -324,11 +325,8 @@ fn render_line_with_links(
     let mut current_width = 0usize;
 
     for word in line.split_whitespace() {
-        let style = if looks_like_link(word) {
-            link_style
-        } else {
-            base_style
-        };
+        let is_link = looks_like_link(word);
+        let style = if is_link { link_style } else { base_style };
         let word_width = word.width();
         let additional = if current_width == 0 {
             word_width
@@ -347,7 +345,16 @@ fn render_line_with_links(
             current_width += 1;
         }
 
-        current_spans.push(Span::styled(word.to_string(), style));
+        // For URLs, wrap the visible text in OSC 8 escapes when the runtime
+        // flag allows it. Display width is computed from the bare URL — the
+        // escapes are zero-width on supporting terminals and ignored on the
+        // rest. The clipboard / selection path strips OSC 8 before yanking.
+        let content = if is_link && osc8::enabled() {
+            osc8::wrap_link(word, word)
+        } else {
+            word.to_string()
+        };
+        current_spans.push(Span::styled(content, style));
         current_width += word_width;
     }
 
@@ -511,5 +518,42 @@ mod tests {
             })
             .collect();
         assert_eq!(items, vec![("-", "alpha"), ("-", "beta"), ("1.", "gamma")]);
+    }
+
+    /// Render with the OSC 8 flag pinned to `enabled`, then restore the prior
+    /// value. We serialize through a static mutex because `osc8::ENABLED` is
+    /// process-wide state and other tests touching it would race otherwise.
+    fn render_with_osc8(enabled: bool, source: &str) -> String {
+        use std::sync::Mutex;
+        static OSC8_GUARD: Mutex<()> = Mutex::new(());
+        let _guard = OSC8_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let prior = osc8::enabled();
+        osc8::set_enabled(enabled);
+        let lines = render_markdown(source, 80, Style::default());
+        let joined = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect::<String>();
+        osc8::set_enabled(prior);
+        joined
+    }
+
+    #[test]
+    fn http_links_get_osc_8_wrapped_when_enabled() {
+        let joined = render_with_osc8(true, "see https://example.com for details");
+        assert!(
+            joined.contains("\x1b]8;;https://example.com\x1b\\https://example.com\x1b]8;;\x1b\\"),
+            "expected OSC 8 wrapper around URL; got {joined:?}"
+        );
+    }
+
+    #[test]
+    fn osc_8_disabled_emits_plain_url() {
+        let joined = render_with_osc8(false, "see https://example.com for details");
+        assert!(
+            !joined.contains("\x1b]8;;"),
+            "expected no OSC 8 wrapper when disabled; got {joined:?}"
+        );
+        assert!(joined.contains("https://example.com"));
     }
 }

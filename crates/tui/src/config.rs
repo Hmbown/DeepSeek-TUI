@@ -336,6 +336,13 @@ pub struct TuiConfig {
     /// Edited interactively via `/statusline`; persisted to `tui.status_items`
     /// in `~/.deepseek/config.toml`.
     pub status_items: Option<Vec<StatusItem>>,
+    /// Emit OSC 8 hyperlink escape sequences around URLs in the transcript so
+    /// supporting terminals (iTerm2, Terminal.app 13+, Ghostty, Kitty,
+    /// WezTerm, Alacritty, recent gnome-terminal/konsole) make them
+    /// Cmd+click-openable. Terminals without OSC 8 support render the plain
+    /// label and ignore the escape. Defaults to `true`; set `false` for
+    /// terminals that misrender the sequence.
+    pub osc8_links: Option<bool>,
 }
 
 /// Notification delivery method (mirrors `tui::notifications::Method`).
