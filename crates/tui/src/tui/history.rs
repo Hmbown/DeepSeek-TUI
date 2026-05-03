@@ -1185,6 +1185,13 @@ pub struct GenericToolCell {
     /// fan-out tool), each prompt is shown on its own indented row instead
     /// of the inline `args:` summary. `None` for ordinary tools.
     pub prompts: Option<Vec<String>>,
+    /// Filesystem path to the full output's spillover file (#422/#423).
+    /// Set by the tool-routing layer when `ToolResult.metadata` carried a
+    /// `spillover_path` field. The truncation affordance includes the
+    /// path so the user can `read_file` it (or Cmd+click in
+    /// OSC 8-aware terminals — the path renders as a hyperlink when
+    /// `tui.osc8_links` is enabled).
+    pub spillover_path: Option<std::path::PathBuf>,
 }
 
 impl GenericToolCell {
@@ -1300,6 +1307,19 @@ impl GenericToolCell {
                     mode,
                 ));
             }
+
+            // #423: surface the spillover-file path inline so the user
+            // (and the model) can find the elided tail. Only emitted in
+            // live mode — transcript replay already has the full output
+            // verbatim. The path is OSC 8-wrapped when the feature is
+            // enabled so terminals that support hyperlinks make it
+            // Cmd+click-openable; the clipboard / selection path
+            // strips the escape on copy.
+            if matches!(mode, RenderMode::Live)
+                && let Some(path) = self.spillover_path.as_ref()
+            {
+                lines.push(render_spillover_annotation(path, width));
+            }
         }
         lines
     }
@@ -1374,6 +1394,29 @@ impl GenericToolCell {
             mode,
         ))
     }
+}
+
+/// Render the inline annotation for a tool cell whose full output was
+/// spilled to disk (#422 + #423). Produces a one-line muted hint:
+///
+/// ```text
+///   full output: /Users/you/.deepseek/tool_outputs/call-abc12.txt
+/// ```
+///
+/// Path is plain text on this branch; the OSC 8 hyperlink-wrap that
+/// makes it Cmd+click-openable lives on the OSC 8 branch (PR #515)
+/// and merges in once both PRs land on `main`. The clipboard /
+/// selection path already strips OSC 8 there, so a future enhancement
+/// stays backward-compatible.
+fn render_spillover_annotation(path: &std::path::Path, width: u16) -> Line<'static> {
+    let display = path.display().to_string();
+    let prefix = "  full output: ";
+    let budget = usize::from(width).saturating_sub(prefix.len()).max(8);
+    let truncated = truncate_text(&display, budget);
+    Line::from(vec![
+        Span::styled(prefix, Style::default().fg(palette::TEXT_MUTED)),
+        Span::styled(truncated, Style::default().fg(palette::TEXT_MUTED).italic()),
+    ])
 }
 
 /// Pull the `agent_id` field out of an `agent_spawn` tool output. The
@@ -3012,6 +3055,121 @@ mod tests {
     // Below 3s the label stays "running" — quick reads/greps shouldn't
     // visually churn. From 3s onward the badge appears and ticks each
     // second so the user can tell the call hasn't hung.
+    // ---- #423 spillover-path UI annotation ----
+    //
+    // When a tool result carries a `spillover_path` (set by the
+    // tool-routing layer when the tool's `metadata.spillover_path` is
+    // populated), the live render appends a one-line muted hint
+    // pointing at the file. Transcript-mode replay leaves the hint
+    // off because the full output is already inline.
+
+    #[test]
+    fn render_spillover_annotation_shows_path() {
+        use std::path::PathBuf;
+        let cell = GenericToolCell {
+            name: "exec_shell".to_string(),
+            status: ToolStatus::Success,
+            input_summary: Some("cmd: cargo build --release".to_string()),
+            output: Some("very large output...".to_string()),
+            prompts: None,
+            spillover_path: Some(PathBuf::from(
+                "/Users/dev/.deepseek/tool_outputs/call-abc12.txt",
+            )),
+        };
+        let lines = cell.lines_with_mode(120, true, super::RenderMode::Live);
+        let joined: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+        assert!(
+            joined.contains("full output:"),
+            "expected annotation prefix: {joined:?}"
+        );
+        assert!(
+            joined.contains("/Users/dev/.deepseek/tool_outputs/call-abc12.txt"),
+            "expected the spillover path: {joined:?}"
+        );
+    }
+
+    #[test]
+    fn render_spillover_annotation_omitted_in_transcript_mode() {
+        use std::path::PathBuf;
+        // Transcript mode is for replay; the full output is already
+        // inline so the annotation would just be redundant.
+        let cell = GenericToolCell {
+            name: "exec_shell".to_string(),
+            status: ToolStatus::Success,
+            input_summary: None,
+            output: Some("output".to_string()),
+            prompts: None,
+            spillover_path: Some(PathBuf::from("/tmp/spill.txt")),
+        };
+        let lines = cell.lines_with_mode(120, true, super::RenderMode::Transcript);
+        let joined: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+        assert!(
+            !joined.contains("full output:"),
+            "annotation should be omitted in transcript mode: {joined:?}"
+        );
+    }
+
+    #[test]
+    fn render_spillover_annotation_omitted_when_no_path_set() {
+        // The common case: most tool results don't trigger spillover.
+        let cell = GenericToolCell {
+            name: "read_file".to_string(),
+            status: ToolStatus::Success,
+            input_summary: None,
+            output: Some("contents".to_string()),
+            prompts: None,
+            spillover_path: None,
+        };
+        let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
+        let joined: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+        assert!(!joined.contains("full output:"), "{joined:?}");
+    }
+
+    #[test]
+    fn render_spillover_annotation_truncates_to_width() {
+        use std::path::PathBuf;
+        let long_path = "/Users/dev/.deepseek/tool_outputs/this-is-a-very-long-tool-call-id-that-will-not-fit-in-narrow-widths.txt";
+        let cell = GenericToolCell {
+            name: "exec_shell".to_string(),
+            status: ToolStatus::Success,
+            input_summary: None,
+            output: Some("output".to_string()),
+            prompts: None,
+            spillover_path: Some(PathBuf::from(long_path)),
+        };
+        let lines = cell.lines_with_mode(40, true, super::RenderMode::Live);
+        let annotation_line = lines
+            .iter()
+            .find(|l| {
+                l.spans
+                    .iter()
+                    .any(|s| s.content.as_ref().contains("full output:"))
+            })
+            .expect("annotation line present");
+        let rendered: String = annotation_line
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        // Width budget is 40; annotation line should be at most ~40 chars.
+        // (Some slack for the prefix; the truncate_text ellipsis costs
+        // 3 cols.)
+        assert!(
+            rendered.chars().count() <= 60,
+            "annotation overflowed at width 40: {} chars: {rendered:?}",
+            rendered.chars().count()
+        );
+    }
+
     // ---- #409 compact agent_spawn rendering ----
     //
     // The DelegateCard owns live state for spawned sub-agents; the
@@ -3061,6 +3219,7 @@ mod tests {
                     .to_string(),
             ),
             prompts: None,
+            spillover_path: None,
         };
         let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
         // One header line, no details/args/output expansion.
@@ -3093,6 +3252,7 @@ mod tests {
             input_summary: Some("prompt: do thing".to_string()),
             output: None,
             prompts: None,
+            spillover_path: None,
         };
         let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
         assert_eq!(lines.len(), 1);
@@ -3112,6 +3272,7 @@ mod tests {
                 r#"{"agent_id": "agent-abc12", "model": "deepseek-v4-flash"}"#.to_string(),
             ),
             prompts: None,
+            spillover_path: None,
         };
         let lines = cell.lines_with_mode(80, true, super::RenderMode::Transcript);
         // Transcript mode emits header + name kv + (no args, output present)
@@ -3129,6 +3290,7 @@ mod tests {
             input_summary: Some("path: foo.rs".to_string()),
             output: Some("first line\nsecond line\nthird line".to_string()),
             prompts: None,
+            spillover_path: None,
         };
         let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
         assert!(
@@ -3550,6 +3712,7 @@ mod tests {
             input_summary: Some("foo".to_string()),
             output: None,
             prompts: None,
+            spillover_path: None,
         };
         let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
         let header_visible: String = lines[0]
@@ -3576,6 +3739,7 @@ mod tests {
             input_summary: Some("task: compare source trees".to_string()),
             output: None,
             prompts: None,
+            spillover_path: None,
         };
         let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
         let header_visible: String = lines[0]
@@ -4011,6 +4175,7 @@ mod tests {
                 "List the public types in client.rs".to_string(),
                 "Diff this commit against main".to_string(),
             ]),
+            spillover_path: None,
         }));
         let text = lines_text(&cell.lines(80));
 
@@ -4035,6 +4200,7 @@ mod tests {
             input_summary: Some("query: foo".to_string()),
             output: None,
             prompts: None,
+            spillover_path: None,
         }));
         let text = lines_text(&cell.lines(80));
         assert!(text.contains("query: foo"));
@@ -4057,6 +4223,7 @@ mod tests {
             input_summary: Some("command: git diff --stat".to_string()),
             output: Some(diff_stat.to_string()),
             prompts: None,
+            spillover_path: None,
         }));
 
         let transcript_text = lines_text(&cell.transcript_lines(80));
@@ -4106,6 +4273,7 @@ mod tests {
             input_summary: Some("command: ls".to_string()),
             output: Some(output),
             prompts: None,
+            spillover_path: None,
         }));
 
         let live = cell.lines_with_options(80, TranscriptRenderOptions::default());
@@ -4140,6 +4308,7 @@ mod tests {
             input_summary: Some("command: noisy".to_string()),
             output: Some(output),
             prompts: None,
+            spillover_path: None,
         }));
 
         let live_text =
@@ -4174,6 +4343,7 @@ mod tests {
             input_summary: Some("command: tool".to_string()),
             output: Some(output),
             prompts: None,
+            spillover_path: None,
         }));
 
         let live_text =

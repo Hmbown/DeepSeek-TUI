@@ -242,6 +242,7 @@ pub(super) fn handle_tool_call_started(
             input_summary,
             output: None,
             prompts: None,
+            spillover_path: None,
         })),
     );
 }
@@ -536,12 +537,20 @@ fn push_orphan_tool_completion(
     };
     let history_threshold_before_push = app.history.len();
     let active_in_flight = app.active_cell.is_some();
+    let spillover_path = result
+        .as_ref()
+        .ok()
+        .and_then(|r| r.metadata.as_ref())
+        .and_then(|m| m.get("spillover_path"))
+        .and_then(serde_json::Value::as_str)
+        .map(std::path::PathBuf::from);
     app.add_message(HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
         name: name.to_string(),
         status,
         input_summary: None,
         output,
         prompts: None,
+        spillover_path,
     })));
     let cell_index = app.history.len().saturating_sub(1);
     app.tool_details_by_cell.insert(

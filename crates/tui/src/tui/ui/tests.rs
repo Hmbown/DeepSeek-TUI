@@ -118,6 +118,7 @@ fn selection_to_text_copies_rendered_transcript_block() {
             input_summary: Some("cargo check".to_string()),
             output: Some("tool output line".to_string()),
             prompts: None,
+            spillover_path: None,
         })),
         HistoryCell::Assistant {
             content: "copy assistant".to_string(),
@@ -542,6 +543,7 @@ fn active_tool_status_label_summarizes_live_tool_group() {
             input_summary: Some("pattern: TODO".to_string()),
             output: Some("done".to_string()),
             prompts: None,
+            spillover_path: None,
         })),
     );
     app.active_cell = Some(active);
@@ -567,6 +569,7 @@ fn active_tool_status_label_counts_foreground_rlm_work() {
             input_summary: Some("task: compare projects".to_string()),
             output: None,
             prompts: None,
+            spillover_path: None,
         })),
     );
     app.active_cell = Some(active);
@@ -1513,6 +1516,7 @@ fn jump_to_adjacent_tool_cell_finds_next_and_previous() {
             input_summary: Some("query: foo".to_string()),
             output: Some("done".to_string()),
             prompts: None,
+            spillover_path: None,
         })),
         HistoryCell::Assistant {
             content: "ok".to_string(),
@@ -1524,6 +1528,7 @@ fn jump_to_adjacent_tool_cell_finds_next_and_previous() {
             input_summary: Some("ls".to_string()),
             output: Some("...".to_string()),
             prompts: None,
+            spillover_path: None,
         })),
     ];
     app.mark_history_updated();
@@ -1579,6 +1584,7 @@ fn detail_target_prefers_visible_tool_card() {
             input_summary: Some("query: foo".to_string()),
             output: Some("done".to_string()),
             prompts: None,
+            spillover_path: None,
         })),
         HistoryCell::Assistant {
             content: "ok".to_string(),
@@ -1590,6 +1596,7 @@ fn detail_target_prefers_visible_tool_card() {
             input_summary: Some("command: ls".to_string()),
             output: Some("...".to_string()),
             prompts: None,
+            spillover_path: None,
         })),
     ];
     app.tool_details_by_cell.insert(
@@ -2949,6 +2956,7 @@ fn checklist_write_renders_dedicated_card() {
                 .to_string(),
         ),
         prompts: None,
+        spillover_path: None,
     };
     let lines = cell.lines_with_mode(80, true, crate::tui::history::RenderMode::Live);
     let text: Vec<String> = lines
