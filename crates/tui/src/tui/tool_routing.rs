@@ -24,10 +24,10 @@ pub(super) fn handle_tool_call_started(
     // #455 (observer-only): fire `tool_call_before` hooks here, before
     // any UI bookkeeping. Hooks are read-only observers in this slice
     // — they can log, notify, or audit, but cannot mutate the args.
-    // Mutation support is tracked separately and stays a v0.8.9
-    // follow-up because it requires a synchronous gate contract that
-    // doesn't exist today.
-    {
+    // Fast-path skip when no hooks are configured so per-tool
+    // dispatch doesn't pay for context construction in the common
+    // case (most users have no hooks).
+    if app.hooks.has_hooks_for_event(HookEvent::ToolCallBefore) {
         let context = app
             .base_hook_context()
             .with_tool_name(name)
@@ -518,16 +518,20 @@ pub(super) fn handle_tool_call_complete(
     // result has settled. Hooks see tool_name + the result content
     // (or error message) + success flag. Read-only — they cannot
     // mutate the result that goes back to the model. Mutation
-    // remains a v0.8.9 follow-up.
-    let (result_text, success): (String, bool) = match result.as_ref() {
-        Ok(tool_result) => (tool_result.content.clone(), tool_result.success),
-        Err(err) => (err.to_string(), false),
-    };
-    let context = app
-        .base_hook_context()
-        .with_tool_name(name)
-        .with_tool_result(&result_text, success, None);
-    let _ = app.execute_hooks(HookEvent::ToolCallAfter, &context);
+    // remains a v0.8.9 follow-up. Fast-path skip avoids the
+    // result.content.clone() and HookContext allocation when no
+    // hooks are configured.
+    if app.hooks.has_hooks_for_event(HookEvent::ToolCallAfter) {
+        let (result_text, success): (String, bool) = match result.as_ref() {
+            Ok(tool_result) => (tool_result.content.clone(), tool_result.success),
+            Err(err) => (err.to_string(), false),
+        };
+        let context = app
+            .base_hook_context()
+            .with_tool_name(name)
+            .with_tool_result(&result_text, success, None);
+        let _ = app.execute_hooks(HookEvent::ToolCallAfter, &context);
+    }
 }
 
 /// Build a finalized standalone history cell for a tool completion whose
