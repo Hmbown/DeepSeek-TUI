@@ -249,8 +249,11 @@ impl ConfigToml {
     /// field-by-field so a project can set just `providers.deepseek.model`
     /// without needing to repeat `api_key` or `base_url`.
     pub fn merge_project_overrides(&mut self, project: ConfigToml) {
+        // Check provider override condition before moving fields.
+        let has_api_key = project.api_key.is_some();
+
         // Top-level scalar fields: apply when the project has a value.
-        if project.api_key.is_some() {
+        if has_api_key {
             self.api_key = project.api_key;
         }
         if project.base_url.is_some() {
@@ -278,7 +281,7 @@ impl ConfigToml {
             self.sandbox_mode = project.sandbox_mode;
         }
         // Provider is only overridden if explicitly set (non-default).
-        if project.provider != ProviderKind::Deepseek || project.api_key.is_some() {
+        if project.provider != ProviderKind::Deepseek || has_api_key {
             self.provider = project.provider;
         }
 
