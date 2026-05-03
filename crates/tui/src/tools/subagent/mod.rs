@@ -54,8 +54,8 @@ const SUBAGENT_STATE_SCHEMA_VERSION: u32 = 1;
 const SUBAGENT_STATE_FILE: &str = "subagents.v1.json";
 const SUBAGENT_RESTART_REASON: &str = "Interrupted by process restart";
 
-const VALID_SUBAGENT_TYPES: &str =
-    "general, explore, plan, review, custom, worker, explorer, awaiter, default";
+const VALID_SUBAGENT_TYPES: &str = "general, explore, plan, review, implementer, verifier, custom, \
+     worker, explorer, awaiter, default, implement, builder, verify, validator, tester";
 pub const WHALE_NICKNAMES: &[&str] = &[
     "Blue",
     "Humpback",
