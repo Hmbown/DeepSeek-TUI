@@ -1434,7 +1434,7 @@ impl ModalView for SubAgentsView {
             ];
 
             lines.push(Line::from(Span::styled(
-                "Sub-agent swarm",
+                "Sub-agents",
                 Style::default().fg(palette::DEEPSEEK_SKY).bold(),
             )));
 

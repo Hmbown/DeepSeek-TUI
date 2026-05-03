@@ -8,7 +8,7 @@ Current boundary note (v0.8.6):
 - The LSP subsystem (`crates/tui/src/lsp/`) is fully wired into the engine's post-tool-execution path
   (`core/engine/lsp_hooks.rs`), providing inline diagnostics after every edit_file/apply_patch/write_file.
 - The swarm agent system was removed in v0.8.5 in favour of sub-agents (agent_spawn) and RLM (rlm_query).
-  No swarm references remain in the active codebase.
+  No model-visible swarm tool remains in the active codebase.
 
 ## High-Level Overview
 

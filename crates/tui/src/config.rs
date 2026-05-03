@@ -13,7 +13,7 @@ use crate::audit::log_sensitive_event;
 use crate::features::{Features, FeaturesToml, is_known_feature_key};
 use crate::hooks::HooksConfig;
 
-pub const DEFAULT_MAX_SUBAGENTS: usize = 5;
+pub const DEFAULT_MAX_SUBAGENTS: usize = 10;
 pub const MAX_SUBAGENTS: usize = 20;
 pub const DEFAULT_TEXT_MODEL: &str = "deepseek-v4-pro";
 pub const DEFAULT_NVIDIA_NIM_MODEL: &str = "deepseek-ai/deepseek-v4-pro";
@@ -326,6 +326,9 @@ pub struct RetryConfig {
 pub struct TuiConfig {
     pub alternate_screen: Option<String>,
     pub mouse_capture: Option<bool>,
+    /// Timeout for startup terminal mode/probe calls in milliseconds.
+    /// Defaults to 500ms when omitted.
+    pub terminal_probe_timeout_ms: Option<u64>,
     /// Ordered list of footer items the user wants visible. `None` (the field
     /// missing from `config.toml`) means "use the built-in default order"; an
     /// empty `Some(vec![])` means "show nothing in the footer".
@@ -514,7 +517,7 @@ impl StatusItem {
             StatusItem::Cost => "running USD total for this session",
             StatusItem::Status => "what the agent is doing right now",
             StatusItem::Coherence => "shown only when the engine intervenes",
-            StatusItem::Agents => "swarm in progress",
+            StatusItem::Agents => "agents or RLM work in progress",
             StatusItem::ReasoningReplay => "thinking tokens replayed each turn",
             StatusItem::Cache => "% of prompt served from cache",
             StatusItem::ContextPercent => "tokens used / model context window",
@@ -644,6 +647,10 @@ pub struct SubagentsConfig {
     pub custom_model: Option<String>,
     #[serde(default)]
     pub models: Option<HashMap<String, String>>,
+    /// Maximum concurrent sub-agents. Overrides the top-level max_subagents
+    /// setting. Clamped to [1, MAX_SUBAGENTS].
+    #[serde(default)]
+    pub max_concurrent: Option<usize>,
 }
 
 /// Per-model context tuning.
@@ -1263,15 +1270,24 @@ impl Config {
     }
 
     /// Return the maximum number of concurrent sub-agents.
+    /// Checks [subagents] max_concurrent first, then top-level max_subagents,
+    /// then falls back to DEFAULT_MAX_SUBAGENTS.
     #[must_use]
     pub fn max_subagents(&self) -> usize {
+        // Check [subagents] max_concurrent first
+        if let Some(subagents_cfg) = self.subagents.as_ref()
+            && let Some(max) = subagents_cfg.max_concurrent
+        {
+            return max.clamp(1, MAX_SUBAGENTS);
+        }
+        // Fall back to top-level max_subagents
         self.max_subagents
             .unwrap_or(DEFAULT_MAX_SUBAGENTS)
             .clamp(1, MAX_SUBAGENTS)
     }
 
     /// Raw sub-agent model override map. Values are validated at spawn time
-    /// so an invalid role/type model fails before any partial swarm spawn.
+    /// so an invalid role/type model fails before any partial agent spawn.
     #[must_use]
     pub fn subagent_model_overrides(&self) -> HashMap<String, String> {
         let mut overrides = HashMap::new();
@@ -2505,6 +2521,47 @@ mod tests {
                 unsafe { env::remove_var(key) };
             }
         }
+    }
+
+    #[test]
+    fn max_subagents_defaults_to_ten() {
+        assert_eq!(Config::default().max_subagents(), DEFAULT_MAX_SUBAGENTS);
+        assert_eq!(DEFAULT_MAX_SUBAGENTS, 10);
+    }
+
+    #[test]
+    fn subagents_max_concurrent_overrides_top_level_cap() {
+        let config = Config {
+            max_subagents: Some(3),
+            subagents: Some(SubagentsConfig {
+                max_concurrent: Some(12),
+                ..SubagentsConfig::default()
+            }),
+            ..Config::default()
+        };
+
+        assert_eq!(config.max_subagents(), 12);
+    }
+
+    #[test]
+    fn max_subagents_clamps_subagents_max_concurrent() {
+        let low = Config {
+            subagents: Some(SubagentsConfig {
+                max_concurrent: Some(0),
+                ..SubagentsConfig::default()
+            }),
+            ..Config::default()
+        };
+        assert_eq!(low.max_subagents(), 1);
+
+        let high = Config {
+            subagents: Some(SubagentsConfig {
+                max_concurrent: Some(MAX_SUBAGENTS + 10),
+                ..SubagentsConfig::default()
+            }),
+            ..Config::default()
+        };
+        assert_eq!(high.max_subagents(), MAX_SUBAGENTS);
     }
 
     #[test]

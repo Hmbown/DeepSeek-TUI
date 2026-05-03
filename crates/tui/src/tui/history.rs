@@ -3099,6 +3099,32 @@ mod tests {
         );
     }
 
+    #[test]
+    fn generic_tool_cell_renders_rlm_with_rlm_label_not_swarm() {
+        let cell = GenericToolCell {
+            name: "rlm".to_string(),
+            status: ToolStatus::Running,
+            input_summary: Some("task: compare source trees".to_string()),
+            output: None,
+            prompts: None,
+        };
+        let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
+        let header_visible: String = lines[0]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>();
+
+        assert!(
+            header_visible.contains(" rlm "),
+            "RLM card should identify RLM work: {header_visible:?}"
+        );
+        assert!(
+            !header_visible.contains("swarm"),
+            "RLM card must not use removed swarm wording: {header_visible:?}"
+        );
+    }
+
     // === Reasoning treatment tests (v0.6.6 UI redesign) ===
 
     #[test]

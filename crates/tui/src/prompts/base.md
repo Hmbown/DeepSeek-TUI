@@ -66,7 +66,7 @@ Sub-agents are cheap — DeepSeek V4 Flash costs $0.14/M input. Use them liberal
 - **Parallel implementation**: After a plan is laid out, spawn one sub-agent per independent leaf task. Each does one thing well; you integrate results.
 - **Solo tasks**: A single read, a single search, a focused question — do these yourself. Spawning has overhead; one-turn reads are faster direct.
 - **Sequential work**: If step B depends on step A's output, run A yourself, then decide whether to spawn B based on what A found. Don't pre-spawn dependent work.
-- **Max 5 in flight**: The dispatcher caps concurrent sub-agents at 5. When you need more, batch them: spawn 5, wait for completions, spawn the next 5.
+- **Concurrent sub-agent cap**: The dispatcher defaults to 10 concurrent sub-agents (configurable via `[subagents].max_concurrent` in `config.toml`, hard ceiling 20). When you need more, batch them: spawn up to the cap, wait for completions, then spawn the next batch.
 
 ## Parallel-First Heuristic
 

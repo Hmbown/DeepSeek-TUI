@@ -103,10 +103,18 @@ release notes explicit that no new Rust binary version shipped.
 
 ## Rust Crates Release
 
+Crate publishing to crates.io is **manual** — there is no automated
+`crates-publish` GitHub workflow. Operators run the helpers in
+`scripts/release/` from a developer workstation that has `cargo login`
+configured.
+
 1. Update the workspace version in [Cargo.toml](../Cargo.toml).
-2. Tag the release as `vX.Y.Z`.
-3. Let `.github/workflows/crates-publish.yml` verify the workspace version and dry-run each crate.
-4. Publish crates in this order:
+2. Run `./scripts/release/check-versions.sh` and
+   `./scripts/release/publish-crates.sh dry-run` locally; both must be clean.
+3. Tag the release as `vX.Y.Z` (typically by pushing the version bump to
+   `main` and letting `auto-tag.yml` create the tag — see the npm wrapper
+   release section below for the `RELEASE_TAG_PAT` requirement).
+4. Publish crates in this order with `./scripts/release/publish-crates.sh publish`:
    - `deepseek-secrets`
    - `deepseek-config`
    - `deepseek-protocol`
@@ -166,11 +174,11 @@ npm publish --access public
 ### Why not automated?
 
 - `release.yml`'s old `publish-npm` job used `secrets.NPM_TOKEN`, but npm's 2FA-by-default policy means a publish token must be either an automation token with "Bypass 2FA for token authentication" enabled OR an account-level 2FA-disabled state. We don't have either configured.
-- The `publish-npm.yml` workflow remains as inert plumbing for a future move to npm Trusted Publishing (OIDC). It only fires on `workflow_dispatch` and only works once Trusted Publishing is configured for *that* workflow filename on the npm side.
+- The standalone `publish-npm.yml` and `crates-publish.yml` workflows have been removed; no inert automation plumbing remains. A future move to npm Trusted Publishing (OIDC) would re-introduce a dedicated workflow at that point.
 
 ### If you fix the token later
 
-To re-enable automated publish: provision an npm automation token with "Bypass 2FA for token authentication" enabled, store it as repo secret `NPM_TOKEN`, and revert this section's "manual" framing along with re-adding the `publish-npm` job in `release.yml`.
+To re-enable automated publish: provision an npm automation token with "Bypass 2FA for token authentication" enabled (or set up npm Trusted Publishing via OIDC), store the corresponding secret on the repo, and re-add a `publish-npm` job to `release.yml` (or a dedicated workflow) along with reverting this section's "manual" framing.
 
 ## Recovery and Rollback
 

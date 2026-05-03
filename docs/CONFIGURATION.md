@@ -217,15 +217,17 @@ If you are upgrading from older releases:
 - `sandbox_mode` (string, optional): `read-only`, `workspace-write`, `danger-full-access`, `external-sandbox`.
 - `managed_config_path` (string, optional): managed config file loaded after user/env config.
 - `requirements_path` (string, optional): requirements file used to enforce allowed approval/sandbox values.
-- `max_subagents` (int, optional): defaults to `5` and is clamped to `1..=20`.
+- `max_subagents` (int, optional): defaults to `10` and is clamped to `1..=20`.
 - `subagents.*` (optional): per-role/type model defaults for `agent_spawn` and
-  `agent_swarm`. Explicit tool `model` values win, then role/type overrides,
-  then the parent runtime model. Supported convenience keys are
+  related sub-agent tools. Explicit tool `model` values win, then role/type
+  overrides, then the parent runtime model. Supported convenience keys are
   `default_model`, `worker_model`, `explorer_model`, `awaiter_model`,
-  `review_model`, `custom_model`; `[subagents.models]` accepts lower-case role
-  or type keys such as `worker`, `explorer`, `general`, `explore`, `plan`, and
-  `review`. Values must normalize to a supported DeepSeek model id before any
-  swarm worker is spawned.
+  `review_model`, `custom_model`, and `max_concurrent`. The
+  `[subagents] max_concurrent` value overrides top-level `max_subagents` and is
+  also clamped to `1..=20`. `[subagents.models]` accepts lower-case role or type
+  keys such as `worker`, `explorer`, `general`, `explore`, `plan`, and
+  `review`. Values must normalize to a supported DeepSeek model id before an
+  agent is spawned.
 - `skills_dir` (string, optional): defaults to `~/.deepseek/skills` (each skill is a directory containing `SKILL.md`). Workspace-local `.agents/skills` or `./skills` are preferred when present.
 - `mcp_config_path` (string, optional): defaults to `~/.deepseek/mcp.json`.
   It is visible in `/config` and can be changed from the TUI. The new path is
@@ -272,6 +274,7 @@ If you are upgrading from older releases:
   - `[capacity].fallback_default_prior` (float, default `3.8`)
 - `tui.alternate_screen` (string, optional): `auto`, `always`, or `never`. `auto` disables the alternate screen in Zellij; `--no-alt-screen` forces inline mode. Set `never` or run with `--no-alt-screen` when you want real terminal scrollback.
 - `tui.mouse_capture` (bool, optional, default `true` when the alternate screen is active): enable internal mouse scrolling, transcript selection, and right-click context actions. TUI-owned drag selection copies only user/assistant transcript text. Set this to `false` or run with `--no-mouse-capture` for raw terminal selection.
+- `tui.terminal_probe_timeout_ms` (int, optional, default `500`): startup terminal-mode probe timeout in milliseconds. Values are clamped to `100..=5000`; timeout emits a warning and aborts startup instead of hanging indefinitely.
 - `hooks` (optional): lifecycle hooks configuration (see `config.example.toml`).
 - `features.*` (optional): feature flag overrides (see below).
 

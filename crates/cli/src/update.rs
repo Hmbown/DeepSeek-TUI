@@ -19,10 +19,8 @@ pub fn run_update() -> Result<()> {
     println!("Checking for updates...");
     println!("Current binary: {}", current_exe.display());
 
-    // Detect platform info
-    let os = std::env::consts::OS;
-    let arch = std::env::consts::ARCH;
-    let binary_name = format!("deepseek-{os}-{arch}");
+    let binary_name =
+        release_asset_stem_for(&current_exe, std::env::consts::OS, std::env::consts::ARCH);
 
     // Step 1: Fetch latest release metadata
     let release = fetch_latest_release()?;
@@ -30,22 +28,18 @@ pub fn run_update() -> Result<()> {
     println!("Latest release: {latest_tag}");
 
     // Step 2: Find the matching asset
-    let asset = release
-        .assets
-        .iter()
-        .find(|a| a.name.contains(&binary_name))
-        .with_context(|| {
-            format!(
-                "no asset found for platform {binary_name} in release {latest_tag}. \
+    let asset = select_platform_asset(&release, &binary_name).with_context(|| {
+        format!(
+            "no asset found for platform {binary_name} in release {latest_tag}. \
                  Available assets: {}",
-                release
-                    .assets
-                    .iter()
-                    .map(|a| a.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        })?;
+            release
+                .assets
+                .iter()
+                .map(|a| a.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    })?;
 
     println!("Downloading {}...", asset.name);
 
@@ -88,6 +82,48 @@ pub fn run_update() -> Result<()> {
     );
 
     Ok(())
+}
+
+pub(crate) fn release_arch_for_rust_arch(arch: &str) -> &str {
+    match arch {
+        "aarch64" => "arm64",
+        "x86_64" => "x64",
+        other => other,
+    }
+}
+
+pub(crate) fn binary_prefix_for_exe(current_exe: &Path) -> &'static str {
+    let exe_name = current_exe
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("deepseek");
+    if exe_name.contains("deepseek-tui") {
+        "deepseek-tui"
+    } else {
+        "deepseek"
+    }
+}
+
+pub(crate) fn release_asset_stem_for(current_exe: &Path, os: &str, rust_arch: &str) -> String {
+    let prefix = binary_prefix_for_exe(current_exe);
+    let arch = release_arch_for_rust_arch(rust_arch);
+    format!("{prefix}-{os}-{arch}")
+}
+
+pub(crate) fn asset_matches_platform(asset_name: &str, binary_name: &str) -> bool {
+    if asset_name.ends_with(".sha256") {
+        return false;
+    }
+    asset_name == binary_name
+        || asset_name == format!("{binary_name}.exe")
+        || asset_name.starts_with(&format!("{binary_name}."))
+}
+
+fn select_platform_asset<'a>(release: &'a Release, binary_name: &str) -> Option<&'a Asset> {
+    release
+        .assets
+        .iter()
+        .find(|asset| asset_matches_platform(&asset.name, binary_name))
 }
 
 /// GitHub release metadata.
@@ -245,6 +281,99 @@ fn backup_path_for(target: &Path) -> std::path::PathBuf {
 mod tests {
     use super::*;
 
+    /// Verify the arch mapping used when constructing asset names.
+    /// The mapping must use release-asset naming (arm64/x64), not Rust
+    /// stdlib constants (aarch64/x86_64).
+    #[test]
+    fn test_arch_mapping() {
+        assert_eq!(release_arch_for_rust_arch("aarch64"), "arm64");
+        assert_eq!(release_arch_for_rust_arch("x86_64"), "x64");
+        // Pass-through for unknown arches
+        assert_eq!(release_arch_for_rust_arch("riscv64"), "riscv64");
+        // The currently-compiled arch maps to a release asset name
+        let compiled_arch = std::env::consts::ARCH;
+        let asset_arch = release_arch_for_rust_arch(compiled_arch);
+        // Must not contain the raw Rust constant names
+        assert!(
+            !asset_arch.contains("aarch64") && !asset_arch.contains("x86_64"),
+            "asset arch '{asset_arch}' still uses raw Rust constant name"
+        );
+    }
+
+    /// Verify binary prefix detection for dispatcher vs TUI binary.
+    #[test]
+    fn test_binary_prefix_detection() {
+        // TUI binary should use deepseek-tui prefix
+        assert_eq!(
+            binary_prefix_for_exe(Path::new("deepseek-tui")),
+            "deepseek-tui"
+        );
+        assert_eq!(
+            binary_prefix_for_exe(Path::new("deepseek-tui.exe")),
+            "deepseek-tui"
+        );
+        assert_eq!(
+            binary_prefix_for_exe(Path::new("/usr/local/bin/deepseek-tui")),
+            "deepseek-tui"
+        );
+
+        // Dispatcher binary should use deepseek prefix
+        assert_eq!(binary_prefix_for_exe(Path::new("deepseek")), "deepseek");
+        assert_eq!(binary_prefix_for_exe(Path::new("deepseek.exe")), "deepseek");
+        assert_eq!(
+            binary_prefix_for_exe(Path::new("/usr/local/bin/deepseek")),
+            "deepseek"
+        );
+
+        // Fallback for unknown names
+        assert_eq!(binary_prefix_for_exe(Path::new("other-binary")), "deepseek");
+    }
+
+    #[test]
+    fn test_release_asset_stem_for_supported_platforms() {
+        let cases = [
+            ("deepseek", "macos", "aarch64", "deepseek-macos-arm64"),
+            ("deepseek", "macos", "x86_64", "deepseek-macos-x64"),
+            ("deepseek", "linux", "x86_64", "deepseek-linux-x64"),
+            ("deepseek", "windows", "x86_64", "deepseek-windows-x64"),
+            (
+                "deepseek-tui",
+                "macos",
+                "aarch64",
+                "deepseek-tui-macos-arm64",
+            ),
+            ("deepseek-tui", "linux", "x86_64", "deepseek-tui-linux-x64"),
+        ];
+
+        for (exe, os, arch, expected) in cases {
+            assert_eq!(release_asset_stem_for(Path::new(exe), os, arch), expected);
+        }
+    }
+
+    #[test]
+    fn test_asset_matching_accepts_binary_assets_and_rejects_checksums() {
+        assert!(asset_matches_platform(
+            "deepseek-macos-arm64",
+            "deepseek-macos-arm64"
+        ));
+        assert!(asset_matches_platform(
+            "deepseek-macos-arm64.tar.gz",
+            "deepseek-macos-arm64"
+        ));
+        assert!(asset_matches_platform(
+            "deepseek-tui-windows-x64.exe",
+            "deepseek-tui-windows-x64"
+        ));
+        assert!(!asset_matches_platform(
+            "deepseek-tui-windows-x64.exe.sha256",
+            "deepseek-tui-windows-x64"
+        ));
+        assert!(!asset_matches_platform(
+            "deepseek-macos-aarch64.tar.gz",
+            "deepseek-macos-arm64"
+        ));
+    }
+
     #[test]
     fn test_sha256_hex_known_value() {
         let data = b"hello";
@@ -284,5 +413,54 @@ mod tests {
         replace_binary(&target, b"fresh binary").unwrap();
         let content = std::fs::read_to_string(&target).unwrap();
         assert_eq!(content, "fresh binary");
+    }
+
+    /// Mocked GitHub release payload covering both the dispatcher (`deepseek`)
+    /// and the legacy TUI (`deepseek-tui`) binaries across our published
+    /// platform/arch matrix, plus a checksum sibling that must never be picked
+    /// as the primary binary.
+    fn mocked_release() -> Release {
+        let json = r#"{
+          "tag_name": "v0.8.8",
+          "assets": [
+            { "name": "deepseek-linux-x64",          "browser_download_url": "https://example.invalid/deepseek-linux-x64" },
+            { "name": "deepseek-macos-x64",          "browser_download_url": "https://example.invalid/deepseek-macos-x64" },
+            { "name": "deepseek-macos-arm64",        "browser_download_url": "https://example.invalid/deepseek-macos-arm64" },
+            { "name": "deepseek-windows-x64.exe",    "browser_download_url": "https://example.invalid/deepseek-windows-x64.exe" },
+            { "name": "deepseek-windows-x64.exe.sha256", "browser_download_url": "https://example.invalid/deepseek-windows-x64.exe.sha256" },
+            { "name": "deepseek-tui-linux-x64",      "browser_download_url": "https://example.invalid/deepseek-tui-linux-x64" },
+            { "name": "deepseek-tui-macos-x64",      "browser_download_url": "https://example.invalid/deepseek-tui-macos-x64" },
+            { "name": "deepseek-tui-macos-arm64",    "browser_download_url": "https://example.invalid/deepseek-tui-macos-arm64" },
+            { "name": "deepseek-tui-windows-x64.exe","browser_download_url": "https://example.invalid/deepseek-tui-windows-x64.exe" }
+          ]
+        }"#;
+        serde_json::from_str(json).expect("mock release JSON")
+    }
+
+    #[test]
+    fn mocked_release_selects_dispatcher_asset_for_supported_platforms() {
+        let release = mocked_release();
+        let cases = [
+            ("macos", "aarch64", "deepseek-macos-arm64"),
+            ("macos", "x86_64", "deepseek-macos-x64"),
+            ("linux", "x86_64", "deepseek-linux-x64"),
+            ("windows", "x86_64", "deepseek-windows-x64.exe"),
+        ];
+
+        for (os, arch, expected) in cases {
+            let stem = release_asset_stem_for(Path::new("/usr/local/bin/deepseek"), os, arch);
+            let asset = select_platform_asset(&release, &stem)
+                .unwrap_or_else(|| panic!("no asset for {os}/{arch} (stem {stem})"));
+            assert_eq!(asset.name, expected, "{os}/{arch}");
+        }
+    }
+
+    #[test]
+    fn mocked_release_selects_tui_asset_when_tui_binary_invokes_update() {
+        let release = mocked_release();
+        let stem =
+            release_asset_stem_for(Path::new("/usr/local/bin/deepseek-tui"), "macos", "aarch64");
+        let asset = select_platform_asset(&release, &stem).expect("TUI platform asset");
+        assert_eq!(asset.name, "deepseek-tui-macos-arm64");
     }
 }

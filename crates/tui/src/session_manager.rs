@@ -46,6 +46,10 @@ pub struct QueuedSessionMessage {
 pub struct OfflineQueueState {
     #[serde(default = "default_queue_schema_version")]
     pub schema_version: u32,
+    /// Session ID this queue belongs to. Queue is only restored when
+    /// resuming the same session to prevent stale messages leaking into new chats.
+    #[serde(default)]
+    pub session_id: Option<String>,
     #[serde(default)]
     pub messages: Vec<QueuedSessionMessage>,
     #[serde(default)]
@@ -56,6 +60,7 @@ impl Default for OfflineQueueState {
     fn default() -> Self {
         Self {
             schema_version: CURRENT_QUEUE_SCHEMA_VERSION,
+            session_id: None,
             messages: Vec::new(),
             draft: None,
         }
@@ -208,11 +213,17 @@ impl SessionManager {
     }
 
     /// Save offline queue state (queued + draft messages).
-    pub fn save_offline_queue_state(&self, state: &OfflineQueueState) -> std::io::Result<PathBuf> {
+    pub fn save_offline_queue_state(
+        &self,
+        state: &OfflineQueueState,
+        session_id: Option<&str>,
+    ) -> std::io::Result<PathBuf> {
         let checkpoints = self.sessions_dir.join("checkpoints");
         fs::create_dir_all(&checkpoints)?;
         let path = checkpoints.join("offline_queue.json");
-        let content = serde_json::to_string_pretty(state)
+        let mut state_with_id = state.clone();
+        state_with_id.session_id = session_id.map(|s| s.to_string());
+        let content = serde_json::to_string_pretty(&state_with_id)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         write_atomic(&path, content.as_bytes())?;
         Ok(path)
@@ -894,7 +905,7 @@ mod tests {
         };
 
         manager
-            .save_offline_queue_state(&state)
+            .save_offline_queue_state(&state, Some("test-session"))
             .expect("save queue state");
         let loaded = manager
             .load_offline_queue_state()

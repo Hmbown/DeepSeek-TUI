@@ -2387,6 +2387,111 @@ impl App {
         self.needs_redraw = true;
     }
 
+    /// Delete the word before the cursor.
+    pub fn delete_word_backward(&mut self) {
+        self.clear_input_history_navigation();
+        self.selected_attachment_index = None;
+        if self.cursor_position == 0 {
+            return;
+        }
+
+        let cursor_byte = byte_index_at_char(&self.input, self.cursor_position);
+        let mut word_start = cursor_byte;
+
+        while word_start > 0 {
+            let Some((prev, ch)) = self.input[..word_start].char_indices().next_back() else {
+                break;
+            };
+            if !ch.is_whitespace() {
+                break;
+            }
+            word_start = prev;
+        }
+
+        while word_start > 0 {
+            let Some((prev, ch)) = self.input[..word_start].char_indices().next_back() else {
+                break;
+            };
+            if ch.is_whitespace() {
+                break;
+            }
+            word_start = prev;
+        }
+
+        if word_start < cursor_byte {
+            self.input.replace_range(word_start..cursor_byte, "");
+            self.cursor_position = char_count(&self.input[..word_start]);
+            self.slash_menu_hidden = false;
+            self.mention_menu_hidden = false;
+            self.mention_menu_selected = 0;
+            self.needs_redraw = true;
+        }
+    }
+
+    /// Delete from the cursor to the start of the line.
+    pub fn delete_to_start_of_line(&mut self) {
+        self.clear_input_history_navigation();
+        self.selected_attachment_index = None;
+        if self.cursor_position == 0 {
+            return;
+        }
+
+        let cursor_byte = byte_index_at_char(&self.input, self.cursor_position);
+        // Find the start of the current line (last newline or start of string)
+        let line_start = self.input[..cursor_byte]
+            .rfind('\n')
+            .map(|idx| idx + 1)
+            .unwrap_or(0);
+
+        if line_start < cursor_byte {
+            self.input.replace_range(line_start..cursor_byte, "");
+            self.cursor_position = char_count(&self.input[..line_start]);
+            self.slash_menu_hidden = false;
+            self.mention_menu_hidden = false;
+            self.mention_menu_selected = 0;
+            self.needs_redraw = true;
+        }
+    }
+
+    /// Delete the word after the cursor.
+    pub fn delete_word_forward(&mut self) {
+        self.clear_input_history_navigation();
+        self.selected_attachment_index = None;
+        let cursor_byte = byte_index_at_char(&self.input, self.cursor_position);
+        if cursor_byte >= self.input.len() {
+            return;
+        }
+
+        let mut word_end = cursor_byte;
+        while word_end < self.input.len() {
+            let Some(ch) = self.input[word_end..].chars().next() else {
+                break;
+            };
+            if !ch.is_whitespace() {
+                break;
+            }
+            word_end += ch.len_utf8();
+        }
+
+        while word_end < self.input.len() {
+            let Some(ch) = self.input[word_end..].chars().next() else {
+                break;
+            };
+            if ch.is_whitespace() {
+                break;
+            }
+            word_end += ch.len_utf8();
+        }
+
+        if cursor_byte < word_end {
+            self.input.replace_range(cursor_byte..word_end, "");
+            self.slash_menu_hidden = false;
+            self.mention_menu_hidden = false;
+            self.mention_menu_selected = 0;
+            self.needs_redraw = true;
+        }
+    }
+
     /// Cut from the cursor to the end of the current logical line into the
     /// kill buffer. If the cursor is already at end-of-line and a trailing
     /// newline exists, that newline is consumed so repeated invocations
@@ -3919,6 +4024,54 @@ mod tests {
             }
             other => panic!("expected Assistant cell, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn delete_word_backward_removes_previous_word_only() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "hello world".to_string();
+        app.cursor_position = char_count(&app.input);
+
+        app.delete_word_backward();
+
+        assert_eq!(app.input, "hello ");
+        assert_eq!(app.cursor_position, char_count("hello "));
+    }
+
+    #[test]
+    fn delete_word_backward_handles_trailing_space_and_utf8() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "cafe 你好   ".to_string();
+        app.cursor_position = char_count(&app.input);
+
+        app.delete_word_backward();
+
+        assert_eq!(app.input, "cafe ");
+        assert_eq!(app.cursor_position, char_count("cafe "));
+    }
+
+    #[test]
+    fn delete_word_forward_handles_leading_space_and_utf8() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "hello 你好 world".to_string();
+        app.cursor_position = char_count("hello");
+
+        app.delete_word_forward();
+
+        assert_eq!(app.input, "hello world");
+        assert_eq!(app.cursor_position, char_count("hello"));
+    }
+
+    #[test]
+    fn delete_to_start_of_line_respects_multiline_cursor() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.input = "first\nsecond line".to_string();
+        app.cursor_position = char_count("first\nsecond");
+
+        app.delete_to_start_of_line();
+
+        assert_eq!(app.input, "first\n line");
+        assert_eq!(app.cursor_position, char_count("first\n"));
     }
 
     #[test]

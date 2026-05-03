@@ -75,7 +75,11 @@ sandbox_mode = "workspace-write" # read-only | workspace-write | danger-full-acc
 #   auto_allow = ["cargo check", "npm run"]
 #
 # auto_allow = []
-max_subagents = 5 # optional (1-20)
+max_subagents = 10 # optional (1-20)
+
+# Optional sub-agent tuning. max_concurrent overrides top-level max_subagents.
+# [subagents]
+# max_concurrent = 10
 
 # Optional managed policy paths (defaults to /etc/deepseek/*.toml on unix):
 # managed_config_path = "/etc/deepseek/managed_config.toml"
@@ -166,6 +170,7 @@ max_subagents = 5 # optional (1-20)
 [tui]
 alternate_screen = "auto"   # auto | always | never
 mouse_capture = true        # true copies only transcript user/assistant text; false uses raw terminal selection/copy
+terminal_probe_timeout_ms = 500 # optional startup terminal-mode timeout (100-5000ms)
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Feature Flags

@@ -452,6 +452,34 @@ fn v4_tool_outputs_keep_large_file_reads_in_context() {
 }
 
 #[test]
+fn subagent_results_are_summarized_before_parent_context_insertion() {
+    let long_result = "verified detail\n".repeat(1_000);
+    let output = ToolResult::success(
+        json!({
+            "agent_id": "agent_1234abcd",
+            "agent_type": "explore",
+            "assignment": {
+                "objective": "Inspect the RLM rendering path and report the smallest fix."
+            },
+            "model": "deepseek-v4-flash",
+            "status": "Completed",
+            "result": long_result,
+            "steps_taken": 12,
+            "duration_ms": 3456
+        })
+        .to_string(),
+    );
+
+    let context = compact_tool_result_for_context("deepseek-v4-pro", "agent_result", &output);
+
+    assert!(context.contains("[sub-agent result summarized for parent context]"));
+    assert!(context.contains("agent_1234abcd (explore) status=Completed"));
+    assert!(context.contains("Inspect the RLM rendering path"));
+    assert!(context.contains("steps=12"));
+    assert!(context.len() < output.content.len());
+}
+
+#[test]
 fn refresh_system_prompt_places_working_set_after_stable_prefix() {
     let tmp = tempdir().expect("tempdir");
     fs::create_dir_all(tmp.path().join("src")).expect("mkdir");

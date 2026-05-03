@@ -109,6 +109,18 @@ pub struct UiTheme {
     pub composer_bg: Color,
     pub selection_bg: Color,
     pub header_bg: Color,
+    /// Statusline mode colors (agent/yolo/plan)
+    pub mode_agent: Color,
+    pub mode_yolo: Color,
+    pub mode_plan: Color,
+    /// Statusline status colors
+    pub status_ready: Color,
+    pub status_working: Color,
+    pub status_warning: Color,
+    /// Statusline text colors
+    pub text_dim: Color,
+    pub text_hint: Color,
+    pub text_muted: Color,
 }
 
 pub const UI_THEME: UiTheme = UiTheme {
@@ -116,6 +128,15 @@ pub const UI_THEME: UiTheme = UiTheme {
     composer_bg: DEEPSEEK_SLATE,
     selection_bg: SELECTION_BG,
     header_bg: DEEPSEEK_INK,
+    mode_agent: MODE_AGENT,
+    mode_yolo: MODE_YOLO,
+    mode_plan: MODE_PLAN,
+    status_ready: TEXT_MUTED,
+    status_working: DEEPSEEK_SKY,
+    status_warning: STATUS_WARNING,
+    text_dim: TEXT_DIM,
+    text_hint: TEXT_HINT,
+    text_muted: TEXT_MUTED,
 };
 
 // === Color depth + brightness helpers (v0.6.6 UI redesign) ===
