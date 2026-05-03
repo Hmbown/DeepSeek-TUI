@@ -5162,6 +5162,11 @@ fn pause_terminal(
     use_mouse_capture: bool,
     use_bracketed_paste: bool,
 ) -> Result<()> {
+    // #443: pop keyboard enhancement flags before handing the terminal
+    // to a child process so it doesn't inherit a half-configured input
+    // mode. Best-effort — terminals that didn't accept the flags
+    // silently ignore the pop. Matches the shutdown and panic paths.
+    let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
     disable_raw_mode()?;
     if use_alt_screen {
         execute!(terminal.backend_mut(), LeaveAlternateScreen)?;

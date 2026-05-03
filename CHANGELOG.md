@@ -148,6 +148,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the user-level array wholesale (the typical "merge" pattern is
   for users who want both — they list `~/global.md` inside the
   project array). Documented in `config.example.toml`.
+- **Keyboard-enhancement flags pop on suspend paths too** (#443
+  follow-up) — `pause_terminal` (Ctrl+Z / shell-suspend) and
+  `external_editor::spawn_editor_for_input` (composer `$EDITOR`
+  launch) now pop the flags before handing the terminal to the
+  child process, matching the existing shutdown and panic-hook
+  paths. Defense-in-depth: if a future code path enables the
+  flags explicitly, the suspend handlers won't leak them to a
+  Vim / less / shell child that hasn't asked for them.
 - **RLM tool family** (#512) — `rlm` tool cards map to
   `ToolFamily::Rlm` and render `rlm`, not `swarm`. Stale "swarm"
   wording cleaned out of docs / comments / tests.

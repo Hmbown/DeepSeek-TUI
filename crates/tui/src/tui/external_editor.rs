@@ -15,7 +15,10 @@ use std::io::{self, Stdout, Write};
 use std::process::Command;
 
 use crossterm::{
-    event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture},
+    event::{
+        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        PopKeyboardEnhancementFlags,
+    },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -125,6 +128,10 @@ pub fn spawn_editor_for_input(
     current: &str,
 ) -> io::Result<EditorOutcome> {
     // 1. Suspend.
+    // #443: pop keyboard enhancement flags first so the editor
+    // process doesn't inherit a half-configured input mode. Best-
+    // effort — matches the shutdown / panic paths in main.rs.
+    let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
     let _ = disable_raw_mode();
     if use_bracketed_paste {
         let _ = execute!(terminal.backend_mut(), DisableBracketedPaste);
