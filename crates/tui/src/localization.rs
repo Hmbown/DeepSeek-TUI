@@ -253,6 +253,7 @@ pub enum MessageId {
     CmdSettingsDescription,
     CmdSkillDescription,
     CmdSkillsDescription,
+    CmdStashDescription,
     CmdStatuslineDescription,
     CmdSubagentsDescription,
     CmdSwarmDescription,
@@ -437,6 +438,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CmdSettingsDescription,
     MessageId::CmdSkillDescription,
     MessageId::CmdSkillsDescription,
+    MessageId::CmdStashDescription,
     MessageId::CmdStatuslineDescription,
     MessageId::CmdSubagentsDescription,
     MessageId::CmdSwarmDescription,
@@ -764,6 +766,9 @@ fn english(id: MessageId) -> &'static str {
         MessageId::CmdSkillsDescription => {
             "List local skills (or --remote to browse the curated registry)"
         }
+        MessageId::CmdStashDescription => {
+            "Park or restore a composer draft (Ctrl+S to push, /stash list/pop)"
+        }
         MessageId::CmdStatuslineDescription => "Configure which items appear in the footer",
         MessageId::CmdSubagentsDescription => "List sub-agent status",
         MessageId::CmdSwarmDescription => {
@@ -1037,6 +1042,9 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::CmdSkillsDescription => {
             "ローカルスキルを一覧表示（--remote で精選レジストリを参照）"
         }
+        MessageId::CmdStashDescription => {
+            "コンポーザーの下書きを退避／復元（Ctrl+S で退避、/stash list|pop）"
+        }
         MessageId::CmdStatuslineDescription => "フッターに表示する項目を設定",
         MessageId::CmdSubagentsDescription => "サブエージェントの状態を一覧表示",
         MessageId::CmdSwarmDescription => {
@@ -1286,6 +1294,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::CmdSettingsDescription => "显示持久化设置",
         MessageId::CmdSkillDescription => "激活技能，或安装/更新/卸载/信任社区技能",
         MessageId::CmdSkillsDescription => "列出本地技能（或使用 --remote 浏览精选注册表）",
+        MessageId::CmdStashDescription => "暂存或恢复输入草稿（Ctrl+S 暂存，/stash list|pop）",
         MessageId::CmdStatuslineDescription => "配置底栏要显示哪些条目",
         MessageId::CmdSubagentsDescription => "列出子代理状态",
         MessageId::CmdSwarmDescription => {
@@ -1544,6 +1553,9 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         }
         MessageId::CmdSkillsDescription => {
             "Listar skills locais (ou --remote para navegar pelo registro curado)"
+        }
+        MessageId::CmdStashDescription => {
+            "Estacionar ou restaurar rascunho do compositor (Ctrl+S estaciona, /stash list|pop)"
         }
         MessageId::CmdStatuslineDescription => "Configurar quais itens aparecem no rodapé",
         MessageId::CmdSubagentsDescription => "Listar o status dos sub-agentes",

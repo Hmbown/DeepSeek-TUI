@@ -173,6 +173,12 @@ pub const COMMANDS: &[CommandInfo] = &[
         description_id: MessageId::CmdQueueDescription,
     },
     CommandInfo {
+        name: "stash",
+        aliases: &["park"],
+        usage: "/stash [list|pop]",
+        description_id: MessageId::CmdStashDescription,
+    },
+    CommandInfo {
         name: "subagents",
         aliases: &["agents"],
         usage: "/subagents",
