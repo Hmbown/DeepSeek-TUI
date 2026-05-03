@@ -1,6 +1,6 @@
 # DeepSeek TUI
 
-> **A terminal-native coding agent for [DeepSeek V4](https://platform.deepseek.com) models — with 1M-token context, thinking-mode reasoning, and full tool-use.**
+> **A terminal-native coding agent built around DeepSeek V4's 1M-token context and prefix cache. Single binary, no Node/Python runtime required — ships an MCP client, sandbox, and durable task queue out of the box.**
 
 [简体中文 README](README.zh-CN.md)
 
@@ -36,6 +36,27 @@ DeepSeek TUI is a coding agent that runs entirely in your terminal. It gives Dee
 - **MCP protocol** — connect to Model Context Protocol servers for extended tooling; see [docs/MCP.md](docs/MCP.md)
 - **Live cost tracking** — per-turn and session-level token usage and cost estimates
 - **Dark theme** — DeepSeek-blue palette
+
+---
+
+## How it's wired
+
+DeepSeek TUI's architecture follows a **dispatcher → TUI → engine → tools** pattern.
+The `deepseek` CLI binary is a lightweight dispatcher that parses subcommands and
+delegates to the `deepseek-tui` companion binary for interactive sessions. The TUI
+runs a **ratatui**-based interface that communicates with an async engine executing
+an agent loop: user input flows to the LLM via a streaming client (OpenAI-compatible
+Chat Completions), tool calls are extracted from the response and dispatched through
+a typed tool registry (shell, file ops, git, web, sub-agents, MCP), and results
+stream back into the transcript.
+
+Behind the scenes, the engine manages session state, turn tracking, and a durable
+task queue. The LSP subsystem (`crates/tui/src/lsp/`) provides post-edit diagnostics
+by spawning language servers (rust-analyzer, pyright, etc.) and injecting errors
+into the model's context before the next reasoning step. A recursive language model
+(RLM) subsystem gives the agent a sandboxed Python REPL for batch classification
+and sub-LLM orchestration. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for
+the full walkthrough.
 
 ---
 
@@ -116,6 +137,45 @@ cargo install --path crates/tui --locked   # requires Rust 1.85+
 ```
 
 </details>
+
+---
+
+## What's new in v0.8.6
+
+### 📝 AGENTS.md bootstrap (`/init`)
+
+`/init` walks the workspace, auto-detects the project type (Cargo.toml,
+package.json, pyproject.toml, etc.), and writes a starter `AGENTS.md` with
+build/test commands, workspace layout, and conventions derived from `git log`.
+Re-running shows a diff of the proposed update without overwriting changes.
+
+### 🔍 Inline LSP diagnostics
+
+After every `apply_patch`/`edit_file`/`write_file`, the engine sends a
+`textDocument/didChange` to the LSP server and surfaces errors/warnings
+inline in the tool result. Configurable via `/lsp on|off` and the
+`[lsp]` config section. Currently supports rust-analyzer, pyright,
+typescript-language-server, gopls, and clangd.
+
+### 🔄 Self-update (`deepseek update`)
+
+`deepseek update` fetches the latest GitHub release, downloads the
+platform-correct binary with SHA256 verification, and atomically replaces
+the running binary. No more remembering `cargo install` or `npm install -g`.
+
+### 🌐 Session sharing (`/share`)
+
+`/share` exports the current session as a static HTML page and uploads it
+to a GitHub Gist via the `gh` CLI, producing a clickable URL you can paste
+anywhere.
+
+### 📖 Docs refresh
+
+README hero updated with intent statement and architecture summary.
+ARCHITECTURE.md cleaned up for v0.8.6 (swarm references removed, current
+crate map). CONTRIBUTING.md now has a "shape of a PR" section.
+
+Full changelog: [CHANGELOG.md](CHANGELOG.md).
 
 ---
 

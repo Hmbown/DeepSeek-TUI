@@ -140,6 +140,10 @@ struct Cli {
     /// Skip onboarding screens
     #[arg(long)]
     skip_onboarding: bool,
+
+    /// Start a fresh session, ignoring any crash-recovery checkpoint
+    #[arg(long = "fresh")]
+    fresh: bool,
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -694,8 +698,13 @@ async fn main() -> Result<()> {
             Ok(manager) => manager.get_latest_session().ok().flatten().map(|m| m.id),
             Err(_) => None,
         }
+    } else if let Some(id) = cli.resume.clone() {
+        Some(id)
+    } else if !cli.fresh {
+        // Check for crash-recovery checkpoint (unless --fresh was passed).
+        try_recover_checkpoint()
     } else {
-        cli.resume.clone()
+        None
     };
 
     // Default: Interactive TUI
@@ -2846,6 +2855,56 @@ fn should_use_mouse_capture(cli: &Cli, config: &Config, use_alt_screen: bool) ->
 
 fn is_zellij() -> bool {
     std::env::var_os("ZELLIJ").is_some()
+}
+
+/// Check for a crash-recovery checkpoint and return the session ID if
+/// recovery is possible.
+///
+/// The checkpoint must exist and its file mtime must be within 24 hours.
+/// On success the checkpoint is persisted as a regular session, cleared,
+/// and a notice is printed to stderr. Returns `None` if there is nothing
+/// to recover.
+fn try_recover_checkpoint() -> Option<String> {
+    let manager = session_manager::SessionManager::default_location().ok()?;
+    let session = manager.load_checkpoint().ok().flatten()?;
+
+    // Verify the checkpoint file is recent (within 24 hours).
+    let home = dirs::home_dir()?;
+    let checkpoint_path = home
+        .join(".deepseek")
+        .join("sessions")
+        .join("checkpoints")
+        .join("latest.json");
+    let metadata = std::fs::metadata(&checkpoint_path).ok()?;
+    let mtime = metadata.modified().ok()?;
+    let age = std::time::SystemTime::now().duration_since(mtime).ok()?;
+    if age > std::time::Duration::from_secs(24 * 3600) {
+        // Stale checkpoint — clean it up.
+        let _ = manager.clear_checkpoint();
+        return None;
+    }
+
+    let session_id = session.metadata.id.clone();
+
+    // Persist the checkpoint as a regular session so the TUI can load it by id.
+    if manager.save_session(&session).is_err() {
+        return None;
+    }
+
+    // Clear the checkpoint now that it has been recovered.
+    let _ = manager.clear_checkpoint();
+
+    // Format age for the notice.
+    let age_str = if age.as_secs() < 60 {
+        format!("{}s ago", age.as_secs())
+    } else if age.as_secs() < 3600 {
+        format!("{}m ago", age.as_secs() / 60)
+    } else {
+        format!("{}h ago", age.as_secs() / 3600)
+    };
+    eprintln!("Recovered interrupted session ({age_str}). Use --fresh to start fresh.",);
+
+    Some(session_id)
 }
 
 async fn run_interactive(

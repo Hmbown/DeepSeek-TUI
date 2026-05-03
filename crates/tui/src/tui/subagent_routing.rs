@@ -93,7 +93,7 @@ pub(super) fn sort_subagents_in_place(agents: &mut [SubAgentResult]) {
 pub(super) fn handle_subagent_mailbox(app: &mut App, seq: u64, message: &MailboxMessage) {
     // Accumulate sub-agent token costs for the real-time footer counter (#166).
     if let MailboxMessage::TokenUsage { model, usage, .. } = message {
-        if app.subagent_cost_event_seqs.insert(seq)
+        if app.session.subagent_cost_event_seqs.insert(seq)
             && let Some(cost) = crate::pricing::calculate_turn_cost_from_usage(model, usage)
         {
             app.accrue_subagent_cost(cost);
@@ -224,6 +224,7 @@ pub(super) fn format_task_list(tasks: &[TaskSummary]) -> String {
 
 pub(super) fn open_task_pager(app: &mut App, task: &TaskRecord) {
     let width = app
+        .viewport
         .last_transcript_area
         .map(|area| area.width)
         .unwrap_or(100)

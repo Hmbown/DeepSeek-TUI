@@ -28,16 +28,16 @@ impl Default for CapacityControllerConfig {
         model_priors.insert("deepseek_v4_flash".to_string(), 4.2);
 
         Self {
-            // OFF BY DEFAULT. The capacity controller's main intervention,
-            // `TargetedContextRefresh`, runs `compact_messages_safe` which
-            // rewrites the live conversation — visually identical to the
-            // agent "restarting" mid-turn. Power users running V4 on a 1M
-            // context window simply don't need this guardrail; the failure
-            // mode it protects against (context overflow) is rare in
-            // practice and self-correcting (the model surfaces a clear
-            // error). Users who do want the controller back can enable it
-            // via `capacity.enabled = true` in `~/.deepseek/config.toml`.
-            enabled: false,
+            // ON BY DEFAULT since v0.8.6 (#402 P0 survivability). The
+            // capacity controller detects context pressure and triggers
+            // TargetedContextRefresh (compaction) before the model hits its
+            // window limit. Long-running sessions accumulate unbounded
+            // message history that silently crosses the token budget — by
+            // the time the error surfaces the conversation is already
+            // degraded. Running the controller by default catches this
+            // early. Users who prefer the previous behaviour can opt out
+            // via `capacity.enabled = false` in `~/.deepseek/config.toml`.
+            enabled: true,
             // Thresholds retained for the opt-in path; tuning notes live
             // in git history (#63 follow-up).
             low_risk_max: 0.50,
@@ -619,9 +619,9 @@ mod tests {
     }
 
     #[test]
-    fn default_controller_is_disabled_and_does_not_observe() {
+    fn default_controller_is_enabled_and_observes() {
         let cfg = CapacityControllerConfig::default();
-        assert!(!cfg.enabled);
+        assert!(cfg.enabled);
 
         let mut controller = CapacityController::new(cfg);
         let snapshot = controller.observe_pre_turn(CapacityObservationInput {
@@ -633,16 +633,19 @@ mod tests {
             context_used_ratio: 0.95,
         });
 
-        assert!(snapshot.is_none());
-        let decision = controller.decide(1, snapshot.as_ref());
-        assert_eq!(decision.action, GuardrailAction::NoIntervention);
-        assert_eq!(decision.reason, "capacity_controller_disabled");
+        // With enabled=true, observe_pre_turn returns a snapshot.
+        assert!(snapshot.is_some());
+        let snap = snapshot.unwrap();
+        assert_eq!(snap.turn_index, 1);
+        assert!(snap.p_fail > 0.0);
     }
 
     #[test]
-    fn app_config_without_capacity_keeps_controller_disabled() {
+    fn app_config_without_capacity_uses_default_enabled() {
         let cfg = CapacityControllerConfig::from_app_config(&crate::config::Config::default());
-        assert!(!cfg.enabled);
+        // Default is now enabled (#402 P0); no capacity section in config
+        // means the controller starts active with reasonable defaults.
+        assert!(cfg.enabled);
         assert_eq!(cfg.low_risk_max, 0.50);
         assert_eq!(cfg.refresh_cooldown_turns, 6);
         assert_eq!(cfg.min_turns_before_guardrail, 4);

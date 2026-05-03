@@ -17,6 +17,11 @@ use uuid::Uuid;
 
 /// Maximum number of sessions to retain
 const MAX_SESSIONS: usize = 50;
+/// Maximum number of messages to persist per session (#402 P0).
+/// Beyond this limit, the oldest messages are dropped and a truncation
+/// note is prepended to the system prompt. Keeps session files bounded
+/// so save/load remains fast even for long-running conversations.
+const MAX_PERSISTED_MESSAGES: usize = 500;
 const CURRENT_SESSION_SCHEMA_VERSION: u32 = 1;
 const CURRENT_QUEUE_SCHEMA_VERSION: u32 = 1;
 
@@ -173,7 +178,6 @@ impl SessionManager {
     }
 
     /// Load the most recent crash-recovery checkpoint if present.
-    #[allow(dead_code)] // Used in tests; will be called from session resume flow
     pub fn load_checkpoint(&self) -> std::io::Result<Option<SavedSession>> {
         let path = self.sessions_dir.join("checkpoints").join("latest.json");
         if !path.exists() {
@@ -464,6 +468,8 @@ pub fn create_saved_session_with_mode(
         })
         .unwrap_or_else(|| "New Session".to_string());
 
+    let (capped_messages, truncation_note) = cap_messages(messages);
+
     SavedSession {
         schema_version: CURRENT_SESSION_SCHEMA_VERSION,
         metadata: SessionMetadata {
@@ -477,8 +483,11 @@ pub fn create_saved_session_with_mode(
             workspace: workspace.to_path_buf(),
             mode: mode.map(str::to_string),
         },
-        messages: messages.to_vec(),
-        system_prompt: system_prompt_to_string(system_prompt),
+        messages: capped_messages,
+        system_prompt: merge_truncation_note(
+            system_prompt_to_string(system_prompt),
+            truncation_note,
+        ),
         context_references: Vec::new(),
     }
 }
@@ -491,12 +500,45 @@ pub fn update_session(
     system_prompt: Option<&SystemPrompt>,
 ) -> SavedSession {
     session.schema_version = CURRENT_SESSION_SCHEMA_VERSION;
-    session.messages = messages.to_vec();
+    let (capped_messages, truncation_note) = cap_messages(messages);
+    session.messages = capped_messages;
     session.metadata.updated_at = Utc::now();
     session.metadata.message_count = messages.len();
     session.metadata.total_tokens = total_tokens;
-    session.system_prompt = system_prompt_to_string(system_prompt).or(session.system_prompt);
+    session.system_prompt = merge_truncation_note(
+        system_prompt_to_string(system_prompt).or(session.system_prompt),
+        truncation_note,
+    );
     session
+}
+
+/// Cap messages to [`MAX_PERSISTED_MESSAGES`], keeping the most recent.
+/// Returns the capped slice and an optional truncation note.
+fn cap_messages(messages: &[Message]) -> (Vec<Message>, Option<String>) {
+    let total = messages.len();
+    if total <= MAX_PERSISTED_MESSAGES {
+        return (messages.to_vec(), None);
+    }
+    let dropped = total - MAX_PERSISTED_MESSAGES;
+    let note = format!(
+        "Note: {dropped} older messages were dropped from the session file \
+         to keep persistence bounded. The full conversation history may \
+         still be recoverable from cycle archives."
+    );
+    (
+        messages[total - MAX_PERSISTED_MESSAGES..].to_vec(),
+        Some(note),
+    )
+}
+
+/// Merge an optional truncation note into the system prompt string.
+fn merge_truncation_note(system_prompt: Option<String>, note: Option<String>) -> Option<String> {
+    match (system_prompt, note) {
+        (None, None) => None,
+        (Some(sp), None) => Some(sp),
+        (None, Some(note)) => Some(format!("[Session note]\n{note}")),
+        (Some(sp), Some(note)) => Some(format!("[Session note]\n{note}\n\n---\n\n{sp}")),
+    }
 }
 
 /// String-scan a JSON byte buffer for the top-level `"metadata":{...}`

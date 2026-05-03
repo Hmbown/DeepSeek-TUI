@@ -30,7 +30,12 @@ pub struct CompactionConfig {
 impl Default for CompactionConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            // ON BY DEFAULT since v0.8.6 (#402 P0 survivability).
+            // Long-running sessions need automatic compaction to stay
+            // within the model's context budget. Users who prefer the
+            // previous behaviour can opt out via `auto_compact = false`
+            // in settings or `compaction.enabled = false` in config.
+            enabled: true,
             token_threshold: 50000,
             message_threshold: 50,
             model: DEFAULT_TEXT_MODEL.to_string(),

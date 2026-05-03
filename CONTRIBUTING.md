@@ -117,6 +117,32 @@ these crates and [DEPENDENCY_GRAPH.md](DEPENDENCY_GRAPH.md) for build ordering.
 - Add tests for new functionality
 - Ensure CI passes before requesting review
 
+## Shape of a Typical PR
+
+A well-structured PR follows a consistent pattern. Recent exemplars include:
+
+- **#386** — `/init` command: new `crates/tui/src/commands/init.rs` module, project-type detection,
+  AGENTS.md generation, command registration in `commands/mod.rs`, localization strings.
+- **#389** — Inline LSP diagnostics: LSP subsystem in `crates/tui/src/lsp/`, engine hooks in
+  `core/engine/lsp_hooks.rs`, config toggle, test coverage.
+- **#387** — Self-update: new `crates/cli/src/update.rs` module, CLI subcommand registration,
+  HTTP download + SHA256 verification + atomic binary replacement.
+- **#393** — `/share` session URL: new `crates/tui/src/commands/share.rs`, HTML rendering,
+  `gh gist create` integration, command registration.
+- **#343/#346** — (v0.8.5) Runtime thread/turn timeline and durable task manager refactors.
+
+Typically each PR touches 1–3 new files, modifies 2–5 existing files for wiring
+(registries, dispatch matches, localization), and adds or updates tests. Changes
+are scoped to a single feature or fix — if you discover related work that needs
+doing, open a separate issue rather than expanding the PR scope.
+
+Before submitting, run:
+```bash
+cargo fmt --check
+cargo clippy --workspace --all-targets --all-features 2>&1 | head -50
+cargo check
+```
+
 ## Reporting Issues
 
 When reporting issues, please include:

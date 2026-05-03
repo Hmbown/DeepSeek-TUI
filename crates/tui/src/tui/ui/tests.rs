@@ -78,18 +78,18 @@ fn selection_to_text_handles_multiline_and_reversed_endpoints() {
         streaming: false,
     }];
     app.resync_history_revisions();
-    app.transcript_cache.ensure(
+    app.viewport.transcript_cache.ensure(
         &app.history,
         &app.history_revisions,
         80,
         app.transcript_render_options(),
     );
 
-    app.transcript_selection.anchor = Some(TranscriptSelectionPoint {
+    app.viewport.transcript_selection.anchor = Some(TranscriptSelectionPoint {
         line_index: 1,
         column: 5,
     });
-    app.transcript_selection.head = Some(TranscriptSelectionPoint {
+    app.viewport.transcript_selection.head = Some(TranscriptSelectionPoint {
         line_index: 0,
         column: 6,
     });
@@ -104,8 +104,8 @@ fn selection_has_content_rejects_zero_width_selection() {
         line_index: 0,
         column: 3,
     };
-    app.transcript_selection.anchor = Some(point);
-    app.transcript_selection.head = Some(point);
+    app.viewport.transcript_selection.anchor = Some(point);
+    app.viewport.transcript_selection.head = Some(point);
 
     assert!(!selection_has_content(&app));
 }
@@ -118,21 +118,21 @@ fn mouse_selection_autocopies_on_release_without_ctrl_c() {
         streaming: false,
     }];
     app.resync_history_revisions();
-    app.transcript_cache.ensure(
+    app.viewport.transcript_cache.ensure(
         &app.history,
         &app.history_revisions,
         80,
         app.transcript_render_options(),
     );
-    app.last_transcript_area = Some(Rect {
+    app.viewport.last_transcript_area = Some(Rect {
         x: 0,
         y: 0,
         width: 80,
         height: 8,
     });
-    app.last_transcript_top = 0;
-    app.last_transcript_total = app.transcript_cache.total_lines();
-    app.last_transcript_padding_top = 0;
+    app.viewport.last_transcript_top = 0;
+    app.viewport.last_transcript_total = app.viewport.transcript_cache.total_lines();
+    app.viewport.last_transcript_padding_top = 0;
 
     handle_mouse_event(
         &mut app,
@@ -197,25 +197,25 @@ fn right_click_menu_includes_selection_and_clicked_cell_actions() {
         streaming: false,
     }];
     app.resync_history_revisions();
-    app.transcript_cache.ensure(
+    app.viewport.transcript_cache.ensure(
         &app.history,
         &app.history_revisions,
         80,
         app.transcript_render_options(),
     );
-    app.last_transcript_area = Some(Rect {
+    app.viewport.last_transcript_area = Some(Rect {
         x: 0,
         y: 0,
         width: 80,
         height: 8,
     });
-    app.last_transcript_top = 0;
-    app.last_transcript_total = app.transcript_cache.total_lines();
-    app.transcript_selection.anchor = Some(TranscriptSelectionPoint {
+    app.viewport.last_transcript_top = 0;
+    app.viewport.last_transcript_total = app.viewport.transcript_cache.total_lines();
+    app.viewport.transcript_selection.anchor = Some(TranscriptSelectionPoint {
         line_index: 0,
         column: 0,
     });
-    app.transcript_selection.head = Some(TranscriptSelectionPoint {
+    app.viewport.transcript_selection.head = Some(TranscriptSelectionPoint {
         line_index: 0,
         column: 5,
     });
@@ -256,7 +256,7 @@ fn mouse_events_do_not_mutate_transcript_behind_modal() {
     );
 
     assert!(events.is_empty());
-    assert_eq!(app.pending_scroll_delta, 0);
+    assert_eq!(app.viewport.pending_scroll_delta, 0);
     assert_eq!(app.view_stack.top_kind(), Some(ModalKind::Help));
 }
 
@@ -731,7 +731,7 @@ fn subagent_token_usage_updates_live_cost_counter_without_card_change() {
         },
     );
 
-    assert!(app.subagent_cost > 0.0);
+    assert!(app.session.subagent_cost > 0.0);
     assert!(
         app.history.is_empty(),
         "usage-only mailbox messages should not allocate a sub-agent card"
@@ -752,11 +752,11 @@ fn subagent_token_usage_is_deduped_by_mailbox_sequence() {
     };
 
     handle_subagent_mailbox(&mut app, 7, &usage);
-    let first = app.subagent_cost;
+    let first = app.session.subagent_cost;
     handle_subagent_mailbox(&mut app, 7, &usage);
-    assert_eq!(app.subagent_cost, first);
+    assert_eq!(app.session.subagent_cost, first);
     handle_subagent_mailbox(&mut app, 8, &usage);
-    assert!(app.subagent_cost > first);
+    assert!(app.session.subagent_cost > first);
 }
 
 #[test]
@@ -871,10 +871,10 @@ fn footer_coherence_chip_hides_healthy_and_uses_clear_labels() {
 fn footer_auxiliary_spans_show_cache_when_compact() {
     let mut app = create_test_app();
     app.is_loading = true;
-    app.last_prompt_tokens = Some(48_000);
-    app.last_prompt_cache_hit_tokens = Some(36_000);
-    app.last_prompt_cache_miss_tokens = Some(12_000);
-    app.session_cost = 12.34;
+    app.session.last_prompt_tokens = Some(48_000);
+    app.session.last_prompt_cache_hit_tokens = Some(36_000);
+    app.session.last_prompt_cache_miss_tokens = Some(12_000);
+    app.session.session_cost = 12.34;
 
     let compact = spans_text(&footer_auxiliary_spans(&app, 14));
     assert!(compact.contains("cache"));
@@ -884,10 +884,10 @@ fn footer_auxiliary_spans_show_cache_when_compact() {
 #[test]
 fn footer_auxiliary_spans_show_cache_and_cost_when_roomy() {
     let mut app = create_test_app();
-    app.last_prompt_tokens = Some(48_000);
-    app.last_prompt_cache_hit_tokens = Some(36_000);
-    app.last_prompt_cache_miss_tokens = Some(12_000);
-    app.session_cost = 12.34;
+    app.session.last_prompt_tokens = Some(48_000);
+    app.session.last_prompt_cache_hit_tokens = Some(36_000);
+    app.session.last_prompt_cache_miss_tokens = Some(12_000);
+    app.session.session_cost = 12.34;
 
     let roomy = spans_text(&footer_auxiliary_spans(&app, 32));
     assert!(roomy.contains("cache hit 75%"));
@@ -904,8 +904,8 @@ fn footer_auxiliary_spans_show_reasoning_replay_chip() {
     // reasoning_content, the footer surfaces the approximate input-token
     // cost so users can see why their context filled up.
     let mut app = create_test_app();
-    app.last_prompt_tokens = Some(48_000);
-    app.last_reasoning_replay_tokens = Some(8_200);
+    app.session.last_prompt_tokens = Some(48_000);
+    app.session.last_reasoning_replay_tokens = Some(8_200);
 
     let spans = footer_auxiliary_spans(&app, 64);
     let text = spans_text(&spans);
@@ -918,8 +918,8 @@ fn footer_auxiliary_spans_show_reasoning_replay_chip() {
 #[test]
 fn footer_auxiliary_spans_hide_reasoning_replay_when_zero() {
     let mut app = create_test_app();
-    app.last_prompt_tokens = Some(48_000);
-    app.last_reasoning_replay_tokens = Some(0);
+    app.session.last_prompt_tokens = Some(48_000);
+    app.session.last_reasoning_replay_tokens = Some(0);
 
     let spans = footer_auxiliary_spans(&app, 64);
     let text = spans_text(&spans);
@@ -929,7 +929,7 @@ fn footer_auxiliary_spans_hide_reasoning_replay_when_zero() {
 #[test]
 fn context_usage_snapshot_prefers_estimate_when_reported_exceeds_window() {
     let mut app = create_test_app();
-    app.last_prompt_tokens = Some(1_200_000);
+    app.session.last_prompt_tokens = Some(1_200_000);
     app.api_messages = vec![Message {
         role: "user".to_string(),
         content: vec![ContentBlock::Text {
@@ -949,7 +949,7 @@ fn context_usage_snapshot_prefers_estimate_when_reported_exceeds_window() {
 #[test]
 fn context_usage_snapshot_prefers_estimate_when_reported_is_inflated_by_old_reasoning() {
     let mut app = create_test_app();
-    app.last_prompt_tokens = Some(980_000);
+    app.session.last_prompt_tokens = Some(980_000);
     app.api_messages = vec![Message {
         role: "user".to_string(),
         content: vec![ContentBlock::Text {
@@ -985,13 +985,13 @@ fn context_usage_does_not_drop_when_reported_shrinks_after_multi_round_turn() {
 
     // Simulate a multi-round turn that summed two rounds' input_tokens
     // (e.g., 200k + 210k from a long thinking + tool-call sequence).
-    app.last_prompt_tokens = Some(410_000);
+    app.session.last_prompt_tokens = Some(410_000);
     let (_, _, percent_after_multi_round) = context_usage_snapshot(&app).expect("usage available");
 
     // Now the next turn is a single round on the same conversation —
     // reported drops to one round's worth even though the actual context
     // hasn't shrunk.
-    app.last_prompt_tokens = Some(15_000);
+    app.session.last_prompt_tokens = Some(15_000);
     let (_, _, percent_after_single_round) = context_usage_snapshot(&app).expect("usage available");
 
     // The displayed % should reflect the conversation size (estimated
@@ -1008,7 +1008,7 @@ fn context_usage_does_not_drop_when_reported_shrinks_after_multi_round_turn() {
 fn context_usage_snapshot_prefers_live_estimate_while_loading() {
     let mut app = create_test_app();
     app.is_loading = true;
-    app.last_prompt_tokens = Some(128);
+    app.session.last_prompt_tokens = Some(128);
     app.api_messages = vec![Message {
         role: "user".to_string(),
         content: vec![ContentBlock::Text {
@@ -1022,7 +1022,7 @@ fn context_usage_snapshot_prefers_live_estimate_while_loading() {
         context_usage_snapshot(&app).expect("context usage should be available");
     assert_eq!(used, estimated);
     assert_eq!(max, 1_000_000);
-    assert!(used > i64::from(app.last_prompt_tokens.expect("reported tokens")));
+    assert!(used > i64::from(app.session.last_prompt_tokens.expect("reported tokens")));
     assert!(percent > 0.0);
 }
 
@@ -1059,7 +1059,7 @@ fn should_auto_compact_before_send_respects_threshold_and_setting() {
         }],
     }];
     app.auto_compact = true;
-    app.last_prompt_tokens = Some(10_000);
+    app.session.last_prompt_tokens = Some(10_000);
     assert!(!should_auto_compact_before_send(&app));
 }
 
@@ -1409,14 +1409,14 @@ fn jump_to_adjacent_tool_cell_finds_next_and_previous() {
     ];
     app.mark_history_updated();
     let cell_revisions = vec![app.history_version; app.history.len()];
-    app.transcript_cache.ensure(
+    app.viewport.transcript_cache.ensure(
         &app.history,
         &cell_revisions,
         100,
         app.transcript_render_options(),
     );
 
-    app.last_transcript_top = 0;
+    app.viewport.last_transcript_top = 0;
     assert!(jump_to_adjacent_tool_cell(
         &mut app,
         SearchDirection::Forward
@@ -1425,9 +1425,13 @@ fn jump_to_adjacent_tool_cell_finds_next_and_previous() {
     // cell's first line). Anything below the live tail is acceptable —
     // the previous assertion checked `TranscriptScroll::Scrolled { .. }`,
     // which under the new flat-offset model means "not at tail."
-    assert!(!app.transcript_scroll.is_at_tail());
+    assert!(!app.viewport.transcript_scroll.is_at_tail());
 
-    app.last_transcript_top = app.transcript_cache.total_lines().saturating_sub(1);
+    app.viewport.last_transcript_top = app
+        .viewport
+        .transcript_cache
+        .total_lines()
+        .saturating_sub(1);
     assert!(jump_to_adjacent_tool_cell(
         &mut app,
         SearchDirection::Backward
@@ -1435,7 +1439,8 @@ fn jump_to_adjacent_tool_cell_finds_next_and_previous() {
 }
 
 fn first_line_for_cell(app: &App, cell_index: usize) -> usize {
-    app.transcript_cache
+    app.viewport
+        .transcript_cache
         .line_meta()
         .iter()
         .position(|meta| meta.cell_line().is_some_and(|(idx, _)| idx == cell_index))
@@ -1488,14 +1493,14 @@ fn detail_target_prefers_visible_tool_card() {
     );
     app.resync_history_revisions();
     let revisions = app.history_revisions.clone();
-    app.transcript_cache.ensure(
+    app.viewport.transcript_cache.ensure(
         &app.history,
         &revisions,
         100,
         app.transcript_render_options(),
     );
-    app.last_transcript_top = first_line_for_cell(&app, 1);
-    app.last_transcript_visible = 6;
+    app.viewport.last_transcript_top = first_line_for_cell(&app, 1);
+    app.viewport.last_transcript_visible = 6;
 
     assert_eq!(detail_target_cell_index(&app), Some(1));
     assert_eq!(
@@ -1519,14 +1524,14 @@ fn open_tool_details_pager_supports_active_virtual_tool_cell() {
         .expect("active cell")
         .entries()
         .to_vec();
-    app.transcript_cache.ensure_split(
+    app.viewport.transcript_cache.ensure_split(
         &[&app.history, active_entries.as_slice()],
         &[1],
         100,
         app.transcript_render_options(),
     );
-    app.last_transcript_top = 0;
-    app.last_transcript_visible = 4;
+    app.viewport.last_transcript_top = 0;
+    app.viewport.last_transcript_visible = 4;
 
     assert_eq!(detail_target_cell_index(&app), Some(0));
     assert!(open_tool_details_pager(&mut app));
@@ -2131,7 +2136,7 @@ fn add_message_does_not_scroll_when_user_scrolled_away() {
 
     let mut app = create_test_app();
     // Pre-condition: user was following the tail, then scrolled up.
-    app.transcript_scroll = TranscriptScroll::at_line(7);
+    app.viewport.transcript_scroll = TranscriptScroll::at_line(7);
     app.user_scrolled_during_stream = true;
 
     app.add_message(HistoryCell::User {
@@ -2139,7 +2144,7 @@ fn add_message_does_not_scroll_when_user_scrolled_away() {
     });
 
     assert!(
-        !app.transcript_scroll.is_at_tail(),
+        !app.viewport.transcript_scroll.is_at_tail(),
         "add_message must respect user_scrolled_during_stream",
     );
 }
@@ -2149,7 +2154,7 @@ fn add_message_pins_to_tail_when_user_was_following() {
     use crate::tui::scrolling::TranscriptScroll;
 
     let mut app = create_test_app();
-    app.transcript_scroll = TranscriptScroll::to_bottom();
+    app.viewport.transcript_scroll = TranscriptScroll::to_bottom();
     app.user_scrolled_during_stream = false;
 
     app.add_message(HistoryCell::User {
@@ -2157,7 +2162,7 @@ fn add_message_pins_to_tail_when_user_was_following() {
     });
 
     assert!(
-        app.transcript_scroll.is_at_tail(),
+        app.viewport.transcript_scroll.is_at_tail(),
         "auto-pin should still work when the user hasn't opted out",
     );
 }
@@ -2169,7 +2174,7 @@ fn tool_call_started_does_not_scroll_when_user_scrolled_away() {
     use crate::tui::scrolling::TranscriptScroll;
 
     let mut app = create_test_app();
-    app.transcript_scroll = TranscriptScroll::at_line(7);
+    app.viewport.transcript_scroll = TranscriptScroll::at_line(7);
     app.user_scrolled_during_stream = true;
 
     handle_tool_call_started(
@@ -2180,7 +2185,7 @@ fn tool_call_started_does_not_scroll_when_user_scrolled_away() {
     );
 
     assert!(
-        !app.transcript_scroll.is_at_tail(),
+        !app.viewport.transcript_scroll.is_at_tail(),
         "tool-cell start must not yank scroll position to bottom",
     );
 }
@@ -2198,13 +2203,13 @@ fn tool_call_complete_does_not_scroll_when_user_scrolled_away() {
     );
 
     // After start, user scrolls up.
-    app.transcript_scroll = TranscriptScroll::at_line(7);
+    app.viewport.transcript_scroll = TranscriptScroll::at_line(7);
     app.user_scrolled_during_stream = true;
 
     handle_tool_call_complete(&mut app, "tid", "exec_shell", &ok_result("output"));
 
     assert!(
-        !app.transcript_scroll.is_at_tail(),
+        !app.viewport.transcript_scroll.is_at_tail(),
         "tool-cell complete must not yank scroll position to bottom",
     );
 }
@@ -2217,13 +2222,13 @@ fn mark_history_updated_does_not_call_scroll_to_bottom() {
     use crate::tui::scrolling::TranscriptScroll;
 
     let mut app = create_test_app();
-    app.transcript_scroll = TranscriptScroll::at_line(3);
+    app.viewport.transcript_scroll = TranscriptScroll::at_line(3);
     app.user_scrolled_during_stream = true;
 
     app.mark_history_updated();
 
     assert!(
-        !app.transcript_scroll.is_at_tail(),
+        !app.viewport.transcript_scroll.is_at_tail(),
         "mark_history_updated must not scroll",
     );
 }
@@ -2714,7 +2719,7 @@ fn render_footer_from_with_default_items_renders_mode_and_model() {
     // Default footer composition should show the mode chip and model
     // identifier — whatever the configured default model is.
     let mut app = create_test_app();
-    app.session_cost = 0.42;
+    app.session.session_cost = 0.42;
     let items = crate::config::StatusItem::default_footer();
     let props = render_footer_from(&app, &items, None);
     assert_eq!(props.mode_label, "agent");
@@ -2728,7 +2733,7 @@ fn render_footer_from_with_empty_items_blanks_every_segment() {
     // A user who toggles every chip OFF should get a bare footer (no model
     // text, no cost, no auxiliary chips). This is the explicit-empty case.
     let mut app = create_test_app();
-    app.session_cost = 1.5;
+    app.session.session_cost = 1.5;
     let props = render_footer_from(&app, &[], None);
     assert_eq!(props.mode_label, "");
     assert!(props.model.is_empty());
@@ -2742,7 +2747,7 @@ fn render_footer_from_with_empty_items_blanks_every_segment() {
 fn render_footer_from_drops_only_unselected_clusters() {
     // Toggling Cost off but keeping the rest should hide cost only.
     let mut app = create_test_app();
-    app.session_cost = 0.42;
+    app.session.session_cost = 0.42;
     let items: Vec<crate::config::StatusItem> = crate::config::StatusItem::default_footer()
         .into_iter()
         .filter(|item| *item != crate::config::StatusItem::Cost)
@@ -2771,7 +2776,7 @@ fn displayed_session_cost_is_monotonic_under_negative_reconciliation() {
     // Simulate reconciliation that lowers the underlying counter (e.g. a
     // cache discount applied after the fact). The underlying value drops,
     // but the displayed cost must not.
-    app.subagent_cost = 0.20;
+    app.session.subagent_cost = 0.20;
     let after_recon = app.displayed_session_cost();
     assert!(
         after_recon >= after_first,

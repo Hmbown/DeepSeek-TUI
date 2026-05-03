@@ -98,6 +98,7 @@ pub(super) fn format_shell_poll(result: &ShellResult) -> String {
 
 pub(super) fn open_shell_job_pager(app: &mut App, detail: &ShellJobDetail) {
     let width = app
+        .viewport
         .last_transcript_area
         .map(|area| area.width)
         .unwrap_or(100)

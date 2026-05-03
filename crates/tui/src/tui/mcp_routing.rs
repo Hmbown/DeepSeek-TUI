@@ -87,6 +87,7 @@ fn push_server(lines: &mut Vec<String>, server: &McpServerSnapshot) {
 
 pub(super) fn open_mcp_manager_pager(app: &mut App, snapshot: &McpManagerSnapshot) {
     let width = app
+        .viewport
         .last_transcript_area
         .map(|area| area.width)
         .unwrap_or(100)
