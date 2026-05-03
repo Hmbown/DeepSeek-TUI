@@ -180,6 +180,31 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     if use_bracketed_paste {
         execute!(stdout, EnableBracketedPaste)?;
     }
+    // #442: opt into the Kitty keyboard protocol's escape-code
+    // disambiguation so terminals that support it (Kitty, Ghostty,
+    // Alacritty 0.13+, WezTerm, recent Konsole, recent xterm) report
+    // unambiguous events for Option/Alt-modified keys, plain Esc, and
+    // multi-byte sequences. Terminals that don't recognise the escape
+    // silently discard it; behaviour is identical to today on legacy
+    // terminals (iTerm2, Terminal.app, Windows 10 conhost).
+    //
+    // Only `DISAMBIGUATE_ESCAPE_CODES` is pushed — the higher tiers
+    // (`REPORT_EVENT_TYPES`, `REPORT_ALL_KEYS_AS_ESCAPE_CODES`) emit
+    // release events that the existing key handlers would mis-route
+    // as duplicate presses. Best-effort: failure to push is logged
+    // and ignored so a quirky terminal can't block startup.
+    if let Err(err) = execute!(
+        stdout,
+        crossterm::event::PushKeyboardEnhancementFlags(
+            crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+        )
+    ) {
+        tracing::debug!(
+            target: "kitty_keyboard",
+            ?err,
+            "PushKeyboardEnhancementFlags ignored (terminal lacks support)"
+        );
+    }
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     let event_broker = EventBroker::new();

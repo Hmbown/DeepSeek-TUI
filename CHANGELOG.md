@@ -165,6 +165,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the same hierarchy `App::new` uses (`.agents/skills` →
   `skills` → `~/.deepseek/skills`). Available in Plan and
   Agent/Yolo modes.
+- **Kitty keyboard protocol opt-in** (#442) — pushes
+  `DISAMBIGUATE_ESCAPE_CODES` at startup so terminals that
+  support the protocol (Kitty, Ghostty, Alacritty 0.13+,
+  WezTerm, recent Konsole / xterm) report unambiguous events
+  for Option/Alt-modified keys, plain Esc, and multi-byte
+  sequences. Legacy terminals silently discard the escape and
+  see no change. Only the disambiguation tier is pushed —
+  release-event reporting was deliberately skipped because the
+  existing handlers would mis-route releases as duplicate
+  presses. The flags are popped on shutdown / panic / suspend
+  paths (#443).
 - **RLM tool family** (#512) — `rlm` tool cards map to
   `ToolFamily::Rlm` and render `rlm`, not `swarm`. Stale "swarm"
   wording cleaned out of docs / comments / tests.
