@@ -71,7 +71,16 @@ fn pop(app: &mut App) -> CommandResult {
             app.input = entry.text.clone();
             app.cursor_position = app.input.len();
             let preview = preview_first_line(&entry.text, 60);
-            CommandResult::message(format!("Restored stashed draft: {preview}"))
+            // Tell the user how many drafts remain so they can plan
+            // whether to keep popping or move on. Matches the
+            // confirmation pattern used by the queue surface.
+            let remaining = composer_stash::load_stash().len();
+            let suffix = match remaining {
+                0 => " (stash now empty)".to_string(),
+                1 => " (1 more parked)".to_string(),
+                n => format!(" ({n} more parked)"),
+            };
+            CommandResult::message(format!("Restored stashed draft: {preview}{suffix}"))
         }
         None => CommandResult::message("Stash empty — nothing to pop."),
     }
