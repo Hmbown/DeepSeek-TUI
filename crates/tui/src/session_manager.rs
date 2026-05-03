@@ -398,10 +398,8 @@ impl SessionManager {
     /// Remove session files whose `updated_at` is older than `max_age`
     /// from the persisted-sessions directory. Returns the number of
     /// records pruned. Building block for #406's phase-2 auto-archive
-    /// on boot — exposing the helper without wiring it into startup
-    /// lets the next person opt the behaviour in behind a config knob
-    /// once the archive policy is decided. Tests in this module pin
-    /// the contract; production callers will land in a follow-up PR.
+    /// on boot; today the user-facing entry point is the
+    /// `/sessions prune <days>` slash command.
     ///
     /// Crash-recovery safety: skips the running checkpoint
     /// (`checkpoints/latest.json`) and any file under `checkpoints/`
@@ -413,7 +411,6 @@ impl SessionManager {
     /// timestamp embedded in the JSON, not the filesystem mtime — the
     /// user may have rsynced their `~/.deepseek` between machines and
     /// fs mtimes can lie.
-    #[allow(dead_code)] // wired in phase 2 (#406)
     pub fn prune_sessions_older_than(
         &self,
         max_age: std::time::Duration,

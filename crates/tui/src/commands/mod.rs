@@ -229,7 +229,7 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "sessions",
         aliases: &["resume"],
-        usage: "/sessions",
+        usage: "/sessions [show|prune <days>]",
         description_id: MessageId::CmdSessionsDescription,
     },
     CommandInfo {
@@ -472,7 +472,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
 
         // Session commands
         "save" => session::save(app, arg),
-        "sessions" | "resume" => session::sessions(app),
+        "sessions" | "resume" => session::sessions(app, arg),
         "load" => session::load(app, arg),
         "compact" => session::compact(app),
         "cycles" => cycle::list_cycles(app),
