@@ -266,6 +266,10 @@ If you are upgrading from older releases:
   requires restarting the TUI.
 - `notes_path` (string, optional): defaults to `~/.deepseek/notes.txt` and is used by the `note` tool.
 - `memory_path` (string, optional): defaults to `~/.deepseek/memory.md`.
+  Used by the user-memory feature when enabled — see
+  [`MEMORY.md`](MEMORY.md) for the full feature surface (`# foo`
+  composer prefix, `/memory` slash command, `remember` tool, opt-in
+  toggle).
 - `snapshots.*` (optional): side-git workspace snapshots for file rollback:
   - `[snapshots].enabled` (bool, default `true`)
   - `[snapshots].max_age_days` (int, default `7`)
