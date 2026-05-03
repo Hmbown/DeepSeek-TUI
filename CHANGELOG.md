@@ -194,6 +194,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `~/.deepseek/audit.log` can correlate large-output episodes
   with disk-usage growth in `~/.deepseek/tool_outputs/`. Fires
   in both the sequential and parallel tool paths.
+- **Prompt stash** (#440) — Ctrl+S in the composer parks the
+  current draft to a JSONL-backed stash at
+  `~/.deepseek/composer_stash.jsonl` (no-op on empty composer).
+  `/stash list` shows parked drafts (oldest first, with one-line
+  previews and timestamps); `/stash pop` restores the most
+  recently parked draft into the composer (LIFO). Self-healing
+  parser drops malformed lines instead of poisoning the stash.
+  Capped at 200 entries; multiline drafts round-trip intact via
+  JSON's newline escaping.
 - **RLM tool family** (#512) — `rlm` tool cards map to
   `ToolFamily::Rlm` and render `rlm`, not `swarm`. Stale "swarm"
   wording cleaned out of docs / comments / tests.

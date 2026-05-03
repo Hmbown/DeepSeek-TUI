@@ -299,6 +299,7 @@ pub enum MessageId {
     KbJumpLineStartEnd,
     KbDeleteChar,
     KbClearDraft,
+    KbStashDraft,
     KbSearchHistory,
     KbInsertNewline,
     KbSendDraft,
@@ -482,6 +483,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::KbJumpLineStartEnd,
     MessageId::KbDeleteChar,
     MessageId::KbClearDraft,
+    MessageId::KbStashDraft,
     MessageId::KbSearchHistory,
     MessageId::KbInsertNewline,
     MessageId::KbSendDraft,
@@ -848,6 +850,7 @@ fn english(id: MessageId) -> &'static str {
             "Delete character before / after the cursor, or remove selected attachment"
         }
         MessageId::KbClearDraft => "Clear the current draft",
+        MessageId::KbStashDraft => "Stash the current draft (`/stash pop` to restore)",
         MessageId::KbSearchHistory => "Search prompt history and recover local drafts",
         MessageId::KbInsertNewline => "Insert a newline in the composer",
         MessageId::KbSendDraft => "Send the current draft",
@@ -1117,6 +1120,7 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::KbJumpLineStartEnd => "行の先頭/末尾へジャンプ",
         MessageId::KbDeleteChar => "カーソル前/後の文字を削除、または選択中の添付を削除",
         MessageId::KbClearDraft => "現在の下書きをクリア",
+        MessageId::KbStashDraft => "現在の下書きをスタッシュ（`/stash pop`で復元）",
         MessageId::KbSearchHistory => "プロンプト履歴を検索してローカル下書きを復元",
         MessageId::KbInsertNewline => "コンポーザーに改行を挿入",
         MessageId::KbSendDraft => "現在の下書きを送信",
@@ -1359,6 +1363,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::KbJumpLineStartEnd => "跳转到行首/行尾",
         MessageId::KbDeleteChar => "删除光标前/后的字符，或移除已选附件",
         MessageId::KbClearDraft => "清空当前草稿",
+        MessageId::KbStashDraft => "暂存当前草稿（用 `/stash pop` 恢复）",
         MessageId::KbSearchHistory => "搜索提示历史并恢复本地草稿",
         MessageId::KbInsertNewline => "在输入框中插入换行",
         MessageId::KbSendDraft => "发送当前草稿",
@@ -1627,6 +1632,7 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
             "Excluir caractere antes / depois do cursor, ou remover anexo selecionado"
         }
         MessageId::KbClearDraft => "Limpar rascunho atual",
+        MessageId::KbStashDraft => "Estacionar rascunho atual (`/stash pop` restaura)",
         MessageId::KbSearchHistory => "Buscar histórico de prompts e recuperar rascunhos locais",
         MessageId::KbInsertNewline => "Inserir nova linha no compositor",
         MessageId::KbSendDraft => "Enviar rascunho atual",

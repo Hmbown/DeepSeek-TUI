@@ -19,6 +19,7 @@ mod command_safety;
 mod commands;
 mod compaction;
 mod composer_history;
+mod composer_stash;
 mod config;
 mod config_ui;
 mod core;

@@ -2395,6 +2395,22 @@ async fn run_event_loop(
                 {
                     app.delete_word_backward();
                 }
+                KeyCode::Char('s') | KeyCode::Char('S')
+                    if key.modifiers == KeyModifiers::CONTROL && !app.input.is_empty() =>
+                {
+                    // #440: park the current draft to the persistent
+                    // stash and clear the composer. Empty composers
+                    // are a no-op so a stray Ctrl+S can't pollute the
+                    // file. Surface a toast so the user sees the
+                    // confirmation (no-op feels broken otherwise).
+                    crate::composer_stash::push_stash(&app.input);
+                    app.clear_input_recoverable();
+                    app.push_status_toast(
+                        "Draft stashed — `/stash pop` to restore",
+                        StatusToastLevel::Info,
+                        Some(3_000),
+                    );
+                }
                 KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     // #379: context-sensitive Ctrl+Y.
                     // When the composer has content → emacs-style yank
