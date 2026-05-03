@@ -775,11 +775,31 @@ pub async fn compact_messages(
     // Extract workflow context (files touched, tasks in progress, etc.)
     let workflow_context = extract_workflow_context(&to_summarize, workspace);
 
+    // Read user-anchored facts that must survive compaction
+    let anchors_text = if let Some(ws) = workspace {
+        let anchors_path = ws.join(".deepseek").join("anchors.md");
+        std::fs::read_to_string(&anchors_path).unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    let anchors_section = if !anchors_text.trim().is_empty() {
+        format!(
+            "## 📌 Pinned Facts (User-Anchored — DO NOT discard)\n\n\
+             The following facts were explicitly pinned by the user. \
+             They MUST be preserved across all compaction cycles.\n\n\
+             {anchors_text}\n\n---\n\n"
+        )
+    } else {
+        String::new()
+    };
+
     // Build new message list with enhanced summary as system block
     let summary_block = SystemBlock {
         block_type: "text".to_string(),
         text: format!(
-            "## 📋 Conversation Summary (Auto-Generated)\n\n\
+            "{anchors_section}\
+             ## 📋 Conversation Summary (Auto-Generated)\n\n\
              {summary}\n\n\
              ---\n\n\
              ## 🔍 Workflow Context\n\n\
