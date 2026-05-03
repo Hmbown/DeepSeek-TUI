@@ -191,8 +191,13 @@ pub enum ViewAction {
 pub trait ModalView: std::any::Any {
     fn kind(&self) -> ModalKind;
     fn handle_key(&mut self, key: KeyEvent) -> ViewAction;
-    fn handle_paste(&mut self, _text: &str) -> ViewAction {
-        ViewAction::None
+    /// Returns `true` if the modal consumed the paste; `false` to let the
+    /// host route the text elsewhere (e.g. drop it because a modal is open,
+    /// or insert it into the composer when no modal wants it). The default
+    /// is `false` so modals that don't care about paste don't silently
+    /// swallow Cmd-V.
+    fn handle_paste(&mut self, _text: &str) -> bool {
+        false
     }
     fn handle_mouse(&mut self, _mouse: MouseEvent) -> ViewAction {
         ViewAction::None
@@ -269,7 +274,7 @@ impl ViewStack {
     pub fn handle_paste(&mut self, text: &str) -> bool {
         self.views
             .last_mut()
-            .map(|view| matches!(view.handle_paste(text), ViewAction::None))
+            .map(|view| view.handle_paste(text))
             .unwrap_or(false)
     }
 
@@ -1696,8 +1701,8 @@ fn truncate_view_text(text: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ConfigListItem, ConfigSection, ConfigView, ModalView, ShellControlView, ViewAction,
-        ViewEvent, truncate_view_text,
+        ConfigListItem, ConfigSection, ConfigView, ModalKind, ModalView, ShellControlView,
+        ViewAction, ViewEvent, ViewStack, truncate_view_text,
     };
     use crate::config::Config;
     use crate::localization::Locale;
@@ -1991,6 +1996,18 @@ mod tests {
             action,
             ViewAction::EmitAndClose(ViewEvent::ShellControlCancel)
         ));
+    }
+
+    /// A modal that doesn't override `handle_paste` must report
+    /// "not consumed" so the host can fall through to the composer.
+    /// Regression: views/mod.rs previously inverted the boolean, swallowing
+    /// every Cmd-V while any modal was on top.
+    #[test]
+    fn default_modal_does_not_consume_paste() {
+        let mut stack = ViewStack::new();
+        stack.push(ShellControlView::new());
+        assert!(!stack.handle_paste("hello"));
+        assert_eq!(stack.top_kind(), Some(ModalKind::ShellControl));
     }
 
     fn buffer_text(buf: &Buffer, area: Rect) -> String {

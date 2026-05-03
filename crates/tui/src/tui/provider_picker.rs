@@ -246,14 +246,16 @@ impl ModalView for ProviderPickerView {
         self
     }
 
-    fn handle_paste(&mut self, text: &str) -> ViewAction {
+    fn handle_paste(&mut self, text: &str) -> bool {
         if self.stage == Stage::KeyEntry {
             let sanitized: String = text.chars().filter(|c| !c.is_whitespace()).collect();
             if !sanitized.is_empty() {
                 self.api_key_input.push_str(&sanitized);
             }
+            true
+        } else {
+            false
         }
-        ViewAction::None
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> ViewAction {
