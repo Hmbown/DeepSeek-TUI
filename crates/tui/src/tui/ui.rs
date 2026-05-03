@@ -2574,6 +2574,16 @@ pub(crate) fn apply_engine_error_to_app(
     app.streaming_state.reset();
     app.streaming_message_index = None;
     app.streaming_thinking_active_entry = None;
+
+    // #455 (observer-only): fire `on_error` hooks so operators can
+    // page on auth / billing / invalid-request failures without
+    // tailing the audit log. Read-only — the hook can react but not
+    // suppress the error from reaching the transcript.
+    {
+        let context = app.base_hook_context().with_error(&message);
+        let _ = app.execute_hooks(crate::hooks::HookEvent::OnError, &context);
+    }
+
     app.add_message(HistoryCell::Error {
         message: message.clone(),
         severity,
@@ -2880,6 +2890,15 @@ async fn dispatch_user_message(
     engine_handle: &EngineHandle,
     message: QueuedMessage,
 ) -> Result<()> {
+    // #455 (observer-only): fire `message_submit` hooks before
+    // dispatch. Hooks see the user's display text via the
+    // `with_message` builder. Read-only — they can log, audit, or
+    // notify but cannot mutate the message that goes to the engine.
+    {
+        let context = app.base_hook_context().with_message(&message.display);
+        let _ = app.execute_hooks(crate::hooks::HookEvent::MessageSubmit, &context);
+    }
+
     // Set immediately to prevent double-dispatch before TurnStarted event arrives.
     app.is_loading = true;
     app.last_send_at = Some(Instant::now());
