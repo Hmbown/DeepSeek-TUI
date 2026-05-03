@@ -504,6 +504,16 @@ impl ToolRegistryBuilder {
         self.with_tool(Arc::new(NoteTool))
     }
 
+    /// Include the `remember` tool — model-callable bullet-add into the
+    /// user memory file (#489). Only register when the user has opted
+    /// in to the memory feature; without that, the tool would surface
+    /// in the model's catalog but always fail with "memory disabled".
+    #[must_use]
+    pub fn with_remember_tool(self) -> Self {
+        use super::remember::RememberTool;
+        self.with_tool(Arc::new(RememberTool))
+    }
+
     /// Include MCP tools from a connected pool as first-class registry
     /// citizens. Each MCP tool is wrapped in a lightweight adapter that
     /// implements `ToolSpec`, so the unified `ToolRegistryBuilder` flow

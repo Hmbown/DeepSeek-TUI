@@ -100,6 +100,11 @@ pub struct ToolContext {
     /// Cancellation token for the active engine turn. Tools that may wait on
     /// external work should observe this so UI cancel can interrupt them.
     pub cancel_token: Option<CancellationToken>,
+    /// Path to the user memory file. `None` when the user-memory feature
+    /// (#489) is disabled — tools that read or write the file should
+    /// short-circuit on `None` rather than fall back to a workspace-local
+    /// default.
+    pub memory_path: Option<PathBuf>,
 }
 
 impl ToolContext {
@@ -125,6 +130,7 @@ impl ToolContext {
             network_policy: None,
             runtime: RuntimeToolServices::default(),
             cancel_token: None,
+            memory_path: None,
         }
     }
 
@@ -153,6 +159,7 @@ impl ToolContext {
             network_policy: None,
             runtime: RuntimeToolServices::default(),
             cancel_token: None,
+            memory_path: None,
         }
     }
 
@@ -181,6 +188,7 @@ impl ToolContext {
             network_policy: None,
             runtime: RuntimeToolServices::default(),
             cancel_token: None,
+            memory_path: None,
         }
     }
 
