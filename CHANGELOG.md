@@ -251,6 +251,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   discover which events to target in `[[hooks.hooks]]` entries
   without reading source. Ordered lifecycle → per-tool →
   situational, stable across releases.
+- **Structured-Markdown compaction template** (#429) —
+  `prompts/compact.md` switches from the legacy
+  Active-task/Files-touched/Key-decisions/Open-blockers
+  framing to the spec'd structure: Goal / Constraints /
+  Progress (Done / In Progress / Blocked) / Key Decisions /
+  Next step. The richer Progress sub-bullets help long
+  resumed sessions distinguish "what's verified done" from
+  "what's mid-flight" — useful when the model writes
+  `.deepseek/handoff.md` before a long break. Backwards-
+  compat: existing handoff.md files continue to render fine
+  because the loader injects them as plain markdown (the
+  template only guides what NEW handoffs look like). The
+  pinned-tool-output configurability part of #429's spec
+  stays a v0.8.9 follow-up — that requires changes to
+  `cycle_manager.rs` compaction logic itself.
 - **`tool_call_before` / `tool_call_after` / `message_submit` /
   `on_error` hooks all fire now** (#455 observer-only slice) —
   these events were defined in the `HookEvent` enum but never

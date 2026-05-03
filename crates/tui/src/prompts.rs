@@ -474,10 +474,15 @@ mod tests {
             SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
         };
         assert!(prompt.contains("## Compaction Handoff"));
-        assert!(prompt.contains("### Active task"));
-        assert!(prompt.contains("### Files touched"));
-        assert!(prompt.contains("### Key decisions"));
-        assert!(prompt.contains("### Open blockers"));
+        // #429: structured Markdown template. Goal/Constraints/Progress
+        // (Done/InProgress/Blocked)/Key Decisions/Next step.
+        assert!(prompt.contains("### Goal"));
+        assert!(prompt.contains("### Constraints"));
+        assert!(prompt.contains("### Progress"));
+        assert!(prompt.contains("#### Done"));
+        assert!(prompt.contains("#### In Progress"));
+        assert!(prompt.contains("#### Blocked"));
+        assert!(prompt.contains("### Key Decisions"));
         assert!(prompt.contains("### Next step"));
     }
 
