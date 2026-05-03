@@ -558,4 +558,40 @@ mod tests {
             );
         });
     }
+
+    #[test]
+    fn apply_spillover_wraps_non_object_metadata_under_prior_key() {
+        // Defends against a tool whose `metadata` is something
+        // other than a JSON object (rare — most use the `json!({})`
+        // pattern — but legal per `serde_json::Value`). The
+        // spillover writer must add `spillover_path` without losing
+        // the prior payload.
+        let _g = setup();
+        let tmp = tempdir().unwrap();
+        with_test_home(tmp.path(), || {
+            let big = "Z".repeat(200 * 1024);
+            let mut result = ToolResult::success(big).with_metadata(serde_json::json!([
+                "unexpected",
+                "array",
+                "payload"
+            ]));
+            let path = apply_spillover(&mut result, "call-arr").expect("should spill");
+
+            let metadata = result.metadata.expect("metadata stamped");
+            // Prior payload re-homed under `_prior`.
+            let prior = metadata.get("_prior").expect("_prior wrap key present");
+            assert_eq!(
+                prior,
+                &serde_json::json!(["unexpected", "array", "payload"]),
+                "prior array should round-trip under _prior"
+            );
+            // New key alongside.
+            assert_eq!(
+                metadata
+                    .get("spillover_path")
+                    .and_then(serde_json::Value::as_str),
+                Some(path.display().to_string().as_str())
+            );
+        });
+    }
 }
