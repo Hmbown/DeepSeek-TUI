@@ -266,7 +266,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   because it needs a synchronous-gate contract that doesn't
   exist today. Combined with the existing `session_start` /
   `session_end` / `mode_change` events, every variant in the
-  `HookEvent` enum now has a live producer.
+  `HookEvent` enum now has a live producer. Each fire is
+  fast-path-gated by
+  `HookExecutor::has_hooks_for_event(event)` so per-tool
+  dispatch never pays for `HookContext` allocation when the
+  user has no hooks configured (the common case).
 - **RLM tool family** (#512) — `rlm` tool cards map to
   `ToolFamily::Rlm` and render `rlm`, not `swarm`. Stale "swarm"
   wording cleaned out of docs / comments / tests.

@@ -2578,7 +2578,11 @@ pub(crate) fn apply_engine_error_to_app(
     // #455 (observer-only): fire `on_error` hooks so operators can
     // page on auth / billing / invalid-request failures without
     // tailing the audit log. Read-only — the hook can react but not
-    // suppress the error from reaching the transcript.
+    // suppress the error from reaching the transcript. Fast-path
+    // skip when no hooks configured.
+    if app
+        .hooks
+        .has_hooks_for_event(crate::hooks::HookEvent::OnError)
     {
         let context = app.base_hook_context().with_error(&message);
         let _ = app.execute_hooks(crate::hooks::HookEvent::OnError, &context);
@@ -2894,6 +2898,10 @@ async fn dispatch_user_message(
     // dispatch. Hooks see the user's display text via the
     // `with_message` builder. Read-only — they can log, audit, or
     // notify but cannot mutate the message that goes to the engine.
+    // Fast-path skip when no hooks configured.
+    if app
+        .hooks
+        .has_hooks_for_event(crate::hooks::HookEvent::MessageSubmit)
     {
         let context = app.base_hook_context().with_message(&message.display);
         let _ = app.execute_hooks(crate::hooks::HookEvent::MessageSubmit, &context);
