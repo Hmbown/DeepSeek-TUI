@@ -237,6 +237,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   output to keep the report scannable; JSON always emits all
   five slots (`global`, `agents`, `local`, `opencode`,
   `claude`) for stable machine consumption.
+- **`deepseek doctor` reports storage surfaces** (#422 / #440 /
+  #500 follow-up) — new `Storage:` section surfaces the
+  tool-output spillover dir
+  (`~/.deepseek/tool_outputs/`) with file count and the
+  composer stash file
+  (`~/.deepseek/composer_stash.jsonl`) with parked-draft
+  count. Mirrored under `storage.{spillover,stash}` in the
+  JSON output so `deepseek doctor --json` keeps a stable
+  schema.
 - **RLM tool family** (#512) — `rlm` tool cards map to
   `ToolFamily::Rlm` and render `rlm`, not `swarm`. Stale "swarm"
   wording cleaned out of docs / comments / tests.

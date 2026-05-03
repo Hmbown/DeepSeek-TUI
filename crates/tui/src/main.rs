@@ -1769,6 +1769,50 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         println!("    Run `deepseek-tui setup --plugins` to scaffold a starter dir.");
     }
 
+    // Storage surfaces (#422 / #440 / #500)
+    println!();
+    println!("{}", "Storage:".bold());
+    if let Some(spillover_root) = crate::tools::truncate::spillover_root() {
+        let (present, count) = if spillover_root.is_dir() {
+            (true, count_dir_entries(&spillover_root))
+        } else {
+            (false, 0)
+        };
+        if present {
+            println!(
+                "  {} tool-output spillover at {} ({} file{})",
+                "✓".truecolor(aqua_r, aqua_g, aqua_b),
+                crate::utils::display_path(&spillover_root),
+                count,
+                if count == 1 { "" } else { "s" }
+            );
+        } else {
+            println!(
+                "  {} tool-output spillover dir not yet created at {}",
+                "·".dimmed(),
+                crate::utils::display_path(&spillover_root)
+            );
+        }
+    }
+    let stash_path = dirs::home_dir().map(|h| h.join(".deepseek").join("composer_stash.jsonl"));
+    if let Some(stash_path) = stash_path {
+        let stash_count = crate::composer_stash::load_stash().len();
+        if stash_path.exists() {
+            println!(
+                "  {} composer stash at {} ({} parked draft{})",
+                "✓".truecolor(aqua_r, aqua_g, aqua_b),
+                crate::utils::display_path(&stash_path),
+                stash_count,
+                if stash_count == 1 { "" } else { "s" }
+            );
+        } else {
+            println!(
+                "  {} composer stash empty (Ctrl+S in the composer to park a draft)",
+                "·".dimmed()
+            );
+        }
+    }
+
     // Platform and sandbox checks
     println!();
     println!("{}", "Platform:".bold());
@@ -1961,6 +2005,28 @@ fn run_doctor_json(
             "path": plugins_dir.display().to_string(),
             "present": plugins_dir.exists(),
             "count": if plugins_dir.exists() { count_dir_entries(&plugins_dir) } else { 0 },
+        },
+        "storage": {
+            "spillover": {
+                "path": crate::tools::truncate::spillover_root()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default(),
+                "present": crate::tools::truncate::spillover_root()
+                    .is_some_and(|p| p.is_dir()),
+                "count": crate::tools::truncate::spillover_root()
+                    .filter(|p| p.is_dir())
+                    .map(|p| count_dir_entries(&p))
+                    .unwrap_or(0),
+            },
+            "stash": {
+                "path": dirs::home_dir()
+                    .map(|h| h.join(".deepseek").join("composer_stash.jsonl").display().to_string())
+                    .unwrap_or_default(),
+                "present": dirs::home_dir()
+                    .map(|h| h.join(".deepseek").join("composer_stash.jsonl"))
+                    .is_some_and(|p| p.exists()),
+                "count": crate::composer_stash::load_stash().len(),
+            },
         },
         "sandbox": match crate::sandbox::get_platform_sandbox() {
             Some(kind) => json!({"available": true, "kind": kind.to_string()}),
