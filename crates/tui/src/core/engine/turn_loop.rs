@@ -1092,9 +1092,19 @@ impl Engine {
                         .await;
 
                         // #500: spill outsized output before fanout (mirror
-                        // of the sequential path below).
-                        if let Ok(tool_result) = result.as_mut() {
-                            crate::tools::truncate::apply_spillover(tool_result, &plan.id);
+                        // of the sequential path below). Emit a
+                        // `tool.spillover` audit event so operators can
+                        // correlate large-output episodes with disk usage.
+                        if let Ok(tool_result) = result.as_mut()
+                            && let Some(path) =
+                                crate::tools::truncate::apply_spillover(tool_result, &plan.id)
+                        {
+                            emit_tool_audit(json!({
+                                "event": "tool.spillover",
+                                "tool_id": plan.id.clone(),
+                                "tool_name": plan.name.clone(),
+                                "path": path.display().to_string(),
+                            }));
                         }
 
                         let _ = tx_event
@@ -1374,8 +1384,19 @@ impl Engine {
                     // result fans out to the model context and the UI cell.
                     // Both consumers see the same truncated content + the
                     // `spillover_path` metadata pointing at the full file.
-                    if let Ok(tool_result) = result.as_mut() {
-                        crate::tools::truncate::apply_spillover(tool_result, &tool_id);
+                    // Emit a discrete `tool.spillover` audit event so
+                    // operators can correlate large-output episodes with
+                    // disk-usage growth in `~/.deepseek/tool_outputs/`.
+                    if let Ok(tool_result) = result.as_mut()
+                        && let Some(path) =
+                            crate::tools::truncate::apply_spillover(tool_result, &tool_id)
+                    {
+                        emit_tool_audit(json!({
+                            "event": "tool.spillover",
+                            "tool_id": tool_id.clone(),
+                            "tool_name": tool_name.clone(),
+                            "path": path.display().to_string(),
+                        }));
                     }
 
                     let _ = self

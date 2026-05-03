@@ -188,6 +188,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ones. New `skills_directories()` and
   `discover_in_workspace()` helpers in
   `crates/tui/src/skills/mod.rs`.
+- **`tool.spillover` audit event** (#500 polish) — emit a
+  discrete audit-log entry whenever `apply_spillover` writes a
+  spillover file, so operators tailing
+  `~/.deepseek/audit.log` can correlate large-output episodes
+  with disk-usage growth in `~/.deepseek/tool_outputs/`. Fires
+  in both the sequential and parallel tool paths.
 - **RLM tool family** (#512) — `rlm` tool cards map to
   `ToolFamily::Rlm` and render `rlm`, not `swarm`. Stale "swarm"
   wording cleaned out of docs / comments / tests.
