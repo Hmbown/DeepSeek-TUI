@@ -1665,6 +1665,67 @@ fn open_tool_details_pager_supports_active_virtual_tool_cell() {
 }
 
 #[test]
+fn spillover_pager_section_returns_none_when_no_spillover() {
+    let mut app = create_test_app();
+    app.history = vec![HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+        name: "exec_shell".to_string(),
+        status: ToolStatus::Success,
+        input_summary: None,
+        output: Some("hi".to_string()),
+        prompts: None,
+        spillover_path: None,
+    }))];
+    app.resync_history_revisions();
+    assert!(spillover_pager_section(&app, 0).is_none());
+}
+
+#[test]
+fn spillover_pager_section_loads_file_when_present() {
+    use std::io::Write;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("call-test.txt");
+    let mut f = std::fs::File::create(&path).unwrap();
+    writeln!(f, "FULL_OUTPUT_BYTES_HERE").unwrap();
+
+    let mut app = create_test_app();
+    app.history = vec![HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+        name: "exec_shell".to_string(),
+        status: ToolStatus::Success,
+        input_summary: None,
+        output: Some("(truncated head)".to_string()),
+        prompts: None,
+        spillover_path: Some(path.clone()),
+    }))];
+    app.resync_history_revisions();
+
+    let section = spillover_pager_section(&app, 0).expect("section present");
+    assert!(section.contains("Full output (spillover)"));
+    assert!(
+        section.contains("FULL_OUTPUT_BYTES_HERE"),
+        "section missing file body: {section}"
+    );
+    assert!(section.contains(&path.display().to_string()));
+}
+
+#[test]
+fn spillover_pager_section_returns_notice_when_file_missing() {
+    let mut app = create_test_app();
+    let bogus = std::path::PathBuf::from("/tmp/this/path/does/not/exist-spill.txt");
+    app.history = vec![HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+        name: "exec_shell".to_string(),
+        status: ToolStatus::Success,
+        input_summary: None,
+        output: Some("(truncated head)".to_string()),
+        prompts: None,
+        spillover_path: Some(bogus),
+    }))];
+    app.resync_history_revisions();
+
+    let section = spillover_pager_section(&app, 0).expect("still emits a notice section");
+    assert!(section.contains("could not read spillover file"));
+}
+
+#[test]
 fn details_shortcut_modifiers_accept_plain_shift_and_alt_only() {
     assert!(details_shortcut_modifiers(KeyModifiers::NONE));
     assert!(details_shortcut_modifiers(KeyModifiers::SHIFT));

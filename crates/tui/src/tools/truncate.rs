@@ -19,26 +19,27 @@
 //! (7 days). Prune failures are logged and never fatal — the user
 //! shouldn't see startup wedge because of a stale tool-output file.
 //!
-//! ## What's NOT here
+//! ## Live callers
 //!
-//! Wiring `maybe_spillover` into the actual tool-execution path is
-//! tracked by **#423** (UI annotation) and **#500** (preview pane);
-//! both want the spillover bytes to exist. This module ships the
-//! plumbing so those follow-ups land cleanly without re-litigating
-//! the storage decisions.
+//! * [`apply_spillover`] — invoked from the engine's tool-execution
+//!   path (`turn_loop.rs`) so any successful tool result over
+//!   [`SPILLOVER_THRESHOLD_BYTES`] spills to disk and the model
+//!   receives a [`SPILLOVER_HEAD_BYTES`] head plus a pointer footer.
+//! * Boot prune in `main.rs` deletes files older than
+//!   [`SPILLOVER_MAX_AGE`].
 //!
-//! Today the only live caller is the boot prune in `main.rs`. The
-//! storage helpers (`write_spillover`, `maybe_spillover`,
-//! `spillover_path`) are unused outside of this module's own tests
-//! and the `#[allow(dead_code)]` markers below mark them deferred —
-//! they get callers when #423 / #500 land.
-
-#![allow(dead_code)] // storage surface used by #423/#500 follow-ups; tests pin the contract
+//! UI-side rendering of the inline `full output: <path>` annotation
+//! is owned by `tui/history.rs::render_spillover_annotation`. The
+//! tool-details pager opens the spillover file when the user
+//! presses `Alt+V` (or plain `v` with empty composer) on a spilled
+//! tool cell.
 
 use std::fs;
 use std::io;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
+
+use crate::tools::spec::ToolResult;
 
 // `Path` is only referenced from helpers gated to test builds.
 #[cfg(test)]
@@ -172,6 +173,88 @@ pub fn maybe_spillover(
         .find(|&i| content.is_char_boundary(i))
         .unwrap_or(0);
     Ok(Some((content[..cut].to_string(), path)))
+}
+
+/// Inline head retained when [`apply_spillover`] truncates a tool
+/// result. 32 KiB is large enough for the model to keep meaningful
+/// context (a long stack trace, a `git diff` head, a directory
+/// listing of typical depth) without consuming the lion's share of
+/// the per-turn context budget. The full output is preserved on
+/// disk; the model can `read_file` it back if it needs the tail.
+pub const SPILLOVER_HEAD_BYTES: usize = 32 * 1024;
+
+/// Apply spillover to a tool result in place. If the result's
+/// content exceeds [`SPILLOVER_THRESHOLD_BYTES`], writes the full
+/// content to a sibling file under `~/.deepseek/tool_outputs/`,
+/// replaces `result.content` with a [`SPILLOVER_HEAD_BYTES`] head
+/// plus a footer pointing the model at the spillover file, and
+/// stamps `metadata.spillover_path` so the UI can render its
+/// "full output: …" annotation.
+///
+/// Returns the spillover path on success, `None` if no spillover
+/// happened (content small enough, error result, write failure).
+/// Failures are logged but never bubble up — a tool that produced a
+/// result shouldn't be marked failed because the spillover writer
+/// couldn't reach disk; we degrade to no-op and the model gets the
+/// original (large) content.
+///
+/// Error results (`success == false`) are skipped: error messages
+/// are typically short, and turning them into a "see file" pointer
+/// would just hide the error from the model's reasoning.
+pub fn apply_spillover(result: &mut ToolResult, tool_id: &str) -> Option<PathBuf> {
+    if !result.success {
+        return None;
+    }
+    if result.content.len() <= SPILLOVER_THRESHOLD_BYTES {
+        return None;
+    }
+    let total = result.content.len();
+    let outcome = match maybe_spillover(
+        tool_id,
+        &result.content,
+        SPILLOVER_THRESHOLD_BYTES,
+        SPILLOVER_HEAD_BYTES,
+    ) {
+        Ok(Some(pair)) => pair,
+        Ok(None) => return None,
+        Err(err) => {
+            tracing::warn!(
+                target: "spillover",
+                ?err,
+                tool_id,
+                "spillover write failed; passing original content through"
+            );
+            return None;
+        }
+    };
+    let (head, path) = outcome;
+    let path_str = path.display().to_string();
+    let footer = format!(
+        "\n\n[Output truncated: {head_kib} KiB of {total_kib} KiB shown. \
+         Full output saved to {path_str}. Use `read_file path={path_str}` \
+         if you need the elided tail.]",
+        head_kib = head.len() / 1024,
+        total_kib = total / 1024,
+    );
+    result.content = format!("{head}{footer}");
+    let metadata = result.metadata.get_or_insert_with(|| serde_json::json!({}));
+    if let Some(obj) = metadata.as_object_mut() {
+        obj.insert("spillover_path".into(), serde_json::Value::String(path_str));
+    } else {
+        // Pre-existing metadata that wasn't a JSON object (rare,
+        // possibly an array). Replace with an object so we can
+        // attach our key without losing prior data — wrap it under
+        // a `_prior` field so callers that introspect can recover.
+        let prior = std::mem::replace(metadata, serde_json::json!({}));
+        if let Some(obj) = metadata.as_object_mut() {
+            obj.insert("_prior".into(), prior);
+            obj.insert(
+                "spillover_path".into(),
+                serde_json::Value::String(path.display().to_string()),
+            );
+        }
+    }
+    Some(path)
 }
 
 /// Sanitise a tool call id for use as a filename. Keeps ASCII
@@ -384,5 +467,95 @@ mod tests {
     fn filetime_set_modified(_path: &Path, _when: SystemTime) {
         // Not exercised in CI on Windows; prune semantics are the same
         // and the per-cycle stress test lives on the Unix path.
+    }
+
+    #[test]
+    fn apply_spillover_is_noop_below_threshold() {
+        let _g = setup();
+        let tmp = tempdir().unwrap();
+        with_test_home(tmp.path(), || {
+            let mut result = ToolResult::success("small payload");
+            let path = apply_spillover(&mut result, "call-small");
+            assert!(path.is_none());
+            assert_eq!(result.content, "small payload");
+            assert!(result.metadata.is_none());
+        });
+    }
+
+    #[test]
+    fn apply_spillover_is_noop_for_error_results() {
+        let _g = setup();
+        let tmp = tempdir().unwrap();
+        with_test_home(tmp.path(), || {
+            // Even very large error messages are passed through —
+            // truncating an error would hide it from the model.
+            let big_err = "boom\n".repeat(50_000);
+            let mut result = ToolResult::error(big_err.clone());
+            let path = apply_spillover(&mut result, "call-err");
+            assert!(path.is_none());
+            assert_eq!(result.content, big_err);
+        });
+    }
+
+    #[test]
+    fn apply_spillover_truncates_and_stamps_metadata_above_threshold() {
+        let _g = setup();
+        let tmp = tempdir().unwrap();
+        with_test_home(tmp.path(), || {
+            // 200 KiB body — well above the 100 KiB threshold.
+            let big = "X".repeat(200 * 1024);
+            let mut result = ToolResult::success(big.clone());
+            let path = apply_spillover(&mut result, "call-big").expect("should spill");
+
+            // Inline content shrunk to head + footer.
+            assert!(result.content.len() < big.len());
+            assert!(
+                result.content.contains("Output truncated:"),
+                "footer missing: {}",
+                &result.content[result.content.len().saturating_sub(200)..]
+            );
+            assert!(result.content.contains("read_file path="));
+
+            // Full bytes are on disk at the returned path.
+            assert!(path.exists(), "spillover file missing: {path:?}");
+            let body = fs::read_to_string(&path).unwrap();
+            assert_eq!(body.len(), 200 * 1024);
+
+            // metadata.spillover_path stamped for the UI to find.
+            let metadata = result.metadata.expect("metadata stamped");
+            let stamped = metadata
+                .get("spillover_path")
+                .and_then(serde_json::Value::as_str)
+                .expect("spillover_path key present");
+            assert_eq!(stamped, path.display().to_string());
+        });
+    }
+
+    #[test]
+    fn apply_spillover_preserves_existing_metadata() {
+        let _g = setup();
+        let tmp = tempdir().unwrap();
+        with_test_home(tmp.path(), || {
+            let big = "Y".repeat(200 * 1024);
+            let mut result = ToolResult::success(big)
+                .with_metadata(serde_json::json!({"prior_key": "prior_value"}));
+            let path = apply_spillover(&mut result, "call-meta").expect("should spill");
+
+            let metadata = result.metadata.expect("metadata present");
+            // Prior keys survive.
+            assert_eq!(
+                metadata
+                    .get("prior_key")
+                    .and_then(serde_json::Value::as_str),
+                Some("prior_value")
+            );
+            // New key added alongside.
+            assert_eq!(
+                metadata
+                    .get("spillover_path")
+                    .and_then(serde_json::Value::as_str),
+                Some(path.display().to_string().as_str())
+            );
+        });
     }
 }

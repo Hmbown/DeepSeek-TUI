@@ -67,14 +67,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`deepseek doctor --json`** now surfaces a `memory` block
   (`enabled` / `path` / `file_present`) so operators can verify
   memory configuration without booting the TUI.
-- **Tool-output spillover** (#422 + #423) — large tool outputs spill
-  to `~/.deepseek/tool_outputs/<id>.txt` (helpers in
-  `crates/tui/src/tools/truncate.rs`, 7-day boot prune wired into
-  `run_interactive`). Tool cells with a spilled path render an
-  inline `full output: <path>` annotation in live mode so the user
-  and the model can find the elided tail; transcript-mode replay
-  omits the annotation because the full output is inline. #500
-  (preview pane) is now unblocked and just needs the pager glue.
+- **Tool-output spillover** (#422 + #423 + #500) — tool outputs over
+  100 KiB now spill to `~/.deepseek/tool_outputs/<id>.txt` from the
+  engine's tool-execution path. The model receives a 32 KiB head plus
+  a footer pointing at the spillover file (`Use read_file path=…`),
+  the tool cell renders an inline `full output: <path>` annotation in
+  live mode, and a 7-day boot prune keeps the directory bounded.
+  Spillover is skipped on error results so the model still sees the
+  failure message verbatim. The existing tool-details pager surfaces
+  the truncated head so the user can verify what the model saw.
 
 ### Changed
 - **Sub-agent concurrency cap raised to 10 by default** (#509) —

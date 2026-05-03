@@ -6655,6 +6655,33 @@ fn open_tool_details_pager(app: &mut App) -> bool {
     open_details_pager_for_cell(app, cell_index)
 }
 
+/// Build the trailing "Spillover" section for the tool-details pager
+/// (#500). Returns `None` when the cell at `cell_index` is not a
+/// `GenericToolCell` with a recorded spillover path, or when the
+/// spillover file is missing or unreadable. Failures fall back to a
+/// short notice in the section so the user understands why the full
+/// content can't be loaded — better than silent truncation.
+fn spillover_pager_section(app: &App, cell_index: usize) -> Option<String> {
+    use crate::tui::history::{GenericToolCell, HistoryCell, ToolCell};
+
+    let cell = app.cell_at_virtual_index(cell_index)?;
+    let HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+        spillover_path: Some(path),
+        ..
+    })) = cell
+    else {
+        return None;
+    };
+    let path_str = path.display().to_string();
+    let body = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) => format!("(could not read spillover file: {err})"),
+    };
+    Some(format!(
+        "── Full output (spillover) ──\nFile: {path_str}\n\n{body}"
+    ))
+}
+
 fn open_details_pager_for_cell(app: &mut App, cell_index: usize) -> bool {
     if let Some(detail) = app.tool_detail_record_for_cell(cell_index) {
         let input = serde_json::to_string_pretty(&detail.input)
@@ -6663,10 +6690,25 @@ fn open_details_pager_for_cell(app: &mut App, cell_index: usize) -> bool {
             "(not available)".to_string(),
             std::string::ToString::to_string,
         );
-        let content = format!(
-            "Tool ID: {}\nTool: {}\n\nInput:\n{}\n\nOutput:\n{}",
-            detail.tool_id, detail.tool_name, input, output
-        );
+
+        // #500: when the tool result was spilled to disk, fold the full
+        // file content into the pager body so the user can see what was
+        // elided (the model only ever saw the head). The truncated head
+        // stays above as `Output:` so the user can compare what the
+        // model received against the full payload.
+        let spillover_section = spillover_pager_section(app, cell_index);
+
+        let content = if let Some(section) = spillover_section {
+            format!(
+                "Tool ID: {}\nTool: {}\n\nInput:\n{}\n\nOutput:\n{}\n\n{}",
+                detail.tool_id, detail.tool_name, input, output, section
+            )
+        } else {
+            format!(
+                "Tool ID: {}\nTool: {}\n\nInput:\n{}\n\nOutput:\n{}",
+                detail.tool_id, detail.tool_name, input, output
+            )
+        };
 
         let width = app
             .viewport
