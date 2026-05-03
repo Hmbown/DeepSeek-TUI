@@ -55,10 +55,11 @@ pub struct FooterProps {
     /// MCP server health chip spans (empty when no MCP servers configured).
     /// Populated lazily — see [`footer_mcp_chip`]. (#502)
     pub mcp: Vec<Span<'static>>,
-    /// Cumulative session-elapsed chip spans ("worked 3h 12m"). Empty
-    /// for the first minute of a session so a fresh launch doesn't
-    /// flash a `worked 5s` indicator. Populated by [`footer_worked_chip`]
-    /// from `App::session_started_at`. (#448)
+    /// Cumulative model-work chip spans ("worked 3h 12m"). Sums the
+    /// elapsed time of completed turns (from `App::cumulative_turn_duration`),
+    /// **not** wall-clock since launch — an idle TUI shouldn't claim
+    /// it's been "working." Empty until cumulative turn time crosses
+    /// 60s. Populated by [`footer_worked_chip`]. (#448)
     pub worked: Vec<Span<'static>>,
     /// Snapshot of the global retry-status surface (#499). Sampled once
     /// at props-build time and rendered as a foreground banner on the
@@ -267,9 +268,12 @@ impl FooterProps {
             .as_ref()
             .map(|s| s.servers.iter().filter(|server| server.connected).count());
         let mcp = footer_mcp_chip(mcp_connected, mcp_configured);
-        // #448: cumulative-elapsed chip. Sampled at props-build time
-        // (matches the `retry` capture pattern) so render is pure.
-        let worked = footer_worked_chip(app.session_started_at.elapsed());
+        // #448: cumulative work-time chip. Sums actual turn durations
+        // (set on `TurnComplete`) rather than wall-clock uptime — a TUI
+        // that's been open and idle for 4 minutes shouldn't claim
+        // "worked 4m". The chip stays empty until enough turns add up
+        // to cross the 60s threshold inside `footer_worked_chip`.
+        let worked = footer_worked_chip(app.cumulative_turn_duration);
         Self {
             model: app.model.clone(),
             mode_label,
@@ -708,11 +712,46 @@ mod tests {
         assert!(props.cache.is_empty());
         assert!(props.cost.is_empty());
         assert!(props.reasoning_replay.is_empty());
-        // #448: fresh apps don't get a `worked` chip until the
-        // session has been alive for >= 60s. A test app built right
-        // before this assertion is well under that threshold.
+        // #448: fresh apps don't get a `worked` chip until completed
+        // turns have added up to >= 60s of model work. A freshly-built
+        // App has cumulative_turn_duration == 0 so the chip is empty.
         assert!(props.worked.is_empty());
         assert!(props.toast.is_none());
+    }
+
+    #[test]
+    fn worked_chip_tracks_completed_turn_time_not_session_uptime() {
+        // Regression test for the v0.8.8 takedown: the chip used to
+        // read `App::session_started_at.elapsed()`, so a TUI that had
+        // been open and idle for several minutes claimed "worked 3m"
+        // even though no turn had ever fired. The chip now sources
+        // from `App::cumulative_turn_duration`, which is only ever
+        // incremented on `TurnComplete`. Pin both directions:
+        //
+        //   1. cumulative == 0 (no turn finished yet)  → empty
+        //   2. cumulative crosses 60s (real work)      → label shows
+        //   3. wall-clock since launch is irrelevant   → not consulted
+        let mut app = make_app();
+        // The whole point: cumulative_turn_duration starts at zero,
+        // so however long the TUI has been open the chip stays empty
+        // until a turn actually completes and adds time.
+        let props = idle_props_for(&app);
+        assert!(
+            props.worked.is_empty(),
+            "idle app with zero cumulative turn time must not show worked chip"
+        );
+
+        // A real turn finishes for 90s of model work — chip lights up.
+        // (`humanize_duration` keeps both units when both are non-zero,
+        // so 90s renders as `1m 30s`, not `1m`.)
+        app.cumulative_turn_duration = std::time::Duration::from_secs(90);
+        let props = idle_props_for(&app);
+        let text: String = props
+            .worked
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>();
+        assert_eq!(text, "worked 1m 30s");
     }
 
     #[test]

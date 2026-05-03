@@ -148,13 +148,26 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     let use_mouse_capture = options.use_mouse_capture;
     let use_bracketed_paste = options.use_bracketed_paste;
 
-    // Apply OSC 8 hyperlink toggle from config; default `true`.
+    // Apply OSC 8 hyperlink toggle from config.
+    //
+    // Default-off on Windows because legacy `cmd.exe` and pre-Win11
+    // PowerShell consoles don't always honor the OSC 8 string
+    // terminator (`ESC \`) cleanly — emitting the escape can leave
+    // stray bytes that eat the leading column of the next line and
+    // duplicate the composer panel during scroll. Reported on a
+    // Windows session (issue forthcoming, screenshot showed
+    // "eepseek-v4-flash" with the leading `d` consumed and three
+    // overlapping composer panels). Mac/Linux still default-on; users
+    // on a Windows console that *does* support OSC 8 (Windows
+    // Terminal, Alacritty, WezTerm) can opt back in via
+    // `[ui] osc8_links = true`.
+    let osc8_default_on = !cfg!(windows);
     crate::tui::osc8::set_enabled(
         config
             .tui
             .as_ref()
             .and_then(|tui| tui.osc8_links)
-            .unwrap_or(true),
+            .unwrap_or(osc8_default_on),
     );
 
     // Terminal probe with timeout to prevent hanging on unresponsive terminals
@@ -845,6 +858,13 @@ async fn run_event_loop(
                         let turn_elapsed =
                             app.turn_started_at.map(|t| t.elapsed()).unwrap_or_default();
                         app.turn_started_at = None;
+                        // Roll the just-finished turn's elapsed time into the
+                        // cumulative session work-time (#448 follow-up). The
+                        // footer's `worked Nh Mm` chip reads this so the
+                        // label reflects actual model work, not idle
+                        // uptime since launch.
+                        app.cumulative_turn_duration =
+                            app.cumulative_turn_duration.saturating_add(turn_elapsed);
                         // Stream lock applies per-turn; clear it so the next
                         // turn's chunks pull the view down again until the
                         // user opts out by scrolling up.
