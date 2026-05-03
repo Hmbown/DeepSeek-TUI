@@ -17,6 +17,7 @@ pub mod plan;
 pub mod project;
 pub mod recall_archive;
 pub mod registry;
+pub mod remember;
 pub mod revert_turn;
 pub mod review;
 pub mod rlm;

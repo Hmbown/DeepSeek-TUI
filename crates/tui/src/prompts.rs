@@ -173,7 +173,7 @@ pub fn system_prompt_for_mode_with_context(
     workspace: &Path,
     working_set_summary: Option<&str>,
 ) -> SystemPrompt {
-    system_prompt_for_mode_with_context_and_skills(mode, workspace, working_set_summary, None)
+    system_prompt_for_mode_with_context_and_skills(mode, workspace, working_set_summary, None, None)
 }
 
 /// Get the system prompt for a specific mode with project and skills context.
@@ -198,6 +198,7 @@ pub fn system_prompt_for_mode_with_context_and_skills(
     workspace: &Path,
     working_set_summary: Option<&str>,
     skills_dir: Option<&Path>,
+    user_memory_block: Option<&str>,
 ) -> SystemPrompt {
     let mode_prompt = compose_mode_prompt(mode);
 
@@ -216,6 +217,15 @@ pub fn system_prompt_for_mode_with_context_and_skills(
             mode_prompt, summary, tree
         )
     };
+
+    // 2.5. User memory block (#489). Goes above skills/context-management
+    // because it's session-stable: the memory file changes when the user
+    // edits it via `/memory` or `# foo` quick-add, but not turn-over-turn.
+    if let Some(memory_block) = user_memory_block
+        && !memory_block.trim().is_empty()
+    {
+        full_prompt = format!("{full_prompt}\n\n{memory_block}");
+    }
 
     // 3. Skills block.
     if let Some(skills_block) = skills_dir.and_then(crate::skills::render_available_skills_context)

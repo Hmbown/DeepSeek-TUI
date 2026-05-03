@@ -563,6 +563,14 @@ pub struct App {
     pub config_profile: Option<String>,
     pub mcp_config_path: PathBuf,
     pub skills_dir: PathBuf,
+    /// Path to the user-memory file (#489). Always populated; only
+    /// consulted when `use_memory` is `true`.
+    pub memory_path: PathBuf,
+    /// Whether the user-memory feature is enabled (#489). Mirrors
+    /// `Config::memory_enabled()` at app boot. Used by the `# foo`
+    /// composer interception, the `/memory` slash command, and tool
+    /// registration for `remember`.
+    pub use_memory: bool,
     pub use_alt_screen: bool,
     pub use_mouse_capture: bool,
     pub use_bracketed_paste: bool,
@@ -931,10 +939,10 @@ impl App {
             use_bracketed_paste,
             max_subagents,
             skills_dir: global_skills_dir,
-            memory_path: _,
+            memory_path,
             notes_path: _,
             mcp_config_path,
-            use_memory: _,
+            use_memory,
             start_in_agent_mode,
             skip_onboarding,
             yolo,
@@ -1064,6 +1072,8 @@ impl App {
             config_profile,
             mcp_config_path,
             skills_dir,
+            memory_path,
+            use_memory,
             use_alt_screen,
             use_mouse_capture,
             use_bracketed_paste,

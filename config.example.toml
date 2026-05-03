@@ -56,6 +56,17 @@ notes_path = "~/.deepseek/notes.txt"
 
 memory_path = "~/.deepseek/memory.md"
 
+# ─────────────────────────────────────────────────────────────────────────────────
+# User memory (#489) — opt-in. When enabled, the TUI reads memory_path on
+# startup and injects its contents into the system prompt as a
+# <user_memory> block, intercepts `# foo` typed in the composer to append
+# the line as a timestamped bullet, and registers a `remember` tool the
+# model can call to add durable notes itself.
+# ─────────────────────────────────────────────────────────────────────────────────
+[memory]
+# enabled = true            # turn the feature on (default: false)
+# Override the env-var equivalent: `DEEPSEEK_MEMORY=on`
+
 # Parsed but currently unused (reserved for future versions):
 # tools_file = "./tools.json"
 

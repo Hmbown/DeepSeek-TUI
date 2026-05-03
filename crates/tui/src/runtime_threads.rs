@@ -1563,6 +1563,8 @@ impl RuntimeThreadManager {
                 shell_manager: None,
             },
             subagent_model_overrides: self.config.subagent_model_overrides(),
+            memory_enabled: self.config.memory_enabled(),
+            memory_path: self.config.memory_path(),
         };
 
         let engine = spawn_engine(engine_cfg, &self.config);

@@ -12,6 +12,7 @@ mod goal;
 mod init;
 mod jobs;
 mod mcp;
+mod memory;
 mod note;
 mod provider;
 mod queue;
@@ -465,6 +466,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "links" | "dashboard" | "api" => core::deepseek_links(app),
         "home" | "stats" | "overview" => core::home_dashboard(app),
         "note" => note::note(app, arg),
+        "memory" => memory::memory(app, arg),
         "attach" | "image" | "media" => attachment::attach(app, arg),
         "task" | "tasks" => task::task(app, arg),
         "jobs" | "job" => jobs::jobs(app, arg),

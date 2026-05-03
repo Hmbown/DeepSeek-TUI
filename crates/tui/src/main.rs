@@ -35,6 +35,7 @@ mod logging;
 mod lsp;
 mod mcp;
 mod mcp_server;
+mod memory;
 mod models;
 mod network_policy;
 mod palette;
@@ -3006,7 +3007,7 @@ async fn run_interactive(
             memory_path: config.memory_path(),
             notes_path: config.notes_path(),
             mcp_config_path: config.mcp_config_path(),
-            use_memory: false,
+            use_memory: config.memory_enabled(),
             start_in_agent_mode: cli.yolo,
             skip_onboarding: cli.skip_onboarding,
             yolo: cli.yolo, // YOLO mode auto-approves all tool executions
@@ -3166,6 +3167,8 @@ async fn run_exec_agent(
         lsp_config,
         runtime_services: crate::tools::spec::RuntimeToolServices::default(),
         subagent_model_overrides: config.subagent_model_overrides(),
+        memory_enabled: config.memory_enabled(),
+        memory_path: config.memory_path(),
     };
 
     let engine_handle = spawn_engine(engine_config, config);

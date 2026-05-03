@@ -400,6 +400,20 @@ impl Default for SnapshotsConfig {
     }
 }
 
+/// User-level memory configuration (#489).
+///
+/// Default is opt-in: when this table is absent or `enabled = false`, the
+/// memory file is neither read nor written, and `# foo` quick-adds in the
+/// composer fall through to the normal turn-submission path.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct MemoryConfig {
+    /// When `true`, load the user memory file at `Config::memory_path()`
+    /// into the system prompt as a `<user_memory>` block, and intercept
+    /// `# foo` typed in the composer to append to that file. Default `false`.
+    #[serde(default)]
+    pub enabled: Option<bool>,
+}
+
 impl SnapshotsConfig {
     #[must_use]
     pub fn max_age(&self) -> std::time::Duration {
@@ -722,6 +736,12 @@ pub struct Config {
     /// retention when the table is absent.
     #[serde(default)]
     pub snapshots: Option<SnapshotsConfig>,
+
+    /// User-level memory file (#489). Default behaviour is **opt-in**:
+    /// loading + injection happens only when `[memory] enabled = true` or
+    /// `DEEPSEEK_MEMORY=on` is set.
+    #[serde(default)]
+    pub memory: Option<MemoryConfig>,
 
     /// Post-edit LSP diagnostics injection (#136). When absent, the engine
     /// applies the defaults documented in [`LspConfigToml`].
@@ -1263,6 +1283,18 @@ impl Config {
             .unwrap_or_else(|| PathBuf::from("./memory.md"))
     }
 
+    /// Whether the user-memory feature is enabled. The default is **off**
+    /// to preserve zero-overhead behavior for users who haven't opted in.
+    /// Flips to `true` when `[memory] enabled = true` in `config.toml` or
+    /// `DEEPSEEK_MEMORY=on` is set in the environment.
+    #[must_use]
+    pub fn memory_enabled(&self) -> bool {
+        self.memory
+            .as_ref()
+            .and_then(|m| m.enabled)
+            .unwrap_or(false)
+    }
+
     /// Return whether shell execution is allowed.
     #[must_use]
     pub fn allow_shell(&self) -> bool {
@@ -1627,6 +1659,16 @@ fn apply_env_overrides(config: &mut Config) {
     if let Ok(value) = std::env::var("DEEPSEEK_MEMORY_PATH") {
         config.memory_path = Some(value);
     }
+    if let Ok(value) = std::env::var("DEEPSEEK_MEMORY") {
+        let on = matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "on" | "true" | "yes" | "y" | "enabled"
+        );
+        config
+            .memory
+            .get_or_insert_with(MemoryConfig::default)
+            .enabled = Some(on);
+    }
     if let Ok(value) = std::env::var("DEEPSEEK_ALLOW_SHELL") {
         config.allow_shell = Some(value == "1" || value.eq_ignore_ascii_case("true"));
     }
@@ -1904,6 +1946,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         network: override_cfg.network.or(base.network),
         skills: override_cfg.skills.or(base.skills),
         snapshots: override_cfg.snapshots.or(base.snapshots),
+        memory: override_cfg.memory.or(base.memory),
         lsp: override_cfg.lsp.or(base.lsp),
         context: ContextConfig {
             enabled: override_cfg.context.enabled.or(base.context.enabled),

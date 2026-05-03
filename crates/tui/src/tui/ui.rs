@@ -403,6 +403,51 @@ fn terminal_probe_timeout(config: &Config) -> Duration {
     Duration::from_millis(timeout_ms)
 }
 
+/// Recognise composer input that is a `# foo` memory quick-add (#492).
+///
+/// Returns `true` for inputs that:
+/// - start with `#`,
+/// - have at least one non-whitespace character after the leading `#`,
+/// - are a single line (no embedded `\n`), and
+/// - are not a shebang (`#!`) or Markdown heading (`## …`, `### …`).
+///
+/// Multi-`#` prefixes are deliberately rejected so users can paste
+/// Markdown headings into the composer without triggering the quick-add.
+#[must_use]
+fn is_memory_quick_add(input: &str) -> bool {
+    let trimmed = input.trim_start();
+    if !trimmed.starts_with('#') {
+        return false;
+    }
+    if trimmed.starts_with("##") || trimmed.starts_with("#!") {
+        return false;
+    }
+    if input.contains('\n') {
+        return false;
+    }
+    // Require something after the `#`.
+    !trimmed.trim_start_matches('#').trim().is_empty()
+}
+
+/// Persist a `# foo` quick-add to the memory file and surface a status
+/// note to the user. Errors land in the same status channel so a missing
+/// memory directory becomes visible without crashing the composer.
+fn handle_memory_quick_add(app: &mut App, input: &str, config: &Config) {
+    let path = config.memory_path();
+    match crate::memory::append_entry(&path, input) {
+        Ok(()) => {
+            app.status_message = Some(format!("memory: appended to {}", path.display()));
+        }
+        Err(err) => {
+            app.status_message = Some(format!(
+                "memory: failed to write {}: {}",
+                path.display(),
+                err
+            ));
+        }
+    }
+}
+
 fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
     EngineConfig {
         model: app.model.clone(),
@@ -439,6 +484,8 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
             .map(crate::config::LspConfigToml::into_runtime),
         runtime_services: app.runtime_services.clone(),
         subagent_model_overrides: config.subagent_model_overrides(),
+        memory_enabled: config.memory_enabled(),
+        memory_path: config.memory_path(),
     }
 }
 
@@ -2192,6 +2239,17 @@ async fn run_event_loop(
                 KeyCode::Enter => {
                     if let Some(input) = app.submit_input() {
                         if handle_plan_choice(app, &engine_handle, &input).await? {
+                            continue;
+                        }
+                        // `# foo` quick-add (#492) — when memory is enabled,
+                        // a single line starting with `#` (but not `##` /
+                        // `#!` shebangs / Markdown headings the user might
+                        // be pasting in) is intercepted: the text is
+                        // appended to the user memory file and the input
+                        // is consumed without firing a turn. Disabled
+                        // behaviour falls through to normal turn submit.
+                        if config.memory_enabled() && is_memory_quick_add(&input) {
+                            handle_memory_quick_add(app, &input, config);
                             continue;
                         }
                         if input.starts_with('/') {

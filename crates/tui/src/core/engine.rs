@@ -127,6 +127,13 @@ pub struct EngineConfig {
     pub runtime_services: RuntimeToolServices,
     /// Per-role/type sub-agent model overrides already resolved from config.
     pub subagent_model_overrides: HashMap<String, String>,
+    /// Whether the user-memory feature is enabled (#489). When `true` the
+    /// engine reads `memory_path` on each prompt assembly and prepends a
+    /// `<user_memory>` block to the system prompt.
+    pub memory_enabled: bool,
+    /// Path to the user memory file (#489). Always populated; only
+    /// consulted when `memory_enabled` is `true`.
+    pub memory_path: PathBuf,
 }
 
 impl Default for EngineConfig {
@@ -153,6 +160,8 @@ impl Default for EngineConfig {
             lsp_config: None,
             runtime_services: RuntimeToolServices::default(),
             subagent_model_overrides: HashMap::new(),
+            memory_enabled: false,
+            memory_path: PathBuf::from("./memory.md"),
         }
     }
 }
@@ -338,11 +347,14 @@ impl Engine {
 
         // Set up system prompt with project context (default to agent mode)
         let working_set_summary = session.working_set.summary_block(&config.workspace);
+        let user_memory_block =
+            crate::memory::compose_block(config.memory_enabled, &config.memory_path);
         let system_prompt = prompts::system_prompt_for_mode_with_context_and_skills(
             AppMode::Agent,
             &config.workspace,
             None,
             Some(&config.skills_dir),
+            user_memory_block.as_deref(),
         );
         session.system_prompt =
             append_working_set_summary(Some(system_prompt), working_set_summary.as_deref());
@@ -1226,6 +1238,13 @@ impl Engine {
         .with_cancel_token(self.cancel_token.clone())
         .with_trusted_external_paths(trusted.paths().to_vec());
 
+        // Hand the user-memory path to tools so the model-callable
+        // `remember` tool can append entries (#489). `None` when the
+        // feature is disabled — tools short-circuit on that.
+        if self.config.memory_enabled {
+            ctx.memory_path = Some(self.config.memory_path.clone());
+        }
+
         if let Some(decider) = self.config.network_policy.as_ref() {
             ctx = ctx.with_network_policy(decider.clone());
         }
@@ -1597,11 +1616,14 @@ impl Engine {
             .session
             .working_set
             .summary_block(&self.config.workspace);
+        let user_memory_block =
+            crate::memory::compose_block(self.config.memory_enabled, &self.config.memory_path);
         let base = prompts::system_prompt_for_mode_with_context_and_skills(
             mode,
             &self.config.workspace,
             None,
             Some(&self.config.skills_dir),
+            user_memory_block.as_deref(),
         );
         let stable_prompt =
             merge_system_prompts(Some(&base), self.session.compaction_summary_prompt.clone());
