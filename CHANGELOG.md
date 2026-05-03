@@ -156,6 +156,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   paths. Defense-in-depth: if a future code path enables the
   flags explicitly, the suspend handlers won't leak them to a
   Vim / less / shell child that hasn't asked for them.
+- **`load_skill` tool** (#434) — model-callable tool that takes a
+  skill id and returns the SKILL.md body plus the sibling
+  companion-file list in one call. Faster than the existing
+  `read_file` + `list_dir` dance; surfaces the skill's
+  description as a quote block at the head so a single tool
+  result is self-contained. Resolves the skills directory with
+  the same hierarchy `App::new` uses (`.agents/skills` →
+  `skills` → `~/.deepseek/skills`). Available in Plan and
+  Agent/Yolo modes.
 - **RLM tool family** (#512) — `rlm` tool cards map to
   `ToolFamily::Rlm` and render `rlm`, not `swarm`. Stale "swarm"
   wording cleaned out of docs / comments / tests.

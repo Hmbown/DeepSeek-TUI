@@ -182,6 +182,28 @@ impl SkillRegistry {
 /// Render a compact model-visible skills block.
 ///
 /// The full `SKILL.md` body is intentionally not included here. This mirrors
+/// Resolve the active skills directory given a workspace, mirroring the
+/// hierarchy `App::new` walks: `<workspace>/.agents/skills` →
+/// `<workspace>/skills` → [`default_skills_dir`] (`~/.deepseek/skills`).
+/// Returns the first directory that exists, or the global default
+/// (which itself falls back to `/tmp/deepseek/skills` if the user
+/// has no home directory).
+///
+/// Used by the `load_skill` tool (#434) and other surfaces that need
+/// the same lookup order without re-implementing it.
+#[must_use]
+pub fn resolve_skills_dir(workspace: &Path) -> PathBuf {
+    let agents = workspace.join(".agents").join("skills");
+    if agents.exists() {
+        return agents;
+    }
+    let local = workspace.join("skills");
+    if local.exists() {
+        return local;
+    }
+    default_skills_dir()
+}
+
 /// Codex's progressive-disclosure contract: the model sees skill names,
 /// descriptions, and paths up front, then opens the specific `SKILL.md` only
 /// when a skill is relevant.

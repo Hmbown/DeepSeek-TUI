@@ -23,6 +23,7 @@ pub mod rlm;
 pub mod search;
 pub mod shell;
 mod shell_output;
+pub mod skill;
 pub mod spec;
 pub mod subagent;
 pub mod tasks;

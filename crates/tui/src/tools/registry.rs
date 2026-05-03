@@ -360,6 +360,16 @@ impl ToolRegistryBuilder {
         self.with_tool(Arc::new(DiagnosticsTool))
     }
 
+    /// Include the `load_skill` tool (#434) so the model can pull a
+    /// SKILL.md body + companion file list into context with one
+    /// call instead of `read_file` + `list_dir` against the path
+    /// shown in the system prompt's `## Skills` section.
+    #[must_use]
+    pub fn with_skill_tools(self) -> Self {
+        use super::skill::LoadSkillTool;
+        self.with_tool(Arc::new(LoadSkillTool))
+    }
+
     /// Include project mapping tools.
     #[must_use]
     pub fn with_project_tools(self) -> Self {
@@ -547,6 +557,7 @@ impl ToolRegistryBuilder {
             .with_git_history_tools()
             .with_diagnostics_tool()
             .with_project_tools()
+            .with_skill_tools()
             .with_test_runner_tool()
             .with_validation_tools()
             .with_runtime_task_tools()
