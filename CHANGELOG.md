@@ -7,6 +7,131 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **User memory MVP** (#489–#493) — opt-in persistent note file
+  injected into the system prompt as a `<user_memory>` block.
+  - `# foo` typed in the composer appends a timestamped bullet
+    without firing a turn (#492).
+  - `/memory [show|path|clear|edit]` slash command for inline
+    inspection / editing hints (#491).
+  - `remember` model-callable tool so the agent can capture
+    durable preferences itself; auto-approved because writes are
+    scoped to the user's own file (#489).
+  - Hierarchy loader pulls `~/.deepseek/memory.md` (path
+    configurable via `memory_path` / `DEEPSEEK_MEMORY_PATH`) and
+    injects above the volatile-content boundary in the prompt
+    (#490).
+  - Default off; enable with `[memory] enabled = true` or
+    `DEEPSEEK_MEMORY=on` (#493).
+  - Full feature documentation in `docs/MEMORY.md`.
+- **Inline diff rendering for `edit_file` / `write_file`** (#505) —
+  tool results now emit a unified diff at the head of the body,
+  picked up by the existing diff-aware renderer with line numbers
+  and coloured `+`/`-` gutters. New `similar` crate dep.
+- **OSC 8 hyperlinks** (#498) — URLs in the transcript become
+  Cmd+click-openable in supporting terminals (iTerm2, Terminal.app
+  13+, Ghostty, Kitty, WezTerm, Alacritty). Clipboard path strips
+  the escapes so yanked text stays clean. Off-switch:
+  `[tui] osc8_links = false`.
+- **Retry/backoff visual countdown** (#499) — `⟳ retry N in Ms — reason`
+  banner ticks down during HTTP backoff. On exhaustion the row turns
+  red `× failed: <reason>` until the next turn starts.
+- **MCP server health chip** (#502) — colour-coded `MCP M/N` in the
+  footer's right-cluster: success / warning / error / muted by
+  reachability. Hidden when zero MCP servers are configured.
+- **Per-project config overlay** (#485) — `<workspace>/.deepseek/config.toml`
+  now overlays nine fields on top of the user-global config:
+  `provider`, `model`, `api_key`, `base_url`, `reasoning_effort`,
+  `approval_policy`, `sandbox_mode`, `mcp_config_path`, `notes_path`,
+  `max_subagents`, `allow_shell`. Pass `--no-project-config` to
+  bypass for one launch.
+- **Sub-agent role taxonomy expansion** (#404) — adds `Implementer`
+  ("land this change with the minimum surrounding edit") and
+  `Verifier` ("run the test suite, report pass/fail with evidence")
+  to the existing `general` / `explore` / `plan` / `review` /
+  `custom` set. Each role has a distinct system prompt posture.
+  Documented in `docs/SUBAGENTS.md`.
+- **`docs/SUBAGENTS.md`** — full sub-agent reference: role taxonomy,
+  alias map, concurrency cap, lifecycle, session-boundary
+  classification, output contract.
+- **`docs/MEMORY.md`** — user-facing memory feature documentation.
+- **Competitive analysis doc** — `docs/COMPETITIVE_ANALYSIS.md`
+  catalogues capability matrix vs OpenCode and Codex CLI.
+
+### Changed
+- **Sub-agent concurrency cap raised to 10 by default** (#509) —
+  was 5; configurable via `[subagents].max_concurrent` (hard
+  ceiling 20). Running-count now ignores non-running, no-handle,
+  and finished handles so completed agents stop occupying slots.
+- **`SharedSubAgentManager` is `Arc<RwLock<...>>`** (#510) — read
+  paths take read locks, eliminating the multi-agent fan-out UI
+  freeze.
+- **Sub-agent output summarized before parent context** (#511) —
+  `compact_tool_result_for_context` now compresses
+  `agent_result` / `agent_wait` payloads instead of dumping the
+  full snapshot back into the parent's context window.
+- **`agent_list` defaults to current-session view** (#405) — each
+  manager mints a `session_boot_id` and stamps every spawn; agents
+  loaded from prior sessions are filtered unless
+  `include_archived=true` is passed. Each result carries a
+  `from_prior_session` flag.
+- **Concise todo / checklist update rendering** (#403) — repeat
+  `todo_update` / `checklist_update` calls render a one-line
+  `Todo #N: <title> → STATUS` card with full list still
+  reachable via Alt+V instead of dumping the entire item array on
+  every call.
+- **Compact `agent_spawn` rendering** (#409) — the generic tool
+  block for `agent_spawn` collapses to one header line in live
+  mode (`◐ delegate · agent-abc12 [running]`) since the
+  `DelegateCard` already owns live action progress. Transcript
+  replay keeps the full block.
+- **Plan panel role clarified** (#408) — drops the "No active
+  plan" placeholder when the panel is otherwise empty; documents
+  the panel's narrow role (`update_plan` tool output + `/goal` +
+  cycle counter, distinct from todos).
+- **Sub-agent description copy** — `agent_spawn` tool description
+  and `prompts/base.md` updated to reflect the new default cap of
+  10 (was stale "Max 5 in flight").
+- **RLM tool family** (#512) — `rlm` tool cards map to
+  `ToolFamily::Rlm` and render `rlm`, not `swarm`. Stale "swarm"
+  wording cleaned out of docs / comments / tests.
+- **Foreground RLM visible in Agents sidebar** (#513 — stopgap)
+  — projection now shows foreground RLM work; full async
+  lifecycle remains v0.8.9.
+
+### Fixed
+- **`Don't auto-approve git -C ...`** (#416, shipped 2026-05-03) —
+  v0.8.8 release runtime fix; foundation for the rest of the
+  stabilization batch.
+- **Self-update arch mapping** (#503) — `update.rs` uses release
+  asset naming (`arm64`/`x64`) instead of raw Rust constants
+  (`aarch64`/`x86_64`); rejects `.sha256` siblings as primary
+  binaries.
+- **Composer Option+Backspace deletes by word** (#488) — was
+  deleting by character.
+- **Offline composer queue is session-scoped** (#487) — legacy
+  unscoped queues fail closed instead of leaking content into
+  unrelated chats.
+- **`display_path` test race + Windows separator** (#506) —
+  tests no longer mutate `$HOME`; `display_path_with_home` walks
+  components and joins with `MAIN_SEPARATOR_STR` so Windows shows
+  `~\projects\foo` not `~\projects/foo`.
+- **Footer reads statusline colours from `app.ui_theme`** (#449) —
+  was using a bespoke palette.
+- **Keyboard-enhancement flags pop on panic exit too** (#443/#444) —
+  raw-mode startup probe is now bounded by a configurable
+  timeout.
+- **CI workflow cleanup** (#507) — pruned three duplicated/dead
+  workflows (`crates-publish.yml`, `parity.yml`, `publish-npm.yml`);
+  `release.yml` `build` job now allows `parity` to be skipped on
+  manual `workflow_dispatch`; release-runbook reconciled.
+
+### Releases
+- npm wrapper publish remains manual (npm 2FA OTP requirement).
+- GitHub release automation depends on `RELEASE_TAG_PAT` secret —
+  without it `auto-tag.yml` creates the tag but `release.yml`
+  doesn't fire.
+
 ## [0.8.7] - 2026-05-03
 
 ### Fixed
