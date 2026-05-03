@@ -153,6 +153,16 @@ assistant message bodies, which made it impossible to copy text out of
 system notes, thinking blocks, or tool output. v0.8.7 drops that gate so
 the rendered transcript block is selectable end-to-end again.
 
+> **Known issue in v0.8.7:** `deepseek update` fails with `no asset found
+> for platform …` because the platform-string mapping in the self-updater
+> uses `aarch64`/`x86_64` instead of the release artifact's `arm64`/`x64`
+> ([#503](https://github.com/Hmbown/DeepSeek-TUI/issues/503)). Until this
+> is fixed in v0.8.8, update via:
+> ```bash
+> npm i -g deepseek-tui          # or
+> cargo install deepseek-tui-cli --locked
+> ```
+
 Full changelog: [CHANGELOG.md](CHANGELOG.md).
 
 ## What's new in v0.8.6
