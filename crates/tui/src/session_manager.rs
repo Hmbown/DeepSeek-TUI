@@ -395,6 +395,50 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Remove session files whose `updated_at` is older than `max_age`
+    /// from the persisted-sessions directory. Returns the number of
+    /// records pruned. Building block for #406's phase-2 auto-archive
+    /// on boot — exposing the helper without wiring it into startup
+    /// lets the next person opt the behaviour in behind a config knob
+    /// once the archive policy is decided. Tests in this module pin
+    /// the contract; production callers will land in a follow-up PR.
+    ///
+    /// Crash-recovery safety: skips the running checkpoint
+    /// (`checkpoints/latest.json`) and any file under `checkpoints/`
+    /// — those are owned by the checkpoint subsystem and live with
+    /// stricter durability rules. Only top-level `<session_id>.json`
+    /// files are candidates.
+    ///
+    /// `max_age` is checked against the metadata's `updated_at`
+    /// timestamp embedded in the JSON, not the filesystem mtime — the
+    /// user may have rsynced their `~/.deepseek` between machines and
+    /// fs mtimes can lie.
+    #[allow(dead_code)] // wired in phase 2 (#406)
+    pub fn prune_sessions_older_than(
+        &self,
+        max_age: std::time::Duration,
+    ) -> std::io::Result<usize> {
+        let cutoff = Utc::now()
+            - chrono::Duration::from_std(max_age).unwrap_or(chrono::Duration::days(365 * 10));
+        let sessions = self.list_sessions()?;
+        let mut pruned = 0usize;
+        for session in sessions {
+            if session.updated_at < cutoff {
+                if let Err(err) = self.delete_session(&session.id) {
+                    tracing::warn!(
+                        target: "session",
+                        session = session.id,
+                        ?err,
+                        "session prune skipped a record",
+                    );
+                    continue;
+                }
+                pruned += 1;
+            }
+        }
+        Ok(pruned)
+    }
+
     /// Get the most recent session
     pub fn get_latest_session(&self) -> std::io::Result<Option<SessionMetadata>> {
         let sessions = self.list_sessions()?;
@@ -1088,6 +1132,131 @@ mod tests {
         let extracted = extract_top_level_metadata(json.as_bytes())
             .expect("brace-in-string survives the scanner");
         assert_eq!(extracted.title, "weird { title } with braces");
+    }
+
+    // ---- #406 prune_sessions_older_than ----
+    //
+    // The helper is a building block for the auto-archive design: it
+    // removes session files older than a threshold while leaving fresh
+    // ones (and the checkpoint directory) alone. Tests cover the empty
+    // case, the all-fresh case, the all-stale case, and the mixed case.
+
+    fn write_session_with_updated_at(
+        manager: &SessionManager,
+        id: &str,
+        updated_at: DateTime<Utc>,
+    ) {
+        // Build a minimal SavedSession by hand so the test isn't tied
+        // to whatever the helper functions emit; we just need a
+        // metadata block whose `updated_at` matches the requested
+        // value.
+        let session = SavedSession {
+            schema_version: CURRENT_SESSION_SCHEMA_VERSION,
+            messages: vec![make_test_message("user", "hi")],
+            metadata: SessionMetadata {
+                id: id.to_string(),
+                title: format!("session-{id}"),
+                created_at: updated_at,
+                updated_at,
+                message_count: 1,
+                total_tokens: 0,
+                model: "deepseek-v4-flash".to_string(),
+                workspace: PathBuf::from("/tmp"),
+                mode: None,
+            },
+            system_prompt: None,
+            context_references: Vec::new(),
+        };
+        manager.save_session(&session).expect("save");
+    }
+
+    #[test]
+    fn prune_sessions_older_than_returns_zero_for_empty_dir() {
+        let tmp = tempdir().expect("tempdir");
+        let manager = SessionManager::new(tmp.path().join("sessions")).expect("new");
+        let pruned = manager
+            .prune_sessions_older_than(std::time::Duration::from_secs(3600))
+            .expect("prune");
+        assert_eq!(pruned, 0);
+    }
+
+    #[test]
+    fn prune_sessions_older_than_keeps_fresh_records() {
+        let tmp = tempdir().expect("tempdir");
+        let manager = SessionManager::new(tmp.path().join("sessions")).expect("new");
+        // All updated within the last hour.
+        write_session_with_updated_at(
+            &manager,
+            "fresh-1",
+            Utc::now() - chrono::Duration::minutes(30),
+        );
+        write_session_with_updated_at(
+            &manager,
+            "fresh-2",
+            Utc::now() - chrono::Duration::minutes(5),
+        );
+        let pruned = manager
+            .prune_sessions_older_than(std::time::Duration::from_secs(3600))
+            .expect("prune");
+        assert_eq!(pruned, 0);
+        // Both files still on disk.
+        assert_eq!(manager.list_sessions().expect("list").len(), 2);
+    }
+
+    #[test]
+    fn prune_sessions_older_than_removes_stale_records() {
+        let tmp = tempdir().expect("tempdir");
+        let manager = SessionManager::new(tmp.path().join("sessions")).expect("new");
+        // Two stale records ≥7 days old.
+        write_session_with_updated_at(&manager, "stale-1", Utc::now() - chrono::Duration::days(8));
+        write_session_with_updated_at(&manager, "stale-2", Utc::now() - chrono::Duration::days(30));
+        let pruned = manager
+            .prune_sessions_older_than(std::time::Duration::from_secs(7 * 24 * 3600))
+            .expect("prune");
+        assert_eq!(pruned, 2);
+        assert_eq!(manager.list_sessions().expect("list").len(), 0);
+    }
+
+    #[test]
+    fn prune_sessions_older_than_only_removes_stale_records_in_mixed_dir() {
+        let tmp = tempdir().expect("tempdir");
+        let manager = SessionManager::new(tmp.path().join("sessions")).expect("new");
+        write_session_with_updated_at(&manager, "fresh", Utc::now() - chrono::Duration::hours(1));
+        write_session_with_updated_at(&manager, "stale", Utc::now() - chrono::Duration::days(60));
+        let pruned = manager
+            .prune_sessions_older_than(std::time::Duration::from_secs(7 * 24 * 3600))
+            .expect("prune");
+        assert_eq!(pruned, 1);
+        let remaining = manager.list_sessions().expect("list");
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, "fresh");
+    }
+
+    #[test]
+    fn prune_sessions_older_than_skips_checkpoint_directory() {
+        // The checkpoint subsystem owns `<sessions>/checkpoints/` —
+        // prune must not walk into it. The list_sessions iterator
+        // already filters to top-level `*.json` files (skipping
+        // sub-directories), so this test pins that behaviour.
+        let tmp = tempdir().expect("tempdir");
+        let sessions_dir = tmp.path().join("sessions");
+        let manager = SessionManager::new(sessions_dir.clone()).expect("new");
+        let checkpoint_dir = sessions_dir.join("checkpoints");
+        fs::create_dir_all(&checkpoint_dir).expect("mkdir checkpoints");
+        // Drop a stale-looking JSON inside the checkpoint dir; prune
+        // should leave it alone.
+        let checkpoint_file = checkpoint_dir.join("latest.json");
+        fs::write(&checkpoint_file, "{}").expect("write checkpoint");
+
+        write_session_with_updated_at(&manager, "stale", Utc::now() - chrono::Duration::days(60));
+        let pruned = manager
+            .prune_sessions_older_than(std::time::Duration::from_secs(7 * 24 * 3600))
+            .expect("prune");
+        assert_eq!(pruned, 1, "the top-level stale session should be removed");
+        assert!(
+            checkpoint_file.exists(),
+            "checkpoint file should be untouched"
+        );
     }
 
     #[test]
