@@ -40,11 +40,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   footer's right-cluster: success / warning / error / muted by
   reachability. Hidden when zero MCP servers are configured.
 - **Per-project config overlay** (#485) — `<workspace>/.deepseek/config.toml`
-  now overlays nine fields on top of the user-global config:
-  `provider`, `model`, `api_key`, `base_url`, `reasoning_effort`,
-  `approval_policy`, `sandbox_mode`, `mcp_config_path`, `notes_path`,
-  `max_subagents`, `allow_shell`. Pass `--no-project-config` to
-  bypass for one launch.
+  overlays a curated set of fields on top of the user-global config:
+  `model`, `reasoning_effort`, `approval_policy`, `sandbox_mode`,
+  `notes_path`, `max_subagents`, `allow_shell`, plus the
+  `instructions = [...]` array (#454). Pass `--no-project-config`
+  to bypass for one launch.
+- **Project-scope deny-list for credentials/redirects** (#417) —
+  `api_key`, `base_url`, `provider`, and `mcp_config_path` are
+  refused at project scope. A malicious
+  `<workspace>/.deepseek/config.toml` would otherwise be able to
+  exfiltrate prompts to an attacker-controlled endpoint by
+  swapping the user's credentials and target host with
+  project-controlled values, or redirect the MCP loader at a
+  config that spawns arbitrary stdio servers under the user's
+  identity. The denied key emits a stderr warning so a user who
+  expected the override sees the deny instead of a silent drop.
+  Less-dangerous escalation prevention (e.g. denying
+  `approval_policy = "auto"` over a stricter user value) stays
+  v0.8.9 follow-up because it needs richer value comparison.
 - **Sub-agent role taxonomy expansion** (#404) — adds `Implementer`
   ("land this change with the minimum surrounding edit") and
   `Verifier` ("run the test suite, report pass/fail with evidence")
