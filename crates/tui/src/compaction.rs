@@ -892,6 +892,10 @@ async fn create_summary(
     };
 
     let response = client.create_message(request).await?;
+    // Compaction summary calls are billed by DeepSeek; route the
+    // tokens through the side-channel so the dashboard total
+    // matches the website (#526).
+    crate::cost_status::report(&response.model, &response.usage);
 
     // Extract text from response
     let summary = response

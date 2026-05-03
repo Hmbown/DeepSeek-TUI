@@ -1360,6 +1360,17 @@ async fn run_event_loop(
         let now = Instant::now();
         app.flush_paste_burst_if_enabled(now);
         app.sync_status_message_to_toasts();
+        // Drain background-LLM cost (compaction summaries, seam
+        // recompaction, cycle briefings) accumulated since the last
+        // tick and fold it into the session-cost counter (#526).
+        // Background callers populate `cost_status::report`; we sweep
+        // the pool once per loop iteration so the footer chip matches
+        // the DeepSeek website's billing.
+        let pending_bg_cost = crate::cost_status::drain();
+        if pending_bg_cost > 0.0 {
+            app.accrue_subagent_cost(pending_bg_cost);
+            app.needs_redraw = true;
+        }
         // Expire the "Press Ctrl+C again to quit" prompt silently after its
         // window. Triggers a redraw if the prompt was visible.
         app.tick_quit_armed();
