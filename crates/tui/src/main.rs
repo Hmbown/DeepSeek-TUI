@@ -4429,4 +4429,21 @@ mod pr_prompt_tests {
         // if the cut logic regresses).
         assert!(prompt.is_ascii() || prompt.contains('🚀'));
     }
+
+    #[test]
+    fn is_command_available_detects_present_and_absent_binaries() {
+        // `sh` is part of the POSIX baseline on every Unix runner and
+        // ships with `git-bash` on Windows CI. It should be present.
+        // (Skip on Windows CI without git-bash because the runner
+        // could legitimately lack `sh.exe`.)
+        #[cfg(unix)]
+        assert!(is_command_available("sh"), "POSIX `sh` should be on PATH");
+
+        // A deliberately-implausible name to confirm the negative
+        // branch — `--version` on this would exec(3) → ENOENT.
+        assert!(
+            !is_command_available("this-command-cannot-exist-deepseek-tui-test-ENOENT-marker"),
+            "missing command should return false, not panic"
+        );
+    }
 }
