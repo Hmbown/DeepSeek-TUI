@@ -2513,9 +2513,39 @@ async fn run_pr(
     run_interactive(cli, config, resume_session_id, Some(prompt)).await
 }
 
+/// Return true if `name` resolves to an executable on the current `PATH`.
+///
+/// Walks `$PATH` directly instead of probing with `--version`. The
+/// previous implementation invoked `Command::new(name).arg("--version")`,
+/// which fails on the Ubuntu CI runner because `/bin/sh` is `dash` —
+/// `dash --version` exits with status 2 ("invalid option") even though
+/// `sh` is plainly on PATH. macOS happens to ship bash as `sh`, which
+/// does honor `--version`, so the bug was invisible locally and only
+/// surfaced in CI logs.
+///
+/// Windows: also checks the `.exe` extension when `name` doesn't have
+/// one, matching the platform's PATHEXT lookup behavior for the common
+/// case.
 fn is_command_available(name: &str) -> bool {
-    let probe = Command::new(name).arg("--version").output();
-    probe.is_ok_and(|out| out.status.success())
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return true;
+        }
+        #[cfg(windows)]
+        {
+            // PATHEXT gives `.exe`/`.cmd`/`.bat` etc. priority — we only
+            // probe `.exe` because that's the case that actually trips
+            // up the negative case (`gh` resolves as `gh.exe`).
+            if candidate.extension().is_none() && candidate.with_extension("exe").is_file() {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 #[derive(Debug, Clone, Default)]
