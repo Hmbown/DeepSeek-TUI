@@ -9,6 +9,7 @@ use std::path::Path;
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
+use std::io::Write;
 
 /// Run the self-update workflow.
 pub fn run_update() -> Result<()> {
@@ -153,35 +154,91 @@ fn sha256_hex(data: &[u8]) -> String {
     format!("{hash:x}")
 }
 
-/// Atomically replace the running binary.
+/// Replace the running binary.
 ///
-/// Writes the new binary to a temp file, then renames it over the original.
-/// On Unix, we also preserve the original file's permissions.
+/// Writes the new binary to a secure temp file in the target directory, then
+/// installs it in place. Unix can atomically replace the executable path. On
+/// Windows, replacing a running executable can fail, so rename the current file
+/// out of the way before moving the new binary into the original path.
 fn replace_binary(target: &Path, new_bytes: &[u8]) -> Result<()> {
-    // Write to a temp file in the same directory (atomic rename requires
-    // same filesystem).
-    let tmp = target.with_extension("tmp");
-    std::fs::write(&tmp, new_bytes)
-        .with_context(|| format!("failed to write temp file at {}", tmp.display()))?;
+    let parent = target
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+
+    let mut tmp = tempfile::Builder::new()
+        .prefix(".deepseek-update-")
+        .tempfile_in(parent)
+        .with_context(|| format!("failed to create temp file in {}", parent.display()))?;
+    tmp.write_all(new_bytes)
+        .with_context(|| format!("failed to write temp file at {}", tmp.path().display()))?;
 
     // Preserve permissions from the original binary (if it exists)
     if target.exists() {
         if let Ok(meta) = std::fs::metadata(target) {
-            let _ = std::fs::set_permissions(&tmp, meta.permissions());
+            let _ = std::fs::set_permissions(tmp.path(), meta.permissions());
         }
     } else {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755));
+            let _ = std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o755));
         }
     }
 
-    // Atomic rename
-    std::fs::rename(&tmp, target)
-        .with_context(|| format!("failed to rename temp file to {}", target.display()))?;
+    #[cfg(windows)]
+    {
+        let backup = backup_path_for(target);
+        if target.exists() {
+            std::fs::rename(target, &backup).with_context(|| {
+                format!(
+                    "failed to move current executable {} to {}",
+                    target.display(),
+                    backup.display()
+                )
+            })?;
+        }
+
+        if let Err(err) = tmp.persist(target) {
+            if backup.exists() {
+                let _ = std::fs::rename(&backup, target);
+            }
+            bail!(
+                "failed to install new binary at {}: {}",
+                target.display(),
+                err.error
+            );
+        }
+
+        let _ = std::fs::remove_file(&backup);
+    }
+
+    #[cfg(not(windows))]
+    {
+        tmp.persist(target)
+            .map_err(|err| err.error)
+            .with_context(|| format!("failed to rename temp file to {}", target.display()))?;
+    }
 
     Ok(())
+}
+
+#[cfg(windows)]
+fn backup_path_for(target: &Path) -> std::path::PathBuf {
+    let pid = std::process::id();
+    for index in 0..100 {
+        let mut candidate = target.to_path_buf();
+        let suffix = if index == 0 {
+            format!("old-{pid}")
+        } else {
+            format!("old-{pid}-{index}")
+        };
+        candidate.set_extension(suffix);
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    target.with_extension(format!("old-{pid}-fallback"))
 }
 
 #[cfg(test)]

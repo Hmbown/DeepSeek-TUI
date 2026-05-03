@@ -419,6 +419,7 @@ struct YoloRestoreState {
 // === Sub-state structs for App field organization (#377) ===
 
 /// Composer input state — grouped fields for the text input area.
+#[derive(Default)]
 pub struct ComposerState {
     /// Current composer text content.
     pub input: String,
@@ -437,27 +438,6 @@ pub struct ComposerState {
     pub slash_menu_hidden: bool,
     pub mention_menu_selected: usize,
     pub mention_menu_hidden: bool,
-}
-
-impl Default for ComposerState {
-    fn default() -> Self {
-        Self {
-            input: String::new(),
-            cursor_position: 0,
-            kill_buffer: String::new(),
-            paste_burst: PasteBurst::default(),
-            input_history: Vec::new(),
-            draft_history: VecDeque::new(),
-            history_index: None,
-            history_navigation_draft: None,
-            composer_history_search: None,
-            selected_attachment_index: None,
-            slash_menu_selected: 0,
-            slash_menu_hidden: false,
-            mention_menu_selected: 0,
-            mention_menu_hidden: false,
-        }
-    }
 }
 
 /// Viewport/scroll state — fields related to transcript scrolling and caching.
@@ -921,7 +901,7 @@ impl std::ops::DerefMut for App {
 // === App State ===
 
 impl App {
-    /// Cap on [`Self::turn_cache_history`]. Holds enough turns to debug a long
+    /// Cap on the session turn-cache history. Holds enough turns to debug a long
     /// session without being so large the on-screen `/cache` table wraps.
     pub const TURN_CACHE_HISTORY_CAP: usize = 50;
 

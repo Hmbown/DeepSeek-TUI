@@ -136,6 +136,7 @@ mod tests {
     /// crate-wide env mutex.
     struct ScopedHome {
         prev: Option<std::ffi::OsString>,
+        _home: TempDir,
         _guard: MutexGuard<'static, ()>,
     }
     impl Drop for ScopedHome {
@@ -149,15 +150,17 @@ mod tests {
             }
         }
     }
-    fn scoped_home(tmp: &TempDir) -> ScopedHome {
+    fn scoped_home(_workspace: &TempDir) -> ScopedHome {
         let guard = lock_test_env();
         let prev = std::env::var_os("HOME");
+        let home = TempDir::new().expect("home tempdir");
         // SAFETY: serialised by the global env lock.
         unsafe {
-            std::env::set_var("HOME", tmp.path());
+            std::env::set_var("HOME", home.path());
         }
         ScopedHome {
             prev,
+            _home: home,
             _guard: guard,
         }
     }

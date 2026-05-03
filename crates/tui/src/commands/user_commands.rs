@@ -100,10 +100,16 @@ mod tests {
     #[test]
     fn test_commands_dir_contains_deepseek_commands() {
         let dir = commands_dir();
-        let path_str = dir.to_string_lossy();
+        let parts: Vec<_> = dir
+            .components()
+            .filter_map(|component| component.as_os_str().to_str())
+            .collect();
         assert!(
-            path_str.contains(".deepseek/commands"),
-            "expected .deepseek/commands in path, got: {path_str}"
+            parts
+                .windows(2)
+                .any(|pair| pair == [".deepseek", "commands"]),
+            "expected .deepseek/commands components in path, got: {}",
+            dir.display()
         );
     }
 

@@ -89,13 +89,13 @@ impl FileTreeState {
             None => return,
         };
         let mut done = false;
-        if let Ok(mut guard) = cell.lock() {
-            if let Some(entries) = guard.take() {
-                self.entries = entries;
-                self.is_loading = false;
-                self.clamp_cursor();
-                done = true;
-            }
+        if let Ok(mut guard) = cell.lock()
+            && let Some(entries) = guard.take()
+        {
+            self.entries = entries;
+            self.is_loading = false;
+            self.clamp_cursor();
+            done = true;
         }
         if !done {
             // Put the cell back so we can poll again next frame.

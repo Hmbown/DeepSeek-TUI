@@ -2937,10 +2937,10 @@ fn merge_project_config(config: &mut Config, workspace: &Path) {
         ("base_url", &mut config.base_url),
         ("reasoning_effort", &mut config.reasoning_effort),
     ] {
-        if let Some(v) = table.get(key).and_then(toml::Value::as_str) {
-            if !v.is_empty() {
-                *field = Some(v.to_string());
-            }
+        if let Some(v) = table.get(key).and_then(toml::Value::as_str)
+            && !v.is_empty()
+        {
+            *field = Some(v.to_string());
         }
     }
 }

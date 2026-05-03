@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.6] - 2026-05-03
+
+### Added
+- **Long-session survivability by default** (#402) — capacity control and
+  compaction defaults are enabled, transcript history is bounded, persisted
+  sessions are capped, and oversized history folds into archived context
+  placeholders instead of freezing the TUI.
+- **v0.8.6 feature batch** (#373-#402) — adds Goal mode, cache-hit chips,
+  cycle-boundary visualization, file-tree pane, `/share`, `/model auto`,
+  user-defined slash commands, `/profile`, LSP diagnostic wiring,
+  crash-recovery, self-update, `/init`, `/diff`, patch-aware `/undo`,
+  `/edit`, inline diff highlighting, smart clipboard, native-copy escape,
+  right-click context menus, clickable file:line styling, and MCP Phase A.
+
+### Fixed
+- **Lag and rendering regressions** (#399, #400) — moves git/file-tree work
+  off the UI thread where possible, bounds render history, and tightens redraw
+  behavior to avoid sidebar/chat text bleed-through.
+- **Release-hardening follow-ups** — `/share` now writes via secure temp files,
+  self-update uses secure same-directory temps with Windows-safe replacement,
+  and docs/rustfmt release gates are clean.
+
 ## [0.8.4] - 2026-05-02
 
 ### Added

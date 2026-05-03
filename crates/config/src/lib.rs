@@ -287,9 +287,15 @@ impl ConfigToml {
 
         // Merge provider sub-tables field-by-field.
         merge_provider_config(&mut self.providers.deepseek, &project.providers.deepseek);
-        merge_provider_config(&mut self.providers.nvidia_nim, &project.providers.nvidia_nim);
+        merge_provider_config(
+            &mut self.providers.nvidia_nim,
+            &project.providers.nvidia_nim,
+        );
         merge_provider_config(&mut self.providers.openai, &project.providers.openai);
-        merge_provider_config(&mut self.providers.openrouter, &project.providers.openrouter);
+        merge_provider_config(
+            &mut self.providers.openrouter,
+            &project.providers.openrouter,
+        );
         merge_provider_config(&mut self.providers.novita, &project.providers.novita);
 
         if project.network.is_some() {

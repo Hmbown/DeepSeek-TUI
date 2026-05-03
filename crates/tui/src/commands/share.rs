@@ -8,7 +8,8 @@
 //! - `/share` — export the current session and print the Gist URL
 //! - `/share help` — show usage
 
-use std::path::{Path, PathBuf};
+use std::io::Write;
+use std::path::Path;
 
 use super::CommandResult;
 use crate::tui::app::{App, AppAction};
@@ -74,21 +75,15 @@ pub async fn perform_share(history_json: &str, model: &str, mode: &str) -> Resul
 
     // Write to a temp file
     let tmp = match write_temp_html(&html) {
-        Ok(path) => path,
+        Ok(file) => file,
         Err(e) => return Err(format!("Failed to write temp file: {e}")),
     };
 
     // Upload via `gh gist create`
-    let url = match upload_gist(&tmp).await {
+    let url = match upload_gist(tmp.path()).await {
         Ok(url) => url,
-        Err(e) => {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(format!("Failed to upload Gist: {e}"));
-        }
+        Err(e) => return Err(format!("Failed to upload Gist: {e}")),
     };
-
-    // Cleanup
-    let _ = std::fs::remove_file(&tmp);
 
     Ok(url)
 }
@@ -147,10 +142,14 @@ fn html_escape(s: &str) -> String {
         .replace('\'', "&#39;")
 }
 
-/// Write HTML to a temp file and return its path.
-fn write_temp_html(html: &str) -> Result<PathBuf, String> {
-    let tmp = std::env::temp_dir().join(format!("deepseek-share-{}.html", std::process::id()));
-    std::fs::write(&tmp, html).map_err(|e| format!("{e}"))?;
+/// Write HTML to a secure temp file and keep it alive for upload.
+fn write_temp_html(html: &str) -> Result<tempfile::NamedTempFile, String> {
+    let mut tmp = tempfile::Builder::new()
+        .prefix("deepseek-share-")
+        .suffix(".html")
+        .tempfile()
+        .map_err(|e| format!("{e}"))?;
+    tmp.write_all(html.as_bytes()).map_err(|e| format!("{e}"))?;
     Ok(tmp)
 }
 
@@ -207,11 +206,10 @@ mod tests {
 
     #[test]
     fn test_write_temp_html_creates_file() {
-        let path = write_temp_html("<html></html>").unwrap();
-        assert!(path.exists());
-        let content = std::fs::read_to_string(&path).unwrap();
+        let file = write_temp_html("<html></html>").unwrap();
+        assert!(file.path().exists());
+        let content = std::fs::read_to_string(file.path()).unwrap();
         assert_eq!(content, "<html></html>");
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

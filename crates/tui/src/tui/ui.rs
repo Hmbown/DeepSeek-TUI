@@ -4947,10 +4947,10 @@ fn compact_user_context_display(content: &str) -> String {
 fn refresh_workspace_context_if_needed(app: &mut App, now: Instant, allow_refresh: bool) {
     // Drain the async cell result into the live field first, so the render
     // path always reads the latest value (#399 S1).
-    if let Ok(mut cell) = app.workspace_context_cell.lock() {
-        if let Some(ctx) = cell.take() {
-            app.workspace_context = Some(ctx);
-        }
+    if let Ok(mut cell) = app.workspace_context_cell.lock()
+        && let Some(ctx) = cell.take()
+    {
+        app.workspace_context = Some(ctx);
     }
 
     if app

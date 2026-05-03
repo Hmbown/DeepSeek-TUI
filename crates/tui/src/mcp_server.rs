@@ -347,8 +347,7 @@ impl McpServer {
         // Resolve thread_id
         let thread_id = if internal_name == "deepseek" {
             // New thread
-            let tid = Uuid::new_v4().to_string();
-            tid
+            Uuid::new_v4().to_string()
         } else {
             arguments
                 .get("thread_id")
