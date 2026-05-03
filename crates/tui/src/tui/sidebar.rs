@@ -60,6 +60,21 @@ pub fn render_sidebar(f: &mut Frame, area: Rect, app: &App) {
     }
 }
 
+/// The Plan section is the **single source of truth for the
+/// `update_plan` tool's output** (#408). It is intentionally distinct
+/// from the Todos section: todos are checklist work items the user
+/// or model is tracking; plan steps are the model's higher-level
+/// strategy as recorded by `update_plan`. The panel also hosts two
+/// session-wide indicators that don't fit the other sections — Goal
+/// (`/goal`) and the cycle counter (#124) — because they share the
+/// "what's the agent trying to do, big-picture" theme.
+///
+/// When the panel is fully empty (no goal, no cycles, no plan) it
+/// renders as a quiet section with a single dim hint at the bottom
+/// rather than the blunt "No active plan" placeholder it used to show.
+/// That kept the user wondering whether the panel was broken; the
+/// hint instead tells them what the panel is for and how to populate
+/// it.
 fn render_sidebar_plan(f: &mut Frame, area: Rect, app: &App) {
     if area.height < 3 {
         return;
@@ -123,10 +138,21 @@ fn render_sidebar_plan(f: &mut Frame, area: Rect, app: &App) {
     match app.plan_state.try_lock() {
         Ok(plan) => {
             if plan.is_empty() {
-                lines.push(Line::from(Span::styled(
-                    "No active plan",
-                    Style::default().fg(theme.plan_summary_color),
-                )));
+                // The blunt "No active plan" placeholder used to land
+                // here on every render with no plan steps, even when the
+                // user had a goal set or had cycled — making the panel
+                // look broken. After #408 we instead emit a quiet hint
+                // that explains what the panel is for, but only when
+                // *all* of the panel's signals are empty so we don't
+                // crowd a panel that already has a goal / cycle
+                // indicator above.
+                let nothing_above = app.goal.goal_objective.is_none() && app.cycle_count == 0;
+                if nothing_above {
+                    lines.push(Line::from(Span::styled(
+                        plan_panel_empty_hint(content_width.max(1)),
+                        Style::default().fg(palette::TEXT_MUTED).italic(),
+                    )));
+                }
             } else {
                 let (pending, in_progress, completed) = plan.counts();
                 let total = pending + in_progress + completed;
@@ -185,6 +211,17 @@ fn render_sidebar_plan(f: &mut Frame, area: Rect, app: &App) {
     }
 
     render_sidebar_section(f, area, "Plan", lines);
+}
+
+/// One-line hint shown when the Plan section has nothing to display
+/// (no goal, no cycle, no steps). Ellipsizes for narrow widths so
+/// even a 24-column sidebar doesn't wrap mid-word. Visible across
+/// modes — the panel's role doesn't change between Plan / Agent /
+/// YOLO; only its content does.
+#[must_use]
+fn plan_panel_empty_hint(content_width: usize) -> String {
+    let full = "tracks update_plan / /goal / cycles";
+    truncate_line_to_width(full, content_width)
 }
 
 fn render_sidebar_todos(f: &mut Frame, area: Rect, app: &App) {
@@ -559,7 +596,7 @@ fn render_sidebar_section(f: &mut Frame, area: Rect, title: &str, lines: Vec<Lin
 
 #[cfg(test)]
 mod tests {
-    use super::{SidebarSubagentSummary, subagent_navigator_lines};
+    use super::{SidebarSubagentSummary, plan_panel_empty_hint, subagent_navigator_lines};
     use ratatui::text::Line;
 
     fn lines_to_text(lines: &[Line<'static>]) -> Vec<String> {
@@ -572,6 +609,47 @@ mod tests {
                     .collect::<String>()
             })
             .collect()
+    }
+
+    // ---- #408 Plan panel empty-state hint ----
+
+    #[test]
+    fn plan_panel_empty_hint_mentions_panels_role() {
+        // The hint replaces the old "No active plan" placeholder; it
+        // should explain what the panel tracks so the user can tell
+        // whether the panel is broken vs simply unused this turn.
+        let hint = plan_panel_empty_hint(80);
+        assert!(
+            hint.contains("update_plan"),
+            "hint should name the tool: {hint:?}"
+        );
+        assert!(
+            hint.contains("/goal") || hint.contains("goal"),
+            "hint should mention /goal: {hint:?}"
+        );
+    }
+
+    #[test]
+    fn plan_panel_empty_hint_truncates_to_narrow_widths() {
+        // Width 16 forces an ellipsis; the hint should still fit.
+        let hint = plan_panel_empty_hint(16);
+        assert!(
+            hint.chars().count() <= 16,
+            "hint width {} > 16: {hint:?}",
+            hint.chars().count()
+        );
+    }
+
+    #[test]
+    fn plan_panel_empty_hint_does_not_say_no_active_plan() {
+        // Regression guard: the placeholder used to say "No active
+        // plan" which made the panel look broken. The hint should
+        // never re-introduce that wording.
+        let hint = plan_panel_empty_hint(80);
+        assert!(
+            !hint.to_ascii_lowercase().contains("no active plan"),
+            "hint regressed to old placeholder: {hint:?}"
+        );
     }
 
     #[test]
