@@ -777,6 +777,7 @@ fn make_subagent(
         result: None,
         steps_taken: 0,
         duration_ms: 0,
+        from_prior_session: false,
     }
 }
 

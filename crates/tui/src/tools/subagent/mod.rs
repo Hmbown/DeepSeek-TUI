@@ -318,6 +318,16 @@ pub struct SubAgentResult {
     pub result: Option<String>,
     pub steps_taken: u32,
     pub duration_ms: u64,
+    /// `true` when this agent was loaded from a prior-session persisted
+    /// state file rather than spawned in the current session (#405).
+    /// Lets `agent_list` filter out historical noise by default while
+    /// keeping the records reachable via `include_archived=true`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub from_prior_session: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 #[derive(Debug, Clone, Default)]
@@ -405,6 +415,14 @@ struct PersistedSubAgent {
     duration_ms: u64,
     allowed_tools: Vec<String>,
     updated_at_ms: u64,
+    /// Stable id of the manager / process boot that spawned this agent
+    /// (#405). Lets a fresh manager filter out agents that were
+    /// persisted by a prior session. Optional with `#[serde(default)]`
+    /// for backward compatibility — older records lack the field and
+    /// load with an empty string, which the manager treats as
+    /// "from_prior_session" because it can't match any current id.
+    #[serde(default)]
+    session_boot_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -587,12 +605,17 @@ pub struct SubAgent {
     /// `None` = full registry inheritance (v0.6.6 default).
     /// `Some(list)` = explicit narrow allowlist (Custom agents, legacy).
     pub allowed_tools: Option<Vec<String>>,
+    /// Stable id of the manager that spawned this agent (#405). Compared
+    /// against the manager's `current_session_boot_id` to classify the
+    /// agent as in-session vs prior-session at list time.
+    pub session_boot_id: String,
     input_tx: Option<mpsc::UnboundedSender<SubAgentInput>>,
     task_handle: Option<JoinHandle<()>>,
 }
 
 impl SubAgent {
     /// Create a new sub-agent.
+    #[allow(clippy::too_many_arguments)]
     fn new(
         agent_type: SubAgentType,
         prompt: String,
@@ -601,6 +624,7 @@ impl SubAgent {
         nickname: Option<String>,
         allowed_tools: Option<Vec<String>>,
         input_tx: mpsc::UnboundedSender<SubAgentInput>,
+        session_boot_id: String,
     ) -> Self {
         let id = format!("agent_{}", &Uuid::new_v4().to_string()[..8]);
 
@@ -616,6 +640,7 @@ impl SubAgent {
             steps_taken: 0,
             started_at: Instant::now(),
             allowed_tools,
+            session_boot_id,
             input_tx: Some(input_tx),
             task_handle: None,
         }
@@ -634,6 +659,11 @@ impl SubAgent {
             result: self.result.clone(),
             steps_taken: self.steps_taken,
             duration_ms: u64::try_from(self.started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+            // Snapshots from the agent itself don't know the manager's
+            // current boot id, so default to false. The manager fills
+            // this in when it produces a snapshot via its own
+            // `snapshot_for_listing` helper (#405).
+            from_prior_session: false,
         }
     }
 }
@@ -646,6 +676,13 @@ pub struct SubAgentManager {
     state_path: Option<PathBuf>,
     max_steps: u32,
     max_agents: usize,
+    /// Stable id assigned at manager construction (#405). Stamped on
+    /// every agent the manager spawns; agents loaded from the
+    /// persisted state file carry whatever id the prior session
+    /// stamped (or empty for pre-#405 records). The manager classifies
+    /// agents whose `session_boot_id` doesn't match this value as
+    /// "from prior session" so `agent_list` can hide them by default.
+    current_session_boot_id: String,
 }
 
 impl SubAgentManager {
@@ -658,7 +695,25 @@ impl SubAgentManager {
             state_path: None,
             max_steps: DEFAULT_MAX_STEPS,
             max_agents,
+            // Fresh boot id per manager. Used by #405 to classify
+            // re-loaded persisted agents as "prior session".
+            current_session_boot_id: format!("boot_{}", &Uuid::new_v4().to_string()[..12]),
         }
+    }
+
+    /// Return the boot id this manager stamps on agents it spawns.
+    /// Exposed for tests; internal callers use the field directly.
+    #[cfg(test)]
+    pub fn session_boot_id(&self) -> &str {
+        &self.current_session_boot_id
+    }
+
+    /// Classify an agent by its `session_boot_id`: `true` when the
+    /// agent was either (a) loaded from disk with no id, or (b) carries
+    /// a different id than the manager's current boot. Filters
+    /// `agent_list` output by default (#405).
+    fn is_from_prior_session(&self, agent: &SubAgent) -> bool {
+        agent.session_boot_id.is_empty() || agent.session_boot_id != self.current_session_boot_id
     }
 
     #[must_use]
@@ -690,6 +745,7 @@ impl SubAgentManager {
                 // Reload converts empty vec back to None (full inheritance).
                 allowed_tools: agent.allowed_tools.clone().unwrap_or_default(),
                 updated_at_ms: now_ms,
+                session_boot_id: agent.session_boot_id.clone(),
             });
         }
         agents.sort_by(|a, b| a.id.cmp(&b.id));
@@ -755,6 +811,10 @@ impl SubAgentManager {
                 steps_taken: persisted.steps_taken,
                 started_at,
                 allowed_tools,
+                // Empty string when loading pre-#405 records; the
+                // manager treats that the same as a non-matching id —
+                // i.e. agent classified as prior-session.
+                session_boot_id: persisted.session_boot_id,
                 input_tx: None,
                 task_handle: None,
             };
@@ -863,6 +923,7 @@ impl SubAgentManager {
             nickname,
             tools.clone(),
             input_tx,
+            self.current_session_boot_id.clone(),
         );
         let agent_id = agent.id.clone();
         let started_at = agent.started_at;
@@ -1147,8 +1208,50 @@ impl SubAgentManager {
 
     /// List all agents and their status.
     #[must_use]
+    /// Snapshot a single agent and tag it with the manager's
+    /// classification. The bare `SubAgent::snapshot` defaults
+    /// `from_prior_session` to `false`; only the manager knows the
+    /// matching boot id, so listing goes through here.
+    fn snapshot_for_listing(&self, agent: &SubAgent) -> SubAgentResult {
+        let mut snap = agent.snapshot();
+        snap.from_prior_session = self.is_from_prior_session(agent);
+        snap
+    }
+
+    /// List all agents currently held by the manager, regardless of
+    /// session origin. Use [`Self::list_filtered`] in user-facing tool
+    /// paths so prior-session agents stay hidden by default (#405).
     pub fn list(&self) -> Vec<SubAgentResult> {
-        self.agents.values().map(SubAgent::snapshot).collect()
+        self.agents
+            .values()
+            .map(|agent| self.snapshot_for_listing(agent))
+            .collect()
+    }
+
+    /// List agents respecting the session-boundary filter (#405).
+    ///
+    /// `include_archived = false` (the default for `agent_list`) drops
+    /// any prior-session agent that is no longer running. Prior-session
+    /// agents that are still `Running` (e.g. interrupted by a process
+    /// restart) stay visible — they may matter for ongoing recovery.
+    ///
+    /// `include_archived = true` returns everything, with the
+    /// `from_prior_session` flag on each `SubAgentResult` so the model
+    /// can tell active and archived apart at a glance.
+    pub fn list_filtered(&self, include_archived: bool) -> Vec<SubAgentResult> {
+        self.agents
+            .values()
+            .filter(|agent| {
+                if include_archived {
+                    return true;
+                }
+                if agent.status == SubAgentStatus::Running {
+                    return true;
+                }
+                !self.is_from_prior_session(agent)
+            })
+            .map(|agent| self.snapshot_for_listing(agent))
+            .collect()
     }
 
     /// Clean up completed agents older than the given duration.
@@ -1767,14 +1870,22 @@ impl ToolSpec for AgentListTool {
     }
 
     fn description(&self) -> &'static str {
-        "List all active and recently completed sub-agents with their status, type, assignment, \
-         steps taken, and duration."
+        "List sub-agents from the current session with their status, type, assignment, steps, \
+         and duration. Pass `include_archived=true` to also see agents that were spawned in a \
+         prior session (e.g. before the TUI restarted) and persisted on disk; those carry \
+         `from_prior_session: true` in the result. Default is the current-session view because \
+         prior-session agents almost never matter for the live turn."
     }
 
     fn input_schema(&self) -> Value {
         json!({
             "type": "object",
-            "properties": {}
+            "properties": {
+                "include_archived": {
+                    "type": "boolean",
+                    "description": "When true, include agents from prior sessions in the listing. Default false."
+                }
+            }
         })
     }
 
@@ -1782,14 +1893,14 @@ impl ToolSpec for AgentListTool {
         vec![ToolCapability::ReadOnly]
     }
 
-    async fn execute(
-        &self,
-        _input: Value,
-        _context: &ToolContext,
-    ) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
+        let include_archived = input
+            .get("include_archived")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let mut manager = self.manager.write().await;
         manager.cleanup(COMPLETED_AGENT_RETENTION);
-        let results = manager.list();
+        let results = manager.list_filtered(include_archived);
         ToolResult::json(&results).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
 }
@@ -2431,6 +2542,7 @@ async fn run_subagent(
                 result: None,
                 steps_taken: steps,
                 duration_ms: u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+                from_prior_session: false,
             });
         }
 
@@ -2504,6 +2616,7 @@ async fn run_subagent(
                     steps_taken: steps,
                     duration_ms: u64::try_from(started_at.elapsed().as_millis())
                         .unwrap_or(u64::MAX),
+                    from_prior_session: false,
                 });
             }
             api = tokio::time::timeout(STEP_API_TIMEOUT, runtime.client.create_message(request)) => {
@@ -2637,6 +2750,7 @@ async fn run_subagent(
         result: final_result,
         steps_taken: steps,
         duration_ms: u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+        from_prior_session: false,
     })
 }
 
