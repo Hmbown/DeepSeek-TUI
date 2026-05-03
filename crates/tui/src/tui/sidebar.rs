@@ -37,26 +37,79 @@ pub fn render_sidebar(f: &mut Frame, area: Rect, app: &App) {
     }
 
     match app.sidebar_focus {
-        SidebarFocus::Auto => {
-            let sections = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Percentage(25),
-                    Constraint::Percentage(25),
-                    Constraint::Percentage(25),
-                    Constraint::Min(6),
-                ])
-                .split(area);
-
-            render_sidebar_plan(f, sections[0], app);
-            render_sidebar_todos(f, sections[1], app);
-            render_sidebar_tasks(f, sections[2], app);
-            render_sidebar_subagents(f, sections[3], app);
-        }
+        SidebarFocus::Auto => render_sidebar_auto(f, area, app),
         SidebarFocus::Plan => render_sidebar_plan(f, area, app),
         SidebarFocus::Todos => render_sidebar_todos(f, area, app),
         SidebarFocus::Tasks => render_sidebar_tasks(f, area, app),
         SidebarFocus::Agents => render_sidebar_subagents(f, area, app),
+    }
+}
+
+/// Build the Auto-mode panel stack. Empty panels collapse to zero height so
+/// non-empty ones get the full sidebar real estate. Without this, Plan got
+/// clipped because Todos/Tasks/Agents each reserved 25% of the height even
+/// when they had nothing to show. Plan is always rendered (it owns the
+/// session-wide empty-state hint).
+fn render_sidebar_auto(f: &mut Frame, area: Rect, app: &App) {
+    #[derive(Clone, Copy)]
+    enum Panel {
+        Plan,
+        Todos,
+        Tasks,
+        Agents,
+    }
+
+    let todos_empty = app
+        .todos
+        .try_lock()
+        .map(|todos| todos.snapshot().items.is_empty())
+        .unwrap_or(false); // assume non-empty when locked so we don't hide updating data
+    let tasks_empty = app.runtime_turn_id.is_none() && app.task_panel.is_empty();
+    let agents_empty = app.subagent_cache.is_empty()
+        && app.agent_progress.is_empty()
+        && active_fanout_counts(app).is_none()
+        && !foreground_rlm_running(app);
+
+    let mut visible: Vec<Panel> = Vec::with_capacity(4);
+    visible.push(Panel::Plan);
+    if !todos_empty {
+        visible.push(Panel::Todos);
+    }
+    if !tasks_empty {
+        visible.push(Panel::Tasks);
+    }
+    if !agents_empty {
+        visible.push(Panel::Agents);
+    }
+
+    let constraints: Vec<Constraint> = match visible.len() {
+        1 => vec![Constraint::Min(0)],
+        2 => vec![Constraint::Percentage(50), Constraint::Min(0)],
+        3 => vec![
+            Constraint::Percentage(34),
+            Constraint::Percentage(33),
+            Constraint::Min(0),
+        ],
+        _ => vec![
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Min(6),
+        ],
+    };
+
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
+        .split(area);
+
+    for (panel, rect) in visible.iter().zip(sections.iter()) {
+        match panel {
+            Panel::Plan => render_sidebar_plan(f, *rect, app),
+            Panel::Todos => render_sidebar_todos(f, *rect, app),
+            Panel::Tasks => render_sidebar_tasks(f, *rect, app),
+            Panel::Agents => render_sidebar_subagents(f, *rect, app),
+        }
     }
 }
 
