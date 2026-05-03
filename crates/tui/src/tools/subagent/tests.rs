@@ -52,6 +52,123 @@ fn test_agent_type_from_str() {
 }
 
 #[test]
+fn test_agent_type_implementer_aliases() {
+    // #404 — Implementer accepts the obvious aliases the model is
+    // likely to reach for when the user says "build this".
+    for alias in ["implementer", "implement", "implementation", "builder"] {
+        assert_eq!(
+            SubAgentType::from_str(alias),
+            Some(SubAgentType::Implementer),
+            "alias {alias} should resolve to Implementer"
+        );
+    }
+    // Case-insensitive.
+    assert_eq!(
+        SubAgentType::from_str("IMPLEMENTER"),
+        Some(SubAgentType::Implementer)
+    );
+}
+
+#[test]
+fn test_agent_type_verifier_aliases() {
+    // #404 — Verifier accepts test/validate aliases distinct from
+    // Reviewer, which is for *grading* code rather than *running* it.
+    for alias in ["verifier", "verify", "verification", "validator", "tester"] {
+        assert_eq!(
+            SubAgentType::from_str(alias),
+            Some(SubAgentType::Verifier),
+            "alias {alias} should resolve to Verifier"
+        );
+    }
+    assert_eq!(
+        SubAgentType::from_str("VERIFY"),
+        Some(SubAgentType::Verifier)
+    );
+}
+
+#[test]
+fn test_agent_type_round_trips_via_as_str() {
+    // Every type should serialize to a string that round-trips back
+    // through `from_str`. Catches missed variants when adding a new
+    // role.
+    for t in [
+        SubAgentType::General,
+        SubAgentType::Explore,
+        SubAgentType::Plan,
+        SubAgentType::Review,
+        SubAgentType::Implementer,
+        SubAgentType::Verifier,
+        SubAgentType::Custom,
+    ] {
+        let label = t.as_str();
+        let back = SubAgentType::from_str(label)
+            .unwrap_or_else(|| panic!("as_str label {label:?} doesn't round-trip via from_str"));
+        assert_eq!(back, t, "round-trip failed for {t:?} via {label:?}");
+    }
+}
+
+#[test]
+fn test_implementer_and_verifier_have_distinct_prompts() {
+    // The whole point of adding the types is that they carry distinct
+    // posture. Defensive guard: catch the easy bug where copy-paste
+    // leaves two new variants with the same prompt as `General`.
+    let implementer = SubAgentType::Implementer.system_prompt();
+    let verifier = SubAgentType::Verifier.system_prompt();
+    let general = SubAgentType::General.system_prompt();
+    assert_ne!(
+        implementer, general,
+        "Implementer prompt must differ from General"
+    );
+    assert_ne!(
+        verifier, general,
+        "Verifier prompt must differ from General"
+    );
+    assert_ne!(
+        implementer, verifier,
+        "Implementer and Verifier must differ"
+    );
+    // Sanity: each prompt mentions the role's defining verb so the
+    // model has clear direction.
+    assert!(
+        implementer.to_lowercase().contains("implement")
+            || implementer.to_lowercase().contains("write the code"),
+        "Implementer prompt should reference its role: {implementer}"
+    );
+    assert!(
+        verifier.to_lowercase().contains("verif")
+            || verifier.to_lowercase().contains("test suite")
+            || verifier.to_lowercase().contains("validation"),
+        "Verifier prompt should reference its role: {verifier}"
+    );
+}
+
+#[test]
+fn test_implementer_allowed_tools_include_writes() {
+    // Implementer is the write-heavy role; the deprecated
+    // `allowed_tools()` advisory list should reflect that the role
+    // can write/edit/patch even if today's runtime grants full
+    // inheritance.
+    #[allow(deprecated)]
+    let tools = SubAgentType::Implementer.allowed_tools();
+    assert!(tools.contains(&"write_file"));
+    assert!(tools.contains(&"edit_file"));
+    assert!(tools.contains(&"apply_patch"));
+}
+
+#[test]
+fn test_verifier_allowed_tools_include_test_runner_but_no_writes() {
+    // Verifier runs validation; it should not have write tools in
+    // its advisory list. The runtime will still gate writes through
+    // approval, but the advisory list signals intent.
+    #[allow(deprecated)]
+    let tools = SubAgentType::Verifier.allowed_tools();
+    assert!(tools.contains(&"run_tests"));
+    assert!(tools.contains(&"diagnostics"));
+    assert!(!tools.contains(&"write_file"));
+    assert!(!tools.contains(&"apply_patch"));
+}
+
+#[test]
 fn test_parse_spawn_request_accepts_message_and_agent_type_aliases() {
     let input = json!({
         "message": "Find references to Foo",

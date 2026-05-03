@@ -1644,19 +1644,17 @@ fn agent_type_order(agent_type: &SubAgentType) -> u8 {
         SubAgentType::General => 0,
         SubAgentType::Explore => 1,
         SubAgentType::Plan => 2,
-        SubAgentType::Review => 3,
-        SubAgentType::Custom => 4,
+        SubAgentType::Implementer => 3,
+        SubAgentType::Verifier => 4,
+        SubAgentType::Review => 5,
+        SubAgentType::Custom => 6,
     }
 }
 
 fn format_agent_type(agent_type: &SubAgentType) -> &'static str {
-    match agent_type {
-        SubAgentType::General => "general",
-        SubAgentType::Explore => "explore",
-        SubAgentType::Plan => "plan",
-        SubAgentType::Review => "review",
-        SubAgentType::Custom => "custom",
-    }
+    // Source of truth lives on the enum so any new role lands in both
+    // the user-visible label and the sort order via the as_str() helper.
+    agent_type.as_str()
 }
 
 fn format_agent_status(

@@ -177,6 +177,16 @@ pub enum SubAgentType {
     Plan,
     /// Code review - read + analysis tools.
     Review,
+    /// Implementation — focused on writing / patching code to satisfy
+    /// a specific change. Distinct from `General` in that the prompt
+    /// posture pushes hard on landing the change cleanly with the
+    /// minimum surrounding edit (#404).
+    Implementer,
+    /// Verification — focused on running the test suite or other
+    /// validation gates and reporting pass/fail with evidence.
+    /// Distinct from `Review` in that Review reads code and grades it;
+    /// Verifier *runs* tests and reports the outcome (#404).
+    Verifier,
     /// Custom tool access defined at spawn time.
     Custom,
 }
@@ -192,6 +202,8 @@ impl SubAgentType {
             "explore" | "exploration" | "explorer" => Some(Self::Explore),
             "plan" | "planning" | "awaiter" => Some(Self::Plan),
             "review" | "code-review" | "code_review" | "reviewer" => Some(Self::Review),
+            "implementer" | "implement" | "implementation" | "builder" => Some(Self::Implementer),
+            "verifier" | "verify" | "verification" | "validator" | "tester" => Some(Self::Verifier),
             "custom" => Some(Self::Custom),
             _ => None,
         }
@@ -204,6 +216,8 @@ impl SubAgentType {
             Self::Explore => "explore",
             Self::Plan => "plan",
             Self::Review => "review",
+            Self::Implementer => "implementer",
+            Self::Verifier => "verifier",
             Self::Custom => "custom",
         }
     }
@@ -216,6 +230,8 @@ impl SubAgentType {
             Self::Explore => EXPLORE_AGENT_PROMPT.to_string(),
             Self::Plan => PLAN_AGENT_PROMPT.to_string(),
             Self::Review => REVIEW_AGENT_PROMPT.to_string(),
+            Self::Implementer => IMPLEMENTER_AGENT_PROMPT.to_string(),
+            Self::Verifier => VERIFIER_AGENT_PROMPT.to_string(),
             Self::Custom => CUSTOM_AGENT_PROMPT.to_string(),
         }
     }
@@ -289,6 +305,44 @@ impl SubAgentType {
                 "todo_list",
             ],
             Self::Review => vec!["list_dir", "read_file", "grep_files", "file_search", "note"],
+            Self::Implementer => vec![
+                "list_dir",
+                "read_file",
+                "write_file",
+                "edit_file",
+                "apply_patch",
+                "grep_files",
+                "file_search",
+                "exec_shell",
+                "exec_shell_wait",
+                "exec_shell_interact",
+                "exec_wait",
+                "exec_interact",
+                "note",
+                "checklist_write",
+                "checklist_add",
+                "checklist_update",
+                "checklist_list",
+                "todo_write",
+                "todo_add",
+                "todo_update",
+                "todo_list",
+                "update_plan",
+            ],
+            Self::Verifier => vec![
+                "list_dir",
+                "read_file",
+                "grep_files",
+                "file_search",
+                "exec_shell",
+                "exec_shell_wait",
+                "exec_shell_interact",
+                "exec_wait",
+                "exec_interact",
+                "run_tests",
+                "diagnostics",
+                "note",
+            ],
             Self::Custom => vec![], // Must be provided by caller.
         }
     }
@@ -3485,6 +3539,61 @@ const CUSTOM_AGENT_PROMPT: &str = concat!(
     "\n",
     "Stay tightly scoped to the assigned objective. The parent chose Custom\n",
     "specifically to constrain you — do not expand into adjacent work.\n",
+    "\n",
+    include_str!("../../prompts/subagent_output_format.md"),
+);
+
+const IMPLEMENTER_AGENT_PROMPT: &str = concat!(
+    "You are an implementation sub-agent. Your job is to land the change\n",
+    "the parent assigned to you — write the code, modify the files, satisfy\n",
+    "the contract — with the *minimum* surrounding edit. You do not refactor\n",
+    "adjacent code. You do not rename unused variables. You do not 'tidy up'\n",
+    "while you're in the file. If you see related work that should happen,\n",
+    "surface it under RISKS or BLOCKERS rather than starting it.\n",
+    "\n",
+    "Method:\n",
+    "- Read the target file(s) end-to-end before editing. Edits made without\n",
+    "  reading the file produce structurally wrong patches.\n",
+    "- Prefer `edit_file` (single search/replace) for narrow changes.\n",
+    "  Reach for `apply_patch` only when the change spans multiple hunks\n",
+    "  or is structurally tricky.\n",
+    "- After every batch of edits, run a quick verification: a relevant\n",
+    "  `cargo check` / `npm run lint` / `pytest -k <test>` so you don't\n",
+    "  hand the parent a half-baked implementation.\n",
+    "- If the change requires writing tests, write them first or alongside\n",
+    "  the implementation — never as a follow-up the parent has to ask for.\n",
+    "\n",
+    "CHANGES is the load-bearing section for implementers. List every file\n",
+    "you modified with a one-line summary of what changed and why. The parent\n",
+    "uses CHANGES to decide what to inspect next.\n",
+    "\n",
+    include_str!("../../prompts/subagent_output_format.md"),
+);
+
+const VERIFIER_AGENT_PROMPT: &str = concat!(
+    "You are a verification sub-agent. Your job is to *run* the project's\n",
+    "test suite (or other validation gates) and report pass/fail with the\n",
+    "evidence the parent needs to act. You are read-only by convention —\n",
+    "do not patch failing tests, do not 'fix' lints, do not modify code.\n",
+    "If a fix seems obvious, describe it under RISKS so the parent can\n",
+    "spawn an Implementer.\n",
+    "\n",
+    "Method:\n",
+    "- Run the right gate for the language: `cargo test --workspace`,\n",
+    "  `npm test`, `pytest`, `go test ./...`. Use `run_tests` when it's\n",
+    "  available; fall back to `exec_shell` when the project has a custom\n",
+    "  invocation.\n",
+    "- Run lints if requested: `cargo clippy -- -D warnings`,\n",
+    "  `npm run lint`, `ruff check .`. Don't run lints the parent didn't\n",
+    "  ask for; lint noise drowns the signal you were spawned to surface.\n",
+    "- Capture the exact failing assertion plus the stack trace / file:line\n",
+    "  in EVIDENCE. A failure summarised as 'cargo test failed' is useless;\n",
+    "  the parent needs the actual panic.\n",
+    "\n",
+    "OUTCOME goes at the top of SUMMARY: PASS / FAIL / FLAKY. If FLAKY,\n",
+    "say which test and how many runs you tried.\n",
+    "\n",
+    "CHANGES will almost always be \"None.\" for a verifier.\n",
     "\n",
     include_str!("../../prompts/subagent_output_format.md"),
 );
