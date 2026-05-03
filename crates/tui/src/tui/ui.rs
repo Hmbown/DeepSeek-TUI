@@ -534,6 +534,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         subagent_model_overrides: config.subagent_model_overrides(),
         memory_enabled: config.memory_enabled(),
         memory_path: config.memory_path(),
+        goal_objective: app.goal.goal_objective.clone(),
     }
 }
 
@@ -3017,11 +3018,19 @@ async fn dispatch_user_message(
     );
     let content = queued_message_content_for_app(app, &message, cwd);
     let message_index = app.api_messages.len();
-    app.system_prompt = Some(prompts::system_prompt_for_mode_with_context(
-        app.mode,
-        &app.workspace,
-        None,
-    ));
+    app.system_prompt = Some(
+        prompts::system_prompt_for_mode_with_context_skills_and_session(
+            app.mode,
+            &app.workspace,
+            None,
+            None,
+            None,
+            prompts::PromptSessionContext {
+                user_memory_block: None,
+                goal_objective: app.goal.goal_objective.as_deref(),
+            },
+        ),
+    );
     app.add_message(HistoryCell::User {
         content: message.display.clone(),
     });
@@ -3065,6 +3074,7 @@ async fn dispatch_user_message(
             content,
             mode: app.mode,
             model: effective_model,
+            goal_objective: app.goal.goal_objective.clone(),
             reasoning_effort: app.reasoning_effort.api_value().map(str::to_string),
             allow_shell: app.allow_shell,
             trust_mode: app.trust_mode,

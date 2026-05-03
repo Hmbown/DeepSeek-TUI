@@ -1566,6 +1566,7 @@ impl RuntimeThreadManager {
             subagent_model_overrides: self.config.subagent_model_overrides(),
             memory_enabled: self.config.memory_enabled(),
             memory_path: self.config.memory_path(),
+            goal_objective: None,
         };
 
         let engine = spawn_engine(engine_cfg, &self.config);

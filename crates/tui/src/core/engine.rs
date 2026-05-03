@@ -139,6 +139,7 @@ pub struct EngineConfig {
     /// Path to the user memory file (#489). Always populated; only
     /// consulted when `memory_enabled` is `true`.
     pub memory_path: PathBuf,
+    pub goal_objective: Option<String>,
 }
 
 impl Default for EngineConfig {
@@ -168,6 +169,7 @@ impl Default for EngineConfig {
             subagent_model_overrides: HashMap::new(),
             memory_enabled: false,
             memory_path: PathBuf::from("./memory.md"),
+            goal_objective: None,
         }
     }
 }
@@ -355,13 +357,16 @@ impl Engine {
         let working_set_summary = session.working_set.summary_block(&config.workspace);
         let user_memory_block =
             crate::memory::compose_block(config.memory_enabled, &config.memory_path);
-        let system_prompt = prompts::system_prompt_for_mode_with_context_and_skills(
+        let system_prompt = prompts::system_prompt_for_mode_with_context_skills_and_session(
             AppMode::Agent,
             &config.workspace,
             None,
             Some(&config.skills_dir),
             Some(&config.instructions),
-            user_memory_block.as_deref(),
+            prompts::PromptSessionContext {
+                user_memory_block: user_memory_block.as_deref(),
+                goal_objective: config.goal_objective.as_deref(),
+            },
         );
         session.system_prompt =
             append_working_set_summary(Some(system_prompt), working_set_summary.as_deref());
@@ -461,6 +466,7 @@ impl Engine {
                     content,
                     mode,
                     model,
+                    goal_objective,
                     reasoning_effort,
                     allow_shell,
                     trust_mode,
@@ -470,6 +476,7 @@ impl Engine {
                         content,
                         mode,
                         model,
+                        goal_objective,
                         reasoning_effort,
                         allow_shell,
                         trust_mode,
@@ -653,6 +660,7 @@ impl Engine {
                         new_message,
                         mode,
                         self.session.model.clone(),
+                        self.config.goal_objective.clone(),
                         self.session.reasoning_effort.clone(),
                         self.session.allow_shell,
                         self.session.trust_mode,
@@ -691,6 +699,7 @@ impl Engine {
         content: String,
         mode: AppMode,
         model: String,
+        goal_objective: Option<String>,
         reasoning_effort: Option<String>,
         allow_shell: bool,
         trust_mode: bool,
@@ -770,6 +779,7 @@ impl Engine {
 
         self.session.model = model;
         self.config.model.clone_from(&self.session.model);
+        self.config.goal_objective = goal_objective;
         self.session.reasoning_effort = reasoning_effort;
         self.session.allow_shell = allow_shell;
         self.config.allow_shell = allow_shell;
@@ -1631,13 +1641,16 @@ impl Engine {
             .summary_block(&self.config.workspace);
         let user_memory_block =
             crate::memory::compose_block(self.config.memory_enabled, &self.config.memory_path);
-        let base = prompts::system_prompt_for_mode_with_context_and_skills(
+        let base = prompts::system_prompt_for_mode_with_context_skills_and_session(
             mode,
             &self.config.workspace,
             None,
             Some(&self.config.skills_dir),
             Some(&self.config.instructions),
-            user_memory_block.as_deref(),
+            prompts::PromptSessionContext {
+                user_memory_block: user_memory_block.as_deref(),
+                goal_objective: self.config.goal_objective.as_deref(),
+            },
         );
         let stable_prompt =
             merge_system_prompts(Some(&base), self.session.compaction_summary_prompt.clone());
