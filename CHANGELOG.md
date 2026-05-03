@@ -131,6 +131,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   including the existing `low_motion` / `calm_mode` /
   `show_thinking` / `show_tool_details` toggles for
   screen-reader users.
+- **Cumulative session-elapsed footer chip** (#448) — a
+  low-priority `worked 3h 12m` chip in the footer's right
+  cluster shows session age once it crosses 60s. Hidden during
+  the first minute of a launch so a fresh start doesn't flash a
+  ticker. Drops first under narrow widths so the existing chips
+  (coherence / agents / replay / cache / mcp) keep their slots.
+  Sampled at props-build time (matches the `retry` capture
+  pattern) so render stays pure for tests.
 - **RLM tool family** (#512) — `rlm` tool cards map to
   `ToolFamily::Rlm` and render `rlm`, not `swarm`. Stale "swarm"
   wording cleaned out of docs / comments / tests.

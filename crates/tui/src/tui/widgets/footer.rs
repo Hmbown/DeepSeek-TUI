@@ -55,6 +55,11 @@ pub struct FooterProps {
     /// MCP server health chip spans (empty when no MCP servers configured).
     /// Populated lazily — see [`footer_mcp_chip`]. (#502)
     pub mcp: Vec<Span<'static>>,
+    /// Cumulative session-elapsed chip spans ("worked 3h 12m"). Empty
+    /// for the first minute of a session so a fresh launch doesn't
+    /// flash a `worked 5s` indicator. Populated by [`footer_worked_chip`]
+    /// from `App::session_started_at`. (#448)
+    pub worked: Vec<Span<'static>>,
     /// Snapshot of the global retry-status surface (#499). Sampled once
     /// at props-build time and rendered as a foreground banner on the
     /// left of the footer when active. Captured here (rather than read
@@ -178,6 +183,27 @@ pub fn footer_agents_chip(running: usize, locale: Locale) -> Vec<Span<'static>> 
     )]
 }
 
+/// Build the cumulative-elapsed chip ("worked 3h 12m") for the
+/// footer's right cluster (#448). Hidden during the first minute of
+/// a session so a fresh launch doesn't render a noisy `worked 5s`
+/// indicator that immediately starts ticking. Above the threshold,
+/// reuses [`crate::tui::notifications::humanize_duration`] for
+/// consistent w/d/h/m formatting.
+#[must_use]
+pub fn footer_worked_chip(elapsed: std::time::Duration) -> Vec<Span<'static>> {
+    if elapsed < std::time::Duration::from_secs(60) {
+        return Vec::new();
+    }
+    let label = format!(
+        "worked {}",
+        crate::tui::notifications::humanize_duration(elapsed)
+    );
+    vec![Span::styled(
+        label,
+        Style::default().fg(palette::TEXT_MUTED),
+    )]
+}
+
 /// Build the "MCP M/N" health chip (#502) from the user's stored
 /// snapshot. `connected` is the number of servers currently reachable;
 /// `configured` is the number declared in the user's MCP config. When
@@ -241,6 +267,9 @@ impl FooterProps {
             .as_ref()
             .map(|s| s.servers.iter().filter(|server| server.connected).count());
         let mcp = footer_mcp_chip(mcp_connected, mcp_configured);
+        // #448: cumulative-elapsed chip. Sampled at props-build time
+        // (matches the `retry` capture pattern) so render is pure.
+        let worked = footer_worked_chip(app.session_started_at.elapsed());
         Self {
             model: app.model.clone(),
             mode_label,
@@ -255,6 +284,7 @@ impl FooterProps {
             reasoning_replay,
             cache,
             mcp,
+            worked,
             cost,
             toast,
             working_strip_frame: None,
@@ -299,6 +329,11 @@ impl FooterWidget {
             &self.props.reasoning_replay,
             &self.props.cache,
             &self.props.mcp,
+            // `worked` is the lowest-priority chip — drops first under
+            // narrow widths (the priority loop below removes from the
+            // tail). `cost` is steady info and stays in the left
+            // cluster where the eye finds it without scanning.
+            &self.props.worked,
         ]
         .into_iter()
         .filter(|spans| !spans.is_empty())
@@ -673,7 +708,42 @@ mod tests {
         assert!(props.cache.is_empty());
         assert!(props.cost.is_empty());
         assert!(props.reasoning_replay.is_empty());
+        // #448: fresh apps don't get a `worked` chip until the
+        // session has been alive for >= 60s. A test app built right
+        // before this assertion is well under that threshold.
+        assert!(props.worked.is_empty());
         assert!(props.toast.is_none());
+    }
+
+    #[test]
+    fn footer_worked_chip_hidden_below_one_minute() {
+        use std::time::Duration;
+        for secs in [0, 1, 30, 59] {
+            let chip = super::footer_worked_chip(Duration::from_secs(secs));
+            assert!(
+                chip.is_empty(),
+                "worked chip must be hidden at {secs}s; got {chip:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn footer_worked_chip_shows_humanized_label_above_threshold() {
+        use std::time::Duration;
+        // 1 minute on the dot — boundary, must render.
+        let chip = super::footer_worked_chip(Duration::from_secs(60));
+        let text: String = chip.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "worked 1m");
+
+        // 3h 12m — the issue's golden example.
+        let chip = super::footer_worked_chip(Duration::from_secs(11_550));
+        let text: String = chip.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "worked 3h 12m");
+
+        // Multi-day session — exercises the d/h band.
+        let chip = super::footer_worked_chip(Duration::from_secs(2 * 86_400 + 5 * 3600));
+        let text: String = chip.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "worked 2d 5h");
     }
 
     #[test]
