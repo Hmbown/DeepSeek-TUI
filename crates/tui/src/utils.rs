@@ -344,6 +344,10 @@ pub fn display_path(path: &Path) -> String {
 /// Like [`display_path`] but takes an explicit home directory instead of
 /// reading `$HOME` / `dirs::home_dir()`.  Used in tests and anywhere the
 /// caller already has the home path available.
+///
+/// The home-relative suffix is rejoined with the platform separator
+/// (`\` on Windows, `/` elsewhere) by walking the path's components, so
+/// inputs that carried foreign separators don't leak through.
 #[must_use]
 pub fn display_path_with_home(path: &Path, home: Option<&Path>) -> String {
     let Some(home) = home else {
@@ -353,8 +357,13 @@ pub fn display_path_with_home(path: &Path, home: Option<&Path>) -> String {
         if rest.as_os_str().is_empty() {
             return "~".to_string();
         }
-        let sep = std::path::MAIN_SEPARATOR;
-        return format!("~{sep}{}", rest.display());
+        let sep = std::path::MAIN_SEPARATOR_STR;
+        let mut out = String::from("~");
+        for component in rest.components() {
+            out.push_str(sep);
+            out.push_str(&component.as_os_str().to_string_lossy());
+        }
+        return out;
     }
     path.display().to_string()
 }
