@@ -576,33 +576,67 @@ impl DeepSeekClient {
                 }
             },
             Some(Box::new(|err, attempt, delay| {
+                let reason = match err {
+                    LlmError::RateLimited { .. } => "rate_limited",
+                    LlmError::ServerError { .. } => "server_error",
+                    LlmError::NetworkError(_) => "network_error",
+                    LlmError::Timeout(_) => "timeout",
+                    _ => "other",
+                };
                 logging::warn(format!(
                     "HTTP retry reason={} attempt={} delay={:.2}s",
-                    match err {
-                        LlmError::RateLimited { .. } => "rate_limited",
-                        LlmError::ServerError { .. } => "server_error",
-                        LlmError::NetworkError(_) => "network_error",
-                        LlmError::Timeout(_) => "timeout",
-                        _ => "other",
-                    },
+                    reason,
                     attempt + 1,
                     delay.as_secs_f64(),
                 ));
+                // Light up the foreground retry banner (#499). `attempt`
+                // here is 0-indexed for the *failed* attempt; surface the
+                // 1-indexed *upcoming* attempt the user is waiting on.
+                crate::retry_status::start(attempt + 1, delay, human_retry_reason(err, reason));
             })),
         )
         .await;
 
         match request_result {
             Ok(response) => {
+                crate::retry_status::succeeded();
                 self.mark_request_success().await;
                 Ok(response)
             }
             Err(err) => {
-                self.mark_request_failure(&err.to_string()).await;
+                let last = err.last_error.to_string();
+                // Only mark the retry banner failed if at least one
+                // retry actually fired — non-retryable errors should
+                // surface as turn errors, not as retry-banner failures.
+                if err.attempts > 1 {
+                    crate::retry_status::failed(last.clone());
+                } else {
+                    crate::retry_status::clear();
+                }
+                self.mark_request_failure(&last).await;
                 self.maybe_probe_recovery().await;
-                Err(anyhow::anyhow!(err.to_string()))
+                Err(anyhow::anyhow!(last))
             }
         }
+    }
+}
+
+/// Translate the structured `LlmError` into a short human reason string
+/// for the retry banner. Falls back to the categorical label so even
+/// unknown variants render something useful.
+fn human_retry_reason(err: &LlmError, fallback: &'static str) -> String {
+    match err {
+        LlmError::RateLimited { retry_after, .. } => {
+            if let Some(after) = retry_after {
+                format!("rate limited (Retry-After {}s)", after.as_secs())
+            } else {
+                "rate limited".to_string()
+            }
+        }
+        LlmError::ServerError { status, .. } => format!("upstream {status}"),
+        LlmError::NetworkError(_) => "network error".to_string(),
+        LlmError::Timeout(_) => "timeout".to_string(),
+        _ => fallback.to_string(),
     }
 }
 

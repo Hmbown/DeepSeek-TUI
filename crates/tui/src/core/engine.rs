@@ -706,6 +706,12 @@ impl Engine {
             })
             .await;
 
+        // A new turn means any leftover retry banner (success cleared
+        // it, failure pinned it) is no longer relevant — reset to idle
+        // so the footer doesn't display a stale failure row across
+        // turns (#499).
+        crate::retry_status::clear();
+
         // Check if we have the appropriate client
         if self.deepseek_client.is_none() {
             let message = self

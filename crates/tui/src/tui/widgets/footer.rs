@@ -438,6 +438,33 @@ fn spans_text(spans: &[Span<'_>]) -> String {
     spans.iter().map(|s| s.content.as_ref()).collect::<String>()
 }
 
+/// Render the retry banner (#499) when the global retry-status surface
+/// reports an active retry or a final failure. Returns `None` when idle
+/// so callers fall back to the regular status line / toast.
+fn retry_banner_spans(max_width: usize, props: &FooterProps) -> Option<Vec<Span<'static>>> {
+    let snapshot = crate::retry_status::snapshot();
+    let label = match &snapshot {
+        crate::retry_status::RetryState::Active(banner) => {
+            let secs = snapshot.seconds_remaining().unwrap_or(0);
+            // Round to 1s — we redraw each frame anyway so the
+            // countdown ticks visually without us having to schedule
+            // anything extra.
+            format!("⟳ retry {} in {secs}s — {}", banner.attempt, banner.reason)
+        }
+        crate::retry_status::RetryState::Failed { reason, .. } => {
+            format!("× failed: {reason}")
+        }
+        crate::retry_status::RetryState::Idle => return None,
+    };
+    let color = match &snapshot {
+        crate::retry_status::RetryState::Failed { .. } => crate::palette::STATUS_ERROR,
+        _ => crate::palette::STATUS_WARNING,
+    };
+    let _ = props; // keeping signature stable for future theme wiring
+    let truncated = truncate_to_width(&label, max_width);
+    Some(vec![Span::styled(truncated, Style::default().fg(color))])
+}
+
 impl Renderable for FooterWidget {
     fn render(&self, area: Rect, buf: &mut Buffer) {
         if area.height == 0 || area.width == 0 {
@@ -456,7 +483,13 @@ impl Renderable for FooterWidget {
             .saturating_sub(min_gap)
             .max(1);
 
-        let left_spans = if let Some(toast) = self.props.toast.as_ref() {
+        let left_spans = if let Some(banner) = retry_banner_spans(max_left_width, &self.props) {
+            // Retry banner takes precedence over toast and the regular
+            // status line so the user sees it loud and clear (#499).
+            // The banner clears automatically on success or on the next
+            // `TurnStarted` (engine emits the clear).
+            banner
+        } else if let Some(toast) = self.props.toast.as_ref() {
             Self::toast_spans(toast, max_left_width)
         } else {
             self.status_line_spans(max_left_width)
@@ -697,6 +730,58 @@ mod tests {
                 "color mismatch for {mode:?}",
             );
         }
+    }
+
+    #[test]
+    fn render_shows_retry_banner_when_active() {
+        let _g = crate::retry_status::test_guard();
+        crate::retry_status::clear();
+
+        crate::retry_status::start(2, std::time::Duration::from_secs(7), "rate limited");
+
+        let app = make_app();
+        let props = idle_props_for(&app);
+        let widget = FooterWidget::new(props);
+        let area = ratatui::layout::Rect::new(0, 0, 80, 1);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        widget.render(area, &mut buf);
+        let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
+        assert!(
+            rendered.contains("retry 2"),
+            "expected retry banner in render: {rendered:?}",
+        );
+        assert!(
+            rendered.contains("rate limited"),
+            "expected reason in render: {rendered:?}",
+        );
+
+        crate::retry_status::clear();
+    }
+
+    #[test]
+    fn render_shows_failure_row_when_failed() {
+        let _g = crate::retry_status::test_guard();
+        crate::retry_status::clear();
+
+        crate::retry_status::failed("upstream 500");
+
+        let app = make_app();
+        let props = idle_props_for(&app);
+        let widget = FooterWidget::new(props);
+        let area = ratatui::layout::Rect::new(0, 0, 80, 1);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        widget.render(area, &mut buf);
+        let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
+        assert!(
+            rendered.contains("failed"),
+            "expected failure row: {rendered:?}",
+        );
+        assert!(
+            rendered.contains("upstream 500"),
+            "expected reason: {rendered:?}",
+        );
+
+        crate::retry_status::clear();
     }
 
     #[test]
