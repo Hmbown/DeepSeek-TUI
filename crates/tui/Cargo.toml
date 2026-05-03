@@ -39,6 +39,7 @@ indicatif = "0.18.0"
 ratatui = "0.29"
 regex = "1.11"
 reqwest = { version = "0.13.1", default-features = false, features = ["blocking", "json", "stream", "multipart", "native-tls", "http2"] }
+similar = "2"
 rustyline = "15.0.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.149", features = ["preserve_order"] }

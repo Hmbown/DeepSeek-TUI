@@ -4,6 +4,7 @@ pub mod apply_patch;
 pub mod approval_cache;
 pub mod automation;
 pub mod diagnostics;
+pub mod diff_format;
 pub mod file;
 pub mod file_search;
 pub mod finance;

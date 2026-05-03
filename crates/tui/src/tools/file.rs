@@ -3,6 +3,7 @@
 //! These tools provide safe file system operations within the workspace,
 //! with path validation to prevent escaping the workspace boundary.
 
+use super::diff_format::make_unified_diff;
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     optional_str, required_str,
@@ -228,6 +229,15 @@ impl ToolSpec for WriteFileTool {
 
         let file_path = context.resolve_path(path_str)?;
 
+        // Snapshot the existing contents (if any) before we overwrite — used
+        // to render an inline diff in the tool result.
+        let existed_before = file_path.exists();
+        let prior_contents = if existed_before {
+            fs::read_to_string(&file_path).unwrap_or_default()
+        } else {
+            String::new()
+        };
+
         // Create parent directories if needed
         if let Some(parent) = file_path.parent() {
             fs::create_dir_all(parent).map_err(|e| {
@@ -243,11 +253,20 @@ impl ToolSpec for WriteFileTool {
             ToolError::execution_failed(format!("Failed to write {}: {}", file_path.display(), e))
         })?;
 
-        Ok(ToolResult::success(format!(
-            "Wrote {} bytes to {}",
-            file_content.len(),
-            file_path.display()
-        )))
+        let display = file_path.display().to_string();
+        let diff = make_unified_diff(&display, &prior_contents, file_content);
+        let summary = if existed_before {
+            format!("Wrote {} bytes to {}", file_content.len(), display)
+        } else {
+            format!("Created {} ({} bytes)", display, file_content.len())
+        };
+        let body = if diff.is_empty() {
+            format!("{summary}\n(no changes)")
+        } else {
+            format!("{diff}\n{summary}")
+        };
+
+        Ok(ToolResult::success(body))
     }
 }
 
@@ -324,11 +343,16 @@ impl ToolSpec for EditFileTool {
             ToolError::execution_failed(format!("Failed to write {}: {}", file_path.display(), e))
         })?;
 
-        Ok(ToolResult::success(format!(
-            "Replaced {} occurrence(s) in {}",
-            count,
-            file_path.display()
-        )))
+        let display = file_path.display().to_string();
+        let diff = make_unified_diff(&display, &contents, &updated);
+        let summary = format!("Replaced {count} occurrence(s) in {display}");
+        let body = if diff.is_empty() {
+            format!("{summary}\n(no textual changes)")
+        } else {
+            format!("{diff}\n{summary}")
+        };
+
+        Ok(ToolResult::success(body))
     }
 }
 
@@ -527,7 +551,15 @@ mod tests {
             .expect("execute");
 
         assert!(result.success);
-        assert!(result.content.contains("Wrote"));
+        // New file → "Created …" summary; the unified diff above the summary
+        // primes the TUI's diff-aware renderer (#505).
+        assert!(result.content.contains("Created"), "{}", result.content);
+        assert!(result.content.contains("--- a/"), "{}", result.content);
+        assert!(
+            result.content.contains("+test content"),
+            "{}",
+            result.content
+        );
 
         // Verify file was written
         let written = fs::read_to_string(tmp.path().join("output.txt")).expect("read");
@@ -575,6 +607,19 @@ mod tests {
 
         assert!(result.success);
         assert!(result.content.contains("2 occurrence(s)"));
+        // Inline diff (#505) — the unified diff lands above the summary
+        // line so the TUI's diff-aware renderer kicks in.
+        assert!(result.content.contains("--- a/"), "{}", result.content);
+        assert!(
+            result.content.contains("-hello world hello"),
+            "{}",
+            result.content
+        );
+        assert!(
+            result.content.contains("+hi world hi"),
+            "{}",
+            result.content
+        );
 
         // Verify edit was applied
         let edited = fs::read_to_string(&test_file).expect("read");
