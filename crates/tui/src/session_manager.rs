@@ -968,6 +968,60 @@ mod tests {
     }
 
     #[test]
+    fn test_offline_queue_stamps_session_id_on_save() {
+        // #487: save_offline_queue_state must stamp the supplied
+        // session id so the load path's mismatch check has something
+        // to compare against. A queue persisted without a session id
+        // is the legacy unscoped form which the load path treats as
+        // stale-risky and refuses to restore.
+        let tmp = tempdir().expect("tempdir");
+        let manager = SessionManager::new(tmp.path().join("sessions")).expect("new");
+
+        let state = OfflineQueueState {
+            messages: vec![QueuedSessionMessage {
+                display: "first parked".to_string(),
+                skill_instruction: None,
+            }],
+            ..OfflineQueueState::default()
+        };
+
+        manager
+            .save_offline_queue_state(&state, Some("session-A"))
+            .expect("save with session id");
+        let loaded = manager
+            .load_offline_queue_state()
+            .expect("ok")
+            .expect("present");
+        assert_eq!(loaded.session_id.as_deref(), Some("session-A"));
+
+        // Re-saving with a different session id replaces the stamp.
+        manager
+            .save_offline_queue_state(&state, Some("session-B"))
+            .expect("re-save");
+        let reloaded = manager
+            .load_offline_queue_state()
+            .expect("ok")
+            .expect("present");
+        assert_eq!(reloaded.session_id.as_deref(), Some("session-B"));
+
+        // Saving without a session id explicitly (None) clears the
+        // stamp — UI's load path treats that as legacy-unscoped and
+        // fails closed.
+        manager
+            .save_offline_queue_state(&state, None)
+            .expect("save without session id");
+        let unscoped = manager
+            .load_offline_queue_state()
+            .expect("ok")
+            .expect("present");
+        assert!(
+            unscoped.session_id.is_none(),
+            "save with None must persist a missing session_id, got {:?}",
+            unscoped.session_id
+        );
+    }
+
+    #[test]
     fn test_session_context_references_round_trip() {
         let tmp = tempdir().expect("tempdir");
         let manager = SessionManager::new(tmp.path().join("sessions")).expect("new");
