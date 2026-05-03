@@ -26,16 +26,14 @@ use crate::tui::widgets::Renderable;
 const PREVIEW_LINE_LIMIT: usize = 3;
 
 /// Description of the keybinding the hint line at the bottom should advertise
-/// for the "edit last queued message" action. The default `Alt+↑` matches
-/// the chord we already wire up; callers can override for terminals where
-/// Alt+ chords are eaten by the shell.
+/// for the "edit last queued message" action.
 #[derive(Debug, Clone)]
 pub struct EditBinding {
     pub label: &'static str,
 }
 
 impl EditBinding {
-    pub const ALT_UP: EditBinding = EditBinding { label: "Alt+↑" };
+    pub const UP: EditBinding = EditBinding { label: "↑" };
 }
 
 /// Widget showing pending input while a turn is in progress.
@@ -68,7 +66,7 @@ impl PendingInputPreview {
             pending_steers: Vec::new(),
             rejected_steers: Vec::new(),
             queued_messages: Vec::new(),
-            edit_binding: EditBinding::ALT_UP,
+            edit_binding: EditBinding::UP,
         }
     }
 
@@ -389,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_steer_renders_without_esc_or_alt_up_hint() {
+    fn pending_steer_renders_without_queue_edit_hint() {
         let mut preview = PendingInputPreview::new();
         preview.pending_steers.push("Please continue.".to_string());
         let rows = render_to_string(&preview, 80);
@@ -402,8 +400,8 @@ mod tests {
             "unexpected Esc hint: {rows:?}"
         );
         assert!(
-            !rows.iter().any(|r| r.contains("Alt+↑")),
-            "unexpected Alt+↑ hint in pending-steer-only view: {rows:?}"
+            !rows.iter().any(|r| r.contains("edit last queued message")),
+            "unexpected edit hint in pending-steer-only view: {rows:?}"
         );
     }
 
@@ -422,7 +420,7 @@ mod tests {
         assert!(rows.iter().any(|r| r.contains("steer")));
         assert!(rows.iter().any(|r| r.contains("rejected")));
         assert!(rows.iter().any(|r| r.contains("queued")));
-        assert!(rows.iter().any(|r| r.contains("Alt+↑")));
+        assert!(rows.iter().any(|r| r.contains("↑")));
     }
 
     #[test]
