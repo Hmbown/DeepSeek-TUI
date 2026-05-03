@@ -229,7 +229,23 @@ deepseek setup --status
 deepseek doctor --json
 ```
 
-UI 语言与模型输出语言相互独立。可以在 `settings.toml` 里设置 `locale`，也可以通过 `LC_ALL` / `LANG` 环境变量自动选择。支持 `en`、`zh-Hans`、`ja`、`pt-BR` 等界面语言。
+UI 语言与模型输出语言相互独立。
+
+### 切换为中文界面
+
+如果界面是英文的，可以在 TUI 内一键切换为简体中文：
+
+1. 在 Composer 里输入 `/config`，按 Tab 或 Enter 打开配置面板。
+
+   ![输入 /config 命令](assets/locale-config-step1.jpg)
+
+2. 选择 **Edit locale**，在 `New:` 字段输入 `zh-Hans`，按 Enter 应用。
+
+   ![编辑 locale 设为 zh-Hans](assets/locale-config-step2.jpg)
+
+可选语言：`auto` | `en` | `ja` | `zh-Hans` | `pt-BR`
+
+也可以直接在 `~/.deepseek/settings.toml` 里设置 `locale = "zh-Hans"`，或者通过 `LC_ALL` / `LANG` 环境变量自动选择。
 
 DeepSeek 上下文缓存是自动的；当 API 返回 cache hit/miss token 字段时，TUI 会把它们纳入用量和成本统计。
 
