@@ -3633,6 +3633,88 @@ model = ""
             Some("deepseek-v4-pro")
         );
     }
+
+    #[test]
+    fn project_overlay_replaces_user_instructions_array_wholesale() {
+        let tmp = workspace_with_project_config(
+            r#"
+instructions = ["./AGENTS.md", "./extra.md"]
+"#,
+        );
+        // User had a global file in their config; the project array
+        // should REPLACE it, not merge.
+        let mut config = Config {
+            instructions: Some(vec!["~/global.md".to_string()]),
+            ..Config::default()
+        };
+        merge_project_config(&mut config, tmp.path());
+        assert_eq!(
+            config.instructions.as_deref(),
+            Some(&["./AGENTS.md".to_string(), "./extra.md".to_string()][..]),
+            "project instructions array replaces user array wholesale"
+        );
+    }
+
+    #[test]
+    fn project_overlay_empty_instructions_array_clears_user_list() {
+        let tmp = workspace_with_project_config(
+            r#"
+instructions = []
+"#,
+        );
+        let mut config = Config {
+            instructions: Some(vec![
+                "~/global.md".to_string(),
+                "~/team-prefs.md".to_string(),
+            ]),
+            ..Config::default()
+        };
+        merge_project_config(&mut config, tmp.path());
+        // Explicit empty array clears the user list — project says
+        // "this repo doesn't want any of those globals".
+        assert_eq!(
+            config.instructions.as_deref(),
+            Some(&[][..]),
+            "explicit empty array clears the user instructions list"
+        );
+    }
+
+    #[test]
+    fn project_overlay_preserves_user_instructions_when_field_absent() {
+        let tmp = workspace_with_project_config(
+            r#"
+provider = "deepseek"
+"#,
+        );
+        let user = vec!["~/global.md".to_string()];
+        let mut config = Config {
+            instructions: Some(user.clone()),
+            ..Config::default()
+        };
+        merge_project_config(&mut config, tmp.path());
+        // No `instructions` key in the project file → user list intact.
+        assert_eq!(
+            config.instructions.as_deref(),
+            Some(user.as_slice()),
+            "absent project field must not clobber the user list"
+        );
+    }
+
+    #[test]
+    fn project_overlay_drops_empty_string_entries_in_instructions_array() {
+        let tmp = workspace_with_project_config(
+            r#"
+instructions = ["./AGENTS.md", "", "  ", "./extra.md"]
+"#,
+        );
+        let mut config = Config::default();
+        merge_project_config(&mut config, tmp.path());
+        assert_eq!(
+            config.instructions.as_deref(),
+            Some(&["./AGENTS.md".to_string(), "./extra.md".to_string()][..]),
+            "empty / whitespace-only entries are filtered"
+        );
+    }
 }
 
 #[cfg(test)]
