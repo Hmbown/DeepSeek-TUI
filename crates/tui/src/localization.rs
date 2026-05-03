@@ -216,6 +216,7 @@ pub enum MessageId {
     HelpFooterClose,
     CmdAgentDescription,
     CmdAttachDescription,
+    CmdAnchorDescription,
     CmdCacheDescription,
     CmdClearDescription,
     CmdCompactDescription,
@@ -405,6 +406,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::HelpFooterJump,
     MessageId::HelpFooterClose,
     MessageId::CmdAgentDescription,
+    MessageId::CmdAnchorDescription,
     MessageId::CmdAttachDescription,
     MessageId::CmdCacheDescription,
     MessageId::CmdClearDescription,
@@ -714,6 +716,9 @@ fn english(id: MessageId) -> &'static str {
         MessageId::HelpFooterJump => " PgUp/PgDn jump ",
         MessageId::HelpFooterClose => " Esc close ",
         MessageId::CmdAgentDescription => "Switch to agent mode",
+        MessageId::CmdAnchorDescription => {
+            "Pin a fact that survives compaction (auto-injected into context)"
+        }
         MessageId::CmdAttachDescription => {
             "Attach image/video media; use @path for text files or directories"
         }
@@ -994,6 +999,9 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::HelpFooterJump => " PgUp/PgDn ジャンプ ",
         MessageId::HelpFooterClose => " Esc 閉じる ",
         MessageId::CmdAgentDescription => "Agent モードに切り替え",
+        MessageId::CmdAnchorDescription => {
+            "コンパクション後も保持される重要な事実をピン留め（コンテキストに自動注入）"
+        }
         MessageId::CmdAttachDescription => {
             "画像・動画メディアを添付（テキストファイルやディレクトリは @path）"
         }
@@ -1266,6 +1274,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::HelpFooterJump => " PgUp/PgDn 跳转 ",
         MessageId::HelpFooterClose => " Esc 关闭 ",
         MessageId::CmdAgentDescription => "切换到 Agent 模式",
+        MessageId::CmdAnchorDescription => "钉选关键事实，在压缩后自动注入上下文",
         MessageId::CmdAttachDescription => "附加图片或视频媒体；文本文件或目录请使用 @path",
         MessageId::CmdCacheDescription => "显示最近 N 轮的 DeepSeek 前缀缓存命中/未命中统计",
         MessageId::CmdClearDescription => "清除对话历史",
@@ -1508,6 +1517,9 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         MessageId::HelpFooterJump => " PgUp/PgDn salta ",
         MessageId::HelpFooterClose => " Esc fecha ",
         MessageId::CmdAgentDescription => "Mudar para o modo agent",
+        MessageId::CmdAnchorDescription => {
+            "Fixar um fato que sobrevive à compactação (injetado automaticamente no contexto)"
+        }
         MessageId::CmdAttachDescription => {
             "Anexar imagem ou vídeo; use @path para arquivos de texto ou diretórios"
         }
