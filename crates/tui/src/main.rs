@@ -3298,11 +3298,12 @@ fn merge_project_config(config: &mut Config, workspace: &Path) {
 
     // String fields a project may legitimately override (model,
     // approval/sandbox tightening, notes path, reasoning effort).
-    // Note: `approval_policy` / `sandbox_mode` are allowed but we
-    // intentionally don't reject loosening here — that's a richer
-    // value-comparison check filed for v0.8.9 follow-up. The `never`
-    // / `read-only` posture is the common project-config pattern
-    // and tightening always wins.
+    // Loosening *values* like `approval_policy = "auto"` and
+    // `sandbox_mode = "danger-full-access"` are denied unconditionally
+    // — those are pure escalation regardless of the user's prior
+    // value. Sub-tightening comparisons (e.g. user `"never"` →
+    // project `"on-request"`) stay v0.8.9 follow-up because they
+    // need a richer ordering check.
     for (key, field) in [
         ("model", &mut config.default_text_model),
         ("reasoning_effort", &mut config.reasoning_effort),
@@ -3313,6 +3314,21 @@ fn merge_project_config(config: &mut Config, workspace: &Path) {
         if let Some(v) = table.get(key).and_then(toml::Value::as_str)
             && !v.is_empty()
         {
+            // #417 escalation deny: project cannot push the session
+            // to the loosest values. Other strings flow through the
+            // existing config validator on load.
+            let is_escalation = matches!(
+                (key, v),
+                ("approval_policy", "auto") | ("sandbox_mode", "danger-full-access")
+            );
+            if is_escalation {
+                eprintln!(
+                    "warning: project-scope `{key} = \"{v}\"` is ignored — \
+                     project config cannot escalate to the loosest value. \
+                     (See #417.)"
+                );
+                continue;
+            }
             *field = Some(v.to_string());
         }
     }
@@ -3920,6 +3936,61 @@ sandbox_mode = "read-only"
         merge_project_config(&mut config, tmp.path());
         assert_eq!(config.approval_policy.as_deref(), Some("never"));
         assert_eq!(config.sandbox_mode.as_deref(), Some("read-only"));
+    }
+
+    #[test]
+    fn project_overlay_denies_approval_auto_and_sandbox_danger_values() {
+        // #417 value-deny: the loosest values (`approval_policy = "auto"`,
+        // `sandbox_mode = "danger-full-access"`) are pure escalation.
+        // Even when the user hasn't set these fields, the project
+        // can't push the session to the loosest posture.
+        let tmp = workspace_with_project_config(
+            r#"
+approval_policy = "auto"
+sandbox_mode = "danger-full-access"
+model = "deepseek-v4-pro"
+"#,
+        );
+        let mut config = Config::default();
+        merge_project_config(&mut config, tmp.path());
+        assert_eq!(
+            config.approval_policy, None,
+            "project-scope `approval_policy = \"auto\"` must be denied"
+        );
+        assert_eq!(
+            config.sandbox_mode, None,
+            "project-scope `sandbox_mode = \"danger-full-access\"` must be denied"
+        );
+        // Non-escalation overrides on the same merge succeed —
+        // the deny is per-key, not per-file.
+        assert_eq!(
+            config.default_text_model.as_deref(),
+            Some("deepseek-v4-pro"),
+            "non-escalation overrides should still apply"
+        );
+    }
+
+    #[test]
+    fn project_overlay_preserves_user_strict_value_when_project_tries_to_loosen() {
+        // Belt-and-suspenders: if the user has `approval_policy = "never"`
+        // and the project tries `approval_policy = "auto"`, the deny
+        // keeps the user's strict value rather than falling through to
+        // None.
+        let tmp = workspace_with_project_config(
+            r#"
+approval_policy = "auto"
+"#,
+        );
+        let mut config = Config {
+            approval_policy: Some("never".to_string()),
+            ..Config::default()
+        };
+        merge_project_config(&mut config, tmp.path());
+        assert_eq!(
+            config.approval_policy.as_deref(),
+            Some("never"),
+            "user's strict approval_policy must survive a project escalation attempt"
+        );
     }
 
     #[test]

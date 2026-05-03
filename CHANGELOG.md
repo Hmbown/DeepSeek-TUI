@@ -55,9 +55,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   config that spawns arbitrary stdio servers under the user's
   identity. The denied key emits a stderr warning so a user who
   expected the override sees the deny instead of a silent drop.
-  Less-dangerous escalation prevention (e.g. denying
-  `approval_policy = "auto"` over a stricter user value) stays
-  v0.8.9 follow-up because it needs richer value comparison.
+- **Project-scope value-deny for the loosest postures** (#417
+  follow-up) — `approval_policy = "auto"` and
+  `sandbox_mode = "danger-full-access"` are pure escalation
+  values, denied unconditionally at project scope regardless
+  of the user's prior value. Sub-tightening comparisons
+  (e.g. user `"never"` → project `"on-request"` is allowed
+  even though it loosens) stay v0.8.9 follow-up because they
+  need a richer ordering check.
 - **Sub-agent role taxonomy expansion** (#404) — adds `Implementer`
   ("land this change with the minimum surrounding edit") and
   `Verifier` ("run the test suite, report pass/fail with evidence")
