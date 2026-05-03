@@ -11,7 +11,7 @@ use crossterm::{
     event::{
         self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
         Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
-        MouseEventKind,
+        MouseEventKind, PopKeyboardEnhancementFlags,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -130,6 +130,7 @@ const WEB_CONFIG_POLL_MS: u64 = 16;
 const UI_STATUS_ANIMATION_MS: u64 = 80;
 const WORKSPACE_CONTEXT_REFRESH_SECS: u64 = 15;
 const SIDEBAR_VISIBLE_MIN_WIDTH: u16 = 100;
+const DEFAULT_TERMINAL_PROBE_TIMEOUT_MS: u64 = 500;
 
 /// Run the interactive TUI event loop.
 ///
@@ -146,7 +147,29 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     let use_alt_screen = options.use_alt_screen;
     let use_mouse_capture = options.use_mouse_capture;
     let use_bracketed_paste = options.use_bracketed_paste;
-    enable_raw_mode()?;
+
+    // Terminal probe with timeout to prevent hanging on unresponsive terminals
+    let probe_timeout = terminal_probe_timeout(config);
+    let enable_raw = tokio::task::spawn_blocking(move || {
+        enable_raw_mode().map_err(|e| anyhow::anyhow!("Failed to enable raw mode: {}", e))
+    });
+
+    match tokio::time::timeout(probe_timeout, enable_raw).await {
+        Ok(inner_result) => {
+            inner_result??; // propagate both join and raw-mode errors
+        }
+        Err(_) => {
+            tracing::warn!(
+                "Terminal probe timed out after {}ms - terminal may be unresponsive",
+                probe_timeout.as_millis()
+            );
+            return Err(anyhow::anyhow!(
+                "Terminal probe timed out after {}ms",
+                probe_timeout.as_millis()
+            ));
+        }
+    }
+
     let mut stdout = io::stdout();
     if use_alt_screen {
         execute!(stdout, EnterAlternateScreen)?;
@@ -233,17 +256,29 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     if let Ok(manager) = SessionManager::default_location() {
         match manager.load_offline_queue_state() {
             Ok(Some(state)) => {
-                app.queued_messages = state
-                    .messages
-                    .into_iter()
-                    .map(queued_session_to_ui)
-                    .collect();
-                app.queued_draft = state.draft.map(queued_session_to_ui);
-                if app.status_message.is_none() && app.queued_message_count() > 0 {
-                    app.status_message = Some(format!(
-                        "Recovered {} queued message(s)",
-                        app.queued_message_count()
-                    ));
+                // Only restore queue if session_id matches (or if we're resuming the same session)
+                let should_restore = match (&state.session_id, &app.current_session_id) {
+                    (Some(saved_id), Some(current_id)) => saved_id == current_id,
+                    (None, _) => false, // Legacy unscoped queues are stale-risky; fail closed.
+                    (_, None) => false, // No current session - don't restore
+                };
+
+                if should_restore {
+                    app.queued_messages = state
+                        .messages
+                        .into_iter()
+                        .map(queued_session_to_ui)
+                        .collect();
+                    app.queued_draft = state.draft.map(queued_session_to_ui);
+                    if app.status_message.is_none() && app.queued_message_count() > 0 {
+                        app.status_message = Some(format!(
+                            "Restored {} queued message(s) from previous session — ↑ to edit, Ctrl+X to discard",
+                            app.queued_message_count()
+                        ));
+                    }
+                } else {
+                    // Session mismatch - clear the stale queue
+                    let _ = manager.clear_offline_queue_state();
                 }
             }
             Ok(None) => {}
@@ -342,6 +377,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     persistence_actor::persist(PersistRequest::ClearCheckpoint);
     persistence_actor::persist(PersistRequest::Shutdown);
 
+    let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
     disable_raw_mode()?;
     if use_alt_screen {
         execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -355,6 +391,16 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     terminal.show_cursor()?;
 
     result
+}
+
+fn terminal_probe_timeout(config: &Config) -> Duration {
+    let timeout_ms = config
+        .tui
+        .as_ref()
+        .and_then(|tui| tui.terminal_probe_timeout_ms)
+        .unwrap_or(DEFAULT_TERMINAL_PROBE_TIMEOUT_MS)
+        .clamp(100, 5_000);
+    Duration::from_millis(timeout_ms)
 }
 
 fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
@@ -2189,6 +2235,41 @@ async fn run_event_loop(
                         }
                     }
                 }
+                KeyCode::Backspace
+                    if key.modifiers.contains(KeyModifiers::SUPER)
+                        && !app.remove_selected_composer_attachment() =>
+                {
+                    app.delete_to_start_of_line();
+                }
+                KeyCode::Backspace if key.modifiers.contains(KeyModifiers::SUPER) => {}
+                KeyCode::Backspace
+                    if key.modifiers.contains(KeyModifiers::ALT)
+                        && !app.remove_selected_composer_attachment() =>
+                {
+                    app.delete_word_backward();
+                }
+                KeyCode::Backspace if key.modifiers.contains(KeyModifiers::ALT) => {}
+                KeyCode::Backspace
+                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && !app.remove_selected_composer_attachment() =>
+                {
+                    app.delete_word_backward();
+                }
+                KeyCode::Backspace if key.modifiers.contains(KeyModifiers::CONTROL) => {}
+                KeyCode::Delete
+                    if key.modifiers.contains(KeyModifiers::ALT)
+                        && !app.remove_selected_composer_attachment() =>
+                {
+                    app.delete_word_forward();
+                }
+                KeyCode::Delete if key.modifiers.contains(KeyModifiers::ALT) => {}
+                KeyCode::Delete
+                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && !app.remove_selected_composer_attachment() =>
+                {
+                    app.delete_word_forward();
+                }
+                KeyCode::Delete if key.modifiers.contains(KeyModifiers::CONTROL) => {}
                 KeyCode::Backspace if !app.remove_selected_composer_attachment() => {
                     app.delete_char();
                 }
@@ -2282,6 +2363,11 @@ async fn run_event_loop(
                 }
                 KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     app.clear_input_recoverable();
+                }
+                KeyCode::Char('w') | KeyCode::Char('W')
+                    if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    app.delete_word_backward();
                 }
                 KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     // #379: context-sensitive Ctrl+Y.
@@ -2476,7 +2562,7 @@ fn persist_offline_queue_state(app: &App) {
             draft: app.queued_draft.as_ref().map(queued_ui_to_session),
             ..OfflineQueueState::default()
         };
-        let _ = manager.save_offline_queue_state(&state);
+        let _ = manager.save_offline_queue_state(&state, app.current_session_id.as_deref());
     }
 }
 
@@ -5441,12 +5527,12 @@ fn collect_active_tool_status(cell: &HistoryCell, snapshot: &mut ActiveToolStatu
             snapshot.record(format!("search {}", search.query), search.status, None);
         }
         ToolCell::Generic(generic) => {
-            // Fanout-class dispatch tools represent themselves through the
-            // FanoutCard + Agents sidebar. Counting them again here would
-            // produce the contradiction the user observed: footer "1 active"
-            // while the card and sidebar already showed the dispatch's own
-            // worker counts (#236, #238). Skip them entirely.
-            if matches!(generic.name.as_str(), "rlm" | "agent_spawn") {
+            // Sub-agent dispatch represents itself through the DelegateCard
+            // + Agents sidebar. Counting it again here would duplicate the
+            // status. RLM is different today: it is a foreground tool call,
+            // so keep it in the live tool footer until the async RLM
+            // workbench lands (#513).
+            if generic.name == "agent_spawn" {
                 return;
             }
             snapshot.record(format!("tool {}", generic.name), generic.status, None);
@@ -5484,8 +5570,8 @@ fn render_footer_from(
         footer_state_label(app)
     } else {
         // "ready" is the sentinel the widget uses to skip the status segment;
-        // pair it with TEXT_MUTED for visual neutrality.
-        ("ready", palette::TEXT_MUTED)
+        // pair it with theme text_muted for visual neutrality.
+        ("ready", app.ui_theme.text_muted)
     };
 
     let coherence = if has(S::Coherence) {
@@ -5761,14 +5847,14 @@ fn footer_status_line_spans(app: &App, max_width: usize) -> Vec<Span<'static>> {
 
     let mut spans = vec![
         Span::styled(mode_label.to_string(), Style::default().fg(mode_color)),
-        Span::styled(sep.to_string(), Style::default().fg(palette::TEXT_DIM)),
-        Span::styled(model_label, Style::default().fg(palette::TEXT_HINT)),
+        Span::styled(sep.to_string(), Style::default().fg(app.ui_theme.text_dim)),
+        Span::styled(model_label, Style::default().fg(app.ui_theme.text_hint)),
     ];
 
     if show_status {
         spans.push(Span::styled(
             sep.to_string(),
-            Style::default().fg(palette::TEXT_DIM),
+            Style::default().fg(app.ui_theme.text_dim),
         ));
         spans.push(Span::styled(
             status_label.to_string(),
@@ -5781,7 +5867,7 @@ fn footer_status_line_spans(app: &App, max_width: usize) -> Vec<Span<'static>> {
 
 fn footer_state_label(app: &App) -> (&'static str, ratatui::style::Color) {
     if app.is_compacting {
-        return ("compacting \u{238B}", palette::STATUS_WARNING);
+        return ("compacting \u{238B}", app.ui_theme.status_warning);
     }
     // Note: we deliberately do NOT show a "thinking" label for `is_loading`.
     // The animated water-spout strip in the footer's spacer is the visual
@@ -5790,30 +5876,30 @@ fn footer_state_label(app: &App) -> (&'static str, ratatui::style::Color) {
     // not strictly reasoning. Sub-agents still surface "working" because
     // that's a distinct lifecycle the user can act on (open `/agents`).
     if running_agent_count(app) > 0 {
-        return ("working", palette::DEEPSEEK_SKY);
+        return ("working", app.ui_theme.status_working);
     }
     if app.queued_draft.is_some() {
-        return ("draft", palette::TEXT_MUTED);
+        return ("draft", app.ui_theme.text_muted);
     }
 
     if !app.view_stack.is_empty() {
-        return ("overlay", palette::TEXT_MUTED);
+        return ("overlay", app.ui_theme.text_muted);
     }
 
     if !app.input.is_empty() {
-        return ("draft", palette::TEXT_MUTED);
+        return ("draft", app.ui_theme.text_muted);
     }
 
-    ("ready", palette::TEXT_MUTED)
+    ("ready", app.ui_theme.status_ready)
 }
 
 #[allow(dead_code)]
 fn footer_mode_style(app: &App) -> (&'static str, ratatui::style::Color) {
     let label = app.mode.as_setting();
     let color = match app.mode {
-        crate::tui::app::AppMode::Agent => palette::MODE_AGENT,
-        crate::tui::app::AppMode::Yolo => palette::MODE_YOLO,
-        crate::tui::app::AppMode::Plan => palette::MODE_PLAN,
+        crate::tui::app::AppMode::Agent => app.ui_theme.mode_agent,
+        crate::tui::app::AppMode::Yolo => app.ui_theme.mode_yolo,
+        crate::tui::app::AppMode::Plan => app.ui_theme.mode_plan,
     };
     (label, color)
 }

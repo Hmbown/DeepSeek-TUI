@@ -107,6 +107,105 @@ fn tool_result_metadata_summary(metadata: Option<&serde_json::Value>) -> Option<
     None
 }
 
+fn summarize_subagent_status(status: &serde_json::Value) -> String {
+    if let Some(raw) = status.as_str() {
+        return raw.to_string();
+    }
+    if let Some(obj) = status.as_object()
+        && let Some((kind, value)) = obj.iter().next()
+    {
+        if let Some(reason) = value.as_str().filter(|s| !s.trim().is_empty()) {
+            return format!("{kind}({})", summarize_text(reason.trim(), 120));
+        }
+        return kind.to_string();
+    }
+    status.to_string()
+}
+
+fn summarize_subagent_snapshot(snapshot: &serde_json::Value, index: usize) -> String {
+    let Some(obj) = snapshot.as_object() else {
+        return format!(
+            "- item {index}: {}",
+            summarize_text(&snapshot.to_string(), 240)
+        );
+    };
+
+    let agent_id = obj
+        .get("agent_id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown");
+    let agent_type = obj
+        .get("agent_type")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("agent");
+    let status = obj
+        .get("status")
+        .map(summarize_subagent_status)
+        .unwrap_or_else(|| "unknown".to_string());
+    let objective = obj
+        .get("assignment")
+        .and_then(|assignment| assignment.get("objective"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| summarize_text(s, 220));
+    let result = obj
+        .get("result")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| summarize_text(s, 1_600));
+    let steps = obj.get("steps_taken").and_then(serde_json::Value::as_u64);
+    let duration_ms = obj.get("duration_ms").and_then(serde_json::Value::as_u64);
+
+    let mut lines = vec![format!("- {agent_id} ({agent_type}) status={status}")];
+    if let Some(objective) = objective {
+        lines.push(format!("  objective: {objective}"));
+    }
+    match result {
+        Some(result) => lines.push(format!("  result: {result}")),
+        None => lines.push("  result: not available yet".to_string()),
+    }
+    if steps.is_some() || duration_ms.is_some() {
+        let steps = steps
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "?".to_string());
+        let duration_ms = duration_ms
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "?".to_string());
+        lines.push(format!("  stats: steps={steps}, duration_ms={duration_ms}"));
+    }
+    lines.join("\n")
+}
+
+fn compact_subagent_tool_result_for_context(tool_name: &str, raw: &str) -> Option<String> {
+    if !matches!(tool_name, "agent_result" | "agent_wait" | "wait") {
+        return None;
+    }
+
+    let parsed: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let snapshots: Vec<&serde_json::Value> = match &parsed {
+        serde_json::Value::Array(items) => items.iter().collect(),
+        serde_json::Value::Object(_) => vec![&parsed],
+        _ => return None,
+    };
+
+    let mut out = String::from("[sub-agent result summarized for parent context]\n");
+    out.push_str("Use `agent_result` again only if you need the full raw payload.\n");
+    for (idx, snapshot) in snapshots.iter().enumerate() {
+        if idx >= 8 {
+            out.push_str(&format!(
+                "- ... {} more sub-agent result(s) omitted from context summary\n",
+                snapshots.len().saturating_sub(idx)
+            ));
+            break;
+        }
+        out.push_str(&summarize_subagent_snapshot(snapshot, idx + 1));
+        out.push('\n');
+    }
+    Some(out.trim_end().to_string())
+}
+
 fn tool_result_context_limits_for_model(model: &str) -> ToolResultContextLimits {
     let is_large_context =
         context_window_for_model(model).is_some_and(|window| window >= LARGE_CONTEXT_WINDOW_TOKENS);
@@ -134,6 +233,10 @@ pub(crate) fn compact_tool_result_for_context(
     let raw = output.content.trim();
     if raw.is_empty() {
         return String::new();
+    }
+
+    if let Some(summary) = compact_subagent_tool_result_for_context(tool_name, raw) {
+        return summary;
     }
 
     let limits = tool_result_context_limits_for_model(model);

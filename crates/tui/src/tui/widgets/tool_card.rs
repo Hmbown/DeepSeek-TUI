@@ -39,6 +39,8 @@ pub enum ToolFamily {
     Delegate,
     /// Multi-agent fanout dispatch (rlm). `⋮⋮ fanout`.
     Fanout,
+    /// Recursive language model work. `⋮⋮ rlm`.
+    Rlm,
     /// Reasoning / chain-of-thought. `… think`. Reasoning has its own
     /// render path (`render_thinking` in `history.rs`); the family is
     /// declared here for completeness so any future code that reaches for
@@ -78,7 +80,7 @@ pub fn tool_family_for_name(name: &str) -> ToolFamily {
         "exec_shell" | "exec_shell_wait" | "exec_shell_interact" => ToolFamily::Run,
         "grep_files" | "file_search" | "web_search" | "fetch_url" => ToolFamily::Find,
         "agent_spawn" => ToolFamily::Delegate,
-        "rlm" => ToolFamily::Fanout,
+        "rlm" => ToolFamily::Rlm,
         _ => ToolFamily::Generic,
     }
 }
@@ -96,7 +98,9 @@ pub fn tool_header_summary_for_name(name: &str, input_summary: Option<&str>) -> 
         ToolFamily::Read | ToolFamily::Patch => ["path", "file", "target", "content"].as_slice(),
         ToolFamily::Run => ["command", "cmd", "script"].as_slice(),
         ToolFamily::Find => ["query", "pattern", "path", "scope"].as_slice(),
-        ToolFamily::Delegate | ToolFamily::Fanout => ["prompt", "task", "model"].as_slice(),
+        ToolFamily::Delegate | ToolFamily::Fanout | ToolFamily::Rlm => {
+            ["prompt", "task", "model"].as_slice()
+        }
         ToolFamily::Think | ToolFamily::Generic => {
             ["query", "path", "command", "prompt"].as_slice()
         }
@@ -137,6 +141,7 @@ pub fn family_glyph(family: ToolFamily) -> &'static str {
         ToolFamily::Find => "\u{2315}",           // ⌕
         ToolFamily::Delegate => "\u{25D0}",       // ◐
         ToolFamily::Fanout => "\u{22EE}\u{22EE}", // ⋮⋮ (two cells)
+        ToolFamily::Rlm => "\u{22EE}\u{22EE}",    // ⋮⋮ (two cells)
         ToolFamily::Think => "\u{2026}",          // …
         ToolFamily::Generic => "\u{2022}",        // •
     }
@@ -153,7 +158,8 @@ pub fn family_label(family: ToolFamily) -> &'static str {
         ToolFamily::Run => "run",
         ToolFamily::Find => "find",
         ToolFamily::Delegate => "delegate",
-        ToolFamily::Fanout => "swarm",
+        ToolFamily::Fanout => "fanout",
+        ToolFamily::Rlm => "rlm",
         ToolFamily::Think => "think",
         ToolFamily::Generic => "tool",
     }
@@ -212,7 +218,7 @@ mod tests {
         assert_eq!(tool_family_for_name("exec_shell"), ToolFamily::Run);
         assert_eq!(tool_family_for_name("grep_files"), ToolFamily::Find);
         assert_eq!(tool_family_for_name("agent_spawn"), ToolFamily::Delegate);
-        assert_eq!(tool_family_for_name("rlm"), ToolFamily::Fanout);
+        assert_eq!(tool_family_for_name("rlm"), ToolFamily::Rlm);
         assert_eq!(
             tool_family_for_name("totally_new_tool"),
             ToolFamily::Generic
@@ -252,6 +258,7 @@ mod tests {
             ToolFamily::Find,
             ToolFamily::Delegate,
             ToolFamily::Fanout,
+            ToolFamily::Rlm,
             ToolFamily::Think,
             ToolFamily::Generic,
         ] {

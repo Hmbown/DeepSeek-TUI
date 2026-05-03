@@ -338,16 +338,32 @@ pub fn url_encode(input: &str) -> String {
 /// resolve correctly across processes.
 #[must_use]
 pub fn display_path(path: &Path) -> String {
-    let Some(home) = dirs::home_dir() else {
+    display_path_with_home(path, dirs::home_dir().as_deref())
+}
+
+/// Like [`display_path`] but takes an explicit home directory instead of
+/// reading `$HOME` / `dirs::home_dir()`.  Used in tests and anywhere the
+/// caller already has the home path available.
+///
+/// The home-relative suffix is rejoined with the platform separator
+/// (`\` on Windows, `/` elsewhere) by walking the path's components, so
+/// inputs that carried foreign separators don't leak through.
+#[must_use]
+pub fn display_path_with_home(path: &Path, home: Option<&Path>) -> String {
+    let Some(home) = home else {
         return path.display().to_string();
     };
-    if let Ok(rest) = path.strip_prefix(&home) {
+    if let Ok(rest) = path.strip_prefix(home) {
         if rest.as_os_str().is_empty() {
             return "~".to_string();
         }
-        // Render with the platform-correct separator after the tilde.
-        let sep = std::path::MAIN_SEPARATOR;
-        return format!("~{sep}{}", rest.display());
+        let sep = std::path::MAIN_SEPARATOR_STR;
+        let mut out = String::from("~");
+        for component in rest.components() {
+            out.push_str(sep);
+            out.push_str(&component.as_os_str().to_string_lossy());
+        }
+        return out;
     }
     path.display().to_string()
 }
@@ -390,81 +406,75 @@ pub fn estimate_message_chars(messages: &[Message]) -> usize {
     total
 }
 
-// Tests below set `HOME` to drive `dirs::home_dir()`, which is honored on
-// Unix but not on Windows (which reads `USERPROFILE` first). The
-// `display_path` contraction logic itself is platform-identical — it
-// delegates to `dirs::home_dir()`. Gate to `cfg(unix)` so we cover the
-// behavior on the platform whose env-var contract matches the test
-// driver, instead of writing platform-specific test scaffolding for a
-// pure abstraction.
-#[cfg(all(test, unix))]
+// Tests use `display_path_with_home` so they never mutate the global `HOME`
+// env var.  Mutating `HOME` via `std::env::set_var` is not thread-safe; Cargo
+// runs tests in parallel by default and CI runners are multi-core, so any test
+// that stomps `HOME` will race with tests that *read* it.  Using the injected
+// helper avoids the race entirely and makes the tests portable to Windows
+// without additional platform scaffolding.
+#[cfg(test)]
 mod tests {
-    use super::display_path;
+    use super::display_path_with_home;
     use std::path::PathBuf;
 
-    /// Save and restore $HOME inside one test so a panic anywhere can't
-    /// poison sibling tests that read the env var.
-    fn with_home<R>(home: &str, f: impl FnOnce() -> R) -> R {
-        let prev = std::env::var_os("HOME");
-        // SAFETY: tests in this crate are run single-threaded with respect
-        // to env-var mutation by the integration harness, and we restore
-        // immediately after the closure.
-        unsafe { std::env::set_var("HOME", home) };
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
-        match prev {
-            Some(v) => unsafe { std::env::set_var("HOME", v) },
-            None => unsafe { std::env::remove_var("HOME") },
-        }
-        match result {
-            Ok(v) => v,
-            Err(p) => std::panic::resume_unwind(p),
-        }
+    fn home(s: &str) -> Option<PathBuf> {
+        Some(PathBuf::from(s))
     }
 
     #[test]
     fn display_path_contracts_home_prefix() {
-        with_home("/Users/alice", || {
-            assert_eq!(
-                display_path(&PathBuf::from("/Users/alice/projects/foo")),
-                format!(
-                    "~{}projects{}foo",
-                    std::path::MAIN_SEPARATOR,
-                    std::path::MAIN_SEPARATOR
-                ),
-            );
-        });
+        let h = home("/Users/alice");
+        assert_eq!(
+            display_path_with_home(&PathBuf::from("/Users/alice/projects/foo"), h.as_deref()),
+            format!(
+                "~{}projects{}foo",
+                std::path::MAIN_SEPARATOR,
+                std::path::MAIN_SEPARATOR
+            ),
+        );
     }
 
     #[test]
     fn display_path_returns_bare_tilde_for_home_itself() {
-        with_home("/Users/alice", || {
-            assert_eq!(display_path(&PathBuf::from("/Users/alice")), "~");
-        });
+        let h = home("/Users/alice");
+        assert_eq!(
+            display_path_with_home(&PathBuf::from("/Users/alice"), h.as_deref()),
+            "~"
+        );
     }
 
     #[test]
     fn display_path_leaves_unrelated_paths_alone() {
-        with_home("/Users/alice", || {
-            // Different user — must not get rewritten or share the tilde.
-            assert_eq!(
-                display_path(&PathBuf::from("/Users/bob/Code")),
-                "/Users/bob/Code".to_string()
-            );
-            // System path must stay absolute.
-            assert_eq!(display_path(&PathBuf::from("/etc/hosts")), "/etc/hosts");
-        });
+        let h = home("/Users/alice");
+        // Different user — must not get rewritten or share the tilde.
+        assert_eq!(
+            display_path_with_home(&PathBuf::from("/Users/bob/Code"), h.as_deref()),
+            "/Users/bob/Code".to_string()
+        );
+        // System path must stay absolute.
+        assert_eq!(
+            display_path_with_home(&PathBuf::from("/etc/hosts"), h.as_deref()),
+            "/etc/hosts"
+        );
     }
 
     #[test]
     fn display_path_does_not_match_username_prefix() {
         // Regression guard: a directory named like the user's home
         // *prefix* but not under it must not get rewritten.
-        with_home("/Users/alice", || {
-            assert_eq!(
-                display_path(&PathBuf::from("/Users/alice2/work")),
-                "/Users/alice2/work"
-            );
-        });
+        let h = home("/Users/alice");
+        assert_eq!(
+            display_path_with_home(&PathBuf::from("/Users/alice2/work"), h.as_deref()),
+            "/Users/alice2/work"
+        );
+    }
+
+    #[test]
+    fn display_path_with_no_home_returns_full_path() {
+        assert_eq!(
+            display_path_with_home(&PathBuf::from("/some/path"), None),
+            "/some/path"
+        );
     }
 }
 

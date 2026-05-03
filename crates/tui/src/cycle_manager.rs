@@ -237,7 +237,7 @@ impl StructuredState {
         };
 
         let subagent_snapshots = if let Some(handle) = subagents {
-            let guard = handle.lock().await;
+            let guard = handle.read().await;
             guard
                 .list()
                 .into_iter()

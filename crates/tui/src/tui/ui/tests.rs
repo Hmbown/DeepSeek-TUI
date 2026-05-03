@@ -555,6 +555,68 @@ fn active_tool_status_label_summarizes_live_tool_group() {
 }
 
 #[test]
+fn active_tool_status_label_counts_foreground_rlm_work() {
+    let mut app = create_test_app();
+    app.turn_started_at = Some(Instant::now() - Duration::from_secs(5));
+    let mut active = ActiveCell::new();
+    active.push_tool(
+        "rlm-1",
+        HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            name: "rlm".to_string(),
+            status: ToolStatus::Running,
+            input_summary: Some("task: compare projects".to_string()),
+            output: None,
+            prompts: None,
+        })),
+    );
+    app.active_cell = Some(active);
+
+    let label = active_tool_status_label(&app).expect("status label");
+
+    assert!(label.contains("tool rlm"), "label: {label}");
+    assert!(label.contains("1 active"), "label: {label}");
+}
+
+#[test]
+fn terminal_probe_timeout_defaults_to_500ms() {
+    let config = Config::default();
+
+    assert_eq!(terminal_probe_timeout(&config), Duration::from_millis(500));
+}
+
+#[test]
+fn terminal_probe_timeout_uses_tui_config_and_clamps() {
+    let mut config = Config {
+        tui: Some(crate::config::TuiConfig {
+            alternate_screen: None,
+            mouse_capture: None,
+            terminal_probe_timeout_ms: Some(750),
+            status_items: None,
+        }),
+        ..Config::default()
+    };
+
+    assert_eq!(terminal_probe_timeout(&config), Duration::from_millis(750));
+
+    config
+        .tui
+        .as_mut()
+        .expect("tui config")
+        .terminal_probe_timeout_ms = Some(0);
+    assert_eq!(terminal_probe_timeout(&config), Duration::from_millis(100));
+
+    config
+        .tui
+        .as_mut()
+        .expect("tui config")
+        .terminal_probe_timeout_ms = Some(60_000);
+    assert_eq!(
+        terminal_probe_timeout(&config),
+        Duration::from_millis(5_000)
+    );
+}
+
+#[test]
 fn file_mentions_add_local_text_context_to_model_payload() {
     let tmpdir = TempDir::new().expect("tempdir");
     std::fs::write(

@@ -197,7 +197,7 @@ anywhere.
 ### 📖 Docs refresh
 
 README hero updated with intent statement and architecture summary.
-ARCHITECTURE.md cleaned up for v0.8.6 (swarm references removed, current
+ARCHITECTURE.md cleaned up for v0.8.6 (removed swarm tool surface, current
 crate map). CONTRIBUTING.md now has a "shape of a PR" section.
 
 Full changelog: [CHANGELOG.md](CHANGELOG.md).
@@ -307,12 +307,12 @@ Filenames containing multi-byte characters (e.g., `dialogue_line__冰糖.mp3`)
 no longer panic the `matches_glob` function — byte-index slicing was replaced
 with `char_indices()` boundary-safe iteration.
 
-### 🔄 Swarm UI reconciliation
+### 🔄 Fanout UI reconciliation
 
 The fanout card no longer pre-seeds with zero-state workers, eliminating the
 "0 done · 0 running · 0 failed · N pending" vs sidebar "N running"
 contradiction. The sidebar now shows "dispatching N" before the first progress
-event arrives from a `agent_swarm` invocation.
+event arrives from a legacy fanout invocation.
 
 Full changelog: [CHANGELOG.md](CHANGELOG.md).
 

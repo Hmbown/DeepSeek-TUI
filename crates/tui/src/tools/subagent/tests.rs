@@ -165,7 +165,7 @@ fn test_parse_assign_request_requires_update_fields() {
 
 #[test]
 fn test_send_input_schema_does_not_require_message_field() {
-    let manager = Arc::new(Mutex::new(SubAgentManager::new(PathBuf::from("."), 1)));
+    let manager = Arc::new(RwLock::new(SubAgentManager::new(PathBuf::from("."), 1)));
     let schema = AgentSendInputTool::new(manager, "send_input").input_schema();
     let required = schema
         .get("required")
@@ -300,7 +300,7 @@ fn test_subagent_tool_registry_reports_unavailable_tools() {
 
 #[tokio::test]
 async fn test_wait_for_result_reports_timeout_when_still_running() {
-    let manager = Arc::new(Mutex::new(SubAgentManager::new(PathBuf::from("."), 2)));
+    let manager = Arc::new(RwLock::new(SubAgentManager::new(PathBuf::from("."), 2)));
     let (input_tx, _input_rx) = mpsc::unbounded_channel();
     let agent = SubAgent::new(
         SubAgentType::Explore,
@@ -313,7 +313,7 @@ async fn test_wait_for_result_reports_timeout_when_still_running() {
     );
     let agent_id = agent.id.clone();
     {
-        let mut guard = manager.lock().await;
+        let mut guard = manager.write().await;
         guard.agents.insert(agent_id.clone(), agent);
     }
 
@@ -324,8 +324,38 @@ async fn test_wait_for_result_reports_timeout_when_still_running() {
     assert_eq!(snapshot.status, SubAgentStatus::Running);
 }
 
+#[tokio::test]
+async fn test_running_count_counts_only_agents_with_live_task_handles() {
+    let mut manager = SubAgentManager::new(PathBuf::from("."), 1);
+    let (input_tx, _input_rx) = mpsc::unbounded_channel();
+    let mut agent = SubAgent::new(
+        SubAgentType::Explore,
+        "prompt".to_string(),
+        make_assignment(),
+        "deepseek-v4-flash".to_string(),
+        Some("Blue".to_string()),
+        Some(vec!["read_file".to_string()]),
+        input_tx,
+    );
+    agent.status = SubAgentStatus::Running;
+    let handle = tokio::spawn(async {
+        tokio::time::sleep(Duration::from_secs(60)).await;
+    });
+    agent.task_handle = Some(handle);
+    let agent_id = agent.id.clone();
+    manager.agents.insert(agent.id.clone(), agent);
+
+    assert_eq!(manager.running_count(), 1);
+    manager
+        .agents
+        .get_mut(&agent_id)
+        .and_then(|agent| agent.task_handle.take())
+        .expect("live task handle")
+        .abort();
+}
+
 #[test]
-fn test_running_count_respects_limit() {
+fn test_running_count_ignores_running_status_without_task_handle() {
     let mut manager = SubAgentManager::new(PathBuf::from("."), 1);
     let (input_tx, _input_rx) = mpsc::unbounded_channel();
     let mut agent = SubAgent::new(
@@ -340,7 +370,7 @@ fn test_running_count_respects_limit() {
     agent.status = SubAgentStatus::Running;
     manager.agents.insert(agent.id.clone(), agent);
 
-    assert_eq!(manager.running_count(), 1);
+    assert_eq!(manager.running_count(), 0);
 }
 
 #[tokio::test]
@@ -543,7 +573,7 @@ fn test_wrap_with_deprecation_notice_preserves_existing_metadata() {
 
 #[test]
 fn test_canonical_agent_send_input_has_no_deprecation() {
-    let manager = Arc::new(Mutex::new(SubAgentManager::new(PathBuf::from("."), 1)));
+    let manager = Arc::new(RwLock::new(SubAgentManager::new(PathBuf::from("."), 1)));
     // The canonical name "agent_send_input" must NOT receive a deprecation notice.
     // We verify this by inspecting the tool's name — the deprecation branch
     // only fires when name == "send_input".

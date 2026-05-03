@@ -147,7 +147,7 @@ reflect very different cost classes:
 
 | Tool | What each child does | Wall-clock | Token cost | Cap |
 |---|---|---|---|---|
-| `agent_spawn` | Full sub-agent loop (planning, tool calls, multi-turn streaming, can spawn children) | minutes | thousands of tokens | 5 in flight |
+| `agent_spawn` | Full sub-agent loop (planning, tool calls, multi-turn streaming, can spawn children) | minutes | thousands of tokens | 10 in flight by default (`[subagents].max_concurrent`, hard ceiling 20) |
 | `rlm_query` | One-shot non-streaming Chat Completions call to `deepseek-v4-flash` | seconds | ~hundreds of tokens | 16 per call |
 
 The caps appear in each tool's description and error messages so the model

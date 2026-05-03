@@ -33,6 +33,12 @@ pub struct FooterProps {
     pub mode_label: &'static str,
     /// Color used for the mode chip.
     pub mode_color: Color,
+    /// Color used for small separators between chips.
+    pub text_dim_color: Color,
+    /// Color used for the model label.
+    pub text_hint_color: Color,
+    /// Color used for steady secondary chips such as cost.
+    pub text_muted_color: Color,
     /// Status label like `"ready"`, `"thinking ⌫"`, `"working"`. When the
     /// label equals `"ready"` the footer hides the status segment entirely.
     pub state_label: String,
@@ -192,11 +198,14 @@ impl FooterProps {
         cache: Vec<Span<'static>>,
         cost: Vec<Span<'static>>,
     ) -> Self {
-        let (mode_label, mode_color) = mode_style(app.mode);
+        let (mode_label, mode_color) = mode_style(app);
         Self {
             model: app.model.clone(),
             mode_label,
             mode_color,
+            text_dim_color: app.ui_theme.text_dim,
+            text_hint_color: app.ui_theme.text_hint,
+            text_muted_color: app.ui_theme.text_muted,
             state_label: state_label.to_string(),
             state_color,
             coherence,
@@ -210,16 +219,16 @@ impl FooterProps {
     }
 }
 
-fn mode_style(mode: AppMode) -> (&'static str, Color) {
-    let label = match mode {
+fn mode_style(app: &App) -> (&'static str, Color) {
+    let label = match app.mode {
         AppMode::Agent => "agent",
         AppMode::Yolo => "yolo",
         AppMode::Plan => "plan",
     };
-    let color = match mode {
-        AppMode::Agent => palette::MODE_AGENT,
-        AppMode::Yolo => palette::MODE_YOLO,
-        AppMode::Plan => palette::MODE_PLAN,
+    let color = match app.mode {
+        AppMode::Agent => app.ui_theme.mode_agent,
+        AppMode::Yolo => app.ui_theme.mode_yolo,
+        AppMode::Plan => app.ui_theme.mode_plan,
     };
     (label, color)
 }
@@ -389,31 +398,31 @@ impl FooterWidget {
             if !spans.is_empty() {
                 spans.push(Span::styled(
                     sep.to_string(),
-                    Style::default().fg(palette::TEXT_DIM),
+                    Style::default().fg(self.props.text_dim_color),
                 ));
             }
             spans.push(Span::styled(
                 model_label,
-                Style::default().fg(palette::TEXT_HINT),
+                Style::default().fg(self.props.text_hint_color),
             ));
         }
         if let Some(cost_text) = cost {
             if !spans.is_empty() {
                 spans.push(Span::styled(
                     sep.to_string(),
-                    Style::default().fg(palette::TEXT_DIM),
+                    Style::default().fg(self.props.text_dim_color),
                 ));
             }
             spans.push(Span::styled(
                 cost_text,
-                Style::default().fg(palette::TEXT_MUTED),
+                Style::default().fg(self.props.text_muted_color),
             ));
         }
         if let Some(status_label) = status {
             if !spans.is_empty() {
                 spans.push(Span::styled(
                     sep.to_string(),
-                    Style::default().fg(palette::TEXT_DIM),
+                    Style::default().fg(self.props.text_dim_color),
                 ));
             }
             spans.push(Span::styled(
@@ -574,6 +583,9 @@ mod tests {
         assert_eq!(props.state_color, palette::TEXT_MUTED);
         assert_eq!(props.mode_label, "agent");
         assert_eq!(props.mode_color, palette::MODE_AGENT);
+        assert_eq!(props.text_dim_color, palette::TEXT_DIM);
+        assert_eq!(props.text_hint_color, palette::TEXT_HINT);
+        assert_eq!(props.text_muted_color, palette::TEXT_MUTED);
         assert_eq!(props.model, "deepseek-v4-flash");
         assert!(props.coherence.is_empty());
         assert!(props.agents.is_empty());
@@ -600,6 +612,22 @@ mod tests {
 
         assert!(props.state_label.starts_with("thinking"));
         assert_eq!(props.state_color, palette::STATUS_WARNING);
+    }
+
+    #[test]
+    fn from_app_statusline_colors_come_from_ui_theme() {
+        let mut app = make_app();
+        app.ui_theme.mode_agent = Color::Rgb(1, 2, 3);
+        app.ui_theme.text_dim = Color::Rgb(4, 5, 6);
+        app.ui_theme.text_hint = Color::Rgb(7, 8, 9);
+        app.ui_theme.text_muted = Color::Rgb(10, 11, 12);
+
+        let props = idle_props_for(&app);
+
+        assert_eq!(props.mode_color, Color::Rgb(1, 2, 3));
+        assert_eq!(props.text_dim_color, Color::Rgb(4, 5, 6));
+        assert_eq!(props.text_hint_color, Color::Rgb(7, 8, 9));
+        assert_eq!(props.text_muted_color, Color::Rgb(10, 11, 12));
     }
 
     // ---- agents chip wording ----

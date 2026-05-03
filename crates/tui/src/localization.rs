@@ -765,7 +765,7 @@ fn english(id: MessageId) -> &'static str {
         MessageId::CmdStatuslineDescription => "Configure which items appear in the footer",
         MessageId::CmdSubagentsDescription => "List sub-agent status",
         MessageId::CmdSwarmDescription => {
-            "Run a multi-agent swarm turn (sequential | mixture | distill | deliberate)"
+            "Run a multi-agent fanout turn (sequential | mixture | distill | deliberate)"
         }
         MessageId::CmdSystemDescription => "Show current system prompt",
         MessageId::CmdTaskDescription => "Manage background tasks",
@@ -873,7 +873,7 @@ fn english(id: MessageId) -> &'static str {
         }
         MessageId::KbJumpPlanAgentYolo => "Jump directly to Plan / Agent / YOLO mode",
         MessageId::KbAltJumpPlanAgentYolo => "Alternative jump to Plan / Agent / YOLO mode",
-        MessageId::KbFocusSidebar => "Focus Plan / Todos / Tasks / Agents / Agents / Auto sidebar",
+        MessageId::KbFocusSidebar => "Focus Plan / Todos / Tasks / Agents / Auto sidebar",
         MessageId::KbTogglePlanAgent => "Toggle between Plan and Agent modes",
         MessageId::KbSessionPicker => "Open the session picker",
         MessageId::KbPasteAttach => "Paste text or attach a clipboard image",
@@ -1037,7 +1037,7 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::CmdStatuslineDescription => "フッターに表示する項目を設定",
         MessageId::CmdSubagentsDescription => "サブエージェントの状態を一覧表示",
         MessageId::CmdSwarmDescription => {
-            "マルチエージェントのスワームターンを実行（sequential | mixture | distill | deliberate）"
+            "マルチエージェントのファンアウトターンを実行（sequential | mixture | distill | deliberate）"
         }
         MessageId::CmdSystemDescription => "現在のシステムプロンプトを表示",
         MessageId::CmdTaskDescription => "バックグラウンドタスクを管理",
@@ -1144,9 +1144,7 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         }
         MessageId::KbJumpPlanAgentYolo => "Plan / Agent / YOLO モードに直接ジャンプ",
         MessageId::KbAltJumpPlanAgentYolo => "Plan / Agent / YOLO モードへの代替ジャンプ",
-        MessageId::KbFocusSidebar => {
-            "Plan / Todos / Tasks / Agents / Agents / Auto サイドバーにフォーカス"
-        }
+        MessageId::KbFocusSidebar => "Plan / Todos / Tasks / Agents / Auto サイドバーにフォーカス",
         MessageId::KbTogglePlanAgent => "Plan モードと Agent モードを切り替え",
         MessageId::KbSessionPicker => "セッションピッカーを開く",
         MessageId::KbPasteAttach => "テキストを貼り付けまたはクリップボード画像を添付",
@@ -1287,7 +1285,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::CmdStatuslineDescription => "配置底栏要显示哪些条目",
         MessageId::CmdSubagentsDescription => "列出子代理状态",
         MessageId::CmdSwarmDescription => {
-            "运行多代理集群轮次（sequential | mixture | distill | deliberate）"
+            "运行多代理扇出轮次（sequential | mixture | distill | deliberate）"
         }
         MessageId::CmdSystemDescription => "显示当前系统提示词",
         MessageId::CmdTaskDescription => "管理后台任务",
@@ -1545,7 +1543,7 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         MessageId::CmdStatuslineDescription => "Configurar quais itens aparecem no rodapé",
         MessageId::CmdSubagentsDescription => "Listar o status dos sub-agentes",
         MessageId::CmdSwarmDescription => {
-            "Executar turno de enxame multi-agente (sequential | mixture | distill | deliberate)"
+            "Executar turno fanout multi-agente (sequential | mixture | distill | deliberate)"
         }
         MessageId::CmdSystemDescription => "Exibir o prompt de sistema atual",
         MessageId::CmdTaskDescription => "Gerenciar tarefas em segundo plano",
@@ -1660,9 +1658,7 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         }
         MessageId::KbJumpPlanAgentYolo => "Pular direto para modo Plan / Agent / YOLO",
         MessageId::KbAltJumpPlanAgentYolo => "Salto alternativo para modo Plan / Agent / YOLO",
-        MessageId::KbFocusSidebar => {
-            "Focar barra lateral Plan / Todos / Tasks / Agents / Agents / Auto"
-        }
+        MessageId::KbFocusSidebar => "Focar barra lateral Plan / Todos / Tasks / Agents / Auto",
         MessageId::KbTogglePlanAgent => "Alternar entre modos Plan e Agent",
         MessageId::KbSessionPicker => "Abrir seletor de sessões",
         MessageId::KbPasteAttach => "Colar texto ou anexar imagem da área de transferência",

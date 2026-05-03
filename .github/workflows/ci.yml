@@ -5,6 +5,8 @@ on:
     branches: [master, main]
   pull_request:
     branches: [master, main]
+  schedule:
+    - cron: '31 6 * * 1'
 
 env:
   CARGO_TERM_COLOR: always
@@ -67,28 +69,13 @@ jobs:
       - name: Run Offline Eval Harness
         run: cargo run -p deepseek-tui --all-features -- eval
 
-  build:
-    name: Build
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Install Linux system dependencies
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
-      - uses: Swatinem/rust-cache@v2
-      - name: Build
-        run: cargo build --release
-
   npm-wrapper-smoke:
     name: npm wrapper smoke
+    if: github.event_name != 'schedule'
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-latest"]' || '["ubuntu-latest","macos-latest","windows-latest"]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -107,6 +94,7 @@ jobs:
   # Check documentation builds without warnings
   docs:
     name: Documentation
+    if: github.event_name == 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

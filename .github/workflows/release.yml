@@ -46,6 +46,12 @@ jobs:
 
   build:
     needs: parity
+    # `parity` is gated to tag-push events. On manual `workflow_dispatch`,
+    # parity is skipped, so let `build` proceed when parity either succeeded
+    # or was skipped — but never when it actually failed or the run was
+    # cancelled. Operators using dispatch are expected to have already run
+    # the same gates locally / via ci.yml on `main`.
+    if: ${{ !cancelled() && (needs.parity.result == 'success' || needs.parity.result == 'skipped') }}
     strategy:
       matrix:
         include:

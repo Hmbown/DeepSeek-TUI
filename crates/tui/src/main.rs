@@ -525,7 +525,9 @@ async fn main() -> Result<()> {
         // Restore the terminal first so the panic message itself, plus the
         // user's shell after exit, are visible. Best-effort — we may not be
         // in raw / alt-screen mode if the panic happens pre-TUI.
+        use crossterm::event::PopKeyboardEnhancementFlags;
         use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
+        let _ = crossterm::execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
         let _ = disable_raw_mode();
         let _ = crossterm::execute!(std::io::stdout(), LeaveAlternateScreen);
 
@@ -3368,6 +3370,7 @@ mod terminal_mode_tests {
             tui: Some(crate::config::TuiConfig {
                 alternate_screen: None,
                 mouse_capture: Some(false),
+                terminal_probe_timeout_ms: None,
                 status_items: None,
             }),
             ..Config::default()
@@ -3391,6 +3394,7 @@ mod terminal_mode_tests {
             tui: Some(crate::config::TuiConfig {
                 alternate_screen: None,
                 mouse_capture: Some(true),
+                terminal_probe_timeout_ms: None,
                 status_items: None,
             }),
             ..Config::default()

@@ -22,6 +22,7 @@ use crate::tools::subagent::SubAgentStatus;
 use crate::tools::todo::TodoStatus;
 
 use super::app::{App, SidebarFocus};
+use super::history::{HistoryCell, ToolCell, ToolStatus};
 use super::subagent_routing::active_fanout_counts;
 use super::ui::truncate_line_to_width;
 
@@ -386,6 +387,7 @@ fn render_sidebar_subagents(f: &mut Frame, area: Rect, app: &App) {
     let (fanout_running, fanout_total) = active_fanout_counts(app)
         .map(|(running, total)| (running, Some(total)))
         .unwrap_or((0, None));
+    let foreground_rlm_running = foreground_rlm_running(app);
 
     let summary = SidebarSubagentSummary {
         cached_total: app.subagent_cache.len(),
@@ -393,6 +395,7 @@ fn render_sidebar_subagents(f: &mut Frame, area: Rect, app: &App) {
         progress_only_count,
         fanout_total,
         fanout_running,
+        foreground_rlm_running,
         role_counts,
     };
     let lines = subagent_navigator_lines(&summary, content_width);
@@ -410,7 +413,20 @@ pub struct SidebarSubagentSummary {
     pub progress_only_count: usize,
     pub fanout_total: Option<usize>,
     pub fanout_running: usize,
+    pub foreground_rlm_running: bool,
     pub role_counts: std::collections::BTreeMap<String, usize>,
+}
+
+fn foreground_rlm_running(app: &App) -> bool {
+    app.active_cell.as_ref().is_some_and(|active| {
+        active.entries().iter().any(|entry| {
+            matches!(
+                entry,
+                HistoryCell::Tool(ToolCell::Generic(generic))
+                    if generic.name == "rlm" && generic.status == ToolStatus::Running
+            )
+        })
+    })
 }
 
 /// Build the demoted navigator lines from a summary projection. Public
@@ -422,7 +438,11 @@ pub fn subagent_navigator_lines(
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(4);
 
     let fanout_total = summary.fanout_total.unwrap_or(0);
-    if summary.cached_total == 0 && summary.progress_only_count == 0 && fanout_total == 0 {
+    if summary.cached_total == 0
+        && summary.progress_only_count == 0
+        && fanout_total == 0
+        && !summary.foreground_rlm_running
+    {
         lines.push(Line::from(Span::styled(
             "No agents",
             Style::default().fg(palette::TEXT_MUTED),
@@ -469,6 +489,16 @@ pub fn subagent_navigator_lines(
             truncate_line_to_width(&role_line, content_width.max(1)),
             Style::default().fg(palette::TEXT_DIM),
         )));
+    }
+
+    if summary.foreground_rlm_running {
+        lines.push(Line::from(vec![
+            Span::styled("RLM", Style::default().fg(palette::DEEPSEEK_SKY).bold()),
+            Span::styled(
+                " foreground work active",
+                Style::default().fg(palette::TEXT_DIM),
+            ),
+        ]));
     }
 
     lines.push(Line::from(Span::styled(
@@ -564,6 +594,7 @@ mod tests {
             progress_only_count: 0,
             fanout_total: None,
             fanout_running: 0,
+            foreground_rlm_running: false,
             role_counts,
         };
         let text = lines_to_text(&subagent_navigator_lines(&summary, 64));
@@ -581,13 +612,14 @@ mod tests {
     }
 
     #[test]
-    fn navigator_uses_fanout_total_when_swarm_has_seeded_slots() {
+    fn navigator_uses_fanout_total_when_fanout_has_seeded_slots() {
         let summary = SidebarSubagentSummary {
             cached_total: 1,
             cached_running: 1,
             progress_only_count: 0,
             fanout_total: Some(6),
             fanout_running: 1,
+            foreground_rlm_running: false,
             role_counts: std::collections::BTreeMap::new(),
         };
 
@@ -607,6 +639,7 @@ mod tests {
             progress_only_count: 0,
             fanout_total: None,
             fanout_running: 0,
+            foreground_rlm_running: false,
             role_counts,
         };
         let text = lines_to_text(&subagent_navigator_lines(&summary, 32));
@@ -626,6 +659,7 @@ mod tests {
             progress_only_count: 0,
             fanout_total: None,
             fanout_running: 0,
+            foreground_rlm_running: false,
             role_counts,
         };
         let lines = subagent_navigator_lines(&summary, 16);
@@ -637,6 +671,22 @@ mod tests {
         assert!(
             role_line.chars().count() <= 16,
             "role line {role_line:?} exceeded content_width"
+        );
+    }
+
+    #[test]
+    fn navigator_shows_foreground_rlm_work_when_no_subagents_exist() {
+        let summary = SidebarSubagentSummary {
+            foreground_rlm_running: true,
+            ..SidebarSubagentSummary::default()
+        };
+        let text = lines_to_text(&subagent_navigator_lines(&summary, 64));
+
+        assert!(!text[0].contains("No agents"), "header: {:?}", text);
+        assert!(
+            text.iter()
+                .any(|line| line.contains("RLM foreground work active")),
+            "RLM work must be visible in Agents panel: {text:?}"
         );
     }
 }

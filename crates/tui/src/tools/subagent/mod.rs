@@ -9,7 +9,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
@@ -526,7 +526,7 @@ impl SubAgentRuntime {
 
     /// Return a child runtime that is deliberately detached from the parent
     /// turn cancellation token. Background sub-agents should keep running when
-    /// the parent turn is cancelled; explicit agent/swarm cancellation still
+    /// the parent turn is cancelled; explicit agent cancellation still
     /// aborts their task handles through the manager.
     #[must_use]
     pub fn background_runtime(&self) -> Self {
@@ -769,13 +769,16 @@ impl SubAgentManager {
         self.agents
             .values()
             .filter(|agent| {
+                // Exclude non-running statuses
                 if agent.status != SubAgentStatus::Running {
                     return false;
                 }
-                !agent
-                    .task_handle
-                    .as_ref()
-                    .is_some_and(tokio::task::JoinHandle::is_finished)
+                // Exclude persisted agents with no task_handle (they're not actually running)
+                let Some(handle) = agent.task_handle.as_ref() else {
+                    return false;
+                };
+                // Exclude agents whose task has finished (status will be updated to Completed shortly)
+                !handle.is_finished()
             })
             .count()
     }
@@ -1192,7 +1195,7 @@ impl SubAgentManager {
 }
 
 /// Thread-safe wrapper for `SubAgentManager`.
-pub type SharedSubAgentManager = Arc<Mutex<SubAgentManager>>;
+pub type SharedSubAgentManager = Arc<RwLock<SubAgentManager>>;
 
 fn default_state_path(workspace: &Path) -> PathBuf {
     workspace
@@ -1234,7 +1237,7 @@ pub fn new_shared_subagent_manager(workspace: PathBuf, max_agents: usize) -> Sha
     if let Err(err) = manager.load_state() {
         eprintln!("Failed to load sub-agent state: {err}");
     }
-    Arc::new(Mutex::new(manager))
+    Arc::new(RwLock::new(manager))
 }
 
 // === Tool Implementations ===
@@ -1276,9 +1279,10 @@ impl ToolSpec for AgentSpawnTool {
 
     fn description(&self) -> &'static str {
         "Spawn a background sub-agent for a focused task. Returns an agent_id immediately; \
-         follow with agent_result to retrieve the final result. Max 5 in flight (each is a \
-         full sub-agent loop; cancel or wait if you hit the cap). For parallel one-shot LLM \
-         queries, just emit multiple tool calls in one turn — the dispatcher runs them in parallel."
+         follow with agent_result to retrieve the final result. Default cap of 10 concurrent \
+         sub-agents (configurable via `[subagents].max_concurrent`); each is a full sub-agent \
+         loop, so cancel or wait if you hit the cap. For parallel one-shot LLM queries, just \
+         emit multiple tool calls in one turn — the dispatcher runs them in parallel."
     }
 
     fn input_schema(&self) -> Value {
@@ -1415,7 +1419,7 @@ impl ToolSpec for AgentSpawnTool {
         };
         child_runtime.model = effective_model.clone();
 
-        let mut manager = self.manager.lock().await;
+        let mut manager = self.manager.write().await;
 
         let result = manager
             .spawn_background_with_assignment_options(
@@ -1526,7 +1530,7 @@ impl ToolSpec for AgentResultTool {
         let (result, timed_out) = if block {
             wait_for_result(&self.manager, agent_id, Duration::from_millis(timeout_ms)).await?
         } else {
-            let manager = self.manager.lock().await;
+            let manager = self.manager.read().await;
             (
                 manager
                     .get_result(agent_id)
@@ -1599,7 +1603,7 @@ impl ToolSpec for AgentCancelTool {
 
     async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
         let agent_id = required_str(&input, "agent_id")?;
-        let mut manager = self.manager.lock().await;
+        let mut manager = self.manager.write().await;
         let result = manager
             .cancel(agent_id)
             .map_err(|e| ToolError::execution_failed(format!("Failed to cancel sub-agent: {e}")))?;
@@ -1669,7 +1673,7 @@ impl ToolSpec for AgentCloseTool {
             .or_else(|| input.get("agent_id"))
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::missing_field("id"))?;
-        let mut manager = self.manager.lock().await;
+        let mut manager = self.manager.write().await;
         let result = manager
             .cancel(agent_id)
             .map_err(|e| ToolError::execution_failed(format!("Failed to close sub-agent: {e}")))?;
@@ -1740,7 +1744,7 @@ impl ToolSpec for AgentResumeTool {
             .or_else(|| input.get("agent_id"))
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::missing_field("id"))?;
-        let mut manager = self.manager.lock().await;
+        let mut manager = self.manager.write().await;
         let result = manager
             .resume(Arc::clone(&self.manager), self.runtime.clone(), agent_id)
             .map_err(|e| ToolError::execution_failed(format!("Failed to resume sub-agent: {e}")))?;
@@ -1783,7 +1787,7 @@ impl ToolSpec for AgentListTool {
         _input: Value,
         _context: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
-        let mut manager = self.manager.lock().await;
+        let mut manager = self.manager.write().await;
         manager.cleanup(COMPLETED_AGENT_RETENTION);
         let results = manager.list();
         ToolResult::json(&results).map_err(|e| ToolError::execution_failed(e.to_string()))
@@ -1862,7 +1866,7 @@ impl ToolSpec for AgentSendInputTool {
         let message = parse_text_or_items(&input, &["message", "input"], "items", "message")?;
         let interrupt = optional_bool(&input, "interrupt", false);
 
-        let mut manager = self.manager.lock().await;
+        let mut manager = self.manager.write().await;
         manager
             .send_input(agent_id, message, interrupt)
             .map_err(|e| ToolError::execution_failed(e.to_string()))?;
@@ -1965,7 +1969,7 @@ impl ToolSpec for AgentAssignTool {
 
     async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
         let request = parse_assign_request(&input)?;
-        let mut manager = self.manager.lock().await;
+        let mut manager = self.manager.write().await;
         let result = manager
             .assign(
                 &request.agent_id,
@@ -2049,7 +2053,7 @@ impl ToolSpec for AgentWaitTool {
             .clamp(MIN_WAIT_TIMEOUT_MS, MAX_RESULT_TIMEOUT_MS);
         let mut ids = parse_wait_ids(&input);
         if ids.is_empty() {
-            let manager = self.manager.lock().await;
+            let manager = self.manager.read().await;
             ids = manager
                 .list()
                 .into_iter()
@@ -2280,7 +2284,7 @@ async fn run_subagent_task(task: SubAgentTask) {
     )
     .await;
 
-    let mut manager = task.manager_handle.lock().await;
+    let mut manager = task.manager_handle.write().await;
     match &result {
         Ok(res) => manager.update_from_result(&task.agent_id, res.clone()),
         Err(err) => manager.update_failed(&task.agent_id, err.to_string()),
@@ -2645,7 +2649,7 @@ async fn wait_for_result(
 
     loop {
         let snapshot = {
-            let manager = manager.lock().await;
+            let manager = manager.read().await;
             manager
                 .get_result(agent_id)
                 .map_err(|e| ToolError::execution_failed(e.to_string()))?
@@ -2672,7 +2676,7 @@ async fn wait_for_agents(
 
     loop {
         let snapshots = {
-            let manager = manager.lock().await;
+            let manager = manager.read().await;
             ids.iter()
                 .map(|id| {
                     manager

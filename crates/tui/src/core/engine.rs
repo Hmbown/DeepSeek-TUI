@@ -505,7 +505,7 @@ impl Engine {
                     .background_runtime();
 
                     let result = {
-                        let mut manager = self.subagent_manager.lock().await;
+                        let mut manager = self.subagent_manager.write().await;
                         manager.spawn_background(
                             Arc::clone(&self.subagent_manager),
                             runtime,
@@ -537,7 +537,7 @@ impl Engine {
                 }
                 Op::ListSubAgents => {
                     let agents = {
-                        let mut manager = self.subagent_manager.lock().await;
+                        let mut manager = self.subagent_manager.write().await;
                         manager.cleanup(Duration::from_secs(60 * 60));
                         manager.list()
                     };
