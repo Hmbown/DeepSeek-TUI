@@ -3045,6 +3045,24 @@ async fn run_interactive(
         session_manager::prune_workspace_snapshots(&workspace, snapshots.max_age());
     }
 
+    // Prune stale tool-output spillover files (#422). Non-fatal: home
+    // missing or directory unreadable just means nothing got pruned;
+    // we never block startup. Runs unconditionally because the
+    // spillover store is created lazily on first write — there's no
+    // user-facing setting to gate.
+    match crate::tools::truncate::prune_older_than(crate::tools::truncate::SPILLOVER_MAX_AGE) {
+        Ok(0) => {}
+        Ok(n) => tracing::debug!(
+            target: "spillover",
+            "boot prune removed {n} spillover file(s)"
+        ),
+        Err(err) => tracing::warn!(
+            target: "spillover",
+            ?err,
+            "spillover prune skipped on boot"
+        ),
+    }
+
     tui::run_tui(
         config,
         tui::TuiOptions {
