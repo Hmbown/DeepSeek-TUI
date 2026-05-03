@@ -138,7 +138,10 @@ Large logs and command outputs should be artifacts with compact summaries in the
 
 `agent_spawn` plus the supporting tools (`agent_result` / `wait` / `send_input` /
 `agent_assign` / `agent_cancel` / `resume_agent` / `agent_list`).
-See `agent.txt` for the delegation protocol.
+See `agent.txt` for the delegation protocol and
+[`SUBAGENTS.md`](SUBAGENTS.md) for the role taxonomy
+(`general` / `explore` / `plan` / `review` / `implementer` /
+`verifier` / `custom`).
 
 ### Parallel fan-out: cost-class caps
 
