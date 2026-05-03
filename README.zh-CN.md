@@ -48,7 +48,7 @@ deepseek
 
 预构建二进制覆盖 **Linux x64**、**Linux ARM64**（v0.8.8 起）、**macOS x64**、
 **macOS ARM64**、**Windows x64**。其他平台（musl、riscv64、FreeBSD 等）请见
-下方[「从源码安装」](#从源码安装)，或参考完整的
+下方的 [从源码安装](#从源码安装) 章节，或参考完整的
 [docs/INSTALL.md](docs/INSTALL.md)。
 
 首次启动时会提示输入 [DeepSeek API key](https://platform.deepseek.com/api_keys)。也可以提前配置：
