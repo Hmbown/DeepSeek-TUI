@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
+use crate::hooks::HookEvent;
 use crate::tools::ReviewOutput;
 use crate::tools::spec::{ToolError, ToolResult};
 use crate::tui::active_cell::ActiveCell;
@@ -20,6 +21,20 @@ pub(super) fn handle_tool_call_started(
     name: &str,
     input: &serde_json::Value,
 ) {
+    // #455 (observer-only): fire `tool_call_before` hooks here, before
+    // any UI bookkeeping. Hooks are read-only observers in this slice
+    // — they can log, notify, or audit, but cannot mutate the args.
+    // Mutation support is tracked separately and stays a v0.8.9
+    // follow-up because it requires a synchronous gate contract that
+    // doesn't exist today.
+    {
+        let context = app
+            .base_hook_context()
+            .with_tool_name(name)
+            .with_tool_args(input);
+        let _ = app.execute_hooks(HookEvent::ToolCallBefore, &context);
+    }
+
     let id = id.to_string();
 
     // All in-flight tool work for the current turn lives in `app.active_cell`
@@ -498,6 +513,21 @@ pub(super) fn handle_tool_call_complete(
             active.bump_revision();
         }
     }
+
+    // #455 (observer-only): fire `tool_call_after` hooks once the
+    // result has settled. Hooks see tool_name + the result content
+    // (or error message) + success flag. Read-only — they cannot
+    // mutate the result that goes back to the model. Mutation
+    // remains a v0.8.9 follow-up.
+    let (result_text, success): (String, bool) = match result.as_ref() {
+        Ok(tool_result) => (tool_result.content.clone(), tool_result.success),
+        Err(err) => (err.to_string(), false),
+    };
+    let context = app
+        .base_hook_context()
+        .with_tool_name(name)
+        .with_tool_result(&result_text, success, None);
+    let _ = app.execute_hooks(HookEvent::ToolCallAfter, &context);
 }
 
 /// Build a finalized standalone history cell for a tool completion whose

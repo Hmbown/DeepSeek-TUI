@@ -251,6 +251,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   discover which events to target in `[[hooks.hooks]]` entries
   without reading source. Ordered lifecycle → per-tool →
   situational, stable across releases.
+- **`tool_call_before` + `tool_call_after` hooks fire** (#455
+  observer-only slice) — both events were defined in the
+  `HookEvent` enum but never fired from production code. The
+  TUI now fires them from `tool_routing.rs` whenever a tool
+  starts or finishes. Hook context carries `tool_name`,
+  `tool_args` (before), or `tool_result` + success flag
+  (after) — observers can log every tool call, send Slack
+  pings, or audit. Hooks remain read-only in this slice;
+  argument / result mutation is a v0.8.9 follow-up because it
+  needs a synchronous-gate contract that doesn't exist today.
+  `/hooks events` already enumerates these events; users can
+  wire them via `[[hooks.hooks]]` entries with
+  `event = "tool_call_before"` or `event = "tool_call_after"`
+  immediately.
 - **RLM tool family** (#512) — `rlm` tool cards map to
   `ToolFamily::Rlm` and render `rlm`, not `swarm`. Stale "swarm"
   wording cleaned out of docs / comments / tests.
