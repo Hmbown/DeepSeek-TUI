@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Linux ARM64 prebuilt binaries** — the release workflow now publishes
+  `deepseek-linux-arm64` and `deepseek-tui-linux-arm64` (built natively on
+  GitHub's `ubuntu-24.04-arm` runner). The npm wrapper picks them up
+  automatically on `arm64` Linux hosts, so HarmonyOS thin-and-light,
+  openEuler/Kylin, Asahi Linux, Raspberry Pi, AWS Graviton, etc. now work
+  with a plain `npm i -g deepseek-tui`.
+
+### Changed
+- **npm `postinstall` failure messages** — when no prebuilt is available for
+  the host's `os.platform() / os.arch()` combo, the wrapper now prints the
+  full `cargo install` fallback recipe and a link to
+  [`docs/INSTALL.md`](docs/INSTALL.md) instead of just the bare error.
+- **`DEEPSEEK_TUI_OPTIONAL_INSTALL=1`** — new env knob that downgrades a
+  postinstall failure to a warning + `exit 0`, so CI matrices that include
+  unsupported platforms don't fail the whole `npm install`.
+
+### Docs
+- New [`docs/INSTALL.md`](docs/INSTALL.md) — every supported platform,
+  prebuilt vs. `cargo install` vs. manual download, cross-compiling x64 → ARM64
+  Linux with `cross` or `gcc-aarch64-linux-gnu`, and a troubleshooting section
+  covering the common `Unsupported architecture`, `MISSING_COMPANION_BINARY`,
+  and self-update mismatch errors.
+- README and `README.zh-CN.md` now have an explicit **Linux ARM64** quickstart
+  pointing ARM64 users at `cargo install deepseek-tui-cli deepseek-tui --locked`
+  for v0.8.7 and at `npm i -g deepseek-tui` for v0.8.8+.
+
 ## [0.8.7] - 2026-05-03
 
 ### Fixed
