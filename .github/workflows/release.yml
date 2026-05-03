@@ -54,6 +54,10 @@ jobs:
             target: x86_64-unknown-linux-gnu
             binary: deepseek
             artifact_name: deepseek-linux-x64
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            binary: deepseek
+            artifact_name: deepseek-linux-arm64
           - os: macos-latest
             target: x86_64-apple-darwin
             binary: deepseek
@@ -71,6 +75,10 @@ jobs:
             target: x86_64-unknown-linux-gnu
             binary: deepseek-tui
             artifact_name: deepseek-tui-linux-x64
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            binary: deepseek-tui
+            artifact_name: deepseek-tui-linux-arm64
           - os: macos-latest
             target: x86_64-apple-darwin
             binary: deepseek-tui
@@ -154,6 +162,7 @@ jobs:
             | Platform | Dispatcher | TUI runtime |
             |---|---|---|
             | Linux x64 | `deepseek-linux-x64` | `deepseek-tui-linux-x64` |
+            | Linux ARM64 | `deepseek-linux-arm64` | `deepseek-tui-linux-arm64` |
             | macOS x64 | `deepseek-macos-x64` | `deepseek-tui-macos-x64` |
             | macOS ARM | `deepseek-macos-arm64` | `deepseek-tui-macos-arm64` |
             | Windows x64 | `deepseek-windows-x64.exe` | `deepseek-tui-windows-x64.exe` |

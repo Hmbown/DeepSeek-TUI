@@ -210,6 +210,12 @@ module.exports = {
 if (require.main === module) {
   run().catch((error) => {
     console.error("deepseek-tui install failed:", error.message);
+    if (process.env.DEEPSEEK_TUI_OPTIONAL_INSTALL === "1") {
+      console.error(
+        "DEEPSEEK_TUI_OPTIONAL_INSTALL=1 set; continuing without a usable binary.",
+      );
+      process.exit(0);
+    }
     process.exit(1);
   });
 }

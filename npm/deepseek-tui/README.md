@@ -52,11 +52,18 @@ is `https://integrate.api.nvidia.com/v1`. With `--provider nvidia-nim`,
 
 ## Supported platforms
 
+Prebuilt binaries for the GitHub release are downloaded automatically:
+
 - Linux x64
+- Linux arm64 (v0.8.8+)
 - macOS x64 / arm64
 - Windows x64
 
-Other platform/architecture combinations are not supported and will fail during install.
+Other platform/architecture combinations (musl, riscv64, FreeBSD, …) aren't
+shipped as prebuilts. The `postinstall` will exit with a clear error pointing
+you at `cargo install deepseek-tui-cli deepseek-tui --locked` and the full
+[docs/INSTALL.md](https://github.com/Hmbown/DeepSeek-TUI/blob/main/docs/INSTALL.md)
+build-from-source guide.
 
 ## Configuration
 
@@ -65,6 +72,7 @@ Other platform/architecture combinations are not supported and will fail during 
 - Set `DEEPSEEK_TUI_GITHUB_REPO` or `DEEPSEEK_GITHUB_REPO` to override the source repo (defaults to `Hmbown/DeepSeek-TUI`).
 - Set `DEEPSEEK_TUI_FORCE_DOWNLOAD=1` to force download even when the cached binary is already present.
 - Set `DEEPSEEK_TUI_DISABLE_INSTALL=1` to skip install-time download.
+- Set `DEEPSEEK_TUI_OPTIONAL_INSTALL=1` to make the `postinstall` step warn and exit `0` on download/extract errors instead of failing `npm install` (useful in CI matrices).
 
 ## Release integrity
 

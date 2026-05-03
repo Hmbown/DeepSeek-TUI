@@ -69,6 +69,29 @@ npm install -g deepseek-tui
 deepseek
 ```
 
+Prebuilt binaries are published for **Linux x64**, **Linux ARM64** (v0.8.8+),
+**macOS x64**, **macOS ARM64**, and **Windows x64**. For everything else —
+musl, riscv64, FreeBSD, etc. — see [Build from source](#install-from-source)
+below or the full [docs/INSTALL.md](docs/INSTALL.md) walkthrough.
+
+### Linux ARM64 (Raspberry Pi, Asahi, Graviton, HarmonyOS PC)
+
+`npm i -g deepseek-tui` works on glibc-based ARM64 Linux from **v0.8.8**
+onward. If you're stuck on v0.8.7 or earlier (where you'll see
+`Unsupported architecture: arm64`), upgrade or use `cargo install`:
+
+```bash
+# requires Rust 1.85+ (https://rustup.rs)
+cargo install deepseek-tui-cli --locked   # provides `deepseek`
+cargo install deepseek-tui     --locked   # provides `deepseek-tui`
+```
+
+You can also download `deepseek-linux-arm64` and `deepseek-tui-linux-arm64`
+directly from the [Releases page](https://github.com/Hmbown/DeepSeek-TUI/releases)
+and drop both side by side into a directory on your `PATH`. Cross-compiling
+from x64 to ARM64 is documented in
+[docs/INSTALL.md](docs/INSTALL.md#cross-compiling-from-x64-to-arm64-linux).
+
 ### China / mirror-friendly install
 
 If GitHub or npm downloads are slow from mainland China, install the Rust
@@ -83,12 +106,12 @@ replace-with = "tuna"
 registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"
 ```
 
-Then install the canonical `deepseek` dispatcher and (optionally) the
-companion TUI binary:
+Then install the canonical `deepseek` dispatcher and the companion TUI binary
+(both are required — the dispatcher delegates to the TUI runtime):
 
 ```bash
 cargo install deepseek-tui-cli --locked   # provides `deepseek`
-cargo install deepseek-tui     --locked   # provides `deepseek-tui` (optional)
+cargo install deepseek-tui     --locked   # provides `deepseek-tui`
 deepseek --version
 ```
 
@@ -129,14 +152,27 @@ deepseek --provider fireworks --model deepseek-v4-pro
 SGLANG_BASE_URL="http://localhost:30000/v1" deepseek --provider sglang --model deepseek-v4-flash
 ```
 
-<details>
+<details id="install-from-source">
 <summary>Install from source</summary>
 
+Works on any Tier-1 Rust target — including Linux musl/riscv64, FreeBSD, and
+ARM64 distros that pre-date our prebuilt binaries.
+
 ```bash
+# Linux build deps (Debian/Ubuntu/openEuler/Kylin):
+#   sudo apt-get install -y build-essential pkg-config libdbus-1-dev
+#   # RHEL family: sudo dnf install -y gcc make pkgconf-pkg-config dbus-devel
+
 git clone https://github.com/Hmbown/DeepSeek-TUI.git
 cd DeepSeek-TUI
-cargo install --path crates/tui --locked   # requires Rust 1.85+
+
+cargo install --path crates/cli --locked   # requires Rust 1.85+; provides `deepseek`
+cargo install --path crates/tui --locked   # provides `deepseek-tui`
 ```
+
+Both binaries are required — the `deepseek` dispatcher delegates to
+`deepseek-tui` at runtime. Cross-compilation, mirror, and platform-specific
+notes live in [docs/INSTALL.md](docs/INSTALL.md).
 
 </details>
 
@@ -153,14 +189,24 @@ assistant message bodies, which made it impossible to copy text out of
 system notes, thinking blocks, or tool output. v0.8.7 drops that gate so
 the rendered transcript block is selectable end-to-end again.
 
-> **Known issue in v0.8.7:** `deepseek update` fails with `no asset found
-> for platform …` because the platform-string mapping in the self-updater
-> uses `aarch64`/`x86_64` instead of the release artifact's `arm64`/`x64`
-> ([#503](https://github.com/Hmbown/DeepSeek-TUI/issues/503)). Until this
-> is fixed in v0.8.8, update via:
+> **Known issues in v0.8.7 (fixed in v0.8.8):**
+> - `deepseek update` fails with `no asset found for platform …` because the
+>   platform-string mapping in the self-updater uses `aarch64`/`x86_64`
+>   instead of the release artifact's `arm64`/`x64`
+>   ([#503](https://github.com/Hmbown/DeepSeek-TUI/issues/503)).
+> - `npm i -g deepseek-tui` exits with `Unsupported architecture: arm64 on
+>   platform linux` on ARM64 Linux because v0.8.7 didn't publish a
+>   `deepseek-linux-arm64` asset.
+>
+> Until v0.8.8 ships, install via:
 > ```bash
-> npm i -g deepseek-tui          # or
-> cargo install deepseek-tui-cli --locked
+> # x64 Linux / macOS / Windows
+> npm i -g deepseek-tui
+>
+> # ARM64 Linux (HarmonyOS, openEuler, Asahi, Raspberry Pi, Graviton, …) —
+> # build from source with Cargo (Rust 1.85+):
+> cargo install deepseek-tui-cli --locked   # provides `deepseek`
+> cargo install deepseek-tui     --locked   # provides `deepseek-tui`
 > ```
 
 Full changelog: [CHANGELOG.md](CHANGELOG.md).

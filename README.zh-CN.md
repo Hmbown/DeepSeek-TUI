@@ -46,6 +46,11 @@ npm install -g deepseek-tui
 deepseek
 ```
 
+预构建二进制覆盖 **Linux x64**、**Linux ARM64**（v0.8.8 起）、**macOS x64**、
+**macOS ARM64**、**Windows x64**。其他平台（musl、riscv64、FreeBSD 等）请见
+下方[「从源码安装」](#从源码安装)，或参考完整的
+[docs/INSTALL.md](docs/INSTALL.md)。
+
 首次启动时会提示输入 [DeepSeek API key](https://platform.deepseek.com/api_keys)。也可以提前配置：
 
 ```bash
@@ -56,6 +61,23 @@ deepseek login --api-key "YOUR_DEEPSEEK_API_KEY"
 export DEEPSEEK_API_KEY="YOUR_DEEPSEEK_API_KEY"
 deepseek
 ```
+
+### Linux ARM64（HarmonyOS 轻薄本、openEuler、Kylin、树莓派、Graviton 等）
+
+从 **v0.8.8** 起，`npm i -g deepseek-tui` 直接支持 glibc 系的 ARM64 Linux。
+如果你停留在 v0.8.7 或更早版本，会看到 `Unsupported architecture: arm64`
+错误。升级到最新版即可，或直接用 `cargo install`：
+
+```bash
+# 需要 Rust 1.85+（https://rustup.rs）
+cargo install deepseek-tui-cli --locked   # 提供 `deepseek`
+cargo install deepseek-tui     --locked   # 提供 `deepseek-tui`
+```
+
+也可以从 [Releases 页面](https://github.com/Hmbown/DeepSeek-TUI/releases) 下载
+`deepseek-linux-arm64` 与 `deepseek-tui-linux-arm64`，放到同一个 `PATH` 目录里。
+从 x64 主机交叉编译到 ARM64 的步骤见
+[docs/INSTALL.md](docs/INSTALL.md#cross-compiling-from-x64-to-arm64-linux)。
 
 ### 中国大陆 / 镜像友好安装
 
@@ -88,12 +110,25 @@ deepseek doctor --json
 
 ### 从源码安装
 
+适用于任何 Tier-1 Rust 目标，包括 musl、riscv64、FreeBSD，以及早于
+v0.8.8、还没有官方预编译包的 ARM64 发行版。
+
 ```bash
+# Linux 构建依赖（Debian/Ubuntu/openEuler/Kylin）：
+#   sudo apt-get install -y build-essential pkg-config libdbus-1-dev
+#   # RHEL 系：sudo dnf install -y gcc make pkgconf-pkg-config dbus-devel
+
 git clone https://github.com/Hmbown/DeepSeek-TUI.git
 cd DeepSeek-TUI
-cargo install --path crates/tui --locked   # 需要 Rust 1.85+
+
+cargo install --path crates/cli --locked   # 需要 Rust 1.85+；提供 `deepseek`
+cargo install --path crates/tui --locked   # 提供 `deepseek-tui`
+
 deepseek --version
 ```
+
+两个二进制都需要安装：`deepseek` 是入口调度器，运行时会调用 `deepseek-tui`。
+跨平台编译、镜像、平台特定故障排查见 [docs/INSTALL.md](docs/INSTALL.md)。
 
 ---
 
