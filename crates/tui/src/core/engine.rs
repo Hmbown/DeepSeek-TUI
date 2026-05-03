@@ -87,6 +87,11 @@ pub struct EngineConfig {
     pub mcp_config_path: PathBuf,
     /// Directory containing discoverable skills.
     pub skills_dir: PathBuf,
+    /// Additional instruction files concatenated into the system
+    /// prompt (#454). Loaded in declared order from the user's
+    /// `instructions = [...]` config (or the per-project override).
+    /// Resolved via `expand_path` so `~` works.
+    pub instructions: Vec<PathBuf>,
     /// Maximum number of assistant steps before stopping.
     pub max_steps: u32,
     /// Maximum number of concurrently active subagents.
@@ -139,6 +144,7 @@ impl Default for EngineConfig {
             notes_path: PathBuf::from("notes.txt"),
             mcp_config_path: PathBuf::from("mcp.json"),
             skills_dir: crate::skills::default_skills_dir(),
+            instructions: Vec::new(),
             max_steps: 100,
             max_subagents: DEFAULT_MAX_SUBAGENTS,
             features: Features::with_defaults(),
@@ -343,6 +349,7 @@ impl Engine {
             &config.workspace,
             None,
             Some(&config.skills_dir),
+            Some(&config.instructions),
         );
         session.system_prompt =
             append_working_set_summary(Some(system_prompt), working_set_summary.as_deref());
@@ -1608,6 +1615,7 @@ impl Engine {
             &self.config.workspace,
             None,
             Some(&self.config.skills_dir),
+            Some(&self.config.instructions),
         );
         let stable_prompt =
             merge_system_prompts(Some(&base), self.session.compaction_summary_prompt.clone());

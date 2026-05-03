@@ -139,6 +139,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (coherence / agents / replay / cache / mcp) keep their slots.
   Sampled at props-build time (matches the `retry` capture
   pattern) so render stays pure for tests.
+- **`instructions = [...]` config array** (#454) — declare
+  additional instruction files (`./AGENTS.md`,
+  `~/.deepseek/global.md`, …) and they're concatenated into the
+  system prompt in declared order, above the skills block. Each
+  file is capped at 100 KiB; missing files log a warning and are
+  skipped instead of failing the launch. Project config replaces
+  the user-level array wholesale (the typical "merge" pattern is
+  for users who want both — they list `~/global.md` inside the
+  project array). Documented in `config.example.toml`.
 - **RLM tool family** (#512) — `rlm` tool cards map to
   `ToolFamily::Rlm` and render `rlm`, not `swarm`. Stale "swarm"
   wording cleaned out of docs / comments / tests.

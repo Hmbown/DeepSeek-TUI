@@ -2999,6 +2999,20 @@ fn merge_project_config(config: &mut Config, workspace: &Path) {
     if let Some(v) = table.get("allow_shell").and_then(toml::Value::as_bool) {
         config.allow_shell = Some(v);
     }
+
+    // #454: instructions array — project replaces user. Empty arrays
+    // count: explicit `instructions = []` clears the user's list for
+    // this repo, useful when the user has a verbose global file that
+    // doesn't apply to the current project. Non-string entries are
+    // skipped silently rather than failing the load.
+    if let Some(arr) = table.get("instructions").and_then(toml::Value::as_array) {
+        let entries: Vec<String> = arr
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .filter(|s| !s.trim().is_empty())
+            .collect();
+        config.instructions = Some(entries);
+    }
 }
 
 async fn run_interactive(
@@ -3224,6 +3238,7 @@ async fn run_exec_agent(
         notes_path: config.notes_path(),
         mcp_config_path: config.mcp_config_path(),
         skills_dir: config.skills_dir(),
+        instructions: config.instructions_paths(),
         max_steps: 100,
         max_subagents,
         features: config.features(),
