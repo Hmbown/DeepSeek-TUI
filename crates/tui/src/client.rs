@@ -412,6 +412,53 @@ fn force_http1_from_env() -> bool {
         .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
 }
 
+/// Read `SSL_CERT_FILE` and add its contents as extra root
+/// certificates on the reqwest builder (#418). Tries the PEM-bundle
+/// parser first (covers single-cert files too), then falls back to
+/// DER. All failures log a warning and return the builder unchanged
+/// so a malformed env var degrades gracefully.
+fn add_extra_root_certs(
+    mut builder: reqwest::ClientBuilder,
+    cert_path: &str,
+) -> reqwest::ClientBuilder {
+    let bytes = match std::fs::read(cert_path) {
+        Ok(b) => b,
+        Err(err) => {
+            logging::warn(format!(
+                "SSL_CERT_FILE={cert_path} could not be read: {err}"
+            ));
+            return builder;
+        }
+    };
+
+    // PEM bundle handles both single-cert and multi-cert files; try
+    // it first since `BEGIN CERTIFICATE` framing is the common case.
+    if let Ok(certs) = reqwest::Certificate::from_pem_bundle(&bytes) {
+        let added = certs.len();
+        for cert in certs {
+            builder = builder.add_root_certificate(cert);
+        }
+        logging::info(format!(
+            "SSL_CERT_FILE={cert_path} loaded ({added} cert(s))"
+        ));
+        return builder;
+    }
+
+    // Single-cert DER fallback.
+    match reqwest::Certificate::from_der(&bytes) {
+        Ok(cert) => {
+            builder = builder.add_root_certificate(cert);
+            logging::info(format!("SSL_CERT_FILE={cert_path} loaded (1 DER cert)"));
+        }
+        Err(err) => {
+            logging::warn(format!(
+                "SSL_CERT_FILE={cert_path} could not be parsed as PEM bundle or DER: {err}"
+            ));
+        }
+    }
+    builder
+}
+
 impl DeepSeekClient {
     /// Create a DeepSeek client from CLI configuration.
     pub fn new(config: &Config) -> Result<Self> {
@@ -472,6 +519,19 @@ impl DeepSeekClient {
         if force_http1_from_env() {
             logging::info("DEEPSEEK_FORCE_HTTP1=1 — pinning HTTP client to HTTP/1.1");
             builder = builder.http1_only();
+        }
+        // #418: corporate-proxy / MITM-inspector CA support. When
+        // `SSL_CERT_FILE` is set, load the cert(s) it points at and
+        // add them as trusted roots alongside the platform's system
+        // store. We try PEM bundle first (the common case for
+        // multi-cert files), then fall back to single-cert PEM, then
+        // DER. Failures log a warning and continue — the existing
+        // system roots still apply, so a malformed env var won't
+        // bring down the launch.
+        if let Ok(cert_path) = std::env::var("SSL_CERT_FILE")
+            && !cert_path.is_empty()
+        {
+            builder = add_extra_root_certs(builder, &cert_path);
         }
         builder.build().map_err(Into::into)
     }

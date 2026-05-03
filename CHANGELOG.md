@@ -63,6 +63,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (e.g. user `"never"` → project `"on-request"` is allowed
   even though it loosens) stay v0.8.9 follow-up because they
   need a richer ordering check.
+- **`SSL_CERT_FILE` honored in the HTTPS client** (#418) — corporate
+  proxy / TLS-inspecting MITM users can now point at their custom
+  CA bundle and have it added alongside the platform's system
+  trust store. Tries PEM-bundle parsing first (covers single-cert
+  files too), falls back to DER. Failures log a warning and
+  continue — the existing system roots still apply, so a
+  malformed env var won't bring down the launch. Documented in
+  `docs/CONFIGURATION.md`.
 - **Sub-agent role taxonomy expansion** (#404) — adds `Implementer`
   ("land this change with the minimum surrounding edit") and
   `Verifier` ("run the test suite, report pass/fail with evidence")

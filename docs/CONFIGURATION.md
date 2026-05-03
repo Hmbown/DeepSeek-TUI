@@ -154,6 +154,11 @@ These override config values:
 - `NO_ANIMATIONS` (`1|true|yes|on` forces `low_motion = true` and
   `fancy_animations = false` at startup, regardless of the saved
   settings; see [`docs/ACCESSIBILITY.md`](./ACCESSIBILITY.md)).
+- `SSL_CERT_FILE` — corporate-proxy / TLS-inspecting MITM users
+  point this at a PEM bundle (or single DER cert) and the cert(s)
+  get added alongside the platform's system trust store. Failures
+  log a warning and continue — the existing system roots still
+  apply.
 
 ### Instruction sources (`instructions = [...]`, #454)
 
