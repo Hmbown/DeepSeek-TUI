@@ -226,7 +226,14 @@ pub fn system_prompt_for_mode_with_context(
     workspace: &Path,
     working_set_summary: Option<&str>,
 ) -> SystemPrompt {
-    system_prompt_for_mode_with_context_and_skills(mode, workspace, working_set_summary, None, None)
+    system_prompt_for_mode_with_context_and_skills(
+        mode,
+        workspace,
+        working_set_summary,
+        None,
+        None,
+        None,
+    )
 }
 
 /// Get the system prompt for a specific mode with project and skills context.
@@ -252,6 +259,7 @@ pub fn system_prompt_for_mode_with_context_and_skills(
     working_set_summary: Option<&str>,
     skills_dir: Option<&Path>,
     instructions: Option<&[PathBuf]>,
+    user_memory_block: Option<&str>,
 ) -> SystemPrompt {
     let mode_prompt = compose_mode_prompt(mode);
 
@@ -271,7 +279,7 @@ pub fn system_prompt_for_mode_with_context_and_skills(
         )
     };
 
-    // 2.5. Configured `instructions = [...]` files (#454). Loaded
+    // 2.5a. Configured `instructions = [...]` files (#454). Loaded
     // and concatenated in declared order. Lives above the skills
     // block so it's part of the workspace-static layer that the KV
     // prefix cache can hit, and so per-project overrides apply
@@ -280,6 +288,15 @@ pub fn system_prompt_for_mode_with_context_and_skills(
         && let Some(block) = render_instructions_block(paths)
     {
         full_prompt = format!("{full_prompt}\n\n{block}");
+    }
+
+    // 2.5b. User memory block (#489). Goes above skills/context-management
+    // because it's session-stable: the memory file changes when the user
+    // edits it via `/memory` or `# foo` quick-add, but not turn-over-turn.
+    if let Some(memory_block) = user_memory_block
+        && !memory_block.trim().is_empty()
+    {
+        full_prompt = format!("{full_prompt}\n\n{memory_block}");
     }
 
     // 3. Skills block. #432: walks every candidate workspace
@@ -786,6 +803,7 @@ mod tests {
             None,
             None,
             Some(std::slice::from_ref(&extra)),
+            None,
         ) {
             SystemPrompt::Text(text) => text,
             SystemPrompt::Blocks(_) => panic!("expected text system prompt"),

@@ -6,7 +6,7 @@ const CHECKSUM_MANIFEST = "deepseek-artifacts-sha256.txt";
 const ASSET_MATRIX = {
   linux: {
     x64: ["deepseek-linux-x64", "deepseek-tui-linux-x64"],
-    // arm64: ["deepseek-linux-arm64", "deepseek-tui-linux-arm64"], // Uncomment when binaries are available
+    arm64: ["deepseek-linux-arm64", "deepseek-tui-linux-arm64"],
   },
   darwin: {
     x64: ["deepseek-macos-x64", "deepseek-tui-macos-x64"],
@@ -23,12 +23,19 @@ function detectBinaryNames() {
   const defaults = ASSET_MATRIX[platform];
   if (!defaults) {
     const supported = Object.keys(ASSET_MATRIX).map(p => `'${p}'`).join(', ');
-    throw new Error(`Unsupported platform: ${platform}. Supported platforms: ${supported}`);
+    throw new Error(
+      `Unsupported platform: ${platform}. Supported platforms: ${supported}.\n\n` +
+      unsupportedBuildHint(),
+    );
   }
   const pair = defaults[arch];
   if (!pair) {
     const supported = Object.keys(defaults).map(a => `'${a}'`).join(', ');
-    throw new Error(`Unsupported architecture: ${arch} on platform ${platform}. Supported architectures: ${supported}`);
+    throw new Error(
+      `Unsupported architecture: ${arch} on platform ${platform}. ` +
+      `Supported architectures: ${supported}.\n\n` +
+      unsupportedBuildHint(),
+    );
   }
   return {
     platform,
@@ -36,6 +43,27 @@ function detectBinaryNames() {
     deepseek: pair[0],
     tui: pair[1],
   };
+}
+
+function unsupportedBuildHint() {
+  return [
+    "No prebuilt binary is available for this platform/architecture combo.",
+    "You can still run DeepSeek TUI by building from source with Cargo:",
+    "",
+    "  # Requires Rust 1.85+ (https://rustup.rs)",
+    "  cargo install deepseek-tui-cli --locked   # provides `deepseek`",
+    "  cargo install deepseek-tui     --locked   # provides `deepseek-tui`",
+    "",
+    "Or build from a checkout:",
+    "",
+    "  git clone https://github.com/Hmbown/DeepSeek-TUI.git",
+    "  cd DeepSeek-TUI",
+    "  cargo install --path crates/cli --locked",
+    "  cargo install --path crates/tui --locked",
+    "",
+    "See https://github.com/Hmbown/DeepSeek-TUI/blob/main/docs/INSTALL.md",
+    "for cross-compilation, mirror, and Linux ARM64 specifics.",
+  ].join("\n");
 }
 
 function executableName(base, platform) {

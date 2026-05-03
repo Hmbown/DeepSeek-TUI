@@ -636,23 +636,17 @@ impl DeepSeekClient {
                 }
             },
             Some(Box::new(|err, attempt, delay| {
-                let reason = match err {
-                    LlmError::RateLimited { .. } => "rate_limited",
-                    LlmError::ServerError { .. } => "server_error",
-                    LlmError::NetworkError(_) => "network_error",
-                    LlmError::Timeout(_) => "timeout",
-                    _ => "other",
-                };
+                let (reason_label, human_reason) = retry_reason_label_and_human(err);
                 logging::warn(format!(
                     "HTTP retry reason={} attempt={} delay={:.2}s",
-                    reason,
+                    reason_label,
                     attempt + 1,
                     delay.as_secs_f64(),
                 ));
                 // Light up the foreground retry banner (#499). `attempt`
                 // here is 0-indexed for the *failed* attempt; surface the
                 // 1-indexed *upcoming* attempt the user is waiting on.
-                crate::retry_status::start(attempt + 1, delay, human_retry_reason(err, reason));
+                crate::retry_status::start(attempt + 1, delay, human_reason);
             })),
         )
         .await;
@@ -681,22 +675,24 @@ impl DeepSeekClient {
     }
 }
 
-/// Translate the structured `LlmError` into a short human reason string
-/// for the retry banner. Falls back to the categorical label so even
-/// unknown variants render something useful.
-fn human_retry_reason(err: &LlmError, fallback: &'static str) -> String {
+/// Translate the structured `LlmError` into both a categorical label
+/// (for structured logs / metrics) and a short human reason string
+/// (for the retry banner). Returning both from one match avoids the
+/// double-classification we had before.
+fn retry_reason_label_and_human(err: &LlmError) -> (&'static str, String) {
     match err {
         LlmError::RateLimited { retry_after, .. } => {
-            if let Some(after) = retry_after {
+            let human = if let Some(after) = retry_after {
                 format!("rate limited (Retry-After {}s)", after.as_secs())
             } else {
                 "rate limited".to_string()
-            }
+            };
+            ("rate_limited", human)
         }
-        LlmError::ServerError { status, .. } => format!("upstream {status}"),
-        LlmError::NetworkError(_) => "network error".to_string(),
-        LlmError::Timeout(_) => "timeout".to_string(),
-        _ => fallback.to_string(),
+        LlmError::ServerError { status, .. } => ("server_error", format!("upstream {status}")),
+        LlmError::NetworkError(_) => ("network_error", "network error".to_string()),
+        LlmError::Timeout(_) => ("timeout", "timeout".to_string()),
+        _ => ("other", "other".to_string()),
     }
 }
 

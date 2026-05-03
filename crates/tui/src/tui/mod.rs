@@ -25,6 +25,7 @@ mod mcp_routing;
 pub mod model_picker;
 pub mod notifications;
 pub mod onboarding;
+pub mod osc8;
 pub mod pager;
 pub mod paste;
 pub mod paste_burst;

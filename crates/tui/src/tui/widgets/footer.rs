@@ -522,22 +522,21 @@ fn spans_text(spans: &[Span<'_>]) -> String {
 /// reports an active retry or a final failure. Returns `None` when idle
 /// so callers fall back to the regular status line / toast.
 fn retry_banner_spans(max_width: usize, props: &FooterProps) -> Option<Vec<Span<'static>>> {
-    let label = match &props.retry {
+    let (label, color) = match &props.retry {
         crate::retry_status::RetryState::Active(banner) => {
             let secs = props.retry.seconds_remaining().unwrap_or(0);
             // Round to 1s — we redraw each frame anyway so the
             // countdown ticks visually without us having to schedule
             // anything extra.
-            format!("⟳ retry {} in {secs}s — {}", banner.attempt, banner.reason)
+            (
+                format!("⟳ retry {} in {secs}s — {}", banner.attempt, banner.reason),
+                crate::palette::STATUS_WARNING,
+            )
         }
         crate::retry_status::RetryState::Failed { reason, .. } => {
-            format!("× failed: {reason}")
+            (format!("× failed: {reason}"), crate::palette::STATUS_ERROR)
         }
         crate::retry_status::RetryState::Idle => return None,
-    };
-    let color = match &props.retry {
-        crate::retry_status::RetryState::Failed { .. } => crate::palette::STATUS_ERROR,
-        _ => crate::palette::STATUS_WARNING,
     };
     let truncated = truncate_to_width(&label, max_width);
     Some(vec![Span::styled(truncated, Style::default().fg(color))])
