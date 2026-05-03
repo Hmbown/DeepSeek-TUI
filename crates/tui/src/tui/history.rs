@@ -1306,6 +1306,27 @@ impl GenericToolCell {
         }
         let output = self.output.as_ref()?;
         let snapshot = parse_checklist_snapshot(output)?;
+
+        // Concise update rendering (#403). When the tool emits an
+        // "Updated todo #N to STATUS" prefix line — which `todo_update` /
+        // `checklist_update` always do on a successful match — render
+        // only the changed item plus a `M/N · pct%` summary instead of
+        // dumping the full list every time. The full list is still
+        // reachable via Alt+V on the tool detail record. This keeps the
+        // transcript scannable in long sessions.
+        if matches!(mode, RenderMode::Live)
+            && let Some(change) = parse_update_prefix(output)
+        {
+            return Some(render_checklist_change_card(
+                &self.name,
+                self.status,
+                &snapshot,
+                &change,
+                width,
+                low_motion,
+            ));
+        }
+
         Some(render_checklist_card(
             &self.name,
             self.status,
@@ -1410,6 +1431,119 @@ fn parse_checklist_snapshot(output: &str) -> Option<ChecklistSnapshot> {
         completed,
         total,
     })
+}
+
+/// One parsed "Updated todo #N to STATUS" prefix line emitted by
+/// `todo_update` / `checklist_update`. Used by [`render_checklist_change_card`]
+/// to show a compact state-change line instead of the full item list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ChecklistChange {
+    id: u32,
+    status: String,
+}
+
+/// Parse the leading line of a checklist-update tool output. Returns
+/// `None` for non-update outputs (e.g. `todo_write` snapshots, errors,
+/// or an unexpected format) so the caller falls back to the full-list
+/// renderer.
+fn parse_update_prefix(output: &str) -> Option<ChecklistChange> {
+    // The tool output shape is `Updated todo #3 to in_progress\n{ ... }`.
+    // We tolerate `checklist` or `todo` as the noun and any reasonable
+    // status word (the snapshot lookup in the renderer is the source of
+    // truth for the title — we just need the id+status pair).
+    let first = output.lines().next()?.trim();
+    let rest = first
+        .strip_prefix("Updated todo #")
+        .or_else(|| first.strip_prefix("Updated checklist #"))?;
+    let (id_str, after) = rest.split_once(' ')?;
+    let id: u32 = id_str.parse().ok()?;
+    let status = after.strip_prefix("to ")?.trim().to_string();
+    if status.is_empty() {
+        return None;
+    }
+    Some(ChecklistChange { id, status })
+}
+
+/// Render a compact one-line state-change card for `todo_update` /
+/// `checklist_update` calls (#403). Shows the changed item's marker,
+/// title, and old → new status, with a `M/N · pct%` progress summary
+/// in the header. The full list is still available via Alt+V on the
+/// detail record.
+fn render_checklist_change_card(
+    name: &str,
+    status: ToolStatus,
+    snapshot: &ChecklistSnapshot,
+    change: &ChecklistChange,
+    width: u16,
+    low_motion: bool,
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    let header_summary = format!(
+        "{}/{} \u{00B7} {}%",
+        snapshot.completed, snapshot.total, snapshot.completion_pct
+    );
+    let family = crate::tui::widgets::tool_card::tool_family_for_name(name);
+    lines.push(render_tool_header_with_family_and_summary(
+        family,
+        Some(&header_summary),
+        tool_status_label(status),
+        status,
+        None,
+        low_motion,
+    ));
+
+    // Look up the title from the snapshot. `id` in tool input is
+    // 1-indexed; `items` is 0-indexed.
+    let item = (change.id as usize)
+        .checked_sub(1)
+        .and_then(|idx| snapshot.items.get(idx));
+    let title = item
+        .map(|i| i.content.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "(missing title)".to_string());
+
+    let (marker, marker_color) = checklist_status_marker(&change.status);
+    let prefix = format!("{marker} ");
+    let prefix_width =
+        UnicodeWidthStr::width("\u{258F} ") + UnicodeWidthStr::width(prefix.as_str());
+    let id_label = format!("Todo #{}", change.id);
+    let arrow = " \u{2192} ";
+    let status_label = change.status.clone();
+    let title_budget = usize::from(width)
+        .saturating_sub(prefix_width)
+        .saturating_sub(UnicodeWidthStr::width(id_label.as_str()))
+        .saturating_sub(UnicodeWidthStr::width(arrow))
+        .saturating_sub(UnicodeWidthStr::width(status_label.as_str()))
+        .saturating_sub(2)
+        .max(8);
+    let title_truncated = truncate_text(title.as_str(), title_budget);
+
+    let spans = vec![
+        Span::styled(
+            "\u{258F} ".to_string(),
+            Style::default().fg(palette::TEXT_DIM),
+        ),
+        Span::styled(prefix, Style::default().fg(marker_color)),
+        Span::styled(id_label, Style::default().fg(palette::TEXT_DIM)),
+        Span::styled(": ".to_string(), Style::default().fg(palette::TEXT_DIM)),
+        Span::styled(title_truncated, tool_value_style()),
+        Span::styled(arrow.to_string(), Style::default().fg(palette::TEXT_DIM)),
+        Span::styled(status_label, Style::default().fg(marker_color)),
+    ];
+    lines.push(Line::from(spans));
+
+    // Tease that the full list is still available without leaving the
+    // transcript. Mirrors the same affordance used by other tool cells.
+    lines.push(render_card_detail_line_single(
+        None,
+        &format!(
+            "{} item{} (Alt+V for full list)",
+            snapshot.total,
+            if snapshot.total == 1 { "" } else { "s" }
+        ),
+        Style::default().fg(palette::TEXT_MUTED),
+    ));
+    lines
 }
 
 fn checklist_status_marker(status: &str) -> (&'static str, Color) {
@@ -2818,6 +2952,156 @@ mod tests {
     // Below 3s the label stays "running" — quick reads/greps shouldn't
     // visually churn. From 3s onward the badge appears and ticks each
     // second so the user can tell the call hasn't hung.
+    // ---- #403 concise todo / checklist update rendering ----
+    //
+    // The tool emits an "Updated todo #N to STATUS" leading line plus a
+    // JSON snapshot. The renderer should detect the prefix and produce
+    // a compact one-line state-change card instead of dumping the full
+    // item list every time.
+
+    #[test]
+    fn parse_update_prefix_recognises_todo_form() {
+        let parsed =
+            super::parse_update_prefix("Updated todo #3 to in_progress\n{ \"items\": [...] }");
+        assert_eq!(
+            parsed,
+            Some(super::ChecklistChange {
+                id: 3,
+                status: "in_progress".to_string(),
+            }),
+        );
+    }
+
+    #[test]
+    fn parse_update_prefix_recognises_checklist_form() {
+        let parsed =
+            super::parse_update_prefix("Updated checklist #7 to completed\n{ \"items\": [] }");
+        assert_eq!(
+            parsed,
+            Some(super::ChecklistChange {
+                id: 7,
+                status: "completed".to_string(),
+            }),
+        );
+    }
+
+    #[test]
+    fn parse_update_prefix_returns_none_for_writes() {
+        // `todo_write` / `checklist_write` outputs don't start with
+        // "Updated …" — they should fall through to the full-card path.
+        assert!(super::parse_update_prefix("{ \"items\": [] }").is_none());
+        assert!(super::parse_update_prefix("Wrote 5 todos\n{}").is_none());
+    }
+
+    #[test]
+    fn parse_update_prefix_returns_none_for_malformed() {
+        // Missing arrow/status → fall through.
+        assert!(super::parse_update_prefix("Updated todo #3\n").is_none());
+        // Non-numeric id → fall through.
+        assert!(super::parse_update_prefix("Updated todo #foo to done\n").is_none());
+    }
+
+    #[test]
+    fn render_checklist_change_card_shows_only_changed_item() {
+        // Build a snapshot with three items; render the change for #2.
+        let snapshot = super::ChecklistSnapshot {
+            items: vec![
+                super::ChecklistItemSnapshot {
+                    content: "Read the spec".to_string(),
+                    status: "completed".to_string(),
+                },
+                super::ChecklistItemSnapshot {
+                    content: "Write the test".to_string(),
+                    status: "in_progress".to_string(),
+                },
+                super::ChecklistItemSnapshot {
+                    content: "Land the PR".to_string(),
+                    status: "pending".to_string(),
+                },
+            ],
+            completion_pct: 33,
+            completed: 1,
+            total: 3,
+        };
+        let change = super::ChecklistChange {
+            id: 2,
+            status: "in_progress".to_string(),
+        };
+        let lines = super::render_checklist_change_card(
+            "todo_update",
+            ToolStatus::Success,
+            &snapshot,
+            &change,
+            80,
+            true,
+        );
+        // Header + change line + summary affordance = 3 lines.
+        assert!(lines.len() >= 3, "expected ≥3 lines, got {}", lines.len());
+
+        // The change line should mention the title and the new status,
+        // and should NOT include the other two item titles (that's the
+        // whole point — concise rendering).
+        let change_line: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(change_line.contains("#2"), "missing id: {change_line:?}");
+        assert!(
+            change_line.contains("Write the test"),
+            "missing title: {change_line:?}"
+        );
+        assert!(
+            change_line.contains("in_progress"),
+            "missing status: {change_line:?}"
+        );
+        assert!(
+            !change_line.contains("Land the PR"),
+            "should not show other items: {change_line:?}"
+        );
+        assert!(
+            !change_line.contains("Read the spec"),
+            "should not show other items: {change_line:?}"
+        );
+
+        // The summary line carries the count + Alt+V hint.
+        let summary_line: String = lines
+            .last()
+            .unwrap()
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(summary_line.contains("3 items"), "{summary_line:?}");
+        assert!(summary_line.contains("Alt+V"), "{summary_line:?}");
+    }
+
+    #[test]
+    fn render_checklist_change_card_handles_missing_title_gracefully() {
+        // If the change targets an out-of-range id, the title falls
+        // back to a placeholder rather than crashing.
+        let snapshot = super::ChecklistSnapshot {
+            items: vec![super::ChecklistItemSnapshot {
+                content: "only item".to_string(),
+                status: "pending".to_string(),
+            }],
+            completion_pct: 0,
+            completed: 0,
+            total: 1,
+        };
+        let change = super::ChecklistChange {
+            id: 99,
+            status: "completed".to_string(),
+        };
+        let lines = super::render_checklist_change_card(
+            "todo_update",
+            ToolStatus::Success,
+            &snapshot,
+            &change,
+            80,
+            true,
+        );
+        let change_line: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(change_line.contains("#99"));
+        assert!(change_line.contains("(missing title)"));
+    }
+
     #[test]
     fn running_status_label_omits_elapsed_below_threshold() {
         assert_eq!(running_status_label_with_elapsed(0), "running");
