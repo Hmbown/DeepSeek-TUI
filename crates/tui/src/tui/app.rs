@@ -663,6 +663,10 @@ pub struct App {
     pub runtime_services: RuntimeToolServices,
     /// Last MCP manager/discovery snapshot shown in the UI.
     pub mcp_snapshot: Option<crate::mcp::McpManagerSnapshot>,
+    /// Number of MCP servers declared in the user's config at app boot.
+    /// Used by the footer chip (#502) so a count is visible even before
+    /// the user runs `/mcp` for the first time. `0` hides the chip.
+    pub mcp_configured_count: usize,
     /// Set after in-TUI MCP config edits because the engine caches its MCP pool.
     pub mcp_restart_required: bool,
     /// Tool execution log
@@ -1062,7 +1066,7 @@ impl App {
             workspace,
             config_path,
             config_profile,
-            mcp_config_path,
+            mcp_config_path: mcp_config_path.clone(),
             skills_dir,
             use_alt_screen,
             use_mouse_capture,
@@ -1135,6 +1139,14 @@ impl App {
                 ..RuntimeToolServices::default()
             },
             mcp_snapshot: None,
+            // Read the MCP config once at boot to know how many servers
+            // the user has declared. The footer chip uses this even when
+            // no live snapshot is available (#502). Cheap (just reads
+            // the JSON file); errors fall through to zero so a missing
+            // or malformed config simply hides the chip.
+            mcp_configured_count: crate::mcp::load_config(&mcp_config_path)
+                .map(|cfg| cfg.servers.len())
+                .unwrap_or(0),
             mcp_restart_required: false,
             tool_log: Vec::new(),
             active_skill: None,

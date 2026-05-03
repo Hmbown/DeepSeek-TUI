@@ -52,6 +52,15 @@ pub struct FooterProps {
     pub reasoning_replay: Vec<Span<'static>>,
     /// Cache-hit-rate chip spans (empty when no usage reported).
     pub cache: Vec<Span<'static>>,
+    /// MCP server health chip spans (empty when no MCP servers configured).
+    /// Populated lazily — see [`footer_mcp_chip`]. (#502)
+    pub mcp: Vec<Span<'static>>,
+    /// Snapshot of the global retry-status surface (#499). Sampled once
+    /// at props-build time and rendered as a foreground banner on the
+    /// left of the footer when active. Captured here (rather than read
+    /// from `retry_status` at render time) so tests can pin a
+    /// deterministic state without racing the parallel runner.
+    pub retry: crate::retry_status::RetryState,
     /// Session-cost chip spans (empty when below the display threshold).
     /// Rendered in the left cluster (after the model name) — cost is steady
     /// info, not a transient signal, so it lives with mode and model.
@@ -169,6 +178,30 @@ pub fn footer_agents_chip(running: usize, locale: Locale) -> Vec<Span<'static>> 
     )]
 }
 
+/// Build the "MCP M/N" health chip (#502) from the user's stored
+/// snapshot. `connected` is the number of servers currently reachable;
+/// `configured` is the number declared in the user's MCP config. When
+/// `configured` is zero the chip is hidden entirely.
+///
+/// Colour-codes the count by health:
+/// - all reachable → success
+/// - some reachable → warning
+/// - none reachable but at least one configured → error
+/// - configured but no live snapshot yet → muted (count only)
+#[must_use]
+pub fn footer_mcp_chip(connected: Option<usize>, configured: usize) -> Vec<Span<'static>> {
+    if configured == 0 {
+        return Vec::new();
+    }
+    let (label, color) = match connected {
+        None => (format!("MCP {configured}"), palette::TEXT_MUTED),
+        Some(c) if c == configured => (format!("MCP {c}/{configured}"), palette::STATUS_SUCCESS),
+        Some(0) => (format!("MCP 0/{configured}"), palette::STATUS_ERROR),
+        Some(c) => (format!("MCP {c}/{configured}"), palette::STATUS_WARNING),
+    };
+    vec![Span::styled(label, Style::default().fg(color))]
+}
+
 /// A status toast routed to the footer's left segment for a short time.
 #[derive(Debug, Clone)]
 pub struct FooterToast {
@@ -199,6 +232,15 @@ impl FooterProps {
         cost: Vec<Span<'static>>,
     ) -> Self {
         let (mode_label, mode_color) = mode_style(app);
+        // MCP chip (#502) — passive, derived from the user's existing
+        // snapshot. `connected` is `None` until the user runs `/mcp`,
+        // which is the same trigger the issue spec accepts for now.
+        let mcp_configured = app.mcp_configured_count;
+        let mcp_connected = app
+            .mcp_snapshot
+            .as_ref()
+            .map(|s| s.servers.iter().filter(|server| server.connected).count());
+        let mcp = footer_mcp_chip(mcp_connected, mcp_configured);
         Self {
             model: app.model.clone(),
             mode_label,
@@ -212,9 +254,11 @@ impl FooterProps {
             agents,
             reasoning_replay,
             cache,
+            mcp,
             cost,
             toast,
             working_strip_frame: None,
+            retry: crate::retry_status::snapshot(),
         }
     }
 }
@@ -254,6 +298,7 @@ impl FooterWidget {
             &self.props.agents,
             &self.props.reasoning_replay,
             &self.props.cache,
+            &self.props.mcp,
         ]
         .into_iter()
         .filter(|spans| !spans.is_empty())
@@ -438,14 +483,13 @@ fn spans_text(spans: &[Span<'_>]) -> String {
     spans.iter().map(|s| s.content.as_ref()).collect::<String>()
 }
 
-/// Render the retry banner (#499) when the global retry-status surface
+/// Render the retry banner (#499) when the props' captured snapshot
 /// reports an active retry or a final failure. Returns `None` when idle
 /// so callers fall back to the regular status line / toast.
 fn retry_banner_spans(max_width: usize, props: &FooterProps) -> Option<Vec<Span<'static>>> {
-    let snapshot = crate::retry_status::snapshot();
-    let label = match &snapshot {
+    let label = match &props.retry {
         crate::retry_status::RetryState::Active(banner) => {
-            let secs = snapshot.seconds_remaining().unwrap_or(0);
+            let secs = props.retry.seconds_remaining().unwrap_or(0);
             // Round to 1s — we redraw each frame anyway so the
             // countdown ticks visually without us having to schedule
             // anything extra.
@@ -456,11 +500,10 @@ fn retry_banner_spans(max_width: usize, props: &FooterProps) -> Option<Vec<Span<
         }
         crate::retry_status::RetryState::Idle => return None,
     };
-    let color = match &snapshot {
+    let color = match &props.retry {
         crate::retry_status::RetryState::Failed { .. } => crate::palette::STATUS_ERROR,
         _ => crate::palette::STATUS_WARNING,
     };
-    let _ = props; // keeping signature stable for future theme wiring
     let truncated = truncate_to_width(&label, max_width);
     Some(vec![Span::styled(truncated, Style::default().fg(color))])
 }
@@ -594,7 +637,7 @@ mod tests {
     }
 
     fn idle_props_for(app: &App) -> FooterProps {
-        FooterProps::from_app(
+        let mut props = FooterProps::from_app(
             app,
             None,
             "ready",
@@ -604,7 +647,12 @@ mod tests {
             Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),
-        )
+        );
+        // `from_app` reads the process-wide retry-status surface; pin
+        // `Idle` so footer tests don't pick up state set by retry-banner
+        // tests running in parallel.
+        props.retry = crate::retry_status::RetryState::Idle;
+        props
     }
 
     #[test]
@@ -733,14 +781,54 @@ mod tests {
     }
 
     #[test]
+    fn footer_mcp_chip_hidden_when_no_servers() {
+        assert!(super::footer_mcp_chip(None, 0).is_empty());
+        assert!(super::footer_mcp_chip(Some(0), 0).is_empty());
+    }
+
+    #[test]
+    fn footer_mcp_chip_shows_count_only_until_snapshot_arrives() {
+        let spans = super::footer_mcp_chip(None, 3);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "MCP 3");
+    }
+
+    #[test]
+    fn footer_mcp_chip_uses_success_color_when_all_connected() {
+        let spans = super::footer_mcp_chip(Some(3), 3);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "MCP 3/3");
+        assert_eq!(spans[0].style.fg, Some(palette::STATUS_SUCCESS));
+    }
+
+    #[test]
+    fn footer_mcp_chip_uses_warning_color_when_partial() {
+        let spans = super::footer_mcp_chip(Some(2), 3);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "MCP 2/3");
+        assert_eq!(spans[0].style.fg, Some(palette::STATUS_WARNING));
+    }
+
+    #[test]
+    fn footer_mcp_chip_uses_error_color_when_zero_connected() {
+        let spans = super::footer_mcp_chip(Some(0), 3);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "MCP 0/3");
+        assert_eq!(spans[0].style.fg, Some(palette::STATUS_ERROR));
+    }
+
+    #[test]
     fn render_shows_retry_banner_when_active() {
-        let _g = crate::retry_status::test_guard();
-        crate::retry_status::clear();
-
-        crate::retry_status::start(2, std::time::Duration::from_secs(7), "rate limited");
-
+        // Since `FooterProps::retry` is now a captured snapshot rather
+        // than a global read at render time, we can pin the state on
+        // the props directly without touching the global surface.
         let app = make_app();
-        let props = idle_props_for(&app);
+        let mut props = idle_props_for(&app);
+        props.retry = crate::retry_status::RetryState::Active(crate::retry_status::RetryBanner {
+            attempt: 2,
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(7),
+            reason: "rate limited".to_string(),
+        });
         let widget = FooterWidget::new(props);
         let area = ratatui::layout::Rect::new(0, 0, 80, 1);
         let mut buf = ratatui::buffer::Buffer::empty(area);
@@ -754,19 +842,16 @@ mod tests {
             rendered.contains("rate limited"),
             "expected reason in render: {rendered:?}",
         );
-
-        crate::retry_status::clear();
     }
 
     #[test]
     fn render_shows_failure_row_when_failed() {
-        let _g = crate::retry_status::test_guard();
-        crate::retry_status::clear();
-
-        crate::retry_status::failed("upstream 500");
-
         let app = make_app();
-        let props = idle_props_for(&app);
+        let mut props = idle_props_for(&app);
+        props.retry = crate::retry_status::RetryState::Failed {
+            reason: "upstream 500".to_string(),
+            since: std::time::Instant::now(),
+        };
         let widget = FooterWidget::new(props);
         let area = ratatui::layout::Rect::new(0, 0, 80, 1);
         let mut buf = ratatui::buffer::Buffer::empty(area);
@@ -780,8 +865,6 @@ mod tests {
             rendered.contains("upstream 500"),
             "expected reason: {rendered:?}",
         );
-
-        crate::retry_status::clear();
     }
 
     #[test]
