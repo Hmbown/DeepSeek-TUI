@@ -110,6 +110,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Sub-agent description copy** — `agent_spawn` tool description
   and `prompts/base.md` updated to reflect the new default cap of
   10 (was stale "Max 5 in flight").
+- **`agent_spawn` / `agent_assign` schema descriptions** (#404
+  follow-up) — type/agent_name property descriptions now list
+  `implementer` and `verifier` so the model surfaces those roles
+  without having to discover them from `docs/SUBAGENTS.md`. Adds
+  the long-form aliases (`builder` / `validator` / `tester`) on
+  `agent_assign` for parity with the alias map.
 - **RLM tool family** (#512) — `rlm` tool cards map to
   `ToolFamily::Rlm` and render `rlm`, not `swarm`. Stale "swarm"
   wording cleaned out of docs / comments / tests.

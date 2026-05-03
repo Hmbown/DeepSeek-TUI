@@ -1467,7 +1467,7 @@ impl ToolSpec for AgentSpawnTool {
                 },
                 "type": {
                     "type": "string",
-                    "description": "Sub-agent type: general, explore, plan, review, custom"
+                    "description": "Sub-agent type: general, explore, plan, review, implementer, verifier, custom. See docs/SUBAGENTS.md for posture per role."
                 },
                 "agent_type": {
                     "type": "string",
@@ -2325,7 +2325,7 @@ impl ToolSpec for DelegateToAgentTool {
             "properties": {
                 "agent_name": {
                     "type": "string",
-                    "description": "Name/type alias for the agent (general, explore, plan, review, worker, explorer, awaiter)"
+                    "description": "Name/type alias for the agent (general, explore, plan, review, implementer, verifier, worker, explorer, awaiter, builder, validator, tester)"
                 },
                 "type": {
                     "type": "string",
