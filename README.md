@@ -142,6 +142,72 @@ cargo install --path crates/tui --locked   # requires Rust 1.85+
 
 ---
 
+## What's new in v0.8.8
+
+A stabilization-focused release: a thick band of UX polish on top of the v0.8.6 / v0.8.7 base, plus runtime fixes for the rough edges that surfaced in production sessions. No model or API changes; every existing config and session keeps working.
+
+### 🪟 TUI polish
+
+- **Visual retry / backoff banner** when the upstream rate-limits or 5xxs, with a per-second countdown so a stalled session is obviously stalled instead of silently frozen ([#499](https://github.com/Hmbown/DeepSeek-TUI/issues/499)).
+- **MCP health chip** in the footer — a coloured `MCP n/n` glyph reflects how many configured servers are actually reachable, hidden when no servers are configured ([#502](https://github.com/Hmbown/DeepSeek-TUI/issues/502)).
+- **Tool-output spillover** routes full bodies to `~/.deepseek/tool_outputs/<id>.txt` with a 32 KiB head visible in the cell; the existing details pager appends the full output so nothing is hidden, just paged ([#500](https://github.com/Hmbown/DeepSeek-TUI/issues/500)).
+- **Multi-day duration formatting** — `humanize_duration` walks `s → m → h → d → w` and caps at two units, so a long-running session reads `2d 3h` instead of `188415s` ([#447](https://github.com/Hmbown/DeepSeek-TUI/issues/447)).
+- **Cumulative `worked Nh Mm` footer chip** appears once a session crosses 60s, dropping first under narrow widths so it never shoves more important chips off-screen ([#448](https://github.com/Hmbown/DeepSeek-TUI/issues/448)).
+- **OSC 8 hyperlinks** — URLs in the transcript are Cmd+click-openable on iTerm2, Terminal.app, Ghostty, Kitty, WezTerm, Alacritty, and modern gnome-terminal/konsole; legacy terminals just show the visible text ([#498](https://github.com/Hmbown/DeepSeek-TUI/issues/498)).
+- **Inline diff rendering** for `edit_file` and `write_file` — tool results emit a unified diff at the head of the body, picked up by the diff-aware renderer with line numbers and coloured `+`/`-` gutters ([#505](https://github.com/Hmbown/DeepSeek-TUI/issues/505)).
+- **Composer prompt stash** — Ctrl+S parks the current draft to `~/.deepseek/composer_stash.jsonl`, `/stash list` shows parked drafts, `/stash pop` restores LIFO, `/stash clear` wipes the file. Self-healing JSONL parser, 200-entry cap, multi-line drafts preserved ([#440](https://github.com/Hmbown/DeepSeek-TUI/issues/440)).
+- **Slash-menu layout no longer jitters** the chat area as the matched-entry count changes mid-typing — reported on Windows 10 PowerShell + WSL where the per-cell write cost made the redraw visibly laggy. The composer now reserves its panel-max envelope for the whole slash/mention session.
+
+### ♿ Accessibility
+
+- **`NO_ANIMATIONS=1`** env var (also `1` / `true` / `yes` / `on`) forces `low_motion = true` and `fancy_animations = false` at startup regardless of saved settings; new `docs/ACCESSIBILITY.md` documents every motion / output knob ([#450](https://github.com/Hmbown/DeepSeek-TUI/issues/450)).
+- **Keyboard-enhancement flags** pop on every shutdown path including panic, Ctrl+Z suspend, and external-editor invocation, so a crashed TUI never leaves your terminal in raw mode ([#443](https://github.com/Hmbown/DeepSeek-TUI/issues/443)/[#444](https://github.com/Hmbown/DeepSeek-TUI/issues/444)).
+- **Kitty keyboard protocol** (`DISAMBIGUATE_ESCAPE_CODES`) pushed at startup so kitty-protocol terminals report unambiguous events for Option/Alt-modified keys; legacy terminals are unaffected ([#442](https://github.com/Hmbown/DeepSeek-TUI/issues/442)).
+
+### 🤖 Agents / sub-agents
+
+- **Sub-agent cap raised 5 → 10** (configurable via `[subagents].max_concurrent`, hard ceiling 20). Completed agents no longer count against the running cap ([#509](https://github.com/Hmbown/DeepSeek-TUI/issues/509)).
+- **Multi-agent fan-out UI freeze fixed** — `SharedSubAgentManager` is now `Arc<RwLock<…>>`; read paths take read locks instead of contending on a `Mutex` ([#510](https://github.com/Hmbown/DeepSeek-TUI/issues/510)).
+- **Sub-agent output summarized** before being folded into the parent's context, so a child returning 100KB of evidence doesn't wreck the parent's window ([#511](https://github.com/Hmbown/DeepSeek-TUI/issues/511)).
+- **`Implementer` + `Verifier` sub-agent roles** wired into `agent_spawn` / `agent_assign` schemas so the model surfaces them by name ([#404](https://github.com/Hmbown/DeepSeek-TUI/issues/404)).
+- **`agent_list` defaults to current-session view** — prior sessions filtered out unless `include_archived=true` ([#405](https://github.com/Hmbown/DeepSeek-TUI/issues/405)).
+- **Compact `agent_spawn` rendering** in live mode collapses to a single header line; transcript replay keeps the full block ([#409](https://github.com/Hmbown/DeepSeek-TUI/issues/409)).
+- **`agent_swarm` / `spawn_agents_on_csv` / `/swarm`** removed in v0.8.5 — confirmed gone in this release; multi-child fanout is no longer a model-callable tool.
+
+### 🛠️ Workflows / extensibility
+
+- **`load_skill` model-callable tool** — takes a skill id, returns the SKILL.md body plus sibling companion-file list in one call. Available in Plan and Agent / Yolo modes ([#434](https://github.com/Hmbown/DeepSeek-TUI/issues/434)).
+- **Cross-tool skill discovery** — skills catalogue and `load_skill` walk `.agents/skills`, `skills`, `.opencode/skills`, `.claude/skills`, and `~/.deepseek/skills` with first-wins precedence ([#432](https://github.com/Hmbown/DeepSeek-TUI/issues/432)).
+- **`/hooks` read-only lifecycle hook listing** groups configured hooks by event with name / command preview / timeout / condition. Notes the global `[hooks].enabled` state. `/hooks events` lists every supported `HookEvent` value ([#460](https://github.com/Hmbown/DeepSeek-TUI/issues/460)).
+- **Every `HookEvent` now has a live producer** — `tool_call_before` / `tool_call_after` / `message_submit` / `on_error` fire from the runtime in addition to the existing session-lifecycle and mode-change events. Hooks remain read-only observers in v0.8.8 ([#455](https://github.com/Hmbown/DeepSeek-TUI/issues/455)).
+- **`instructions = [...]` config array** lets you stack additional system-prompt files; paths capped at 100 KiB each, project array replaces user array wholesale ([#454](https://github.com/Hmbown/DeepSeek-TUI/issues/454)).
+- **`deepseek pr <N>` subcommand** fetches a PR's title / body / diff via `gh` and launches the TUI with a review prompt already in the composer. Codepoint-safe diff cap at 200 KiB; optional `--repo` / `--checkout` ([#451](https://github.com/Hmbown/DeepSeek-TUI/issues/451)).
+- **User-memory MVP** (opt-in) — `~/.deepseek/memory.md` injected into the system prompt as a `<user_memory>` block; `# foo` typed in the composer appends a timestamped bullet without firing a turn; `/memory [show|path|clear|edit]` for inspection. Default off; enable with `[memory] enabled = true` or `DEEPSEEK_MEMORY=on` ([#489](https://github.com/Hmbown/DeepSeek-TUI/issues/489)–[#493](https://github.com/Hmbown/DeepSeek-TUI/issues/493)).
+
+### 🔒 Security
+
+- **Project-config keys denied at workspace scope** — a malicious `./.deepseek/config.toml` can no longer override `api_key`, `base_url`, `provider`, or `mcp_config_path`. The loosest values (`approval_policy = "auto"`, `sandbox_mode = "danger-full-access"`) are also denied at project scope ([#417](https://github.com/Hmbown/DeepSeek-TUI/issues/417)).
+- **`SSL_CERT_FILE` honoured** in the HTTPS client so corporate-CA / MITM-proxy users can connect — PEM bundle and DER fallback; failures log a warning and continue ([#418](https://github.com/Hmbown/DeepSeek-TUI/issues/418)).
+- **Execpolicy heredoc parsing** — `normalize_command` strips heredoc bodies before shlex tokenization so `auto_allow = ["cat > file.txt"]` matches the heredoc form `cat <<EOF > file.txt\nbody\nEOF`. Recognises `<<DELIM` / `<<-DELIM` / `<<'DELIM'` / `<<"DELIM"`; leaves `<<<` (here-string) untouched ([#419](https://github.com/Hmbown/DeepSeek-TUI/issues/419)).
+- **`Don't auto-approve git -C ...`** runtime fix shipped on v0.8.7 main ([#416](https://github.com/Hmbown/DeepSeek-TUI/issues/416)) — included for completeness.
+
+### 📦 Packaging
+
+- **Linux ARM64 prebuilts** added to the release matrix; npm wrapper picks the right binary on `aarch64-linux` automatically. New `docs/INSTALL.md` covers every install path (npm, cargo, prebuilt, source).
+- **`deepseek update` fixed** — the v0.8.7 self-updater used Rust ARCH constants (`aarch64`/`x86_64`) instead of release-asset naming (`arm64`/`x64`), so the command failed on every platform. Now maps correctly and rejects `.sha256` siblings as primary binaries ([#503](https://github.com/Hmbown/DeepSeek-TUI/issues/503)).
+- **CI workflow cleanup** — pruned three duplicated/dead workflows; `release.yml` `build` job now allows the `parity` gate to be skipped on manual `workflow_dispatch` ([#507](https://github.com/Hmbown/DeepSeek-TUI/issues/507)).
+
+### 🐛 Bug fixes
+
+- **Composer Option+Backspace** deletes by word now ([#488](https://github.com/Hmbown/DeepSeek-TUI/issues/488)).
+- **Offline composer queue is session-scoped** — legacy unscoped queues fail closed instead of leaking content into unrelated chats ([#487](https://github.com/Hmbown/DeepSeek-TUI/issues/487)).
+- **`display_path` test race + Windows separator** — tests no longer mutate `$HOME`; home-relative suffix joins with `MAIN_SEPARATOR_STR` so Windows shows `~\projects\foo` ([#506](https://github.com/Hmbown/DeepSeek-TUI/issues/506)).
+- **Footer reads statusline colours from `app.ui_theme`** ([#449](https://github.com/Hmbown/DeepSeek-TUI/issues/449)).
+
+Full changelog: [CHANGELOG.md](CHANGELOG.md).
+
+---
+
 ## What's new in v0.8.7
 
 Quick patch on top of v0.8.6 to unblock copy/select.
