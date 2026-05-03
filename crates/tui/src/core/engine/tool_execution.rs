@@ -195,3 +195,104 @@ impl Engine {
         result
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::sync::Mutex;
+
+    /// Tests in this module mutate `DEEPSEEK_TOOL_AUDIT_LOG` which is
+    /// process-global; serialise through this guard so the parallel
+    /// runner doesn't observe interleaved env mutations.
+    static AUDIT_TEST_GUARD: Mutex<()> = Mutex::new(());
+
+    fn audit_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        AUDIT_TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[test]
+    fn emit_tool_audit_writes_jsonl_line_when_env_var_set() {
+        let _g = audit_test_guard();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("audit.log");
+        // SAFETY: serialised by the guard above.
+        unsafe {
+            std::env::set_var("DEEPSEEK_TOOL_AUDIT_LOG", &path);
+        }
+
+        emit_tool_audit(json!({
+            "event": "tool.spillover",
+            "tool_id": "call-abc",
+            "tool_name": "exec_shell",
+            "path": "/tmp/foo.txt",
+        }));
+        emit_tool_audit(json!({
+            "event": "tool.result",
+            "tool_id": "call-xyz",
+            "success": true,
+        }));
+
+        let body = std::fs::read_to_string(&path).expect("audit log written");
+        let lines: Vec<&str> = body.lines().collect();
+        assert_eq!(lines.len(), 2, "two emits → two lines");
+
+        // Each line round-trips as JSON, has the expected event key.
+        let first: serde_json::Value = serde_json::from_str(lines[0]).expect("first line is JSON");
+        assert_eq!(
+            first.get("event").and_then(|v| v.as_str()),
+            Some("tool.spillover")
+        );
+        assert_eq!(
+            first.get("tool_id").and_then(|v| v.as_str()),
+            Some("call-abc")
+        );
+
+        let second: serde_json::Value =
+            serde_json::from_str(lines[1]).expect("second line is JSON");
+        assert_eq!(
+            second.get("event").and_then(|v| v.as_str()),
+            Some("tool.result")
+        );
+
+        // SAFETY: cleanup under the guard.
+        unsafe {
+            std::env::remove_var("DEEPSEEK_TOOL_AUDIT_LOG");
+        }
+    }
+
+    #[test]
+    fn emit_tool_audit_is_noop_when_env_var_unset() {
+        let _g = audit_test_guard();
+        // SAFETY: serialised by the guard above.
+        unsafe {
+            std::env::remove_var("DEEPSEEK_TOOL_AUDIT_LOG");
+        }
+        // Should not panic and should not create any file. We can't
+        // assert "no file written" without knowing where one might be
+        // written, but the contract is "do nothing", which we verify
+        // by ensuring the call returns without error.
+        emit_tool_audit(json!({"event": "noop", "x": 1}));
+        // Successful return is the assertion.
+    }
+
+    #[test]
+    fn emit_tool_audit_creates_parent_directory() {
+        let _g = audit_test_guard();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // Path with a parent that doesn't exist yet — the writer
+        // should create it.
+        let nested = tmp.path().join("nested").join("dir").join("audit.log");
+        // SAFETY: serialised by the guard above.
+        unsafe {
+            std::env::set_var("DEEPSEEK_TOOL_AUDIT_LOG", &nested);
+        }
+        emit_tool_audit(json!({"event": "test"}));
+        assert!(nested.exists(), "writer should mkdir -p the parent chain");
+
+        // SAFETY: cleanup under the guard.
+        unsafe {
+            std::env::remove_var("DEEPSEEK_TOOL_AUDIT_LOG");
+        }
+    }
+}
