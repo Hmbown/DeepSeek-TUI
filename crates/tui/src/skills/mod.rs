@@ -189,9 +189,12 @@ impl SkillRegistry {
 /// (which itself falls back to `/tmp/deepseek/skills` if the user
 /// has no home directory).
 ///
-/// Used by the `load_skill` tool (#434) and other surfaces that need
-/// the same lookup order without re-implementing it.
+/// Kept for callers that want a single canonical directory (e.g.
+/// "where do I install a new skill?"). For session-time discovery
+/// that should pick up cross-tool skill folders too, use
+/// [`skills_directories`] / [`discover_in_workspace`] (#432).
 #[must_use]
+#[allow(dead_code)] // Intentionally kept for the "single canonical install dir" surface; live callers use discover_in_workspace.
 pub fn resolve_skills_dir(workspace: &Path) -> PathBuf {
     let agents = workspace.join(".agents").join("skills");
     if agents.exists() {
@@ -204,12 +207,90 @@ pub fn resolve_skills_dir(workspace: &Path) -> PathBuf {
     default_skills_dir()
 }
 
+/// Resolve every candidate skills directory for a workspace, in
+/// precedence order — most specific first. Used for session-time
+/// skill discovery so the model sees skills that originated in
+/// other AI-tool conventions installed in the same workspace
+/// (#432).
+///
+/// Precedence (first match wins on name conflicts):
+///
+/// 1. `<workspace>/.agents/skills` — deepseek-native convention.
+/// 2. `<workspace>/skills` — flat, project-local.
+/// 3. `<workspace>/.opencode/skills` — OpenCode interop.
+/// 4. `<workspace>/.claude/skills` — Claude Code interop.
+/// 5. [`default_skills_dir`] — global, user-installed.
+///
+/// Only directories that exist on disk are returned — callers don't
+/// need to filter further. Returns an empty vec when nothing is
+/// installed (the system-prompt skills block is then suppressed).
+#[must_use]
+pub fn skills_directories(workspace: &Path) -> Vec<PathBuf> {
+    let candidates = [
+        workspace.join(".agents").join("skills"),
+        workspace.join("skills"),
+        workspace.join(".opencode").join("skills"),
+        workspace.join(".claude").join("skills"),
+        default_skills_dir(),
+    ];
+    let mut out = Vec::new();
+    for path in candidates {
+        if path.is_dir() && !out.iter().any(|p: &PathBuf| p == &path) {
+            out.push(path);
+        }
+    }
+    out
+}
+
+/// Walk every candidate skills directory for a workspace and merge
+/// the discovered skills into a single registry. Name conflicts are
+/// resolved with first-match-wins precedence per
+/// [`skills_directories`].
+///
+/// Warnings from each scanned directory accumulate so the model
+/// (and the user via `/skill list`) can see why a skill didn't
+/// load.
+#[must_use]
+pub fn discover_in_workspace(workspace: &Path) -> SkillRegistry {
+    let mut merged = SkillRegistry::default();
+    for dir in skills_directories(workspace) {
+        let registry = SkillRegistry::discover(&dir);
+        for skill in registry.skills {
+            if !merged.skills.iter().any(|s| s.name == skill.name) {
+                merged.skills.push(skill);
+            }
+        }
+        for warning in registry.warnings {
+            merged.warnings.push(warning);
+        }
+    }
+    merged
+}
+
+/// Render the system-prompt skills block from every workspace
+/// candidate directory plus the global default (#432). Wraps
+/// [`discover_in_workspace`] for callers (e.g. `prompts.rs`) that
+/// only have the workspace path to hand.
+#[must_use]
+pub fn render_available_skills_context_for_workspace(workspace: &Path) -> Option<String> {
+    let registry = discover_in_workspace(workspace);
+    render_skills_block(&registry)
+}
+
 /// Codex's progressive-disclosure contract: the model sees skill names,
 /// descriptions, and paths up front, then opens the specific `SKILL.md` only
 /// when a skill is relevant.
+///
+/// Single-directory variant — use
+/// [`render_available_skills_context_for_workspace`] when scanning
+/// a workspace for cross-tool skill folders (#432).
 #[must_use]
 pub fn render_available_skills_context(skills_dir: &Path) -> Option<String> {
     let registry = SkillRegistry::discover(skills_dir);
+    render_skills_block(&registry)
+}
+
+fn render_skills_block(registry: &SkillRegistry) -> Option<String> {
     if registry.is_empty() {
         return None;
     }
@@ -486,5 +567,127 @@ mod tests {
             rendered.chars().count() < super::MAX_AVAILABLE_SKILLS_CHARS + 4_000,
             "rendered length should stay near the budget"
         );
+    }
+
+    fn write_skill(dir: &std::path::Path, name: &str, description: &str, body: &str) {
+        let skill_dir = dir.join(name);
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {description}\n---\n{body}\n"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn skills_directories_returns_existing_dirs_in_precedence_order() {
+        let tmpdir = TempDir::new().unwrap();
+        let workspace = tmpdir.path();
+
+        // Create three of the four candidate dirs (skip `.opencode`).
+        std::fs::create_dir_all(workspace.join(".agents").join("skills")).unwrap();
+        std::fs::create_dir_all(workspace.join("skills")).unwrap();
+        std::fs::create_dir_all(workspace.join(".claude").join("skills")).unwrap();
+
+        let dirs = super::skills_directories(workspace);
+        // We don't assert on the global default position because it's
+        // host-dependent (may not exist on the test machine).
+        let mut idx = 0;
+        let agents = workspace.join(".agents").join("skills");
+        let local = workspace.join("skills");
+        let claude = workspace.join(".claude").join("skills");
+
+        assert_eq!(dirs.get(idx), Some(&agents), "agents must come first");
+        idx += 1;
+        assert_eq!(dirs.get(idx), Some(&local), "local must come second");
+        idx += 1;
+        // .opencode/skills was not created — it must NOT appear.
+        assert!(
+            !dirs
+                .iter()
+                .any(|p| p == &workspace.join(".opencode").join("skills")),
+            "missing dir must be omitted, got: {dirs:?}"
+        );
+        assert_eq!(dirs.get(idx), Some(&claude), "claude must come after local");
+    }
+
+    #[test]
+    fn discover_in_workspace_merges_with_first_wins_precedence() {
+        let tmpdir = TempDir::new().unwrap();
+        let workspace = tmpdir.path();
+
+        // Same skill name `shared` in two locations — the higher-precedence
+        // dir's version should win.
+        write_skill(
+            &workspace.join(".agents").join("skills"),
+            "shared",
+            "agents wins",
+            "from agents",
+        );
+        write_skill(
+            &workspace.join(".claude").join("skills"),
+            "shared",
+            "claude loses",
+            "from claude",
+        );
+        // Unique skill in claude — should still be discovered.
+        write_skill(
+            &workspace.join(".claude").join("skills"),
+            "unique-claude",
+            "only here",
+            "claude-only",
+        );
+
+        let registry = super::discover_in_workspace(workspace);
+        let names: Vec<&str> = registry.list().iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            names.contains(&"shared"),
+            "shared must be present: {names:?}"
+        );
+        assert!(names.contains(&"unique-claude"));
+
+        let shared = registry.get("shared").expect("shared present");
+        assert_eq!(
+            shared.description, "agents wins",
+            "first-wins precedence should keep .agents/skills version"
+        );
+        assert!(
+            shared.path.starts_with(workspace.join(".agents")),
+            "shared.path should be from .agents/skills, got {:?}",
+            shared.path
+        );
+    }
+
+    #[test]
+    fn discover_in_workspace_pulls_skills_from_opencode_dir() {
+        let tmpdir = TempDir::new().unwrap();
+        let workspace = tmpdir.path();
+        write_skill(
+            &workspace.join(".opencode").join("skills"),
+            "opencode-only",
+            "for interop",
+            "body",
+        );
+
+        let registry = super::discover_in_workspace(workspace);
+        assert!(
+            registry.get("opencode-only").is_some(),
+            ".opencode/skills must be scanned (#432)"
+        );
+    }
+
+    #[test]
+    fn render_available_skills_context_for_workspace_picks_up_cross_tool_dirs() {
+        let tmpdir = TempDir::new().unwrap();
+        let workspace = tmpdir.path();
+        write_skill(
+            &workspace.join(".claude").join("skills"),
+            "from-claude",
+            "claude-style skill",
+            "body",
+        );
+        let rendered =
+            super::render_available_skills_context_for_workspace(workspace).expect("non-empty");
+        assert!(rendered.contains("from-claude"));
     }
 }

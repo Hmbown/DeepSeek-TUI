@@ -27,7 +27,7 @@
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use crate::skills::{Skill, SkillRegistry, resolve_skills_dir};
+use crate::skills::{Skill, discover_in_workspace, skills_directories};
 
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
@@ -84,17 +84,26 @@ impl ToolSpec for LoadSkillTool {
             ));
         }
 
-        let skills_dir = resolve_skills_dir(&context.workspace);
-        let registry = SkillRegistry::discover(&skills_dir);
+        // #432: walk every candidate skill directory (workspace
+        // .agents/skills, skills, .opencode/skills, .claude/skills,
+        // global default), merging with first-wins precedence. The
+        // tool's lookup mirrors what the system-prompt skills block
+        // already lists, so the model never asks for a name it
+        // can't find.
+        let registry = discover_in_workspace(&context.workspace);
         let Some(skill) = registry.get(name) else {
-            // Build a name-list hint so the model can see what IS
-            // available without a follow-up `list_skills` call.
             let available: Vec<&str> = registry.list().iter().map(|s| s.name.as_str()).collect();
             let hint = if available.is_empty() {
-                format!(
-                    "no skills found in {}; expected `<dir>/<skill>/SKILL.md`",
-                    skills_dir.display()
-                )
+                let dirs: Vec<String> = skills_directories(&context.workspace)
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect();
+                if dirs.is_empty() {
+                    "no skills directories found; install skills under `<workspace>/.agents/skills/<name>/SKILL.md` or `~/.deepseek/skills/<name>/SKILL.md`"
+                        .to_string()
+                } else {
+                    format!("no skills installed. Searched: {}", dirs.join(", "))
+                }
             } else {
                 format!(
                     "skill `{name}` not found. Available: {}",
@@ -176,6 +185,7 @@ fn collect_companion_files(skill: &Skill) -> Vec<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::skills::SkillRegistry;
     use std::fs;
     use tempfile::tempdir;
 

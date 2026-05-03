@@ -176,6 +176,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   existing handlers would mis-route releases as duplicate
   presses. The flags are popped on shutdown / panic / suspend
   paths (#443).
+- **Multi-directory skill discovery** (#432) — the system
+  prompt's `## Skills` listing and the `load_skill` tool now
+  walk every candidate directory in the workspace plus the
+  global default: `<workspace>/.agents/skills` →
+  `<workspace>/skills` → `<workspace>/.opencode/skills` →
+  `<workspace>/.claude/skills` → `~/.deepseek/skills`. Skills
+  installed for any AI-tool convention show up in the same
+  catalogue. Name conflicts resolve first-match-wins per the
+  precedence order so workspace-local skills shadow user/global
+  ones. New `skills_directories()` and
+  `discover_in_workspace()` helpers in
+  `crates/tui/src/skills/mod.rs`.
 - **RLM tool family** (#512) — `rlm` tool cards map to
   `ToolFamily::Rlm` and render `rlm`, not `swarm`. Stale "swarm"
   wording cleaned out of docs / comments / tests.

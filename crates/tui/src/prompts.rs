@@ -282,10 +282,18 @@ pub fn system_prompt_for_mode_with_context_and_skills(
         full_prompt = format!("{full_prompt}\n\n{block}");
     }
 
-    // 3. Skills block.
-    if let Some(skills_block) = skills_dir.and_then(crate::skills::render_available_skills_context)
-    {
-        full_prompt = format!("{full_prompt}\n\n{skills_block}");
+    // 3. Skills block. #432: walks every candidate workspace
+    // skills directory (`.agents/skills`, `skills`,
+    // `.opencode/skills`, `.claude/skills`) plus the global
+    // default so skills installed for any AI-tool convention show
+    // up in the catalogue. The legacy single-`skills_dir` path is
+    // honoured as a fallback for callers that don't supply a
+    // workspace-aware view; it falls through to the same merged
+    // registry when available.
+    let skills_block = crate::skills::render_available_skills_context_for_workspace(workspace)
+        .or_else(|| skills_dir.and_then(crate::skills::render_available_skills_context));
+    if let Some(block) = skills_block {
+        full_prompt = format!("{full_prompt}\n\n{block}");
     }
 
     // 4. Context Management (Agent / Yolo only).
