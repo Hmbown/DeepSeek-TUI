@@ -203,6 +203,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   parser drops malformed lines instead of poisoning the stash.
   Capped at 200 entries; multiline drafts round-trip intact via
   JSON's newline escaping.
+- **`deepseek pr <N>` subcommand** (#451) — fetches PR
+  title/body/diff via `gh` and launches the interactive TUI
+  with a review prompt pre-populated in the composer. The
+  diff is capped at 200 KiB (codepoint-safe truncation) so a
+  massive PR doesn't blow the context window before the user
+  hits Enter. Optional `--repo <owner/name>` and `--checkout`
+  flags; falls back gracefully with an actionable error
+  message if `gh` isn't on PATH. Adds a new
+  `TuiOptions::initial_input` plumb that any future caller can
+  reuse to drop the model into a session with text already
+  typed.
 - **RLM tool family** (#512) — `rlm` tool cards map to
   `ToolFamily::Rlm` and render `rlm`, not `swarm`. Stale "swarm"
   wording cleaned out of docs / comments / tests.

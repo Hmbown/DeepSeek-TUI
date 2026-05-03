@@ -364,6 +364,7 @@ mod tests {
             skip_onboarding: true,
             yolo: false,
             resume_session_id: None,
+            initial_input: None,
         };
         let mut app = App::new(options, &Config::default());
         // App::new merges in `~/.config/deepseek/settings.toml` /

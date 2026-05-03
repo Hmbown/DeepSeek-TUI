@@ -145,6 +145,7 @@ mod tests {
             skip_onboarding: true,
             yolo: false,
             resume_session_id: None,
+            initial_input: None,
         };
         let mut app = App::new(options, &Config::default());
         app.use_paste_burst_detection = true;

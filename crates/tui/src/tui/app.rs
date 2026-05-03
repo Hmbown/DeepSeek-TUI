@@ -407,6 +407,11 @@ pub struct TuiOptions {
     pub yolo: bool,
     /// Resume a previous session by ID
     pub resume_session_id: Option<String>,
+    /// Pre-populate the composer with this text when the TUI starts.
+    /// Used by `deepseek pr <N>` (#451) to drop the model into a
+    /// session with the PR context already typed — the user can edit
+    /// before sending or hit Enter to fire as-is.
+    pub initial_input: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -949,6 +954,7 @@ impl App {
             skip_onboarding,
             yolo,
             resume_session_id: _,
+            initial_input,
         } = options;
 
         // If no provider is explicitly configured AND the system locale
@@ -1029,11 +1035,22 @@ impl App {
         };
 
         let input_history = crate::composer_history::load_history();
+        let (initial_input_text, initial_input_cursor) = match initial_input {
+            // #451: pre-populate the composer when invoked via
+            // `deepseek pr <N>` (or any future caller that wants to
+            // drop the model into a session with context already
+            // typed). Cursor lands at the end so Enter sends as-is.
+            Some(text) if !text.is_empty() => {
+                let cursor = text.len();
+                (text, cursor)
+            }
+            _ => (String::new(), 0),
+        };
         Self {
             mode: initial_mode,
             composer: ComposerState {
-                input: String::new(),
-                cursor_position: 0,
+                input: initial_input_text,
+                cursor_position: initial_input_cursor,
                 kill_buffer: String::new(),
                 paste_burst: PasteBurst::default(),
                 input_history,
@@ -3193,6 +3210,7 @@ mod tests {
             skip_onboarding: false,
             yolo,
             resume_session_id: None,
+            initial_input: None,
         }
     }
 

@@ -190,6 +190,21 @@ enum Commands {
     Exec(ExecArgs),
     /// Run a code review over a git diff
     Review(ReviewArgs),
+    /// Open the TUI pre-seeded with a GitHub PR's title, body, and diff (#451)
+    Pr {
+        /// PR number
+        #[arg(value_name = "NUMBER")]
+        number: u32,
+        /// Repository in `owner/name` form. Defaults to the current
+        /// workspace's `gh` config (i.e. the repo gh thinks you're in).
+        #[arg(short = 'R', long)]
+        repo: Option<String>,
+        /// Skip `gh pr checkout` even if gh is available. By default
+        /// the working tree is left as-is — checkout is opt-in via
+        /// `--checkout` because dirty trees fail it loudly.
+        #[arg(long, default_value_t = false)]
+        checkout: bool,
+    },
     /// Apply a patch file (or stdin) to the working tree
     Apply(ApplyArgs),
     /// Run the offline evaluation harness (no network/LLM calls)
@@ -630,6 +645,14 @@ async fn main() -> Result<()> {
                 let config = load_config_from_cli(&cli)?;
                 run_review(&config, args).await
             }
+            Commands::Pr {
+                number,
+                repo,
+                checkout,
+            } => {
+                let config = load_config_from_cli(&cli)?;
+                run_pr(&cli, &config, number, repo.as_deref(), checkout).await
+            }
             Commands::Apply(args) => run_apply(args),
             Commands::Eval(args) => run_eval(args),
             Commands::Mcp { command } => {
@@ -678,12 +701,12 @@ async fn main() -> Result<()> {
             Commands::Resume { session_id, last } => {
                 let config = load_config_from_cli(&cli)?;
                 let resume_id = resolve_session_id(session_id, last)?;
-                run_interactive(&cli, &config, Some(resume_id)).await
+                run_interactive(&cli, &config, Some(resume_id), None).await
             }
             Commands::Fork { session_id, last } => {
                 let config = load_config_from_cli(&cli)?;
                 let new_session_id = fork_session(session_id, last)?;
-                run_interactive(&cli, &config, Some(new_session_id)).await
+                run_interactive(&cli, &config, Some(new_session_id), None).await
             }
             Commands::ResponsesApiProxy(args) => {
                 responses_api_proxy::run_main(args)?;
@@ -717,7 +740,7 @@ async fn main() -> Result<()> {
 
     // Default: Interactive TUI
     // --yolo starts in YOLO mode (shell + trust + auto-approve)
-    run_interactive(&cli, &config, resume_session_id).await
+    run_interactive(&cli, &config, resume_session_id, None).await
 }
 
 /// Generate shell completions for the given shell
@@ -2341,6 +2364,186 @@ Provide findings ordered by severity with file references, then open questions, 
     Ok(())
 }
 
+/// `deepseek pr <N>` (#451) — fetch a GitHub PR via `gh`, format
+/// title + body + diff as the composer's first message, and launch
+/// the interactive TUI. Falls back gracefully if `gh` is missing.
+async fn run_pr(
+    cli: &Cli,
+    config: &Config,
+    number: u32,
+    repo: Option<&str>,
+    checkout: bool,
+) -> Result<()> {
+    if !is_command_available("gh") {
+        bail!(
+            "`gh` CLI not found on PATH. Install GitHub CLI \
+             (https://cli.github.com) and authenticate (`gh auth login`) \
+             so `deepseek pr <N>` can fetch PR metadata and the diff."
+        );
+    }
+
+    let view = run_gh_pr_view(number, repo)?;
+    let diff = run_gh_pr_diff(number, repo)?;
+
+    if checkout {
+        match run_gh_pr_checkout(number, repo) {
+            Ok(()) => eprintln!("Checked out PR #{number} into the current workspace."),
+            Err(err) => eprintln!(
+                "warning: gh pr checkout #{number} failed ({err}). Continuing without checkout."
+            ),
+        }
+    }
+
+    let prompt = format_pr_prompt(number, &view, &diff);
+    let resume_session_id = if cli.continue_session {
+        match session_manager::SessionManager::default_location() {
+            Ok(manager) => manager.get_latest_session().ok().flatten().map(|m| m.id),
+            Err(_) => None,
+        }
+    } else {
+        cli.resume.clone()
+    };
+    run_interactive(cli, config, resume_session_id, Some(prompt)).await
+}
+
+fn is_command_available(name: &str) -> bool {
+    let probe = Command::new(name).arg("--version").output();
+    probe.is_ok_and(|out| out.status.success())
+}
+
+#[derive(Debug, Clone, Default)]
+struct GhPullRequest {
+    title: String,
+    body: String,
+    base: String,
+    head: String,
+    url: String,
+}
+
+fn run_gh_pr_view(number: u32, repo: Option<&str>) -> Result<GhPullRequest> {
+    let mut cmd = Command::new("gh");
+    cmd.arg("pr").arg("view").arg(number.to_string());
+    if let Some(r) = repo {
+        cmd.arg("--repo").arg(r);
+    }
+    cmd.arg("--json")
+        .arg("title,body,baseRefName,headRefName,url");
+    let output = cmd
+        .output()
+        .map_err(|e| anyhow::anyhow!("Failed to run `gh pr view`: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        bail!("gh pr view #{number} failed: {stderr}");
+    }
+    let raw = String::from_utf8_lossy(&output.stdout).to_string();
+    let value: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| anyhow::anyhow!("gh pr view returned non-JSON output: {e}"))?;
+    let pick = |key: &str| {
+        value
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    Ok(GhPullRequest {
+        title: pick("title"),
+        body: pick("body"),
+        base: pick("baseRefName"),
+        head: pick("headRefName"),
+        url: pick("url"),
+    })
+}
+
+fn run_gh_pr_diff(number: u32, repo: Option<&str>) -> Result<String> {
+    let mut cmd = Command::new("gh");
+    cmd.arg("pr").arg("diff").arg(number.to_string());
+    if let Some(r) = repo {
+        cmd.arg("--repo").arg(r);
+    }
+    let output = cmd
+        .output()
+        .map_err(|e| anyhow::anyhow!("Failed to run `gh pr diff`: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        bail!("gh pr diff #{number} failed: {stderr}");
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn run_gh_pr_checkout(number: u32, repo: Option<&str>) -> Result<()> {
+    let mut cmd = Command::new("gh");
+    cmd.arg("pr").arg("checkout").arg(number.to_string());
+    if let Some(r) = repo {
+        cmd.arg("--repo").arg(r);
+    }
+    let output = cmd
+        .output()
+        .map_err(|e| anyhow::anyhow!("Failed to run `gh pr checkout`: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        bail!("gh pr checkout #{number} failed: {stderr}");
+    }
+    Ok(())
+}
+
+/// Format the PR review prompt that lands in the composer. Caps the
+/// diff at 200 KiB so a massive PR doesn't blow the model's context
+/// window before the user even hits Enter — they can always ask the
+/// model to fetch more via `gh pr diff #N` from inside the session.
+fn format_pr_prompt(number: u32, view: &GhPullRequest, diff: &str) -> String {
+    const MAX_DIFF_BYTES: usize = 200 * 1024;
+    let diff_section = if diff.len() > MAX_DIFF_BYTES {
+        let cut = (0..=MAX_DIFF_BYTES)
+            .rev()
+            .find(|&i| diff.is_char_boundary(i))
+            .unwrap_or(0);
+        format!(
+            "{}\n\n[…diff truncated at {} KiB; ask me to fetch more if needed]\n",
+            &diff[..cut],
+            MAX_DIFF_BYTES / 1024
+        )
+    } else {
+        diff.to_string()
+    };
+    let body = if view.body.trim().is_empty() {
+        "(no description)".to_string()
+    } else {
+        view.body.trim().to_string()
+    };
+    let title = if view.title.trim().is_empty() {
+        format!("(PR #{number})")
+    } else {
+        view.title.trim().to_string()
+    };
+    let branches = match (view.base.is_empty(), view.head.is_empty()) {
+        (false, false) => format!("{} ← {}", view.base, view.head),
+        (false, true) => view.base.clone(),
+        (true, false) => view.head.clone(),
+        _ => "(unknown)".to_string(),
+    };
+    format!(
+        "Review PR #{number} — {title}\n\
+         \n\
+         URL: {url}\n\
+         Branches: {branches}\n\
+         \n\
+         ## Description\n\
+         \n\
+         {body}\n\
+         \n\
+         ## Diff\n\
+         \n\
+         ```diff\n\
+         {diff_section}\n\
+         ```\n",
+        url = if view.url.is_empty() {
+            "(unavailable)"
+        } else {
+            view.url.as_str()
+        },
+    )
+}
+
 fn collect_diff(args: &ReviewArgs) -> Result<String> {
     let mut cmd = Command::new("git");
     cmd.arg("diff");
@@ -3020,6 +3223,7 @@ async fn run_interactive(
     cli: &Cli,
     config: &Config,
     resume_session_id: Option<String>,
+    initial_input: Option<String>,
 ) -> Result<()> {
     let workspace = cli
         .workspace
@@ -3098,6 +3302,7 @@ async fn run_interactive(
             skip_onboarding: cli.skip_onboarding,
             yolo: cli.yolo, // YOLO mode auto-approves all tool executions
             resume_session_id,
+            initial_input,
             max_subagents,
         },
     )
@@ -4055,5 +4260,65 @@ mod setup_helper_tests {
         )
         .unwrap();
         assert_eq!(skills_count_for(&dir), 1);
+    }
+}
+
+#[cfg(test)]
+mod pr_prompt_tests {
+    use super::*;
+
+    fn sample_pr() -> GhPullRequest {
+        GhPullRequest {
+            title: "Add cool feature".to_string(),
+            body: "Closes #99.\n\nAlso:\n- bullet a\n- bullet b".to_string(),
+            base: "main".to_string(),
+            head: "feat/cool".to_string(),
+            url: "https://github.com/example/repo/pull/123".to_string(),
+        }
+    }
+
+    #[test]
+    fn format_pr_prompt_includes_title_url_branches_body_and_diff() {
+        let prompt = format_pr_prompt(123, &sample_pr(), "diff --git a/x b/x\n+y");
+        assert!(prompt.contains("Review PR #123 — Add cool feature"));
+        assert!(prompt.contains("URL: https://github.com/example/repo/pull/123"));
+        assert!(prompt.contains("Branches: main ← feat/cool"));
+        assert!(prompt.contains("Closes #99."));
+        assert!(prompt.contains("- bullet a"));
+        assert!(prompt.contains("```diff"));
+        assert!(prompt.contains("diff --git a/x b/x"));
+    }
+
+    #[test]
+    fn format_pr_prompt_handles_empty_body_and_unknown_branches() {
+        let pr = GhPullRequest {
+            title: String::new(),
+            body: "   ".to_string(),
+            base: String::new(),
+            head: String::new(),
+            url: String::new(),
+        };
+        let prompt = format_pr_prompt(7, &pr, "(diff body)");
+        // Empty title falls back to a placeholder.
+        assert!(prompt.contains("(PR #7)"));
+        // Empty body renders the explicit placeholder.
+        assert!(prompt.contains("(no description)"));
+        assert!(prompt.contains("Branches: (unknown)"));
+        assert!(prompt.contains("URL: (unavailable)"));
+    }
+
+    #[test]
+    fn format_pr_prompt_truncates_oversize_diff_at_a_codepoint_boundary() {
+        // 300 KiB of `X` bytes with a multibyte char near the cap.
+        let mut diff = "X".repeat(190 * 1024);
+        diff.push_str(&"🚀".repeat(5_000));
+        let prompt = format_pr_prompt(1, &sample_pr(), &diff);
+        assert!(prompt.contains("[…diff truncated"));
+        assert!(prompt.contains("at 200 KiB"));
+        // Ensure we didn't slice mid-codepoint — the result still
+        // round-trips as valid UTF-8 (it's a String, so this is by
+        // construction; the test pins behaviour against silent panics
+        // if the cut logic regresses).
+        assert!(prompt.is_ascii() || prompt.contains('🚀'));
     }
 }
