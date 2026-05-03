@@ -13,16 +13,61 @@ use super::CommandResult;
 
 /// Top-level dispatch for `/hooks`. Subcommands:
 ///
-/// * `/hooks`       — same as `/hooks list`.
-/// * `/hooks list`  — show every configured hook grouped by event,
+/// * `/hooks`         — same as `/hooks list`.
+/// * `/hooks list`    — show every configured hook grouped by event,
 ///   noting whether the global `[hooks].enabled` flag suppresses
 ///   them.
+/// * `/hooks events`  — list every supported `HookEvent` value the
+///   user can target in `[[hooks.hooks]]` entries. Useful for
+///   discovery — without this, the only way to learn the event
+///   names is to read source.
 pub fn hooks(app: &App, arg: Option<&str>) -> CommandResult {
     let sub = arg.map(str::trim).unwrap_or("list").to_ascii_lowercase();
     match sub.as_str() {
         "" | "list" | "ls" | "show" => list(app),
-        other => CommandResult::error(format!("unknown subcommand `{other}`. Try `/hooks list`.")),
+        "events" | "event" | "list-events" => events(),
+        other => CommandResult::error(format!(
+            "unknown subcommand `{other}`. Try `/hooks list` or `/hooks events`."
+        )),
     }
+}
+
+fn events() -> CommandResult {
+    let mut out = String::new();
+    out.push_str(
+        "Available hook events (use one of these as `event = \"...\"` in your `[[hooks.hooks]]` entry):\n\n",
+    );
+    // Order matters — group lifecycle events first, then per-tool,
+    // then situational. Stays stable across releases so users can
+    // grep on it.
+    let ordered = [
+        (HookEvent::SessionStart, "fires once when the TUI launches"),
+        (HookEvent::SessionEnd, "fires once on graceful shutdown"),
+        (
+            HookEvent::MessageSubmit,
+            "fires when the user submits a turn (before model dispatch)",
+        ),
+        (
+            HookEvent::ToolCallBefore,
+            "fires before each tool call (read-only observer for now)",
+        ),
+        (
+            HookEvent::ToolCallAfter,
+            "fires after each tool call (read-only observer for now)",
+        ),
+        (
+            HookEvent::ModeChange,
+            "fires on Plan/Agent/Yolo transitions",
+        ),
+        (
+            HookEvent::OnError,
+            "fires on transport / capacity / tool errors",
+        ),
+    ];
+    for (event, desc) in ordered {
+        out.push_str(&format!("  - `{}` — {desc}\n", event_label(event)));
+    }
+    CommandResult::message(out.trim_end().to_string())
 }
 
 fn list(app: &App) -> CommandResult {
@@ -201,6 +246,44 @@ mod tests {
             }),
             "all of [tool_name=`exec_shell`, mode=`yolo`]"
         );
+    }
+
+    #[test]
+    fn events_subcommand_lists_every_event_variant_in_documented_order() {
+        let result = events();
+        let body = result.message.expect("non-empty body");
+        let positions: Vec<(usize, &str)> = [
+            "session_start",
+            "session_end",
+            "message_submit",
+            "tool_call_before",
+            "tool_call_after",
+            "mode_change",
+            "on_error",
+        ]
+        .iter()
+        .map(|name| {
+            (
+                body.find(name).unwrap_or_else(|| {
+                    panic!("event `{name}` missing from /hooks events output:\n{body}")
+                }),
+                *name,
+            )
+        })
+        .collect();
+        // Documented order is lifecycle → tool-call → situational.
+        // Each subsequent position must be greater than the previous.
+        for window in positions.windows(2) {
+            let (a_pos, a_name) = window[0];
+            let (b_pos, b_name) = window[1];
+            assert!(
+                a_pos < b_pos,
+                "expected `{a_name}` before `{b_name}` in events listing"
+            );
+        }
+        // Each event line includes the descriptive blurb.
+        assert!(body.contains("fires once when the TUI launches"));
+        assert!(body.contains("read-only observer"));
     }
 
     #[test]

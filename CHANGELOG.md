@@ -246,6 +246,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   count. Mirrored under `storage.{spillover,stash}` in the
   JSON output so `deepseek doctor --json` keeps a stable
   schema.
+- **`/hooks events` subcommand** (#460 polish) — lists every
+  supported `HookEvent` value with a short blurb so users can
+  discover which events to target in `[[hooks.hooks]]` entries
+  without reading source. Ordered lifecycle → per-tool →
+  situational, stable across releases.
 - **RLM tool family** (#512) — `rlm` tool cards map to
   `ToolFamily::Rlm` and render `rlm`, not `swarm`. Stale "swarm"
   wording cleaned out of docs / comments / tests.

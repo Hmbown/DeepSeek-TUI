@@ -182,7 +182,7 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "hooks",
         aliases: &["hook"],
-        usage: "/hooks [list]",
+        usage: "/hooks [list|events]",
         description_id: MessageId::CmdHooksDescription,
     },
     CommandInfo {
