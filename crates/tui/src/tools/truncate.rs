@@ -478,11 +478,12 @@ mod tests {
         );
     }
 
-    #[cfg(not(unix))]
-    fn filetime_set_modified(_path: &Path, _when: SystemTime) {
-        // Not exercised in CI on Windows; prune semantics are the same
-        // and the per-cycle stress test lives on the Unix path.
-    }
+    // Windows stub removed in v0.8.8 — the only caller of
+    // `filetime_set_modified` is `prune_older_than_keeps_fresh_files_drops_stale_ones`,
+    // which is now `#[cfg(unix)]` because mtime backdating requires
+    // `utimensat` and a Windows no-op stub can't make the assertion pass
+    // anyway. Keeping the stub triggered `-D dead-code` on Windows builds
+    // (the prune test was the only caller) and broke `Test (windows-latest)`.
 
     #[test]
     fn apply_spillover_is_noop_below_threshold() {
