@@ -18,6 +18,37 @@ Overrides:
 
 If both are set, `--config` wins. Environment variable overrides are applied after the file is loaded.
 
+### Per-project overlay (#485)
+
+When the TUI starts in a workspace that contains a
+`<workspace>/.deepseek/config.toml` file, the values declared in that
+file are merged on top of the global config. This lets a repo lock its
+own provider, model, sandbox policy, or approval policy without
+touching the user's `~/.deepseek/config.toml`. Pass
+`--no-project-config` to skip the overlay for one launch.
+
+Supported keys in the project overlay (top-level fields only):
+
+| Key | Effect |
+|---|---|
+| `provider` | switch backend (e.g. `"nvidia-nim"` for an enterprise repo) |
+| `model` | override `default_text_model` |
+| `api_key` | use a per-repo key (typically read from `.env`, **not committed**) |
+| `base_url` | point at a self-hosted endpoint |
+| `reasoning_effort` | force `"high"` / `"max"` for a complex repo |
+| `approval_policy` | `"never"` / `"on-request"` / `"untrusted"` for opinionated repos |
+| `sandbox_mode` | `"read-only"` / `"workspace-write"` / `"danger-full-access"` |
+| `mcp_config_path` | per-repo MCP server set |
+| `notes_path` | keep notes in-repo |
+| `max_subagents` | clamp concurrency for a constrained repo (clamped to 1..=20) |
+| `allow_shell` | gate shell tool access on `false` |
+
+The overlay is intentionally narrow — it covers the fields a repo
+maintainer is most likely to want to standardize across contributors.
+Other settings (skills_dir, hooks, capacity, retry, etc.) stay
+user-global. If your repo needs more, file an issue describing the
+specific use case.
+
 The `deepseek` facade and `deepseek-tui` binary share the same config file for
 DeepSeek auth and model defaults. `deepseek login --api-key ...` writes the
 root `api_key` field that `deepseek-tui` reads directly, and `deepseek --model

@@ -2933,18 +2933,44 @@ fn merge_project_config(config: &mut Config, workspace: &Path) {
         None => return,
     };
 
-    // Apply top-level string fields that make sense for project overrides.
+    // String fields a project may legitimately want to override:
+    // - `provider` — pick a different backend per repo (e.g. NVIDIA NIM
+    //   for an enterprise repo, deepseek-cn for a CN-team repo).
+    // - `model` / `api_key` / `base_url` / `reasoning_effort` — the
+    //   original four.
+    // - `approval_policy` / `sandbox_mode` — let an opinionated repo
+    //   demand `never` approval or `read-only` sandbox so the agent
+    //   can't accidentally write.
+    // - `mcp_config_path` — point at a per-repo MCP config without
+    //   touching the user's global file.
+    // - `notes_path` — keep notes in-repo for projects where the
+    //   notes tool is part of the dev workflow.
     for (key, field) in [
+        ("provider", &mut config.provider),
         ("model", &mut config.default_text_model),
         ("api_key", &mut config.api_key),
         ("base_url", &mut config.base_url),
         ("reasoning_effort", &mut config.reasoning_effort),
+        ("approval_policy", &mut config.approval_policy),
+        ("sandbox_mode", &mut config.sandbox_mode),
+        ("mcp_config_path", &mut config.mcp_config_path),
+        ("notes_path", &mut config.notes_path),
     ] {
         if let Some(v) = table.get(key).and_then(toml::Value::as_str)
             && !v.is_empty()
         {
             *field = Some(v.to_string());
         }
+    }
+
+    // Numeric / bool fields that benefit from per-project overrides.
+    if let Some(v) = table.get("max_subagents").and_then(toml::Value::as_integer)
+        && v > 0
+    {
+        config.max_subagents = Some((v as usize).clamp(1, crate::config::MAX_SUBAGENTS));
+    }
+    if let Some(v) = table.get("allow_shell").and_then(toml::Value::as_bool) {
+        config.allow_shell = Some(v);
     }
 }
 
@@ -3410,6 +3436,142 @@ mod terminal_mode_tests {
         let config = Config::default();
 
         assert!(!should_use_mouse_capture(&cli, &config, false));
+    }
+}
+
+#[cfg(test)]
+mod project_config_tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    /// Write a `<workspace>/.deepseek/config.toml` and return the workspace
+    /// root so the merge function can find it.
+    fn workspace_with_project_config(body: &str) -> tempfile::TempDir {
+        let tmp = tempdir().expect("tempdir");
+        let project_dir = tmp.path().join(".deepseek");
+        fs::create_dir_all(&project_dir).expect("mkdir .deepseek");
+        fs::write(project_dir.join("config.toml"), body).expect("write project config");
+        tmp
+    }
+
+    #[test]
+    fn project_overlay_overrides_provider_and_model() {
+        let tmp = workspace_with_project_config(
+            r#"
+provider = "nvidia-nim"
+model = "deepseek-ai/deepseek-v4-pro"
+"#,
+        );
+        let mut config = Config::default();
+        merge_project_config(&mut config, tmp.path());
+        assert_eq!(config.provider.as_deref(), Some("nvidia-nim"));
+        assert_eq!(
+            config.default_text_model.as_deref(),
+            Some("deepseek-ai/deepseek-v4-pro")
+        );
+    }
+
+    #[test]
+    fn project_overlay_overrides_approval_and_sandbox() {
+        let tmp = workspace_with_project_config(
+            r#"
+approval_policy = "never"
+sandbox_mode = "read-only"
+"#,
+        );
+        let mut config = Config::default();
+        merge_project_config(&mut config, tmp.path());
+        assert_eq!(config.approval_policy.as_deref(), Some("never"));
+        assert_eq!(config.sandbox_mode.as_deref(), Some("read-only"));
+    }
+
+    #[test]
+    fn project_overlay_overrides_max_subagents_and_allow_shell() {
+        let tmp = workspace_with_project_config(
+            r#"
+max_subagents = 4
+allow_shell = false
+"#,
+        );
+        let mut config = Config::default();
+        merge_project_config(&mut config, tmp.path());
+        assert_eq!(config.max_subagents, Some(4));
+        assert_eq!(config.allow_shell, Some(false));
+    }
+
+    #[test]
+    fn project_overlay_clamps_max_subagents_to_safe_range() {
+        let tmp = workspace_with_project_config(
+            r#"
+max_subagents = 500
+"#,
+        );
+        let mut config = Config::default();
+        merge_project_config(&mut config, tmp.path());
+        assert_eq!(
+            config.max_subagents,
+            Some(crate::config::MAX_SUBAGENTS),
+            "should clamp to MAX_SUBAGENTS"
+        );
+    }
+
+    #[test]
+    fn project_overlay_ignores_negative_max_subagents() {
+        let tmp = workspace_with_project_config(
+            r#"
+max_subagents = -3
+"#,
+        );
+        let mut config = Config::default();
+        merge_project_config(&mut config, tmp.path());
+        assert_eq!(config.max_subagents, None, "negative should be ignored");
+    }
+
+    #[test]
+    fn project_overlay_skips_missing_config_file() {
+        let tmp = tempdir().expect("tempdir");
+        let mut config = Config {
+            provider: Some("deepseek".to_string()),
+            ..Config::default()
+        };
+        merge_project_config(&mut config, tmp.path());
+        // Untouched.
+        assert_eq!(config.provider.as_deref(), Some("deepseek"));
+    }
+
+    #[test]
+    fn project_overlay_skips_malformed_toml() {
+        let tmp = workspace_with_project_config("this is not valid TOML !!");
+        let mut config = Config {
+            provider: Some("deepseek".to_string()),
+            ..Config::default()
+        };
+        merge_project_config(&mut config, tmp.path());
+        // Untouched on parse error — better to fall back to global than crash.
+        assert_eq!(config.provider.as_deref(), Some("deepseek"));
+    }
+
+    #[test]
+    fn project_overlay_ignores_empty_string_values() {
+        let tmp = workspace_with_project_config(
+            r#"
+provider = ""
+model = ""
+"#,
+        );
+        let mut config = Config {
+            provider: Some("deepseek".to_string()),
+            default_text_model: Some("deepseek-v4-pro".to_string()),
+            ..Config::default()
+        };
+        merge_project_config(&mut config, tmp.path());
+        // Empty strings are ignored — they're rarely a deliberate override.
+        assert_eq!(config.provider.as_deref(), Some("deepseek"));
+        assert_eq!(
+            config.default_text_model.as_deref(),
+            Some("deepseek-v4-pro")
+        );
     }
 }
 
