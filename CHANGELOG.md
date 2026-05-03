@@ -354,6 +354,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   workflows (`crates-publish.yml`, `parity.yml`, `publish-npm.yml`);
   `release.yml` `build` job now allows `parity` to be skipped on
   manual `workflow_dispatch`; release-runbook reconciled.
+- **Slash-menu layout jitter on Windows** — typing through a
+  `/foo` autocomplete used to shrink the matched-entry count,
+  which shrank the composer height every keystroke, which forced
+  the chat area above to repaint. On Windows 10 PowerShell + WSL
+  the per-cell write cost made the jitter visible. Composer now
+  reserves its panel-max envelope for the whole slash/mention
+  session so the chat-area Rect stays stable; the menu still
+  renders only the entries that actually match.
 
 ### Releases
 - npm wrapper publish remains manual (npm 2FA OTP requirement).

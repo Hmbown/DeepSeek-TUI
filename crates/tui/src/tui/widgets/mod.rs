@@ -367,6 +367,31 @@ impl<'a> ComposerWidget<'a> {
         }
     }
 
+    /// Row reservation passed to `composer_height`. When the slash- or
+    /// mention-menu is active we lock the composer to its worst-case
+    /// envelope so the chat area above doesn't repaint every keystroke
+    /// as the matched-entry count shrinks. Pure cosmetic: the menu
+    /// itself still renders its actual entries — the extra rows are
+    /// just panel padding inside the same Rect.
+    ///
+    /// Reported on Windows 10 PowerShell + WSL where the console
+    /// backend's per-cell write cost makes the layout jitter visible
+    /// even though the work is tiny on Unix terminals. See user
+    /// feedback in v0.8.8 polish thread.
+    fn active_menu_reserved_rows(&self) -> usize {
+        let actual = self.active_menu_row_count();
+        if actual == 0 {
+            return 0;
+        }
+        if self.app.is_history_search_active() {
+            return actual;
+        }
+        // Slash- and mention-menu are the cases that grow/shrink mid-typing.
+        // Reserve the composer's panel-max so the layout stays stable
+        // for the lifetime of the menu session.
+        actual.max(usize::from(self.max_height_cap()))
+    }
+
     fn has_panel(&self, area: Rect) -> bool {
         self.app.composer_border && area.height >= 3 && area.width >= 12
     }
@@ -410,7 +435,14 @@ impl Renderable for ComposerWidget<'_> {
         } else {
             menu_entries.len()
         };
-        let input_rows_budget = composer_input_rows_budget(inner_area.height, menu_lines);
+        // For the layout-budget calculation, treat the menu as if it were
+        // already at its locked, worst-case height (see
+        // `active_menu_reserved_rows`). Without this, when the matched-entry
+        // count drops mid-typing, `top_padding` grows and the input visually
+        // jumps down inside the panel even though the panel rect stayed put.
+        let menu_lines_for_budget = self.active_menu_reserved_rows().max(menu_lines);
+        let input_rows_budget =
+            composer_input_rows_budget(inner_area.height, menu_lines_for_budget);
         let content_width = usize::from(inner_area.width.max(1));
         let (visible_lines, _cursor_row, _cursor_col) =
             layout_input(input_text, input_cursor, content_width, input_rows_budget);
@@ -697,7 +729,7 @@ impl Renderable for ComposerWidget<'_> {
             self.app.composer_display_input(),
             width,
             self.max_height.min(self.max_height_cap()),
-            self.active_menu_row_count(),
+            self.active_menu_reserved_rows(),
             self.app.composer_density,
             self.app.composer_border,
         )
@@ -708,8 +740,10 @@ impl Renderable for ComposerWidget<'_> {
         let input_text = self.app.composer_display_input();
         let input_cursor = self.app.composer_display_cursor();
         let content_width = usize::from(inner_area.width.max(1));
+        // Match the render path's locked-budget calculation so the cursor
+        // lands on the same row the input is drawn on.
         let input_rows_budget =
-            composer_input_rows_budget(inner_area.height, self.active_menu_row_count());
+            composer_input_rows_budget(inner_area.height, self.active_menu_reserved_rows());
 
         let (visible_lines, cursor_row, cursor_col) =
             layout_input(input_text, input_cursor, content_width, input_rows_budget);
@@ -2058,6 +2092,45 @@ mod tests {
         // cursor_y = 0 + (1-0) + (1+0) = 2
         assert_eq!(placeholder_visual_lines(12), 2);
         assert_eq!(widget.cursor_pos(area), Some((1, 2)));
+    }
+
+    #[test]
+    fn slash_menu_open_locks_composer_height_against_match_count_changes() {
+        // Repro for the Windows 10 PowerShell + WSL feedback: typing
+        // through a slash command shrinks the matched-entry list, which
+        // used to shrink the composer height — and shrinking the
+        // composer forces the chat area above to repaint every
+        // keystroke.  With the height lock, the desired height returned
+        // for a 5-match menu and a 1-match menu must be identical so
+        // the layout stays stable for the lifetime of the slash session.
+        let mut app = create_test_app();
+        app.composer_density = ComposerDensity::Comfortable;
+        app.input = "/skill".to_string();
+
+        let many_matches: Vec<String> = (0..5).map(|i| format!("/skill{i}")).collect();
+        let one_match = vec!["/skill".to_string()];
+        let no_matches = Vec::<String>::new();
+
+        let widget_many = ComposerWidget::new(&app, 9, &many_matches, &[]);
+        let widget_one = ComposerWidget::new(&app, 9, &one_match, &[]);
+        let widget_none = ComposerWidget::new(&app, 9, &no_matches, &[]);
+
+        // Fixed worst-case envelope while the slash menu is open.
+        let height_many = widget_many.desired_height(40);
+        let height_one = widget_one.desired_height(40);
+        assert_eq!(
+            height_many, height_one,
+            "slash menu height must not jitter as the matched-entry count changes"
+        );
+
+        // Sanity: closing the slash menu (no matches) lets the panel
+        // collapse back to a tight composer — we only want to lock
+        // height *while* the menu is open.
+        let height_none = widget_none.desired_height(40);
+        assert!(
+            height_none < height_many,
+            "with the menu closed the composer should release the reserved rows; got {height_none} vs locked {height_many}"
+        );
     }
 
     #[test]
