@@ -16,13 +16,16 @@ use super::CommandResult;
 /// * `/stash list`   — show parked drafts, oldest first.
 /// * `/stash pop`    — restore the most recently parked draft into
 ///   the composer; the popped entry is removed from disk.
+/// * `/stash clear`  — wipe the entire stash file. Reports how many
+///   entries were dropped so the user knows what they deleted.
 pub fn stash(app: &mut App, arg: Option<&str>) -> CommandResult {
     let sub = arg.map(str::trim).unwrap_or("list").to_ascii_lowercase();
     match sub.as_str() {
         "" | "list" | "ls" | "show" => list(),
         "pop" | "restore" => pop(app),
+        "clear" | "wipe" | "drop" => clear(),
         other => CommandResult::error(format!(
-            "unknown subcommand `{other}`. Try `/stash list` or `/stash pop`."
+            "unknown subcommand `{other}`. Try `/stash list`, `/stash pop`, or `/stash clear`."
         )),
     }
 }
@@ -47,6 +50,14 @@ fn list() -> CommandResult {
     }
     out.push_str("\nUse `/stash pop` to restore the most recent draft.");
     CommandResult::message(out)
+}
+
+fn clear() -> CommandResult {
+    match composer_stash::clear_stash() {
+        Ok(0) => CommandResult::message("Stash already empty — nothing to clear."),
+        Ok(n) => CommandResult::message(format!("Cleared {n} parked draft(s) from the stash.")),
+        Err(err) => CommandResult::error(format!("Failed to clear stash: {err}")),
+    }
 }
 
 fn pop(app: &mut App) -> CommandResult {

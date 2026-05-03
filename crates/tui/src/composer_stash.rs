@@ -26,6 +26,7 @@
 //! ambiguity and the timestamp / future fields land cleanly.
 
 use std::fs;
+use std::io;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
@@ -123,6 +124,29 @@ fn push_stash_to(path: &Path, text: &str) {
 pub fn pop_stash() -> Option<StashedDraft> {
     let path = default_stash_path()?;
     pop_stash_from(&path)
+}
+
+/// Wipe the stash file entirely. Returns the number of entries
+/// that were dropped (so the caller can report it). Returns 0
+/// when the file doesn't exist or had no entries.
+pub fn clear_stash() -> io::Result<usize> {
+    let Some(path) = default_stash_path() else {
+        return Ok(0);
+    };
+    clear_stash_at(&path)
+}
+
+fn clear_stash_at(path: &Path) -> io::Result<usize> {
+    if !path.exists() {
+        return Ok(0);
+    }
+    let entries = load_stash_from(path);
+    let count = entries.len();
+    if count == 0 {
+        return Ok(0);
+    }
+    crate::utils::write_atomic(path, b"")?;
+    Ok(count)
 }
 
 fn pop_stash_from(path: &Path) -> Option<StashedDraft> {
@@ -234,6 +258,32 @@ this is not json
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].text, "good one");
         assert_eq!(entries[1].text, "good two");
+    }
+
+    #[test]
+    fn clear_returns_zero_when_file_is_absent() {
+        let (_tmp, path) = temp_stash_path();
+        // Path doesn't exist yet.
+        assert_eq!(clear_stash_at(&path).unwrap(), 0);
+    }
+
+    #[test]
+    fn clear_returns_zero_when_file_is_empty() {
+        let (_tmp, path) = temp_stash_path();
+        std::fs::write(&path, "").unwrap();
+        assert_eq!(clear_stash_at(&path).unwrap(), 0);
+    }
+
+    #[test]
+    fn clear_drops_entries_and_reports_count() {
+        let (_tmp, path) = temp_stash_path();
+        push_stash_to(&path, "first");
+        push_stash_to(&path, "second");
+        push_stash_to(&path, "third");
+        let dropped = clear_stash_at(&path).expect("clear succeeds");
+        assert_eq!(dropped, 3);
+        // File still exists but is empty so subsequent loads come back clean.
+        assert!(load_stash_from(&path).is_empty());
     }
 
     #[test]

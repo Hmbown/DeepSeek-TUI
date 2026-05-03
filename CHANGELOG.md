@@ -214,6 +214,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `TuiOptions::initial_input` plumb that any future caller can
   reuse to drop the model into a session with text already
   typed.
+- **`/stash clear` subcommand** (#440 polish) — wipes the
+  entire stash file and reports how many parked drafts were
+  dropped. Pairs with `/stash list` and `/stash pop` so the
+  user can fully manage the stash from inside the TUI without
+  reaching for `rm`.
 - **RLM tool family** (#512) — `rlm` tool cards map to
   `ToolFamily::Rlm` and render `rlm`, not `swarm`. Stale "swarm"
   wording cleaned out of docs / comments / tests.

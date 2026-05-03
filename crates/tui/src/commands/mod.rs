@@ -175,7 +175,7 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "stash",
         aliases: &["park"],
-        usage: "/stash [list|pop]",
+        usage: "/stash [list|pop|clear]",
         description_id: MessageId::CmdStashDescription,
     },
     CommandInfo {
