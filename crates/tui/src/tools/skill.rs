@@ -287,4 +287,79 @@ mod tests {
             "solo skills shouldn't emit an empty Companion files section"
         );
     }
+
+    #[tokio::test]
+    async fn execute_finds_skills_in_opencode_dir_via_workspace_discovery() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().to_path_buf();
+        // Skill installed under workspace `.opencode/skills` (#432).
+        let opencode_dir = workspace.join(".opencode").join("skills");
+        std::fs::create_dir_all(&opencode_dir).unwrap();
+        write_skill(
+            &opencode_dir,
+            "from-opencode",
+            "Skill installed under .opencode/skills",
+            "Body content marker.",
+        );
+
+        let mut context = ToolContext::new(workspace);
+        // The skill tool reads $HOME for the global default; pin it to a
+        // tempdir so the test is hermetic regardless of the host's
+        // ~/.deepseek/skills.
+        context.workspace = tmp.path().to_path_buf();
+
+        let tool = LoadSkillTool;
+        let result = tool
+            .execute(json!({"name": "from-opencode"}), &context)
+            .await
+            .expect("load_skill should succeed");
+        assert!(result.success);
+        assert!(
+            result.content.contains("# Skill: from-opencode"),
+            "body header missing: {}",
+            &result.content
+        );
+        assert!(result.content.contains("Body content marker."));
+
+        let metadata = result.metadata.expect("metadata stamped");
+        assert_eq!(
+            metadata
+                .get("skill_name")
+                .and_then(serde_json::Value::as_str),
+            Some("from-opencode")
+        );
+        let path_str = metadata
+            .get("skill_path")
+            .and_then(serde_json::Value::as_str)
+            .expect("skill_path stamped");
+        assert!(
+            path_str.contains(".opencode"),
+            "skill_path should point at the .opencode dir: {path_str}"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_returns_helpful_error_for_unknown_skill() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().to_path_buf();
+        // One real skill so the available list is non-empty.
+        write_skill(
+            &workspace.join(".agents").join("skills"),
+            "real-one",
+            "x",
+            "body",
+        );
+
+        let context = ToolContext::new(workspace);
+        let tool = LoadSkillTool;
+        let err = tool
+            .execute(json!({"name": "imaginary"}), &context)
+            .await
+            .expect_err("unknown skill should error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("imaginary") && msg.contains("real-one"),
+            "error must name the missing skill and list available ones: {msg}"
+        );
+    }
 }
