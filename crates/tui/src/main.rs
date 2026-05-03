@@ -144,6 +144,10 @@ struct Cli {
     /// Start a fresh session, ignoring any crash-recovery checkpoint
     #[arg(long = "fresh")]
     fresh: bool,
+
+    /// Skip loading project-level config from $WORKSPACE/.deepseek/config.toml
+    #[arg(long = "no-project-config")]
+    no_project_config: bool,
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -2907,6 +2911,40 @@ fn try_recover_checkpoint() -> Option<String> {
     Some(session_id)
 }
 
+/// Load project-level config from `$WORKSPACE/.deepseek/config.toml` and
+/// apply its fields as overrides on top of the global config (#485).
+/// Only explicitly set fields in the project file are applied; everything
+/// else falls back to the global value.
+fn merge_project_config(config: &mut Config, workspace: &Path) {
+    let path = workspace.join(".deepseek").join("config.toml");
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    let project: toml::Value = match toml::from_str(&raw) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    let table = match project.as_table() {
+        Some(t) => t,
+        None => return,
+    };
+
+    // Apply top-level string fields that make sense for project overrides.
+    for (key, field) in [
+        ("model", &mut config.default_text_model),
+        ("api_key", &mut config.api_key),
+        ("base_url", &mut config.base_url),
+        ("reasoning_effort", &mut config.reasoning_effort),
+    ] {
+        if let Some(v) = table.get(key).and_then(toml::Value::as_str) {
+            if !v.is_empty() {
+                *field = Some(v.to_string());
+            }
+        }
+    }
+}
+
 async fn run_interactive(
     cli: &Cli,
     config: &Config,
@@ -2916,6 +2954,15 @@ async fn run_interactive(
         .workspace
         .clone()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+    // Merge project-level config from $WORKSPACE/.deepseek/config.toml
+    // unless --no-project-config was passed (#485).
+    let mut merged_config = config.clone();
+    if !cli.no_project_config {
+        merge_project_config(&mut merged_config, &workspace);
+    }
+    let config = &merged_config;
+
     let model = config.default_model();
     let max_subagents = cli.max_subagents.map_or_else(
         || config.max_subagents(),
