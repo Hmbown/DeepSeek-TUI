@@ -6451,9 +6451,6 @@ fn selection_to_text(app: &App) -> Option<String> {
     let mut selected_lines = Vec::new();
     #[allow(clippy::needless_range_loop)]
     for line_index in start_index..=end_index {
-        let Some(body_start) = llm_io_selection_body_start(app, line_index) else {
-            continue;
-        };
         let line_text = line_to_plain(&lines[line_index]);
         let line_width = text_display_width(&line_text);
         let (col_start, col_end) = if start_index == end_index {
@@ -6466,34 +6463,10 @@ fn selection_to_text(app: &App) -> Option<String> {
             (0, line_width)
         };
 
-        if col_end <= body_start {
-            continue;
-        }
-        let slice = slice_text(&line_text, col_start.max(body_start), col_end);
+        let slice = slice_text(&line_text, col_start, col_end);
         selected_lines.push(slice);
     }
     Some(selected_lines.join("\n"))
-}
-
-fn llm_io_selection_body_start(app: &App, line_index: usize) -> Option<usize> {
-    const MESSAGE_BODY_START_COLUMN: usize = 2;
-
-    let (filtered_cell_index, _) = app
-        .viewport
-        .transcript_cache
-        .line_meta()
-        .get(line_index)?
-        .cell_line()?;
-    let cell_index = app
-        .collapsed_cell_map
-        .get(filtered_cell_index)
-        .copied()
-        .unwrap_or(filtered_cell_index);
-
-    match app.cell_at_virtual_index(cell_index)? {
-        HistoryCell::User { .. } | HistoryCell::Assistant { .. } => Some(MESSAGE_BODY_START_COLUMN),
-        _ => None,
-    }
 }
 
 fn open_pager_for_selection(app: &mut App) -> bool {

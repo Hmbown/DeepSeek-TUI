@@ -94,24 +94,31 @@ fn selection_to_text_handles_multiline_and_reversed_endpoints() {
         column: 6,
     });
 
-    assert_eq!(selection_to_text(&app).as_deref(), Some("a beta\ngam"));
+    assert_eq!(selection_to_text(&app).as_deref(), Some("a beta\n  gam"));
 }
 
 #[test]
-fn selection_to_text_only_copies_user_and_assistant_bodies() {
+fn selection_to_text_copies_rendered_transcript_block() {
     let mut app = create_test_app();
     app.history = vec![
         HistoryCell::System {
-            content: "skip system".to_string(),
+            content: "copy system".to_string(),
         },
         HistoryCell::User {
             content: "copy user".to_string(),
         },
         HistoryCell::Thinking {
-            content: "skip thinking".to_string(),
+            content: "copy thinking".to_string(),
             streaming: false,
             duration_secs: Some(1.0),
         },
+        HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            name: "exec_shell".to_string(),
+            status: ToolStatus::Success,
+            input_summary: Some("cargo check".to_string()),
+            output: Some("tool output line".to_string()),
+            prompts: None,
+        })),
         HistoryCell::Assistant {
             content: "copy assistant".to_string(),
             streaming: false,
@@ -139,12 +146,11 @@ fn selection_to_text_only_copies_user_and_assistant_bodies() {
     });
 
     let selected = selection_to_text(&app).expect("selection text");
-    assert!(selected.contains("copy user"), "{selected:?}");
-    assert!(selected.contains("copy assistant"), "{selected:?}");
-    assert!(!selected.contains("skip system"), "{selected:?}");
-    assert!(!selected.contains("skip thinking"), "{selected:?}");
-    assert!(!selected.contains('▎'), "{selected:?}");
-    assert!(!selected.contains('●'), "{selected:?}");
+    assert!(selected.contains("Note copy system"), "{selected:?}");
+    assert!(selected.contains("▎ copy user"), "{selected:?}");
+    assert!(selected.contains("copy thinking"), "{selected:?}");
+    assert!(selected.contains("tool output line"), "{selected:?}");
+    assert!(selected.contains("● copy assistant"), "{selected:?}");
 }
 
 #[test]

@@ -46,7 +46,6 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const SEND_FLASH_DURATION: Duration = Duration::from_millis(500);
 const COMPOSER_PANEL_HEIGHT: u16 = 2;
-const MESSAGE_SELECTION_BODY_START_COLUMN: usize = 2;
 
 pub struct ChatWidget {
     content_area: Rect,
@@ -1302,11 +1301,8 @@ fn apply_selection(lines: &mut [Line<'static>], top: usize, app: &App) {
         if line_index < start.line_index || line_index > end.line_index {
             continue;
         }
-        let Some(body_start) = llm_io_selection_body_start(app, line_index) else {
-            continue;
-        };
 
-        let (mut col_start, col_end) = if start.line_index == end.line_index {
+        let (col_start, col_end) = if start.line_index == end.line_index {
             (start.column, end.column)
         } else if line_index == start.line_index {
             (start.column, usize::MAX)
@@ -1316,11 +1312,6 @@ fn apply_selection(lines: &mut [Line<'static>], top: usize, app: &App) {
             (0, usize::MAX)
         };
 
-        if col_end <= body_start {
-            continue;
-        }
-        col_start = col_start.max(body_start);
-
         if col_start == 0 && col_end == usize::MAX {
             for span in &mut line.spans {
                 span.style = span.style.patch(selection_style);
@@ -1329,27 +1320,6 @@ fn apply_selection(lines: &mut [Line<'static>], top: usize, app: &App) {
         }
 
         line.spans = apply_selection_to_line(line, col_start, col_end, selection_style);
-    }
-}
-
-fn llm_io_selection_body_start(app: &App, line_index: usize) -> Option<usize> {
-    let (filtered_cell_index, _) = app
-        .viewport
-        .transcript_cache
-        .line_meta()
-        .get(line_index)?
-        .cell_line()?;
-    let cell_index = app
-        .collapsed_cell_map
-        .get(filtered_cell_index)
-        .copied()
-        .unwrap_or(filtered_cell_index);
-
-    match app.cell_at_virtual_index(cell_index)? {
-        HistoryCell::User { .. } | HistoryCell::Assistant { .. } => {
-            Some(MESSAGE_SELECTION_BODY_START_COLUMN)
-        }
-        _ => None,
     }
 }
 
