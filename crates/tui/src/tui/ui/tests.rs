@@ -94,7 +94,57 @@ fn selection_to_text_handles_multiline_and_reversed_endpoints() {
         column: 6,
     });
 
-    assert_eq!(selection_to_text(&app).as_deref(), Some("a beta\n  gam"));
+    assert_eq!(selection_to_text(&app).as_deref(), Some("a beta\ngam"));
+}
+
+#[test]
+fn selection_to_text_only_copies_user_and_assistant_bodies() {
+    let mut app = create_test_app();
+    app.history = vec![
+        HistoryCell::System {
+            content: "skip system".to_string(),
+        },
+        HistoryCell::User {
+            content: "copy user".to_string(),
+        },
+        HistoryCell::Thinking {
+            content: "skip thinking".to_string(),
+            streaming: false,
+            duration_secs: Some(1.0),
+        },
+        HistoryCell::Assistant {
+            content: "copy assistant".to_string(),
+            streaming: false,
+        },
+    ];
+    app.resync_history_revisions();
+    app.viewport.transcript_cache.ensure(
+        &app.history,
+        &app.history_revisions,
+        80,
+        app.transcript_render_options(),
+    );
+
+    app.viewport.transcript_selection.anchor = Some(TranscriptSelectionPoint {
+        line_index: 0,
+        column: 0,
+    });
+    app.viewport.transcript_selection.head = Some(TranscriptSelectionPoint {
+        line_index: app
+            .viewport
+            .transcript_cache
+            .total_lines()
+            .saturating_sub(1),
+        column: 80,
+    });
+
+    let selected = selection_to_text(&app).expect("selection text");
+    assert!(selected.contains("copy user"), "{selected:?}");
+    assert!(selected.contains("copy assistant"), "{selected:?}");
+    assert!(!selected.contains("skip system"), "{selected:?}");
+    assert!(!selected.contains("skip thinking"), "{selected:?}");
+    assert!(!selected.contains('▎'), "{selected:?}");
+    assert!(!selected.contains('●'), "{selected:?}");
 }
 
 #[test]

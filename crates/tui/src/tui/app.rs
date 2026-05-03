@@ -2727,7 +2727,7 @@ impl App {
     }
 
     /// Pop the most-recently queued message back into the composer for editing
-    /// (issue #85 — Alt+↑ affordance). The popped message is parked in
+    /// (issue #85 — ↑ affordance). The popped message is parked in
     /// [`Self::queued_draft`] so the next Enter re-queues it carrying its
     /// original skill instruction. No-op if the composer already has typed
     /// content or a draft is already being edited — surfacing the affordance

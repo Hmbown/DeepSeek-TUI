@@ -3377,6 +3377,29 @@ mod terminal_mode_tests {
     }
 
     #[test]
+    fn mouse_capture_flag_enables_mouse_capture() {
+        let cli = parse_cli(&["deepseek", "--mouse-capture"]);
+        let config = Config::default();
+
+        assert!(should_use_mouse_capture(&cli, &config, true));
+    }
+
+    #[test]
+    fn config_can_enable_mouse_capture() {
+        let cli = parse_cli(&["deepseek"]);
+        let config = Config {
+            tui: Some(crate::config::TuiConfig {
+                alternate_screen: None,
+                mouse_capture: Some(true),
+                status_items: None,
+            }),
+            ..Config::default()
+        };
+
+        assert!(should_use_mouse_capture(&cli, &config, true));
+    }
+
+    #[test]
     fn mouse_capture_is_off_without_alternate_screen() {
         let cli = parse_cli(&["deepseek", "--mouse-capture"]);
         let config = Config::default();

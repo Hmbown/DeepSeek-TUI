@@ -280,7 +280,7 @@ fn render_sidebar_tasks(f: &mut Frame, area: Rect, app: &App) {
 
     if app.task_panel.is_empty() {
         lines.push(Line::from(Span::styled(
-            "No tasks",
+            "No active tasks",
             Style::default().fg(palette::TEXT_MUTED),
         )));
     } else {
@@ -291,11 +291,19 @@ fn render_sidebar_tasks(f: &mut Frame, area: Rect, app: &App) {
             .count();
         lines.push(Line::from(vec![
             Span::styled(
-                format!("{running} running"),
+                if running == app.task_panel.len() {
+                    format!("{running} running")
+                } else {
+                    format!("{} active", app.task_panel.len())
+                },
                 Style::default().fg(palette::DEEPSEEK_SKY).bold(),
             ),
             Span::styled(
-                format!(" / {}", app.task_panel.len()),
+                if running == app.task_panel.len() {
+                    String::new()
+                } else {
+                    format!(" ({running} running)")
+                },
                 Style::default().fg(palette::TEXT_MUTED),
             ),
         ]));

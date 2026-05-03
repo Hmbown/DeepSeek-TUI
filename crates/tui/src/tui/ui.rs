@@ -47,7 +47,9 @@ use crate::session_manager::{
     OfflineQueueState, QueuedSessionMessage, SavedSession, SessionManager,
     create_saved_session_with_mode, update_session,
 };
-use crate::task_manager::{NewTaskRequest, SharedTaskManager, TaskManager, TaskManagerConfig};
+use crate::task_manager::{
+    NewTaskRequest, SharedTaskManager, TaskManager, TaskManagerConfig, TaskStatus,
+};
 use crate::tools::spec::RuntimeToolServices;
 use crate::tools::subagent::SubAgentStatus;
 use crate::tui::command_palette::{
@@ -286,12 +288,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         active_task_id: None,
         active_thread_id: None,
     };
-    app.task_panel = task_manager
-        .list_tasks(Some(10))
-        .await
-        .into_iter()
-        .map(task_summary_to_panel_entry)
-        .collect();
+    refresh_active_task_panel(&mut app, &task_manager).await;
 
     let engine_config = build_engine_config(&app, config);
 
@@ -399,6 +396,33 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
     }
 }
 
+async fn refresh_active_task_panel(app: &mut App, task_manager: &SharedTaskManager) {
+    let tasks = task_manager.list_tasks(None).await;
+    let mut entries: Vec<TaskPanelEntry> = tasks
+        .into_iter()
+        .filter(|task| matches!(task.status, TaskStatus::Queued | TaskStatus::Running))
+        .map(task_summary_to_panel_entry)
+        .collect();
+
+    if let Some(shell_mgr) = app.runtime_services.shell_manager.as_ref()
+        && let Ok(mut mgr) = shell_mgr.lock()
+    {
+        for job in mgr.list_jobs() {
+            if !matches!(job.status, crate::tools::shell::ShellStatus::Running) {
+                continue;
+            }
+            entries.push(TaskPanelEntry {
+                id: job.id,
+                status: "running".to_string(),
+                prompt_summary: format!("shell: {}", job.command),
+                duration_ms: Some(job.elapsed_ms),
+            });
+        }
+    }
+
+    app.task_panel = entries;
+}
+
 #[allow(clippy::too_many_lines)]
 async fn run_event_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
@@ -433,32 +457,7 @@ async fn run_event_loop(
         }
 
         if last_task_refresh.elapsed() >= Duration::from_millis(2500) {
-            let tasks = task_manager.list_tasks(Some(10)).await;
-            let mut entries: Vec<TaskPanelEntry> =
-                tasks.into_iter().map(task_summary_to_panel_entry).collect();
-
-            // #373: merge live shell jobs into the Tasks panel.
-            if let Some(shell_mgr) = app.runtime_services.shell_manager.as_ref()
-                && let Ok(mut mgr) = shell_mgr.lock()
-            {
-                for job in mgr.list_jobs() {
-                    let status = match job.status {
-                        crate::tools::shell::ShellStatus::Running => "running",
-                        crate::tools::shell::ShellStatus::Completed => "completed",
-                        crate::tools::shell::ShellStatus::Failed => "failed",
-                        crate::tools::shell::ShellStatus::Killed => "canceled",
-                        crate::tools::shell::ShellStatus::TimedOut => "failed",
-                    };
-                    entries.push(TaskPanelEntry {
-                        id: job.id,
-                        status: status.to_string(),
-                        prompt_summary: format!("shell: {}", job.command),
-                        duration_ms: Some(job.elapsed_ms),
-                    });
-                }
-            }
-
-            app.task_panel = entries;
+            refresh_active_task_panel(app, &task_manager).await;
             last_task_refresh = Instant::now();
             app.needs_redraw = true;
         }
@@ -656,29 +655,7 @@ async fn run_event_loop(
                                 | "task_shell_start"
                                 | "exec_shell"
                         ) {
-                            let tasks = task_manager.list_tasks(Some(10)).await;
-                            let mut entries: Vec<TaskPanelEntry> =
-                                tasks.into_iter().map(task_summary_to_panel_entry).collect();
-                            if let Some(shell_mgr) = app.runtime_services.shell_manager.as_ref()
-                                && let Ok(mut mgr) = shell_mgr.lock()
-                            {
-                                for job in mgr.list_jobs() {
-                                    let status = match job.status {
-                                        crate::tools::shell::ShellStatus::Running => "running",
-                                        crate::tools::shell::ShellStatus::Completed => "completed",
-                                        crate::tools::shell::ShellStatus::Failed => "failed",
-                                        crate::tools::shell::ShellStatus::Killed => "canceled",
-                                        crate::tools::shell::ShellStatus::TimedOut => "failed",
-                                    };
-                                    entries.push(TaskPanelEntry {
-                                        id: job.id,
-                                        status: status.to_string(),
-                                        prompt_summary: format!("shell: {}", job.command),
-                                        duration_ms: Some(job.elapsed_ms),
-                                    });
-                                }
-                            }
-                            app.task_panel = entries;
+                            refresh_active_task_panel(app, &task_manager).await;
                             last_task_refresh = Instant::now();
                         }
                         if matches!(
@@ -1953,18 +1930,8 @@ async fn run_event_loop(
                         }
                     }
                 },
-                // #85: Alt+↑ pops the most-recent queued message back into the
-                // composer for editing when the preview's affordance is visible
-                // (queue non-empty, composer idle). Splits the binding into two
-                // arms so the legacy scroll fallback is unambiguous on the same
-                // chord.
-                KeyCode::Up
-                    if key.modifiers.contains(KeyModifiers::ALT)
-                        && app.input.is_empty()
-                        && app.queued_draft.is_none()
-                        && !app.queued_messages.is_empty() =>
-                {
-                    let _ = app.pop_last_queued_into_draft();
+                KeyCode::Up if key.modifiers.contains(KeyModifiers::SUPER) => {
+                    app.scroll_up(app.viewport.last_transcript_visible.max(3));
                 }
                 KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => {
                     app.scroll_up(3);
@@ -1998,6 +1965,23 @@ async fn run_event_loop(
                 {
                     let _ = app.select_previous_composer_attachment();
                     continue;
+                }
+                // #85: ↑ edits the most-recent queued message when the composer
+                // is idle and the pending-input preview is showing queued work.
+                KeyCode::Up
+                    if key.modifiers.is_empty()
+                        && app.input.is_empty()
+                        && app.cursor_position == 0
+                        && app.queued_draft.is_none()
+                        && !app.queued_messages.is_empty()
+                        && !mention_menu_open
+                        && !slash_menu_open
+                        && app.selected_composer_attachment_index().is_none() =>
+                {
+                    let _ = app.pop_last_queued_into_draft();
+                }
+                KeyCode::Down if key.modifiers.contains(KeyModifiers::SUPER) => {
+                    app.scroll_down(app.viewport.last_transcript_visible.max(3));
                 }
                 KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => {
                     app.scroll_down(3);
@@ -3574,20 +3558,11 @@ async fn apply_command_result(
                         });
                     }
                 }
-                app.task_panel = task_manager
-                    .list_tasks(Some(10))
-                    .await
-                    .into_iter()
-                    .map(task_summary_to_panel_entry)
-                    .collect();
+                refresh_active_task_panel(app, task_manager).await;
             }
             AppAction::TaskList => {
                 let tasks = task_manager.list_tasks(Some(30)).await;
-                app.task_panel = tasks
-                    .iter()
-                    .cloned()
-                    .map(task_summary_to_panel_entry)
-                    .collect();
+                refresh_active_task_panel(app, task_manager).await;
                 app.add_message(HistoryCell::System {
                     content: format_task_list(&tasks),
                 });
@@ -3613,12 +3588,7 @@ async fn apply_command_result(
                         });
                     }
                 }
-                app.task_panel = task_manager
-                    .list_tasks(Some(10))
-                    .await
-                    .into_iter()
-                    .map(task_summary_to_panel_entry)
-                    .collect();
+                refresh_active_task_panel(app, task_manager).await;
             }
             AppAction::ShellJob(action) => {
                 handle_shell_job_action(app, action);
@@ -6450,10 +6420,7 @@ fn selection_point_from_position(
 }
 
 fn selection_has_content(app: &App) -> bool {
-    match app.viewport.transcript_selection.ordered_endpoints() {
-        Some((start, end)) => start != end,
-        None => false,
-    }
+    selection_to_text(app).is_some_and(|text| !text.is_empty())
 }
 
 fn copy_active_selection(app: &mut App) {
@@ -6481,25 +6448,52 @@ fn selection_to_text(app: &App) -> Option<String> {
     let end_index = end.line_index.min(lines.len().saturating_sub(1));
     let start_index = start.line_index.min(end_index);
 
-    let mut out = String::new();
+    let mut selected_lines = Vec::new();
     #[allow(clippy::needless_range_loop)]
     for line_index in start_index..=end_index {
-        let line_text = line_to_plain(&lines[line_index]);
-        let slice = if start_index == end_index {
-            slice_text(&line_text, start.column, end.column)
-        } else if line_index == start_index {
-            slice_text(&line_text, start.column, text_display_width(&line_text))
-        } else if line_index == end_index {
-            slice_text(&line_text, 0, end.column)
-        } else {
-            line_text
+        let Some(body_start) = llm_io_selection_body_start(app, line_index) else {
+            continue;
         };
-        out.push_str(&slice);
-        if line_index != end_index {
-            out.push('\n');
+        let line_text = line_to_plain(&lines[line_index]);
+        let line_width = text_display_width(&line_text);
+        let (col_start, col_end) = if start_index == end_index {
+            (start.column, end.column)
+        } else if line_index == start_index {
+            (start.column, line_width)
+        } else if line_index == end_index {
+            (0, end.column)
+        } else {
+            (0, line_width)
+        };
+
+        if col_end <= body_start {
+            continue;
         }
+        let slice = slice_text(&line_text, col_start.max(body_start), col_end);
+        selected_lines.push(slice);
     }
-    Some(out)
+    Some(selected_lines.join("\n"))
+}
+
+fn llm_io_selection_body_start(app: &App, line_index: usize) -> Option<usize> {
+    const MESSAGE_BODY_START_COLUMN: usize = 2;
+
+    let (filtered_cell_index, _) = app
+        .viewport
+        .transcript_cache
+        .line_meta()
+        .get(line_index)?
+        .cell_line()?;
+    let cell_index = app
+        .collapsed_cell_map
+        .get(filtered_cell_index)
+        .copied()
+        .unwrap_or(filtered_cell_index);
+
+    match app.cell_at_virtual_index(cell_index)? {
+        HistoryCell::User { .. } | HistoryCell::Assistant { .. } => Some(MESSAGE_BODY_START_COLUMN),
+        _ => None,
+    }
 }
 
 fn open_pager_for_selection(app: &mut App) -> bool {
