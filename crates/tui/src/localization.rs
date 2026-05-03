@@ -230,6 +230,7 @@ pub enum MessageId {
     CmdExportDescription,
     CmdHelpDescription,
     CmdHomeDescription,
+    CmdHooksDescription,
     CmdGoalDescription,
     CmdInitDescription,
     CmdJobsDescription,
@@ -253,6 +254,7 @@ pub enum MessageId {
     CmdSettingsDescription,
     CmdSkillDescription,
     CmdSkillsDescription,
+    CmdStashDescription,
     CmdStatuslineDescription,
     CmdSubagentsDescription,
     CmdSwarmDescription,
@@ -299,6 +301,7 @@ pub enum MessageId {
     KbJumpLineStartEnd,
     KbDeleteChar,
     KbClearDraft,
+    KbStashDraft,
     KbSearchHistory,
     KbInsertNewline,
     KbSendDraft,
@@ -414,6 +417,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CmdExportDescription,
     MessageId::CmdHelpDescription,
     MessageId::CmdHomeDescription,
+    MessageId::CmdHooksDescription,
     MessageId::CmdInitDescription,
     MessageId::CmdJobsDescription,
     MessageId::CmdLinksDescription,
@@ -436,6 +440,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CmdSettingsDescription,
     MessageId::CmdSkillDescription,
     MessageId::CmdSkillsDescription,
+    MessageId::CmdStashDescription,
     MessageId::CmdStatuslineDescription,
     MessageId::CmdSubagentsDescription,
     MessageId::CmdSwarmDescription,
@@ -482,6 +487,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::KbJumpLineStartEnd,
     MessageId::KbDeleteChar,
     MessageId::KbClearDraft,
+    MessageId::KbStashDraft,
     MessageId::KbSearchHistory,
     MessageId::KbInsertNewline,
     MessageId::KbSendDraft,
@@ -723,6 +729,7 @@ fn english(id: MessageId) -> &'static str {
         MessageId::CmdExportDescription => "Export conversation to markdown",
         MessageId::CmdHelpDescription => "Show help information",
         MessageId::CmdHomeDescription => "Show home dashboard with stats and quick actions",
+        MessageId::CmdHooksDescription => "List configured lifecycle hooks (read-only)",
         MessageId::CmdGoalDescription => "Set a session goal with optional token budget",
         MessageId::CmdInitDescription => "Generate AGENTS.md for project",
         MessageId::CmdLspDescription => "Toggle LSP diagnostics on or off",
@@ -761,6 +768,9 @@ fn english(id: MessageId) -> &'static str {
         }
         MessageId::CmdSkillsDescription => {
             "List local skills (or --remote to browse the curated registry)"
+        }
+        MessageId::CmdStashDescription => {
+            "Park or restore a composer draft (Ctrl+S to push, /stash list/pop)"
         }
         MessageId::CmdStatuslineDescription => "Configure which items appear in the footer",
         MessageId::CmdSubagentsDescription => "List sub-agent status",
@@ -848,6 +858,7 @@ fn english(id: MessageId) -> &'static str {
             "Delete character before / after the cursor, or remove selected attachment"
         }
         MessageId::KbClearDraft => "Clear the current draft",
+        MessageId::KbStashDraft => "Stash the current draft (`/stash pop` to restore)",
         MessageId::KbSearchHistory => "Search prompt history and recover local drafts",
         MessageId::KbInsertNewline => "Insert a newline in the composer",
         MessageId::KbSendDraft => "Send the current draft",
@@ -997,6 +1008,9 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::CmdExportDescription => "会話を Markdown にエクスポート",
         MessageId::CmdHelpDescription => "ヘルプを表示",
         MessageId::CmdHomeDescription => "統計とクイックアクション付きのホームダッシュボードを表示",
+        MessageId::CmdHooksDescription => {
+            "設定済みのライフサイクルフックを一覧表示（読み取り専用）"
+        }
         MessageId::CmdGoalDescription => "トークンバジェット付きのセッション目標を設定",
         MessageId::CmdInitDescription => "プロジェクト用に AGENTS.md を生成",
         MessageId::CmdLspDescription => "LSP 診断のオン・オフを切り替え",
@@ -1033,6 +1047,9 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         }
         MessageId::CmdSkillsDescription => {
             "ローカルスキルを一覧表示（--remote で精選レジストリを参照）"
+        }
+        MessageId::CmdStashDescription => {
+            "コンポーザーの下書きを退避／復元（Ctrl+S で退避、/stash list|pop）"
         }
         MessageId::CmdStatuslineDescription => "フッターに表示する項目を設定",
         MessageId::CmdSubagentsDescription => "サブエージェントの状態を一覧表示",
@@ -1117,6 +1134,7 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::KbJumpLineStartEnd => "行の先頭/末尾へジャンプ",
         MessageId::KbDeleteChar => "カーソル前/後の文字を削除、または選択中の添付を削除",
         MessageId::KbClearDraft => "現在の下書きをクリア",
+        MessageId::KbStashDraft => "現在の下書きをスタッシュ（`/stash pop`で復元）",
         MessageId::KbSearchHistory => "プロンプト履歴を検索してローカル下書きを復元",
         MessageId::KbInsertNewline => "コンポーザーに改行を挿入",
         MessageId::KbSendDraft => "現在の下書きを送信",
@@ -1253,6 +1271,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::CmdExportDescription => "将对话导出为 Markdown",
         MessageId::CmdHelpDescription => "显示帮助信息",
         MessageId::CmdHomeDescription => "显示主页面板，含统计与快捷操作",
+        MessageId::CmdHooksDescription => "列出已配置的生命周期钩子（只读）",
         MessageId::CmdGoalDescription => "设置带有可选令牌预算的会话目标",
         MessageId::CmdInitDescription => "为项目生成 AGENTS.md",
         MessageId::CmdLspDescription => "切换 LSP 诊断的开启或关闭",
@@ -1282,6 +1301,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::CmdSettingsDescription => "显示持久化设置",
         MessageId::CmdSkillDescription => "激活技能，或安装/更新/卸载/信任社区技能",
         MessageId::CmdSkillsDescription => "列出本地技能（或使用 --remote 浏览精选注册表）",
+        MessageId::CmdStashDescription => "暂存或恢复输入草稿（Ctrl+S 暂存，/stash list|pop）",
         MessageId::CmdStatuslineDescription => "配置底栏要显示哪些条目",
         MessageId::CmdSubagentsDescription => "列出子代理状态",
         MessageId::CmdSwarmDescription => {
@@ -1359,6 +1379,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::KbJumpLineStartEnd => "跳转到行首/行尾",
         MessageId::KbDeleteChar => "删除光标前/后的字符，或移除已选附件",
         MessageId::KbClearDraft => "清空当前草稿",
+        MessageId::KbStashDraft => "暂存当前草稿（用 `/stash pop` 恢复）",
         MessageId::KbSearchHistory => "搜索提示历史并恢复本地草稿",
         MessageId::KbInsertNewline => "在输入框中插入换行",
         MessageId::KbSendDraft => "发送当前草稿",
@@ -1495,6 +1516,9 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         MessageId::CmdExportDescription => "Exportar a conversa para markdown",
         MessageId::CmdHelpDescription => "Exibir informações de ajuda",
         MessageId::CmdHomeDescription => "Exibir o painel inicial com estatísticas e ações rápidas",
+        MessageId::CmdHooksDescription => {
+            "Listar hooks de ciclo de vida configurados (somente leitura)"
+        }
         MessageId::CmdGoalDescription => {
             "Definir uma meta de sessão com orçamento de tokens opcional"
         }
@@ -1539,6 +1563,9 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         }
         MessageId::CmdSkillsDescription => {
             "Listar skills locais (ou --remote para navegar pelo registro curado)"
+        }
+        MessageId::CmdStashDescription => {
+            "Estacionar ou restaurar rascunho do compositor (Ctrl+S estaciona, /stash list|pop)"
         }
         MessageId::CmdStatuslineDescription => "Configurar quais itens aparecem no rodapé",
         MessageId::CmdSubagentsDescription => "Listar o status dos sub-agentes",
@@ -1627,6 +1654,7 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
             "Excluir caractere antes / depois do cursor, ou remover anexo selecionado"
         }
         MessageId::KbClearDraft => "Limpar rascunho atual",
+        MessageId::KbStashDraft => "Estacionar rascunho atual (`/stash pop` restaura)",
         MessageId::KbSearchHistory => "Buscar histórico de prompts e recuperar rascunhos locais",
         MessageId::KbInsertNewline => "Inserir nova linha no compositor",
         MessageId::KbSendDraft => "Enviar rascunho atual",

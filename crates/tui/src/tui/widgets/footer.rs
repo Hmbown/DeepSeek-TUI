@@ -52,6 +52,20 @@ pub struct FooterProps {
     pub reasoning_replay: Vec<Span<'static>>,
     /// Cache-hit-rate chip spans (empty when no usage reported).
     pub cache: Vec<Span<'static>>,
+    /// MCP server health chip spans (empty when no MCP servers configured).
+    /// Populated lazily — see [`footer_mcp_chip`]. (#502)
+    pub mcp: Vec<Span<'static>>,
+    /// Cumulative session-elapsed chip spans ("worked 3h 12m"). Empty
+    /// for the first minute of a session so a fresh launch doesn't
+    /// flash a `worked 5s` indicator. Populated by [`footer_worked_chip`]
+    /// from `App::session_started_at`. (#448)
+    pub worked: Vec<Span<'static>>,
+    /// Snapshot of the global retry-status surface (#499). Sampled once
+    /// at props-build time and rendered as a foreground banner on the
+    /// left of the footer when active. Captured here (rather than read
+    /// from `retry_status` at render time) so tests can pin a
+    /// deterministic state without racing the parallel runner.
+    pub retry: crate::retry_status::RetryState,
     /// Session-cost chip spans (empty when below the display threshold).
     /// Rendered in the left cluster (after the model name) — cost is steady
     /// info, not a transient signal, so it lives with mode and model.
@@ -169,6 +183,51 @@ pub fn footer_agents_chip(running: usize, locale: Locale) -> Vec<Span<'static>> 
     )]
 }
 
+/// Build the cumulative-elapsed chip ("worked 3h 12m") for the
+/// footer's right cluster (#448). Hidden during the first minute of
+/// a session so a fresh launch doesn't render a noisy `worked 5s`
+/// indicator that immediately starts ticking. Above the threshold,
+/// reuses [`crate::tui::notifications::humanize_duration`] for
+/// consistent w/d/h/m formatting.
+#[must_use]
+pub fn footer_worked_chip(elapsed: std::time::Duration) -> Vec<Span<'static>> {
+    if elapsed < std::time::Duration::from_secs(60) {
+        return Vec::new();
+    }
+    let label = format!(
+        "worked {}",
+        crate::tui::notifications::humanize_duration(elapsed)
+    );
+    vec![Span::styled(
+        label,
+        Style::default().fg(palette::TEXT_MUTED),
+    )]
+}
+
+/// Build the "MCP M/N" health chip (#502) from the user's stored
+/// snapshot. `connected` is the number of servers currently reachable;
+/// `configured` is the number declared in the user's MCP config. When
+/// `configured` is zero the chip is hidden entirely.
+///
+/// Colour-codes the count by health:
+/// - all reachable → success
+/// - some reachable → warning
+/// - none reachable but at least one configured → error
+/// - configured but no live snapshot yet → muted (count only)
+#[must_use]
+pub fn footer_mcp_chip(connected: Option<usize>, configured: usize) -> Vec<Span<'static>> {
+    if configured == 0 {
+        return Vec::new();
+    }
+    let (label, color) = match connected {
+        None => (format!("MCP {configured}"), palette::TEXT_MUTED),
+        Some(c) if c == configured => (format!("MCP {c}/{configured}"), palette::STATUS_SUCCESS),
+        Some(0) => (format!("MCP 0/{configured}"), palette::STATUS_ERROR),
+        Some(c) => (format!("MCP {c}/{configured}"), palette::STATUS_WARNING),
+    };
+    vec![Span::styled(label, Style::default().fg(color))]
+}
+
 /// A status toast routed to the footer's left segment for a short time.
 #[derive(Debug, Clone)]
 pub struct FooterToast {
@@ -199,6 +258,18 @@ impl FooterProps {
         cost: Vec<Span<'static>>,
     ) -> Self {
         let (mode_label, mode_color) = mode_style(app);
+        // MCP chip (#502) — passive, derived from the user's existing
+        // snapshot. `connected` is `None` until the user runs `/mcp`,
+        // which is the same trigger the issue spec accepts for now.
+        let mcp_configured = app.mcp_configured_count;
+        let mcp_connected = app
+            .mcp_snapshot
+            .as_ref()
+            .map(|s| s.servers.iter().filter(|server| server.connected).count());
+        let mcp = footer_mcp_chip(mcp_connected, mcp_configured);
+        // #448: cumulative-elapsed chip. Sampled at props-build time
+        // (matches the `retry` capture pattern) so render is pure.
+        let worked = footer_worked_chip(app.session_started_at.elapsed());
         Self {
             model: app.model.clone(),
             mode_label,
@@ -212,9 +283,12 @@ impl FooterProps {
             agents,
             reasoning_replay,
             cache,
+            mcp,
+            worked,
             cost,
             toast,
             working_strip_frame: None,
+            retry: crate::retry_status::snapshot(),
         }
     }
 }
@@ -254,6 +328,12 @@ impl FooterWidget {
             &self.props.agents,
             &self.props.reasoning_replay,
             &self.props.cache,
+            &self.props.mcp,
+            // `worked` is the lowest-priority chip — drops first under
+            // narrow widths (the priority loop below removes from the
+            // tail). `cost` is steady info and stays in the left
+            // cluster where the eye finds it without scanning.
+            &self.props.worked,
         ]
         .into_iter()
         .filter(|spans| !spans.is_empty())
@@ -438,6 +518,30 @@ fn spans_text(spans: &[Span<'_>]) -> String {
     spans.iter().map(|s| s.content.as_ref()).collect::<String>()
 }
 
+/// Render the retry banner (#499) when the props' captured snapshot
+/// reports an active retry or a final failure. Returns `None` when idle
+/// so callers fall back to the regular status line / toast.
+fn retry_banner_spans(max_width: usize, props: &FooterProps) -> Option<Vec<Span<'static>>> {
+    let (label, color) = match &props.retry {
+        crate::retry_status::RetryState::Active(banner) => {
+            let secs = props.retry.seconds_remaining().unwrap_or(0);
+            // Round to 1s — we redraw each frame anyway so the
+            // countdown ticks visually without us having to schedule
+            // anything extra.
+            (
+                format!("⟳ retry {} in {secs}s — {}", banner.attempt, banner.reason),
+                crate::palette::STATUS_WARNING,
+            )
+        }
+        crate::retry_status::RetryState::Failed { reason, .. } => {
+            (format!("× failed: {reason}"), crate::palette::STATUS_ERROR)
+        }
+        crate::retry_status::RetryState::Idle => return None,
+    };
+    let truncated = truncate_to_width(&label, max_width);
+    Some(vec![Span::styled(truncated, Style::default().fg(color))])
+}
+
 impl Renderable for FooterWidget {
     fn render(&self, area: Rect, buf: &mut Buffer) {
         if area.height == 0 || area.width == 0 {
@@ -456,7 +560,13 @@ impl Renderable for FooterWidget {
             .saturating_sub(min_gap)
             .max(1);
 
-        let left_spans = if let Some(toast) = self.props.toast.as_ref() {
+        let left_spans = if let Some(banner) = retry_banner_spans(max_left_width, &self.props) {
+            // Retry banner takes precedence over toast and the regular
+            // status line so the user sees it loud and clear (#499).
+            // The banner clears automatically on success or on the next
+            // `TurnStarted` (engine emits the clear).
+            banner
+        } else if let Some(toast) = self.props.toast.as_ref() {
             Self::toast_spans(toast, max_left_width)
         } else {
             self.status_line_spans(max_left_width)
@@ -551,6 +661,7 @@ mod tests {
             skip_onboarding: true,
             yolo: false,
             resume_session_id: None,
+            initial_input: None,
         };
         let mut app = App::new(options, &Config::default());
         // App::new may pick up `default_model` from a local user Settings
@@ -561,7 +672,7 @@ mod tests {
     }
 
     fn idle_props_for(app: &App) -> FooterProps {
-        FooterProps::from_app(
+        let mut props = FooterProps::from_app(
             app,
             None,
             "ready",
@@ -571,7 +682,12 @@ mod tests {
             Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),
-        )
+        );
+        // `from_app` reads the process-wide retry-status surface; pin
+        // `Idle` so footer tests don't pick up state set by retry-banner
+        // tests running in parallel.
+        props.retry = crate::retry_status::RetryState::Idle;
+        props
     }
 
     #[test]
@@ -592,7 +708,42 @@ mod tests {
         assert!(props.cache.is_empty());
         assert!(props.cost.is_empty());
         assert!(props.reasoning_replay.is_empty());
+        // #448: fresh apps don't get a `worked` chip until the
+        // session has been alive for >= 60s. A test app built right
+        // before this assertion is well under that threshold.
+        assert!(props.worked.is_empty());
         assert!(props.toast.is_none());
+    }
+
+    #[test]
+    fn footer_worked_chip_hidden_below_one_minute() {
+        use std::time::Duration;
+        for secs in [0, 1, 30, 59] {
+            let chip = super::footer_worked_chip(Duration::from_secs(secs));
+            assert!(
+                chip.is_empty(),
+                "worked chip must be hidden at {secs}s; got {chip:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn footer_worked_chip_shows_humanized_label_above_threshold() {
+        use std::time::Duration;
+        // 1 minute on the dot — boundary, must render.
+        let chip = super::footer_worked_chip(Duration::from_secs(60));
+        let text: String = chip.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "worked 1m");
+
+        // 3h 12m — the issue's golden example.
+        let chip = super::footer_worked_chip(Duration::from_secs(11_550));
+        let text: String = chip.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "worked 3h 12m");
+
+        // Multi-day session — exercises the d/h band.
+        let chip = super::footer_worked_chip(Duration::from_secs(2 * 86_400 + 5 * 3600));
+        let text: String = chip.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "worked 2d 5h");
     }
 
     #[test]
@@ -697,6 +848,93 @@ mod tests {
                 "color mismatch for {mode:?}",
             );
         }
+    }
+
+    #[test]
+    fn footer_mcp_chip_hidden_when_no_servers() {
+        assert!(super::footer_mcp_chip(None, 0).is_empty());
+        assert!(super::footer_mcp_chip(Some(0), 0).is_empty());
+    }
+
+    #[test]
+    fn footer_mcp_chip_shows_count_only_until_snapshot_arrives() {
+        let spans = super::footer_mcp_chip(None, 3);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "MCP 3");
+    }
+
+    #[test]
+    fn footer_mcp_chip_uses_success_color_when_all_connected() {
+        let spans = super::footer_mcp_chip(Some(3), 3);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "MCP 3/3");
+        assert_eq!(spans[0].style.fg, Some(palette::STATUS_SUCCESS));
+    }
+
+    #[test]
+    fn footer_mcp_chip_uses_warning_color_when_partial() {
+        let spans = super::footer_mcp_chip(Some(2), 3);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "MCP 2/3");
+        assert_eq!(spans[0].style.fg, Some(palette::STATUS_WARNING));
+    }
+
+    #[test]
+    fn footer_mcp_chip_uses_error_color_when_zero_connected() {
+        let spans = super::footer_mcp_chip(Some(0), 3);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "MCP 0/3");
+        assert_eq!(spans[0].style.fg, Some(palette::STATUS_ERROR));
+    }
+
+    #[test]
+    fn render_shows_retry_banner_when_active() {
+        // Since `FooterProps::retry` is now a captured snapshot rather
+        // than a global read at render time, we can pin the state on
+        // the props directly without touching the global surface.
+        let app = make_app();
+        let mut props = idle_props_for(&app);
+        props.retry = crate::retry_status::RetryState::Active(crate::retry_status::RetryBanner {
+            attempt: 2,
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(7),
+            reason: "rate limited".to_string(),
+        });
+        let widget = FooterWidget::new(props);
+        let area = ratatui::layout::Rect::new(0, 0, 80, 1);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        widget.render(area, &mut buf);
+        let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
+        assert!(
+            rendered.contains("retry 2"),
+            "expected retry banner in render: {rendered:?}",
+        );
+        assert!(
+            rendered.contains("rate limited"),
+            "expected reason in render: {rendered:?}",
+        );
+    }
+
+    #[test]
+    fn render_shows_failure_row_when_failed() {
+        let app = make_app();
+        let mut props = idle_props_for(&app);
+        props.retry = crate::retry_status::RetryState::Failed {
+            reason: "upstream 500".to_string(),
+            since: std::time::Instant::now(),
+        };
+        let widget = FooterWidget::new(props);
+        let area = ratatui::layout::Rect::new(0, 0, 80, 1);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        widget.render(area, &mut buf);
+        let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
+        assert!(
+            rendered.contains("failed"),
+            "expected failure row: {rendered:?}",
+        );
+        assert!(
+            rendered.contains("upstream 500"),
+            "expected reason: {rendered:?}",
+        );
     }
 
     #[test]

@@ -102,28 +102,37 @@ impl Settings {
     /// Load settings from disk, or return defaults if not found
     pub fn load() -> Result<Self> {
         let path = Self::path()?;
-        if !path.exists() {
-            return Ok(Self::default());
-        }
-
-        let content = std::fs::read_to_string(&path)
-            .with_context(|| format!("Failed to read settings from {}", path.display()))?;
-        let mut settings: Settings = toml::from_str(&content)
-            .with_context(|| format!("Failed to parse settings from {}", path.display()))?;
-        settings.default_mode = normalize_mode(&settings.default_mode).to_string();
-        settings.composer_density =
-            normalize_composer_density(&settings.composer_density).to_string();
-        settings.transcript_spacing =
-            normalize_transcript_spacing(&settings.transcript_spacing).to_string();
-        settings.sidebar_focus = normalize_sidebar_focus(&settings.sidebar_focus).to_string();
-        settings.locale = normalize_configured_locale(&settings.locale)
-            .unwrap_or("en")
-            .to_string();
-        settings.default_model = settings
-            .default_model
-            .as_deref()
-            .and_then(normalize_model_name);
+        let mut settings = if !path.exists() {
+            Self::default()
+        } else {
+            let content = std::fs::read_to_string(&path)
+                .with_context(|| format!("Failed to read settings from {}", path.display()))?;
+            let mut s: Settings = toml::from_str(&content)
+                .with_context(|| format!("Failed to parse settings from {}", path.display()))?;
+            s.default_mode = normalize_mode(&s.default_mode).to_string();
+            s.composer_density = normalize_composer_density(&s.composer_density).to_string();
+            s.transcript_spacing = normalize_transcript_spacing(&s.transcript_spacing).to_string();
+            s.sidebar_focus = normalize_sidebar_focus(&s.sidebar_focus).to_string();
+            s.locale = normalize_configured_locale(&s.locale)
+                .unwrap_or("en")
+                .to_string();
+            s.default_model = s.default_model.as_deref().and_then(normalize_model_name);
+            s
+        };
+        settings.apply_env_overrides();
         Ok(settings)
+    }
+
+    /// Apply environment-driven overlays after disk load. Used for
+    /// platform a11y signals that should ignore the user's saved
+    /// preference (#450). The env values are consulted at startup;
+    /// changing them mid-session has no effect because settings are
+    /// only re-read on `Settings::load()`.
+    pub fn apply_env_overrides(&mut self) {
+        if env_truthy("NO_ANIMATIONS") {
+            self.low_motion = true;
+            self.fancy_animations = false;
+        }
     }
 
     /// Save settings to disk
@@ -418,6 +427,20 @@ fn normalize_sidebar_focus(value: &str) -> &str {
     }
 }
 
+/// Resolve an environment variable as a boolean. Recognises the
+/// common truthy spellings (`1`, `true`, `yes`, `on`) case-
+/// insensitively. Used by [`Settings::apply_env_overrides`] for
+/// platform a11y signals like `NO_ANIMATIONS`.
+fn env_truthy(name: &str) -> bool {
+    match std::env::var(name) {
+        Ok(v) => matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -489,5 +512,86 @@ mod tests {
             zh.contains("配置文件"),
             "chinese config label missing:\n{zh}"
         );
+    }
+
+    /// Tests that mutate process-global `NO_ANIMATIONS` serialise
+    /// through this guard so the cargo parallel runner doesn't
+    /// observe interleaved overrides.
+    fn no_animations_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        static GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        GUARD.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[test]
+    fn no_animations_env_forces_low_motion_on() {
+        let _g = no_animations_test_guard();
+        // SAFETY: tests in this group serialise through the guard.
+        unsafe {
+            std::env::set_var("NO_ANIMATIONS", "1");
+        }
+        let mut settings = Settings::default();
+        assert!(!settings.low_motion, "default is animated");
+        assert!(!settings.fancy_animations, "default is animated");
+        settings.apply_env_overrides();
+        assert!(settings.low_motion, "NO_ANIMATIONS=1 forces low_motion");
+        assert!(
+            !settings.fancy_animations,
+            "NO_ANIMATIONS=1 keeps fancy off"
+        );
+        // SAFETY: cleanup under the guard.
+        unsafe {
+            std::env::remove_var("NO_ANIMATIONS");
+        }
+    }
+
+    #[test]
+    fn no_animations_env_overrides_user_opt_in() {
+        let _g = no_animations_test_guard();
+        // SAFETY: serialised by the guard.
+        unsafe {
+            std::env::set_var("NO_ANIMATIONS", "true");
+        }
+        // User had explicitly opted into fancy animations on disk.
+        let mut settings = Settings {
+            fancy_animations: true,
+            ..Settings::default()
+        };
+        settings.apply_env_overrides();
+        assert!(
+            !settings.fancy_animations,
+            "platform NO_ANIMATIONS overrides user-opt-in fancy_animations"
+        );
+        assert!(settings.low_motion);
+        // SAFETY: cleanup under the guard.
+        unsafe {
+            std::env::remove_var("NO_ANIMATIONS");
+        }
+    }
+
+    #[test]
+    fn no_animations_env_recognises_truthy_spellings_only() {
+        let _g = no_animations_test_guard();
+        for truthy in ["1", "true", "True", "YES", "on"] {
+            // SAFETY: serialised by the guard.
+            unsafe {
+                std::env::set_var("NO_ANIMATIONS", truthy);
+            }
+            let mut s = Settings::default();
+            s.apply_env_overrides();
+            assert!(s.low_motion, "{truthy:?} should be truthy");
+        }
+        for falsy in ["0", "false", "no", "off", ""] {
+            // SAFETY: serialised by the guard.
+            unsafe {
+                std::env::set_var("NO_ANIMATIONS", falsy);
+            }
+            let mut s = Settings::default();
+            s.apply_env_overrides();
+            assert!(!s.low_motion, "{falsy:?} should be falsy");
+        }
+        // SAFETY: cleanup under the guard.
+        unsafe {
+            std::env::remove_var("NO_ANIMATIONS");
+        }
     }
 }

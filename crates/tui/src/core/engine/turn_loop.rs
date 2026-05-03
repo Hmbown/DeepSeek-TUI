@@ -1078,7 +1078,7 @@ impl Engine {
                     let started_at = Instant::now();
 
                     tool_tasks.push(async move {
-                        let result = Engine::execute_tool_with_lock(
+                        let mut result = Engine::execute_tool_with_lock(
                             lock,
                             plan.supports_parallel,
                             plan.interactive,
@@ -1090,6 +1090,22 @@ impl Engine {
                             None,
                         )
                         .await;
+
+                        // #500: spill outsized output before fanout (mirror
+                        // of the sequential path below). Emit a
+                        // `tool.spillover` audit event so operators can
+                        // correlate large-output episodes with disk usage.
+                        if let Ok(tool_result) = result.as_mut()
+                            && let Some(path) =
+                                crate::tools::truncate::apply_spillover(tool_result, &plan.id)
+                        {
+                            emit_tool_audit(json!({
+                                "event": "tool.spillover",
+                                "tool_id": plan.id.clone(),
+                                "tool_name": plan.name.clone(),
+                                "path": path.display().to_string(),
+                            }));
+                        }
 
                         let _ = tx_event
                             .send(Event::ToolCallComplete {
@@ -1347,7 +1363,7 @@ impl Engine {
                     }
 
                     let started_at = Instant::now();
-                    let result = if let Some(result_override) = result_override {
+                    let mut result = if let Some(result_override) = result_override {
                         result_override
                     } else {
                         Self::execute_tool_with_lock(
@@ -1363,6 +1379,25 @@ impl Engine {
                         )
                         .await
                     };
+
+                    // #500: spill outsized tool outputs to disk before the
+                    // result fans out to the model context and the UI cell.
+                    // Both consumers see the same truncated content + the
+                    // `spillover_path` metadata pointing at the full file.
+                    // Emit a discrete `tool.spillover` audit event so
+                    // operators can correlate large-output episodes with
+                    // disk-usage growth in `~/.deepseek/tool_outputs/`.
+                    if let Ok(tool_result) = result.as_mut()
+                        && let Some(path) =
+                            crate::tools::truncate::apply_spillover(tool_result, &tool_id)
+                    {
+                        emit_tool_audit(json!({
+                            "event": "tool.spillover",
+                            "tool_id": tool_id.clone(),
+                            "tool_name": tool_name.clone(),
+                            "path": path.display().to_string(),
+                        }));
+                    }
 
                     let _ = self
                         .tx_event

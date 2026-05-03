@@ -412,6 +412,53 @@ fn force_http1_from_env() -> bool {
         .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
 }
 
+/// Read `SSL_CERT_FILE` and add its contents as extra root
+/// certificates on the reqwest builder (#418). Tries the PEM-bundle
+/// parser first (covers single-cert files too), then falls back to
+/// DER. All failures log a warning and return the builder unchanged
+/// so a malformed env var degrades gracefully.
+fn add_extra_root_certs(
+    mut builder: reqwest::ClientBuilder,
+    cert_path: &str,
+) -> reqwest::ClientBuilder {
+    let bytes = match std::fs::read(cert_path) {
+        Ok(b) => b,
+        Err(err) => {
+            logging::warn(format!(
+                "SSL_CERT_FILE={cert_path} could not be read: {err}"
+            ));
+            return builder;
+        }
+    };
+
+    // PEM bundle handles both single-cert and multi-cert files; try
+    // it first since `BEGIN CERTIFICATE` framing is the common case.
+    if let Ok(certs) = reqwest::Certificate::from_pem_bundle(&bytes) {
+        let added = certs.len();
+        for cert in certs {
+            builder = builder.add_root_certificate(cert);
+        }
+        logging::info(format!(
+            "SSL_CERT_FILE={cert_path} loaded ({added} cert(s))"
+        ));
+        return builder;
+    }
+
+    // Single-cert DER fallback.
+    match reqwest::Certificate::from_der(&bytes) {
+        Ok(cert) => {
+            builder = builder.add_root_certificate(cert);
+            logging::info(format!("SSL_CERT_FILE={cert_path} loaded (1 DER cert)"));
+        }
+        Err(err) => {
+            logging::warn(format!(
+                "SSL_CERT_FILE={cert_path} could not be parsed as PEM bundle or DER: {err}"
+            ));
+        }
+    }
+    builder
+}
+
 impl DeepSeekClient {
     /// Create a DeepSeek client from CLI configuration.
     pub fn new(config: &Config) -> Result<Self> {
@@ -472,6 +519,19 @@ impl DeepSeekClient {
         if force_http1_from_env() {
             logging::info("DEEPSEEK_FORCE_HTTP1=1 — pinning HTTP client to HTTP/1.1");
             builder = builder.http1_only();
+        }
+        // #418: corporate-proxy / MITM-inspector CA support. When
+        // `SSL_CERT_FILE` is set, load the cert(s) it points at and
+        // add them as trusted roots alongside the platform's system
+        // store. We try PEM bundle first (the common case for
+        // multi-cert files), then fall back to single-cert PEM, then
+        // DER. Failures log a warning and continue — the existing
+        // system roots still apply, so a malformed env var won't
+        // bring down the launch.
+        if let Ok(cert_path) = std::env::var("SSL_CERT_FILE")
+            && !cert_path.is_empty()
+        {
+            builder = add_extra_root_certs(builder, &cert_path);
         }
         builder.build().map_err(Into::into)
     }
@@ -576,33 +636,63 @@ impl DeepSeekClient {
                 }
             },
             Some(Box::new(|err, attempt, delay| {
+                let (reason_label, human_reason) = retry_reason_label_and_human(err);
                 logging::warn(format!(
                     "HTTP retry reason={} attempt={} delay={:.2}s",
-                    match err {
-                        LlmError::RateLimited { .. } => "rate_limited",
-                        LlmError::ServerError { .. } => "server_error",
-                        LlmError::NetworkError(_) => "network_error",
-                        LlmError::Timeout(_) => "timeout",
-                        _ => "other",
-                    },
+                    reason_label,
                     attempt + 1,
                     delay.as_secs_f64(),
                 ));
+                // Light up the foreground retry banner (#499). `attempt`
+                // here is 0-indexed for the *failed* attempt; surface the
+                // 1-indexed *upcoming* attempt the user is waiting on.
+                crate::retry_status::start(attempt + 1, delay, human_reason);
             })),
         )
         .await;
 
         match request_result {
             Ok(response) => {
+                crate::retry_status::succeeded();
                 self.mark_request_success().await;
                 Ok(response)
             }
             Err(err) => {
-                self.mark_request_failure(&err.to_string()).await;
+                let last = err.last_error.to_string();
+                // Only mark the retry banner failed if at least one
+                // retry actually fired — non-retryable errors should
+                // surface as turn errors, not as retry-banner failures.
+                if err.attempts > 1 {
+                    crate::retry_status::failed(last.clone());
+                } else {
+                    crate::retry_status::clear();
+                }
+                self.mark_request_failure(&last).await;
                 self.maybe_probe_recovery().await;
-                Err(anyhow::anyhow!(err.to_string()))
+                Err(anyhow::anyhow!(last))
             }
         }
+    }
+}
+
+/// Translate the structured `LlmError` into both a categorical label
+/// (for structured logs / metrics) and a short human reason string
+/// (for the retry banner). Returning both from one match avoids the
+/// double-classification we had before.
+fn retry_reason_label_and_human(err: &LlmError) -> (&'static str, String) {
+    match err {
+        LlmError::RateLimited { retry_after, .. } => {
+            let human = if let Some(after) = retry_after {
+                format!("rate limited (Retry-After {}s)", after.as_secs())
+            } else {
+                "rate limited".to_string()
+            };
+            ("rate_limited", human)
+        }
+        LlmError::ServerError { status, .. } => ("server_error", format!("upstream {status}")),
+        LlmError::NetworkError(_) => ("network_error", "network error".to_string()),
+        LlmError::Timeout(_) => ("timeout", "timeout".to_string()),
+        _ => ("other", "other".to_string()),
     }
 }
 

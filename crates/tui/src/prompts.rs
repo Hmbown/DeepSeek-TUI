@@ -10,13 +10,66 @@
 use crate::models::SystemPrompt;
 use crate::project_context::{ProjectContext, load_project_context_with_parents};
 use crate::tui::app::AppMode;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Conventional location for the structured session-handoff artifact (#32).
 /// A previous session writes it on exit / `/compact`; the next session reads
 /// it back on startup and prepends it to the system prompt so a fresh agent
 /// doesn't have to re-discover open blockers from scratch.
 pub const HANDOFF_RELATIVE_PATH: &str = ".deepseek/handoff.md";
+
+/// Per-file size cap for `instructions = [...]` entries (#454). Mirrors
+/// the existing project-context cap in `project_context::load_context_file`
+/// so a malicious / oversized include can't blow the prompt budget on
+/// its own. Files larger than this are truncated with an `[…elided]`
+/// marker rather than skipped entirely so the model still sees the head.
+const INSTRUCTIONS_FILE_MAX_BYTES: usize = 100 * 1024;
+
+/// Render the `instructions = [...]` config array as a single
+/// system-prompt block (#454). Each path is loaded in declared order;
+/// missing files are skipped with a tracing warning so a stale entry
+/// in `~/.deepseek/config.toml` doesn't fail the launch. Empty input
+/// (or all paths missing) returns `None` so callers append nothing.
+fn render_instructions_block(paths: &[PathBuf]) -> Option<String> {
+    let mut sections: Vec<String> = Vec::new();
+    for path in paths {
+        match std::fs::read_to_string(path) {
+            Ok(raw) => {
+                let trimmed = raw.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let body = if trimmed.len() > INSTRUCTIONS_FILE_MAX_BYTES {
+                    let head_end = (0..=INSTRUCTIONS_FILE_MAX_BYTES)
+                        .rev()
+                        .find(|&i| trimmed.is_char_boundary(i))
+                        .unwrap_or(0);
+                    format!("{}\n[…elided]", &trimmed[..head_end])
+                } else {
+                    trimmed.to_string()
+                };
+                sections.push(format!(
+                    "<instructions source=\"{}\">\n{}\n</instructions>",
+                    path.display(),
+                    body
+                ));
+            }
+            Err(err) => {
+                tracing::warn!(
+                    target: "instructions",
+                    ?err,
+                    ?path,
+                    "skipping unreadable instructions file"
+                );
+            }
+        }
+    }
+    if sections.is_empty() {
+        None
+    } else {
+        Some(sections.join("\n\n"))
+    }
+}
 
 /// Read the workspace-local handoff artifact, if present, and format it as a
 /// system-prompt block. Returns `None` when the file is absent or empty so
@@ -173,7 +226,14 @@ pub fn system_prompt_for_mode_with_context(
     workspace: &Path,
     working_set_summary: Option<&str>,
 ) -> SystemPrompt {
-    system_prompt_for_mode_with_context_and_skills(mode, workspace, working_set_summary, None, None)
+    system_prompt_for_mode_with_context_and_skills(
+        mode,
+        workspace,
+        working_set_summary,
+        None,
+        None,
+        None,
+    )
 }
 
 /// Get the system prompt for a specific mode with project and skills context.
@@ -198,6 +258,7 @@ pub fn system_prompt_for_mode_with_context_and_skills(
     workspace: &Path,
     working_set_summary: Option<&str>,
     skills_dir: Option<&Path>,
+    instructions: Option<&[PathBuf]>,
     user_memory_block: Option<&str>,
 ) -> SystemPrompt {
     let mode_prompt = compose_mode_prompt(mode);
@@ -218,7 +279,18 @@ pub fn system_prompt_for_mode_with_context_and_skills(
         )
     };
 
-    // 2.5. User memory block (#489). Goes above skills/context-management
+    // 2.5a. Configured `instructions = [...]` files (#454). Loaded
+    // and concatenated in declared order. Lives above the skills
+    // block so it's part of the workspace-static layer that the KV
+    // prefix cache can hit, and so per-project overrides apply
+    // consistently turn-over-turn.
+    if let Some(paths) = instructions
+        && let Some(block) = render_instructions_block(paths)
+    {
+        full_prompt = format!("{full_prompt}\n\n{block}");
+    }
+
+    // 2.5b. User memory block (#489). Goes above skills/context-management
     // because it's session-stable: the memory file changes when the user
     // edits it via `/memory` or `# foo` quick-add, but not turn-over-turn.
     if let Some(memory_block) = user_memory_block
@@ -227,10 +299,18 @@ pub fn system_prompt_for_mode_with_context_and_skills(
         full_prompt = format!("{full_prompt}\n\n{memory_block}");
     }
 
-    // 3. Skills block.
-    if let Some(skills_block) = skills_dir.and_then(crate::skills::render_available_skills_context)
-    {
-        full_prompt = format!("{full_prompt}\n\n{skills_block}");
+    // 3. Skills block. #432: walks every candidate workspace
+    // skills directory (`.agents/skills`, `skills`,
+    // `.opencode/skills`, `.claude/skills`) plus the global
+    // default so skills installed for any AI-tool convention show
+    // up in the catalogue. The legacy single-`skills_dir` path is
+    // honoured as a fallback for callers that don't supply a
+    // workspace-aware view; it falls through to the same merged
+    // registry when available.
+    let skills_block = crate::skills::render_available_skills_context_for_workspace(workspace)
+        .or_else(|| skills_dir.and_then(crate::skills::render_available_skills_context));
+    if let Some(block) = skills_block {
+        full_prompt = format!("{full_prompt}\n\n{block}");
     }
 
     // 4. Context Management (Agent / Yolo only).
@@ -411,10 +491,15 @@ mod tests {
             SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
         };
         assert!(prompt.contains("## Compaction Handoff"));
-        assert!(prompt.contains("### Active task"));
-        assert!(prompt.contains("### Files touched"));
-        assert!(prompt.contains("### Key decisions"));
-        assert!(prompt.contains("### Open blockers"));
+        // #429: structured Markdown template. Goal/Constraints/Progress
+        // (Done/InProgress/Blocked)/Key Decisions/Next step.
+        assert!(prompt.contains("### Goal"));
+        assert!(prompt.contains("### Constraints"));
+        assert!(prompt.contains("### Progress"));
+        assert!(prompt.contains("#### Done"));
+        assert!(prompt.contains("#### In Progress"));
+        assert!(prompt.contains("#### Blocked"));
+        assert!(prompt.contains("### Key Decisions"));
         assert!(prompt.contains("### Next step"));
     }
 
@@ -635,6 +720,102 @@ mod tests {
         assert!(
             handoff_pos < working_set_pos,
             "handoff block must precede the working-set summary (most-volatile last)"
+        );
+    }
+
+    #[test]
+    fn render_instructions_block_returns_none_for_empty_input() {
+        assert!(super::render_instructions_block(&[]).is_none());
+    }
+
+    #[test]
+    fn render_instructions_block_skips_missing_files_with_warning() {
+        let tmp = tempdir().expect("tempdir");
+        let real = tmp.path().join("real.md");
+        std::fs::write(&real, "real content here").unwrap();
+        let bogus = tmp.path().join("does-not-exist.md");
+
+        let block = super::render_instructions_block(&[bogus.clone(), real.clone()])
+            .expect("present file should produce a block");
+        assert!(block.contains("real content here"));
+        assert!(block.contains(&real.display().to_string()));
+        // Bogus path is skipped, not rendered.
+        assert!(!block.contains(&bogus.display().to_string()));
+    }
+
+    #[test]
+    fn render_instructions_block_concatenates_in_declared_order() {
+        let tmp = tempdir().expect("tempdir");
+        let a = tmp.path().join("a.md");
+        let b = tmp.path().join("b.md");
+        std::fs::write(&a, "ALPHA_MARKER").unwrap();
+        std::fs::write(&b, "BRAVO_MARKER").unwrap();
+
+        let block = super::render_instructions_block(&[a, b]).expect("non-empty");
+        let alpha_pos = block.find("ALPHA_MARKER").expect("alpha rendered");
+        let bravo_pos = block.find("BRAVO_MARKER").expect("bravo rendered");
+        assert!(
+            alpha_pos < bravo_pos,
+            "instructions must concatenate in declared order"
+        );
+    }
+
+    #[test]
+    fn render_instructions_block_skips_empty_files() {
+        let tmp = tempdir().expect("tempdir");
+        let empty = tmp.path().join("empty.md");
+        let real = tmp.path().join("real.md");
+        std::fs::write(&empty, "   \n   \n").unwrap();
+        std::fs::write(&real, "real content").unwrap();
+
+        let block = super::render_instructions_block(&[empty, real]).expect("non-empty");
+        // Empty file produces no `<instructions>` section, only the real one.
+        let count = block.matches("<instructions").count();
+        assert_eq!(count, 1, "only the non-empty file should produce a section");
+    }
+
+    #[test]
+    fn render_instructions_block_truncates_oversize_files() {
+        let tmp = tempdir().expect("tempdir");
+        let big = tmp.path().join("big.md");
+        // 200 KiB of content — well above the 100 KiB cap.
+        std::fs::write(&big, "X".repeat(200 * 1024)).unwrap();
+
+        let block = super::render_instructions_block(&[big]).expect("non-empty");
+        assert!(block.contains("[…elided]"), "truncation marker missing");
+        // Block should be much smaller than the original file.
+        assert!(
+            block.len() < 110 * 1024,
+            "block should be capped near 100 KiB"
+        );
+    }
+
+    #[test]
+    fn instructions_block_appears_in_system_prompt_when_configured() {
+        let tmp = tempdir().expect("tempdir");
+        let workspace = tmp.path();
+        let extra = workspace.join("extra-instructions.md");
+        std::fs::write(&extra, "EXTRA_INSTRUCTIONS_MARKER_BODY").unwrap();
+
+        let prompt = match super::system_prompt_for_mode_with_context_and_skills(
+            AppMode::Agent,
+            workspace,
+            None,
+            None,
+            Some(std::slice::from_ref(&extra)),
+            None,
+        ) {
+            SystemPrompt::Text(text) => text,
+            SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
+        };
+
+        assert!(
+            prompt.contains("EXTRA_INSTRUCTIONS_MARKER_BODY"),
+            "configured instructions file body must appear in the prompt"
+        );
+        assert!(
+            prompt.contains(&extra.display().to_string()),
+            "instructions block must annotate its source path"
         );
     }
 }

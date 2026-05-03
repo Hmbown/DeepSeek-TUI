@@ -8,6 +8,361 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **User memory MVP** (#489–#493) — opt-in persistent note file
+  injected into the system prompt as a `<user_memory>` block.
+  - `# foo` typed in the composer appends a timestamped bullet
+    without firing a turn (#492).
+  - `/memory [show|path|clear|edit]` slash command for inline
+    inspection / editing hints (#491).
+  - `remember` model-callable tool so the agent can capture
+    durable preferences itself; auto-approved because writes are
+    scoped to the user's own file (#489).
+  - Hierarchy loader pulls `~/.deepseek/memory.md` (path
+    configurable via `memory_path` / `DEEPSEEK_MEMORY_PATH`) and
+    injects above the volatile-content boundary in the prompt
+    (#490).
+  - Default off; enable with `[memory] enabled = true` or
+    `DEEPSEEK_MEMORY=on` (#493).
+  - Full feature documentation in `docs/MEMORY.md`.
+- **Inline diff rendering for `edit_file` / `write_file`** (#505) —
+  tool results now emit a unified diff at the head of the body,
+  picked up by the existing diff-aware renderer with line numbers
+  and coloured `+`/`-` gutters. New `similar` crate dep.
+- **OSC 8 hyperlinks** (#498) — URLs in the transcript become
+  Cmd+click-openable in supporting terminals (iTerm2, Terminal.app
+  13+, Ghostty, Kitty, WezTerm, Alacritty). Clipboard path strips
+  the escapes so yanked text stays clean. Off-switch:
+  `[tui] osc8_links = false`.
+- **Retry/backoff visual countdown** (#499) — `⟳ retry N in Ms — reason`
+  banner ticks down during HTTP backoff. On exhaustion the row turns
+  red `× failed: <reason>` until the next turn starts.
+- **MCP server health chip** (#502) — colour-coded `MCP M/N` in the
+  footer's right-cluster: success / warning / error / muted by
+  reachability. Hidden when zero MCP servers are configured.
+- **Per-project config overlay** (#485) — `<workspace>/.deepseek/config.toml`
+  overlays a curated set of fields on top of the user-global config:
+  `model`, `reasoning_effort`, `approval_policy`, `sandbox_mode`,
+  `notes_path`, `max_subagents`, `allow_shell`, plus the
+  `instructions = [...]` array (#454). Pass `--no-project-config`
+  to bypass for one launch.
+- **Project-scope deny-list for credentials/redirects** (#417) —
+  `api_key`, `base_url`, `provider`, and `mcp_config_path` are
+  refused at project scope. A malicious
+  `<workspace>/.deepseek/config.toml` would otherwise be able to
+  exfiltrate prompts to an attacker-controlled endpoint by
+  swapping the user's credentials and target host with
+  project-controlled values, or redirect the MCP loader at a
+  config that spawns arbitrary stdio servers under the user's
+  identity. The denied key emits a stderr warning so a user who
+  expected the override sees the deny instead of a silent drop.
+- **Project-scope value-deny for the loosest postures** (#417
+  follow-up) — `approval_policy = "auto"` and
+  `sandbox_mode = "danger-full-access"` are pure escalation
+  values, denied unconditionally at project scope regardless
+  of the user's prior value. Sub-tightening comparisons
+  (e.g. user `"never"` → project `"on-request"` is allowed
+  even though it loosens) stay v0.8.9 follow-up because they
+  need a richer ordering check.
+- **`SSL_CERT_FILE` honored in the HTTPS client** (#418) — corporate
+  proxy / TLS-inspecting MITM users can now point at their custom
+  CA bundle and have it added alongside the platform's system
+  trust store. Tries PEM-bundle parsing first (covers single-cert
+  files too), falls back to DER. Failures log a warning and
+  continue — the existing system roots still apply, so a
+  malformed env var won't bring down the launch. Documented in
+  `docs/CONFIGURATION.md`.
+- **Execpolicy heredoc handling** (#419) — `normalize_command` now
+  strips heredoc bodies before shlex tokenization so a user's
+  `auto_allow = ["cat > file.txt"]` pattern matches the heredoc
+  form `cat <<EOF > file.txt\nbody\nEOF` cleanly. Recognises the
+  common forms (`<<DELIM`, `<<-DELIM`, `<<'DELIM'`, `<<"DELIM"`)
+  while leaving the here-string operator (`<<<`) untouched.
+  Without this fix, heredoc-form file writes would skip the
+  user's auto-approve list and route through the approval modal
+  even for explicitly-blessed commands.
+- **Sub-agent role taxonomy expansion** (#404) — adds `Implementer`
+  ("land this change with the minimum surrounding edit") and
+  `Verifier` ("run the test suite, report pass/fail with evidence")
+  to the existing `general` / `explore` / `plan` / `review` /
+  `custom` set. Each role has a distinct system prompt posture.
+  Documented in `docs/SUBAGENTS.md`.
+- **`docs/SUBAGENTS.md`** — full sub-agent reference: role taxonomy,
+  alias map, concurrency cap, lifecycle, session-boundary
+  classification, output contract.
+- **`docs/MEMORY.md`** — user-facing memory feature documentation.
+- **Competitive analysis doc** — `docs/COMPETITIVE_ANALYSIS.md`
+  catalogues capability matrix vs OpenCode and Codex CLI.
+- **Session prune helper + `/sessions prune <days>`** (#406 phase-1) —
+  drops persisted sessions older than N days from
+  `~/.deepseek/sessions/`. Skips the checkpoint subdirectory and
+  compares against metadata `updated_at` (not fs mtime, which can
+  lie after an rsync). 10 total tests cover the helper's contract
+  and the slash-command dispatch surface. Phase 2 (boot-prune +
+  retention policy) stays v0.8.9 work.
+- **`deepseek doctor --json`** now surfaces a `memory` block
+  (`enabled` / `path` / `file_present`) so operators can verify
+  memory configuration without booting the TUI.
+- **Tool-output spillover** (#422 + #423 + #500) — tool outputs over
+  100 KiB now spill to `~/.deepseek/tool_outputs/<id>.txt` from the
+  engine's tool-execution path. The model receives a 32 KiB head plus
+  a footer pointing at the spillover file (`Use read_file path=…`),
+  the tool cell renders an inline `full output: <path>` annotation in
+  live mode, and a 7-day boot prune keeps the directory bounded.
+  Spillover is skipped on error results so the model still sees the
+  failure message verbatim. The existing tool-details pager surfaces
+  the truncated head so the user can verify what the model saw.
+
+### Changed
+- **Sub-agent concurrency cap raised to 10 by default** (#509) —
+  was 5; configurable via `[subagents].max_concurrent` (hard
+  ceiling 20). Running-count now ignores non-running, no-handle,
+  and finished handles so completed agents stop occupying slots.
+- **`SharedSubAgentManager` is `Arc<RwLock<...>>`** (#510) — read
+  paths take read locks, eliminating the multi-agent fan-out UI
+  freeze.
+- **Sub-agent output summarized before parent context** (#511) —
+  `compact_tool_result_for_context` now compresses
+  `agent_result` / `agent_wait` payloads instead of dumping the
+  full snapshot back into the parent's context window.
+- **`agent_list` defaults to current-session view** (#405) — each
+  manager mints a `session_boot_id` and stamps every spawn; agents
+  loaded from prior sessions are filtered unless
+  `include_archived=true` is passed. Each result carries a
+  `from_prior_session` flag.
+- **Concise todo / checklist update rendering** (#403) — repeat
+  `todo_update` / `checklist_update` calls render a one-line
+  `Todo #N: <title> → STATUS` card with full list still
+  reachable via Alt+V instead of dumping the entire item array on
+  every call.
+- **Compact `agent_spawn` rendering** (#409) — the generic tool
+  block for `agent_spawn` collapses to one header line in live
+  mode (`◐ delegate · agent-abc12 [running]`) since the
+  `DelegateCard` already owns live action progress. Transcript
+  replay keeps the full block.
+- **Plan panel role clarified** (#408) — drops the "No active
+  plan" placeholder when the panel is otherwise empty; documents
+  the panel's narrow role (`update_plan` tool output + `/goal` +
+  cycle counter, distinct from todos).
+- **Sub-agent description copy** — `agent_spawn` tool description
+  and `prompts/base.md` updated to reflect the new default cap of
+  10 (was stale "Max 5 in flight").
+- **`agent_spawn` / `agent_assign` schema descriptions** (#404
+  follow-up) — type/agent_name property descriptions now list
+  `implementer` and `verifier` so the model surfaces those roles
+  without having to discover them from `docs/SUBAGENTS.md`. Adds
+  the long-form aliases (`builder` / `validator` / `tester`) on
+  `agent_assign` for parity with the alias map.
+- **Multi-day duration formatting** (#447) — `humanize_duration`
+  now caps at two units and promotes through h/d/w boundaries.
+  Long-running sessions render as `2d 3h` instead of `188415s`,
+  and the previous "192m 30s" cycle output becomes `3h 12m`. The
+  `/goal` status line picks up the same formatter so multi-day
+  goal-elapsed times stay readable.
+- **Accessibility flag** (#450) — `NO_ANIMATIONS=1` env var now
+  forces `low_motion = true` and `fancy_animations = false` at
+  startup, regardless of the saved `settings.toml`. Recognises
+  the standard truthy spellings (`1`, `true`, `yes`, `on`).
+  Documented end-to-end in the new `docs/ACCESSIBILITY.md`,
+  including the existing `low_motion` / `calm_mode` /
+  `show_thinking` / `show_tool_details` toggles for
+  screen-reader users.
+- **Cumulative session-elapsed footer chip** (#448) — a
+  low-priority `worked 3h 12m` chip in the footer's right
+  cluster shows session age once it crosses 60s. Hidden during
+  the first minute of a launch so a fresh start doesn't flash a
+  ticker. Drops first under narrow widths so the existing chips
+  (coherence / agents / replay / cache / mcp) keep their slots.
+  Sampled at props-build time (matches the `retry` capture
+  pattern) so render stays pure for tests.
+- **`instructions = [...]` config array** (#454) — declare
+  additional instruction files (`./AGENTS.md`,
+  `~/.deepseek/global.md`, …) and they're concatenated into the
+  system prompt in declared order, above the skills block. Each
+  file is capped at 100 KiB; missing files log a warning and are
+  skipped instead of failing the launch. Project config replaces
+  the user-level array wholesale (the typical "merge" pattern is
+  for users who want both — they list `~/global.md` inside the
+  project array). Documented in `config.example.toml`.
+- **Keyboard-enhancement flags pop on suspend paths too** (#443
+  follow-up) — `pause_terminal` (Ctrl+Z / shell-suspend) and
+  `external_editor::spawn_editor_for_input` (composer `$EDITOR`
+  launch) now pop the flags before handing the terminal to the
+  child process, matching the existing shutdown and panic-hook
+  paths. Defense-in-depth: if a future code path enables the
+  flags explicitly, the suspend handlers won't leak them to a
+  Vim / less / shell child that hasn't asked for them.
+- **`load_skill` tool** (#434) — model-callable tool that takes a
+  skill id and returns the SKILL.md body plus the sibling
+  companion-file list in one call. Faster than the existing
+  `read_file` + `list_dir` dance; surfaces the skill's
+  description as a quote block at the head so a single tool
+  result is self-contained. Resolves the skills directory with
+  the same hierarchy `App::new` uses (`.agents/skills` →
+  `skills` → `~/.deepseek/skills`). Available in Plan and
+  Agent/Yolo modes.
+- **Kitty keyboard protocol opt-in** (#442) — pushes
+  `DISAMBIGUATE_ESCAPE_CODES` at startup so terminals that
+  support the protocol (Kitty, Ghostty, Alacritty 0.13+,
+  WezTerm, recent Konsole / xterm) report unambiguous events
+  for Option/Alt-modified keys, plain Esc, and multi-byte
+  sequences. Legacy terminals silently discard the escape and
+  see no change. Only the disambiguation tier is pushed —
+  release-event reporting was deliberately skipped because the
+  existing handlers would mis-route releases as duplicate
+  presses. The flags are popped on shutdown / panic / suspend
+  paths (#443).
+- **Multi-directory skill discovery** (#432) — the system
+  prompt's `## Skills` listing and the `load_skill` tool now
+  walk every candidate directory in the workspace plus the
+  global default: `<workspace>/.agents/skills` →
+  `<workspace>/skills` → `<workspace>/.opencode/skills` →
+  `<workspace>/.claude/skills` → `~/.deepseek/skills`. Skills
+  installed for any AI-tool convention show up in the same
+  catalogue. Name conflicts resolve first-match-wins per the
+  precedence order so workspace-local skills shadow user/global
+  ones. New `skills_directories()` and
+  `discover_in_workspace()` helpers in
+  `crates/tui/src/skills/mod.rs`.
+- **`tool.spillover` audit event** (#500 polish) — emit a
+  discrete audit-log entry whenever `apply_spillover` writes a
+  spillover file, so operators tailing
+  `~/.deepseek/audit.log` can correlate large-output episodes
+  with disk-usage growth in `~/.deepseek/tool_outputs/`. Fires
+  in both the sequential and parallel tool paths.
+- **Prompt stash** (#440) — Ctrl+S in the composer parks the
+  current draft to a JSONL-backed stash at
+  `~/.deepseek/composer_stash.jsonl` (no-op on empty composer).
+  `/stash list` shows parked drafts (oldest first, with one-line
+  previews and timestamps); `/stash pop` restores the most
+  recently parked draft into the composer (LIFO). Self-healing
+  parser drops malformed lines instead of poisoning the stash.
+  Capped at 200 entries; multiline drafts round-trip intact via
+  JSON's newline escaping.
+- **`deepseek pr <N>` subcommand** (#451) — fetches PR
+  title/body/diff via `gh` and launches the interactive TUI
+  with a review prompt pre-populated in the composer. The
+  diff is capped at 200 KiB (codepoint-safe truncation) so a
+  massive PR doesn't blow the context window before the user
+  hits Enter. Optional `--repo <owner/name>` and `--checkout`
+  flags; falls back gracefully with an actionable error
+  message if `gh` isn't on PATH. Adds a new
+  `TuiOptions::initial_input` plumb that any future caller can
+  reuse to drop the model into a session with text already
+  typed.
+- **`/stash clear` subcommand** (#440 polish) — wipes the
+  entire stash file and reports how many parked drafts were
+  dropped. Pairs with `/stash list` and `/stash pop` so the
+  user can fully manage the stash from inside the TUI without
+  reaching for `rm`.
+- **`/hooks` read-only listing** (#460 MVP) — slash command
+  enumerates configured lifecycle hooks grouped by event,
+  showing each hook's name, command preview, timeout, and
+  condition. Notes the global `[hooks].enabled` flag's state.
+  No more `cat ~/.deepseek/config.toml` to debug "did my hook
+  actually load". The picker / persisted enable-disable
+  surface from #460 stays as v0.8.9 follow-up. Available via
+  `/hooks` or `/hooks list`; aliased to `/hook`. Localized in
+  en/ja/zh-Hans/pt-BR.
+- **`deepseek doctor` reports cross-tool skill dirs** (#432
+  follow-up) — both the human-readable and JSON outputs now
+  surface `.opencode/skills/` and `.claude/skills/` presence /
+  count, so operators can confirm at a glance whether any
+  cross-tool skill folder is contributing to the merged
+  catalogue. Empty dirs are omitted from the human-readable
+  output to keep the report scannable; JSON always emits all
+  five slots (`global`, `agents`, `local`, `opencode`,
+  `claude`) for stable machine consumption.
+- **`deepseek doctor` reports storage surfaces** (#422 / #440 /
+  #500 follow-up) — new `Storage:` section surfaces the
+  tool-output spillover dir
+  (`~/.deepseek/tool_outputs/`) with file count and the
+  composer stash file
+  (`~/.deepseek/composer_stash.jsonl`) with parked-draft
+  count. Mirrored under `storage.{spillover,stash}` in the
+  JSON output so `deepseek doctor --json` keeps a stable
+  schema.
+- **`/hooks events` subcommand** (#460 polish) — lists every
+  supported `HookEvent` value with a short blurb so users can
+  discover which events to target in `[[hooks.hooks]]` entries
+  without reading source. Ordered lifecycle → per-tool →
+  situational, stable across releases.
+- **Structured-Markdown compaction template** (#429) —
+  `prompts/compact.md` switches from the legacy
+  Active-task/Files-touched/Key-decisions/Open-blockers
+  framing to the spec'd structure: Goal / Constraints /
+  Progress (Done / In Progress / Blocked) / Key Decisions /
+  Next step. The richer Progress sub-bullets help long
+  resumed sessions distinguish "what's verified done" from
+  "what's mid-flight" — useful when the model writes
+  `.deepseek/handoff.md` before a long break. Backwards-
+  compat: existing handoff.md files continue to render fine
+  because the loader injects them as plain markdown (the
+  template only guides what NEW handoffs look like). The
+  pinned-tool-output configurability part of #429's spec
+  stays a v0.8.9 follow-up — that requires changes to
+  `cycle_manager.rs` compaction logic itself.
+- **`tool_call_before` / `tool_call_after` / `message_submit` /
+  `on_error` hooks all fire now** (#455 observer-only slice) —
+  these events were defined in the `HookEvent` enum but never
+  fired from production code. Wired through:
+  `tool_call_before` and `tool_call_after` fire from
+  `tool_routing.rs`; `message_submit` fires from
+  `dispatch_user_message` before engine dispatch; `on_error`
+  fires from `apply_engine_error_to_app` before the error cell
+  reaches the transcript. Hook contexts populate the relevant
+  fields (`tool_name` + `tool_args` / `tool_result`,
+  `message`, `error`). Hooks remain read-only in this slice;
+  argument / result / message mutation is a v0.8.9 follow-up
+  because it needs a synchronous-gate contract that doesn't
+  exist today. Combined with the existing `session_start` /
+  `session_end` / `mode_change` events, every variant in the
+  `HookEvent` enum now has a live producer. Each fire is
+  fast-path-gated by
+  `HookExecutor::has_hooks_for_event(event)` so per-tool
+  dispatch never pays for `HookContext` allocation when the
+  user has no hooks configured (the common case).
+- **RLM tool family** (#512) — `rlm` tool cards map to
+  `ToolFamily::Rlm` and render `rlm`, not `swarm`. Stale "swarm"
+  wording cleaned out of docs / comments / tests.
+- **Foreground RLM visible in Agents sidebar** (#513 — stopgap)
+  — projection now shows foreground RLM work; full async
+  lifecycle remains v0.8.9.
+
+### Fixed
+- **`Don't auto-approve git -C ...`** (#416, shipped 2026-05-03) —
+  v0.8.8 release runtime fix; foundation for the rest of the
+  stabilization batch.
+- **Self-update arch mapping** (#503) — `update.rs` uses release
+  asset naming (`arm64`/`x64`) instead of raw Rust constants
+  (`aarch64`/`x86_64`); rejects `.sha256` siblings as primary
+  binaries.
+- **Composer Option+Backspace deletes by word** (#488) — was
+  deleting by character.
+- **Offline composer queue is session-scoped** (#487) — legacy
+  unscoped queues fail closed instead of leaking content into
+  unrelated chats.
+- **`display_path` test race + Windows separator** (#506) —
+  tests no longer mutate `$HOME`; `display_path_with_home` walks
+  components and joins with `MAIN_SEPARATOR_STR` so Windows shows
+  `~\projects\foo` not `~\projects/foo`.
+- **Footer reads statusline colours from `app.ui_theme`** (#449) —
+  was using a bespoke palette.
+- **Keyboard-enhancement flags pop on panic exit too** (#443/#444) —
+  raw-mode startup probe is now bounded by a configurable
+  timeout.
+- **CI workflow cleanup** (#507) — pruned three duplicated/dead
+  workflows (`crates-publish.yml`, `parity.yml`, `publish-npm.yml`);
+  `release.yml` `build` job now allows `parity` to be skipped on
+  manual `workflow_dispatch`; release-runbook reconciled.
+- **Slash-menu layout jitter on Windows** — typing through a
+  `/foo` autocomplete used to shrink the matched-entry count,
+  which shrank the composer height every keystroke, which forced
+  the chat area above to repaint. On Windows 10 PowerShell + WSL
+  the per-cell write cost made the jitter visible. Composer now
+  reserves its panel-max envelope for the whole slash/mention
+  session so the chat-area Rect stays stable; the menu still
+  renders only the entries that actually match.
+
 - **Linux ARM64 prebuilt binaries** — the release workflow now publishes
   `deepseek-linux-arm64` and `deepseek-tui-linux-arm64` (built natively on
   GitHub's `ubuntu-24.04-arm` runner). The npm wrapper picks them up
@@ -33,6 +388,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - README and `README.zh-CN.md` now have an explicit **Linux ARM64** quickstart
   pointing ARM64 users at `cargo install deepseek-tui-cli deepseek-tui --locked`
   for v0.8.7 and at `npm i -g deepseek-tui` for v0.8.8+.
+
+### Releases
+- npm wrapper publish remains manual (npm 2FA OTP requirement).
+- GitHub release automation depends on `RELEASE_TAG_PAT` secret —
+  without it `auto-tag.yml` creates the tag but `release.yml`
+  doesn't fire.
 
 ## [0.8.7] - 2026-05-03
 

@@ -18,6 +18,37 @@ Overrides:
 
 If both are set, `--config` wins. Environment variable overrides are applied after the file is loaded.
 
+### Per-project overlay (#485)
+
+When the TUI starts in a workspace that contains a
+`<workspace>/.deepseek/config.toml` file, the values declared in that
+file are merged on top of the global config. This lets a repo lock its
+own provider, model, sandbox policy, or approval policy without
+touching the user's `~/.deepseek/config.toml`. Pass
+`--no-project-config` to skip the overlay for one launch.
+
+Supported keys in the project overlay (top-level fields only):
+
+| Key | Effect |
+|---|---|
+| `provider` | switch backend (e.g. `"nvidia-nim"` for an enterprise repo) |
+| `model` | override `default_text_model` |
+| `api_key` | use a per-repo key (typically read from `.env`, **not committed**) |
+| `base_url` | point at a self-hosted endpoint |
+| `reasoning_effort` | force `"high"` / `"max"` for a complex repo |
+| `approval_policy` | `"never"` / `"on-request"` / `"untrusted"` for opinionated repos |
+| `sandbox_mode` | `"read-only"` / `"workspace-write"` / `"danger-full-access"` |
+| `mcp_config_path` | per-repo MCP server set |
+| `notes_path` | keep notes in-repo |
+| `max_subagents` | clamp concurrency for a constrained repo (clamped to 1..=20) |
+| `allow_shell` | gate shell tool access on `false` |
+
+The overlay is intentionally narrow — it covers the fields a repo
+maintainer is most likely to want to standardize across contributors.
+Other settings (skills_dir, hooks, capacity, retry, etc.) stay
+user-global. If your repo needs more, file an issue describing the
+specific use case.
+
 The `deepseek` facade and `deepseek-tui` binary share the same config file for
 DeepSeek auth and model defaults. `deepseek login --api-key ...` writes the
 root `api_key` field that `deepseek-tui` reads directly, and `deepseek --model
@@ -120,6 +151,60 @@ These override config values:
 - `DEEPSEEK_CAPACITY_PRIOR_V4_PRO`
 - `DEEPSEEK_CAPACITY_PRIOR_V4_FLASH`
 - `DEEPSEEK_CAPACITY_PRIOR_FALLBACK`
+- `NO_ANIMATIONS` (`1|true|yes|on` forces `low_motion = true` and
+  `fancy_animations = false` at startup, regardless of the saved
+  settings; see [`docs/ACCESSIBILITY.md`](./ACCESSIBILITY.md)).
+- `SSL_CERT_FILE` — corporate-proxy / TLS-inspecting MITM users
+  point this at a PEM bundle (or single DER cert) and the cert(s)
+  get added alongside the platform's system trust store. Failures
+  log a warning and continue — the existing system roots still
+  apply.
+
+### Instruction sources (`instructions = [...]`, #454)
+
+Add a list of additional system-prompt sources that get
+concatenated, in declared order, alongside the auto-loaded
+`AGENTS.md`:
+
+```toml
+instructions = [
+    "./AGENTS.md",
+    "~/.deepseek/global.md",
+    "~/team/agents-shared.md",
+]
+```
+
+Rules:
+
+- Paths run through `expand_path` so `~` and env vars work.
+- Each file is capped at 100 KiB; oversized files are
+  truncated with a `[…elided]` marker rather than skipped.
+- Missing files are skipped with a tracing warning so a stale
+  entry doesn't fail the launch.
+- Project config (`<workspace>/.deepseek/config.toml`)
+  **replaces** the user array wholesale rather than merging.
+  If you want both, list `~/global.md` inside the project
+  array. Set `instructions = []` in the project to clear the
+  user list for that repo.
+
+### `/hooks` listing
+
+Run `/hooks` (or `/hooks list`) inside the TUI to see every
+configured lifecycle hook grouped by event, including each
+hook's name, command preview, timeout, and condition. The
+`[hooks].enabled` flag's state is shown at the top so it's
+obvious when hooks are globally suppressed. Hooks are
+configured under `[[hooks.hooks]]` entries — see the existing
+hook-system documentation for the full schema.
+
+### Composer stash (`/stash`, Ctrl+S)
+
+Press **Ctrl+S** in the composer to park the current draft to
+`~/.deepseek/composer_stash.jsonl`. `/stash list` shows parked
+drafts with one-line previews and timestamps; `/stash pop`
+restores the most recently parked draft (LIFO); `/stash clear`
+wipes the file. Capped at 200 entries; multiline drafts
+round-trip intact.
 
 ## Settings File (Persistent UI Preferences)
 
@@ -235,6 +320,10 @@ If you are upgrading from older releases:
   requires restarting the TUI.
 - `notes_path` (string, optional): defaults to `~/.deepseek/notes.txt` and is used by the `note` tool.
 - `memory_path` (string, optional): defaults to `~/.deepseek/memory.md`.
+  Used by the user-memory feature when enabled — see
+  [`MEMORY.md`](MEMORY.md) for the full feature surface (`# foo`
+  composer prefix, `/memory` slash command, `remember` tool, opt-in
+  toggle).
 - `snapshots.*` (optional): side-git workspace snapshots for file rollback:
   - `[snapshots].enabled` (bool, default `true`)
   - `[snapshots].max_age_days` (int, default `7`)

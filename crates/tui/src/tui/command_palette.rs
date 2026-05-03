@@ -401,6 +401,8 @@ fn command_runs_directly(name: &str) -> bool {
             | "exit"
             | "models"
             | "queue"
+            | "stash"
+            | "hooks"
             | "subagents"
             | "links"
             | "home"

@@ -9,6 +9,7 @@ mod core;
 mod cycle;
 mod debug;
 mod goal;
+mod hooks;
 mod init;
 mod jobs;
 mod mcp;
@@ -21,6 +22,7 @@ mod review;
 mod session;
 pub mod share;
 mod skills;
+mod stash;
 mod task;
 mod user_commands;
 
@@ -173,6 +175,18 @@ pub const COMMANDS: &[CommandInfo] = &[
         description_id: MessageId::CmdQueueDescription,
     },
     CommandInfo {
+        name: "stash",
+        aliases: &["park"],
+        usage: "/stash [list|pop|clear]",
+        description_id: MessageId::CmdStashDescription,
+    },
+    CommandInfo {
+        name: "hooks",
+        aliases: &["hook"],
+        usage: "/hooks [list|events]",
+        description_id: MessageId::CmdHooksDescription,
+    },
+    CommandInfo {
         name: "subagents",
         aliases: &["agents"],
         usage: "/subagents",
@@ -230,7 +244,7 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "sessions",
         aliases: &["resume"],
-        usage: "/sessions",
+        usage: "/sessions [show|prune <days>]",
         description_id: MessageId::CmdSessionsDescription,
     },
     CommandInfo {
@@ -462,6 +476,8 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "models" => core::models(app),
         "provider" => provider::provider(app, arg),
         "queue" | "queued" => queue::queue(app, arg),
+        "stash" | "park" => stash::stash(app, arg),
+        "hooks" | "hook" => hooks::hooks(app, arg),
         "subagents" | "agents" => core::subagents(app),
         "links" | "dashboard" | "api" => core::deepseek_links(app),
         "home" | "stats" | "overview" => core::home_dashboard(app),
@@ -474,7 +490,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
 
         // Session commands
         "save" => session::save(app, arg),
-        "sessions" | "resume" => session::sessions(app),
+        "sessions" | "resume" => session::sessions(app, arg),
         "load" => session::load(app, arg),
         "compact" => session::compact(app),
         "cycles" => cycle::list_cycles(app),
@@ -787,6 +803,7 @@ mod tests {
             skip_onboarding: true,
             yolo: false,
             resume_session_id: None,
+            initial_input: None,
         };
         App::new(options, &Config::default())
     }
@@ -916,6 +933,7 @@ mod tests {
             skip_onboarding: true,
             yolo: false,
             resume_session_id: None,
+            initial_input: None,
         };
         let app = App::new(options, &Config::default());
         (app, tmpdir)

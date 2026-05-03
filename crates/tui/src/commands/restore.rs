@@ -128,6 +128,7 @@ mod tests {
             skip_onboarding: true,
             yolo,
             resume_session_id: None,
+            initial_input: None,
         };
         App::new(options, &Config::default())
     }

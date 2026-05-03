@@ -118,6 +118,7 @@ fn selection_to_text_copies_rendered_transcript_block() {
             input_summary: Some("cargo check".to_string()),
             output: Some("tool output line".to_string()),
             prompts: None,
+            spillover_path: None,
         })),
         HistoryCell::Assistant {
             content: "copy assistant".to_string(),
@@ -448,6 +449,7 @@ fn create_test_app() -> App {
         skip_onboarding: false,
         yolo: false,
         resume_session_id: None,
+        initial_input: None,
     };
     App::new(options, &Config::default())
 }
@@ -542,6 +544,7 @@ fn active_tool_status_label_summarizes_live_tool_group() {
             input_summary: Some("pattern: TODO".to_string()),
             output: Some("done".to_string()),
             prompts: None,
+            spillover_path: None,
         })),
     );
     app.active_cell = Some(active);
@@ -567,6 +570,7 @@ fn active_tool_status_label_counts_foreground_rlm_work() {
             input_summary: Some("task: compare projects".to_string()),
             output: None,
             prompts: None,
+            spillover_path: None,
         })),
     );
     app.active_cell = Some(active);
@@ -778,6 +782,7 @@ fn make_subagent(
         result: None,
         steps_taken: 0,
         duration_ms: 0,
+        from_prior_session: false,
     }
 }
 
@@ -1513,6 +1518,7 @@ fn jump_to_adjacent_tool_cell_finds_next_and_previous() {
             input_summary: Some("query: foo".to_string()),
             output: Some("done".to_string()),
             prompts: None,
+            spillover_path: None,
         })),
         HistoryCell::Assistant {
             content: "ok".to_string(),
@@ -1524,6 +1530,7 @@ fn jump_to_adjacent_tool_cell_finds_next_and_previous() {
             input_summary: Some("ls".to_string()),
             output: Some("...".to_string()),
             prompts: None,
+            spillover_path: None,
         })),
     ];
     app.mark_history_updated();
@@ -1579,6 +1586,7 @@ fn detail_target_prefers_visible_tool_card() {
             input_summary: Some("query: foo".to_string()),
             output: Some("done".to_string()),
             prompts: None,
+            spillover_path: None,
         })),
         HistoryCell::Assistant {
             content: "ok".to_string(),
@@ -1590,6 +1598,7 @@ fn detail_target_prefers_visible_tool_card() {
             input_summary: Some("command: ls".to_string()),
             output: Some("...".to_string()),
             prompts: None,
+            spillover_path: None,
         })),
     ];
     app.tool_details_by_cell.insert(
@@ -1655,6 +1664,67 @@ fn open_tool_details_pager_supports_active_virtual_tool_cell() {
     assert_eq!(detail_target_cell_index(&app), Some(0));
     assert!(open_tool_details_pager(&mut app));
     assert_eq!(app.view_stack.top_kind(), Some(ModalKind::Pager));
+}
+
+#[test]
+fn spillover_pager_section_returns_none_when_no_spillover() {
+    let mut app = create_test_app();
+    app.history = vec![HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+        name: "exec_shell".to_string(),
+        status: ToolStatus::Success,
+        input_summary: None,
+        output: Some("hi".to_string()),
+        prompts: None,
+        spillover_path: None,
+    }))];
+    app.resync_history_revisions();
+    assert!(spillover_pager_section(&app, 0).is_none());
+}
+
+#[test]
+fn spillover_pager_section_loads_file_when_present() {
+    use std::io::Write;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("call-test.txt");
+    let mut f = std::fs::File::create(&path).unwrap();
+    writeln!(f, "FULL_OUTPUT_BYTES_HERE").unwrap();
+
+    let mut app = create_test_app();
+    app.history = vec![HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+        name: "exec_shell".to_string(),
+        status: ToolStatus::Success,
+        input_summary: None,
+        output: Some("(truncated head)".to_string()),
+        prompts: None,
+        spillover_path: Some(path.clone()),
+    }))];
+    app.resync_history_revisions();
+
+    let section = spillover_pager_section(&app, 0).expect("section present");
+    assert!(section.contains("Full output (spillover)"));
+    assert!(
+        section.contains("FULL_OUTPUT_BYTES_HERE"),
+        "section missing file body: {section}"
+    );
+    assert!(section.contains(&path.display().to_string()));
+}
+
+#[test]
+fn spillover_pager_section_returns_notice_when_file_missing() {
+    let mut app = create_test_app();
+    let bogus = std::path::PathBuf::from("/tmp/this/path/does/not/exist-spill.txt");
+    app.history = vec![HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+        name: "exec_shell".to_string(),
+        status: ToolStatus::Success,
+        input_summary: None,
+        output: Some("(truncated head)".to_string()),
+        prompts: None,
+        spillover_path: Some(bogus),
+    }))];
+    app.resync_history_revisions();
+
+    let section = spillover_pager_section(&app, 0).expect("still emits a notice section");
+    assert!(section.contains("could not read spillover file"));
 }
 
 #[test]
@@ -2949,6 +3019,7 @@ fn checklist_write_renders_dedicated_card() {
                 .to_string(),
         ),
         prompts: None,
+        spillover_path: None,
     };
     let lines = cell.lines_with_mode(80, true, crate::tui::history::RenderMode::Live);
     let text: Vec<String> = lines

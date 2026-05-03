@@ -702,6 +702,15 @@ pub struct Config {
     pub mcp_config_path: Option<String>,
     pub notes_path: Option<String>,
     pub memory_path: Option<String>,
+    /// Additional system-prompt sources concatenated in declared order
+    /// (#454). Paths are expanded via `expand_path` so `~` and env
+    /// vars work. Project config overrides user config (replace, not
+    /// merge) — that's the typical "this repo needs X plus everything
+    /// I already have" pattern, where users put `~/global.md` in the
+    /// project's array if they want both. Each file is loaded, capped
+    /// at 100 KiB, and skipped (with a warning) on read errors so a
+    /// missing optional file doesn't fail the launch.
+    pub instructions: Option<Vec<String>>,
     pub allow_shell: Option<bool>,
     pub approval_policy: Option<String>,
     pub sandbox_mode: Option<String>,
@@ -1290,6 +1299,23 @@ impl Config {
             .unwrap_or_else(|| PathBuf::from("./memory.md"))
     }
 
+    /// Resolve the configured `instructions = [...]` array (#454)
+    /// to absolute paths, in declared order. Empty when unset or
+    /// when every entry is empty after trimming. Each entry runs
+    /// through `expand_path` so `~` and env vars are honoured.
+    #[must_use]
+    pub fn instructions_paths(&self) -> Vec<PathBuf> {
+        self.instructions
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .map(String::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(expand_path)
+            .collect()
+    }
+
     /// Whether the user-memory feature is enabled. The default is **off**
     /// to preserve zero-overhead behavior for users who haven't opted in.
     /// Flips to `true` when `[memory] enabled = true` in `config.toml` or
@@ -1309,8 +1335,8 @@ impl Config {
     }
 
     /// Return the maximum number of concurrent sub-agents.
-    /// Checks [subagents] max_concurrent first, then top-level max_subagents,
-    /// then falls back to DEFAULT_MAX_SUBAGENTS.
+    /// Checks `[subagents] max_concurrent` first, then top-level `max_subagents`,
+    /// then falls back to `DEFAULT_MAX_SUBAGENTS`.
     #[must_use]
     pub fn max_subagents(&self) -> usize {
         // Check [subagents] max_concurrent first
@@ -1935,6 +1961,10 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         mcp_config_path: override_cfg.mcp_config_path.or(base.mcp_config_path),
         notes_path: override_cfg.notes_path.or(base.notes_path),
         memory_path: override_cfg.memory_path.or(base.memory_path),
+        // #454: project's instructions array replaces user's array
+        // wholesale. The typical "merge" pattern is for users who want
+        // both — they list `~/global.md` inside the project array.
+        instructions: override_cfg.instructions.or(base.instructions),
         allow_shell: override_cfg.allow_shell.or(base.allow_shell),
         approval_policy: override_cfg.approval_policy.or(base.approval_policy),
         sandbox_mode: override_cfg.sandbox_mode.or(base.sandbox_mode),

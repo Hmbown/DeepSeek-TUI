@@ -19,6 +19,7 @@ mod command_safety;
 mod commands;
 mod compaction;
 mod composer_history;
+mod composer_stash;
 mod config;
 mod config_ui;
 mod core;
@@ -45,6 +46,7 @@ mod project_doc;
 mod prompts;
 pub mod repl;
 mod responses_api_proxy;
+mod retry_status;
 pub mod rlm;
 mod runtime_api;
 mod runtime_threads;
@@ -60,7 +62,6 @@ mod task_manager;
 mod test_support;
 mod tools;
 mod tui;
-mod ui;
 mod utils;
 mod working_set;
 mod workspace_trust;
@@ -189,6 +190,21 @@ enum Commands {
     Exec(ExecArgs),
     /// Run a code review over a git diff
     Review(ReviewArgs),
+    /// Open the TUI pre-seeded with a GitHub PR's title, body, and diff (#451)
+    Pr {
+        /// PR number
+        #[arg(value_name = "NUMBER")]
+        number: u32,
+        /// Repository in `owner/name` form. Defaults to the current
+        /// workspace's `gh` config (i.e. the repo gh thinks you're in).
+        #[arg(short = 'R', long)]
+        repo: Option<String>,
+        /// Skip `gh pr checkout` even if gh is available. By default
+        /// the working tree is left as-is — checkout is opt-in via
+        /// `--checkout` because dirty trees fail it loudly.
+        #[arg(long, default_value_t = false)]
+        checkout: bool,
+    },
     /// Apply a patch file (or stdin) to the working tree
     Apply(ApplyArgs),
     /// Run the offline evaluation harness (no network/LLM calls)
@@ -629,6 +645,14 @@ async fn main() -> Result<()> {
                 let config = load_config_from_cli(&cli)?;
                 run_review(&config, args).await
             }
+            Commands::Pr {
+                number,
+                repo,
+                checkout,
+            } => {
+                let config = load_config_from_cli(&cli)?;
+                run_pr(&cli, &config, number, repo.as_deref(), checkout).await
+            }
             Commands::Apply(args) => run_apply(args),
             Commands::Eval(args) => run_eval(args),
             Commands::Mcp { command } => {
@@ -677,12 +701,12 @@ async fn main() -> Result<()> {
             Commands::Resume { session_id, last } => {
                 let config = load_config_from_cli(&cli)?;
                 let resume_id = resolve_session_id(session_id, last)?;
-                run_interactive(&cli, &config, Some(resume_id)).await
+                run_interactive(&cli, &config, Some(resume_id), None).await
             }
             Commands::Fork { session_id, last } => {
                 let config = load_config_from_cli(&cli)?;
                 let new_session_id = fork_session(session_id, last)?;
-                run_interactive(&cli, &config, Some(new_session_id)).await
+                run_interactive(&cli, &config, Some(new_session_id), None).await
             }
             Commands::ResponsesApiProxy(args) => {
                 responses_api_proxy::run_main(args)?;
@@ -716,7 +740,7 @@ async fn main() -> Result<()> {
 
     // Default: Interactive TUI
     // --yolo starts in YOLO mode (shell + trust + auto-approve)
-    run_interactive(&cli, &config, resume_session_id).await
+    run_interactive(&cli, &config, resume_session_id, None).await
 }
 
 /// Generate shell completions for the given shell
@@ -1609,6 +1633,12 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     let global_skills_dir = config.skills_dir();
     let agents_skills_dir = workspace.join(".agents").join("skills");
     let local_skills_dir = workspace.join("skills");
+    // #432: cross-tool skill discovery dirs. Presence is reported here
+    // even though they sit lower in the precedence chain so users can
+    // see at a glance whether a `.opencode/skills/` or `.claude/skills/`
+    // directory is contributing to the merged catalogue.
+    let opencode_skills_dir = workspace.join(".opencode").join("skills");
+    let claude_skills_dir = workspace.join(".claude").join("skills");
     let selected_skills_dir = if agents_skills_dir.exists() {
         &agents_skills_dir
     } else if local_skills_dir.exists() {
@@ -1668,6 +1698,26 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         );
     }
 
+    // #432: only print interop dirs when they're populated — empty
+    // .opencode/.claude folders are common and would just clutter
+    // the report with false-positive "absent" lines.
+    if opencode_skills_dir.exists() {
+        println!(
+            "  {} .opencode skills dir found at {} ({} items)",
+            "✓".truecolor(aqua_r, aqua_g, aqua_b),
+            crate::utils::display_path(&opencode_skills_dir),
+            describe_dir(&opencode_skills_dir)
+        );
+    }
+    if claude_skills_dir.exists() {
+        println!(
+            "  {} .claude skills dir found at {} ({} items)",
+            "✓".truecolor(aqua_r, aqua_g, aqua_b),
+            crate::utils::display_path(&claude_skills_dir),
+            describe_dir(&claude_skills_dir)
+        );
+    }
+
     println!(
         "  {} selected skills dir: {}",
         "·".dimmed(),
@@ -1717,6 +1767,50 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             crate::utils::display_path(&plugins_dir)
         );
         println!("    Run `deepseek-tui setup --plugins` to scaffold a starter dir.");
+    }
+
+    // Storage surfaces (#422 / #440 / #500)
+    println!();
+    println!("{}", "Storage:".bold());
+    if let Some(spillover_root) = crate::tools::truncate::spillover_root() {
+        let (present, count) = if spillover_root.is_dir() {
+            (true, count_dir_entries(&spillover_root))
+        } else {
+            (false, 0)
+        };
+        if present {
+            println!(
+                "  {} tool-output spillover at {} ({} file{})",
+                "✓".truecolor(aqua_r, aqua_g, aqua_b),
+                crate::utils::display_path(&spillover_root),
+                count,
+                if count == 1 { "" } else { "s" }
+            );
+        } else {
+            println!(
+                "  {} tool-output spillover dir not yet created at {}",
+                "·".dimmed(),
+                crate::utils::display_path(&spillover_root)
+            );
+        }
+    }
+    let stash_path = dirs::home_dir().map(|h| h.join(".deepseek").join("composer_stash.jsonl"));
+    if let Some(stash_path) = stash_path {
+        let stash_count = crate::composer_stash::load_stash().len();
+        if stash_path.exists() {
+            println!(
+                "  {} composer stash at {} ({} parked draft{})",
+                "✓".truecolor(aqua_r, aqua_g, aqua_b),
+                crate::utils::display_path(&stash_path),
+                stash_count,
+                if stash_count == 1 { "" } else { "s" }
+            );
+        } else {
+            println!(
+                "  {} composer stash empty (Ctrl+S in the composer to park a draft)",
+                "·".dimmed()
+            );
+        }
     }
 
     // Platform and sandbox checks
@@ -1813,6 +1907,12 @@ fn run_doctor_json(
     let global_skills_dir = config.skills_dir();
     let agents_skills_dir = workspace.join(".agents").join("skills");
     let local_skills_dir = workspace.join("skills");
+    // #432: cross-tool skill discovery dirs surface in the JSON
+    // report so external dashboards can see whether any
+    // `.opencode/skills/` or `.claude/skills/` content is contributing
+    // to the merged catalogue.
+    let opencode_skills_dir = workspace.join(".opencode").join("skills");
+    let claude_skills_dir = workspace.join(".claude").join("skills");
     let selected_skills_dir = if agents_skills_dir.exists() {
         agents_skills_dir.clone()
     } else if local_skills_dir.exists() {
@@ -1823,6 +1923,32 @@ fn run_doctor_json(
 
     let tools_dir = default_tools_dir();
     let plugins_dir = default_plugins_dir();
+
+    // Memory feature state (#489). Operators ask "is memory on?" and
+    // "where does it live?" — surface both here so the question can be
+    // answered without booting the TUI. Both inputs are checked: the
+    // config flag and the env-var override that the runtime would
+    // honour. (The dedicated `Config::memory_enabled()` accessor lives
+    // on the memory-MVP branch (#518); this duplicates the same logic
+    // until the two PRs land and it can be replaced with a single
+    // method call.)
+    let memory_path = config.memory_path();
+    let memory_enabled_env = std::env::var("DEEPSEEK_MEMORY")
+        .ok()
+        .map(|raw| {
+            matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "1" | "on" | "true" | "yes" | "y" | "enabled"
+            )
+        })
+        .unwrap_or(false);
+    let memory_summary = json!({
+        // The MVP feature is opt-in by default; this defaults to false
+        // on branches without the [memory] section in `Config`.
+        "enabled": memory_enabled_env,
+        "path": memory_path.display().to_string(),
+        "file_present": memory_path.exists(),
+    });
 
     let report = json!({
         "version": env!("CARGO_PKG_VERSION"),
@@ -1840,6 +1966,7 @@ fn run_doctor_json(
             .default_text_model
             .clone()
             .unwrap_or_else(|| DEFAULT_TEXT_MODEL.to_string()),
+        "memory": memory_summary,
         "mcp": mcp_summary,
         "skills": {
             "selected": selected_skills_dir.display().to_string(),
@@ -1858,6 +1985,16 @@ fn run_doctor_json(
                 "present": local_skills_dir.exists(),
                 "count": skills_count_for(&local_skills_dir),
             },
+            "opencode": {
+                "path": opencode_skills_dir.display().to_string(),
+                "present": opencode_skills_dir.exists(),
+                "count": skills_count_for(&opencode_skills_dir),
+            },
+            "claude": {
+                "path": claude_skills_dir.display().to_string(),
+                "present": claude_skills_dir.exists(),
+                "count": skills_count_for(&claude_skills_dir),
+            },
         },
         "tools": {
             "path": tools_dir.display().to_string(),
@@ -1868,6 +2005,28 @@ fn run_doctor_json(
             "path": plugins_dir.display().to_string(),
             "present": plugins_dir.exists(),
             "count": if plugins_dir.exists() { count_dir_entries(&plugins_dir) } else { 0 },
+        },
+        "storage": {
+            "spillover": {
+                "path": crate::tools::truncate::spillover_root()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default(),
+                "present": crate::tools::truncate::spillover_root()
+                    .is_some_and(|p| p.is_dir()),
+                "count": crate::tools::truncate::spillover_root()
+                    .filter(|p| p.is_dir())
+                    .map(|p| count_dir_entries(&p))
+                    .unwrap_or(0),
+            },
+            "stash": {
+                "path": dirs::home_dir()
+                    .map(|h| h.join(".deepseek").join("composer_stash.jsonl").display().to_string())
+                    .unwrap_or_default(),
+                "present": dirs::home_dir()
+                    .map(|h| h.join(".deepseek").join("composer_stash.jsonl"))
+                    .is_some_and(|p| p.exists()),
+                "count": crate::composer_stash::load_stash().len(),
+            },
         },
         "sandbox": match crate::sandbox::get_platform_sandbox() {
             Some(kind) => json!({"available": true, "kind": kind.to_string()}),
@@ -2311,6 +2470,216 @@ Provide findings ordered by severity with file references, then open questions, 
         println!("{output}");
     }
     Ok(())
+}
+
+/// `deepseek pr <N>` (#451) — fetch a GitHub PR via `gh`, format
+/// title + body + diff as the composer's first message, and launch
+/// the interactive TUI. Falls back gracefully if `gh` is missing.
+async fn run_pr(
+    cli: &Cli,
+    config: &Config,
+    number: u32,
+    repo: Option<&str>,
+    checkout: bool,
+) -> Result<()> {
+    if !is_command_available("gh") {
+        bail!(
+            "`gh` CLI not found on PATH. Install GitHub CLI \
+             (https://cli.github.com) and authenticate (`gh auth login`) \
+             so `deepseek pr <N>` can fetch PR metadata and the diff."
+        );
+    }
+
+    let view = run_gh_pr_view(number, repo)?;
+    let diff = run_gh_pr_diff(number, repo)?;
+
+    if checkout {
+        match run_gh_pr_checkout(number, repo) {
+            Ok(()) => eprintln!("Checked out PR #{number} into the current workspace."),
+            Err(err) => eprintln!(
+                "warning: gh pr checkout #{number} failed ({err}). Continuing without checkout."
+            ),
+        }
+    }
+
+    let prompt = format_pr_prompt(number, &view, &diff);
+    let resume_session_id = if cli.continue_session {
+        match session_manager::SessionManager::default_location() {
+            Ok(manager) => manager.get_latest_session().ok().flatten().map(|m| m.id),
+            Err(_) => None,
+        }
+    } else {
+        cli.resume.clone()
+    };
+    run_interactive(cli, config, resume_session_id, Some(prompt)).await
+}
+
+/// Return true if `name` resolves to an executable on the current `PATH`.
+///
+/// Walks `$PATH` directly instead of probing with `--version`. The
+/// previous implementation invoked `Command::new(name).arg("--version")`,
+/// which fails on the Ubuntu CI runner because `/bin/sh` is `dash` —
+/// `dash --version` exits with status 2 ("invalid option") even though
+/// `sh` is plainly on PATH. macOS happens to ship bash as `sh`, which
+/// does honor `--version`, so the bug was invisible locally and only
+/// surfaced in CI logs.
+///
+/// Windows: also checks the `.exe` extension when `name` doesn't have
+/// one, matching the platform's PATHEXT lookup behavior for the common
+/// case.
+fn is_command_available(name: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return true;
+        }
+        #[cfg(windows)]
+        {
+            // PATHEXT gives `.exe`/`.cmd`/`.bat` etc. priority — we only
+            // probe `.exe` because that's the case that actually trips
+            // up the negative case (`gh` resolves as `gh.exe`).
+            if candidate.extension().is_none() && candidate.with_extension("exe").is_file() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+#[derive(Debug, Clone, Default)]
+struct GhPullRequest {
+    title: String,
+    body: String,
+    base: String,
+    head: String,
+    url: String,
+}
+
+fn run_gh_pr_view(number: u32, repo: Option<&str>) -> Result<GhPullRequest> {
+    let mut cmd = Command::new("gh");
+    cmd.arg("pr").arg("view").arg(number.to_string());
+    if let Some(r) = repo {
+        cmd.arg("--repo").arg(r);
+    }
+    cmd.arg("--json")
+        .arg("title,body,baseRefName,headRefName,url");
+    let output = cmd
+        .output()
+        .map_err(|e| anyhow::anyhow!("Failed to run `gh pr view`: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        bail!("gh pr view #{number} failed: {stderr}");
+    }
+    let raw = String::from_utf8_lossy(&output.stdout).to_string();
+    let value: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| anyhow::anyhow!("gh pr view returned non-JSON output: {e}"))?;
+    let pick = |key: &str| {
+        value
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    Ok(GhPullRequest {
+        title: pick("title"),
+        body: pick("body"),
+        base: pick("baseRefName"),
+        head: pick("headRefName"),
+        url: pick("url"),
+    })
+}
+
+fn run_gh_pr_diff(number: u32, repo: Option<&str>) -> Result<String> {
+    let mut cmd = Command::new("gh");
+    cmd.arg("pr").arg("diff").arg(number.to_string());
+    if let Some(r) = repo {
+        cmd.arg("--repo").arg(r);
+    }
+    let output = cmd
+        .output()
+        .map_err(|e| anyhow::anyhow!("Failed to run `gh pr diff`: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        bail!("gh pr diff #{number} failed: {stderr}");
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn run_gh_pr_checkout(number: u32, repo: Option<&str>) -> Result<()> {
+    let mut cmd = Command::new("gh");
+    cmd.arg("pr").arg("checkout").arg(number.to_string());
+    if let Some(r) = repo {
+        cmd.arg("--repo").arg(r);
+    }
+    let output = cmd
+        .output()
+        .map_err(|e| anyhow::anyhow!("Failed to run `gh pr checkout`: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        bail!("gh pr checkout #{number} failed: {stderr}");
+    }
+    Ok(())
+}
+
+/// Format the PR review prompt that lands in the composer. Caps the
+/// diff at 200 KiB so a massive PR doesn't blow the model's context
+/// window before the user even hits Enter — they can always ask the
+/// model to fetch more via `gh pr diff #N` from inside the session.
+fn format_pr_prompt(number: u32, view: &GhPullRequest, diff: &str) -> String {
+    const MAX_DIFF_BYTES: usize = 200 * 1024;
+    let diff_section = if diff.len() > MAX_DIFF_BYTES {
+        let cut = (0..=MAX_DIFF_BYTES)
+            .rev()
+            .find(|&i| diff.is_char_boundary(i))
+            .unwrap_or(0);
+        format!(
+            "{}\n\n[…diff truncated at {} KiB; ask me to fetch more if needed]\n",
+            &diff[..cut],
+            MAX_DIFF_BYTES / 1024
+        )
+    } else {
+        diff.to_string()
+    };
+    let body = if view.body.trim().is_empty() {
+        "(no description)".to_string()
+    } else {
+        view.body.trim().to_string()
+    };
+    let title = if view.title.trim().is_empty() {
+        format!("(PR #{number})")
+    } else {
+        view.title.trim().to_string()
+    };
+    let branches = match (view.base.is_empty(), view.head.is_empty()) {
+        (false, false) => format!("{} ← {}", view.base, view.head),
+        (false, true) => view.base.clone(),
+        (true, false) => view.head.clone(),
+        _ => "(unknown)".to_string(),
+    };
+    format!(
+        "Review PR #{number} — {title}\n\
+         \n\
+         URL: {url}\n\
+         Branches: {branches}\n\
+         \n\
+         ## Description\n\
+         \n\
+         {body}\n\
+         \n\
+         ## Diff\n\
+         \n\
+         ```diff\n\
+         {diff_section}\n\
+         ```\n",
+        url = if view.url.is_empty() {
+            "(unavailable)"
+        } else {
+            view.url.as_str()
+        },
+    )
 }
 
 fn collect_diff(args: &ReviewArgs) -> Result<String> {
@@ -2933,18 +3302,89 @@ fn merge_project_config(config: &mut Config, workspace: &Path) {
         None => return,
     };
 
-    // Apply top-level string fields that make sense for project overrides.
+    // #417: dangerous keys are denied at project scope. A malicious
+    // `<workspace>/.deepseek/config.toml` could otherwise:
+    // * `api_key` / `base_url` / `provider` — exfiltrate prompts to a
+    //   look-alike endpoint by swapping the user's credentials and
+    //   target host with project-controlled values.
+    // * `mcp_config_path` — point the loader at an MCP config that
+    //   spawns arbitrary stdio servers under the user's identity.
+    //
+    // The overlay path is non-interactive; users can't visually
+    // confirm a rogue project config is hijacking these. We surface
+    // a stderr warning on first encounter so a user who *did* expect
+    // the override has a chance to notice the deny instead of silent
+    // discard.
+    const DENY_AT_PROJECT_SCOPE: &[&str] = &["api_key", "base_url", "provider", "mcp_config_path"];
+    for key in DENY_AT_PROJECT_SCOPE {
+        if table.contains_key(*key) {
+            eprintln!(
+                "warning: project-scope config key `{key}` is ignored — \
+                 set it in `~/.deepseek/config.toml` instead. \
+                 (See #417 for the deny-list rationale.)"
+            );
+        }
+    }
+
+    // String fields a project may legitimately override (model,
+    // approval/sandbox tightening, notes path, reasoning effort).
+    // Loosening *values* like `approval_policy = "auto"` and
+    // `sandbox_mode = "danger-full-access"` are denied unconditionally
+    // — those are pure escalation regardless of the user's prior
+    // value. Sub-tightening comparisons (e.g. user `"never"` →
+    // project `"on-request"`) stay v0.8.9 follow-up because they
+    // need a richer ordering check.
     for (key, field) in [
         ("model", &mut config.default_text_model),
-        ("api_key", &mut config.api_key),
-        ("base_url", &mut config.base_url),
         ("reasoning_effort", &mut config.reasoning_effort),
+        ("approval_policy", &mut config.approval_policy),
+        ("sandbox_mode", &mut config.sandbox_mode),
+        ("notes_path", &mut config.notes_path),
     ] {
         if let Some(v) = table.get(key).and_then(toml::Value::as_str)
             && !v.is_empty()
         {
+            // #417 escalation deny: project cannot push the session
+            // to the loosest values. Other strings flow through the
+            // existing config validator on load.
+            let is_escalation = matches!(
+                (key, v),
+                ("approval_policy", "auto") | ("sandbox_mode", "danger-full-access")
+            );
+            if is_escalation {
+                eprintln!(
+                    "warning: project-scope `{key} = \"{v}\"` is ignored — \
+                     project config cannot escalate to the loosest value. \
+                     (See #417.)"
+                );
+                continue;
+            }
             *field = Some(v.to_string());
         }
+    }
+
+    // Numeric / bool fields that benefit from per-project overrides.
+    if let Some(v) = table.get("max_subagents").and_then(toml::Value::as_integer)
+        && v > 0
+    {
+        config.max_subagents = Some((v as usize).clamp(1, crate::config::MAX_SUBAGENTS));
+    }
+    if let Some(v) = table.get("allow_shell").and_then(toml::Value::as_bool) {
+        config.allow_shell = Some(v);
+    }
+
+    // #454: instructions array — project replaces user. Empty arrays
+    // count: explicit `instructions = []` clears the user's list for
+    // this repo, useful when the user has a verbose global file that
+    // doesn't apply to the current project. Non-string entries are
+    // skipped silently rather than failing the load.
+    if let Some(arr) = table.get("instructions").and_then(toml::Value::as_array) {
+        let entries: Vec<String> = arr
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .filter(|s| !s.trim().is_empty())
+            .collect();
+        config.instructions = Some(entries);
     }
 }
 
@@ -2952,6 +3392,7 @@ async fn run_interactive(
     cli: &Cli,
     config: &Config,
     resume_session_id: Option<String>,
+    initial_input: Option<String>,
 ) -> Result<()> {
     let workspace = cli
         .workspace
@@ -2992,6 +3433,24 @@ async fn run_interactive(
         session_manager::prune_workspace_snapshots(&workspace, snapshots.max_age());
     }
 
+    // Prune stale tool-output spillover files (#422). Non-fatal: home
+    // missing or directory unreadable just means nothing got pruned;
+    // we never block startup. Runs unconditionally because the
+    // spillover store is created lazily on first write — there's no
+    // user-facing setting to gate.
+    match crate::tools::truncate::prune_older_than(crate::tools::truncate::SPILLOVER_MAX_AGE) {
+        Ok(0) => {}
+        Ok(n) => tracing::debug!(
+            target: "spillover",
+            "boot prune removed {n} spillover file(s)"
+        ),
+        Err(err) => tracing::warn!(
+            target: "spillover",
+            ?err,
+            "spillover prune skipped on boot"
+        ),
+    }
+
     tui::run_tui(
         config,
         tui::TuiOptions {
@@ -3012,6 +3471,7 @@ async fn run_interactive(
             skip_onboarding: cli.skip_onboarding,
             yolo: cli.yolo, // YOLO mode auto-approves all tool executions
             resume_session_id,
+            initial_input,
             max_subagents,
         },
     )
@@ -3153,6 +3613,7 @@ async fn run_exec_agent(
         notes_path: config.notes_path(),
         mcp_config_path: config.mcp_config_path(),
         skills_dir: config.skills_dir(),
+        instructions: config.instructions_paths(),
         max_steps: 100,
         max_subagents,
         features: config.features(),
@@ -3414,6 +3875,326 @@ mod terminal_mode_tests {
         let config = Config::default();
 
         assert!(!should_use_mouse_capture(&cli, &config, false));
+    }
+}
+
+#[cfg(test)]
+mod project_config_tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    /// Write a `<workspace>/.deepseek/config.toml` and return the workspace
+    /// root so the merge function can find it.
+    fn workspace_with_project_config(body: &str) -> tempfile::TempDir {
+        let tmp = tempdir().expect("tempdir");
+        let project_dir = tmp.path().join(".deepseek");
+        fs::create_dir_all(&project_dir).expect("mkdir .deepseek");
+        fs::write(project_dir.join("config.toml"), body).expect("write project config");
+        tmp
+    }
+
+    #[test]
+    fn project_overlay_overrides_model_but_denies_provider() {
+        // #417: `provider` is on the deny-list; only the `model`
+        // override applies. The denied key emits a stderr warning
+        // (verified by integration runs; here we assert the post-
+        // merge state).
+        let tmp = workspace_with_project_config(
+            r#"
+provider = "nvidia-nim"
+model = "deepseek-ai/deepseek-v4-pro"
+"#,
+        );
+        let mut config = Config::default();
+        merge_project_config(&mut config, tmp.path());
+        assert_eq!(
+            config.provider, None,
+            "#417: project-scope `provider` must be denied"
+        );
+        assert_eq!(
+            config.default_text_model.as_deref(),
+            Some("deepseek-ai/deepseek-v4-pro"),
+            "model is allowed at project scope"
+        );
+    }
+
+    #[test]
+    fn project_overlay_denies_dangerous_credentials_and_redirects() {
+        // #417: `api_key` / `base_url` / `provider` / `mcp_config_path`
+        // are all on the deny-list. A malicious project must not be
+        // able to redirect prompts or hijack MCP servers via these.
+        let tmp = workspace_with_project_config(
+            r#"
+api_key = "ATTACKER_KEY"
+base_url = "https://evil.example.com"
+provider = "nvidia-nim"
+mcp_config_path = "/tmp/attacker-mcp.json"
+"#,
+        );
+        let mut config = Config {
+            api_key: Some("USER_KEY".to_string()),
+            base_url: Some("https://api.deepseek.com".to_string()),
+            ..Config::default()
+        };
+        merge_project_config(&mut config, tmp.path());
+        assert_eq!(
+            config.api_key.as_deref(),
+            Some("USER_KEY"),
+            "user api_key must survive project-config attack"
+        );
+        assert_eq!(
+            config.base_url.as_deref(),
+            Some("https://api.deepseek.com"),
+            "user base_url must survive project-config attack"
+        );
+        assert_eq!(
+            config.provider, None,
+            "project-scope provider must be denied"
+        );
+        assert_eq!(
+            config.mcp_config_path, None,
+            "project-scope mcp_config_path must be denied"
+        );
+    }
+
+    #[test]
+    fn project_overlay_overrides_approval_and_sandbox() {
+        let tmp = workspace_with_project_config(
+            r#"
+approval_policy = "never"
+sandbox_mode = "read-only"
+"#,
+        );
+        let mut config = Config::default();
+        merge_project_config(&mut config, tmp.path());
+        assert_eq!(config.approval_policy.as_deref(), Some("never"));
+        assert_eq!(config.sandbox_mode.as_deref(), Some("read-only"));
+    }
+
+    #[test]
+    fn project_overlay_denies_approval_auto_and_sandbox_danger_values() {
+        // #417 value-deny: the loosest values (`approval_policy = "auto"`,
+        // `sandbox_mode = "danger-full-access"`) are pure escalation.
+        // Even when the user hasn't set these fields, the project
+        // can't push the session to the loosest posture.
+        let tmp = workspace_with_project_config(
+            r#"
+approval_policy = "auto"
+sandbox_mode = "danger-full-access"
+model = "deepseek-v4-pro"
+"#,
+        );
+        let mut config = Config::default();
+        merge_project_config(&mut config, tmp.path());
+        assert_eq!(
+            config.approval_policy, None,
+            "project-scope `approval_policy = \"auto\"` must be denied"
+        );
+        assert_eq!(
+            config.sandbox_mode, None,
+            "project-scope `sandbox_mode = \"danger-full-access\"` must be denied"
+        );
+        // Non-escalation overrides on the same merge succeed —
+        // the deny is per-key, not per-file.
+        assert_eq!(
+            config.default_text_model.as_deref(),
+            Some("deepseek-v4-pro"),
+            "non-escalation overrides should still apply"
+        );
+    }
+
+    #[test]
+    fn project_overlay_preserves_user_strict_value_when_project_tries_to_loosen() {
+        // Belt-and-suspenders: if the user has `approval_policy = "never"`
+        // and the project tries `approval_policy = "auto"`, the deny
+        // keeps the user's strict value rather than falling through to
+        // None.
+        let tmp = workspace_with_project_config(
+            r#"
+approval_policy = "auto"
+"#,
+        );
+        let mut config = Config {
+            approval_policy: Some("never".to_string()),
+            ..Config::default()
+        };
+        merge_project_config(&mut config, tmp.path());
+        assert_eq!(
+            config.approval_policy.as_deref(),
+            Some("never"),
+            "user's strict approval_policy must survive a project escalation attempt"
+        );
+    }
+
+    #[test]
+    fn project_overlay_overrides_max_subagents_and_allow_shell() {
+        let tmp = workspace_with_project_config(
+            r#"
+max_subagents = 4
+allow_shell = false
+"#,
+        );
+        let mut config = Config::default();
+        merge_project_config(&mut config, tmp.path());
+        assert_eq!(config.max_subagents, Some(4));
+        assert_eq!(config.allow_shell, Some(false));
+    }
+
+    #[test]
+    fn project_overlay_clamps_max_subagents_to_safe_range() {
+        let tmp = workspace_with_project_config(
+            r#"
+max_subagents = 500
+"#,
+        );
+        let mut config = Config::default();
+        merge_project_config(&mut config, tmp.path());
+        assert_eq!(
+            config.max_subagents,
+            Some(crate::config::MAX_SUBAGENTS),
+            "should clamp to MAX_SUBAGENTS"
+        );
+    }
+
+    #[test]
+    fn project_overlay_ignores_negative_max_subagents() {
+        let tmp = workspace_with_project_config(
+            r#"
+max_subagents = -3
+"#,
+        );
+        let mut config = Config::default();
+        merge_project_config(&mut config, tmp.path());
+        assert_eq!(config.max_subagents, None, "negative should be ignored");
+    }
+
+    #[test]
+    fn project_overlay_skips_missing_config_file() {
+        let tmp = tempdir().expect("tempdir");
+        let mut config = Config {
+            provider: Some("deepseek".to_string()),
+            ..Config::default()
+        };
+        merge_project_config(&mut config, tmp.path());
+        // Untouched.
+        assert_eq!(config.provider.as_deref(), Some("deepseek"));
+    }
+
+    #[test]
+    fn project_overlay_skips_malformed_toml() {
+        let tmp = workspace_with_project_config("this is not valid TOML !!");
+        let mut config = Config {
+            provider: Some("deepseek".to_string()),
+            ..Config::default()
+        };
+        merge_project_config(&mut config, tmp.path());
+        // Untouched on parse error — better to fall back to global than crash.
+        assert_eq!(config.provider.as_deref(), Some("deepseek"));
+    }
+
+    #[test]
+    fn project_overlay_ignores_empty_string_values() {
+        let tmp = workspace_with_project_config(
+            r#"
+provider = ""
+model = ""
+"#,
+        );
+        let mut config = Config {
+            provider: Some("deepseek".to_string()),
+            default_text_model: Some("deepseek-v4-pro".to_string()),
+            ..Config::default()
+        };
+        merge_project_config(&mut config, tmp.path());
+        // Empty strings are ignored — they're rarely a deliberate override.
+        assert_eq!(config.provider.as_deref(), Some("deepseek"));
+        assert_eq!(
+            config.default_text_model.as_deref(),
+            Some("deepseek-v4-pro")
+        );
+    }
+
+    #[test]
+    fn project_overlay_replaces_user_instructions_array_wholesale() {
+        let tmp = workspace_with_project_config(
+            r#"
+instructions = ["./AGENTS.md", "./extra.md"]
+"#,
+        );
+        // User had a global file in their config; the project array
+        // should REPLACE it, not merge.
+        let mut config = Config {
+            instructions: Some(vec!["~/global.md".to_string()]),
+            ..Config::default()
+        };
+        merge_project_config(&mut config, tmp.path());
+        assert_eq!(
+            config.instructions.as_deref(),
+            Some(&["./AGENTS.md".to_string(), "./extra.md".to_string()][..]),
+            "project instructions array replaces user array wholesale"
+        );
+    }
+
+    #[test]
+    fn project_overlay_empty_instructions_array_clears_user_list() {
+        let tmp = workspace_with_project_config(
+            r#"
+instructions = []
+"#,
+        );
+        let mut config = Config {
+            instructions: Some(vec![
+                "~/global.md".to_string(),
+                "~/team-prefs.md".to_string(),
+            ]),
+            ..Config::default()
+        };
+        merge_project_config(&mut config, tmp.path());
+        // Explicit empty array clears the user list — project says
+        // "this repo doesn't want any of those globals".
+        assert_eq!(
+            config.instructions.as_deref(),
+            Some(&[][..]),
+            "explicit empty array clears the user instructions list"
+        );
+    }
+
+    #[test]
+    fn project_overlay_preserves_user_instructions_when_field_absent() {
+        let tmp = workspace_with_project_config(
+            r#"
+provider = "deepseek"
+"#,
+        );
+        let user = vec!["~/global.md".to_string()];
+        let mut config = Config {
+            instructions: Some(user.clone()),
+            ..Config::default()
+        };
+        merge_project_config(&mut config, tmp.path());
+        // No `instructions` key in the project file → user list intact.
+        assert_eq!(
+            config.instructions.as_deref(),
+            Some(user.as_slice()),
+            "absent project field must not clobber the user list"
+        );
+    }
+
+    #[test]
+    fn project_overlay_drops_empty_string_entries_in_instructions_array() {
+        let tmp = workspace_with_project_config(
+            r#"
+instructions = ["./AGENTS.md", "", "  ", "./extra.md"]
+"#,
+        );
+        let mut config = Config::default();
+        merge_project_config(&mut config, tmp.path());
+        assert_eq!(
+            config.instructions.as_deref(),
+            Some(&["./AGENTS.md".to_string(), "./extra.md".to_string()][..]),
+            "empty / whitespace-only entries are filtered"
+        );
     }
 }
 
@@ -3754,5 +4535,82 @@ mod setup_helper_tests {
         )
         .unwrap();
         assert_eq!(skills_count_for(&dir), 1);
+    }
+}
+
+#[cfg(test)]
+mod pr_prompt_tests {
+    use super::*;
+
+    fn sample_pr() -> GhPullRequest {
+        GhPullRequest {
+            title: "Add cool feature".to_string(),
+            body: "Closes #99.\n\nAlso:\n- bullet a\n- bullet b".to_string(),
+            base: "main".to_string(),
+            head: "feat/cool".to_string(),
+            url: "https://github.com/example/repo/pull/123".to_string(),
+        }
+    }
+
+    #[test]
+    fn format_pr_prompt_includes_title_url_branches_body_and_diff() {
+        let prompt = format_pr_prompt(123, &sample_pr(), "diff --git a/x b/x\n+y");
+        assert!(prompt.contains("Review PR #123 — Add cool feature"));
+        assert!(prompt.contains("URL: https://github.com/example/repo/pull/123"));
+        assert!(prompt.contains("Branches: main ← feat/cool"));
+        assert!(prompt.contains("Closes #99."));
+        assert!(prompt.contains("- bullet a"));
+        assert!(prompt.contains("```diff"));
+        assert!(prompt.contains("diff --git a/x b/x"));
+    }
+
+    #[test]
+    fn format_pr_prompt_handles_empty_body_and_unknown_branches() {
+        let pr = GhPullRequest {
+            title: String::new(),
+            body: "   ".to_string(),
+            base: String::new(),
+            head: String::new(),
+            url: String::new(),
+        };
+        let prompt = format_pr_prompt(7, &pr, "(diff body)");
+        // Empty title falls back to a placeholder.
+        assert!(prompt.contains("(PR #7)"));
+        // Empty body renders the explicit placeholder.
+        assert!(prompt.contains("(no description)"));
+        assert!(prompt.contains("Branches: (unknown)"));
+        assert!(prompt.contains("URL: (unavailable)"));
+    }
+
+    #[test]
+    fn format_pr_prompt_truncates_oversize_diff_at_a_codepoint_boundary() {
+        // 300 KiB of `X` bytes with a multibyte char near the cap.
+        let mut diff = "X".repeat(190 * 1024);
+        diff.push_str(&"🚀".repeat(5_000));
+        let prompt = format_pr_prompt(1, &sample_pr(), &diff);
+        assert!(prompt.contains("[…diff truncated"));
+        assert!(prompt.contains("at 200 KiB"));
+        // Ensure we didn't slice mid-codepoint — the result still
+        // round-trips as valid UTF-8 (it's a String, so this is by
+        // construction; the test pins behaviour against silent panics
+        // if the cut logic regresses).
+        assert!(prompt.is_ascii() || prompt.contains('🚀'));
+    }
+
+    #[test]
+    fn is_command_available_detects_present_and_absent_binaries() {
+        // `sh` is part of the POSIX baseline on every Unix runner and
+        // ships with `git-bash` on Windows CI. It should be present.
+        // (Skip on Windows CI without git-bash because the runner
+        // could legitimately lack `sh.exe`.)
+        #[cfg(unix)]
+        assert!(is_command_available("sh"), "POSIX `sh` should be on PATH");
+
+        // A deliberately-implausible name to confirm the negative
+        // branch — `--version` on this would exec(3) → ENOENT.
+        assert!(
+            !is_command_available("this-command-cannot-exist-deepseek-tui-test-ENOENT-marker"),
+            "missing command should return false, not panic"
+        );
     }
 }

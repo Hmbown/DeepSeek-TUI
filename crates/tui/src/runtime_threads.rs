@@ -1540,6 +1540,7 @@ impl RuntimeThreadManager {
             notes_path: self.config.notes_path(),
             mcp_config_path: self.config.mcp_config_path(),
             skills_dir: self.config.skills_dir(),
+            instructions: self.config.instructions_paths(),
             max_steps: 100,
             max_subagents: self.config.max_subagents().clamp(1, MAX_SUBAGENTS),
             features: self.config.features(),

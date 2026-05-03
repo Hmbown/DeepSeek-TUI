@@ -16,6 +16,7 @@ fn make_snapshot(status: SubAgentStatus) -> SubAgentResult {
         result: None,
         steps_taken: 0,
         duration_ms: 0,
+        from_prior_session: false,
     }
 }
 
@@ -48,6 +49,123 @@ fn test_agent_type_from_str() {
     );
     assert_eq!(SubAgentType::from_str("awaiter"), Some(SubAgentType::Plan));
     assert_eq!(SubAgentType::from_str("invalid"), None);
+}
+
+#[test]
+fn test_agent_type_implementer_aliases() {
+    // #404 — Implementer accepts the obvious aliases the model is
+    // likely to reach for when the user says "build this".
+    for alias in ["implementer", "implement", "implementation", "builder"] {
+        assert_eq!(
+            SubAgentType::from_str(alias),
+            Some(SubAgentType::Implementer),
+            "alias {alias} should resolve to Implementer"
+        );
+    }
+    // Case-insensitive.
+    assert_eq!(
+        SubAgentType::from_str("IMPLEMENTER"),
+        Some(SubAgentType::Implementer)
+    );
+}
+
+#[test]
+fn test_agent_type_verifier_aliases() {
+    // #404 — Verifier accepts test/validate aliases distinct from
+    // Reviewer, which is for *grading* code rather than *running* it.
+    for alias in ["verifier", "verify", "verification", "validator", "tester"] {
+        assert_eq!(
+            SubAgentType::from_str(alias),
+            Some(SubAgentType::Verifier),
+            "alias {alias} should resolve to Verifier"
+        );
+    }
+    assert_eq!(
+        SubAgentType::from_str("VERIFY"),
+        Some(SubAgentType::Verifier)
+    );
+}
+
+#[test]
+fn test_agent_type_round_trips_via_as_str() {
+    // Every type should serialize to a string that round-trips back
+    // through `from_str`. Catches missed variants when adding a new
+    // role.
+    for t in [
+        SubAgentType::General,
+        SubAgentType::Explore,
+        SubAgentType::Plan,
+        SubAgentType::Review,
+        SubAgentType::Implementer,
+        SubAgentType::Verifier,
+        SubAgentType::Custom,
+    ] {
+        let label = t.as_str();
+        let back = SubAgentType::from_str(label)
+            .unwrap_or_else(|| panic!("as_str label {label:?} doesn't round-trip via from_str"));
+        assert_eq!(back, t, "round-trip failed for {t:?} via {label:?}");
+    }
+}
+
+#[test]
+fn test_implementer_and_verifier_have_distinct_prompts() {
+    // The whole point of adding the types is that they carry distinct
+    // posture. Defensive guard: catch the easy bug where copy-paste
+    // leaves two new variants with the same prompt as `General`.
+    let implementer = SubAgentType::Implementer.system_prompt();
+    let verifier = SubAgentType::Verifier.system_prompt();
+    let general = SubAgentType::General.system_prompt();
+    assert_ne!(
+        implementer, general,
+        "Implementer prompt must differ from General"
+    );
+    assert_ne!(
+        verifier, general,
+        "Verifier prompt must differ from General"
+    );
+    assert_ne!(
+        implementer, verifier,
+        "Implementer and Verifier must differ"
+    );
+    // Sanity: each prompt mentions the role's defining verb so the
+    // model has clear direction.
+    assert!(
+        implementer.to_lowercase().contains("implement")
+            || implementer.to_lowercase().contains("write the code"),
+        "Implementer prompt should reference its role: {implementer}"
+    );
+    assert!(
+        verifier.to_lowercase().contains("verif")
+            || verifier.to_lowercase().contains("test suite")
+            || verifier.to_lowercase().contains("validation"),
+        "Verifier prompt should reference its role: {verifier}"
+    );
+}
+
+#[test]
+fn test_implementer_allowed_tools_include_writes() {
+    // Implementer is the write-heavy role; the deprecated
+    // `allowed_tools()` advisory list should reflect that the role
+    // can write/edit/patch even if today's runtime grants full
+    // inheritance.
+    #[allow(deprecated)]
+    let tools = SubAgentType::Implementer.allowed_tools();
+    assert!(tools.contains(&"write_file"));
+    assert!(tools.contains(&"edit_file"));
+    assert!(tools.contains(&"apply_patch"));
+}
+
+#[test]
+fn test_verifier_allowed_tools_include_test_runner_but_no_writes() {
+    // Verifier runs validation; it should not have write tools in
+    // its advisory list. The runtime will still gate writes through
+    // approval, but the advisory list signals intent.
+    #[allow(deprecated)]
+    let tools = SubAgentType::Verifier.allowed_tools();
+    assert!(tools.contains(&"run_tests"));
+    assert!(tools.contains(&"diagnostics"));
+    assert!(!tools.contains(&"write_file"));
+    assert!(!tools.contains(&"apply_patch"));
 }
 
 #[test]
@@ -310,6 +428,7 @@ async fn test_wait_for_result_reports_timeout_when_still_running() {
         Some("Blue".to_string()),
         Some(vec!["read_file".to_string()]),
         input_tx,
+        "boot_test".to_string(),
     );
     let agent_id = agent.id.clone();
     {
@@ -336,6 +455,7 @@ async fn test_running_count_counts_only_agents_with_live_task_handles() {
         Some("Blue".to_string()),
         Some(vec!["read_file".to_string()]),
         input_tx,
+        "boot_test".to_string(),
     );
     agent.status = SubAgentStatus::Running;
     let handle = tokio::spawn(async {
@@ -366,6 +486,7 @@ fn test_running_count_ignores_running_status_without_task_handle() {
         Some("Blue".to_string()),
         Some(vec!["read_file".to_string()]),
         input_tx,
+        "boot_test".to_string(),
     );
     agent.status = SubAgentStatus::Running;
     manager.agents.insert(agent.id.clone(), agent);
@@ -385,6 +506,7 @@ async fn test_running_count_ignores_finished_task_handles() {
         Some("Blue".to_string()),
         Some(vec!["read_file".to_string()]),
         input_tx,
+        "boot_test".to_string(),
     );
     agent.status = SubAgentStatus::Running;
     let handle = tokio::spawn(async {});
@@ -412,6 +534,7 @@ fn test_assign_updates_running_agent_and_sends_message() {
         Some("Blue".to_string()),
         Some(vec!["read_file".to_string()]),
         input_tx,
+        "boot_test".to_string(),
     );
     let agent_id = agent.id.clone();
     manager.agents.insert(agent_id.clone(), agent);
@@ -448,6 +571,7 @@ fn test_assign_rejects_message_for_non_running_agent() {
         Some("Blue".to_string()),
         Some(vec!["read_file".to_string()]),
         input_tx,
+        "boot_test".to_string(),
     );
     agent.status = SubAgentStatus::Completed;
     let agent_id = agent.id.clone();
@@ -471,6 +595,7 @@ fn test_assign_updates_non_running_metadata_without_message() {
         Some("Blue".to_string()),
         Some(vec!["read_file".to_string()]),
         input_tx,
+        "boot_test".to_string(),
     );
     agent.status = SubAgentStatus::Completed;
     let agent_id = agent.id.clone();
@@ -505,6 +630,7 @@ fn test_persist_and_reload_marks_running_agent_as_interrupted() {
         Some("Blue".to_string()),
         Some(vec!["read_file".to_string()]),
         input_tx,
+        "boot_test".to_string(),
     );
     let running_id = running.id.clone();
     manager.agents.insert(running_id.clone(), running);
@@ -999,4 +1125,185 @@ fn stub_client() -> DeepSeekClient {
         ..crate::config::Config::default()
     };
     DeepSeekClient::new(&config).expect("stub client should construct")
+}
+
+// ---- #405 session-boundary classification ----
+//
+// Each manager assigns a fresh session_boot_id; agents stamp the id at
+// spawn time. After persist + reload by a *new* manager, those agents
+// carry the prior boot id and are classified as `from_prior_session`.
+// `agent_list` defaults to current-session only; `include_archived=true`
+// surfaces the prior-session records with the flag set.
+
+fn insert_prior_session_agent(
+    manager: &mut SubAgentManager,
+    id: &str,
+    status: SubAgentStatus,
+    boot_id: &str,
+) {
+    let (input_tx, _input_rx) = mpsc::unbounded_channel();
+    let mut agent = SubAgent::new(
+        SubAgentType::General,
+        "old prompt".to_string(),
+        make_assignment(),
+        "deepseek-v4-flash".to_string(),
+        None,
+        None,
+        input_tx,
+        boot_id.to_string(),
+    );
+    agent.status = status;
+    agent.id = id.to_string();
+    manager.agents.insert(id.to_string(), agent);
+}
+
+#[test]
+fn session_boot_ids_are_unique_per_manager() {
+    let a = SubAgentManager::new(PathBuf::from("."), 1);
+    let b = SubAgentManager::new(PathBuf::from("."), 1);
+    assert_ne!(a.session_boot_id(), b.session_boot_id());
+}
+
+#[test]
+fn list_filtered_drops_prior_session_terminals_by_default() {
+    let mut manager = SubAgentManager::new(PathBuf::from("."), 5);
+    let current_boot = manager.session_boot_id().to_string();
+    insert_prior_session_agent(
+        &mut manager,
+        "current_running",
+        SubAgentStatus::Running,
+        &current_boot,
+    );
+    insert_prior_session_agent(
+        &mut manager,
+        "prior_completed",
+        SubAgentStatus::Completed,
+        "boot_old_session",
+    );
+    insert_prior_session_agent(
+        &mut manager,
+        "prior_running",
+        SubAgentStatus::Running,
+        "boot_old_session",
+    );
+
+    let listed = manager.list_filtered(false);
+    let ids: Vec<&str> = listed.iter().map(|s| s.agent_id.as_str()).collect();
+    assert!(ids.contains(&"current_running"), "{ids:?}");
+    assert!(
+        ids.contains(&"prior_running"),
+        "still-running prior-session agents stay visible: {ids:?}"
+    );
+    assert!(
+        !ids.contains(&"prior_completed"),
+        "completed prior-session agents are hidden by default: {ids:?}"
+    );
+
+    let prior = listed
+        .iter()
+        .find(|s| s.agent_id == "prior_running")
+        .unwrap();
+    assert!(prior.from_prior_session);
+    let current = listed
+        .iter()
+        .find(|s| s.agent_id == "current_running")
+        .unwrap();
+    assert!(!current.from_prior_session);
+}
+
+#[test]
+fn list_filtered_with_include_archived_returns_everything() {
+    let mut manager = SubAgentManager::new(PathBuf::from("."), 5);
+    let current_boot = manager.session_boot_id().to_string();
+    insert_prior_session_agent(
+        &mut manager,
+        "current_done",
+        SubAgentStatus::Completed,
+        &current_boot,
+    );
+    insert_prior_session_agent(
+        &mut manager,
+        "prior_done",
+        SubAgentStatus::Completed,
+        "boot_old",
+    );
+    insert_prior_session_agent(
+        &mut manager,
+        "prior_failed",
+        SubAgentStatus::Failed("boom".to_string()),
+        "boot_old",
+    );
+
+    let listed = manager.list_filtered(true);
+    assert_eq!(listed.len(), 3, "{listed:?}");
+    let prior = listed.iter().find(|s| s.agent_id == "prior_done").unwrap();
+    assert!(prior.from_prior_session);
+    let current = listed
+        .iter()
+        .find(|s| s.agent_id == "current_done")
+        .unwrap();
+    assert!(!current.from_prior_session);
+}
+
+#[test]
+fn agents_with_empty_boot_id_classify_as_prior_session() {
+    // Records persisted before #405 land with an empty `session_boot_id`
+    // due to `#[serde(default)]`. The manager treats those the same as
+    // a non-matching id — i.e. prior session.
+    let mut manager = SubAgentManager::new(PathBuf::from("."), 5);
+    insert_prior_session_agent(&mut manager, "legacy", SubAgentStatus::Completed, "");
+
+    let listed_default = manager.list_filtered(false);
+    assert!(
+        listed_default.iter().all(|s| s.agent_id != "legacy"),
+        "legacy completed agents are hidden by default"
+    );
+
+    let listed_archived = manager.list_filtered(true);
+    let legacy = listed_archived
+        .iter()
+        .find(|s| s.agent_id == "legacy")
+        .unwrap();
+    assert!(legacy.from_prior_session);
+}
+
+#[test]
+fn persist_round_trip_preserves_session_boot_id() {
+    let dir = tempdir().expect("tempdir");
+    let state_path = dir.path().join(SUBAGENT_STATE_FILE);
+
+    let original_boot;
+    {
+        let mut writer =
+            SubAgentManager::new(dir.path().to_path_buf(), 2).with_state_path(state_path.clone());
+        original_boot = writer.session_boot_id().to_string();
+        insert_prior_session_agent(
+            &mut writer,
+            "agent_persist",
+            SubAgentStatus::Completed,
+            &original_boot,
+        );
+        writer
+            .persist_state()
+            .expect("persist round-trip should write");
+    }
+
+    // A fresh manager comes up with a *different* boot id and reloads
+    // the persisted state; the agent should now be classified prior.
+    let mut reader =
+        SubAgentManager::new(dir.path().to_path_buf(), 2).with_state_path(state_path.clone());
+    reader.load_state().expect("reload should succeed");
+    assert_ne!(reader.session_boot_id(), original_boot);
+
+    let listed_default = reader.list_filtered(false);
+    assert!(
+        !listed_default.iter().any(|s| s.agent_id == "agent_persist"),
+        "completed prior-session agent hidden after reload: {listed_default:?}"
+    );
+    let listed_all = reader.list_filtered(true);
+    let snap = listed_all
+        .iter()
+        .find(|s| s.agent_id == "agent_persist")
+        .unwrap();
+    assert!(snap.from_prior_session);
 }

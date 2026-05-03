@@ -470,8 +470,26 @@ impl HookExecutor {
     }
 
     /// Get the session ID
+    /// Read-only access to the underlying configuration. Used by
+    /// `/hooks` (#460 read-only MVP) so the user can list configured
+    /// hooks without reaching for `cat ~/.deepseek/config.toml`.
+    pub fn config(&self) -> &HooksConfig {
+        &self.config
+    }
+
     pub fn session_id(&self) -> &str {
         &self.session_id
+    }
+
+    /// Cheap pre-check: are there any enabled hooks for this event?
+    /// Lets call sites avoid building a [`HookContext`] (which allocates
+    /// for `workspace`, `model`, `session_id`, …) on every tool call
+    /// when the user hasn't configured any hooks. The cost matters
+    /// because `ToolCallBefore` / `ToolCallAfter` fire from
+    /// `tool_routing.rs` on every tool dispatch (#455).
+    #[must_use]
+    pub fn has_hooks_for_event(&self, event: HookEvent) -> bool {
+        self.config.enabled && self.config.hooks.iter().any(|h| h.event == event)
     }
 
     /// Execute all hooks for an event
@@ -481,6 +499,14 @@ impl HookExecutor {
         }
 
         let hooks = self.config.hooks_for_event(event);
+        if hooks.is_empty() {
+            // Fast path: no hooks for this event → skip the
+            // `context.to_env_vars()` HashMap allocation. With
+            // `tool_call_before` / `tool_call_after` firing per-tool
+            // (#455) this allocation would otherwise happen on every
+            // tool dispatch even for users with zero hooks configured.
+            return Vec::new();
+        }
         let env_vars = context.to_env_vars();
         let mut results = Vec::new();
 
@@ -494,6 +520,24 @@ impl HookExecutor {
             } else {
                 self.execute_sync(hook, &env_vars)
             };
+
+            // Log failures via tracing so operators tailing
+            // `deepseek` with `RUST_LOG=warn` can see hook errors
+            // without instrumenting each call site. Successful runs
+            // log nothing (would be too noisy on per-tool events).
+            if !result.success {
+                let label = result.name.as_deref().unwrap_or("(unnamed)");
+                tracing::warn!(
+                    target: "hooks",
+                    hook = label,
+                    event = event.as_str(),
+                    exit_code = ?result.exit_code,
+                    duration_ms = result.duration.as_millis() as u64,
+                    error = result.error.as_deref().unwrap_or(""),
+                    stderr_head = %result.stderr.lines().next().unwrap_or(""),
+                    "hook failed"
+                );
+            }
 
             let should_continue = result.success || hook.continue_on_error;
             results.push(result);
@@ -812,5 +856,59 @@ mod tests {
 
         assert!(executor.session_id().starts_with("sess_"));
         assert_eq!(executor.session_id().len(), 13); // "sess_" + 8 chars
+    }
+
+    #[test]
+    fn has_hooks_for_event_fast_path_returns_false_for_empty_config() {
+        let executor = HookExecutor::disabled();
+        // No hooks configured AT ALL — every event is a fast skip.
+        for event in [
+            HookEvent::SessionStart,
+            HookEvent::SessionEnd,
+            HookEvent::MessageSubmit,
+            HookEvent::ToolCallBefore,
+            HookEvent::ToolCallAfter,
+            HookEvent::ModeChange,
+            HookEvent::OnError,
+        ] {
+            assert!(
+                !executor.has_hooks_for_event(event),
+                "empty config must short-circuit for {event:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn has_hooks_for_event_returns_false_when_globally_disabled() {
+        let config = HooksConfig {
+            enabled: false,
+            hooks: vec![Hook::new(HookEvent::ToolCallBefore, "echo blocked")],
+            ..HooksConfig::default()
+        };
+        let executor = HookExecutor::new(config, PathBuf::from("."));
+        assert!(
+            !executor.has_hooks_for_event(HookEvent::ToolCallBefore),
+            "globally-disabled hooks must report no fires even when one is configured"
+        );
+    }
+
+    #[test]
+    fn has_hooks_for_event_distinguishes_event_types() {
+        let config = HooksConfig {
+            enabled: true,
+            hooks: vec![
+                Hook::new(HookEvent::SessionStart, "echo start"),
+                Hook::new(HookEvent::ToolCallBefore, "echo before"),
+            ],
+            ..HooksConfig::default()
+        };
+        let executor = HookExecutor::new(config, PathBuf::from("."));
+        // Configured events return true.
+        assert!(executor.has_hooks_for_event(HookEvent::SessionStart));
+        assert!(executor.has_hooks_for_event(HookEvent::ToolCallBefore));
+        // Unconfigured events return false even when other events are present.
+        assert!(!executor.has_hooks_for_event(HookEvent::ToolCallAfter));
+        assert!(!executor.has_hooks_for_event(HookEvent::OnError));
+        assert!(!executor.has_hooks_for_event(HookEvent::ModeChange));
     }
 }

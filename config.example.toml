@@ -56,6 +56,19 @@ notes_path = "~/.deepseek/notes.txt"
 
 memory_path = "~/.deepseek/memory.md"
 
+# instructions = ["./AGENTS.md", "~/.deepseek/global.md"]
+#
+# Optional list of additional instruction files concatenated into the
+# system prompt in declared order (#454). Useful for layering
+# repo-specific rules on top of a global preferences file. Each entry
+# is expanded so `~` and env vars work; missing files are skipped with
+# a tracing warning. Files are capped at 100 KiB per entry.
+#
+# Project-level config (.deepseek/config.toml in the workspace) replaces
+# the user-level array wholesale rather than merging — list `~/global.md`
+# inside the project array if you want both. An explicit empty array
+# (`instructions = []`) clears the user list for the current repo.
+
 # ─────────────────────────────────────────────────────────────────────────────────
 # User memory (#489) — opt-in. When enabled, the TUI reads memory_path on
 # startup and injects its contents into the system prompt as a

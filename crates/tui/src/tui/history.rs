@@ -1185,6 +1185,13 @@ pub struct GenericToolCell {
     /// fan-out tool), each prompt is shown on its own indented row instead
     /// of the inline `args:` summary. `None` for ordinary tools.
     pub prompts: Option<Vec<String>>,
+    /// Filesystem path to the full output's spillover file (#422/#423).
+    /// Set by the tool-routing layer when `ToolResult.metadata` carried a
+    /// `spillover_path` field. The truncation affordance includes the
+    /// path so the user can `read_file` it (or Cmd+click in
+    /// OSC 8-aware terminals — the path renders as a hyperlink when
+    /// `tui.osc8_links` is enabled).
+    pub spillover_path: Option<std::path::PathBuf>,
 }
 
 impl GenericToolCell {
@@ -1205,6 +1212,18 @@ impl GenericToolCell {
         if let Some(lines) = self.try_render_as_checklist(width, low_motion, mode) {
             return lines;
         }
+
+        // Issue #409: `agent_spawn` already gets a dedicated `DelegateCard`
+        // that owns the live action tree, status, and final summary. The
+        // generic tool block for the same call duplicates that signal at
+        // 3-4 lines per spawn — N parallel spawns multiply the noise. In
+        // live mode, render one compact summary line and let the
+        // DelegateCard be the source of truth. Transcript mode keeps the
+        // full block so session replay remains complete.
+        if matches!(mode, RenderMode::Live) && self.name == "agent_spawn" {
+            return self.render_agent_spawn_compact(low_motion);
+        }
+
         let mut lines = Vec::new();
         // Map the actual tool name (e.g. `agent_spawn`, `apply_patch`) to a
         // family rather than the catch-all `"Tool"` title — this is what
@@ -1288,8 +1307,47 @@ impl GenericToolCell {
                     mode,
                 ));
             }
+
+            // #423: surface the spillover-file path inline so the user
+            // (and the model) can find the elided tail. Only emitted in
+            // live mode — transcript replay already has the full output
+            // verbatim. The path is OSC 8-wrapped when the feature is
+            // enabled so terminals that support hyperlinks make it
+            // Cmd+click-openable; the clipboard / selection path
+            // strips the escape on copy.
+            if matches!(mode, RenderMode::Live)
+                && let Some(path) = self.spillover_path.as_ref()
+            {
+                lines.push(render_spillover_annotation(path, width));
+            }
         }
         lines
+    }
+
+    /// Render `agent_spawn` as a single compact summary line for live
+    /// mode (#409). The companion `DelegateCard` already carries the
+    /// live action tree, status, and final summary; this line is just
+    /// the pointer that says "a spawn happened, here's the agent id".
+    ///
+    /// Output shape (header):
+    ///   `◐ delegate · agent_spawn  agent-abc12  [running]`
+    /// Falls back to a placeholder when the spawn is still pending and
+    /// no agent id has been assigned yet.
+    fn render_agent_spawn_compact(&self, low_motion: bool) -> Vec<Line<'static>> {
+        let family = crate::tui::widgets::tool_card::ToolFamily::Delegate;
+        let agent_id = self
+            .output
+            .as_deref()
+            .and_then(extract_agent_id)
+            .unwrap_or("…");
+        vec![render_tool_header_with_family_and_summary(
+            family,
+            Some(agent_id),
+            tool_status_label(self.status),
+            self.status,
+            None,
+            low_motion,
+        )]
     }
 
     /// If this cell is a checklist/todo write/add/update and the output is
@@ -1306,6 +1364,27 @@ impl GenericToolCell {
         }
         let output = self.output.as_ref()?;
         let snapshot = parse_checklist_snapshot(output)?;
+
+        // Concise update rendering (#403). When the tool emits an
+        // "Updated todo #N to STATUS" prefix line — which `todo_update` /
+        // `checklist_update` always do on a successful match — render
+        // only the changed item plus a `M/N · pct%` summary instead of
+        // dumping the full list every time. The full list is still
+        // reachable via Alt+V on the tool detail record. This keeps the
+        // transcript scannable in long sessions.
+        if matches!(mode, RenderMode::Live)
+            && let Some(change) = parse_update_prefix(output)
+        {
+            return Some(render_checklist_change_card(
+                &self.name,
+                self.status,
+                &snapshot,
+                &change,
+                width,
+                low_motion,
+            ));
+        }
+
         Some(render_checklist_card(
             &self.name,
             self.status,
@@ -1315,6 +1394,51 @@ impl GenericToolCell {
             mode,
         ))
     }
+}
+
+/// Render the inline annotation for a tool cell whose full output was
+/// spilled to disk (#422 + #423). Produces a one-line muted hint:
+///
+/// ```text
+///   full output: /Users/you/.deepseek/tool_outputs/call-abc12.txt
+/// ```
+///
+/// Path is plain text on this branch; the OSC 8 hyperlink-wrap that
+/// makes it Cmd+click-openable lives on the OSC 8 branch (PR #515)
+/// and merges in once both PRs land on `main`. The clipboard /
+/// selection path already strips OSC 8 there, so a future enhancement
+/// stays backward-compatible.
+fn render_spillover_annotation(path: &std::path::Path, width: u16) -> Line<'static> {
+    let display = path.display().to_string();
+    let prefix = "  full output: ";
+    let budget = usize::from(width).saturating_sub(prefix.len()).max(8);
+    let truncated = truncate_text(&display, budget);
+    Line::from(vec![
+        Span::styled(prefix, Style::default().fg(palette::TEXT_MUTED)),
+        Span::styled(truncated, Style::default().fg(palette::TEXT_MUTED).italic()),
+    ])
+}
+
+/// Pull the `agent_id` field out of an `agent_spawn` tool output. The
+/// tool emits structured JSON shaped like
+/// `{"agent_id": "agent-abc12", "nickname": "...", "model": "..."}` so we
+/// look for the `agent_id` key and return its string value.
+///
+/// Returns `None` for outputs we can't parse as JSON or that lack the
+/// expected key — the caller falls back to a placeholder so a still-pending
+/// spawn renders cleanly.
+fn extract_agent_id(output: &str) -> Option<&str> {
+    // Cheap, deterministic, no allocations: scan for the literal key.
+    // Avoids dragging serde_json into a render hot path on every frame.
+    let key = "\"agent_id\"";
+    let key_idx = output.find(key)?;
+    let rest = &output[key_idx + key.len()..];
+    let colon = rest.find(':')?;
+    let after_colon = rest[colon + 1..].trim_start();
+    let after_colon = after_colon.strip_prefix('"')?;
+    let end = after_colon.find('"')?;
+    let id = &after_colon[..end];
+    (!id.is_empty()).then_some(id)
 }
 
 fn is_checklist_tool_name(name: &str) -> bool {
@@ -1410,6 +1534,119 @@ fn parse_checklist_snapshot(output: &str) -> Option<ChecklistSnapshot> {
         completed,
         total,
     })
+}
+
+/// One parsed "Updated todo #N to STATUS" prefix line emitted by
+/// `todo_update` / `checklist_update`. Used by [`render_checklist_change_card`]
+/// to show a compact state-change line instead of the full item list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ChecklistChange {
+    id: u32,
+    status: String,
+}
+
+/// Parse the leading line of a checklist-update tool output. Returns
+/// `None` for non-update outputs (e.g. `todo_write` snapshots, errors,
+/// or an unexpected format) so the caller falls back to the full-list
+/// renderer.
+fn parse_update_prefix(output: &str) -> Option<ChecklistChange> {
+    // The tool output shape is `Updated todo #3 to in_progress\n{ ... }`.
+    // We tolerate `checklist` or `todo` as the noun and any reasonable
+    // status word (the snapshot lookup in the renderer is the source of
+    // truth for the title — we just need the id+status pair).
+    let first = output.lines().next()?.trim();
+    let rest = first
+        .strip_prefix("Updated todo #")
+        .or_else(|| first.strip_prefix("Updated checklist #"))?;
+    let (id_str, after) = rest.split_once(' ')?;
+    let id: u32 = id_str.parse().ok()?;
+    let status = after.strip_prefix("to ")?.trim().to_string();
+    if status.is_empty() {
+        return None;
+    }
+    Some(ChecklistChange { id, status })
+}
+
+/// Render a compact one-line state-change card for `todo_update` /
+/// `checklist_update` calls (#403). Shows the changed item's marker,
+/// title, and old → new status, with a `M/N · pct%` progress summary
+/// in the header. The full list is still available via Alt+V on the
+/// detail record.
+fn render_checklist_change_card(
+    name: &str,
+    status: ToolStatus,
+    snapshot: &ChecklistSnapshot,
+    change: &ChecklistChange,
+    width: u16,
+    low_motion: bool,
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    let header_summary = format!(
+        "{}/{} \u{00B7} {}%",
+        snapshot.completed, snapshot.total, snapshot.completion_pct
+    );
+    let family = crate::tui::widgets::tool_card::tool_family_for_name(name);
+    lines.push(render_tool_header_with_family_and_summary(
+        family,
+        Some(&header_summary),
+        tool_status_label(status),
+        status,
+        None,
+        low_motion,
+    ));
+
+    // Look up the title from the snapshot. `id` in tool input is
+    // 1-indexed; `items` is 0-indexed.
+    let item = (change.id as usize)
+        .checked_sub(1)
+        .and_then(|idx| snapshot.items.get(idx));
+    let title = item
+        .map(|i| i.content.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "(missing title)".to_string());
+
+    let (marker, marker_color) = checklist_status_marker(&change.status);
+    let prefix = format!("{marker} ");
+    let prefix_width =
+        UnicodeWidthStr::width("\u{258F} ") + UnicodeWidthStr::width(prefix.as_str());
+    let id_label = format!("Todo #{}", change.id);
+    let arrow = " \u{2192} ";
+    let status_label = change.status.clone();
+    let title_budget = usize::from(width)
+        .saturating_sub(prefix_width)
+        .saturating_sub(UnicodeWidthStr::width(id_label.as_str()))
+        .saturating_sub(UnicodeWidthStr::width(arrow))
+        .saturating_sub(UnicodeWidthStr::width(status_label.as_str()))
+        .saturating_sub(2)
+        .max(8);
+    let title_truncated = truncate_text(title.as_str(), title_budget);
+
+    let spans = vec![
+        Span::styled(
+            "\u{258F} ".to_string(),
+            Style::default().fg(palette::TEXT_DIM),
+        ),
+        Span::styled(prefix, Style::default().fg(marker_color)),
+        Span::styled(id_label, Style::default().fg(palette::TEXT_DIM)),
+        Span::styled(": ".to_string(), Style::default().fg(palette::TEXT_DIM)),
+        Span::styled(title_truncated, tool_value_style()),
+        Span::styled(arrow.to_string(), Style::default().fg(palette::TEXT_DIM)),
+        Span::styled(status_label, Style::default().fg(marker_color)),
+    ];
+    lines.push(Line::from(spans));
+
+    // Tease that the full list is still available without leaving the
+    // transcript. Mirrors the same affordance used by other tool cells.
+    lines.push(render_card_detail_line_single(
+        None,
+        &format!(
+            "{} item{} (Alt+V for full list)",
+            snapshot.total,
+            if snapshot.total == 1 { "" } else { "s" }
+        ),
+        Style::default().fg(palette::TEXT_MUTED),
+    ));
+    lines
 }
 
 fn checklist_status_marker(status: &str) -> (&'static str, Color) {
@@ -2818,6 +3055,400 @@ mod tests {
     // Below 3s the label stays "running" — quick reads/greps shouldn't
     // visually churn. From 3s onward the badge appears and ticks each
     // second so the user can tell the call hasn't hung.
+    // ---- #423 spillover-path UI annotation ----
+    //
+    // When a tool result carries a `spillover_path` (set by the
+    // tool-routing layer when the tool's `metadata.spillover_path` is
+    // populated), the live render appends a one-line muted hint
+    // pointing at the file. Transcript-mode replay leaves the hint
+    // off because the full output is already inline.
+
+    #[test]
+    fn render_spillover_annotation_shows_path() {
+        use std::path::PathBuf;
+        let cell = GenericToolCell {
+            name: "exec_shell".to_string(),
+            status: ToolStatus::Success,
+            input_summary: Some("cmd: cargo build --release".to_string()),
+            output: Some("very large output...".to_string()),
+            prompts: None,
+            spillover_path: Some(PathBuf::from(
+                "/Users/dev/.deepseek/tool_outputs/call-abc12.txt",
+            )),
+        };
+        let lines = cell.lines_with_mode(120, true, super::RenderMode::Live);
+        let joined: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+        assert!(
+            joined.contains("full output:"),
+            "expected annotation prefix: {joined:?}"
+        );
+        assert!(
+            joined.contains("/Users/dev/.deepseek/tool_outputs/call-abc12.txt"),
+            "expected the spillover path: {joined:?}"
+        );
+    }
+
+    #[test]
+    fn render_spillover_annotation_omitted_in_transcript_mode() {
+        use std::path::PathBuf;
+        // Transcript mode is for replay; the full output is already
+        // inline so the annotation would just be redundant.
+        let cell = GenericToolCell {
+            name: "exec_shell".to_string(),
+            status: ToolStatus::Success,
+            input_summary: None,
+            output: Some("output".to_string()),
+            prompts: None,
+            spillover_path: Some(PathBuf::from("/tmp/spill.txt")),
+        };
+        let lines = cell.lines_with_mode(120, true, super::RenderMode::Transcript);
+        let joined: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+        assert!(
+            !joined.contains("full output:"),
+            "annotation should be omitted in transcript mode: {joined:?}"
+        );
+    }
+
+    #[test]
+    fn render_spillover_annotation_omitted_when_no_path_set() {
+        // The common case: most tool results don't trigger spillover.
+        let cell = GenericToolCell {
+            name: "read_file".to_string(),
+            status: ToolStatus::Success,
+            input_summary: None,
+            output: Some("contents".to_string()),
+            prompts: None,
+            spillover_path: None,
+        };
+        let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
+        let joined: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+        assert!(!joined.contains("full output:"), "{joined:?}");
+    }
+
+    #[test]
+    fn render_spillover_annotation_truncates_to_width() {
+        use std::path::PathBuf;
+        let long_path = "/Users/dev/.deepseek/tool_outputs/this-is-a-very-long-tool-call-id-that-will-not-fit-in-narrow-widths.txt";
+        let cell = GenericToolCell {
+            name: "exec_shell".to_string(),
+            status: ToolStatus::Success,
+            input_summary: None,
+            output: Some("output".to_string()),
+            prompts: None,
+            spillover_path: Some(PathBuf::from(long_path)),
+        };
+        let lines = cell.lines_with_mode(40, true, super::RenderMode::Live);
+        let annotation_line = lines
+            .iter()
+            .find(|l| {
+                l.spans
+                    .iter()
+                    .any(|s| s.content.as_ref().contains("full output:"))
+            })
+            .expect("annotation line present");
+        let rendered: String = annotation_line
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        // Width budget is 40; annotation line should be at most ~40 chars.
+        // (Some slack for the prefix; the truncate_text ellipsis costs
+        // 3 cols.)
+        assert!(
+            rendered.chars().count() <= 60,
+            "annotation overflowed at width 40: {} chars: {rendered:?}",
+            rendered.chars().count()
+        );
+    }
+
+    // ---- #409 compact agent_spawn rendering ----
+    //
+    // The DelegateCard owns live state for spawned sub-agents; the
+    // generic tool block previously duplicated that signal at 3-4 lines
+    // per spawn. In live mode we now render a single compact line that
+    // points at the spawned agent id; transcript-mode replay keeps the
+    // full block so debug history is intact.
+
+    #[test]
+    fn extract_agent_id_pulls_id_from_json_output() {
+        let output =
+            r#"{"agent_id": "agent-abc12", "nickname": "Beluga", "model": "deepseek-v4-flash"}"#;
+        assert_eq!(super::extract_agent_id(output), Some("agent-abc12"));
+    }
+
+    #[test]
+    fn extract_agent_id_handles_extra_whitespace() {
+        let output = r#"{
+            "agent_id"   :    "agent-xyz",
+            "model": "x"
+        }"#;
+        assert_eq!(super::extract_agent_id(output), Some("agent-xyz"));
+    }
+
+    #[test]
+    fn extract_agent_id_returns_none_when_missing() {
+        let output = r#"{"nickname": "Orca", "model": "x"}"#;
+        assert!(super::extract_agent_id(output).is_none());
+        assert!(super::extract_agent_id("(not json)").is_none());
+        assert!(super::extract_agent_id("").is_none());
+    }
+
+    #[test]
+    fn extract_agent_id_returns_none_for_empty_id() {
+        let output = r#"{"agent_id": "", "model": "x"}"#;
+        assert!(super::extract_agent_id(output).is_none());
+    }
+
+    #[test]
+    fn agent_spawn_renders_single_compact_line_in_live_mode() {
+        let cell = GenericToolCell {
+            name: "agent_spawn".to_string(),
+            status: ToolStatus::Running,
+            input_summary: Some("prompt: do thing".to_string()),
+            output: Some(
+                r#"{"agent_id": "agent-abc12", "nickname": "Beluga", "model": "deepseek-v4-flash"}"#
+                    .to_string(),
+            ),
+            prompts: None,
+            spillover_path: None,
+        };
+        let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
+        // One header line, no details/args/output expansion.
+        assert_eq!(lines.len(), 1, "expected exactly 1 line, got {:?}", lines);
+        let rendered: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        // Header carries the agent id and the running status.
+        assert!(
+            rendered.contains("agent-abc12"),
+            "expected agent id in header: {rendered:?}"
+        );
+        assert!(
+            rendered.contains("running"),
+            "expected status in header: {rendered:?}"
+        );
+        // No verbose `args:` / `name:` rows.
+        assert!(
+            !rendered.contains("args"),
+            "args should be hidden: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn agent_spawn_pending_render_uses_placeholder_id() {
+        // No output yet → use the … placeholder so the user still sees a
+        // header line during the brief gap between tool-call-started and
+        // the spawn returning the agent_id.
+        let cell = GenericToolCell {
+            name: "agent_spawn".to_string(),
+            status: ToolStatus::Running,
+            input_summary: Some("prompt: do thing".to_string()),
+            output: None,
+            prompts: None,
+            spillover_path: None,
+        };
+        let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
+        assert_eq!(lines.len(), 1);
+        let rendered: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(rendered.contains('\u{2026}'), "{rendered:?}"); // …
+    }
+
+    #[test]
+    fn agent_spawn_transcript_mode_keeps_full_block() {
+        // Transcript mode is for replay/debug — preserve the full block
+        // so session export still carries the args/output verbatim.
+        let cell = GenericToolCell {
+            name: "agent_spawn".to_string(),
+            status: ToolStatus::Success,
+            input_summary: Some("prompt: do thing".to_string()),
+            output: Some(
+                r#"{"agent_id": "agent-abc12", "model": "deepseek-v4-flash"}"#.to_string(),
+            ),
+            prompts: None,
+            spillover_path: None,
+        };
+        let lines = cell.lines_with_mode(80, true, super::RenderMode::Transcript);
+        // Transcript mode emits header + name kv + (no args, output present)
+        // + output rows. At minimum more than the live one-liner.
+        assert!(lines.len() > 1, "expected verbose transcript render");
+    }
+
+    #[test]
+    fn other_tools_are_unaffected_by_agent_spawn_compact_path() {
+        // Only `agent_spawn` is collapsed — `read_file` and friends
+        // continue to render their normal multi-line block in live mode.
+        let cell = GenericToolCell {
+            name: "read_file".to_string(),
+            status: ToolStatus::Success,
+            input_summary: Some("path: foo.rs".to_string()),
+            output: Some("first line\nsecond line\nthird line".to_string()),
+            prompts: None,
+            spillover_path: None,
+        };
+        let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
+        assert!(
+            lines.len() > 1,
+            "non-spawn tools should keep their full block"
+        );
+    }
+
+    // ---- #403 concise todo / checklist update rendering ----
+    //
+    // The tool emits an "Updated todo #N to STATUS" leading line plus a
+    // JSON snapshot. The renderer should detect the prefix and produce
+    // a compact one-line state-change card instead of dumping the full
+    // item list every time.
+
+    #[test]
+    fn parse_update_prefix_recognises_todo_form() {
+        let parsed =
+            super::parse_update_prefix("Updated todo #3 to in_progress\n{ \"items\": [...] }");
+        assert_eq!(
+            parsed,
+            Some(super::ChecklistChange {
+                id: 3,
+                status: "in_progress".to_string(),
+            }),
+        );
+    }
+
+    #[test]
+    fn parse_update_prefix_recognises_checklist_form() {
+        let parsed =
+            super::parse_update_prefix("Updated checklist #7 to completed\n{ \"items\": [] }");
+        assert_eq!(
+            parsed,
+            Some(super::ChecklistChange {
+                id: 7,
+                status: "completed".to_string(),
+            }),
+        );
+    }
+
+    #[test]
+    fn parse_update_prefix_returns_none_for_writes() {
+        // `todo_write` / `checklist_write` outputs don't start with
+        // "Updated …" — they should fall through to the full-card path.
+        assert!(super::parse_update_prefix("{ \"items\": [] }").is_none());
+        assert!(super::parse_update_prefix("Wrote 5 todos\n{}").is_none());
+    }
+
+    #[test]
+    fn parse_update_prefix_returns_none_for_malformed() {
+        // Missing arrow/status → fall through.
+        assert!(super::parse_update_prefix("Updated todo #3\n").is_none());
+        // Non-numeric id → fall through.
+        assert!(super::parse_update_prefix("Updated todo #foo to done\n").is_none());
+    }
+
+    #[test]
+    fn render_checklist_change_card_shows_only_changed_item() {
+        // Build a snapshot with three items; render the change for #2.
+        let snapshot = super::ChecklistSnapshot {
+            items: vec![
+                super::ChecklistItemSnapshot {
+                    content: "Read the spec".to_string(),
+                    status: "completed".to_string(),
+                },
+                super::ChecklistItemSnapshot {
+                    content: "Write the test".to_string(),
+                    status: "in_progress".to_string(),
+                },
+                super::ChecklistItemSnapshot {
+                    content: "Land the PR".to_string(),
+                    status: "pending".to_string(),
+                },
+            ],
+            completion_pct: 33,
+            completed: 1,
+            total: 3,
+        };
+        let change = super::ChecklistChange {
+            id: 2,
+            status: "in_progress".to_string(),
+        };
+        let lines = super::render_checklist_change_card(
+            "todo_update",
+            ToolStatus::Success,
+            &snapshot,
+            &change,
+            80,
+            true,
+        );
+        // Header + change line + summary affordance = 3 lines.
+        assert!(lines.len() >= 3, "expected ≥3 lines, got {}", lines.len());
+
+        // The change line should mention the title and the new status,
+        // and should NOT include the other two item titles (that's the
+        // whole point — concise rendering).
+        let change_line: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(change_line.contains("#2"), "missing id: {change_line:?}");
+        assert!(
+            change_line.contains("Write the test"),
+            "missing title: {change_line:?}"
+        );
+        assert!(
+            change_line.contains("in_progress"),
+            "missing status: {change_line:?}"
+        );
+        assert!(
+            !change_line.contains("Land the PR"),
+            "should not show other items: {change_line:?}"
+        );
+        assert!(
+            !change_line.contains("Read the spec"),
+            "should not show other items: {change_line:?}"
+        );
+
+        // The summary line carries the count + Alt+V hint.
+        let summary_line: String = lines
+            .last()
+            .unwrap()
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(summary_line.contains("3 items"), "{summary_line:?}");
+        assert!(summary_line.contains("Alt+V"), "{summary_line:?}");
+    }
+
+    #[test]
+    fn render_checklist_change_card_handles_missing_title_gracefully() {
+        // If the change targets an out-of-range id, the title falls
+        // back to a placeholder rather than crashing.
+        let snapshot = super::ChecklistSnapshot {
+            items: vec![super::ChecklistItemSnapshot {
+                content: "only item".to_string(),
+                status: "pending".to_string(),
+            }],
+            completion_pct: 0,
+            completed: 0,
+            total: 1,
+        };
+        let change = super::ChecklistChange {
+            id: 99,
+            status: "completed".to_string(),
+        };
+        let lines = super::render_checklist_change_card(
+            "todo_update",
+            ToolStatus::Success,
+            &snapshot,
+            &change,
+            80,
+            true,
+        );
+        let change_line: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(change_line.contains("#99"));
+        assert!(change_line.contains("(missing title)"));
+    }
+
     #[test]
     fn running_status_label_omits_elapsed_below_threshold() {
         assert_eq!(running_status_label_with_elapsed(0), "running");
@@ -3081,6 +3712,7 @@ mod tests {
             input_summary: Some("foo".to_string()),
             output: None,
             prompts: None,
+            spillover_path: None,
         };
         let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
         let header_visible: String = lines[0]
@@ -3107,6 +3739,7 @@ mod tests {
             input_summary: Some("task: compare source trees".to_string()),
             output: None,
             prompts: None,
+            spillover_path: None,
         };
         let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
         let header_visible: String = lines[0]
@@ -3542,6 +4175,7 @@ mod tests {
                 "List the public types in client.rs".to_string(),
                 "Diff this commit against main".to_string(),
             ]),
+            spillover_path: None,
         }));
         let text = lines_text(&cell.lines(80));
 
@@ -3566,6 +4200,7 @@ mod tests {
             input_summary: Some("query: foo".to_string()),
             output: None,
             prompts: None,
+            spillover_path: None,
         }));
         let text = lines_text(&cell.lines(80));
         assert!(text.contains("query: foo"));
@@ -3588,6 +4223,7 @@ mod tests {
             input_summary: Some("command: git diff --stat".to_string()),
             output: Some(diff_stat.to_string()),
             prompts: None,
+            spillover_path: None,
         }));
 
         let transcript_text = lines_text(&cell.transcript_lines(80));
@@ -3637,6 +4273,7 @@ mod tests {
             input_summary: Some("command: ls".to_string()),
             output: Some(output),
             prompts: None,
+            spillover_path: None,
         }));
 
         let live = cell.lines_with_options(80, TranscriptRenderOptions::default());
@@ -3671,6 +4308,7 @@ mod tests {
             input_summary: Some("command: noisy".to_string()),
             output: Some(output),
             prompts: None,
+            spillover_path: None,
         }));
 
         let live_text =
@@ -3705,6 +4343,7 @@ mod tests {
             input_summary: Some("command: tool".to_string()),
             output: Some(output),
             prompts: None,
+            spillover_path: None,
         }));
 
         let live_text =

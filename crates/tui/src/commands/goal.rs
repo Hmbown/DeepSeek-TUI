@@ -30,10 +30,13 @@ pub fn goal(app: &mut App, arg: Option<&str>) -> CommandResult {
         _ => {
             // Show current goal
             if let Some(ref obj) = app.goal.goal_objective {
+                // #447: render long elapsed times as `2d 3h` rather
+                // than Rust's default Debug `Duration` (which produces
+                // `188415.234s` or similar for multi-day goals).
                 let elapsed = app
                     .goal
                     .goal_started_at
-                    .map(|t| format!("{:?}", t.elapsed()))
+                    .map(|t| crate::tui::notifications::humanize_duration(t.elapsed()))
                     .unwrap_or_else(|| "unknown".to_string());
                 let budget_str = app
                     .goal
@@ -105,6 +108,7 @@ mod tests {
             skip_onboarding: true,
             yolo: false,
             resume_session_id: None,
+            initial_input: None,
         };
         App::new(options, &Config::default())
     }

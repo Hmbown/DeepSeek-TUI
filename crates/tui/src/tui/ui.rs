@@ -189,6 +189,31 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     if use_bracketed_paste {
         execute!(stdout, EnableBracketedPaste)?;
     }
+    // #442: opt into the Kitty keyboard protocol's escape-code
+    // disambiguation so terminals that support it (Kitty, Ghostty,
+    // Alacritty 0.13+, WezTerm, recent Konsole, recent xterm) report
+    // unambiguous events for Option/Alt-modified keys, plain Esc, and
+    // multi-byte sequences. Terminals that don't recognise the escape
+    // silently discard it; behaviour is identical to today on legacy
+    // terminals (iTerm2, Terminal.app, Windows 10 conhost).
+    //
+    // Only `DISAMBIGUATE_ESCAPE_CODES` is pushed — the higher tiers
+    // (`REPORT_EVENT_TYPES`, `REPORT_ALL_KEYS_AS_ESCAPE_CODES`) emit
+    // release events that the existing key handlers would mis-route
+    // as duplicate presses. Best-effort: failure to push is logged
+    // and ignored so a quirky terminal can't block startup.
+    if let Err(err) = execute!(
+        stdout,
+        crossterm::event::PushKeyboardEnhancementFlags(
+            crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+        )
+    ) {
+        tracing::debug!(
+            target: "kitty_keyboard",
+            ?err,
+            "PushKeyboardEnhancementFlags ignored (terminal lacks support)"
+        );
+    }
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     let event_broker = EventBroker::new();
@@ -466,6 +491,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         notes_path: config.notes_path(),
         mcp_config_path: config.mcp_config_path(),
         skills_dir: app.skills_dir.clone(),
+        instructions: config.instructions_paths(),
         // Effectively unlimited. V4 has a 1M context window and the user
         // wants the model running until it's actually done. The previous cap
         // of 100 hit the ceiling on long multi-step plans (wide refactors,
@@ -2436,6 +2462,22 @@ async fn run_event_loop(
                 {
                     app.delete_word_backward();
                 }
+                KeyCode::Char('s') | KeyCode::Char('S')
+                    if key.modifiers == KeyModifiers::CONTROL && !app.input.is_empty() =>
+                {
+                    // #440: park the current draft to the persistent
+                    // stash and clear the composer. Empty composers
+                    // are a no-op so a stray Ctrl+S can't pollute the
+                    // file. Surface a toast so the user sees the
+                    // confirmation (no-op feels broken otherwise).
+                    crate::composer_stash::push_stash(&app.input);
+                    app.clear_input_recoverable();
+                    app.push_status_toast(
+                        "Draft stashed — `/stash pop` to restore",
+                        StatusToastLevel::Info,
+                        Some(3_000),
+                    );
+                }
                 KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     // #379: context-sensitive Ctrl+Y.
                     // When the composer has content → emacs-style yank
@@ -2599,6 +2641,20 @@ pub(crate) fn apply_engine_error_to_app(
     app.streaming_state.reset();
     app.streaming_message_index = None;
     app.streaming_thinking_active_entry = None;
+
+    // #455 (observer-only): fire `on_error` hooks so operators can
+    // page on auth / billing / invalid-request failures without
+    // tailing the audit log. Read-only — the hook can react but not
+    // suppress the error from reaching the transcript. Fast-path
+    // skip when no hooks configured.
+    if app
+        .hooks
+        .has_hooks_for_event(crate::hooks::HookEvent::OnError)
+    {
+        let context = app.base_hook_context().with_error(&message);
+        let _ = app.execute_hooks(crate::hooks::HookEvent::OnError, &context);
+    }
+
     app.add_message(HistoryCell::Error {
         message: message.clone(),
         severity,
@@ -2905,6 +2961,19 @@ async fn dispatch_user_message(
     engine_handle: &EngineHandle,
     message: QueuedMessage,
 ) -> Result<()> {
+    // #455 (observer-only): fire `message_submit` hooks before
+    // dispatch. Hooks see the user's display text via the
+    // `with_message` builder. Read-only — they can log, audit, or
+    // notify but cannot mutate the message that goes to the engine.
+    // Fast-path skip when no hooks configured.
+    if app
+        .hooks
+        .has_hooks_for_event(crate::hooks::HookEvent::MessageSubmit)
+    {
+        let context = app.base_hook_context().with_message(&message.display);
+        let _ = app.execute_hooks(crate::hooks::HookEvent::MessageSubmit, &context);
+    }
+
     // Set immediately to prevent double-dispatch before TurnStarted event arrives.
     app.is_loading = true;
     app.last_send_at = Some(Instant::now());
@@ -3916,6 +3985,10 @@ async fn handle_mcp_ui_action(
                     "MCP discovery refreshed for the UI. Restart the TUI after config edits to rebuild the model-visible MCP tool pool.".to_string(),
                 );
             }
+            // Keep the boot-time MCP-count chip in sync with the live
+            // snapshot so footers and panels reflect post-/mcp edits
+            // (#502).
+            app.mcp_configured_count = snapshot.servers.len();
             app.mcp_snapshot = Some(snapshot.clone());
             open_mcp_manager_pager(app, &snapshot);
         }
@@ -5224,6 +5297,11 @@ fn pause_terminal(
     use_mouse_capture: bool,
     use_bracketed_paste: bool,
 ) -> Result<()> {
+    // #443: pop keyboard enhancement flags before handing the terminal
+    // to a child process so it doesn't inherit a half-configured input
+    // mode. Best-effort — terminals that didn't accept the flags
+    // silently ignore the pop. Matches the shutdown and panic paths.
+    let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
     disable_raw_mode()?;
     if use_alt_screen {
         execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -6718,6 +6796,33 @@ fn open_tool_details_pager(app: &mut App) -> bool {
     open_details_pager_for_cell(app, cell_index)
 }
 
+/// Build the trailing "Spillover" section for the tool-details pager
+/// (#500). Returns `None` when the cell at `cell_index` is not a
+/// `GenericToolCell` with a recorded spillover path, or when the
+/// spillover file is missing or unreadable. Failures fall back to a
+/// short notice in the section so the user understands why the full
+/// content can't be loaded — better than silent truncation.
+fn spillover_pager_section(app: &App, cell_index: usize) -> Option<String> {
+    use crate::tui::history::{GenericToolCell, HistoryCell, ToolCell};
+
+    let cell = app.cell_at_virtual_index(cell_index)?;
+    let HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+        spillover_path: Some(path),
+        ..
+    })) = cell
+    else {
+        return None;
+    };
+    let path_str = path.display().to_string();
+    let body = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) => format!("(could not read spillover file: {err})"),
+    };
+    Some(format!(
+        "── Full output (spillover) ──\nFile: {path_str}\n\n{body}"
+    ))
+}
+
 fn open_details_pager_for_cell(app: &mut App, cell_index: usize) -> bool {
     if let Some(detail) = app.tool_detail_record_for_cell(cell_index) {
         let input = serde_json::to_string_pretty(&detail.input)
@@ -6726,10 +6831,25 @@ fn open_details_pager_for_cell(app: &mut App, cell_index: usize) -> bool {
             "(not available)".to_string(),
             std::string::ToString::to_string,
         );
-        let content = format!(
-            "Tool ID: {}\nTool: {}\n\nInput:\n{}\n\nOutput:\n{}",
-            detail.tool_id, detail.tool_name, input, output
-        );
+
+        // #500: when the tool result was spilled to disk, fold the full
+        // file content into the pager body so the user can see what was
+        // elided (the model only ever saw the head). The truncated head
+        // stays above as `Output:` so the user can compare what the
+        // model received against the full payload.
+        let spillover_section = spillover_pager_section(app, cell_index);
+
+        let content = if let Some(section) = spillover_section {
+            format!(
+                "Tool ID: {}\nTool: {}\n\nInput:\n{}\n\nOutput:\n{}\n\n{}",
+                detail.tool_id, detail.tool_name, input, output, section
+            )
+        } else {
+            format!(
+                "Tool ID: {}\nTool: {}\n\nInput:\n{}\n\nOutput:\n{}",
+                detail.tool_id, detail.tool_name, input, output
+            )
+        };
 
         let width = app
             .viewport

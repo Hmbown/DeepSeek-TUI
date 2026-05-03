@@ -35,7 +35,6 @@ crossterm = "0.28"
 dotenvy = "0.15.7"
 dirs = "6.0.0"
 futures-util = "0.3.31"
-indicatif = "0.18.0"
 ratatui = "0.29"
 regex = "1.11"
 reqwest = { version = "0.13.1", default-features = false, features = ["blocking", "json", "stream", "multipart", "native-tls", "http2"] }
