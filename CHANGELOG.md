@@ -228,6 +228,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   surface from #460 stays as v0.8.9 follow-up. Available via
   `/hooks` or `/hooks list`; aliased to `/hook`. Localized in
   en/ja/zh-Hans/pt-BR.
+- **`deepseek doctor` reports cross-tool skill dirs** (#432
+  follow-up) — both the human-readable and JSON outputs now
+  surface `.opencode/skills/` and `.claude/skills/` presence /
+  count, so operators can confirm at a glance whether any
+  cross-tool skill folder is contributing to the merged
+  catalogue. Empty dirs are omitted from the human-readable
+  output to keep the report scannable; JSON always emits all
+  five slots (`global`, `agents`, `local`, `opencode`,
+  `claude`) for stable machine consumption.
 - **RLM tool family** (#512) — `rlm` tool cards map to
   `ToolFamily::Rlm` and render `rlm`, not `swarm`. Stale "swarm"
   wording cleaned out of docs / comments / tests.

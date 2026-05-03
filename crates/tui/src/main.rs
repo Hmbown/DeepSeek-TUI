@@ -1633,6 +1633,12 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     let global_skills_dir = config.skills_dir();
     let agents_skills_dir = workspace.join(".agents").join("skills");
     let local_skills_dir = workspace.join("skills");
+    // #432: cross-tool skill discovery dirs. Presence is reported here
+    // even though they sit lower in the precedence chain so users can
+    // see at a glance whether a `.opencode/skills/` or `.claude/skills/`
+    // directory is contributing to the merged catalogue.
+    let opencode_skills_dir = workspace.join(".opencode").join("skills");
+    let claude_skills_dir = workspace.join(".claude").join("skills");
     let selected_skills_dir = if agents_skills_dir.exists() {
         &agents_skills_dir
     } else if local_skills_dir.exists() {
@@ -1689,6 +1695,26 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             "  {} global skills dir not found at {}",
             "·".dimmed(),
             crate::utils::display_path(&global_skills_dir)
+        );
+    }
+
+    // #432: only print interop dirs when they're populated — empty
+    // .opencode/.claude folders are common and would just clutter
+    // the report with false-positive "absent" lines.
+    if opencode_skills_dir.exists() {
+        println!(
+            "  {} .opencode skills dir found at {} ({} items)",
+            "✓".truecolor(aqua_r, aqua_g, aqua_b),
+            crate::utils::display_path(&opencode_skills_dir),
+            describe_dir(&opencode_skills_dir)
+        );
+    }
+    if claude_skills_dir.exists() {
+        println!(
+            "  {} .claude skills dir found at {} ({} items)",
+            "✓".truecolor(aqua_r, aqua_g, aqua_b),
+            crate::utils::display_path(&claude_skills_dir),
+            describe_dir(&claude_skills_dir)
         );
     }
 
@@ -1837,6 +1863,12 @@ fn run_doctor_json(
     let global_skills_dir = config.skills_dir();
     let agents_skills_dir = workspace.join(".agents").join("skills");
     let local_skills_dir = workspace.join("skills");
+    // #432: cross-tool skill discovery dirs surface in the JSON
+    // report so external dashboards can see whether any
+    // `.opencode/skills/` or `.claude/skills/` content is contributing
+    // to the merged catalogue.
+    let opencode_skills_dir = workspace.join(".opencode").join("skills");
+    let claude_skills_dir = workspace.join(".claude").join("skills");
     let selected_skills_dir = if agents_skills_dir.exists() {
         agents_skills_dir.clone()
     } else if local_skills_dir.exists() {
@@ -1908,6 +1940,16 @@ fn run_doctor_json(
                 "path": local_skills_dir.display().to_string(),
                 "present": local_skills_dir.exists(),
                 "count": skills_count_for(&local_skills_dir),
+            },
+            "opencode": {
+                "path": opencode_skills_dir.display().to_string(),
+                "present": opencode_skills_dir.exists(),
+                "count": skills_count_for(&opencode_skills_dir),
+            },
+            "claude": {
+                "path": claude_skills_dir.display().to_string(),
+                "present": claude_skills_dir.exists(),
+                "count": skills_count_for(&claude_skills_dir),
             },
         },
         "tools": {
