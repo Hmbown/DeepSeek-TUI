@@ -1205,6 +1205,18 @@ impl GenericToolCell {
         if let Some(lines) = self.try_render_as_checklist(width, low_motion, mode) {
             return lines;
         }
+
+        // Issue #409: `agent_spawn` already gets a dedicated `DelegateCard`
+        // that owns the live action tree, status, and final summary. The
+        // generic tool block for the same call duplicates that signal at
+        // 3-4 lines per spawn — N parallel spawns multiply the noise. In
+        // live mode, render one compact summary line and let the
+        // DelegateCard be the source of truth. Transcript mode keeps the
+        // full block so session replay remains complete.
+        if matches!(mode, RenderMode::Live) && self.name == "agent_spawn" {
+            return self.render_agent_spawn_compact(low_motion);
+        }
+
         let mut lines = Vec::new();
         // Map the actual tool name (e.g. `agent_spawn`, `apply_patch`) to a
         // family rather than the catch-all `"Tool"` title — this is what
@@ -1292,6 +1304,32 @@ impl GenericToolCell {
         lines
     }
 
+    /// Render `agent_spawn` as a single compact summary line for live
+    /// mode (#409). The companion `DelegateCard` already carries the
+    /// live action tree, status, and final summary; this line is just
+    /// the pointer that says "a spawn happened, here's the agent id".
+    ///
+    /// Output shape (header):
+    ///   `◐ delegate · agent_spawn  agent-abc12  [running]`
+    /// Falls back to a placeholder when the spawn is still pending and
+    /// no agent id has been assigned yet.
+    fn render_agent_spawn_compact(&self, low_motion: bool) -> Vec<Line<'static>> {
+        let family = crate::tui::widgets::tool_card::ToolFamily::Delegate;
+        let agent_id = self
+            .output
+            .as_deref()
+            .and_then(extract_agent_id)
+            .unwrap_or("…");
+        vec![render_tool_header_with_family_and_summary(
+            family,
+            Some(agent_id),
+            tool_status_label(self.status),
+            self.status,
+            None,
+            low_motion,
+        )]
+    }
+
     /// If this cell is a checklist/todo write/add/update and the output is
     /// parseable as a checklist snapshot, render a purpose-built checklist
     /// card instead of the generic `name: ... { json }` block (issue #241).
@@ -1336,6 +1374,28 @@ impl GenericToolCell {
             mode,
         ))
     }
+}
+
+/// Pull the `agent_id` field out of an `agent_spawn` tool output. The
+/// tool emits structured JSON shaped like
+/// `{"agent_id": "agent-abc12", "nickname": "...", "model": "..."}` so we
+/// look for the `agent_id` key and return its string value.
+///
+/// Returns `None` for outputs we can't parse as JSON or that lack the
+/// expected key — the caller falls back to a placeholder so a still-pending
+/// spawn renders cleanly.
+fn extract_agent_id(output: &str) -> Option<&str> {
+    // Cheap, deterministic, no allocations: scan for the literal key.
+    // Avoids dragging serde_json into a render hot path on every frame.
+    let key = "\"agent_id\"";
+    let key_idx = output.find(key)?;
+    let rest = &output[key_idx + key.len()..];
+    let colon = rest.find(':')?;
+    let after_colon = rest[colon + 1..].trim_start();
+    let after_colon = after_colon.strip_prefix('"')?;
+    let end = after_colon.find('"')?;
+    let id = &after_colon[..end];
+    (!id.is_empty()).then_some(id)
 }
 
 fn is_checklist_tool_name(name: &str) -> bool {
@@ -2952,6 +3012,131 @@ mod tests {
     // Below 3s the label stays "running" — quick reads/greps shouldn't
     // visually churn. From 3s onward the badge appears and ticks each
     // second so the user can tell the call hasn't hung.
+    // ---- #409 compact agent_spawn rendering ----
+    //
+    // The DelegateCard owns live state for spawned sub-agents; the
+    // generic tool block previously duplicated that signal at 3-4 lines
+    // per spawn. In live mode we now render a single compact line that
+    // points at the spawned agent id; transcript-mode replay keeps the
+    // full block so debug history is intact.
+
+    #[test]
+    fn extract_agent_id_pulls_id_from_json_output() {
+        let output =
+            r#"{"agent_id": "agent-abc12", "nickname": "Beluga", "model": "deepseek-v4-flash"}"#;
+        assert_eq!(super::extract_agent_id(output), Some("agent-abc12"));
+    }
+
+    #[test]
+    fn extract_agent_id_handles_extra_whitespace() {
+        let output = r#"{
+            "agent_id"   :    "agent-xyz",
+            "model": "x"
+        }"#;
+        assert_eq!(super::extract_agent_id(output), Some("agent-xyz"));
+    }
+
+    #[test]
+    fn extract_agent_id_returns_none_when_missing() {
+        let output = r#"{"nickname": "Orca", "model": "x"}"#;
+        assert!(super::extract_agent_id(output).is_none());
+        assert!(super::extract_agent_id("(not json)").is_none());
+        assert!(super::extract_agent_id("").is_none());
+    }
+
+    #[test]
+    fn extract_agent_id_returns_none_for_empty_id() {
+        let output = r#"{"agent_id": "", "model": "x"}"#;
+        assert!(super::extract_agent_id(output).is_none());
+    }
+
+    #[test]
+    fn agent_spawn_renders_single_compact_line_in_live_mode() {
+        let cell = GenericToolCell {
+            name: "agent_spawn".to_string(),
+            status: ToolStatus::Running,
+            input_summary: Some("prompt: do thing".to_string()),
+            output: Some(
+                r#"{"agent_id": "agent-abc12", "nickname": "Beluga", "model": "deepseek-v4-flash"}"#
+                    .to_string(),
+            ),
+            prompts: None,
+        };
+        let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
+        // One header line, no details/args/output expansion.
+        assert_eq!(lines.len(), 1, "expected exactly 1 line, got {:?}", lines);
+        let rendered: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        // Header carries the agent id and the running status.
+        assert!(
+            rendered.contains("agent-abc12"),
+            "expected agent id in header: {rendered:?}"
+        );
+        assert!(
+            rendered.contains("running"),
+            "expected status in header: {rendered:?}"
+        );
+        // No verbose `args:` / `name:` rows.
+        assert!(
+            !rendered.contains("args"),
+            "args should be hidden: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn agent_spawn_pending_render_uses_placeholder_id() {
+        // No output yet → use the … placeholder so the user still sees a
+        // header line during the brief gap between tool-call-started and
+        // the spawn returning the agent_id.
+        let cell = GenericToolCell {
+            name: "agent_spawn".to_string(),
+            status: ToolStatus::Running,
+            input_summary: Some("prompt: do thing".to_string()),
+            output: None,
+            prompts: None,
+        };
+        let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
+        assert_eq!(lines.len(), 1);
+        let rendered: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(rendered.contains('\u{2026}'), "{rendered:?}"); // …
+    }
+
+    #[test]
+    fn agent_spawn_transcript_mode_keeps_full_block() {
+        // Transcript mode is for replay/debug — preserve the full block
+        // so session export still carries the args/output verbatim.
+        let cell = GenericToolCell {
+            name: "agent_spawn".to_string(),
+            status: ToolStatus::Success,
+            input_summary: Some("prompt: do thing".to_string()),
+            output: Some(
+                r#"{"agent_id": "agent-abc12", "model": "deepseek-v4-flash"}"#.to_string(),
+            ),
+            prompts: None,
+        };
+        let lines = cell.lines_with_mode(80, true, super::RenderMode::Transcript);
+        // Transcript mode emits header + name kv + (no args, output present)
+        // + output rows. At minimum more than the live one-liner.
+        assert!(lines.len() > 1, "expected verbose transcript render");
+    }
+
+    #[test]
+    fn other_tools_are_unaffected_by_agent_spawn_compact_path() {
+        // Only `agent_spawn` is collapsed — `read_file` and friends
+        // continue to render their normal multi-line block in live mode.
+        let cell = GenericToolCell {
+            name: "read_file".to_string(),
+            status: ToolStatus::Success,
+            input_summary: Some("path: foo.rs".to_string()),
+            output: Some("first line\nsecond line\nthird line".to_string()),
+            prompts: None,
+        };
+        let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
+        assert!(
+            lines.len() > 1,
+            "non-spawn tools should keep their full block"
+        );
+    }
+
     // ---- #403 concise todo / checklist update rendering ----
     //
     // The tool emits an "Updated todo #N to STATUS" leading line plus a
