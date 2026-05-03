@@ -1560,11 +1560,18 @@ impl ToolSpec for ExecShellTool {
         }
 
         let policy_override = context.elevated_sandbox_policy.clone();
-        let working_dir = input
+        let working_dir = match input
             .get("cwd")
             .or_else(|| input.get("working_dir"))
             .and_then(serde_json::Value::as_str)
-            .map(str::to_string);
+        {
+            Some(dir) => {
+                // Validate cwd against workspace boundary (same as file tools)
+                let resolved = context.resolve_path(dir)?;
+                Some(resolved.to_string_lossy().to_string())
+            }
+            None => None,
+        };
 
         let result = if interactive {
             let mut manager = context
