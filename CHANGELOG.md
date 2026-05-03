@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.7] - 2026-05-03
+
+### Fixed
+- **Selection across transcript cell types** — the selection-tightening from
+  v0.8.6 (#383) restricted copy/select to user and assistant message bodies
+  only, so text in system notes, thinking blocks, and tool output could not be
+  copied. v0.8.7 removes the body-start gate; the rendered transcript block is
+  fully selectable again.
+
 ## [0.8.6] - 2026-05-03
 
 ### Added

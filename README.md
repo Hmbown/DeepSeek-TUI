@@ -140,6 +140,19 @@ cargo install --path crates/tui --locked   # requires Rust 1.85+
 
 ---
 
+## What's new in v0.8.7
+
+Quick patch on top of v0.8.6 to unblock copy/select.
+
+### ✂️ Selection works across the whole transcript
+
+The selection-tightening from v0.8.6 restricted copy/select to user and
+assistant message bodies, which made it impossible to copy text out of
+system notes, thinking blocks, or tool output. v0.8.7 drops that gate so
+the rendered transcript block is selectable end-to-end again.
+
+Full changelog: [CHANGELOG.md](CHANGELOG.md).
+
 ## What's new in v0.8.6
 
 ### 📝 AGENTS.md bootstrap (`/init`)
