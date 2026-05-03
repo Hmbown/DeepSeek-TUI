@@ -1296,8 +1296,8 @@ impl Config {
     }
 
     /// Return the maximum number of concurrent sub-agents.
-    /// Checks [subagents] max_concurrent first, then top-level max_subagents,
-    /// then falls back to DEFAULT_MAX_SUBAGENTS.
+    /// Checks `[subagents] max_concurrent` first, then top-level `max_subagents`,
+    /// then falls back to `DEFAULT_MAX_SUBAGENTS`.
     #[must_use]
     pub fn max_subagents(&self) -> usize {
         // Check [subagents] max_concurrent first
