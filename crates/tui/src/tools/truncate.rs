@@ -337,7 +337,17 @@ mod tests {
             let body = fs::read_to_string(&path).unwrap();
             assert_eq!(body, "hello world");
             // Directory landed under `<HOME>/.deepseek/tool_outputs/`.
-            assert!(path.to_string_lossy().contains(".deepseek/tool_outputs"));
+            // Compare components instead of a substring on `to_string_lossy`
+            // — Windows uses `\` as the separator so a `/` substring match
+            // would falsely fail there.
+            let components: Vec<&str> = path
+                .components()
+                .filter_map(|c| c.as_os_str().to_str())
+                .collect();
+            assert!(
+                components.contains(&".deepseek") && components.contains(&"tool_outputs"),
+                "spillover path missing expected `.deepseek/tool_outputs/...` segments: {path:?}"
+            );
         });
     }
 
@@ -412,7 +422,12 @@ mod tests {
         });
     }
 
+    // The mtime backdate uses utimensat (Unix-only). On Windows the
+    // filetime_set_modified helper is a no-op, so the prune wouldn't see
+    // any stale files. Gate the whole test on `cfg(unix)` instead of
+    // testing a no-op path that can't fail meaningfully.
     #[test]
+    #[cfg(unix)]
     fn prune_older_than_keeps_fresh_files_drops_stale_ones() {
         let _g = setup();
         let tmp = tempdir().unwrap();
