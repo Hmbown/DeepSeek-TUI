@@ -117,6 +117,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without having to discover them from `docs/SUBAGENTS.md`. Adds
   the long-form aliases (`builder` / `validator` / `tester`) on
   `agent_assign` for parity with the alias map.
+- **Multi-day duration formatting** (#447) — `humanize_duration`
+  now caps at two units and promotes through h/d/w boundaries.
+  Long-running sessions render as `2d 3h` instead of `188415s`,
+  and the previous "192m 30s" cycle output becomes `3h 12m`. The
+  `/goal` status line picks up the same formatter so multi-day
+  goal-elapsed times stay readable.
 - **RLM tool family** (#512) — `rlm` tool cards map to
   `ToolFamily::Rlm` and render `rlm`, not `swarm`. Stale "swarm"
   wording cleaned out of docs / comments / tests.

@@ -118,22 +118,67 @@ pub fn notify_done(
     notify_done_to(method, in_tmux, msg, threshold, elapsed, &mut io::stdout());
 }
 
-/// Return a human-readable duration string, e.g. `"1m 12s"` or `"45s"`.
+/// Return a human-readable duration string, capped at two units so
+/// it stays compact in headers and notifications.
+///
+/// Examples:
+/// * `"45s"`, `"1m"`, `"1m 12s"`
+/// * `"1h"`, `"3h 12m"` (#447 — was previously `"192m"` form)
+/// * `"1d"`, `"2d 5h"` (#447 — multi-day sessions/cycles)
+/// * `"1w"`, `"3w 2d"` (#447 — long-running automations)
+///
+/// The output drops the secondary unit when it's zero, so `"1h"`
+/// rather than `"1h 0m"`. Sub-minute precision is dropped at the
+/// hour mark and above; the goal is "is this a couple of hours or
+/// a couple of days," not stopwatch accuracy.
 #[must_use]
 pub fn humanize_duration(d: Duration) -> String {
+    const MINUTE: u64 = 60;
+    const HOUR: u64 = 60 * MINUTE;
+    const DAY: u64 = 24 * HOUR;
+    const WEEK: u64 = 7 * DAY;
+
     let total = d.as_secs();
     if total == 0 {
         return "0s".to_string();
     }
-    let minutes = total / 60;
-    let seconds = total % 60;
-    if minutes == 0 {
-        format!("{seconds}s")
-    } else if seconds == 0 {
-        format!("{minutes}m")
-    } else {
-        format!("{minutes}m {seconds}s")
+    if total >= WEEK {
+        let w = total / WEEK;
+        let days = (total % WEEK) / DAY;
+        return if days == 0 {
+            format!("{w}w")
+        } else {
+            format!("{w}w {days}d")
+        };
     }
+    if total >= DAY {
+        let days = total / DAY;
+        let h = (total % DAY) / HOUR;
+        return if h == 0 {
+            format!("{days}d")
+        } else {
+            format!("{days}d {h}h")
+        };
+    }
+    if total >= HOUR {
+        let h = total / HOUR;
+        let m = (total % HOUR) / MINUTE;
+        return if m == 0 {
+            format!("{h}h")
+        } else {
+            format!("{h}h {m}m")
+        };
+    }
+    if total >= MINUTE {
+        let m = total / MINUTE;
+        let s = total % MINUTE;
+        return if s == 0 {
+            format!("{m}m")
+        } else {
+            format!("{m}m {s}s")
+        };
+    }
+    format!("{total}s")
 }
 
 #[cfg(test)]
@@ -246,11 +291,51 @@ mod tests {
     }
 
     #[test]
-    fn humanize_duration_formats_correctly() {
+    fn humanize_duration_seconds_and_minutes() {
         assert_eq!(humanize_duration(Duration::from_secs(0)), "0s");
         assert_eq!(humanize_duration(Duration::from_secs(45)), "45s");
         assert_eq!(humanize_duration(Duration::from_secs(60)), "1m");
         assert_eq!(humanize_duration(Duration::from_secs(72)), "1m 12s");
-        assert_eq!(humanize_duration(Duration::from_secs(3661)), "61m 1s");
+        // 59m 59s — still under the hour boundary.
+        assert_eq!(humanize_duration(Duration::from_secs(3599)), "59m 59s");
+    }
+
+    #[test]
+    fn humanize_duration_promotes_to_hours_at_one_hour() {
+        // 3661s = 1h 1m 1s — under the new format the seconds fall
+        // off; we keep just the top two units at the hour mark.
+        assert_eq!(humanize_duration(Duration::from_secs(3661)), "1h 1m");
+        assert_eq!(humanize_duration(Duration::from_secs(3600)), "1h");
+        assert_eq!(humanize_duration(Duration::from_secs(7200)), "2h");
+        assert_eq!(humanize_duration(Duration::from_secs(7320)), "2h 2m");
+        // 3h 12m — the previous "192m 30s" case that motivated #447.
+        assert_eq!(humanize_duration(Duration::from_secs(11_550)), "3h 12m");
+    }
+
+    #[test]
+    fn humanize_duration_handles_multi_day_sessions() {
+        // Exactly one day.
+        assert_eq!(humanize_duration(Duration::from_secs(86_400)), "1d");
+        // 1d 1h.
+        assert_eq!(humanize_duration(Duration::from_secs(90_000)), "1d 1h");
+        // 2d 5h — the two-tier rule drops minutes/seconds.
+        assert_eq!(
+            humanize_duration(Duration::from_secs(2 * 86_400 + 5 * 3600 + 17 * 60)),
+            "2d 5h"
+        );
+    }
+
+    #[test]
+    fn humanize_duration_promotes_to_weeks_after_seven_days() {
+        assert_eq!(humanize_duration(Duration::from_secs(604_800)), "1w");
+        assert_eq!(
+            humanize_duration(Duration::from_secs(604_800 + 86_400)),
+            "1w 1d"
+        );
+        // 3w 2d — long-running automation case.
+        assert_eq!(
+            humanize_duration(Duration::from_secs(3 * 604_800 + 2 * 86_400 + 17 * 3600)),
+            "3w 2d"
+        );
     }
 }
