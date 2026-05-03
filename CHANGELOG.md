@@ -57,11 +57,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`docs/MEMORY.md`** — user-facing memory feature documentation.
 - **Competitive analysis doc** — `docs/COMPETITIVE_ANALYSIS.md`
   catalogues capability matrix vs OpenCode and Codex CLI.
-- **Session-prune helper** (#406 phase-1) —
-  `SessionManager::prune_sessions_older_than(max_age)` with 5 unit
-  tests pinning the contract. Building block for the v0.8.9
-  auto-archive design; currently unwired pending retention-policy
-  decisions.
+- **Session prune helper + `/sessions prune <days>`** (#406 phase-1) —
+  drops persisted sessions older than N days from
+  `~/.deepseek/sessions/`. Skips the checkpoint subdirectory and
+  compares against metadata `updated_at` (not fs mtime, which can
+  lie after an rsync). 10 total tests cover the helper's contract
+  and the slash-command dispatch surface. Phase 2 (boot-prune +
+  retention policy) stays v0.8.9 work.
 - **`deepseek doctor --json`** now surfaces a `memory` block
   (`enabled` / `path` / `file_present`) so operators can verify
   memory configuration without booting the TUI.
