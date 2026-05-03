@@ -89,7 +89,13 @@ fn show_single_setting(app: &App, key: &str) -> CommandResult {
         }
     }
     let value = match key.as_str() {
-        "model" => Some(app.model.clone()),
+        "model" => {
+            if app.auto_model {
+                Some("auto (auto-select by request complexity)".to_string())
+            } else {
+                Some(app.model.clone())
+            }
+        }
         "approval_mode" | "approval" => Some(app.approval_mode.label().to_string()),
         "locale" | "language" => Some(locale_display(app.ui_locale).to_string()),
         "auto_compact" | "compact" => {
@@ -237,6 +243,20 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
 
     match key.as_str() {
         "model" => {
+            // Support "/model auto" — auto-select model based on request complexity
+            if value.trim().eq_ignore_ascii_case("auto") {
+                app.auto_model = true;
+                app.model = "auto".to_string();
+                app.update_model_compaction_budget();
+                app.session.last_prompt_tokens = None;
+                app.session.last_completion_tokens = None;
+                return CommandResult::with_message_and_action(
+                    "model = auto (auto-select by request complexity)".to_string(),
+                    AppAction::UpdateCompaction(app.compaction_config()),
+                );
+            }
+            // Clear auto mode when a specific model is set
+            app.auto_model = false;
             let Some(model) = normalize_model_name(value) else {
                 return CommandResult::error(format!(
                     "Invalid model '{value}'. Expected a DeepSeek model ID. Common models: {}",
@@ -245,8 +265,8 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
             };
             app.model = model.clone();
             app.update_model_compaction_budget();
-            app.last_prompt_tokens = None;
-            app.last_completion_tokens = None;
+            app.session.last_prompt_tokens = None;
+            app.session.last_completion_tokens = None;
             return CommandResult::with_message_and_action(
                 format!("model = {model}"),
                 AppAction::UpdateCompaction(app.compaction_config()),
@@ -367,8 +387,8 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
             if let Some(ref model) = settings.default_model {
                 app.model.clone_from(model);
                 app.update_model_compaction_budget();
-                app.last_prompt_tokens = None;
-                app.last_completion_tokens = None;
+                app.session.last_prompt_tokens = None;
+                app.session.last_completion_tokens = None;
                 action = Some(AppAction::UpdateCompaction(app.compaction_config()));
             }
         }
@@ -576,6 +596,78 @@ fn expand_tilde(raw: &str) -> String {
     raw.to_string()
 }
 
+/// Auto-select a model based on request complexity.
+///
+/// Short messages (<100 chars) → Flash (fast & cheap).
+/// Long messages (>500 chars) → Pro (powerful reasoning).
+/// Messages with complex keywords → Pro.
+/// Default → Flash (cost savings).
+pub fn auto_model_heuristic(input: &str, _current_model: &str) -> String {
+    let len = input.chars().count();
+    // Short messages → Flash
+    if len < 100 {
+        return "deepseek-v4-flash".to_string();
+    }
+    // Long complex requests → Pro
+    if len > 500 {
+        return "deepseek-v4-pro".to_string();
+    }
+    let lower = input.to_lowercase();
+    let complex_keywords = [
+        "refactor",
+        "architecture",
+        "design",
+        "debug",
+        "security",
+        "review",
+        "audit",
+        "migrate",
+        "optimize",
+        "rewrite",
+        "implement",
+        "analyze",
+    ];
+    if complex_keywords.iter().any(|kw| lower.contains(kw)) {
+        return "deepseek-v4-pro".to_string();
+    }
+    // Default to Flash for cost savings
+    "deepseek-v4-flash".to_string()
+}
+
+/// Toggle LSP diagnostics on/off or show status.
+///
+/// - `/lsp on` — enable inline LSP diagnostics
+/// - `/lsp off` — disable inline LSP diagnostics
+/// - `/lsp status` — show whether diagnostics are currently enabled
+pub fn lsp_command(app: &mut App, arg: Option<&str>) -> CommandResult {
+    let raw = arg.map(str::trim).unwrap_or("");
+    // Access lsp_manager config through the App's engine handle
+    let current_enabled = app.lsp_enabled;
+
+    match raw {
+        "" | "status" => {
+            let status = if current_enabled { "on" } else { "off" };
+            CommandResult::message(format!(
+                "LSP diagnostics are currently **{status}**.\n\n\
+                 Use `/lsp on` to enable or `/lsp off` to disable inline diagnostics after file edits."
+            ))
+        }
+        "on" | "enable" | "1" | "true" => {
+            app.lsp_enabled = true;
+            CommandResult::message(
+                "LSP diagnostics enabled — file edit results will include compiler errors and warnings when available.",
+            )
+        }
+        "off" | "disable" | "0" | "false" => {
+            app.lsp_enabled = false;
+            CommandResult::message("LSP diagnostics disabled.")
+        }
+        other => CommandResult::error(format!(
+            "Unknown /lsp argument `{other}`. Use `/lsp on`, `/lsp off`, or `/lsp status`."
+        )),
+    }
+}
+
 /// Logout - clear API key and return to onboarding
 pub fn logout(app: &mut App) -> CommandResult {
     match clear_api_key() {
@@ -723,7 +815,7 @@ mod tests {
     #[test]
     fn test_show_config_defaults_to_native() {
         let mut app = create_test_app();
-        app.total_tokens = 1234;
+        app.session.total_tokens = 1234;
         let result = show_config(&mut app, None);
         assert!(result.message.is_none());
         assert!(matches!(result.action, Some(AppAction::OpenConfigView)));

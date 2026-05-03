@@ -1,6 +1,6 @@
 //! TUI rendering helpers for chat history and tool output.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use ratatui::style::{Color, Modifier, Style, Stylize};
@@ -18,6 +18,7 @@ use crate::tui::markdown_render;
 
 // === Constants ===
 
+use std::process::Command;
 const TOOL_COMMAND_LINE_LIMIT: usize = 3;
 const TOOL_OUTPUT_LINE_LIMIT: usize = 6;
 const TOOL_TEXT_LIMIT: usize = 180;
@@ -186,13 +187,19 @@ impl HistoryCell {
                 content,
                 width,
             ),
-            HistoryCell::System { content } => render_message(
-                "Note",
-                system_label_style(),
-                system_body_style(),
-                content,
-                width,
-            ),
+            HistoryCell::System { content } => {
+                if is_cycle_boundary(content) {
+                    render_cycle_boundary(content, width)
+                } else {
+                    render_message(
+                        "Note",
+                        system_label_style(),
+                        system_body_style(),
+                        content,
+                        width,
+                    )
+                }
+            }
             HistoryCell::Error { message, severity } => render_message(
                 error_label_text(*severity),
                 error_label_style(*severity),
@@ -1254,17 +1261,33 @@ impl GenericToolCell {
         }
 
         if let Some(output) = self.output.as_ref() {
-            // Multi-line outputs (diff stats, file lists, todo snapshots) used
-            // to be crushed into one line by `render_compact_kv` because its
-            // wrapper joined the entire string before wrapping. Route through
-            // `render_tool_output_mode` so each `\n` becomes a real row, with
-            // a `+N more lines` affordance in live mode (#80).
-            lines.extend(render_tool_output_mode(
-                output,
-                width,
-                TOOL_OUTPUT_LINE_LIMIT,
-                mode,
-            ));
+            // If the output looks like a unified diff (contains hunk headers),
+            // use the full diff renderer with line numbers and colored gutters
+            // instead of the generic output path (#380).
+            if output_looks_like_diff(output) {
+                let diff_summary = diff_render::diff_summary_label(output);
+                lines.push(render_tool_header_with_summary(
+                    "Diff",
+                    diff_summary.as_deref(),
+                    tool_status_label(self.status),
+                    self.status,
+                    None,
+                    low_motion,
+                ));
+                lines.extend(diff_render::render_diff(output, width));
+            } else {
+                // Multi-line outputs (diff stats, file lists, todo snapshots) used
+                // to be crushed into one line by `render_compact_kv` because its
+                // wrapper joined the entire string before wrapping. Route through
+                // `render_tool_output_mode` so each `\n` becomes a real row, with
+                // a `+N more lines` affordance in live mode (#80).
+                lines.extend(render_tool_output_mode(
+                    output,
+                    width,
+                    TOOL_OUTPUT_LINE_LIMIT,
+                    mode,
+                ));
+            }
         }
         lines
     }
@@ -1304,6 +1327,22 @@ fn is_checklist_tool_name(name: &str) -> bool {
             | "todo_add"
             | "todo_update"
     )
+}
+
+/// Heuristic: does the output look like a unified diff? Returns true when
+/// the output contains at least one hunk header (`@@`) or a `diff --git`
+/// line, which are reliable markers of unified diff content (#380).
+fn output_looks_like_diff(output: &str) -> bool {
+    let mut lines = output.lines();
+    // Check first 5 lines for diff markers
+    for _ in 0..5 {
+        let Some(line) = lines.next() else { break };
+        let trimmed = line.trim();
+        if trimmed.starts_with("@@") || trimmed.starts_with("diff --git") {
+            return true;
+        }
+    }
+    false
 }
 
 #[derive(Debug, Clone)]
@@ -2145,23 +2184,108 @@ fn is_path_or_url_like(line: &str) -> bool {
     has_separator && has_extension
 }
 
+/// Detect whether a system message is a cycle-boundary announcement
+/// (e.g. `─── cycle 0 → 1  (briefing: 2500 tokens) ───`).
+fn is_cycle_boundary(content: &str) -> bool {
+    content.contains("cycle")
+}
+
+/// Render a cycle-boundary system message with distinct visual styling (#395):
+/// full-width line with DEEPSEEK_BLUE text and bold weight, plus a thin
+/// horizontal rule above for visual separation.
+fn render_cycle_boundary(content: &str, width: u16) -> Vec<Line<'static>> {
+    let style = Style::default()
+        .fg(palette::DEEPSEEK_BLUE)
+        .add_modifier(Modifier::BOLD);
+    let rule_style = Style::default().fg(palette::TEXT_DIM);
+    let content_width = usize::from(width.saturating_sub(2).max(1));
+    let mut lines = Vec::new();
+    // Thin horizontal rule above for visual separation
+    if width >= 4 {
+        let rule = "\u{2500}".repeat(content_width);
+        lines.push(Line::from(Span::styled(format!("  {rule}"), rule_style)));
+    }
+    // Cycle boundary text — just the content, full-width
+    let rendered =
+        crate::tui::markdown_render::render_markdown(content, content_width as u16, style);
+    for line in rendered {
+        let mut spans = vec![Span::raw("  ")];
+        spans.extend(line.spans);
+        lines.push(Line::from(spans));
+    }
+    if lines.len() == 1 && width >= 4 {
+        // Only the rule was added (unlikely), but add at least a spacer
+        lines.push(Line::from(""));
+    }
+    lines
+}
+
+/// Detect whether a line contains a `path:line` pattern that could be
+/// opened by `try_open_file_at_line`. Returns a distinctive style
+/// (underline + blue) when the pattern matches, or `None` otherwise.
+/// The style is applied over the existing value style so the line
+/// remains readable.
+fn file_line_style(text: &str) -> Option<Style> {
+    let trimmed = text.trim();
+    if let Some((before, after)) = trimmed.rsplit_once(':')
+        && !before.is_empty()
+        && after.chars().all(|c| c.is_ascii_digit())
+        && looks_like_file_path(before)
+    {
+        Some(
+            Style::default()
+                .fg(palette::DEEPSEEK_SKY)
+                .add_modifier(Modifier::UNDERLINED),
+        )
+    } else {
+        None
+    }
+}
+
+/// Apply inline diff highlighting to a single text line.
+///
+/// Returns the appropriate style for the line based on its prefix:
+/// - Lines starting with `+` (after trimming) => `palette::STATUS_SUCCESS` (green)
+/// - Lines starting with `-` (after trimming) => `palette::STATUS_ERROR` (red)
+/// - Lines starting with `@@` => `palette::DEEPSEEK_SKY` (cyan/blue)
+/// - All other lines => None (use default style)
+fn diff_line_style(text: &str) -> Option<Style> {
+    let trimmed = text.trim_start();
+    if trimmed.starts_with("@@") {
+        Some(Style::default().fg(palette::DEEPSEEK_SKY))
+    } else if trimmed.starts_with('+') && !trimmed.starts_with("+++") {
+        Some(Style::default().fg(palette::STATUS_SUCCESS))
+    } else if trimmed.starts_with('-') && !trimmed.starts_with("---") {
+        Some(Style::default().fg(palette::STATUS_ERROR))
+    } else {
+        None
+    }
+}
+
 fn render_output_row(
     lines: &mut Vec<Line<'static>>,
     label: Option<&str>,
     row: &OutputRow,
     width: u16,
 ) {
+    // #374: apply file:line highlighting when the row text contains
+    // a `path:line` pattern. Diff style takes precedence (colored
+    // prefix lines should stay colored), but if no diff style matched,
+    // check for a file:line pattern and highlight it distinctively.
+    let diff_style = diff_line_style(&row.text);
+    let file_style = file_line_style(&row.text);
+    let value_style = diff_style.or(file_style).unwrap_or_else(tool_value_style);
     if row.intact {
         lines.push(render_card_detail_line_single(
             label,
             &row.text,
-            tool_value_style(),
+            value_style,
         ));
     } else {
         lines.extend(render_card_detail_line(
             label,
             &row.text,
-            tool_value_style(),
+            value_style,
             width,
         ));
     }
@@ -2559,6 +2683,118 @@ fn thinking_state_accent(state: ThinkingVisualState) -> Color {
         ThinkingVisualState::Live => palette::ACCENT_REASONING_LIVE,
         ThinkingVisualState::Done => palette::TEXT_DIM,
         ThinkingVisualState::Idle => palette::TEXT_DIM,
+    }
+}
+
+/// Parse `path:line` patterns from `text` and open the file at the given line
+/// in the user's preferred editor (`$VISUAL` / `$EDITOR` / `vim`).
+///
+/// Scans lines of `text` for patterns like `src/main.rs:42`. Resolves the path
+/// relative to `workspace` (if not absolute) and opens the editor. Returns
+/// `true` if at least one file was opened successfully.
+pub fn try_open_file_at_line(text: &str, workspace: &Path) -> bool {
+    let editor = std::env::var("VISUAL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            std::env::var("EDITOR")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+        })
+        .unwrap_or_else(|| "vim".to_string());
+
+    let mut any_opened = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if let Some((before, after)) = trimmed.rsplit_once(':')
+            && after.chars().all(|c| c.is_ascii_digit())
+        {
+            let line_num: u32 = after.parse().unwrap_or(1);
+            let path_str = before.trim();
+            if !path_str.is_empty() && looks_like_file_path(path_str) {
+                let abs_path = if Path::new(path_str).is_absolute() {
+                    PathBuf::from(path_str)
+                } else {
+                    workspace.join(path_str)
+                };
+                if abs_path.is_file()
+                    && Command::new(&editor)
+                        .arg(format!("+{line_num}"))
+                        .arg(&abs_path)
+                        .spawn()
+                        .is_ok()
+                {
+                    any_opened = true;
+                }
+            }
+        }
+    }
+    any_opened
+}
+
+/// Heuristic check whether a string looks like a file path (contains a
+/// directory separator or a known source file extension).
+fn looks_like_file_path(s: &str) -> bool {
+    if s.contains('/') || s.contains('\\') {
+        return true;
+    }
+    // Check for a known file extension
+    if let Some((_, ext)) = s.rsplit_once('.') {
+        let ext = ext.trim();
+        matches!(
+            ext,
+            "rs" | "toml"
+                | "md"
+                | "sh"
+                | "py"
+                | "js"
+                | "ts"
+                | "json"
+                | "yaml"
+                | "yml"
+                | "css"
+                | "html"
+                | "go"
+                | "c"
+                | "h"
+                | "cpp"
+                | "hpp"
+                | "java"
+                | "kt"
+                | "swift"
+                | "rb"
+                | "php"
+                | "lua"
+                | "zig"
+                | "mod"
+                | "sum"
+                | "lock"
+                | "txt"
+                | "ini"
+                | "cfg"
+                | "conf"
+                | "env"
+                | "gitignore"
+                | "dockerfile"
+                | "sql"
+                | "r"
+                | "ex"
+                | "exs"
+                | "vue"
+                | "svelte"
+                | "tsx"
+                | "jsx"
+                | "scss"
+                | "sass"
+                | "less"
+                | "gradle"
+                | "properties"
+                | "xml"
+                | "proto"
+                | "nix"
+        )
+    } else {
+        false
     }
 }
 

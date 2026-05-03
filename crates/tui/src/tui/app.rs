@@ -286,7 +286,7 @@ impl ComposerHistorySearch {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct InputHistoryDraft {
+pub(crate) struct InputHistoryDraft {
     input: String,
     cursor: usize,
 }
@@ -416,35 +416,32 @@ struct YoloRestoreState {
     approval_mode: ApprovalMode,
 }
 
-/// Global UI state for the TUI.
-#[allow(clippy::struct_excessive_bools)]
-pub struct App {
-    pub mode: AppMode,
+// === Sub-state structs for App field organization (#377) ===
+
+/// Composer input state — grouped fields for the text input area.
+#[derive(Default)]
+pub struct ComposerState {
+    /// Current composer text content.
     pub input: String,
+    /// Cursor position within `input` (in characters).
     pub cursor_position: usize,
     /// Single-entry kill buffer for emacs-style `Ctrl+K` cut / `Ctrl+Y` yank.
-    /// Populated by `kill_to_end_of_line`; restored by `yank`. Persists across
-    /// composer clears (e.g. submit) so a yank can recover an accidental kill.
     pub kill_buffer: String,
     pub paste_burst: PasteBurst,
-    pub history: Vec<HistoryCell>,
-    pub history_version: u64,
-    /// Per-cell revision counter, kept in lockstep with `history`. Bumped only
-    /// for the cell whose content actually changed; appended (with a fresh
-    /// value) when a new cell is pushed; truncated when cells are removed. The
-    /// transcript cache compares each entry against its previously rendered
-    /// revision to skip re-wrap on unchanged cells.
-    ///
-    /// Critical for transcript scroll perf (issue #78): without per-cell
-    /// revisions, every history mutation forces a full re-render of every
-    /// cell, which scales O(N) with transcript length and stalls the UI when
-    /// scrolled far back.
-    pub history_revisions: Vec<u64>,
-    /// Monotonic counter used to issue fresh per-cell revisions. Wrapping is
-    /// fine — the chance of a wrap-around revision collision in a single
-    /// session is astronomical.
-    pub next_history_revision: u64,
-    pub api_messages: Vec<Message>,
+    pub input_history: Vec<String>,
+    pub draft_history: VecDeque<String>,
+    pub history_index: Option<usize>,
+    pub(crate) history_navigation_draft: Option<InputHistoryDraft>,
+    pub composer_history_search: Option<ComposerHistorySearch>,
+    pub selected_attachment_index: Option<usize>,
+    pub slash_menu_selected: usize,
+    pub slash_menu_hidden: bool,
+    pub mention_menu_selected: usize,
+    pub mention_menu_hidden: bool,
+}
+
+/// Viewport/scroll state — fields related to transcript scrolling and caching.
+pub struct ViewportState {
     pub transcript_scroll: TranscriptScroll,
     pub pending_scroll_delta: i32,
     pub mouse_scroll: MouseScrollState,
@@ -455,6 +452,88 @@ pub struct App {
     pub last_transcript_visible: usize,
     pub last_transcript_total: usize,
     pub last_transcript_padding_top: usize,
+}
+
+impl Default for ViewportState {
+    fn default() -> Self {
+        Self {
+            transcript_scroll: TranscriptScroll::to_bottom(),
+            pending_scroll_delta: 0,
+            mouse_scroll: MouseScrollState::new(),
+            transcript_cache: TranscriptViewCache::new(),
+            transcript_selection: TranscriptSelection::default(),
+            last_transcript_area: None,
+            last_transcript_top: 0,
+            last_transcript_visible: 0,
+            last_transcript_total: 0,
+            last_transcript_padding_top: 0,
+        }
+    }
+}
+
+/// Goal mode state (#397).
+#[derive(Debug, Clone, Default)]
+pub struct GoalState {
+    pub goal_objective: Option<String>,
+    pub goal_token_budget: Option<u32>,
+    pub goal_started_at: Option<Instant>,
+}
+
+/// Session cost and token telemetry state.
+#[derive(Debug, Clone)]
+pub struct SessionState {
+    pub session_cost: f64,
+    pub subagent_cost: f64,
+    pub subagent_cost_event_seqs: HashSet<u64>,
+    pub displayed_cost_high_water: f64,
+    pub last_prompt_tokens: Option<u32>,
+    pub last_completion_tokens: Option<u32>,
+    pub last_prompt_cache_hit_tokens: Option<u32>,
+    pub last_prompt_cache_miss_tokens: Option<u32>,
+    pub last_reasoning_replay_tokens: Option<u32>,
+    pub total_tokens: u32,
+    pub total_conversation_tokens: u32,
+    pub turn_cache_history: VecDeque<TurnCacheRecord>,
+}
+
+impl Default for SessionState {
+    fn default() -> Self {
+        Self {
+            session_cost: 0.0,
+            subagent_cost: 0.0,
+            subagent_cost_event_seqs: HashSet::new(),
+            displayed_cost_high_water: 0.0,
+            last_prompt_tokens: None,
+            last_completion_tokens: None,
+            last_prompt_cache_hit_tokens: None,
+            last_prompt_cache_miss_tokens: None,
+            last_reasoning_replay_tokens: None,
+            total_tokens: 0,
+            total_conversation_tokens: 0,
+            turn_cache_history: VecDeque::new(),
+        }
+    }
+}
+
+/// Global UI state for the TUI.
+#[allow(clippy::struct_excessive_bools)]
+pub struct App {
+    pub mode: AppMode,
+    /// Composer sub-state (input, cursor, history, menus).
+    pub composer: ComposerState,
+    /// Viewport sub-state (scroll, cache, selection).
+    pub viewport: ViewportState,
+    /// Goal sub-state.
+    pub goal: GoalState,
+    /// Session sub-state (cost, tokens, telemetry).
+    pub session: SessionState,
+    pub history: Vec<HistoryCell>,
+    pub history_version: u64,
+    /// Per-cell revision counter, kept in lockstep with `history`.
+    pub history_revisions: Vec<u64>,
+    /// Monotonic counter used to issue fresh per-cell revisions.
+    pub next_history_revision: u64,
+    pub api_messages: Vec<Message>,
     pub is_loading: bool,
     /// Degraded connectivity mode; new user inputs are queued for later retry.
     pub offline_mode: bool,
@@ -467,6 +546,11 @@ pub struct App {
     /// Last status text already promoted from `status_message` into toast state.
     pub last_status_message_seen: Option<String>,
     pub model: String,
+    /// When true, the model is auto-selected based on request complexity
+    /// rather than using a fixed model. The `/model auto` command sets this.
+    /// `dispatch_user_message` calls `auto_model_heuristic` to resolve the
+    /// effective model for each outbound message.
+    pub auto_model: bool,
     /// Current API provider (mirrors `Config::api_provider`).
     /// Updated by `/provider` switches so the UI/commands can read the
     /// active backend without re-deriving it from the live config.
@@ -485,12 +569,6 @@ pub struct App {
     pub use_paste_burst_detection: bool,
     #[allow(dead_code)]
     pub system_prompt: Option<SystemPrompt>,
-    pub input_history: Vec<String>,
-    pub draft_history: VecDeque<String>,
-    pub history_index: Option<usize>,
-    history_navigation_draft: Option<InputHistoryDraft>,
-    pub composer_history_search: Option<ComposerHistorySearch>,
-    pub selected_attachment_index: Option<usize>,
     pub auto_compact: bool,
     pub calm_mode: bool,
     pub low_motion: bool,
@@ -506,20 +584,11 @@ pub struct App {
     pub transcript_spacing: TranscriptSpacing,
     pub sidebar_width_percent: u16,
     pub sidebar_focus: SidebarFocus,
-    /// Slash menu selection index in composer.
-    pub slash_menu_selected: usize,
-    /// Temporary hide flag for slash menu until next input edit.
-    pub slash_menu_hidden: bool,
-    /// `@`-mention completion popup selection index in composer.
-    pub mention_menu_selected: usize,
-    /// Temporary hide flag for the @-mention popup until next input edit.
-    pub mention_menu_hidden: bool,
+    /// File-tree pane state. `None` when hidden; `Some` when visible.
+    pub file_tree: Option<crate::tui::file_tree::FileTreeState>,
     #[allow(dead_code)]
     pub compact_threshold: usize,
     pub max_input_history: usize,
-    pub total_tokens: u32,
-    /// Tokens used in the current conversation (reset on clear/load)
-    pub total_conversation_tokens: u32,
     pub allow_shell: bool,
     pub max_subagents: usize,
     /// Cached sub-agent snapshots for UI views.
@@ -535,11 +604,6 @@ pub struct App {
     /// spawned by the same `rlm` invocation route into this card; reset
     /// when a fresh fanout-family tool call starts.
     pub last_fanout_card_index: Option<usize>,
-    /// Highest cumulative session cost ever displayed. Used to keep the
-    /// footer cost monotonic across reconciliation events: provisional
-    /// estimates can be revised, but the visible total never decreases
-    /// during a single session unless explicitly reset (#244).
-    pub displayed_cost_high_water: f64,
     /// Most recently observed sub-agent dispatch tool name (set on
     /// `ToolCallStarted` for `agent_spawn` / `rlm` / etc., cleared
     /// after the first `Started` mailbox envelope routes through it).
@@ -603,12 +667,6 @@ pub struct App {
     pub mcp_restart_required: bool,
     /// Tool execution log
     pub tool_log: Vec<String>,
-    /// Session cost tracking
-    pub session_cost: f64,
-    /// Running cost from active sub-agents (updated live via mailbox).
-    pub subagent_cost: f64,
-    /// Mailbox TokenUsage sequence ids already accounted in subagent_cost.
-    pub subagent_cost_event_seqs: HashSet<u64>,
     /// Active skill to apply to next user message
     pub active_skill: Option<String>,
     /// Tool call cells by tool id (for cells already finalized in `history`).
@@ -685,25 +743,11 @@ pub struct App {
     pub runtime_turn_id: Option<String>,
     /// Current runtime turn status (if known).
     pub runtime_turn_status: Option<String>,
-    /// Provider-reported input tokens from the last completed turn. This is
-    /// telemetry/cost data and may sum repeated stable prefixes across tool
-    /// rounds; active context pressure is estimated from `api_messages`.
-    pub last_prompt_tokens: Option<u32>,
-    /// Provider-reported output tokens from the last completed turn.
-    pub last_completion_tokens: Option<u32>,
-    /// DeepSeek context-cache hit tokens from the last API call. Telemetry only.
-    pub last_prompt_cache_hit_tokens: Option<u32>,
-    /// DeepSeek context-cache miss tokens from the last API call. Telemetry only.
-    pub last_prompt_cache_miss_tokens: Option<u32>,
-    /// Per-turn cache telemetry ring (`/cache` debug surface, #263). Newest
-    /// turn at the back. Capped at [`Self::TURN_CACHE_HISTORY_CAP`].
-    pub turn_cache_history: VecDeque<TurnCacheRecord>,
-    /// Approximate input tokens spent re-sending prior `reasoning_content` on
-    /// the last thinking-mode tool-calling turn (V4 §5.1.1 "Interleaved
-    /// Thinking"). Computed client-side at ~4 chars/token.
-    pub last_reasoning_replay_tokens: Option<u32>,
+
     /// Cached git context snapshot for the footer.
     pub workspace_context: Option<String>,
+    /// Shared cell for async git context updates (#399 S1).
+    pub workspace_context_cell: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     /// Timestamp for cached workspace context.
     pub workspace_context_refreshed_at: Option<Instant>,
     /// Cached background tasks for sidebar rendering.
@@ -741,6 +785,24 @@ pub struct App {
     /// Active cycle configuration (token threshold, briefing cap, per-model
     /// overrides). Loaded from config and forwarded to the engine.
     pub cycle: CycleConfig,
+
+    // === Goal Mode (#397) ===
+    /// Transcript cells the user has collapsed (hidden from view).
+    /// Stores **original** virtual cell indices (pre-filtering).
+    pub collapsed_cells: HashSet<usize>,
+    /// Mapping from filtered cell index → original virtual index.
+    /// Populated during `ChatWidget::new` by filtering out collapsed cells.
+    /// Used by `build_context_menu_entries` to convert line-meta indices
+    /// back to original indices for the `HideCell` / `ShowCell` actions.
+    pub collapsed_cell_map: Vec<usize>,
+
+    /// Whether `/edit` has loaded the last user message into the composer and
+    /// the next submit should replace (not append to) the last exchange.
+    pub edit_in_progress: bool,
+
+    /// Whether LSP diagnostics are currently enabled. Mirrors the config file
+    /// `[lsp].enabled` setting. Toggled at runtime via `/lsp on|off`.
+    pub lsp_enabled: bool,
 }
 
 /// Message queued while the engine is busy.
@@ -758,12 +820,14 @@ pub struct QueuedMessage {
 pub enum SubmitDisposition {
     /// Engine idle and online: send immediately.
     Immediate,
-    /// Offline mode: park on `queued_messages`.
+    /// Park on `queued_messages` (offline, or engine busy — #382).
     Queue,
-    /// Engine busy and online: forward as a mid-turn steer.
+    /// Explicit steer via Ctrl+Enter (#382). Not returned by `decide_submit_disposition`.
+    #[allow(dead_code)]
     Steer,
-    /// Model is actively streaming text; park on `queued_messages` for
-    /// dispatch after TurnComplete.
+    /// Park on `queued_messages` for dispatch after TurnComplete.
+    /// Legacy path; #382 unified busy states under `Queue`.
+    #[allow(dead_code)]
     QueueFollowUp,
 }
 
@@ -819,19 +883,34 @@ pub enum ApiKeyError {
     SaveFailed { source: anyhow::Error },
 }
 
+// === Deref to ComposerState for backward compat ===
+
+impl std::ops::Deref for App {
+    type Target = ComposerState;
+    fn deref(&self) -> &Self::Target {
+        &self.composer
+    }
+}
+
+impl std::ops::DerefMut for App {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.composer
+    }
+}
+
 // === App State ===
 
 impl App {
-    /// Cap on [`Self::turn_cache_history`]. Holds enough turns to debug a long
+    /// Cap on the session turn-cache history. Holds enough turns to debug a long
     /// session without being so large the on-screen `/cache` table wraps.
     pub const TURN_CACHE_HISTORY_CAP: usize = 50;
 
     /// Append a per-turn cache-telemetry record, trimming the oldest entry once
     /// the ring exceeds [`Self::TURN_CACHE_HISTORY_CAP`].
     pub fn push_turn_cache_record(&mut self, record: TurnCacheRecord) {
-        self.turn_cache_history.push_back(record);
-        while self.turn_cache_history.len() > Self::TURN_CACHE_HISTORY_CAP {
-            self.turn_cache_history.pop_front();
+        self.session.turn_cache_history.push_back(record);
+        while self.session.turn_cache_history.len() > Self::TURN_CACHE_HISTORY_CAP {
+            self.session.turn_cache_history.pop_front();
         }
     }
 
@@ -939,27 +1018,33 @@ impl App {
             global_skills_dir
         };
 
+        let input_history = crate::composer_history::load_history();
         Self {
             mode: initial_mode,
-            input: String::new(),
-            cursor_position: 0,
-            kill_buffer: String::new(),
-            paste_burst: PasteBurst::default(),
+            composer: ComposerState {
+                input: String::new(),
+                cursor_position: 0,
+                kill_buffer: String::new(),
+                paste_burst: PasteBurst::default(),
+                input_history,
+                draft_history: VecDeque::new(),
+                history_index: None,
+                history_navigation_draft: None,
+                composer_history_search: None,
+                selected_attachment_index: None,
+                slash_menu_selected: 0,
+                slash_menu_hidden: false,
+                mention_menu_selected: 0,
+                mention_menu_hidden: false,
+            },
+            viewport: ViewportState::default(),
+            goal: GoalState::default(),
+            session: SessionState::default(),
             history: Vec::new(),
             history_version: 0,
             history_revisions: Vec::new(),
             next_history_revision: 1,
             api_messages: Vec::new(),
-            transcript_scroll: TranscriptScroll::to_bottom(),
-            pending_scroll_delta: 0,
-            mouse_scroll: MouseScrollState::new(),
-            transcript_cache: TranscriptViewCache::new(),
-            transcript_selection: TranscriptSelection::default(),
-            last_transcript_area: None,
-            last_transcript_top: 0,
-            last_transcript_visible: 0,
-            last_transcript_total: 0,
-            last_transcript_padding_top: 0,
             is_loading: false,
             offline_mode: false,
             status_message: None,
@@ -967,6 +1052,7 @@ impl App {
             sticky_status: None,
             last_status_message_seen: None,
             model,
+            auto_model: false,
             api_provider: provider,
             reasoning_effort: config
                 .reasoning_effort()
@@ -983,12 +1069,6 @@ impl App {
             use_bracketed_paste,
             use_paste_burst_detection,
             system_prompt: None,
-            input_history: crate::composer_history::load_history(),
-            draft_history: VecDeque::new(),
-            history_index: None,
-            history_navigation_draft: None,
-            composer_history_search: None,
-            selected_attachment_index: None,
             auto_compact,
             calm_mode,
             low_motion,
@@ -1001,21 +1081,15 @@ impl App {
             transcript_spacing,
             sidebar_width_percent,
             sidebar_focus,
-            slash_menu_selected: 0,
-            mention_menu_selected: 0,
-            mention_menu_hidden: false,
-            slash_menu_hidden: false,
+            file_tree: None,
             compact_threshold,
             max_input_history,
-            total_tokens: 0,
-            total_conversation_tokens: 0,
             allow_shell,
             max_subagents,
             subagent_cache: Vec::new(),
             agent_progress: HashMap::new(),
             subagent_card_index: HashMap::new(),
             last_fanout_card_index: None,
-            displayed_cost_high_water: 0.0,
             pending_subagent_dispatch: None,
             agent_activity_started_at: None,
             ui_theme,
@@ -1046,10 +1120,6 @@ impl App {
             backtrack: crate::tui::backtrack::BacktrackState::new(),
             current_session_id: None,
             trust_mode: initial_mode == AppMode::Yolo,
-            // Honour `tui.status_items` from config; fall back to the v0.6.6
-            // default footer composition when unset so upgraders see no
-            // change. Empty `Some(vec![])` is respected (user explicitly
-            // wants a bare footer).
             status_items: config
                 .tui
                 .as_ref()
@@ -1067,9 +1137,6 @@ impl App {
             mcp_snapshot: None,
             mcp_restart_required: false,
             tool_log: Vec::new(),
-            session_cost: 0.0,
-            subagent_cost: 0.0,
-            subagent_cost_event_seqs: HashSet::new(),
             active_skill: None,
             tool_cells: HashMap::new(),
             tool_details_by_cell: HashMap::new(),
@@ -1097,13 +1164,8 @@ impl App {
             turn_started_at: None,
             runtime_turn_id: None,
             runtime_turn_status: None,
-            last_prompt_tokens: None,
-            last_completion_tokens: None,
-            last_prompt_cache_hit_tokens: None,
-            last_prompt_cache_miss_tokens: None,
-            turn_cache_history: VecDeque::new(),
-            last_reasoning_replay_tokens: None,
             workspace_context: None,
+            workspace_context_cell: std::sync::Arc::new(std::sync::Mutex::new(None)),
             workspace_context_refreshed_at: None,
             task_panel: Vec::new(),
             needs_redraw: true,
@@ -1116,6 +1178,10 @@ impl App {
             cycle_count: 0,
             cycle_briefings: Vec::new(),
             cycle: CycleConfig::default(),
+            collapsed_cells: HashSet::new(),
+            collapsed_cell_map: Vec::new(),
+            edit_in_progress: false,
+            lsp_enabled: config.lsp.as_ref().and_then(|l| l.enabled).unwrap_or(true),
         }
     }
 
@@ -1232,28 +1298,35 @@ impl App {
             .with_workspace(self.workspace.clone())
             .with_model(&self.model)
             .with_session_id(self.hooks.session_id())
-            .with_tokens(self.total_tokens)
+            .with_tokens(self.session.total_tokens)
     }
+
+    /// Soft cap on [`Self::history`] length. When history exceeds this count,
+    /// the oldest cells are folded into a single placeholder to bound memory
+    /// and render cost (#399 S2). The cap is generous — 5000 cells is more
+    /// than enough to keep the visible transcript intact across sessions.
+    pub const HISTORY_SOFT_CAP: usize = 5_000;
+
+    /// Number of oldest cells to fold when the soft cap fires. Folding in
+    /// batches amortizes the cost instead of triggering on every push.
+    const HISTORY_FOLD_BATCH: usize = 1_000;
 
     pub fn add_message(&mut self, msg: HistoryCell) {
         let rev = self.fresh_history_revision();
         self.history.push(msg);
         self.history_revisions.push(rev);
         self.history_version = self.history_version.wrapping_add(1);
+
+        // Bound history length: when the soft cap fires, fold the oldest
+        // batch into a single ArchivedContext placeholder.
+        self.maybe_fold_history();
         let selection_has_range = self
+            .viewport
             .transcript_selection
             .ordered_endpoints()
             .is_some_and(|(start, end)| start != end);
-        // Auto-pin to live tail only when:
-        //   1. We're already at the tail (nothing to do otherwise)
-        //   2. The user isn't actively selecting text
-        //   3. The user hasn't scrolled away during this streaming turn
-        // Without (3), pressing Up while a tool result streams in would lose
-        // the keypress: scroll_up sets pending_scroll_delta, but before the
-        // render frame consumes it, mark_history_updated would fire here,
-        // call scroll_to_bottom, and zero the delta.
-        if self.transcript_scroll.is_at_tail()
-            && !self.transcript_selection.dragging
+        if self.viewport.transcript_scroll.is_at_tail()
+            && !self.viewport.transcript_selection.dragging
             && !selection_has_range
             && !self.user_scrolled_during_stream
         {
@@ -1264,23 +1337,23 @@ impl App {
     /// Add `delta` to the parent-turn session cost and bump the displayed
     /// high-water mark so the footer total never reverses (#244).
     pub fn accrue_session_cost(&mut self, delta: f64) {
-        self.session_cost += delta;
+        self.session.session_cost += delta;
         self.refresh_displayed_cost_high_water();
     }
 
     /// Add `delta` to the running sub-agent cost and bump the displayed
     /// high-water mark so the footer total never reverses (#244).
     pub fn accrue_subagent_cost(&mut self, delta: f64) {
-        self.subagent_cost += delta;
+        self.session.subagent_cost += delta;
         self.refresh_displayed_cost_high_water();
     }
 
     /// Recompute the displayed cost high-water mark. Called any time a cost
     /// counter is mutated; never decreases.
     pub fn refresh_displayed_cost_high_water(&mut self) {
-        let current = self.session_cost + self.subagent_cost;
-        if current > self.displayed_cost_high_water {
-            self.displayed_cost_high_water = current;
+        let current = self.session.session_cost + self.session.subagent_cost;
+        if current > self.session.displayed_cost_high_water {
+            self.session.displayed_cost_high_water = current;
         }
     }
 
@@ -1288,8 +1361,123 @@ impl App {
     /// reconciliation events (cache adjustments, provisional → final swaps)
     /// for the lifetime of one session (#244).
     pub fn displayed_session_cost(&self) -> f64 {
-        let current = self.session_cost + self.subagent_cost;
-        current.max(self.displayed_cost_high_water)
+        let current = self.session.session_cost + self.session.subagent_cost;
+        current.max(self.session.displayed_cost_high_water)
+    }
+
+    /// Fold the oldest [`Self::HISTORY_FOLD_BATCH`] cells into a single
+    /// `ArchivedContext` placeholder when history exceeds the soft cap.
+    /// Called from [`Self::add_message`]; the caller is responsible for
+    /// also removing the folded range from any auxiliary per-cell maps.
+    fn maybe_fold_history(&mut self) {
+        if self.history.len() <= Self::HISTORY_SOFT_CAP {
+            return;
+        }
+
+        let fold_count = Self::HISTORY_FOLD_BATCH.min(self.history.len());
+        // Don't fold into the very last cell(s) — keep a buffer of
+        // non-folded cells so the visible transcript tail stays intact.
+        let keep_tail = Self::HISTORY_SOFT_CAP.saturating_sub(Self::HISTORY_FOLD_BATCH);
+        if self.history.len().saturating_sub(fold_count) < keep_tail {
+            return;
+        }
+
+        // Gather the range of cell indices we are folding.
+        let folded: Vec<HistoryCell> = self.history.drain(..fold_count).collect();
+        let folded_revs: Vec<u64> = self.history_revisions.drain(..fold_count).collect();
+        let _ = folded_revs; // revisions are discarded with the cells
+
+        // Shift all per-cell index maps down by `fold_count`.
+        self.shift_history_maps_down(fold_count);
+
+        // Build a single placeholder cell summarizing the folded range.
+        let total_folded = folded.len();
+        let summary = format!(
+            "{total_folded} older transcript cells folded to bound memory. \
+             Use /sessions to load a prior session snapshot if needed."
+        );
+        let placeholder = HistoryCell::ArchivedContext {
+            level: 0,
+            range: format!("cells 0-{}", total_folded.saturating_sub(1)),
+            tokens: String::new(),
+            density: String::new(),
+            model: String::new(),
+            timestamp: String::new(),
+            summary,
+        };
+
+        // Insert the placeholder at the front.
+        let rev = self.fresh_history_revision();
+        self.history.insert(0, placeholder);
+        self.history_revisions.insert(0, rev);
+        self.history_version = self.history_version.wrapping_add(1);
+        self.needs_redraw = true;
+    }
+
+    /// Shift all per-cell index maps down by `n` after removing the first
+    /// `n` history cells. Every map key >= n is mapped to key - n; keys < n
+    /// are dropped.
+    fn shift_history_maps_down(&mut self, n: usize) {
+        // tool_cells: HashMap<String, usize>
+        self.tool_cells.retain(|_, idx| {
+            if *idx >= n {
+                *idx -= n;
+                true
+            } else {
+                false
+            }
+        });
+
+        // tool_details_by_cell: HashMap<usize, ToolDetailRecord>
+        self.tool_details_by_cell = std::mem::take(&mut self.tool_details_by_cell)
+            .into_iter()
+            .filter_map(|(idx, detail)| {
+                if idx >= n {
+                    Some((idx - n, detail))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // context_references_by_cell
+        self.context_references_by_cell = std::mem::take(&mut self.context_references_by_cell)
+            .into_iter()
+            .filter_map(|(idx, refs)| {
+                if idx >= n {
+                    Some((idx - n, refs))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        self.rebuild_session_context_references();
+
+        // subagent_card_index
+        self.subagent_card_index.retain(|_, idx| {
+            if *idx >= n {
+                *idx -= n;
+                true
+            } else {
+                false
+            }
+        });
+
+        // last_fanout_card_index
+        if let Some(ref mut idx) = self.last_fanout_card_index {
+            if *idx >= n {
+                *idx -= n;
+            } else {
+                self.last_fanout_card_index = None;
+            }
+        }
+
+        // collapsed_cells
+        self.collapsed_cells = std::mem::take(&mut self.collapsed_cells)
+            .into_iter()
+            .filter_map(|idx| if idx >= n { Some(idx - n) } else { None })
+            .collect();
+        self.collapsed_cell_map.clear();
     }
 
     pub fn mark_history_updated(&mut self) {
@@ -1355,6 +1543,7 @@ impl App {
         self.history.push(cell);
         self.history_revisions.push(rev);
         self.history_version = self.history_version.wrapping_add(1);
+        self.maybe_fold_history();
         self.needs_redraw = true;
     }
 
@@ -1368,6 +1557,7 @@ impl App {
             self.history.push(cell);
             self.history_revisions.push(rev);
         }
+        self.maybe_fold_history();
         self.history_version = self.history_version.wrapping_add(1);
         self.needs_redraw = true;
     }
@@ -1379,6 +1569,8 @@ impl App {
         self.history_revisions.clear();
         self.context_references_by_cell.clear();
         self.session_context_references.clear();
+        self.collapsed_cells.clear();
+        self.collapsed_cell_map.clear();
         self.history_version = self.history_version.wrapping_add(1);
         self.needs_redraw = true;
     }
@@ -1425,6 +1617,9 @@ impl App {
         {
             self.last_fanout_card_index = None;
         }
+        // Drop collapsed cells that reference indices past the new tail.
+        self.collapsed_cells.retain(|idx| *idx < new_len);
+        self.collapsed_cell_map.clear();
         self.history_version = self.history_version.wrapping_add(1);
         self.needs_redraw = true;
     }
@@ -1510,6 +1705,7 @@ impl App {
         line_meta: &[TranscriptLineMeta],
     ) -> Option<usize> {
         let selected_cell = self
+            .viewport
             .transcript_selection
             .ordered_endpoints()
             .and_then(|(start, _)| line_meta.get(start.line_index))
@@ -1622,15 +1818,10 @@ impl App {
     /// [`ActiveCell::mark_in_progress_as_interrupted`]).
     pub fn flush_active_cell(&mut self) {
         let Some(mut active) = self.active_cell.take() else {
-            // Even with no active cell, the thinking-stream pointer must not
-            // outlive a flush — a stale index would point at the wrong cell
-            // after subsequent pushes.
             self.streaming_thinking_active_entry = None;
             return;
         };
         if active.is_empty() {
-            // Reset auxiliary state regardless so a future tool can start a
-            // fresh active cell.
             self.exploring_cell = None;
             self.exploring_entries.clear();
             self.active_tool_details.clear();
@@ -1639,10 +1830,6 @@ impl App {
             return;
         }
 
-        // P2.3 safety net: stop any still-streaming thinking spinner before
-        // the entry migrates into history. Normal flow finalizes via
-        // `ThinkingComplete`; this guards against engine misbehaviour and
-        // race conditions.
         if let Some(entry_idx) = self.streaming_thinking_active_entry.take()
             && let Some(HistoryCell::Thinking { streaming, .. }) = active.entry_mut(entry_idx)
         {
@@ -1652,23 +1839,13 @@ impl App {
         let drained = active.drain();
         let base_index = self.history.len();
 
-        // Rewrite per-tool indices that targeted entries inside the active
-        // group: their new home is `base_index + entry_offset`.
         let mut details = std::mem::take(&mut self.active_tool_details);
         for (tool_id, detail) in details.drain() {
-            // Try to recover the entry offset from `tool_cells`-style maps.
-            // Tool ids registered for active-cell entries live in
-            // `tool_cells` with `index = base_index_at_register_time +
-            // entry_offset`. After rewriting once, those indices are correct.
             self.tool_details_by_cell
                 .entry(self.tool_cells.get(&tool_id).copied().unwrap_or(base_index))
                 .or_insert(detail);
         }
 
-        // tool_cells already contains the virtual index. After the drain,
-        // history.len() == base_index + drained.len(), so any virtual index
-        // in [base_index, base_index + drained.len()) is now a real history
-        // index. No rewrite needed.
         self.exploring_cell = None;
         self.exploring_entries.clear();
 
@@ -1680,11 +1857,12 @@ impl App {
         self.history_version = self.history_version.wrapping_add(1);
         self.needs_redraw = true;
         let selection_has_range = self
+            .viewport
             .transcript_selection
             .ordered_endpoints()
             .is_some_and(|(start, end)| start != end);
-        if self.transcript_scroll.is_at_tail()
-            && !self.transcript_selection.dragging
+        if self.viewport.transcript_scroll.is_at_tail()
+            && !self.viewport.transcript_selection.dragging
             && !selection_has_range
             && !self.user_scrolled_during_stream
         {
@@ -1885,38 +2063,22 @@ impl App {
     }
 
     /// Handle terminal resize event.
-    ///
-    /// This method properly invalidates all cached layout state to ensure
-    /// correct rendering after the terminal dimensions change.
     pub fn handle_resize(&mut self, _width: u16, _height: u16) {
-        // Invalidate transcript cache (will be rebuilt on next render)
-        self.transcript_cache = TranscriptViewCache::new();
+        self.viewport.transcript_cache = TranscriptViewCache::new();
 
-        // The flat line-offset model is width-dependent (line wrapping
-        // changes the meta length on resize), so a stored offset can no
-        // longer point at the same logical content. Snapping back to the
-        // tail keeps the user where they intuitively expect — at the
-        // most recent output — and matches what Codex does on resize.
-        // The renderer will clamp anyway, but resetting to tail avoids
-        // a frame where the offset shows stale wrapping.
-        if !self.transcript_scroll.is_at_tail() {
-            self.transcript_scroll = TranscriptScroll::to_bottom();
+        if !self.viewport.transcript_scroll.is_at_tail() {
+            self.viewport.transcript_scroll = TranscriptScroll::to_bottom();
         }
 
-        // Clear pending scroll delta
-        self.pending_scroll_delta = 0;
+        self.viewport.pending_scroll_delta = 0;
+        self.viewport.transcript_selection.clear();
 
-        // Clear selection (endpoints may be invalid at new width)
-        self.transcript_selection.clear();
+        self.viewport.last_transcript_area = None;
+        self.viewport.last_transcript_top = 0;
+        self.viewport.last_transcript_visible = 0;
+        self.viewport.last_transcript_total = 0;
+        self.viewport.last_transcript_padding_top = 0;
 
-        // Clear stale layout info
-        self.last_transcript_area = None;
-        self.last_transcript_top = 0;
-        self.last_transcript_visible = 0;
-        self.last_transcript_total = 0;
-        self.last_transcript_padding_top = 0;
-
-        // Mark history updated to force cache rebuild
         self.mark_history_updated();
     }
 
@@ -2157,26 +2319,23 @@ impl App {
 
     pub fn scroll_up(&mut self, amount: usize) {
         let delta = i32::try_from(amount).unwrap_or(i32::MAX);
-        self.pending_scroll_delta = self.pending_scroll_delta.saturating_sub(delta);
-        // Sticky intent: once the user has scrolled up during a stream, they
-        // shouldn't be yanked back to the live tail by subsequent chunks.
-        // Cleared when they explicitly return to bottom or the stream ends.
+        self.viewport.pending_scroll_delta =
+            self.viewport.pending_scroll_delta.saturating_sub(delta);
         self.user_scrolled_during_stream = true;
         self.needs_redraw = true;
     }
 
     pub fn scroll_down(&mut self, amount: usize) {
         let delta = i32::try_from(amount).unwrap_or(i32::MAX);
-        self.pending_scroll_delta = self.pending_scroll_delta.saturating_add(delta);
+        self.viewport.pending_scroll_delta =
+            self.viewport.pending_scroll_delta.saturating_add(delta);
         self.user_scrolled_during_stream = true;
         self.needs_redraw = true;
     }
 
     pub fn scroll_to_bottom(&mut self) {
-        self.transcript_scroll = TranscriptScroll::to_bottom();
-        self.pending_scroll_delta = 0;
-        // Explicit return-to-tail clears the stream-lock; new chunks will
-        // again pull the view down with them.
+        self.viewport.transcript_scroll = TranscriptScroll::to_bottom();
+        self.viewport.pending_scroll_delta = 0;
         self.user_scrolled_during_stream = false;
         self.needs_redraw = true;
     }
@@ -2612,12 +2771,13 @@ impl App {
 
     /// Decide how to route a fresh composer submit.
     ///
+    /// #382: default to Queue when busy — the user shouldn't have to distinguish
+    /// "streaming" from "tool execution". Ctrl+Enter overrides to Steer.
+    ///
     /// Truth table:
     ///   offline=F, busy=F → Immediate
-    ///   offline=F, busy=T, streaming → QueueFollowUp
-    ///   offline=F, busy=T, not streaming → Steer
-    ///   offline=T, busy=F → Queue
-    ///   offline=T, busy=T → Queue
+    ///   offline=F, busy=T → Queue  (was Steer for non-streaming; now unified)
+    ///   offline=T, busy=* → Queue
     #[must_use]
     pub fn decide_submit_disposition(&self) -> SubmitDisposition {
         if self.offline_mode {
@@ -2626,13 +2786,8 @@ impl App {
         if !self.is_loading {
             return SubmitDisposition::Immediate;
         }
-        // Busy + streaming text: queue for after TurnComplete.
-        // Busy + not streaming (tool execution): forward as a steer.
-        if self.streaming_message_index.is_some() {
-            SubmitDisposition::QueueFollowUp
-        } else {
-            SubmitDisposition::Steer
-        }
+        // Busy: always queue. Ctrl+Enter routes through steer_user_message directly.
+        SubmitDisposition::Queue
     }
 
     /// Mark the in-flight streaming Assistant cell as interrupted: prepend
@@ -2826,6 +2981,17 @@ pub enum AppAction {
     },
     ShellJob(ShellJobAction),
     Mcp(McpUiAction),
+    /// Switch to a different config profile without restarting.
+    SwitchProfile {
+        /// Profile name to load.
+        profile: String,
+    },
+    /// Export and share the current session as a web URL.
+    ShareSession {
+        history_len: usize,
+        model: String,
+        mode: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3541,26 +3707,23 @@ mod tests {
     }
 
     #[test]
-    fn submit_disposition_steer_when_busy_and_online_not_streaming() {
-        // Busy + not streaming (tool execution phase) → Steer
+    fn submit_disposition_queue_when_busy_and_online_not_streaming() {
+        // #382: Busy + not streaming → Queue (was Steer; now unified)
         let mut app = App::new(test_options(false), &Config::default());
         app.is_loading = true;
         app.offline_mode = false;
         // streaming_message_index is None (default) → tool execution phase
-        assert_eq!(app.decide_submit_disposition(), SubmitDisposition::Steer);
+        assert_eq!(app.decide_submit_disposition(), SubmitDisposition::Queue);
     }
 
     #[test]
-    fn submit_disposition_queue_follow_up_when_streaming() {
-        // Busy + actively streaming → QueueFollowUp
+    fn submit_disposition_queue_when_busy_and_streaming() {
+        // #382: Busy + streaming → Queue (was QueueFollowUp; now unified)
         let mut app = App::new(test_options(false), &Config::default());
         app.is_loading = true;
         app.offline_mode = false;
         app.streaming_message_index = Some(0);
-        assert_eq!(
-            app.decide_submit_disposition(),
-            SubmitDisposition::QueueFollowUp
-        );
+        assert_eq!(app.decide_submit_disposition(), SubmitDisposition::Queue);
     }
 
     #[test]

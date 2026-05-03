@@ -2,9 +2,13 @@
 
 This document provides an overview of the DeepSeek TUI architecture for developers and contributors.
 
-Current boundary note:
+Current boundary note (v0.8.6):
 - `crates/tui` is still the live end-user runtime for the TUI, runtime API, task manager, and tool execution loop.
 - Other workspace crates are being split out incrementally, but they are not yet the sole runtime source of truth.
+- The LSP subsystem (`crates/tui/src/lsp/`) is fully wired into the engine's post-tool-execution path
+  (`core/engine/lsp_hooks.rs`), providing inline diagnostics after every edit_file/apply_patch/write_file.
+- The swarm agent system was removed in v0.8.5 in favour of sub-agents (agent_spawn) and RLM (rlm_query).
+  No swarm references remain in the active codebase.
 
 ## High-Level Overview
 
@@ -84,6 +88,17 @@ Current boundary note:
 ### Workspace Crates
 
 - **`crates/tools`** - Shared tool invocation primitives, including tool result/error/capability types used by the TUI runtime.
+- **`crates/agent`** - Model/provider registry (ModelRegistry) for resolving model IDs to provider endpoints.
+- **`crates/app-server`** - HTTP/SSE + JSON-RPC app server transport for headless agent workflows.
+- **`crates/config`** - Config loading, profiles, environment variable precedence, CLI runtime overrides.
+- **`crates/core`** - Agent loop, session management, turn orchestration, capacity flow guardrails.
+- **`crates/execpolicy`** - Approval/sandbox policy engine for tool execution decisions.
+- **`crates/hooks`** - Lifecycle hooks (stdout, jsonl, webhook) for pre/post tool events.
+- **`crates/mcp`** - MCP client + stdio server for Model Context Protocol tool servers.
+- **`crates/protocol`** - Request/response framing and protocol types.
+- **`crates/secrets`** - OS keyring integration for API key storage.
+- **`crates/state`** - SQLite thread/session persistence layer.
+- **`crates/tui-core`** - Event-driven TUI state machine scaffold.
 
 ### LLM Integration
 
@@ -114,8 +129,9 @@ drives turns through Chat Completions.
   - `github.rs` - Read-only GitHub context and guarded comment/closure tools backed by `gh`
   - `automation.rs` - Model-visible scheduling tools over `AutomationManager`
   - `plan.rs` - Planning tools
-  - `subagent.rs` - Sub-agent spawning
+  - `subagent.rs` - Sub-agent spawning (replaces the removed `agent_swarm` surface)
   - `spec.rs` - Tool specifications
+  - `rlm.rs` - Recursive Language Model (RLM) tool — sandboxed Python REPL with `llm_query()` helpers
 
 ### Extension Systems
 
@@ -133,6 +149,15 @@ drives turns through Chat Completions.
   - `streaming.rs` - Streaming text collector
 
 - **`ui.rs`** - Legacy/simple UI utilities
+
+### LSP Integration
+
+- **`lsp/`** - Post-edit diagnostics injection (#136)
+  - `mod.rs` - `LspManager` — lazy per-language transport pool + config
+  - `client.rs` - `StdioLspTransport` — JSON-RPC over stdio with `didOpen`/`didChange`/`publishDiagnostics`
+  - `diagnostics.rs` - Diagnostic types, severity, and HTML-block renderer
+  - `registry.rs` - Language detection and default server map (rust-analyzer, pyright, gopls, clangd, typescript-language-server)
+  - Wired into the engine via `core/engine/lsp_hooks.rs` — called after every successful edit
 
 ### Security
 
@@ -185,7 +210,9 @@ drives turns through Chat Completions.
 5. Tool executed (possibly sandboxed on macOS)
 6. Post-execution hooks run
 7. Result metadata is retained on runtime item records
-8. Result returned to agent loop
+8. **LSP post-edit hook** (v0.8.6): if the tool was `edit_file`/`apply_patch`/`write_file` and LSP is enabled, the engine runs `run_post_edit_lsp_hook()` to collect diagnostics
+9. **Diagnostics flush** (v0.8.6): before the next API request, `flush_pending_lsp_diagnostics()` injects any collected errors as a synthetic user message
+10. Result returned to agent loop
 
 ### Background Tasks
 

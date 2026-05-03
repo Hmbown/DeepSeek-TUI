@@ -1,14 +1,20 @@
 //! MCP server implementation for exposing DeepSeek tools over stdio.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::runtime::Runtime;
+use uuid::Uuid;
 
+use crate::client::DeepSeekClient;
+use crate::config::Config;
+use crate::llm_client::LlmClient;
+use crate::models::{ContentBlock, Message, MessageRequest};
 use crate::session_manager::SessionManager;
 use crate::tools::spec::{ToolError, ToolResult};
 use crate::tools::{ToolContext, ToolRegistryBuilder};
@@ -75,6 +81,11 @@ struct McpServer {
     registry: crate::tools::ToolRegistry,
     exposed_tools: Vec<ExposedTool>,
     require_approval: bool,
+    /// Thread-based conversation state for deepseek/deepseek-reply tools.
+    /// Maps thread_id -> ordered list of messages in the conversation.
+    threads: Arc<Mutex<HashMap<String, Vec<Message>>>>,
+    /// Monotonic request counter for notification correlation.
+    next_notification_id: u64,
 }
 
 impl McpServer {
@@ -104,6 +115,8 @@ impl McpServer {
             registry,
             exposed_tools,
             require_approval: settings.require_approval,
+            threads: Arc::new(Mutex::new(HashMap::new())),
+            next_notification_id: 0,
         })
     }
 
@@ -141,7 +154,7 @@ impl McpServer {
             "tools/list" => respond(id.as_ref(), self.list_tools_response()),
             "tools/call" => {
                 let params = message.get("params").cloned().unwrap_or_else(|| json!({}));
-                match self.call_tool(runtime, params) {
+                match self.call_tool(runtime, params, id.clone()) {
                     Ok(result) => respond(id.as_ref(), result),
                     Err(err) => respond_error(id.as_ref(), err.code, err.message),
                 }
@@ -160,12 +173,64 @@ impl McpServer {
             if !seen.insert(entry.public.clone()) {
                 continue;
             }
-            if let Some(tool) = self.registry.get(&entry.internal) {
-                tools.push(json!({
-                    "name": entry.public,
-                    "description": tool.description(),
-                    "inputSchema": tool.input_schema(),
-                }));
+            match entry.internal.as_str() {
+                "deepseek" => {
+                    tools.push(json!({
+                        "name": "deepseek",
+                        "description": "Send a prompt to DeepSeek and get a response. Creates a new conversation thread.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "prompt": {
+                                    "type": "string",
+                                    "description": "The user prompt to send to DeepSeek"
+                                },
+                                "model": {
+                                    "type": "string",
+                                    "description": "Optional model identifier (default: deepseek-v4-pro)"
+                                },
+                                "cwd": {
+                                    "type": "string",
+                                    "description": "Optional working directory context"
+                                }
+                            },
+                            "required": ["prompt"]
+                        }
+                    }));
+                }
+                "deepseek-reply" => {
+                    tools.push(json!({
+                        "name": "deepseek-reply",
+                        "description": "Continue an existing conversation thread with DeepSeek. Requires a thread_id from a previous deepseek call.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "thread_id": {
+                                    "type": "string",
+                                    "description": "Thread ID from a previous deepseek call"
+                                },
+                                "prompt": {
+                                    "type": "string",
+                                    "description": "The follow-up prompt"
+                                },
+                                "model": {
+                                    "type": "string",
+                                    "description": "Optional model override"
+                                }
+                            },
+                            "required": ["thread_id", "prompt"]
+                        }
+                    }));
+                }
+                _ => {
+                    if let Some(tool) = self.registry.get(&entry.internal) {
+                        tools.push(json!({
+                            "name": entry.public,
+                            "description": tool.description(),
+                            "inputSchema": tool.input_schema(),
+                        }));
+                    }
+                }
             }
         }
         json!({ "tools": tools, "nextCursor": Value::Null })
@@ -196,7 +261,12 @@ impl McpServer {
         json!({ "resources": resources, "nextCursor": Value::Null })
     }
 
-    fn call_tool(&self, runtime: &Runtime, params: Value) -> Result<Value, RpcError> {
+    fn call_tool(
+        &mut self,
+        runtime: &Runtime,
+        params: Value,
+        request_id: Option<Value>,
+    ) -> Result<Value, RpcError> {
         let params = params.as_object().ok_or_else(|| RpcError {
             code: -32602,
             message: "Invalid params for tools/call".to_string(),
@@ -231,12 +301,199 @@ impl McpServer {
                 message: format!("Tool not exposed: {name}"),
             })?;
 
+        // Handle deepseek and deepseek-reply natively
+        if internal == "deepseek" || internal == "deepseek-reply" {
+            let arguments = params
+                .get("arguments")
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            return self.handle_deepseek_call(runtime, &internal, &arguments, request_id);
+        }
+
         let arguments = params
             .get("arguments")
             .cloned()
             .unwrap_or_else(|| json!({}));
         let result = runtime.block_on(self.registry.execute_full(&internal, arguments));
         Ok(tool_result_to_mcp(result))
+    }
+
+    /// Handle a `deepseek` or `deepseek-reply` tool call.
+    ///
+    /// Uses `DeepSeekClient` directly (not the full engine) to send a prompt
+    /// and return the response. For `deepseek` a new thread is created; for
+    /// `deepseek-reply` the caller supplies a `thread_id` to continue an
+    /// existing conversation.
+    fn handle_deepseek_call(
+        &mut self,
+        runtime: &Runtime,
+        internal_name: &str,
+        arguments: &Value,
+        request_id: Option<Value>,
+    ) -> Result<Value, RpcError> {
+        let prompt = arguments
+            .get("prompt")
+            .and_then(Value::as_str)
+            .ok_or_else(|| RpcError {
+                code: -32602,
+                message: "Missing required argument: prompt".to_string(),
+            })?;
+
+        let model = arguments
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or("deepseek-v4-pro");
+
+        // Resolve thread_id
+        let thread_id = if internal_name == "deepseek" {
+            // New thread
+            Uuid::new_v4().to_string()
+        } else {
+            arguments
+                .get("thread_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| RpcError {
+                    code: -32602,
+                    message: "Missing required argument: thread_id for deepseek-reply".to_string(),
+                })?
+                .to_string()
+        };
+
+        // Load config and create client
+        let config = Config::load(None, None).map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Failed to load config: {e}"),
+        })?;
+        let client = DeepSeekClient::new(&config).map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Failed to create DeepSeek client: {e}"),
+        })?;
+
+        // Build message list
+        let user_message = Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: prompt.to_string(),
+                cache_control: None,
+            }],
+        };
+
+        let messages = if internal_name == "deepseek" {
+            vec![user_message]
+        } else {
+            let thread = self.threads.lock().unwrap();
+            let mut existing = thread.get(&thread_id).cloned().ok_or_else(|| RpcError {
+                code: -32602,
+                message: format!("Thread not found: {thread_id}"),
+            })?;
+            existing.push(user_message);
+            existing
+        };
+
+        // Send the API request (non-streaming for the basic version)
+        let request = MessageRequest {
+            model: model.to_string(),
+            messages: messages.clone(),
+            max_tokens: 16384,
+            system: None,
+            tools: None,
+            tool_choice: None,
+            metadata: None,
+            thinking: None,
+            reasoning_effort: None,
+            stream: None,
+            temperature: None,
+            top_p: None,
+        };
+
+        let response = runtime
+            .block_on(client.create_message(request))
+            .map_err(|e| RpcError {
+                code: -32000,
+                message: format!("DeepSeek API call failed: {e}"),
+            })?;
+
+        // Extract response text from content blocks
+        let response_text = response
+            .content
+            .iter()
+            .filter_map(|block| {
+                if let ContentBlock::Text { text, .. } = block {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("");
+
+        let usage = &response.usage;
+
+        // Store the assistant response in the thread
+        {
+            let mut thread = self.threads.lock().unwrap();
+            let convo = thread.entry(thread_id.clone()).or_default();
+            // If deepseek, we already have just the user message; if deepseek-reply,
+            // the user message was appended to the cloned messages above but we need
+            // to also append it to the stored thread and then the assistant response.
+            if internal_name == "deepseek" {
+                convo.push(Message {
+                    role: "user".to_string(),
+                    content: vec![ContentBlock::Text {
+                        text: prompt.to_string(),
+                        cache_control: None,
+                    }],
+                });
+            }
+            convo.push(Message {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: response_text.clone(),
+                    cache_control: None,
+                }],
+            });
+        }
+
+        // Emit a notification/message so the client can correlate the response
+        let notification_id = {
+            let nid = self.next_notification_id;
+            self.next_notification_id += 1;
+            nid
+        };
+
+        // Write notification to stdout
+        let notification = json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/message",
+            "params": {
+                "notificationId": notification_id,
+                "requestId": request_id,
+                "threadId": thread_id,
+                "content": response_text,
+                "usage": {
+                    "inputTokens": usage.input_tokens,
+                    "outputTokens": usage.output_tokens,
+                }
+            }
+        });
+        if let Ok(payload) = serde_json::to_string(&notification) {
+            let mut stdout = io::stdout();
+            let _ = writeln!(stdout, "{payload}");
+            let _ = stdout.flush();
+        }
+
+        Ok(json!({
+            "content": [{ "type": "text", "text": &response_text }],
+            "isError": false,
+            "structuredContent": {
+                "threadId": thread_id,
+                "content": response_text,
+                "usage": {
+                    "inputTokens": usage.input_tokens,
+                    "outputTokens": usage.output_tokens,
+                }
+            }
+        }))
     }
 }
 
@@ -251,6 +508,8 @@ fn default_expose_tools() -> Vec<String> {
         "search".to_string(),
         "apply_patch".to_string(),
         "shell".to_string(),
+        "deepseek".to_string(),
+        "deepseek-reply".to_string(),
     ]
 }
 
@@ -269,6 +528,8 @@ fn build_exposed_tools(names: &[String]) -> Vec<ExposedTool> {
             "shell" => "exec_shell",
             "search" => "grep_files",
             "file_search" => "file_search",
+            // deepseek and deepseek-reply are handled natively in call_tool
+            "deepseek" | "deepseek-reply" => trimmed,
             other => other,
         }
         .to_string();

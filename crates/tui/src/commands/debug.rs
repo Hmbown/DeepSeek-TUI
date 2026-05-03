@@ -37,8 +37,8 @@ fn active_context_summary(app: &App, locale: Locale) -> String {
 
 fn cache_summary(app: &App, locale: Locale) -> String {
     match (
-        app.last_prompt_cache_hit_tokens,
-        app.last_prompt_cache_miss_tokens,
+        app.session.last_prompt_cache_hit_tokens,
+        app.session.last_prompt_cache_miss_tokens,
     ) {
         (Some(hit), Some(miss)) => tr(locale, MessageId::CmdTokensCacheBoth)
             .replace("{hit}", &hit.to_string())
@@ -61,11 +61,17 @@ pub fn tokens(app: &mut App) -> CommandResult {
 
     let report = tr(locale, MessageId::CmdTokensReport)
         .replace("{active}", &active_context_summary(app, locale))
-        .replace("{input}", &token_count(app.last_prompt_tokens, locale))
-        .replace("{output}", &token_count(app.last_completion_tokens, locale))
+        .replace(
+            "{input}",
+            &token_count(app.session.last_prompt_tokens, locale),
+        )
+        .replace(
+            "{output}",
+            &token_count(app.session.last_completion_tokens, locale),
+        )
         .replace("{cache}", &cache_summary(app, locale))
-        .replace("{total}", &app.total_tokens.to_string())
-        .replace("{cost}", &format!("{:.4}", app.session_cost))
+        .replace("{total}", &app.session.total_tokens.to_string())
+        .replace("{cost}", &format!("{:.4}", app.session.session_cost))
         .replace("{api_messages}", &message_count.to_string())
         .replace("{chat_messages}", &chat_count.to_string())
         .replace("{model}", &app.model);
@@ -75,7 +81,7 @@ pub fn tokens(app: &mut App) -> CommandResult {
 /// Show session cost breakdown
 pub fn cost(app: &mut App) -> CommandResult {
     let report = tr(app.ui_locale, MessageId::CmdCostReport)
-        .replace("{cost}", &format!("{:.4}", app.session_cost));
+        .replace("{cost}", &format!("{:.4}", app.session.session_cost));
     CommandResult::message(report)
 }
 
@@ -128,7 +134,7 @@ pub fn cache(app: &mut App, arg: Option<&str>) -> CommandResult {
     let want = arg
         .and_then(|s| s.trim().parse::<usize>().ok())
         .unwrap_or(10);
-    let cap = app.turn_cache_history.len();
+    let cap = app.session.turn_cache_history.len();
     let count = want
         .min(cap)
         .min(crate::tui::app::App::TURN_CACHE_HISTORY_CAP);
@@ -141,9 +147,9 @@ pub fn cache(app: &mut App, arg: Option<&str>) -> CommandResult {
 }
 
 fn format_cache_history(app: &App, count: usize, locale: Locale) -> String {
-    let total = app.turn_cache_history.len();
+    let total = app.session.turn_cache_history.len();
     let start = total.saturating_sub(count);
-    let rows: Vec<&TurnCacheRecord> = app.turn_cache_history.iter().skip(start).collect();
+    let rows: Vec<&TurnCacheRecord> = app.session.turn_cache_history.iter().skip(start).collect();
 
     let mut totals_input: u64 = 0;
     let mut totals_hit: u64 = 0;
@@ -290,12 +296,12 @@ mod tests {
     #[test]
     fn test_tokens_shows_usage_info() {
         let mut app = create_test_app();
-        app.total_tokens = 1234;
-        app.session_cost = 0.05;
-        app.last_prompt_tokens = Some(100);
-        app.last_completion_tokens = Some(25);
-        app.last_prompt_cache_hit_tokens = Some(70);
-        app.last_prompt_cache_miss_tokens = Some(30);
+        app.session.total_tokens = 1234;
+        app.session.session_cost = 0.05;
+        app.session.last_prompt_tokens = Some(100);
+        app.session.last_completion_tokens = Some(25);
+        app.session.last_prompt_cache_hit_tokens = Some(70);
+        app.session.last_prompt_cache_miss_tokens = Some(30);
         app.api_messages.push(Message {
             role: "user".to_string(),
             content: vec![ContentBlock::Text {
@@ -326,7 +332,7 @@ mod tests {
     #[test]
     fn test_cost_shows_spending_info() {
         let mut app = create_test_app();
-        app.session_cost = 0.1234;
+        app.session.session_cost = 0.1234;
         let result = cost(&mut app);
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
@@ -491,12 +497,12 @@ mod tests {
             });
         }
         assert_eq!(
-            app.turn_cache_history.len(),
+            app.session.turn_cache_history.len(),
             crate::tui::app::App::TURN_CACHE_HISTORY_CAP
         );
         // Oldest record was evicted; newest record is still at the back.
         assert_eq!(
-            app.turn_cache_history.back().unwrap().input_tokens,
+            app.session.turn_cache_history.back().unwrap().input_tokens,
             (crate::tui::app::App::TURN_CACHE_HISTORY_CAP + 11) as u32
         );
     }
@@ -524,7 +530,7 @@ mod tests {
     }
 
     #[test]
-    fn test_undo_removes_last_exchange() {
+    fn test_undo_conversation_removes_last_exchange() {
         let mut app = create_test_app();
         app.history.push(HistoryCell::User {
             content: "Hello".to_string(),
@@ -544,7 +550,7 @@ mod tests {
 
         let initial_history_len = app.history.len();
         let initial_api_len = app.api_messages.len();
-        let result = undo(&mut app);
+        let result = undo_conversation(&mut app);
 
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
@@ -554,12 +560,12 @@ mod tests {
     }
 
     #[test]
-    fn test_undo_nothing_to_undo() {
+    fn test_undo_conversation_nothing_to_undo() {
         let mut app = create_test_app();
         // Clear any default history
         app.history.clear();
         app.api_messages.clear();
-        let result = undo(&mut app);
+        let result = undo_conversation(&mut app);
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
         assert!(msg.contains("Nothing to undo") || msg.contains("Removed"));
@@ -614,8 +620,14 @@ mod tests {
     }
 }
 
-/// Remove last message pair (user + assistant)
-pub fn undo(app: &mut App) -> CommandResult {
+/// Remove last message pair (user + assistant).
+///
+/// This is the old `/undo` behaviour — it removes the most recent
+/// user+assistant conversation pair from history and API messages.
+/// The new `/undo` first tries to revert workspace files via
+/// [`patch_undo`]; if no snapshots are available it falls back to
+/// this function.
+pub fn undo_conversation(app: &mut App) -> CommandResult {
     // Remove from display history (up to the last user message)
     let mut removed_count = 0;
     while !app.history.is_empty() {
@@ -649,6 +661,170 @@ pub fn undo(app: &mut App) -> CommandResult {
     }
 }
 
+/// Revert the most recent write tool (apply_patch/edit_file/write_file) or turn.
+///
+/// Opens the side-git snapshot repo and finds the most recent snapshot,
+/// preferring per-tool snapshots (`tool:*`) over pre-turn snapshots
+/// (`pre-turn:*`). Restores files from that snapshot and shows a diff
+/// summary. Falls back to conversation undo when no snapshots exist.
+///
+/// Posts a `HistoryCell::System` entry so the user can see what was
+/// reverted in the transcript.
+pub fn patch_undo(app: &mut App) -> CommandResult {
+    let workspace = app.workspace.clone();
+
+    let repo = match crate::snapshot::SnapshotRepo::open_or_init(&workspace) {
+        Ok(r) => r,
+        Err(e) => {
+            return CommandResult::error(format!(
+                "Snapshot repo unavailable for {}: {e}",
+                workspace.display(),
+            ));
+        }
+    };
+
+    let snapshots = match repo.list(20) {
+        Ok(s) => s,
+        Err(e) => {
+            return CommandResult::error(format!("Failed to list snapshots: {e}"));
+        }
+    };
+
+    if snapshots.is_empty() {
+        return CommandResult::message("No snapshots found to undo — nothing to revert.");
+    }
+
+    // Prefer the most recent `tool:` snapshot; fall back to `pre-turn:`.
+    let target = snapshots
+        .iter()
+        .find(|s| s.label.starts_with("tool:"))
+        .or_else(|| snapshots.iter().find(|s| s.label.starts_with("pre-turn:")));
+
+    let Some(target) = target else {
+        return CommandResult::message("No tool or pre-turn snapshots found — nothing to revert.");
+    };
+
+    if let Err(e) = repo.restore(&target.id) {
+        return CommandResult::error(format!("Restore failed: {e}"));
+    }
+
+    // Show diff stat so the user knows what changed.
+    let diff_stat = std::process::Command::new("git")
+        .args(["diff", "--stat"])
+        .current_dir(&workspace)
+        .output()
+        .ok()
+        .and_then(|o| {
+            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if s.is_empty() { None } else { Some(s) }
+        });
+
+    let short = &target.id.as_str()[..target.id.as_str().len().min(8)];
+    let summary = match diff_stat {
+        Some(ref stat) => {
+            format!(
+                "Restored snapshot '{}' ({}). Files affected:\n{stat}",
+                target.label, short
+            )
+        }
+        None => {
+            format!(
+                "Restored snapshot '{}' ({}). No diff changes detected.",
+                target.label, short
+            )
+        }
+    };
+
+    // Post a system cell so the reverted state is visible in the transcript.
+    app.push_history_cell(HistoryCell::System {
+        content: format!(
+            "/undo reverted workspace to snapshot '{}' ({})",
+            target.label, short
+        ),
+    });
+
+    CommandResult::message(summary)
+}
+
+/// Load the last user message back into the composer for editing.
+///
+/// Searches `app.history` for the most recent `HistoryCell::User`, copies its
+/// content into `app.input`, and positions the cursor at the end so the user
+/// can edit and press Enter to resubmit. The original exchange stays visible
+/// in the transcript.
+pub fn edit(app: &mut App) -> CommandResult {
+    let last_user = app.history.iter().rev().find_map(|cell| match cell {
+        HistoryCell::User { content } => Some(content.clone()),
+        _ => None,
+    });
+
+    match last_user {
+        Some(content) => {
+            app.input = content;
+            app.cursor_position = app.input.chars().count();
+            app.edit_in_progress = true;
+            CommandResult::message(
+                "Last message loaded into composer — edit and press Enter to resubmit",
+            )
+        }
+        None => CommandResult::message("No previous message to edit"),
+    }
+}
+
+/// Show git diff output since session start.
+///
+/// Runs `git diff --stat` and `git diff --name-only` in the workspace
+/// directory. Displays which files have changed and a stat summary. If no
+/// changes exist or git fails, returns an appropriate message.
+pub fn diff(app: &mut App) -> CommandResult {
+    let workspace = app.workspace.clone();
+
+    let name_only_output = std::process::Command::new("git")
+        .args(["diff", "--name-only"])
+        .current_dir(&workspace)
+        .output();
+    let stat_output = std::process::Command::new("git")
+        .args(["diff", "--stat"])
+        .current_dir(&workspace)
+        .output();
+
+    match (name_only_output, stat_output) {
+        (Ok(name_only), Ok(stat)) => {
+            let name_stdout = String::from_utf8_lossy(&name_only.stdout);
+            let stat_stdout = String::from_utf8_lossy(&stat.stdout);
+
+            if name_stdout.trim().is_empty() {
+                return CommandResult::message("No changes since session start");
+            }
+
+            let files: Vec<&str> = name_stdout.lines().filter(|l| !l.is_empty()).collect();
+            let file_count = files.len();
+            let file_list = files.join("\n");
+
+            // Detect rename entries (e.g. "foo -> bar") and exclude them
+            // from the file-count header so the user sees only actual
+            // modifications.
+            let renamed_count = files.iter().filter(|f| f.contains(" -> ")).count();
+            let summary = if renamed_count > 0 {
+                format!("Changed files ({file_count}, {renamed_count} renamed):\n{file_list}")
+            } else {
+                format!("Changed files ({file_count}):\n{file_list}")
+            };
+
+            let stat_str = stat_stdout.trim();
+            let mut message = summary;
+            if !stat_str.is_empty() {
+                message.push_str("\n\n── Stat ──\n");
+                message.push_str(stat_str);
+            }
+            CommandResult::message(message)
+        }
+        (Err(e), _) | (_, Err(e)) => {
+            CommandResult::message(format!("Git diff failed — is this a git repository?\n{e}"))
+        }
+    }
+}
+
 /// Retry last request - remove last exchange and re-send the user's message
 pub fn retry(app: &mut App) -> CommandResult {
     let last_user_input = app.history.iter().rev().find_map(|cell| match cell {
@@ -658,7 +834,7 @@ pub fn retry(app: &mut App) -> CommandResult {
 
     match last_user_input {
         Some(input) => {
-            undo(app);
+            undo_conversation(app);
             let display_input = if input.len() > 50 {
                 let truncate_at = input
                     .char_indices()

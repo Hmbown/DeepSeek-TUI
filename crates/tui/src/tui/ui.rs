@@ -20,6 +20,7 @@ use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
+    prelude::Widget,
     style::Style,
     text::Span,
     widgets::Block,
@@ -83,7 +84,7 @@ use crate::tui::user_input::UserInputView;
 use super::active_cell::ActiveCell;
 use super::app::{
     App, AppAction, AppMode, OnboardingState, QueuedMessage, SidebarFocus, StatusToastLevel,
-    SubmitDisposition, ToolDetailRecord, TuiOptions,
+    SubmitDisposition, TaskPanelEntry, ToolDetailRecord, TuiOptions,
 };
 use super::approval::{
     ApprovalMode, ApprovalRequest, ApprovalView, ElevationRequest, ElevationView, ReviewDecision,
@@ -188,13 +189,14 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
                 app.update_model_compaction_budget();
                 app.workspace.clone_from(&saved.metadata.workspace);
                 app.current_session_id = Some(saved.metadata.id.clone());
-                app.total_tokens = u32::try_from(saved.metadata.total_tokens).unwrap_or(u32::MAX);
-                app.total_conversation_tokens = app.total_tokens;
-                app.last_prompt_tokens = None;
-                app.last_completion_tokens = None;
-                app.last_prompt_cache_hit_tokens = None;
-                app.last_prompt_cache_miss_tokens = None;
-                app.last_reasoning_replay_tokens = None;
+                app.session.total_tokens =
+                    u32::try_from(saved.metadata.total_tokens).unwrap_or(u32::MAX);
+                app.session.total_conversation_tokens = app.session.total_tokens;
+                app.session.last_prompt_tokens = None;
+                app.session.last_completion_tokens = None;
+                app.session.last_prompt_cache_hit_tokens = None;
+                app.session.last_prompt_cache_miss_tokens = None;
+                app.session.last_reasoning_replay_tokens = None;
                 if let Some(prompt) = saved.system_prompt {
                     app.system_prompt = Some(SystemPrompt::Text(prompt));
                 }
@@ -421,6 +423,9 @@ async fn run_event_loop(
     // codex's frame coalescing that maps cleanly onto our poll-based loop.
     let mut frame_rate_limiter = crate::tui::frame_rate_limiter::FrameRateLimiter::default();
     let mut web_config_session: Option<WebConfigSession> = None;
+    // #376: native-copy escape — hold Shift to bypass alt-screen mouse capture
+    // for terminal-native text selection.
+    let mut shift_bypass_active = false;
 
     loop {
         if !drain_web_config_events(&mut web_config_session, app, config, &engine_handle).await {
@@ -429,7 +434,31 @@ async fn run_event_loop(
 
         if last_task_refresh.elapsed() >= Duration::from_millis(2500) {
             let tasks = task_manager.list_tasks(Some(10)).await;
-            app.task_panel = tasks.into_iter().map(task_summary_to_panel_entry).collect();
+            let mut entries: Vec<TaskPanelEntry> =
+                tasks.into_iter().map(task_summary_to_panel_entry).collect();
+
+            // #373: merge live shell jobs into the Tasks panel.
+            if let Some(shell_mgr) = app.runtime_services.shell_manager.as_ref()
+                && let Ok(mut mgr) = shell_mgr.lock()
+            {
+                for job in mgr.list_jobs() {
+                    let status = match job.status {
+                        crate::tools::shell::ShellStatus::Running => "running",
+                        crate::tools::shell::ShellStatus::Completed => "completed",
+                        crate::tools::shell::ShellStatus::Failed => "failed",
+                        crate::tools::shell::ShellStatus::Killed => "canceled",
+                        crate::tools::shell::ShellStatus::TimedOut => "failed",
+                    };
+                    entries.push(TaskPanelEntry {
+                        id: job.id,
+                        status: status.to_string(),
+                        prompt_summary: format!("shell: {}", job.command),
+                        duration_ms: Some(job.elapsed_ms),
+                    });
+                }
+            }
+
+            app.task_panel = entries;
             last_task_refresh = Instant::now();
             app.needs_redraw = true;
         }
@@ -618,11 +647,38 @@ async fn run_event_loop(
                         // tool that changes task state completes, so the
                         // Tasks panel stays in sync with tool execution
                         // rather than waiting up to 2.5 s for the periodic
-                        // poll.
-                        if matches!(name.as_str(), "agent_spawn" | "agent_cancel" | "todo_write") {
+                        // poll. Also merge shell jobs (#373).
+                        if matches!(
+                            name.as_str(),
+                            "agent_spawn"
+                                | "agent_cancel"
+                                | "todo_write"
+                                | "task_shell_start"
+                                | "exec_shell"
+                        ) {
                             let tasks = task_manager.list_tasks(Some(10)).await;
-                            app.task_panel =
+                            let mut entries: Vec<TaskPanelEntry> =
                                 tasks.into_iter().map(task_summary_to_panel_entry).collect();
+                            if let Some(shell_mgr) = app.runtime_services.shell_manager.as_ref()
+                                && let Ok(mut mgr) = shell_mgr.lock()
+                            {
+                                for job in mgr.list_jobs() {
+                                    let status = match job.status {
+                                        crate::tools::shell::ShellStatus::Running => "running",
+                                        crate::tools::shell::ShellStatus::Completed => "completed",
+                                        crate::tools::shell::ShellStatus::Failed => "failed",
+                                        crate::tools::shell::ShellStatus::Killed => "canceled",
+                                        crate::tools::shell::ShellStatus::TimedOut => "failed",
+                                    };
+                                    entries.push(TaskPanelEntry {
+                                        id: job.id,
+                                        status: status.to_string(),
+                                        prompt_summary: format!("shell: {}", job.command),
+                                        duration_ms: Some(job.elapsed_ms),
+                                    });
+                                }
+                            }
+                            app.task_panel = entries;
                             last_task_refresh = Instant::now();
                         }
                         if matches!(
@@ -705,14 +761,17 @@ async fn run_event_loop(
                             let _ = engine_handle.send(Op::ListSubAgents).await;
                         }
                         let turn_tokens = usage.input_tokens + usage.output_tokens;
-                        app.total_tokens = app.total_tokens.saturating_add(turn_tokens);
-                        app.total_conversation_tokens =
-                            app.total_conversation_tokens.saturating_add(turn_tokens);
-                        app.last_prompt_tokens = Some(usage.input_tokens);
-                        app.last_completion_tokens = Some(usage.output_tokens);
-                        app.last_prompt_cache_hit_tokens = usage.prompt_cache_hit_tokens;
-                        app.last_prompt_cache_miss_tokens = usage.prompt_cache_miss_tokens;
-                        app.last_reasoning_replay_tokens = usage.reasoning_replay_tokens;
+                        app.session.total_tokens =
+                            app.session.total_tokens.saturating_add(turn_tokens);
+                        app.session.total_conversation_tokens = app
+                            .session
+                            .total_conversation_tokens
+                            .saturating_add(turn_tokens);
+                        app.session.last_prompt_tokens = Some(usage.input_tokens);
+                        app.session.last_completion_tokens = Some(usage.output_tokens);
+                        app.session.last_prompt_cache_hit_tokens = usage.prompt_cache_hit_tokens;
+                        app.session.last_prompt_cache_miss_tokens = usage.prompt_cache_miss_tokens;
+                        app.session.last_reasoning_replay_tokens = usage.reasoning_replay_tokens;
                         app.push_turn_cache_record(crate::tui::app::TurnCacheRecord {
                             input_tokens: usage.input_tokens,
                             output_tokens: usage.output_tokens,
@@ -1297,6 +1356,33 @@ async fn run_event_loop(
             if app.use_mouse_capture
                 && let Event::Mouse(mouse) = evt
             {
+                // #376: hold Shift to bypass alt-screen mouse capture for
+                // terminal-native text selection. While bypass is active,
+                // mouse events pass through to the terminal instead of
+                // being consumed by the TUI.
+                if mouse.modifiers.contains(KeyModifiers::SHIFT) {
+                    if !shift_bypass_active {
+                        let _ = execute!(terminal.backend_mut(), DisableMouseCapture);
+                        shift_bypass_active = true;
+                        app.push_status_toast(
+                            "Native selection \u{2014} release Shift to return",
+                            StatusToastLevel::Info,
+                            Some(3_000),
+                        );
+                    }
+                    // Let the terminal handle this mouse event natively.
+                    continue;
+                }
+                if shift_bypass_active {
+                    let _ = execute!(terminal.backend_mut(), EnableMouseCapture);
+                    shift_bypass_active = false;
+                    app.push_status_toast(
+                        "Mouse capture restored",
+                        StatusToastLevel::Info,
+                        Some(2_000),
+                    );
+                }
+
                 let events = handle_mouse_event(app, mouse);
                 if handle_view_events(
                     terminal,
@@ -1479,6 +1565,27 @@ async fn run_event_loop(
                 continue;
             }
 
+            // Ctrl+E toggles the file-tree pane. Visible even when other
+            // modals are open (the file tree is part of the body layout,
+            // not a modal overlay).
+            if key.code == KeyCode::Char('e') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                if let Some(_state) = app.file_tree.as_mut() {
+                    // File tree visible → hide it.
+                    app.file_tree = None;
+                    app.status_message = Some("File tree closed".to_string());
+                } else {
+                    // Build the file tree from the current workspace.
+                    let state = crate::tui::file_tree::FileTreeState::new(&app.workspace);
+                    app.file_tree = Some(state);
+                    app.status_message = Some(
+                        "File tree: \u{2191}/\u{2193} navigate  Enter select  Esc close"
+                            .to_string(),
+                    );
+                }
+                app.needs_redraw = true;
+                continue;
+            }
+
             // Ctrl+P opens the fuzzy file-picker overlay. Bound only when the
             // composer is focused (no other modal on top of the stack) and the
             // engine is not actively streaming a turn.
@@ -1507,6 +1614,49 @@ async fn run_event_loop(
             {
                 open_context_inspector(app);
                 continue;
+            }
+
+            // File-tree navigation: intercept keys when the file-tree pane is
+            // visible so Up/Down/Enter/Esc operate on the tree rather than
+            // falling through to composer or modal handlers.
+            if app.file_tree.is_some() {
+                match key.code {
+                    KeyCode::Up => {
+                        if let Some(state) = app.file_tree.as_mut() {
+                            state.cursor_up();
+                        }
+                        app.needs_redraw = true;
+                        continue;
+                    }
+                    KeyCode::Down => {
+                        if let Some(state) = app.file_tree.as_mut() {
+                            state.cursor_down();
+                        }
+                        app.needs_redraw = true;
+                        continue;
+                    }
+                    KeyCode::Enter => {
+                        if let Some(state) = app.file_tree.as_mut() {
+                            if let Some(rel_path) = state.activate() {
+                                // Insert @path into the composer.
+                                let path_str = rel_path.to_string_lossy().to_string();
+                                app.status_message = Some(format!("Attached @{path_str}"));
+                                app.insert_str(&format!("@{} ", path_str));
+                            } else {
+                                // Directory was expanded/collapsed; rebuild.
+                                app.needs_redraw = true;
+                            }
+                        }
+                        continue;
+                    }
+                    KeyCode::Esc => {
+                        app.file_tree = None;
+                        app.status_message = Some("File tree closed".to_string());
+                        app.needs_redraw = true;
+                        continue;
+                    }
+                    _ => {}
+                }
             }
 
             if !app.view_stack.is_empty() {
@@ -1593,7 +1743,7 @@ async fn run_event_loop(
             match key.code {
                 KeyCode::Enter
                     if app.input.is_empty()
-                        && app.transcript_selection.is_active()
+                        && app.viewport.transcript_selection.is_active()
                         && open_pager_for_selection(app) =>
                 {
                     continue;
@@ -1771,6 +1921,7 @@ async fn run_event_loop(
                     }
                     EscapeAction::ClearInput => {
                         app.backtrack.reset();
+                        app.edit_in_progress = false;
                         app.clear_input_recoverable();
                     }
                     EscapeAction::Noop => {
@@ -1866,11 +2017,11 @@ async fn run_event_loop(
                     let _ = app.select_next_composer_attachment();
                 }
                 KeyCode::PageUp => {
-                    let page = app.last_transcript_visible.max(1);
+                    let page = app.viewport.last_transcript_visible.max(1);
                     app.scroll_up(page);
                 }
                 KeyCode::PageDown => {
-                    let page = app.last_transcript_visible.max(1);
+                    let page = app.viewport.last_transcript_visible.max(1);
                     app.scroll_down(page);
                 }
                 KeyCode::Tab => {
@@ -1912,9 +2063,9 @@ async fn run_event_loop(
                     if key.modifiers.is_empty() && app.input.is_empty() && !slash_menu_open =>
                 {
                     if let Some(anchor) =
-                        TranscriptScroll::anchor_for(app.transcript_cache.line_meta(), 0)
+                        TranscriptScroll::anchor_for(app.viewport.transcript_cache.line_meta(), 0)
                     {
-                        app.transcript_scroll = anchor;
+                        app.viewport.transcript_scroll = anchor;
                     }
                 }
                 KeyCode::Char('G')
@@ -1971,6 +2122,43 @@ async fn run_event_loop(
                 {
                     continue;
                 }
+                // #382: Ctrl+Enter forces a steer into the current turn.
+                KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    if let Some(input) = app.submit_input() {
+                        if input.starts_with('/') {
+                            if execute_command_input(
+                                terminal,
+                                app,
+                                &mut engine_handle,
+                                &task_manager,
+                                config,
+                                &mut web_config_session,
+                                &input,
+                            )
+                            .await?
+                            {
+                                return Ok(());
+                            }
+                        } else {
+                            let queued = if let Some(mut draft) = app.queued_draft.take() {
+                                draft.display = input;
+                                draft
+                            } else {
+                                build_queued_message(app, input)
+                            };
+                            // Force steer: bypass decide_submit_disposition.
+                            if let Err(err) =
+                                steer_user_message(app, &engine_handle, queued.clone()).await
+                            {
+                                app.queue_message(queued);
+                                app.status_message = Some(format!(
+                                    "Steer failed ({err}); queued {} message(s)",
+                                    app.queued_message_count()
+                                ));
+                            }
+                        }
+                    }
+                }
                 KeyCode::Enter => {
                     if let Some(input) = app.submit_input() {
                         if handle_plan_choice(app, &engine_handle, &input).await? {
@@ -1997,6 +2185,22 @@ async fn run_event_loop(
                             } else {
                                 build_queued_message(app, input)
                             };
+                            // #383: /edit — if the user invoked /edit to revise
+                            // the last message, undo the last exchange before
+                            // dispatching the replacement. Sync the engine
+                            // session so it also drops the old exchange.
+                            if app.edit_in_progress {
+                                crate::commands::execute("/undo", app);
+                                app.edit_in_progress = false;
+                                let _ = engine_handle
+                                    .send(Op::SyncSession {
+                                        messages: app.api_messages.clone(),
+                                        system_prompt: app.system_prompt.clone(),
+                                        model: app.model.clone(),
+                                        workspace: app.workspace.clone(),
+                                    })
+                                    .await;
+                            }
                             submit_or_steer_message(app, &engine_handle, queued).await?;
                         }
                     }
@@ -2017,9 +2221,9 @@ async fn run_event_loop(
                 }
                 KeyCode::Home if key.modifiers.is_empty() => {
                     if let Some(anchor) =
-                        TranscriptScroll::anchor_for(app.transcript_cache.line_meta(), 0)
+                        TranscriptScroll::anchor_for(app.viewport.transcript_cache.line_meta(), 0)
                     {
-                        app.transcript_scroll = anchor;
+                        app.viewport.transcript_scroll = anchor;
                     }
                 }
                 KeyCode::End if key.modifiers.is_empty() => {
@@ -2096,9 +2300,24 @@ async fn run_event_loop(
                     app.clear_input_recoverable();
                 }
                 KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    // Emacs-style yank from the kill buffer at the cursor.
-                    // No-op when the buffer is empty.
-                    app.yank();
+                    // #379: context-sensitive Ctrl+Y.
+                    // When the composer has content → emacs-style yank
+                    // from the kill buffer at the cursor.
+                    // When the composer is empty (transcript focus) →
+                    // copy the focused cell text to the system clipboard.
+                    if app.input.is_empty() && app.view_stack.is_empty() {
+                        if copy_focused_cell(app) {
+                            app.push_status_toast(
+                                "Copied to clipboard",
+                                StatusToastLevel::Info,
+                                Some(2_000),
+                            );
+                        } else {
+                            app.status_message = Some("No transcript cell to copy".to_string());
+                        }
+                    } else {
+                        app.yank();
+                    }
                 }
                 KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     let new_mode = match app.mode {
@@ -2188,7 +2407,7 @@ fn build_session_snapshot(app: &App, manager: &SessionManager) -> SavedSession {
         let mut updated = update_session(
             existing,
             &app.api_messages,
-            u64::from(app.total_tokens),
+            u64::from(app.session.total_tokens),
             app.system_prompt.as_ref(),
         );
         updated.metadata.mode = Some(app.mode.as_setting().to_string());
@@ -2199,7 +2418,7 @@ fn build_session_snapshot(app: &App, manager: &SessionManager) -> SavedSession {
             &app.api_messages,
             &app.model,
             &app.workspace,
-            u64::from(app.total_tokens),
+            u64::from(app.session.total_tokens),
             app.system_prompt.as_ref(),
             Some(app.mode.as_setting()),
         );
@@ -2584,11 +2803,11 @@ async fn dispatch_user_message(
         app.status_message = Some("Context critical; compacting before send...".to_string());
         let _ = engine_handle.send(Op::CompactContext).await;
     }
-    app.last_prompt_tokens = None;
-    app.last_completion_tokens = None;
-    app.last_prompt_cache_hit_tokens = None;
-    app.last_prompt_cache_miss_tokens = None;
-    app.last_reasoning_replay_tokens = None;
+    app.session.last_prompt_tokens = None;
+    app.session.last_completion_tokens = None;
+    app.session.last_prompt_cache_hit_tokens = None;
+    app.session.last_prompt_cache_miss_tokens = None;
+    app.session.last_reasoning_replay_tokens = None;
     // Persist immediately so abrupt termination can recover this in-flight turn.
     // Offloaded to the persistence actor.
     if let Ok(manager) = SessionManager::default_location() {
@@ -2596,11 +2815,19 @@ async fn dispatch_user_message(
         persistence_actor::persist(PersistRequest::Checkpoint(session));
     }
 
+    // Resolve the effective model: when auto_model is active, use the
+    // heuristic to pick between Pro and Flash based on the user's input.
+    let effective_model = if app.auto_model {
+        commands::auto_model_heuristic(&message.display, &app.model)
+    } else {
+        app.model.clone()
+    };
+
     engine_handle
         .send(Op::SendMessage {
             content,
             mode: app.mode,
-            model: app.model.clone(),
+            model: effective_model,
             reasoning_effort: app.reasoning_effort.api_value().map(str::to_string),
             allow_shell: app.allow_shell,
             trust_mode: app.trust_mode,
@@ -2722,11 +2949,11 @@ async fn apply_model_picker_choice(
     if model_changed {
         app.model = model.clone();
         app.update_model_compaction_budget();
-        app.last_prompt_tokens = None;
-        app.last_completion_tokens = None;
-        app.last_prompt_cache_hit_tokens = None;
-        app.last_prompt_cache_miss_tokens = None;
-        app.last_reasoning_replay_tokens = None;
+        app.session.last_prompt_tokens = None;
+        app.session.last_completion_tokens = None;
+        app.session.last_prompt_cache_hit_tokens = None;
+        app.session.last_prompt_cache_miss_tokens = None;
+        app.session.last_reasoning_replay_tokens = None;
     }
     if effort_changed {
         app.reasoning_effort = effort;
@@ -2839,8 +3066,8 @@ async fn switch_provider(
     app.api_provider = target;
     app.model = new_model.clone();
     app.update_model_compaction_budget();
-    app.last_prompt_tokens = None;
-    app.last_completion_tokens = None;
+    app.session.last_prompt_tokens = None;
+    app.session.last_completion_tokens = None;
 
     let _ = engine_handle.send(Op::Shutdown).await;
     let engine_config = build_engine_config(app, config);
@@ -2876,6 +3103,7 @@ async fn switch_provider(
 
 fn open_text_pager(app: &mut App, title: String, content: String) {
     let width = app
+        .viewport
         .last_transcript_area
         .map(|area| area.width)
         .unwrap_or(80);
@@ -2888,6 +3116,7 @@ fn open_text_pager(app: &mut App, title: String, content: String) {
 
 fn open_context_inspector(app: &mut App) {
     let width = app
+        .viewport
         .last_transcript_area
         .map(|area| area.width)
         .unwrap_or(80);
@@ -3397,6 +3626,67 @@ async fn apply_command_result(
             AppAction::Mcp(action) => {
                 handle_mcp_ui_action(app, config, action).await;
             }
+            AppAction::SwitchProfile { profile } => {
+                app.config_profile = Some(profile.clone());
+                match Config::load(app.config_path.clone(), Some(&profile)) {
+                    Ok(new_config) => {
+                        *config = new_config.clone();
+                        app.api_provider = config.api_provider();
+                        let new_model = config.default_model();
+                        app.model = new_model.clone();
+                        app.update_model_compaction_budget();
+                        app.session.last_prompt_tokens = None;
+                        app.session.last_completion_tokens = None;
+                        // Rebuild the engine with the new config so API key/model/base URL take effect.
+                        let _ = engine_handle.send(Op::Shutdown).await;
+                        let engine_config = build_engine_config(app, config);
+                        *engine_handle = spawn_engine(engine_config, config);
+                        if !app.api_messages.is_empty() {
+                            let _ = engine_handle
+                                .send(Op::SyncSession {
+                                    messages: app.api_messages.clone(),
+                                    system_prompt: app.system_prompt.clone(),
+                                    model: app.model.clone(),
+                                    workspace: app.workspace.clone(),
+                                })
+                                .await;
+                        }
+                        app.add_message(HistoryCell::System {
+                            content: format!(
+                                "Switched to profile '{profile}'. Model: {new_model}, Provider: {}",
+                                config.api_provider().as_str()
+                            ),
+                        });
+                        app.status_message = Some(format!("Profile: {profile}"));
+                    }
+                    Err(err) => {
+                        app.config_profile = None;
+                        app.status_message =
+                            Some(format!("Failed to switch to profile '{profile}': {err}"));
+                    }
+                }
+            }
+            AppAction::ShareSession {
+                history_len: _,
+                model,
+                mode,
+            } => {
+                let status = if app.api_messages.is_empty() {
+                    "No session content to share.".to_string()
+                } else {
+                    let history_json = serde_json::to_string_pretty(&app.api_messages)
+                        .unwrap_or_else(|_| "[]".to_string());
+                    match crate::commands::share::perform_share(&history_json, &model, &mode).await
+                    {
+                        Ok(url) => format!("Session shared! URL: {url}"),
+                        Err(err) => format!("Share failed: {err}"),
+                    }
+                };
+                app.add_message(HistoryCell::System {
+                    content: status.clone(),
+                });
+                app.status_message = Some(status);
+            }
         }
     }
 
@@ -3651,14 +3941,20 @@ async fn submit_or_steer_message(
     match app.decide_submit_disposition() {
         SubmitDisposition::Immediate => dispatch_user_message(app, engine_handle, message).await,
         SubmitDisposition::Queue => {
+            let count = app.queued_message_count().saturating_add(1);
             app.queue_message(message);
-            app.status_message = Some(format!(
-                "Offline mode: queued {} message(s) - /queue to review",
-                app.queued_message_count()
-            ));
+            if app.offline_mode {
+                app.status_message = Some(format!(
+                    "Offline mode: queued {count} message(s) - /queue to review"
+                ));
+            } else {
+                app.status_message = Some(format!(
+                    "Queued for next turn: {count} message(s) - Ctrl+Enter to steer, /queue to review"
+                ));
+            }
             Ok(())
         }
-        SubmitDisposition::QueueFollowUp => queue_follow_up(app, message).await,
+        // Steer and QueueFollowUp are now only reached via Ctrl+Enter override.
         SubmitDisposition::Steer => {
             if let Err(err) = steer_user_message(app, engine_handle, message.clone()).await {
                 app.queue_message(message);
@@ -3666,9 +3962,16 @@ async fn submit_or_steer_message(
                     "Steer failed ({err}); queued {} message(s) - /queue to view/edit",
                     app.queued_message_count()
                 ));
+            } else {
+                app.push_status_toast(
+                    "Steering into current turn",
+                    StatusToastLevel::Info,
+                    Some(1_500),
+                );
             }
             Ok(())
         }
+        SubmitDisposition::QueueFollowUp => queue_follow_up(app, message).await,
     }
 }
 
@@ -3950,9 +4253,9 @@ fn render(f: &mut Frame, app: &mut App) {
             app.ui_theme.header_bg,
         )
         .with_usage(
-            app.total_conversation_tokens,
+            app.session.total_conversation_tokens,
             sanitized_context_window,
-            app.session_cost,
+            app.session.session_cost,
             sanitized_prompt_tokens,
         )
         .with_reasoning_effort(Some(effort_label))
@@ -3962,23 +4265,51 @@ fn render(f: &mut Frame, app: &mut App) {
         header_widget.render(chunks[0], buf);
     }
 
-    // Render chat + sidebar
+    // Render chat + sidebar + optional file-tree pane
     {
-        let mut chat_area = chunks[1];
+        // Defensive backstop (#400): fill the entire body area with ink
+        // background before any sub-widgets render, so cells that end up
+        // uncovered by layout splits (e.g. after file-tree toggle or
+        // resize) don't retain stale content from a previous frame.
+        Block::default()
+            .style(Style::default().bg(palette::DEEPSEEK_INK))
+            .render(chunks[1], f.buffer_mut());
+
         let mut sidebar_area = None;
 
-        if chunks[1].width >= SIDEBAR_VISIBLE_MIN_WIDTH {
-            let preferred_sidebar = (u32::from(chunks[1].width)
+        // When the file-tree pane is visible and the terminal is wide
+        // enough, reserve the left ~25% for the file tree.
+        let mut chat_area =
+            if app.file_tree.is_some() && chunks[1].width >= SIDEBAR_VISIBLE_MIN_WIDTH {
+                let split = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
+                    .split(chunks[1]);
+                let tree_area = split[0];
+                let remaining = split[1];
+
+                // Render the file-tree pane.
+                if let Some(ref mut state) = app.file_tree {
+                    super::file_tree::render_file_tree(f, tree_area, state);
+                }
+
+                remaining
+            } else {
+                chunks[1]
+            };
+
+        if chat_area.width >= SIDEBAR_VISIBLE_MIN_WIDTH {
+            let preferred_sidebar = (u32::from(chat_area.width)
                 * u32::from(app.sidebar_width_percent.clamp(10, 50))
                 / 100) as u16;
             let sidebar_width = preferred_sidebar
                 .max(24)
-                .min(chunks[1].width.saturating_sub(40));
+                .min(chat_area.width.saturating_sub(40));
             if sidebar_width >= 20 {
                 let split = Layout::default()
                     .direction(Direction::Horizontal)
                     .constraints([Constraint::Min(1), Constraint::Length(sidebar_width)])
-                    .split(chunks[1]);
+                    .split(chat_area);
                 chat_area = split[0];
                 sidebar_area = Some(split[1]);
             }
@@ -4584,16 +4915,16 @@ fn apply_loaded_session(app: &mut App, session: &SavedSession) {
     }
     app.sync_context_references_from_session(&session.context_references, &message_to_cell);
     app.mark_history_updated();
-    app.transcript_selection.clear();
+    app.viewport.transcript_selection.clear();
     app.model.clone_from(&session.metadata.model);
     app.update_model_compaction_budget();
     app.workspace.clone_from(&session.metadata.workspace);
-    app.total_tokens = u32::try_from(session.metadata.total_tokens).unwrap_or(u32::MAX);
-    app.total_conversation_tokens = app.total_tokens;
-    app.last_prompt_tokens = None;
-    app.last_completion_tokens = None;
-    app.last_prompt_cache_hit_tokens = None;
-    app.last_prompt_cache_miss_tokens = None;
+    app.session.total_tokens = u32::try_from(session.metadata.total_tokens).unwrap_or(u32::MAX);
+    app.session.total_conversation_tokens = app.session.total_tokens;
+    app.session.last_prompt_tokens = None;
+    app.session.last_completion_tokens = None;
+    app.session.last_prompt_cache_hit_tokens = None;
+    app.session.last_prompt_cache_miss_tokens = None;
     app.current_session_id = Some(session.metadata.id.clone());
     app.workspace_context = None;
     app.workspace_context_refreshed_at = None;
@@ -4613,7 +4944,15 @@ fn compact_user_context_display(content: &str) -> String {
         .to_string()
 }
 
-fn refresh_workspace_context_if_needed(app: &mut App, now: Instant, allow_blocking_refresh: bool) {
+fn refresh_workspace_context_if_needed(app: &mut App, now: Instant, allow_refresh: bool) {
+    // Drain the async cell result into the live field first, so the render
+    // path always reads the latest value (#399 S1).
+    if let Ok(mut cell) = app.workspace_context_cell.lock()
+        && let Some(ctx) = cell.take()
+    {
+        app.workspace_context = Some(ctx);
+    }
+
     if app
         .workspace_context_refreshed_at
         .is_some_and(|refreshed_at| {
@@ -4623,11 +4962,27 @@ fn refresh_workspace_context_if_needed(app: &mut App, now: Instant, allow_blocki
         return;
     }
 
-    if !allow_blocking_refresh {
+    if !allow_refresh {
         return;
     }
 
-    app.workspace_context = collect_workspace_context(&app.workspace);
+    // Offload git query to a background thread when a Tokio runtime is
+    // available. Fall back to synchronous execution for tests and other
+    // non-async contexts (#399 S1).
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        let ctx = app.workspace_context_cell.clone();
+        let workspace = app.workspace.clone();
+        handle.spawn_blocking(move || {
+            let result = collect_workspace_context(&workspace);
+            if let Ok(mut guard) = ctx.lock() {
+                *guard = result;
+            }
+        });
+    } else {
+        // No runtime — run synchronously so tests and one-shot callers
+        // still get a result immediately.
+        app.workspace_context = collect_workspace_context(&app.workspace);
+    }
     app.workspace_context_refreshed_at = Some(now);
 }
 
@@ -5334,23 +5689,38 @@ fn footer_coherence_spans(app: &App) -> Vec<Span<'static>> {
 }
 
 fn footer_cache_spans(app: &App) -> Vec<Span<'static>> {
-    let Some(hit_tokens) = app.last_prompt_cache_hit_tokens else {
+    let Some(hit_tokens) = app.session.last_prompt_cache_hit_tokens else {
         return Vec::new();
     };
-    let miss_tokens = app.last_prompt_cache_miss_tokens.unwrap_or_else(|| {
-        app.last_prompt_tokens
-            .unwrap_or(0)
-            .saturating_sub(hit_tokens)
-    });
+    let miss_tokens = app
+        .session
+        .last_prompt_cache_miss_tokens
+        .unwrap_or_else(|| {
+            app.session
+                .last_prompt_tokens
+                .unwrap_or(0)
+                .saturating_sub(hit_tokens)
+        });
     let total = hit_tokens.saturating_add(miss_tokens);
     if total == 0 {
         return Vec::new();
     }
 
     let percent = (f64::from(hit_tokens) / f64::from(total) * 100.0).clamp(0.0, 100.0);
+    // Threshold-based coloring for cache hit rate (#396):
+    //   >80%: green (good cache utilization)
+    //   40-80%: yellow/warning
+    //   <40%: red/dimmed (poor cache)
+    let color = if percent > 80.0 {
+        palette::STATUS_SUCCESS
+    } else if percent >= 40.0 {
+        palette::STATUS_WARNING
+    } else {
+        palette::STATUS_ERROR
+    };
     vec![Span::styled(
         format!("cache hit {:.0}%", percent),
-        Style::default().fg(palette::TEXT_MUTED),
+        Style::default().fg(color),
     )]
 }
 
@@ -5362,14 +5732,14 @@ fn footer_cache_spans(app: &App) -> Vec<Span<'static>> {
 /// (>50%), the chip turns warning-coloured so users notice that thinking
 /// replay is the main consumer of context.
 fn footer_reasoning_replay_spans(app: &App) -> Vec<Span<'static>> {
-    let Some(replay) = app.last_reasoning_replay_tokens else {
+    let Some(replay) = app.session.last_reasoning_replay_tokens else {
         return Vec::new();
     };
     if replay == 0 {
         return Vec::new();
     }
     let label = format!("rsn {}", format_token_count_compact(u64::from(replay)));
-    let color = match app.last_prompt_tokens {
+    let color = match app.session.last_prompt_tokens {
         Some(input) if input > 0 && f64::from(replay) / f64::from(input) > 0.5 => {
             palette::STATUS_WARNING
         }
@@ -5537,12 +5907,13 @@ enum SearchDirection {
 }
 
 fn jump_to_adjacent_tool_cell(app: &mut App, direction: SearchDirection) -> bool {
-    let line_meta = app.transcript_cache.line_meta();
+    let line_meta = app.viewport.transcript_cache.line_meta();
     if line_meta.is_empty() {
         return false;
     }
 
     let top = app
+        .viewport
         .last_transcript_top
         .min(line_meta.len().saturating_sub(1));
     let current_cell = line_meta
@@ -5571,8 +5942,8 @@ fn jump_to_adjacent_tool_cell(app: &mut App, direction: SearchDirection) -> bool
             continue;
         }
         if let Some(anchor) = TranscriptScroll::anchor_for(line_meta, idx) {
-            app.transcript_scroll = anchor;
-            app.pending_scroll_delta = 0;
+            app.viewport.transcript_scroll = anchor;
+            app.viewport.pending_scroll_delta = 0;
             app.needs_redraw = true;
             return true;
         }
@@ -5593,6 +5964,7 @@ fn context_usage_snapshot(app: &App) -> Option<(i64, u32, f64)> {
     let max = context_window_for_model(&app.model)?;
     let max_i64 = i64::from(max);
     let reported = app
+        .session
         .last_prompt_tokens
         .map(i64::from)
         .map(|tokens| tokens.max(0));
@@ -5785,41 +6157,41 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) -> Vec<ViewEvent> {
 
     match mouse.kind {
         MouseEventKind::ScrollUp => {
-            let update = app.mouse_scroll.on_scroll(ScrollDirection::Up);
-            app.pending_scroll_delta += update.delta_lines;
+            let update = app.viewport.mouse_scroll.on_scroll(ScrollDirection::Up);
+            app.viewport.pending_scroll_delta += update.delta_lines;
         }
         MouseEventKind::ScrollDown => {
-            let update = app.mouse_scroll.on_scroll(ScrollDirection::Down);
-            app.pending_scroll_delta += update.delta_lines;
+            let update = app.viewport.mouse_scroll.on_scroll(ScrollDirection::Down);
+            app.viewport.pending_scroll_delta += update.delta_lines;
         }
         MouseEventKind::Down(MouseButton::Left) => {
             if let Some(point) = selection_point_from_mouse(app, mouse) {
-                app.transcript_selection.anchor = Some(point);
-                app.transcript_selection.head = Some(point);
-                app.transcript_selection.dragging = true;
+                app.viewport.transcript_selection.anchor = Some(point);
+                app.viewport.transcript_selection.head = Some(point);
+                app.viewport.transcript_selection.dragging = true;
 
                 if app.is_loading
-                    && app.transcript_scroll.is_at_tail()
+                    && app.viewport.transcript_scroll.is_at_tail()
                     && let Some(anchor) = TranscriptScroll::anchor_for(
-                        app.transcript_cache.line_meta(),
-                        app.last_transcript_top,
+                        app.viewport.transcript_cache.line_meta(),
+                        app.viewport.last_transcript_top,
                     )
                 {
-                    app.transcript_scroll = anchor;
+                    app.viewport.transcript_scroll = anchor;
                 }
-            } else if app.transcript_selection.is_active() {
-                app.transcript_selection.clear();
+            } else if app.viewport.transcript_selection.is_active() {
+                app.viewport.transcript_selection.clear();
             }
         }
         MouseEventKind::Drag(MouseButton::Left) => {
-            if app.transcript_selection.dragging
+            if app.viewport.transcript_selection.dragging
                 && let Some(point) = selection_point_from_mouse(app, mouse)
             {
-                app.transcript_selection.head = Some(point);
+                app.viewport.transcript_selection.head = Some(point);
             }
         }
-        MouseEventKind::Up(MouseButton::Left) if app.transcript_selection.dragging => {
-            app.transcript_selection.dragging = false;
+        MouseEventKind::Up(MouseButton::Left) if app.viewport.transcript_selection.dragging => {
+            app.viewport.transcript_selection.dragging = false;
             if selection_has_content(app) {
                 copy_active_selection(app);
             }
@@ -5864,7 +6236,16 @@ fn build_context_menu_entries(app: &App, mouse: MouseEvent) -> Vec<ContextMenuEn
         });
     }
 
-    if let Some(cell_index) = transcript_cell_index_from_mouse(app, mouse) {
+    if let Some(filtered_cell_index) = transcript_cell_index_from_mouse(app, mouse) {
+        // Convert filtered index → original virtual index using the
+        // mapping built in ChatWidget::new. When no cells are collapsed
+        // this is an identity mapping.
+        let cell_index = app
+            .collapsed_cell_map
+            .get(filtered_cell_index)
+            .copied()
+            .unwrap_or(filtered_cell_index);
+
         let target = detail_target_label(app, cell_index)
             .map(|label| truncate_line_to_width(&label, 28))
             .unwrap_or_else(|| "message".to_string());
@@ -5877,6 +6258,35 @@ fn build_context_menu_entries(app: &App, mouse: MouseEvent) -> Vec<ContextMenuEn
             label: "Copy message".to_string(),
             description: "write clicked transcript cell".to_string(),
             action: ContextMenuAction::CopyCell { cell_index },
+        });
+        entries.push(ContextMenuEntry {
+            label: "Open in editor".to_string(),
+            description: "open file:line in $EDITOR".to_string(),
+            action: ContextMenuAction::OpenFileAtLine { cell_index },
+        });
+        // Hide/show cell toggle.
+        if app.collapsed_cells.contains(&cell_index) {
+            entries.push(ContextMenuEntry {
+                label: "Show cell".to_string(),
+                description: "unhide this transcript cell".to_string(),
+                action: ContextMenuAction::ShowCell { cell_index },
+            });
+        } else {
+            entries.push(ContextMenuEntry {
+                label: "Hide cell".to_string(),
+                description: "collapse this transcript cell".to_string(),
+                action: ContextMenuAction::HideCell { cell_index },
+            });
+        }
+    }
+
+    // When cells are hidden, offer a way to show them all.
+    if !app.collapsed_cells.is_empty() {
+        let count = app.collapsed_cells.len();
+        entries.push(ContextMenuEntry {
+            label: format!("Show hidden ({count})"),
+            description: "unhide all collapsed cells".to_string(),
+            action: ContextMenuAction::ShowAllHidden,
         });
     }
 
@@ -5906,7 +6316,8 @@ fn build_context_menu_entries(app: &App, mouse: MouseEvent) -> Vec<ContextMenuEn
 
 fn transcript_cell_index_from_mouse(app: &App, mouse: MouseEvent) -> Option<usize> {
     let point = selection_point_from_mouse(app, mouse)?;
-    app.transcript_cache
+    app.viewport
+        .transcript_cache
         .line_meta()
         .get(point.line_index)
         .and_then(|meta| meta.cell_line())
@@ -5924,7 +6335,7 @@ fn handle_context_menu_action(app: &mut App, action: ContextMenuAction) {
             }
         }
         ContextMenuAction::ClearSelection => {
-            app.transcript_selection.clear();
+            app.viewport.transcript_selection.clear();
             app.status_message = Some("Selection cleared".to_string());
         }
         ContextMenuAction::CopyCell { cell_index } => {
@@ -5954,18 +6365,50 @@ fn handle_context_menu_action(app: &mut App, action: ContextMenuAction) {
         ContextMenuAction::OpenHelp => {
             app.view_stack.push(HelpView::new_for_locale(app.ui_locale));
         }
+        ContextMenuAction::OpenFileAtLine { cell_index } => {
+            let width = app
+                .viewport
+                .last_transcript_area
+                .map(|area| area.width)
+                .unwrap_or(80);
+            let text = history_cell_to_text(
+                app.cell_at_virtual_index(cell_index)
+                    .unwrap_or(&HistoryCell::System {
+                        content: String::new(),
+                    }),
+                width,
+            );
+            if crate::tui::history::try_open_file_at_line(&text, &app.workspace) {
+                app.status_message = Some("Opened file in editor".to_string());
+            } else {
+                app.status_message = Some("No file:line pattern found in selection".to_string());
+            }
+        }
+        ContextMenuAction::HideCell { cell_index } => {
+            app.collapsed_cells.insert(cell_index);
+            app.status_message = Some("Cell hidden".to_string());
+        }
+        ContextMenuAction::ShowCell { cell_index } => {
+            app.collapsed_cells.remove(&cell_index);
+            app.status_message = Some("Cell shown".to_string());
+        }
+        ContextMenuAction::ShowAllHidden => {
+            let count = app.collapsed_cells.len();
+            app.collapsed_cells.clear();
+            app.status_message = Some(format!("{count} hidden cell(s) restored"));
+        }
     }
     app.needs_redraw = true;
 }
 
 fn selection_point_from_mouse(app: &App, mouse: MouseEvent) -> Option<TranscriptSelectionPoint> {
     selection_point_from_position(
-        app.last_transcript_area?,
+        app.viewport.last_transcript_area?,
         mouse.column,
         mouse.row,
-        app.last_transcript_top,
-        app.last_transcript_total,
-        app.last_transcript_padding_top,
+        app.viewport.last_transcript_top,
+        app.viewport.last_transcript_total,
+        app.viewport.last_transcript_padding_top,
     )
 }
 
@@ -6007,14 +6450,14 @@ fn selection_point_from_position(
 }
 
 fn selection_has_content(app: &App) -> bool {
-    match app.transcript_selection.ordered_endpoints() {
+    match app.viewport.transcript_selection.ordered_endpoints() {
         Some((start, end)) => start != end,
         None => false,
     }
 }
 
 fn copy_active_selection(app: &mut App) {
-    if !app.transcript_selection.is_active() {
+    if !app.viewport.transcript_selection.is_active() {
         return;
     }
     if let Some(text) = selection_to_text(app).filter(|text| !text.is_empty()) {
@@ -6024,14 +6467,14 @@ fn copy_active_selection(app: &mut App) {
             app.status_message = Some("Copy failed".to_string());
         }
     } else {
-        app.transcript_selection.clear();
+        app.viewport.transcript_selection.clear();
         app.status_message = Some("No selection to copy".to_string());
     }
 }
 
 fn selection_to_text(app: &App) -> Option<String> {
-    let (start, end) = app.transcript_selection.ordered_endpoints()?;
-    let lines = app.transcript_cache.lines();
+    let (start, end) = app.viewport.transcript_selection.ordered_endpoints()?;
+    let lines = app.viewport.transcript_cache.lines();
     if lines.is_empty() {
         return None;
     }
@@ -6064,6 +6507,7 @@ fn open_pager_for_selection(app: &mut App) -> bool {
         return false;
     };
     let width = app
+        .viewport
         .last_transcript_area
         .map(|area| area.width)
         .unwrap_or(80);
@@ -6077,6 +6521,7 @@ fn open_pager_for_last_message(app: &mut App) -> bool {
         return false;
     };
     let width = app
+        .viewport
         .last_transcript_area
         .map(|area| area.width)
         .unwrap_or(80);
@@ -6092,10 +6537,12 @@ fn open_pager_for_last_message(app: &mut App) -> bool {
 /// reasoning content that's been collapsed in calm-mode rendering.
 fn open_thinking_pager(app: &mut App) -> bool {
     let selected_cell = app
+        .viewport
         .transcript_selection
         .ordered_endpoints()
         .and_then(|(start, _)| {
-            app.transcript_cache
+            app.viewport
+                .transcript_cache
                 .line_meta()
                 .get(start.line_index)
                 .and_then(|meta| meta.cell_line())
@@ -6129,6 +6576,7 @@ fn open_thinking_pager(app: &mut App) -> bool {
 
     let cell = &app.history[idx];
     let width = app
+        .viewport
         .last_transcript_area
         .map(|area| area.width)
         .unwrap_or(80);
@@ -6164,6 +6612,7 @@ fn open_details_pager_for_cell(app: &mut App, cell_index: usize) -> bool {
         );
 
         let width = app
+            .viewport
             .last_transcript_area
             .map(|area| area.width)
             .unwrap_or(80);
@@ -6190,6 +6639,7 @@ fn open_details_pager_for_cell(app: &mut App, cell_index: usize) -> bool {
         HistoryCell::ArchivedContext { .. } => "Archived Context".to_string(),
     };
     let width = app
+        .viewport
         .last_transcript_area
         .map(|area| area.width)
         .unwrap_or(80);
@@ -6202,12 +6652,25 @@ fn open_details_pager_for_cell(app: &mut App, cell_index: usize) -> bool {
     true
 }
 
+/// Copy the "focused" transcript cell to the system clipboard.
+/// The focused cell is determined by the detail-target heuristic
+/// (viewport centre or most recent cell). Returns true when text
+/// was actually copied.
+fn copy_focused_cell(app: &mut App) -> bool {
+    let cell_index = detail_target_cell_index(app);
+    let Some(index) = cell_index else {
+        return false;
+    };
+    copy_cell_to_clipboard(app, index)
+}
+
 fn copy_cell_to_clipboard(app: &mut App, cell_index: usize) -> bool {
     let Some(cell) = app.cell_at_virtual_index(cell_index) else {
         app.status_message = Some("No message at that line".to_string());
         return false;
     };
     let width = app
+        .viewport
         .last_transcript_area
         .map(|area| area.width)
         .unwrap_or(80);
@@ -6226,8 +6689,9 @@ fn copy_cell_to_clipboard(app: &mut App, cell_index: usize) -> bool {
 }
 
 fn detail_target_cell_index(app: &App) -> Option<usize> {
-    if let Some((start, _)) = app.transcript_selection.ordered_endpoints() {
+    if let Some((start, _)) = app.viewport.transcript_selection.ordered_endpoints() {
         return app
+            .viewport
             .transcript_cache
             .line_meta()
             .get(start.line_index)
@@ -6236,21 +6700,21 @@ fn detail_target_cell_index(app: &App) -> Option<usize> {
     }
 
     app.detail_cell_index_for_viewport(
-        app.last_transcript_top,
-        app.last_transcript_visible.max(1),
-        app.transcript_cache.line_meta(),
+        app.viewport.last_transcript_top,
+        app.viewport.last_transcript_visible.max(1),
+        app.viewport.transcript_cache.line_meta(),
     )
     .or_else(|| app.history.len().checked_sub(1))
 }
 
 fn selected_detail_footer_label(app: &App) -> Option<String> {
-    if app.transcript_selection.is_active() {
+    if app.viewport.transcript_selection.is_active() {
         return None;
     }
     let cell_index = app.detail_cell_index_for_viewport(
-        app.last_transcript_top,
-        app.last_transcript_visible.max(1),
-        app.transcript_cache.line_meta(),
+        app.viewport.last_transcript_top,
+        app.viewport.last_transcript_visible.max(1),
+        app.viewport.transcript_cache.line_meta(),
     )?;
     let label = detail_target_label(app, cell_index)?;
     Some(format!(

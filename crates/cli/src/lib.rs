@@ -1,4 +1,5 @@
 mod metrics;
+mod update;
 
 use std::io::{self, Read};
 use std::net::SocketAddr;
@@ -153,6 +154,8 @@ enum Commands {
     },
     /// Print a usage rollup from the audit log and session store.
     Metrics(MetricsArgs),
+    /// Check for and apply updates to the `deepseek` binary.
+    Update,
 }
 
 #[derive(Debug, Args)]
@@ -447,6 +450,7 @@ fn run() -> Result<()> {
             Ok(())
         }
         Some(Commands::Metrics(args)) => run_metrics_command(args),
+        Some(Commands::Update) => update::run_update(),
         None => {
             let mut forwarded = Vec::new();
             if let Some(prompt) = cli.prompt_flag.clone().or_else(|| cli.prompt.clone()) {

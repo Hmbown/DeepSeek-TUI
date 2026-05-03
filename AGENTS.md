@@ -47,3 +47,23 @@ Issues may be closed when the acceptance criteria have been verified or when the
 - **Modes**: Three modes — Plan (read-only investigation), Agent (tool use with approval), YOLO (auto-approved). See `docs/MODES.md` for details.
 - **Sub-agents**: Single model-callable surface is `agent_spawn` (returns an `agent_id` immediately; parent keeps working) plus `agent_wait` / `agent_result` / `agent_cancel` / `agent_list` / `agent_send_input` / `agent_resume` / `agent_assign`. The old `agent_swarm` / `spawn_agents_on_csv` / `/swarm` surface was removed in v0.8.5 (#336).
 - **`rlm` tool** (`crates/tui/src/tools/rlm.rs`): a sandboxed Python REPL where a sub-LLM can call in-REPL helpers (`llm_query()`, `llm_query_batched()`, `rlm_query()`, `rlm_query_batched()`) — those `*_query` names are **Python helpers inside the REPL**, not separately-registered model-visible tools. Always loaded across all modes.
+
+## Session Longevity (Critical)
+
+Long sessions in DeepSeek TUI WILL degrade and crash if you work sequentially. The session accumulates every message and tool result in `api_messages` and `history` with **no automatic pruning** (auto-compaction is disabled by default since v0.6.6). Session saves serialize the entire bloated array to disk.
+
+**To survive a multi-hour sprint:**
+
+1. **Delegate everything to sub-agents.** Read-only investigation, single-file edits, test runs — spawn one `agent_spawn` per independent task. You are the coordinator, not the worker. Sub-agents start fresh sessions with clean context. Your session stays small.
+
+2. **Batch tool calls.** Never fire one `read_file` and wait. Fire 3 `read_file` + 2 `grep_files` + 1 `git_status` in one turn. The dispatcher runs them in parallel.
+
+3. **Compact aggressively.** Suggest `/compact` at 60% context usage, not 80%. A compacted session that stays fast beats a dead session every time.
+
+4. **Max 3 sequential turns before delegating.** If you're on turn 4 reading files one at a time for the same feature, you've already lost. Spawn sub-agents.
+
+5. **Use RLM for batch classification.** Need to categorize 15 files? `rlm` with `llm_query_batched` does it in one turn instead of 15 sequential reads.
+
+6. **After every 3 turns, check:** context under 60%? Sub-agents still running? PRs ready to push? `cargo check` still passes?
+
+**The "mismanaged genius" problem:** The system prompt was written for a less capable model and treats sub-agents, RLM, and parallel execution as specialty escape hatches. The model *can* do all of this — the prompt just doesn't encourage it strongly enough. We fixed this in v0.8.6 (see `PROMPT_ANALYSIS.md`).

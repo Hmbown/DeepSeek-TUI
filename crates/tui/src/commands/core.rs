@@ -49,10 +49,10 @@ pub fn clear(app: &mut App) -> CommandResult {
     app.mark_history_updated();
     app.api_messages.clear();
     app.system_prompt = None;
-    app.transcript_selection.clear();
+    app.viewport.transcript_selection.clear();
     app.queued_messages.clear();
     app.queued_draft = None;
-    app.total_conversation_tokens = 0;
+    app.session.total_conversation_tokens = 0;
     let todos_cleared = app.clear_todos();
     app.tool_log.clear();
     app.tool_cells.clear();
@@ -61,8 +61,8 @@ pub fn clear(app: &mut App) -> CommandResult {
     app.ignored_tool_calls.clear();
     app.pending_tool_uses.clear();
     app.last_exec_wait_command = None;
-    app.last_prompt_tokens = None;
-    app.last_completion_tokens = None;
+    app.session.last_prompt_tokens = None;
+    app.session.last_completion_tokens = None;
     app.current_session_id = None;
     let locale = app.ui_locale;
     let message = if todos_cleared {
@@ -100,8 +100,8 @@ pub fn model(app: &mut App, model_name: Option<&str>) -> CommandResult {
         let old_model = app.model.clone();
         app.model = model_id.clone();
         app.update_model_compaction_budget();
-        app.last_prompt_tokens = None;
-        app.last_completion_tokens = None;
+        app.session.last_prompt_tokens = None;
+        app.session.last_completion_tokens = None;
         CommandResult::with_message_and_action(
             tr(app.ui_locale, MessageId::ModelChanged)
                 .replace("{old}", &old_model)
@@ -126,6 +126,24 @@ pub fn subagents(app: &mut App) -> CommandResult {
     }
     app.status_message = Some(tr(app.ui_locale, MessageId::SubagentsFetching).to_string());
     CommandResult::action(AppAction::ListSubAgents)
+}
+
+/// Switch to a configured profile.
+pub fn profile_switch(_app: &mut App, arg: Option<&str>) -> CommandResult {
+    let profile_name = match arg {
+        Some(name) if !name.trim().is_empty() => name.trim().to_string(),
+        _ => {
+            return CommandResult::error(
+                "Usage: /profile <name>\n\nSwitch to a named config profile. Profiles are defined in ~/.deepseek/config.toml under [profiles] sections.",
+            );
+        }
+    };
+    CommandResult::with_message_and_action(
+        format!("Switching to profile '{profile_name}'..."),
+        AppAction::SwitchProfile {
+            profile: profile_name,
+        },
+    )
 }
 
 /// Show `DeepSeek` dashboard and docs links
@@ -175,7 +193,7 @@ pub fn home_dashboard(app: &mut App) -> CommandResult {
 
     // Session stats
     let history_count = app.history.len();
-    let total_tokens = app.total_conversation_tokens;
+    let total_tokens = app.session.total_conversation_tokens;
     let queued_messages = app.queued_messages.len();
     let _ = writeln!(
         stats,
@@ -357,7 +375,7 @@ mod tests {
             role: "user".to_string(),
             content: vec![],
         });
-        app.total_conversation_tokens = 100;
+        app.session.total_conversation_tokens = 100;
         app.tool_log.push("test".to_string());
         app.current_session_id = Some("existing-session".to_string());
 
@@ -365,7 +383,7 @@ mod tests {
         assert!(result.message.is_some());
         assert!(app.history.is_empty());
         assert!(app.api_messages.is_empty());
-        assert_eq!(app.total_conversation_tokens, 0);
+        assert_eq!(app.session.total_conversation_tokens, 0);
         assert!(app.tool_log.is_empty());
         assert!(app.tool_cells.is_empty());
         assert!(app.tool_details_by_cell.is_empty());
@@ -394,8 +412,8 @@ mod tests {
             Some(AppAction::UpdateCompaction(_))
         ));
         assert_eq!(app.model, "deepseek-v4-flash");
-        assert_eq!(app.last_prompt_tokens, None);
-        assert_eq!(app.last_completion_tokens, None);
+        assert_eq!(app.session.last_prompt_tokens, None);
+        assert_eq!(app.session.last_completion_tokens, None);
     }
 
     #[test]
@@ -468,7 +486,7 @@ mod tests {
     #[test]
     fn test_home_dashboard_includes_all_sections() {
         let mut app = create_test_app();
-        app.total_conversation_tokens = 1234;
+        app.session.total_conversation_tokens = 1234;
         let result = home_dashboard(&mut app);
         assert!(result.message.is_some());
         let msg = result.message.unwrap();

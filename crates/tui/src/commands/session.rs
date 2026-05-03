@@ -24,7 +24,7 @@ pub fn save(app: &mut App, path: Option<&str>) -> CommandResult {
         &messages,
         &app.model,
         &app.workspace,
-        u64::from(app.total_tokens),
+        u64::from(app.session.total_tokens),
         app.system_prompt.as_ref(),
         Some(app.mode.label()),
     );
@@ -91,14 +91,14 @@ pub fn load(app: &mut App, path: Option<&str>) -> CommandResult {
         .collect();
     app.extend_history(cells_to_add);
     app.mark_history_updated();
-    app.transcript_selection.clear();
+    app.viewport.transcript_selection.clear();
     app.model.clone_from(&session.metadata.model);
     app.update_model_compaction_budget();
     app.workspace.clone_from(&session.metadata.workspace);
-    app.total_tokens = u32::try_from(session.metadata.total_tokens).unwrap_or(u32::MAX);
-    app.total_conversation_tokens = app.total_tokens;
-    app.last_prompt_tokens = None;
-    app.last_completion_tokens = None;
+    app.session.total_tokens = u32::try_from(session.metadata.total_tokens).unwrap_or(u32::MAX);
+    app.session.total_conversation_tokens = app.session.total_tokens;
+    app.session.last_prompt_tokens = None;
+    app.session.last_completion_tokens = None;
     app.current_session_id = Some(session.metadata.id.clone());
     if let Some(sp) = session.system_prompt {
         app.system_prompt = Some(crate::models::SystemPrompt::Text(sp));
@@ -329,7 +329,7 @@ mod tests {
                 cache_control: None,
             }],
         });
-        app1.total_tokens = 500;
+        app1.session.total_tokens = 500;
         let save_path = tmpdir.path().join("test.json");
         save(&mut app1, Some(save_path.to_str().unwrap()));
 
@@ -342,7 +342,7 @@ mod tests {
         assert!(msg.contains("ID:"));
         assert!(msg.contains("messages"));
         assert_eq!(app2.api_messages.len(), 1);
-        assert_eq!(app2.total_tokens, 500);
+        assert_eq!(app2.session.total_tokens, 500);
         assert!(app2.current_session_id.is_some());
         assert!(matches!(result.action, Some(AppAction::SyncSession { .. })));
     }

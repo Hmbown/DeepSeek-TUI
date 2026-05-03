@@ -1329,6 +1329,23 @@ impl Engine {
                         (None, None)
                     };
 
+                    // Per-tool snapshot for surgical undo (#384): capture workspace
+                    // state before file-modifying tools execute so `/undo` can
+                    // revert the most recent write_file/edit_file/apply_patch.
+                    if result_override.is_none()
+                        && matches!(
+                            tool_name.as_str(),
+                            "write_file" | "edit_file" | "apply_patch"
+                        )
+                    {
+                        let ws = self.session.workspace.clone();
+                        let tid = tool_id.clone();
+                        let _ = tokio::task::spawn_blocking(move || {
+                            crate::core::turn::pre_tool_snapshot(&ws, &tid)
+                        })
+                        .await;
+                    }
+
                     let started_at = Instant::now();
                     let result = if let Some(result_override) = result_override {
                         result_override

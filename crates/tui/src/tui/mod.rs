@@ -15,6 +15,7 @@ pub mod event_broker;
 pub mod external_editor;
 pub mod file_mention;
 pub mod file_picker;
+pub mod file_tree;
 pub mod frame_rate_limiter;
 pub mod history;
 pub mod keybindings;

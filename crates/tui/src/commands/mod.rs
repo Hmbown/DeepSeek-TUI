@@ -8,6 +8,7 @@ mod config;
 mod core;
 mod cycle;
 mod debug;
+mod goal;
 mod init;
 mod jobs;
 mod mcp;
@@ -17,8 +18,10 @@ mod queue;
 mod restore;
 mod review;
 mod session;
+pub mod share;
 mod skills;
 mod task;
+mod user_commands;
 
 use crate::localization::{Locale, MessageId, tr};
 use crate::tui::app::{App, AppAction};
@@ -322,6 +325,18 @@ pub const COMMANDS: &[CommandInfo] = &[
         description_id: MessageId::CmdSystemDescription,
     },
     CommandInfo {
+        name: "edit",
+        aliases: &[],
+        usage: "/edit",
+        description_id: MessageId::CmdEditDescription,
+    },
+    CommandInfo {
+        name: "diff",
+        aliases: &[],
+        usage: "/diff",
+        description_id: MessageId::CmdDiffDescription,
+    },
+    CommandInfo {
         name: "undo",
         aliases: &[],
         usage: "/undo",
@@ -338,6 +353,24 @@ pub const COMMANDS: &[CommandInfo] = &[
         aliases: &[],
         usage: "/init",
         description_id: MessageId::CmdInitDescription,
+    },
+    CommandInfo {
+        name: "lsp",
+        aliases: &[],
+        usage: "/lsp [on|off|status]",
+        description_id: MessageId::CmdLspDescription,
+    },
+    CommandInfo {
+        name: "share",
+        aliases: &[],
+        usage: "/share",
+        description_id: MessageId::CmdShareDescription,
+    },
+    CommandInfo {
+        name: "goal",
+        aliases: &[],
+        usage: "/goal [objective] [budget: N]",
+        description_id: MessageId::CmdGoalDescription,
     },
     CommandInfo {
         name: "settings",
@@ -390,6 +423,13 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "/cost",
         description_id: MessageId::CmdCostDescription,
     },
+    // Profile switching (#390)
+    CommandInfo {
+        name: "profile",
+        aliases: &[],
+        usage: "/profile <name>",
+        description_id: MessageId::CmdHelpDescription, // reuse for now
+    },
     // Cache telemetry (#263)
     CommandInfo {
         name: "cache",
@@ -405,6 +445,11 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
     let command = parts[0].to_lowercase();
     let command = command.strip_prefix('/').unwrap_or(&command);
     let arg = parts.get(1).map(|s| s.trim());
+
+    // Check user-defined commands FIRST so they can override built-ins.
+    if let Some(result) = user_commands::try_dispatch_user_command(app, cmd.trim()) {
+        return result;
+    }
 
     // Match command or alias
     match command {
@@ -451,17 +496,39 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "cache" => debug::cache(app, arg),
         "system" => debug::system_prompt(app),
         "context" | "ctx" => debug::context(app),
-        "undo" => debug::undo(app),
+        "edit" => debug::edit(app),
+        "diff" => debug::diff(app),
+        "undo" => {
+            // Try surgical patch-undo first; fall back to conversation undo
+            // if no snapshots are available or if the snapshot undo couldn't
+            // find anything useful.
+            let result = debug::patch_undo(app);
+            if result.message.as_deref().is_none_or(|m| {
+                m.starts_with("No snapshots found")
+                    || m.starts_with("No tool or pre-turn")
+                    || m.starts_with("Snapshot repo")
+            }) {
+                debug::undo_conversation(app)
+            } else {
+                result
+            }
+        }
         "retry" => debug::retry(app),
 
         // Project commands
         "init" => init::init(app),
+        "lsp" => config::lsp_command(app, arg),
+        "share" => share::share(app, arg),
+        "goal" => goal::goal(app, arg),
 
         // Skills commands
         "skills" => skills::list_skills(app, arg),
         "skill" => skills::run_skill(app, arg),
         "review" => review::review(app, arg),
         "restore" => restore::restore(app, arg),
+
+        // Profile switch (#390)
+        "profile" => core::profile_switch(app, arg),
 
         // RLM command
         "rlm" | "recursive" => rlm(app, arg),
@@ -511,6 +578,11 @@ pub fn persist_status_items(
 /// Persist a root-level string key in `config.toml`.
 pub fn persist_root_string_key(key: &str, value: &str) -> anyhow::Result<std::path::PathBuf> {
     config::persist_root_string_key(key, value)
+}
+
+/// Auto-select a model based on request complexity.
+pub fn auto_model_heuristic(input: &str, current_model: &str) -> String {
+    config::auto_model_heuristic(input, current_model)
 }
 
 /// Execute a Recursive Language Model (RLM) turn — Algorithm 1 from
@@ -571,6 +643,26 @@ pub fn get_command_info(name: &str) -> Option<&'static CommandInfo> {
     COMMANDS
         .iter()
         .find(|cmd| cmd.name == name || cmd.aliases.contains(&name))
+}
+
+/// Get all command names matching a prefix, including both built-in
+/// static commands and user-defined commands, formatted as `/name`.
+pub fn all_command_names_matching(prefix: &str) -> Vec<String> {
+    let prefix = prefix.strip_prefix('/').unwrap_or(prefix).to_lowercase();
+    let mut result: Vec<String> = COMMANDS
+        .iter()
+        .filter(|cmd| {
+            cmd.name.starts_with(&prefix) || cmd.aliases.iter().any(|a| a.starts_with(&prefix))
+        })
+        .map(|cmd| format!("/{}", cmd.name))
+        .collect();
+
+    // Add user-defined commands
+    result.extend(user_commands::user_commands_matching(&prefix));
+
+    result.sort();
+    result.dedup();
+    result
 }
 
 /// Get all commands matching a prefix (for autocomplete)

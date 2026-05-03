@@ -9,6 +9,7 @@ use std::fmt::Write;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
+    prelude::Widget,
     style::{Style, Stylize},
     text::{Line, Span},
     widgets::{Block, Paragraph, Wrap},
@@ -26,6 +27,11 @@ use super::ui::truncate_line_to_width;
 
 pub fn render_sidebar(f: &mut Frame, area: Rect, app: &App) {
     if area.width < 24 || area.height < 8 {
+        // Paint a styled block over the area so stale cells from a previous
+        // (wider) frame don't persist as bleed-through artifacts (#400).
+        Block::default()
+            .style(Style::default().bg(palette::DEEPSEEK_INK))
+            .render(area, f.buffer_mut());
         return;
     }
 
@@ -61,6 +67,44 @@ fn render_sidebar_plan(f: &mut Frame, area: Rect, app: &App) {
     let theme = active_theme();
     let content_width = area.width.saturating_sub(4) as usize;
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(usize::from(area.height).max(4));
+
+    // === Goal Mode (#397) — gold outline matching todo items ===
+    if let Some(ref objective) = app.goal.goal_objective {
+        lines.push(Line::from(Span::styled(
+            format!(
+                "◆ {}",
+                truncate_line_to_width(objective, content_width.max(1))
+            ),
+            Style::default()
+                .fg(palette::STATUS_WARNING)
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        )));
+        if let Some(budget) = app.goal.goal_token_budget {
+            let used = app.session.total_conversation_tokens;
+            let pct = if budget > 0 {
+                ((used as f64 / budget as f64) * 100.0).min(100.0)
+            } else {
+                0.0
+            };
+            let bar_width = content_width.min(20);
+            let filled = ((pct / 100.0) * bar_width as f64) as usize;
+            let bar = format!(
+                "[{}{}] {:.0}%",
+                "█".repeat(filled),
+                "░".repeat(bar_width.saturating_sub(filled)),
+                pct
+            );
+            lines.push(Line::from(Span::styled(
+                format!("  tokens: {used}/{budget} {}", bar),
+                Style::default().fg(palette::TEXT_MUTED),
+            )));
+        }
+        // Gold separator
+        lines.push(Line::from(Span::styled(
+            "─".repeat(content_width.min(24)),
+            Style::default().fg(palette::STATUS_WARNING),
+        )));
+    }
 
     // Cycle indicator (issue #124). Only shown once a boundary has fired —
     // first-time users with cycle_count == 0 don't need this row of chrome.
@@ -429,6 +473,10 @@ pub fn subagent_navigator_lines(
 
 fn render_sidebar_section(f: &mut Frame, area: Rect, title: &str, lines: Vec<Line<'static>>) {
     if area.width < 4 || area.height < 3 {
+        // Clear stale cells before bailing out (#400).
+        Block::default()
+            .style(Style::default().bg(palette::DEEPSEEK_INK))
+            .render(area, f.buffer_mut());
         return;
     }
 
@@ -440,7 +488,22 @@ fn render_sidebar_section(f: &mut Frame, area: Rect, title: &str, lines: Vec<Lin
     let max_title_width = area.width.saturating_sub(4).max(1) as usize;
     let display_title = truncate_line_to_width(title, max_title_width);
 
-    let section = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+    // Constrain lines to the visible section area so a Paragraph wrap
+    // overflow can't write cells outside the Block bounds (#400). The
+    // border + padding consume 2 rows; budget the rest for content.
+    let visible_content_rows = area
+        .height
+        .saturating_sub(2) // top + bottom border
+        .saturating_sub(theme.section_padding.top + theme.section_padding.bottom)
+        as usize;
+    let lines: Vec<Line<'static>> =
+        if lines.len() > visible_content_rows && visible_content_rows > 0 {
+            lines.into_iter().take(visible_content_rows).collect()
+        } else {
+            lines
+        };
+
+    let section = Paragraph::new(lines).wrap(Wrap { trim: true }).block(
         Block::default()
             .title(Line::from(vec![Span::styled(
                 format!(" {display_title} "),

@@ -611,6 +611,36 @@ impl Engine {
                     self.handle_rlm(content, model, child_model, max_depth)
                         .await;
                 }
+                Op::EditLastTurn { new_message } => {
+                    // #383: /edit — remove the last user+assistant exchange
+                    // from the session, then re-send with the new content.
+                    // Pop messages from the tail until we've removed the
+                    // most recent user message and everything after it.
+                    // First, find the last user message index.
+                    let mut cut = None;
+                    for (idx, msg) in self.session.messages.iter().enumerate().rev() {
+                        if msg.role == "user" {
+                            cut = Some(idx);
+                            break;
+                        }
+                    }
+                    if let Some(idx) = cut {
+                        self.session.messages.truncate(idx);
+                    }
+                    // Now dispatch the new message as a normal send,
+                    // reusing the engine's stored mode/model config.
+                    let mode = AppMode::Agent; // default fallback
+                    self.handle_send_message(
+                        new_message,
+                        mode,
+                        self.session.model.clone(),
+                        self.session.reasoning_effort.clone(),
+                        self.session.allow_shell,
+                        self.session.trust_mode,
+                        self.session.auto_approve,
+                    )
+                    .await;
+                }
                 Op::Shutdown => {
                     break;
                 }

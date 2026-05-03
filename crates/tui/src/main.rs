@@ -140,6 +140,14 @@ struct Cli {
     /// Skip onboarding screens
     #[arg(long)]
     skip_onboarding: bool,
+
+    /// Start a fresh session, ignoring any crash-recovery checkpoint
+    #[arg(long = "fresh")]
+    fresh: bool,
+
+    /// Skip loading project-level config from $WORKSPACE/.deepseek/config.toml
+    #[arg(long = "no-project-config")]
+    no_project_config: bool,
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -694,8 +702,13 @@ async fn main() -> Result<()> {
             Ok(manager) => manager.get_latest_session().ok().flatten().map(|m| m.id),
             Err(_) => None,
         }
+    } else if let Some(id) = cli.resume.clone() {
+        Some(id)
+    } else if !cli.fresh {
+        // Check for crash-recovery checkpoint (unless --fresh was passed).
+        try_recover_checkpoint()
     } else {
-        cli.resume.clone()
+        None
     };
 
     // Default: Interactive TUI
@@ -2848,6 +2861,90 @@ fn is_zellij() -> bool {
     std::env::var_os("ZELLIJ").is_some()
 }
 
+/// Check for a crash-recovery checkpoint and return the session ID if
+/// recovery is possible.
+///
+/// The checkpoint must exist and its file mtime must be within 24 hours.
+/// On success the checkpoint is persisted as a regular session, cleared,
+/// and a notice is printed to stderr. Returns `None` if there is nothing
+/// to recover.
+fn try_recover_checkpoint() -> Option<String> {
+    let manager = session_manager::SessionManager::default_location().ok()?;
+    let session = manager.load_checkpoint().ok().flatten()?;
+
+    // Verify the checkpoint file is recent (within 24 hours).
+    let home = dirs::home_dir()?;
+    let checkpoint_path = home
+        .join(".deepseek")
+        .join("sessions")
+        .join("checkpoints")
+        .join("latest.json");
+    let metadata = std::fs::metadata(&checkpoint_path).ok()?;
+    let mtime = metadata.modified().ok()?;
+    let age = std::time::SystemTime::now().duration_since(mtime).ok()?;
+    if age > std::time::Duration::from_secs(24 * 3600) {
+        // Stale checkpoint — clean it up.
+        let _ = manager.clear_checkpoint();
+        return None;
+    }
+
+    let session_id = session.metadata.id.clone();
+
+    // Persist the checkpoint as a regular session so the TUI can load it by id.
+    if manager.save_session(&session).is_err() {
+        return None;
+    }
+
+    // Clear the checkpoint now that it has been recovered.
+    let _ = manager.clear_checkpoint();
+
+    // Format age for the notice.
+    let age_str = if age.as_secs() < 60 {
+        format!("{}s ago", age.as_secs())
+    } else if age.as_secs() < 3600 {
+        format!("{}m ago", age.as_secs() / 60)
+    } else {
+        format!("{}h ago", age.as_secs() / 3600)
+    };
+    eprintln!("Recovered interrupted session ({age_str}). Use --fresh to start fresh.",);
+
+    Some(session_id)
+}
+
+/// Load project-level config from `$WORKSPACE/.deepseek/config.toml` and
+/// apply its fields as overrides on top of the global config (#485).
+/// Only explicitly set fields in the project file are applied; everything
+/// else falls back to the global value.
+fn merge_project_config(config: &mut Config, workspace: &Path) {
+    let path = workspace.join(".deepseek").join("config.toml");
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    let project: toml::Value = match toml::from_str(&raw) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    let table = match project.as_table() {
+        Some(t) => t,
+        None => return,
+    };
+
+    // Apply top-level string fields that make sense for project overrides.
+    for (key, field) in [
+        ("model", &mut config.default_text_model),
+        ("api_key", &mut config.api_key),
+        ("base_url", &mut config.base_url),
+        ("reasoning_effort", &mut config.reasoning_effort),
+    ] {
+        if let Some(v) = table.get(key).and_then(toml::Value::as_str)
+            && !v.is_empty()
+        {
+            *field = Some(v.to_string());
+        }
+    }
+}
+
 async fn run_interactive(
     cli: &Cli,
     config: &Config,
@@ -2857,6 +2954,15 @@ async fn run_interactive(
         .workspace
         .clone()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+    // Merge project-level config from $WORKSPACE/.deepseek/config.toml
+    // unless --no-project-config was passed (#485).
+    let mut merged_config = config.clone();
+    if !cli.no_project_config {
+        merge_project_config(&mut merged_config, &workspace);
+    }
+    let config = &merged_config;
+
     let model = config.default_model();
     let max_subagents = cli.max_subagents.map_or_else(
         || config.max_subagents(),

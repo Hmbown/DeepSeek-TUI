@@ -68,11 +68,11 @@ impl ChatWidget {
 
         if should_render_empty_state(app) {
             let lines = build_empty_state_lines(app, content_area);
-            app.last_transcript_area = Some(content_area);
-            app.last_transcript_top = 0;
-            app.last_transcript_visible = visible_lines;
-            app.last_transcript_total = 0;
-            app.last_transcript_padding_top = 0;
+            app.viewport.last_transcript_area = Some(content_area);
+            app.viewport.last_transcript_top = 0;
+            app.viewport.last_transcript_visible = visible_lines;
+            app.viewport.last_transcript_total = 0;
+            app.viewport.last_transcript_padding_top = 0;
             return Self {
                 content_area,
                 lines,
@@ -102,64 +102,119 @@ impl ChatWidget {
             .active_cell
             .as_ref()
             .map_or(&[], |active| active.entries());
-        // Build the per-cell revision slice without cloning history cells.
-        // History cells reuse `app.history_revisions` directly; active-cell
-        // entries fall back to a synthetic revision derived from
-        // `active_cell_revision` (active cells don't carry their own
-        // per-entry counter today).
-        let mut cell_revisions: Vec<u64> =
-            Vec::with_capacity(app.history.len() + active_entries.len());
-        cell_revisions.extend_from_slice(&app.history_revisions);
-        if !active_entries.is_empty() {
-            let active_rev = app.active_cell_revision;
-            for i in 0..active_entries.len() {
-                let salt = (i as u64).wrapping_add(1);
-                cell_revisions.push(
-                    active_rev
-                        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
-                        .wrapping_add(salt),
-                );
+
+        let history_len = app.history.len();
+        let has_collapsed = !app.collapsed_cells.is_empty();
+
+        // Fast path: no collapsed cells — use original slices directly.
+        if !has_collapsed {
+            let mut cell_revisions: Vec<u64> =
+                Vec::with_capacity(app.history.len() + active_entries.len());
+            cell_revisions.extend_from_slice(&app.history_revisions);
+            if !active_entries.is_empty() {
+                let active_rev = app.active_cell_revision;
+                for i in 0..active_entries.len() {
+                    let salt = (i as u64).wrapping_add(1);
+                    cell_revisions.push(
+                        active_rev
+                            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                            .wrapping_add(salt),
+                    );
+                }
             }
+            // Build identity mapping: filtered index == original index.
+            app.collapsed_cell_map = (0..app.history.len() + active_entries.len()).collect();
+
+            let shards: [&[HistoryCell]; 2] = [&app.history, active_entries];
+            app.viewport.transcript_cache.ensure_split(
+                &shards,
+                &cell_revisions,
+                content_area.width.max(1),
+                render_options,
+            );
+        } else {
+            // Slow path: clone non-collapsed cells into filtered vecs so
+            // collapsed cells are excluded from rendering. Build the
+            // filtered→original index mapping.
+            let mut filtered_cells: Vec<HistoryCell> =
+                Vec::with_capacity(history_len + active_entries.len());
+            let mut filtered_revs: Vec<u64> =
+                Vec::with_capacity(history_len + active_entries.len());
+            let mut filtered_to_original: Vec<usize> =
+                Vec::with_capacity(history_len + active_entries.len());
+
+            for (idx, cell) in app.history.iter().enumerate() {
+                if app.collapsed_cells.contains(&idx) {
+                    continue;
+                }
+                filtered_cells.push(cell.clone());
+                filtered_revs.push(app.history_revisions[idx]);
+                filtered_to_original.push(idx);
+            }
+
+            if !active_entries.is_empty() {
+                let active_rev = app.active_cell_revision;
+                for (i, cell) in active_entries.iter().enumerate() {
+                    let original_idx = history_len + i;
+                    if app.collapsed_cells.contains(&original_idx) {
+                        continue;
+                    }
+                    filtered_cells.push(cell.clone());
+                    let salt = (i as u64).wrapping_add(1);
+                    filtered_revs.push(
+                        active_rev
+                            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                            .wrapping_add(salt),
+                    );
+                    filtered_to_original.push(original_idx);
+                }
+            }
+
+            app.collapsed_cell_map = filtered_to_original;
+
+            let shards: [&[HistoryCell]; 1] = [&filtered_cells];
+            app.viewport.transcript_cache.ensure_split(
+                &shards,
+                &filtered_revs,
+                content_area.width.max(1),
+                render_options,
+            );
         }
-        let shards: [&[HistoryCell]; 2] = [&app.history, active_entries];
-        app.transcript_cache.ensure_split(
-            &shards,
-            &cell_revisions,
-            content_area.width.max(1),
-            render_options,
-        );
 
-        let total_lines = app.transcript_cache.total_lines();
+        let total_lines = app.viewport.transcript_cache.total_lines();
 
-        let line_meta = app.transcript_cache.line_meta();
+        let line_meta = app.viewport.transcript_cache.line_meta();
 
-        if app.pending_scroll_delta != 0 {
-            app.transcript_scroll = app.transcript_scroll.scrolled_by(
-                app.pending_scroll_delta,
+        if app.viewport.pending_scroll_delta != 0 {
+            app.viewport.transcript_scroll = app.viewport.transcript_scroll.scrolled_by(
+                app.viewport.pending_scroll_delta,
                 line_meta,
                 visible_lines,
             );
-            app.pending_scroll_delta = 0;
+            app.viewport.pending_scroll_delta = 0;
         }
 
         let max_start = total_lines.saturating_sub(visible_lines);
-        let (scroll_state, top) = app.transcript_scroll.resolve_top(line_meta, max_start);
-        app.transcript_scroll = scroll_state;
+        let (scroll_state, top) = app
+            .viewport
+            .transcript_scroll
+            .resolve_top(line_meta, max_start);
+        app.viewport.transcript_scroll = scroll_state;
         // If the user scrolled back to the live tail, the per-stream
         // "leave me alone" lock is over — new chunks should pin to bottom
         // again until they explicitly scroll up. Without this clear, content
         // piles up off-screen below the visible area and the view appears
         // frozen at the moment they returned to bottom.
-        if app.transcript_scroll.is_at_tail() {
+        if app.viewport.transcript_scroll.is_at_tail() {
             app.user_scrolled_during_stream = false;
         }
 
-        app.last_transcript_area = Some(content_area);
-        app.last_transcript_top = top;
-        app.last_transcript_visible = visible_lines;
-        app.last_transcript_total = total_lines;
-        app.last_transcript_padding_top = 0;
-        let detail_target_cell = (!app.transcript_selection.is_active())
+        app.viewport.last_transcript_area = Some(content_area);
+        app.viewport.last_transcript_top = top;
+        app.viewport.last_transcript_visible = visible_lines;
+        app.viewport.last_transcript_total = total_lines;
+        app.viewport.last_transcript_padding_top = 0;
+        let detail_target_cell = (!app.viewport.transcript_selection.is_active())
             .then(|| app.detail_cell_index_for_viewport(top, visible_lines, line_meta))
             .flatten();
 
@@ -167,7 +222,7 @@ impl ChatWidget {
         let mut lines = if total_lines == 0 {
             vec![Line::from("")]
         } else {
-            app.transcript_cache.lines()[top..end].to_vec()
+            app.viewport.transcript_cache.lines()[top..end].to_vec()
         };
 
         // Brief flash highlight on the most recently sent user message.
@@ -187,8 +242,8 @@ impl ChatWidget {
 
         apply_selection(&mut lines, top, app);
 
-        if app.transcript_scroll.is_at_tail() {
-            app.last_transcript_padding_top = visible_lines.saturating_sub(lines.len());
+        if app.viewport.transcript_scroll.is_at_tail() {
+            app.viewport.last_transcript_padding_top = visible_lines.saturating_sub(lines.len());
             pad_lines_to_bottom(&mut lines, visible_lines);
         }
 
@@ -210,6 +265,20 @@ impl ChatWidget {
 
 impl Renderable for ChatWidget {
     fn render(&self, _area: Rect, buf: &mut Buffer) {
+        // Use the passed render area, not self.content_area — those can
+        // drift when layout changes (e.g. file-tree pane toggle), and
+        // using the stale self.content_area is the root cause of text
+        // bleed-through (#400). In debug builds, assert the two match to
+        // catch future drift early.
+        debug_assert_eq!(
+            _area, self.content_area,
+            "ChatWidget content_area drifted from render area: \
+             content_area={:?} render_area={:?}",
+            self.content_area, _area
+        );
+
+        let area = _area;
+
         // Repaint the full chat area with the deepseek-ink background each
         // frame. Ratatui's `Paragraph` only writes cells that contain text,
         // so cells the current frame's paragraph doesn't touch would
@@ -220,11 +289,11 @@ impl Renderable for ChatWidget {
         // area on-brand.
         Block::default()
             .style(Style::default().bg(palette::DEEPSEEK_INK))
-            .render(self.content_area, buf);
+            .render(area, buf);
 
         let paragraph =
             Paragraph::new(self.lines.clone()).style(Style::default().bg(palette::DEEPSEEK_INK));
-        paragraph.render(self.content_area, buf);
+        paragraph.render(area, buf);
 
         if let Some(scrollbar) = self.scrollbar {
             let scrollable_range = scrollbar.total.saturating_sub(scrollbar.visible);
@@ -238,7 +307,7 @@ impl Renderable for ChatWidget {
                 .track_style(Style::default().fg(palette::BORDER_COLOR))
                 .thumb_symbol("┃")
                 .thumb_style(Style::default().fg(palette::DEEPSEEK_SKY))
-                .render(self.content_area, buf, &mut state);
+                .render(area, buf, &mut state);
         }
     }
 
@@ -388,17 +457,39 @@ impl Renderable for ComposerWidget<'_> {
                 // Queue. The disposition flips with engine state so this hint
                 // is the only reliable cue before pressing Enter.
                 use crate::tui::app::SubmitDisposition;
+                let queue_count = self.app.queued_message_count();
                 let (label, color) = match self.app.decide_submit_disposition() {
-                    SubmitDisposition::Immediate => (None, palette::TEXT_MUTED),
-                    SubmitDisposition::Steer => {
-                        (Some("↵ steer into current turn"), palette::DEEPSEEK_SKY)
-                    }
-                    SubmitDisposition::QueueFollowUp => {
-                        (Some("↵ queue for next turn"), palette::TEXT_MUTED)
+                    SubmitDisposition::Immediate => {
+                        if queue_count > 0 {
+                            (
+                                Some(format!("↵ send ({} queued)", queue_count)),
+                                palette::DEEPSEEK_SKY,
+                            )
+                        } else {
+                            (None, palette::TEXT_MUTED)
+                        }
                     }
                     SubmitDisposition::Queue => {
-                        (Some("↵ offline queue (no engine)"), palette::STATUS_WARNING)
+                        if self.app.offline_mode {
+                            (Some("↵ offline queue".to_string()), palette::STATUS_WARNING)
+                        } else {
+                            let label = if queue_count > 0 {
+                                format!("↵ queue ({} waiting)", queue_count.saturating_add(1))
+                            } else {
+                                "↵ queue for next turn".to_string()
+                            };
+                            (Some(label), palette::TEXT_MUTED)
+                        }
                     }
+                    // Steer and QueueFollowUp are now only reached via Ctrl+Enter override.
+                    SubmitDisposition::Steer => (
+                        Some("↵ steering (Ctrl+Enter)".to_string()),
+                        palette::DEEPSEEK_SKY,
+                    ),
+                    SubmitDisposition::QueueFollowUp => (
+                        Some("↵ queued (Ctrl+Enter to steer)".to_string()),
+                        palette::TEXT_MUTED,
+                    ),
                 };
                 label.map(|text| {
                     Line::from(vec![Span::styled(
@@ -1197,7 +1288,7 @@ pub(crate) fn pad_lines_to_bottom(lines: &mut Vec<Line<'static>>, height: usize)
 }
 
 fn apply_selection(lines: &mut [Line<'static>], top: usize, app: &App) {
-    let Some((start, end)) = app.transcript_selection.ordered_endpoints() else {
+    let Some((start, end)) = app.viewport.transcript_selection.ordered_endpoints() else {
         return;
     };
 
@@ -1467,10 +1558,7 @@ pub(crate) fn slash_completion_hints(input: &str, limit: usize) -> Vec<String> {
     }
 
     let prefix = input.trim_start_matches('/');
-    let mut hints = commands::commands_matching(prefix)
-        .into_iter()
-        .map(|info| format!("/{}", info.name))
-        .collect::<Vec<_>>();
+    let mut hints = commands::all_command_names_matching(prefix);
 
     if hints.is_empty() && prefix.eq_ignore_ascii_case("model") {
         hints = COMMON_DEEPSEEK_MODELS
@@ -2254,14 +2342,14 @@ mod tests {
         let mut buf_wide = Buffer::empty(area_wide);
         let widget_wide = ChatWidget::new(&mut app, area_wide);
         widget_wide.render(area_wide, &mut buf_wide);
-        let wide_total_lines = app.transcript_cache.total_lines();
+        let wide_total_lines = app.viewport.transcript_cache.total_lines();
 
         // Without an explicit resize call, just shrinking the render area
         // should still trigger a cache rebuild because the cache keys on width.
         let mut buf_narrow = Buffer::empty(area_narrow);
         let widget_narrow = ChatWidget::new(&mut app, area_narrow);
         widget_narrow.render(area_narrow, &mut buf_narrow);
-        let narrow_total_lines = app.transcript_cache.total_lines();
+        let narrow_total_lines = app.viewport.transcript_cache.total_lines();
 
         assert!(
             narrow_total_lines > wide_total_lines,
@@ -2336,10 +2424,11 @@ mod tests {
         // cells, so the time should be roughly constant regardless of
         // offset.
         for offset_from_tail in [0usize, 100, 500, 2000] {
-            let total = app.transcript_cache.total_lines();
+            let total = app.viewport.transcript_cache.total_lines();
             let max_start = total.saturating_sub(visible);
             let target = max_start.saturating_sub(offset_from_tail);
-            app.transcript_scroll = crate::tui::scrolling::TranscriptScroll::at_line(target);
+            app.viewport.transcript_scroll =
+                crate::tui::scrolling::TranscriptScroll::at_line(target);
 
             let iters: u32 = 10;
             let start = Instant::now();
@@ -2359,10 +2448,11 @@ mod tests {
         // and time a render. The cache should re-render only the new cell,
         // NOT every cell — even at deep scroll.
         for offset_from_tail in [0usize, 2000] {
-            let total = app.transcript_cache.total_lines();
+            let total = app.viewport.transcript_cache.total_lines();
             let max_start = total.saturating_sub(visible);
             let target = max_start.saturating_sub(offset_from_tail);
-            app.transcript_scroll = crate::tui::scrolling::TranscriptScroll::at_line(target);
+            app.viewport.transcript_scroll =
+                crate::tui::scrolling::TranscriptScroll::at_line(target);
 
             let iters: u32 = 10;
             let start = Instant::now();

@@ -19,7 +19,7 @@ default-members = ["crates/cli", "crates/app-server", "crates/tui"]
 resolver = "2"
 
 [workspace.package]
-version = "0.8.5"
+version = "0.8.6"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/Hmbown/DeepSeek-TUI"
@@ -39,6 +39,7 @@ serde_json = "1.0.149"
 thiserror = "2.0"
 tokio = { version = "1.49.0", features = ["full"] }
 toml = "0.9.7"
+sha2 = "0.10"
 tower-http = { version = "0.6", features = ["cors"] }
 tracing = "0.1"
 uuid = { version = "1.11", features = ["v4"] }

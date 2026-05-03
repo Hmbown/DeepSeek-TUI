@@ -243,6 +243,78 @@ pub struct LspConfigToml {
 }
 
 impl ConfigToml {
+    /// Merge project-level overrides from `$WORKSPACE/.deepseek/config.toml`.
+    /// Only populated fields in `project` are applied; everything else
+    /// keeps its global value. Provider-specific sub-tables are merged
+    /// field-by-field so a project can set just `providers.deepseek.model`
+    /// without needing to repeat `api_key` or `base_url`.
+    pub fn merge_project_overrides(&mut self, project: ConfigToml) {
+        // Check provider override condition before moving fields.
+        let has_api_key = project.api_key.is_some();
+
+        // Top-level scalar fields: apply when the project has a value.
+        if has_api_key {
+            self.api_key = project.api_key;
+        }
+        if project.base_url.is_some() {
+            self.base_url = project.base_url;
+        }
+        if project.default_text_model.is_some() {
+            self.default_text_model = project.default_text_model;
+        }
+        if project.model.is_some() {
+            self.model = project.model;
+        }
+        if project.auth_mode.is_some() {
+            self.auth_mode = project.auth_mode;
+        }
+        if project.output_mode.is_some() {
+            self.output_mode = project.output_mode;
+        }
+        if project.telemetry.is_some() {
+            self.telemetry = project.telemetry;
+        }
+        if project.approval_policy.is_some() {
+            self.approval_policy = project.approval_policy;
+        }
+        if project.sandbox_mode.is_some() {
+            self.sandbox_mode = project.sandbox_mode;
+        }
+        // Provider is only overridden if explicitly set (non-default).
+        if project.provider != ProviderKind::Deepseek || has_api_key {
+            self.provider = project.provider;
+        }
+
+        // Merge provider sub-tables field-by-field.
+        merge_provider_config(&mut self.providers.deepseek, &project.providers.deepseek);
+        merge_provider_config(
+            &mut self.providers.nvidia_nim,
+            &project.providers.nvidia_nim,
+        );
+        merge_provider_config(&mut self.providers.openai, &project.providers.openai);
+        merge_provider_config(
+            &mut self.providers.openrouter,
+            &project.providers.openrouter,
+        );
+        merge_provider_config(&mut self.providers.novita, &project.providers.novita);
+
+        if project.network.is_some() {
+            self.network = project.network;
+        }
+        if project.skills.is_some() {
+            self.skills = project.skills;
+        }
+        if project.snapshots.is_some() {
+            self.snapshots = project.snapshots;
+        }
+        if project.lsp.is_some() {
+            self.lsp = project.lsp;
+        }
+        for (k, v) in project.extras {
+            self.extras.insert(k, v);
+        }
+    }
+
     #[must_use]
     pub fn get_value(&self, key: &str) -> Option<String> {
         match key {
@@ -609,6 +681,29 @@ impl ConfigToml {
             sandbox_mode,
         }
     }
+}
+
+fn merge_provider_config(target: &mut ProviderConfigToml, source: &ProviderConfigToml) {
+    if source.api_key.is_some() {
+        target.api_key = source.api_key.clone();
+    }
+    if source.base_url.is_some() {
+        target.base_url = source.base_url.clone();
+    }
+    if source.model.is_some() {
+        target.model = source.model.clone();
+    }
+}
+
+/// Load a project-level config from `$WORKSPACE/.deepseek/config.toml`.
+/// Returns `None` if the file doesn't exist or can't be parsed.
+pub fn load_project_config(workspace: &Path) -> Option<ConfigToml> {
+    let path = workspace.join(".deepseek").join(CONFIG_FILE_NAME);
+    if !path.exists() {
+        return None;
+    }
+    let raw = fs::read_to_string(&path).ok()?;
+    toml::from_str(&raw).ok()
 }
 
 fn normalize_model_for_provider(provider: ProviderKind, model: &str) -> String {

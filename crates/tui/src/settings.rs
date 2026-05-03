@@ -56,7 +56,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            auto_compact: false,
+            auto_compact: true,
             calm_mode: false,
             low_motion: false,
             fancy_animations: false,
@@ -319,7 +319,7 @@ impl Settings {
         vec![
             (
                 "auto_compact",
-                "Auto-compact near context limit: on/off (default off)",
+                "Auto-compact near context limit: on/off (default on)",
             ),
             ("calm_mode", "Calmer UI defaults: on/off"),
             ("low_motion", "Reduce animation and redraw churn: on/off"),
@@ -423,9 +423,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_settings_preserve_v4_prefix_cache_by_default() {
+    fn default_settings_enable_auto_compact_for_session_survivability() {
         let settings = Settings::default();
-        assert!(!settings.auto_compact);
+        // #402 P0: auto-compaction is on by default so long-running
+        // sessions stay within the model's context budget.
+        assert!(settings.auto_compact);
     }
 
     #[test]

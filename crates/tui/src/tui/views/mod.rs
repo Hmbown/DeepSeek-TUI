@@ -46,12 +46,30 @@ pub enum ContextMenuAction {
     CopySelection,
     OpenSelection,
     ClearSelection,
-    CopyCell { cell_index: usize },
-    OpenDetails { cell_index: usize },
+    CopyCell {
+        cell_index: usize,
+    },
+    OpenDetails {
+        cell_index: usize,
+    },
     Paste,
     OpenCommandPalette,
     OpenContextInspector,
     OpenHelp,
+    /// Open the selected file:line in the user's editor.
+    OpenFileAtLine {
+        cell_index: usize,
+    },
+    /// Hide a transcript cell. Adds the cell's index to `collapsed_cells`.
+    HideCell {
+        cell_index: usize,
+    },
+    /// Show a previously hidden cell (when right-clicking near it).
+    ShowCell {
+        cell_index: usize,
+    },
+    /// Show all currently hidden cells.
+    ShowAllHidden,
 }
 
 #[derive(Debug, Clone)]

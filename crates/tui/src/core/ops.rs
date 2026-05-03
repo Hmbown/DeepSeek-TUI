@@ -80,6 +80,11 @@ pub enum Op {
         max_depth: u32,
     },
 
+    /// Edit the last user message: remove the last user+assistant exchange
+    /// from the session, then re-send with the new content.
+    #[allow(dead_code)]
+    EditLastTurn { new_message: String },
+
     /// Shutdown the engine
     Shutdown,
 }
