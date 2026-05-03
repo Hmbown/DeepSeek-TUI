@@ -67,6 +67,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`deepseek doctor --json`** now surfaces a `memory` block
   (`enabled` / `path` / `file_present`) so operators can verify
   memory configuration without booting the TUI.
+- **Tool-output spillover writer** (#422) — new
+  `crates/tui/src/tools/truncate.rs` module with
+  `write_spillover` / `maybe_spillover` / `prune_older_than`
+  helpers. Files land in `~/.deepseek/tool_outputs/<id>.txt` with
+  ASCII-only id sanitisation; 7-day boot prune wired into
+  `run_interactive`. Storage half ships now; UI annotation (#423)
+  and preview pane (#500) follow up with the bytes already on disk.
 
 ### Changed
 - **Sub-agent concurrency cap raised to 10 by default** (#509) —
