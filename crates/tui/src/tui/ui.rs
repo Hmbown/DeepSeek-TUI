@@ -148,6 +148,15 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     let use_mouse_capture = options.use_mouse_capture;
     let use_bracketed_paste = options.use_bracketed_paste;
 
+    // Apply OSC 8 hyperlink toggle from config; default `true`.
+    crate::tui::osc8::set_enabled(
+        config
+            .tui
+            .as_ref()
+            .and_then(|tui| tui.osc8_links)
+            .unwrap_or(true),
+    );
+
     // Terminal probe with timeout to prevent hanging on unresponsive terminals
     let probe_timeout = terminal_probe_timeout(config);
     let enable_raw = tokio::task::spawn_blocking(move || {

@@ -4,6 +4,7 @@ use ratatui::text::Line;
 use unicode_width::UnicodeWidthChar;
 
 use crate::tui::history::HistoryCell;
+use crate::tui::osc8;
 
 pub(super) fn history_cell_to_text(cell: &HistoryCell, width: u16) -> String {
     cell.transcript_lines(width)
@@ -14,17 +15,27 @@ pub(super) fn history_cell_to_text(cell: &HistoryCell, width: u16) -> String {
 }
 
 fn line_to_string(line: Line<'static>) -> String {
-    line.spans
-        .into_iter()
-        .map(|span| span.content.to_string())
-        .collect::<String>()
+    let mut out = String::new();
+    for span in line.spans {
+        if span.content.contains('\x1b') {
+            osc8::strip_into(&span.content, &mut out);
+        } else {
+            out.push_str(&span.content);
+        }
+    }
+    out
 }
 
 pub(super) fn line_to_plain(line: &Line<'static>) -> String {
-    line.spans
-        .iter()
-        .map(|span| span.content.as_ref())
-        .collect::<String>()
+    let mut out = String::new();
+    for span in &line.spans {
+        if span.content.contains('\x1b') {
+            osc8::strip_into(&span.content, &mut out);
+        } else {
+            out.push_str(span.content.as_ref());
+        }
+    }
+    out
 }
 
 pub(super) fn text_display_width(text: &str) -> usize {
@@ -58,5 +69,33 @@ fn char_display_width(ch: char) -> usize {
         4
     } else {
         UnicodeWidthChar::width(ch).unwrap_or(0).max(1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::text::Span;
+
+    #[test]
+    fn line_to_plain_strips_osc_8_wrapper() {
+        // A span carrying an OSC 8-wrapped URL must not leak the escape into
+        // selection / clipboard output. The visible label survives.
+        let wrapped = format!(
+            "\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\",
+            "https://example.com", "https://example.com"
+        );
+        let line = Line::from(vec![
+            Span::raw("see "),
+            Span::raw(wrapped),
+            Span::raw(" for details"),
+        ]);
+        assert_eq!(line_to_plain(&line), "see https://example.com for details");
+    }
+
+    #[test]
+    fn line_to_plain_passes_through_plain_spans() {
+        let line = Line::from(vec![Span::raw("plain "), Span::raw("text")]);
+        assert_eq!(line_to_plain(&line), "plain text");
     }
 }
