@@ -71,6 +71,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   continue — the existing system roots still apply, so a
   malformed env var won't bring down the launch. Documented in
   `docs/CONFIGURATION.md`.
+- **Execpolicy heredoc handling** (#419) — `normalize_command` now
+  strips heredoc bodies before shlex tokenization so a user's
+  `auto_allow = ["cat > file.txt"]` pattern matches the heredoc
+  form `cat <<EOF > file.txt\nbody\nEOF` cleanly. Recognises the
+  common forms (`<<DELIM`, `<<-DELIM`, `<<'DELIM'`, `<<"DELIM"`)
+  while leaving the here-string operator (`<<<`) untouched.
+  Without this fix, heredoc-form file writes would skip the
+  user's auto-approve list and route through the approval modal
+  even for explicitly-blessed commands.
 - **Sub-agent role taxonomy expansion** (#404) — adds `Implementer`
   ("land this change with the minimum surrounding edit") and
   `Verifier` ("run the test suite, report pass/fail with evidence")
