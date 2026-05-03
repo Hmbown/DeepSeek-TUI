@@ -151,6 +151,55 @@ These override config values:
 - `DEEPSEEK_CAPACITY_PRIOR_V4_PRO`
 - `DEEPSEEK_CAPACITY_PRIOR_V4_FLASH`
 - `DEEPSEEK_CAPACITY_PRIOR_FALLBACK`
+- `NO_ANIMATIONS` (`1|true|yes|on` forces `low_motion = true` and
+  `fancy_animations = false` at startup, regardless of the saved
+  settings; see [`docs/ACCESSIBILITY.md`](./ACCESSIBILITY.md)).
+
+### Instruction sources (`instructions = [...]`, #454)
+
+Add a list of additional system-prompt sources that get
+concatenated, in declared order, alongside the auto-loaded
+`AGENTS.md`:
+
+```toml
+instructions = [
+    "./AGENTS.md",
+    "~/.deepseek/global.md",
+    "~/team/agents-shared.md",
+]
+```
+
+Rules:
+
+- Paths run through `expand_path` so `~` and env vars work.
+- Each file is capped at 100 KiB; oversized files are
+  truncated with a `[…elided]` marker rather than skipped.
+- Missing files are skipped with a tracing warning so a stale
+  entry doesn't fail the launch.
+- Project config (`<workspace>/.deepseek/config.toml`)
+  **replaces** the user array wholesale rather than merging.
+  If you want both, list `~/global.md` inside the project
+  array. Set `instructions = []` in the project to clear the
+  user list for that repo.
+
+### `/hooks` listing
+
+Run `/hooks` (or `/hooks list`) inside the TUI to see every
+configured lifecycle hook grouped by event, including each
+hook's name, command preview, timeout, and condition. The
+`[hooks].enabled` flag's state is shown at the top so it's
+obvious when hooks are globally suppressed. Hooks are
+configured under `[[hooks.hooks]]` entries — see the existing
+hook-system documentation for the full schema.
+
+### Composer stash (`/stash`, Ctrl+S)
+
+Press **Ctrl+S** in the composer to park the current draft to
+`~/.deepseek/composer_stash.jsonl`. `/stash list` shows parked
+drafts with one-line previews and timestamps; `/stash pop`
+restores the most recently parked draft (LIFO); `/stash clear`
+wipes the file. Capped at 200 entries; multiline drafts
+round-trip intact.
 
 ## Settings File (Persistent UI Preferences)
 
