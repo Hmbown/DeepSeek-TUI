@@ -219,6 +219,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dropped. Pairs with `/stash list` and `/stash pop` so the
   user can fully manage the stash from inside the TUI without
   reaching for `rm`.
+- **`/hooks` read-only listing** (#460 MVP) — slash command
+  enumerates configured lifecycle hooks grouped by event,
+  showing each hook's name, command preview, timeout, and
+  condition. Notes the global `[hooks].enabled` flag's state.
+  No more `cat ~/.deepseek/config.toml` to debug "did my hook
+  actually load". The picker / persisted enable-disable
+  surface from #460 stays as v0.8.9 follow-up. Available via
+  `/hooks` or `/hooks list`; aliased to `/hook`. Localized in
+  en/ja/zh-Hans/pt-BR.
 - **RLM tool family** (#512) — `rlm` tool cards map to
   `ToolFamily::Rlm` and render `rlm`, not `swarm`. Stale "swarm"
   wording cleaned out of docs / comments / tests.

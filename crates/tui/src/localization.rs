@@ -230,6 +230,7 @@ pub enum MessageId {
     CmdExportDescription,
     CmdHelpDescription,
     CmdHomeDescription,
+    CmdHooksDescription,
     CmdGoalDescription,
     CmdInitDescription,
     CmdJobsDescription,
@@ -416,6 +417,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CmdExportDescription,
     MessageId::CmdHelpDescription,
     MessageId::CmdHomeDescription,
+    MessageId::CmdHooksDescription,
     MessageId::CmdInitDescription,
     MessageId::CmdJobsDescription,
     MessageId::CmdLinksDescription,
@@ -727,6 +729,7 @@ fn english(id: MessageId) -> &'static str {
         MessageId::CmdExportDescription => "Export conversation to markdown",
         MessageId::CmdHelpDescription => "Show help information",
         MessageId::CmdHomeDescription => "Show home dashboard with stats and quick actions",
+        MessageId::CmdHooksDescription => "List configured lifecycle hooks (read-only)",
         MessageId::CmdGoalDescription => "Set a session goal with optional token budget",
         MessageId::CmdInitDescription => "Generate AGENTS.md for project",
         MessageId::CmdLspDescription => "Toggle LSP diagnostics on or off",
@@ -1005,6 +1008,9 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::CmdExportDescription => "会話を Markdown にエクスポート",
         MessageId::CmdHelpDescription => "ヘルプを表示",
         MessageId::CmdHomeDescription => "統計とクイックアクション付きのホームダッシュボードを表示",
+        MessageId::CmdHooksDescription => {
+            "設定済みのライフサイクルフックを一覧表示（読み取り専用）"
+        }
         MessageId::CmdGoalDescription => "トークンバジェット付きのセッション目標を設定",
         MessageId::CmdInitDescription => "プロジェクト用に AGENTS.md を生成",
         MessageId::CmdLspDescription => "LSP 診断のオン・オフを切り替え",
@@ -1265,6 +1271,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::CmdExportDescription => "将对话导出为 Markdown",
         MessageId::CmdHelpDescription => "显示帮助信息",
         MessageId::CmdHomeDescription => "显示主页面板，含统计与快捷操作",
+        MessageId::CmdHooksDescription => "列出已配置的生命周期钩子（只读）",
         MessageId::CmdGoalDescription => "设置带有可选令牌预算的会话目标",
         MessageId::CmdInitDescription => "为项目生成 AGENTS.md",
         MessageId::CmdLspDescription => "切换 LSP 诊断的开启或关闭",
@@ -1509,6 +1516,9 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         MessageId::CmdExportDescription => "Exportar a conversa para markdown",
         MessageId::CmdHelpDescription => "Exibir informações de ajuda",
         MessageId::CmdHomeDescription => "Exibir o painel inicial com estatísticas e ações rápidas",
+        MessageId::CmdHooksDescription => {
+            "Listar hooks de ciclo de vida configurados (somente leitura)"
+        }
         MessageId::CmdGoalDescription => {
             "Definir uma meta de sessão com orçamento de tokens opcional"
         }

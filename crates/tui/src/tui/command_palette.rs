@@ -402,6 +402,7 @@ fn command_runs_directly(name: &str) -> bool {
             | "models"
             | "queue"
             | "stash"
+            | "hooks"
             | "subagents"
             | "links"
             | "home"

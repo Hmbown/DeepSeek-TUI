@@ -470,6 +470,13 @@ impl HookExecutor {
     }
 
     /// Get the session ID
+    /// Read-only access to the underlying configuration. Used by
+    /// `/hooks` (#460 read-only MVP) so the user can list configured
+    /// hooks without reaching for `cat ~/.deepseek/config.toml`.
+    pub fn config(&self) -> &HooksConfig {
+        &self.config
+    }
+
     pub fn session_id(&self) -> &str {
         &self.session_id
     }
