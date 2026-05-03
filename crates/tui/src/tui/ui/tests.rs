@@ -1977,6 +1977,24 @@ fn ok_result(
 }
 
 #[test]
+fn tool_child_usage_metadata_updates_live_cost_counter() {
+    let mut app = create_test_app();
+    let result = Ok(crate::tools::spec::ToolResult::success("ok").with_metadata(
+        serde_json::json!({
+            "child_model": "deepseek-v4-flash",
+            "child_input_tokens": 10_000,
+            "child_output_tokens": 1_000,
+            "child_prompt_cache_hit_tokens": 7_000,
+            "child_prompt_cache_miss_tokens": 3_000,
+        }),
+    ));
+
+    handle_tool_call_complete(&mut app, "review-usage", "review", &result);
+
+    assert!(app.session.subagent_cost > 0.0);
+}
+
+#[test]
 fn parallel_exploring_tool_starts_share_one_active_entry() {
     // Three exploring tools start in any order; they must collapse into one
     // entry inside the active cell rather than three separate cells. This is

@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 use crate::client::DeepSeekClient;
 use crate::llm_client::LlmClient;
-use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt};
+use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt, Usage};
 use crate::utils::truncate_with_ellipsis;
 
 use super::spec::{
@@ -240,8 +240,25 @@ impl ToolSpec for ReviewTool {
 
         let response_text = extract_text(&response.content);
         let output = ReviewOutput::from_str(&response_text);
-        ToolResult::json(&output).map_err(|e| ToolError::execution_failed(e.to_string()))
+        let metadata = review_usage_metadata(&response.model, &response.usage);
+        let result =
+            ToolResult::json(&output).map_err(|e| ToolError::execution_failed(e.to_string()))?;
+        Ok(result.with_metadata(metadata))
     }
+}
+
+fn review_usage_metadata(model: &str, usage: &Usage) -> Value {
+    json!({
+        "tool": "review",
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+        "child_model": model,
+        "child_input_tokens": usage.input_tokens,
+        "child_output_tokens": usage.output_tokens,
+        "child_prompt_cache_hit_tokens": usage.prompt_cache_hit_tokens,
+        "child_prompt_cache_miss_tokens": usage.prompt_cache_miss_tokens,
+        "child_reasoning_tokens": usage.reasoning_tokens,
+    })
 }
 
 enum ReviewSource {
@@ -536,5 +553,28 @@ mod tests {
         let output = ReviewOutput::from_str("Not JSON");
         assert!(!output.summary.is_empty());
         assert!(output.issues.is_empty());
+    }
+
+    #[test]
+    fn review_usage_metadata_reports_child_tokens_for_cost_accrual() {
+        let metadata = review_usage_metadata(
+            "deepseek-v4-flash",
+            &Usage {
+                input_tokens: 123,
+                output_tokens: 45,
+                prompt_cache_hit_tokens: Some(100),
+                prompt_cache_miss_tokens: Some(23),
+                reasoning_tokens: Some(7),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(metadata["tool"], "review");
+        assert_eq!(metadata["child_model"], "deepseek-v4-flash");
+        assert_eq!(metadata["child_input_tokens"], 123);
+        assert_eq!(metadata["child_output_tokens"], 45);
+        assert_eq!(metadata["child_prompt_cache_hit_tokens"], 100);
+        assert_eq!(metadata["child_prompt_cache_miss_tokens"], 23);
+        assert_eq!(metadata["child_reasoning_tokens"], 7);
     }
 }
