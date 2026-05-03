@@ -123,6 +123,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the previous "192m 30s" cycle output becomes `3h 12m`. The
   `/goal` status line picks up the same formatter so multi-day
   goal-elapsed times stay readable.
+- **Accessibility flag** (#450) — `NO_ANIMATIONS=1` env var now
+  forces `low_motion = true` and `fancy_animations = false` at
+  startup, regardless of the saved `settings.toml`. Recognises
+  the standard truthy spellings (`1`, `true`, `yes`, `on`).
+  Documented end-to-end in the new `docs/ACCESSIBILITY.md`,
+  including the existing `low_motion` / `calm_mode` /
+  `show_thinking` / `show_tool_details` toggles for
+  screen-reader users.
 - **RLM tool family** (#512) — `rlm` tool cards map to
   `ToolFamily::Rlm` and render `rlm`, not `swarm`. Stale "swarm"
   wording cleaned out of docs / comments / tests.
