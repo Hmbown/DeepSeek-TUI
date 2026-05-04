@@ -1497,6 +1497,14 @@ async fn run_event_loop(
                 }
                 terminal.clear()?;
                 app.handle_resize(final_w, final_h);
+                // Explicitly resize ratatui's internal buffers to the
+                // dimensions reported by the resize event.  On Windows
+                // PowerShell (ConHost), `crossterm::terminal::size()` can
+                // return stale dimensions during a maximize→windowed
+                // transition, which `terminal.draw()` queries internally via
+                // `backend.size()`. Forwarding the event-reported dimensions
+                // directly avoids the stale-query black screen (#582).
+                terminal.resize(Rect::new(0, 0, final_w, final_h))?;
                 // Draw immediately so the cleared screen gets repainted before
                 // any other events can interleave. Without this, the next
                 // iteration's draw can race against fast follow-up input and
