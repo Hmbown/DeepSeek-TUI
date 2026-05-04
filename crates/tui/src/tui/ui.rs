@@ -1559,7 +1559,10 @@ async fn run_event_loop(
 
             // Handle onboarding flow
             if app.onboarding != OnboardingState::None {
-                let advance_onboarding = |app: &mut App| {
+                // After Welcome (and the new Language step) we route to either
+                // the API-key step, the trust prompt, or the tips screen
+                // depending on what the user still needs to set up.
+                let advance_after_language = |app: &mut App| {
                     app.status_message = None;
                     if app.onboarding_needs_api_key {
                         app.onboarding = OnboardingState::ApiKey;
@@ -1568,6 +1571,10 @@ async fn run_event_loop(
                     } else {
                         app.onboarding = OnboardingState::Tips;
                     }
+                };
+                let advance_onboarding = |app: &mut App| {
+                    app.status_message = None;
+                    app.onboarding = OnboardingState::Language;
                 };
 
                 match key.code {
@@ -1581,9 +1588,41 @@ async fn run_event_loop(
                         app.api_key_cursor = 0;
                         app.status_message = None;
                     }
+                    KeyCode::Esc if app.onboarding == OnboardingState::Language => {
+                        app.onboarding = OnboardingState::Welcome;
+                        app.status_message = None;
+                    }
+                    // Language picker hotkeys: 1-5 select + persist (#566).
+                    KeyCode::Char(c)
+                        if app.onboarding == OnboardingState::Language
+                            && c.is_ascii_digit()
+                            && let Some((_, tag, _, _)) =
+                                onboarding::language::LANGUAGE_OPTIONS
+                                    .iter()
+                                    .find(|(hotkey, _, _, _)| *hotkey == c) =>
+                    {
+                        match app.set_locale_from_onboarding(tag) {
+                            Ok(()) => {
+                                app.push_status_toast(
+                                    format!("Language set to {tag}"),
+                                    StatusToastLevel::Info,
+                                    Some(2_500),
+                                );
+                                advance_after_language(app);
+                            }
+                            Err(err) => {
+                                app.status_message = Some(format!("Failed to save locale: {err}"));
+                            }
+                        }
+                    }
                     KeyCode::Enter => match app.onboarding {
                         OnboardingState::Welcome => {
                             advance_onboarding(app);
+                        }
+                        OnboardingState::Language => {
+                            // Enter without a digit pick keeps the existing
+                            // setting (which defaults to "auto").
+                            advance_after_language(app);
                         }
                         OnboardingState::ApiKey => {
                             let key = app.api_key_input.trim().to_string();

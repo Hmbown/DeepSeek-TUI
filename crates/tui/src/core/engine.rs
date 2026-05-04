@@ -673,6 +673,16 @@ impl Engine {
                 }
             }
         }
+
+        // #420: graceful MCP shutdown — send SIGTERM and give stdio servers
+        // a brief window to exit before drop fires SIGKILL via kill_on_drop.
+        // Best-effort: pool may not exist (no MCP configured) and the lock
+        // can fail under contention; either way the kill_on_drop fallback
+        // still reaps the children.
+        if let Some(pool) = self.mcp_pool.as_ref() {
+            let mut guard = pool.lock().await;
+            guard.shutdown_all().await;
+        }
     }
 
     async fn emit_session_updated(&self) {
