@@ -5,6 +5,9 @@
 //! tmux DCS passthrough so OSC 9 reaches the outer terminal even when
 //! running inside a tmux session.
 
+#[cfg(target_os = "windows")]
+use windows::Win32::UI::WindowsAndMessaging::MessageBeep;
+
 use std::io::{self, Write};
 use std::time::Duration;
 
@@ -33,6 +36,19 @@ impl Method {
             "off" | "disabled" | "none" => Self::Off,
             _ => Self::Auto,
         }
+    }
+}
+
+/// Emit a Windows system beep via `MessageBeep(MB_OK)`.
+///
+/// Writing BEL (`\\x07`) to the terminal is silent on most Windows
+/// terminals (Windows Terminal, Conhost, etc.), so we call the Win32
+/// API directly to produce the standard notification sound.
+#[cfg(target_os = "windows")]
+fn windows_bell() {
+    // MB_OK = 0x00000000 — plays the default system sound.
+    unsafe {
+        MessageBeep(0x00000000);
     }
 }
 
@@ -101,6 +117,14 @@ pub fn notify_done_to<W: Write>(
     // Best-effort: ignore write errors (e.g. stdout closed).
     let _ = sink.write_all(&bytes);
     let _ = sink.flush();
+
+    // On Windows, writing BEL (`\x07`) to the terminal is silent in most
+    // terminals (Windows Terminal, Conhost, etc.). Call MessageBeep to
+    // produce an actual notification sound via the system audio scheme.
+    #[cfg(target_os = "windows")]
+    if effective == Method::Bel {
+        windows_bell();
+    }
 }
 
 /// Emit a turn-complete notification to **stdout** if `elapsed >= threshold`.
