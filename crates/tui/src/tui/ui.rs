@@ -4222,13 +4222,10 @@ async fn submit_or_steer_message(
             let count = app.queued_message_count().saturating_add(1);
             app.queue_message(message);
             if app.offline_mode {
-                app.status_message = Some(format!(
-                    "Offline: {count} queued — ↑ to edit, /queue list"
-                ));
+                app.status_message =
+                    Some(format!("Offline: {count} queued — ↑ to edit, /queue list"));
             } else {
-                app.status_message = Some(format!(
-                    "{count} queued — ↑ to edit, /queue list"
-                ));
+                app.status_message = Some(format!("{count} queued — ↑ to edit, /queue list"));
             }
             Ok(())
         }

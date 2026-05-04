@@ -2884,10 +2884,7 @@ impl App {
         if let Err(e) = std::fs::create_dir_all(&pastes_dir) {
             // Fallback: keep a truncated version so we don't lose the
             // user's input entirely when the filesystem is unhappy.
-            self.input = full_input
-                .chars()
-                .take(MAX_SUBMITTED_INPUT_CHARS)
-                .collect();
+            self.input = full_input.chars().take(MAX_SUBMITTED_INPUT_CHARS).collect();
             self.cursor_position = char_count(&self.input);
             self.push_status_toast(
                 format!("Failed to create paste directory: {e}"),
@@ -2899,10 +2896,7 @@ impl App {
 
         let file_path = self.workspace.join(&rel_path);
         if let Err(e) = std::fs::write(&file_path, &full_input) {
-            self.input = full_input
-                .chars()
-                .take(MAX_SUBMITTED_INPUT_CHARS)
-                .collect();
+            self.input = full_input.chars().take(MAX_SUBMITTED_INPUT_CHARS).collect();
             self.cursor_position = char_count(&self.input);
             self.push_status_toast(
                 format!("Failed to write paste file: {e}"),
@@ -3326,7 +3320,10 @@ mod tests {
                 .iter()
                 .any(|toast| toast.text.contains("consolidated")),
             "expected consolidation toast, got: {:?}",
-            app.status_toasts.iter().map(|t| &t.text).collect::<Vec<_>>()
+            app.status_toasts
+                .iter()
+                .map(|t| &t.text)
+                .collect::<Vec<_>>()
         );
 
         // The composer must be clear after submit.

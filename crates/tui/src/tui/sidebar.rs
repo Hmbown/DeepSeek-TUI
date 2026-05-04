@@ -639,10 +639,7 @@ fn render_context_panel(f: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(palette::DEEPSEEK_SKY).bold(),
         ),
         Span::styled(
-            format!(
-                "  {}",
-                app.workspace_context.as_deref().unwrap_or("")
-            ),
+            format!("  {}", app.workspace_context.as_deref().unwrap_or("")),
             Style::default().fg(palette::TEXT_DIM),
         ),
     ]));
@@ -676,16 +673,25 @@ fn render_context_panel(f: &mut Frame, area: Rect, app: &App) {
     // ── Session cost ─────────────────────────────────────────────
     let total_cost = app.session.session_cost + app.session.subagent_cost;
     lines.push(Line::from(Span::styled(
-        format!("cost: ${total_cost:.4} (session ${:.4} + agents ${:.4})",
-            app.session.session_cost, app.session.subagent_cost),
+        format!(
+            "cost: ${total_cost:.4} (session ${:.4} + agents ${:.4})",
+            app.session.session_cost, app.session.subagent_cost
+        ),
         Style::default().fg(palette::TEXT_MUTED),
     )));
 
     // ── MCP servers ──────────────────────────────────────────────
     if app.mcp_configured_count > 0 {
-        let restart_hint = if app.mcp_restart_required { " (restart needed)" } else { "" };
+        let restart_hint = if app.mcp_restart_required {
+            " (restart needed)"
+        } else {
+            ""
+        };
         lines.push(Line::from(Span::styled(
-            format!("mcp: {} server(s){}", app.mcp_configured_count, restart_hint),
+            format!(
+                "mcp: {} server(s){}",
+                app.mcp_configured_count, restart_hint
+            ),
             Style::default().fg(palette::TEXT_MUTED),
         )));
     }
@@ -700,8 +706,11 @@ fn render_context_panel(f: &mut Frame, area: Rect, app: &App) {
     // ── Cycles ───────────────────────────────────────────────────
     if app.cycle_count > 0 {
         lines.push(Line::from(Span::styled(
-            format!("cycles: {} crossed, {} briefing(s)",
-                app.cycle_count, app.cycle_briefings.len()),
+            format!(
+                "cycles: {} crossed, {} briefing(s)",
+                app.cycle_count,
+                app.cycle_briefings.len()
+            ),
             Style::default().fg(palette::TEXT_MUTED),
         )));
     }
