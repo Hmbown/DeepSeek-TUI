@@ -241,6 +241,23 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     let config = &mut config;
     let mut app = App::new(options.clone(), config);
 
+    // Apply custom background color from [theme] config (#596).
+    if let Some(ref theme_cfg) = config.theme
+        && let Some(ref bg_str) = theme_cfg.background_color
+    {
+        match palette::parse_color(bg_str) {
+            Some(color) => {
+                app.ui_theme.header_bg = color;
+            }
+            None => {
+                tracing::warn!(
+                    target: "theme",
+                    "Ignoring invalid theme.background_color: {bg_str:?} — expected hex #rrggbb or named color"
+                );
+            }
+        }
+    }
+
     // Load existing session if resuming.
     if let Some(ref session_id) = options.resume_session_id
         && let Ok(manager) = SessionManager::default_location()
@@ -4600,12 +4617,12 @@ fn render(f: &mut Frame, app: &mut App) {
 
     // Render chat + sidebar + optional file-tree pane
     {
-        // Defensive backstop (#400): fill the entire body area with ink
-        // background before any sub-widgets render, so cells that end up
-        // uncovered by layout splits (e.g. after file-tree toggle or
+        // Defensive backstop (#400): fill the entire body area with
+        // background color before any sub-widgets render, so cells that end
+        // up uncovered by layout splits (e.g. after file-tree toggle or
         // resize) don't retain stale content from a previous frame.
         Block::default()
-            .style(Style::default().bg(palette::DEEPSEEK_INK))
+            .style(Style::default().bg(app.ui_theme.header_bg))
             .render(chunks[1], f.buffer_mut());
 
         let mut sidebar_area = None;
