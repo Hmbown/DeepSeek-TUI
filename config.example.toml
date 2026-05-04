@@ -70,6 +70,16 @@ memory_path = "~/.deepseek/memory.md"
 # (`instructions = []`) clears the user list for the current repo.
 
 # ─────────────────────────────────────────────────────────────────────────────────
+# Memory: persistent notes + auto-extract (#538 / #489)
+# ─────────────────────────────────────────────────────────────────────
+# auto_extract_memory = false   # default off. When true, after each completed
+#                               # turn the TUI scans the assistant's response
+#                               # for decision-worthy sentences (containing
+#                               # "I will", "decided", "implemented") and
+#                               # appends the first match to the notes file
+#                               # at notes_path. Useful for building a running
+#                               # log of what the agent did.
+
 # User memory (#489) — opt-in. When enabled, the TUI reads memory_path on
 # startup and injects its contents into the system prompt as a
 # <user_memory> block, intercepts `# foo` typed in the composer to append
