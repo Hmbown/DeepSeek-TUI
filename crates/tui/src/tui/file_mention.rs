@@ -148,6 +148,9 @@ pub fn find_file_mention_completions(
     limit: usize,
 ) -> Vec<String> {
     let entries = workspace.completions(partial, limit);
+    // #441: re-rank by frecency so files the user mentions a lot float up.
+    // Never-mentioned candidates fall back to the workspace ranker's order.
+    let entries = super::file_frecency::rerank_by_frecency(entries);
     tracing::debug!(
         target: "deepseek_tui::file_mention",
         partial = %partial,
@@ -215,6 +218,9 @@ pub fn apply_mention_menu_selection(app: &mut App, entries: &[String]) -> bool {
         .mention_menu_selected
         .min(entries.len().saturating_sub(1));
     let replacement = &entries[selected_idx];
+    // #441: bump this path's frecency before we splice it in. The store
+    // persists asynchronously, so this never blocks input handling.
+    super::file_frecency::record_mention(replacement);
     replace_file_mention(app, byte_start, &partial, replacement);
     app.mention_menu_hidden = false;
     app.status_message = Some(format!("Attached @{replacement}"));
@@ -239,6 +245,8 @@ pub fn try_autocomplete_file_mention(app: &mut App) -> bool {
         return true;
     }
     if candidates.len() == 1 {
+        // #441: a unique-match completion is also a "mention" for ranking.
+        super::file_frecency::record_mention(&candidates[0]);
         replace_file_mention(app, byte_start, &partial, &candidates[0]);
         app.status_message = Some(format!("Attached @{}", candidates[0]));
         return true;
