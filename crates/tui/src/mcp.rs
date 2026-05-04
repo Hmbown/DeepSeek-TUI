@@ -260,12 +260,49 @@ pub enum ConnectionState {
 pub trait McpTransport: Send + Sync {
     async fn send(&mut self, msg: serde_json::Value) -> Result<()>;
     async fn recv(&mut self) -> Result<serde_json::Value>;
+
+    /// Graceful shutdown — stdio transports send SIGTERM to the child and
+    /// give it a brief window to exit before tokio's `kill_on_drop` fires
+    /// SIGKILL as the backstop. Default is a no-op for non-stdio transports
+    /// that have no child process. Whalescale#420.
+    async fn shutdown(&mut self) {}
 }
 
 pub struct StdioTransport {
-    _child: Child,
+    child: Child,
     stdin: ChildStdin,
     reader: tokio::io::BufReader<ChildStdout>,
+}
+
+/// How long `StdioTransport::shutdown` waits for the child to exit on SIGTERM
+/// before `kill_on_drop` fires SIGKILL. Tuned short so a hung MCP server
+/// can't stall TUI exit; well-behaved servers almost always exit within
+/// a few hundred ms.
+const STDIO_SHUTDOWN_GRACE: Duration = Duration::from_millis(2_000);
+
+/// Best-effort SIGTERM. On Unix uses `libc::kill`; on Windows there's no
+/// equivalent so we let `kill_on_drop` (TerminateProcess) handle it via the
+/// subsequent Drop. Returns whether a signal was actually sent.
+fn send_sigterm(child: &Child) -> bool {
+    #[cfg(unix)]
+    {
+        if let Some(pid) = child.id() {
+            // SAFETY: pid was just obtained from `child.id()`. `libc::kill`
+            // with `SIGTERM` is async-signal-safe and never observes invalid
+            // memory. Worst case (pid wrap / process already gone) returns
+            // ESRCH, which we deliberately ignore.
+            unsafe {
+                let _ = libc::kill(pid as i32, libc::SIGTERM);
+            }
+            return true;
+        }
+        false
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = child;
+        false
+    }
 }
 
 #[async_trait::async_trait]
@@ -295,6 +332,25 @@ impl McpTransport for StdioTransport {
                 return Ok(value);
             }
         }
+    }
+
+    /// Send SIGTERM and wait up to `STDIO_SHUTDOWN_GRACE` for graceful exit
+    /// before letting Drop / `kill_on_drop` fire SIGKILL as the backstop.
+    async fn shutdown(&mut self) {
+        send_sigterm(&self.child);
+        // Give the child a window to exit cleanly. Discard the result —
+        // either it exits (success) or the timeout fires (Drop will SIGKILL).
+        let _ = tokio::time::timeout(STDIO_SHUTDOWN_GRACE, self.child.wait()).await;
+    }
+}
+
+/// Drop fallback (#420): if `shutdown` was never called explicitly, still
+/// fire SIGTERM before tokio's `kill_on_drop` sends SIGKILL. The two
+/// signals arrive back-to-back so well-behaved servers at least see the
+/// SIGTERM first; misbehaving ones get SIGKILL'd anyway.
+impl Drop for StdioTransport {
+    fn drop(&mut self) {
+        send_sigterm(&self.child);
     }
 }
 
@@ -552,7 +608,7 @@ impl McpConnection {
             let stdout = child.stdout.take().context("Failed to get MCP stdout")?;
 
             Box::new(StdioTransport {
-                _child: child,
+                child,
                 stdin,
                 reader: tokio::io::BufReader::new(stdout),
             })
@@ -1413,6 +1469,25 @@ impl McpPool {
         self.connections.clear();
     }
 
+    /// Graceful shutdown of every connection in the pool: send SIGTERM to
+    /// each stdio child and give them a short grace period before drop
+    /// fires SIGKILL. Whalescale#420.
+    ///
+    /// Call from the TUI exit path *before* dropping the pool to give
+    /// MCP servers a chance to flush state. The fallback Drop on
+    /// `StdioTransport` still sends SIGTERM if this never runs, so even
+    /// abnormal exits avoid leaking PIDs without a signal.
+    #[allow(dead_code)] // Wired in by callers that want graceful shutdown
+    pub async fn shutdown_all(&mut self) {
+        let names: Vec<String> = self.connections.keys().cloned().collect();
+        for name in names {
+            if let Some(conn) = self.connections.get_mut(&name) {
+                conn.transport.shutdown().await;
+            }
+        }
+        self.connections.clear();
+    }
+
     /// Get the underlying configuration
     #[allow(dead_code)] // Public API for MCP consumers
     pub fn config(&self) -> &McpConfig {
@@ -1978,6 +2053,53 @@ mod tests {
         assert!(
             redacted.contains("other=val"),
             "non-secret preserved: {redacted}"
+        );
+    }
+
+    /// #420: `StdioTransport::shutdown` reaps the child process by sending
+    /// SIGTERM and giving it a brief grace period before drop fires SIGKILL.
+    /// The test spawns `cat` (which exits immediately on stdin EOF / SIGTERM)
+    /// and verifies the transport tears down cleanly. Unix-only because
+    /// SIGTERM doesn't exist on Windows; on Windows the test would just
+    /// duplicate the kill_on_drop path.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stdio_transport_shutdown_terminates_child() {
+        use tokio::process::Command as TokioCommand;
+        let mut cmd = TokioCommand::new("cat");
+        cmd.stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true);
+        let mut child = cmd.spawn().expect("spawn cat");
+        let pid = child.id().expect("child pid");
+        let stdin = child.stdin.take().expect("child stdin");
+        let stdout = child.stdout.take().expect("child stdout");
+        let mut transport = StdioTransport {
+            child,
+            stdin,
+            reader: tokio::io::BufReader::new(stdout),
+        };
+
+        // shutdown() should send SIGTERM and complete within the grace window.
+        let start = std::time::Instant::now();
+        transport.shutdown().await;
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < STDIO_SHUTDOWN_GRACE + Duration::from_millis(500),
+            "shutdown blocked beyond grace window: {elapsed:?}"
+        );
+
+        // The child should be reaped — kill(pid, 0) returning ESRCH means
+        // the pid is gone. If it's still alive, kill(0) returns 0, which
+        // means our shutdown didn't terminate it.
+        // SAFETY: pid was just collected from a tokio Child we spawned.
+        // libc::kill with signal 0 only checks pid existence and is
+        // async-signal-safe.
+        let still_alive = unsafe { libc::kill(pid as i32, 0) } == 0;
+        assert!(
+            !still_alive,
+            "child {pid} survived StdioTransport::shutdown — SIGTERM not delivered"
         );
     }
 }

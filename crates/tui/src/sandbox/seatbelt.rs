@@ -203,10 +203,10 @@ fn generate_policy(policy: &SandboxPolicy, cwd: &Path) -> String {
 /// never on a real macOS user account; can happen in CI containers without
 /// `HOME` exported).
 fn resolve_cargo_home() -> Option<PathBuf> {
-    if let Ok(explicit) = std::env::var("CARGO_HOME") {
-        if !explicit.trim().is_empty() {
-            return Some(PathBuf::from(explicit));
-        }
+    if let Ok(explicit) = std::env::var("CARGO_HOME")
+        && !explicit.trim().is_empty()
+    {
+        return Some(PathBuf::from(explicit));
     }
     let home = std::env::var("HOME").ok()?;
     Some(PathBuf::from(home).join(".cargo"))
