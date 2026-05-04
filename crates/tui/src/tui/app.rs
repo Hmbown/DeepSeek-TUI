@@ -46,6 +46,10 @@ use crate::utils::is_chinese_system_locale;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OnboardingState {
     Welcome,
+    /// Pick the UI locale before any other config decisions (#566).
+    /// Defaults to auto-detection from `LC_ALL` / `LANG`; explicit picks
+    /// land in `~/.deepseek/settings.toml` via `Settings::set("locale", …)`.
+    Language,
     ApiKey,
     TrustDirectory,
     Tips,
@@ -1260,6 +1264,31 @@ impl App {
             self.status_message = Some(format!("Failed to mark onboarding: {err}"));
         }
         self.needs_redraw = true;
+    }
+
+    /// Apply a locale tag selected from the onboarding language picker (#566).
+    /// Persists the value to `~/.deepseek/settings.toml` and immediately
+    /// re-resolves `ui_locale` so the rest of onboarding renders in the new
+    /// language. `App` doesn't keep `Settings` resident — it loads on entry
+    /// and rewrites on exit, mirroring the pattern used by the `/config`
+    /// surface.
+    pub fn set_locale_from_onboarding(&mut self, tag: &str) -> anyhow::Result<()> {
+        let mut settings = Settings::load().unwrap_or_else(|_| Settings::default());
+        settings.set("locale", tag)?;
+        settings.save()?;
+        self.ui_locale = crate::localization::resolve_locale(&settings.locale);
+        self.needs_redraw = true;
+        Ok(())
+    }
+
+    /// Locale tag currently persisted in `~/.deepseek/settings.toml` (or
+    /// `"auto"` when no settings file exists). Used by the onboarding
+    /// language picker to highlight the current selection without `App`
+    /// having to keep `Settings` resident.
+    pub fn current_locale_tag(&self) -> String {
+        Settings::load()
+            .map(|s| s.locale)
+            .unwrap_or_else(|_| "auto".to_string())
     }
 
     pub fn set_mode(&mut self, mode: AppMode) -> bool {

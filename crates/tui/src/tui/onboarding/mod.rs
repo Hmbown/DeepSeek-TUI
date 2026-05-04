@@ -1,6 +1,7 @@
 //! Onboarding flow rendering and helpers.
 
 pub mod api_key;
+pub mod language;
 pub mod trust_directory;
 pub mod welcome;
 
@@ -32,6 +33,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
 
     let lines = match app.onboarding {
         OnboardingState::Welcome => welcome::lines(),
+        OnboardingState::Language => language::lines(app),
         OnboardingState::ApiKey => api_key::lines(app),
         OnboardingState::TrustDirectory => trust_directory::lines(app),
         OnboardingState::Tips => tips_lines(),
@@ -66,7 +68,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
 
 fn onboarding_step(app: &App) -> (usize, usize) {
     let needs_trust = !app.trust_mode && needs_trust(&app.workspace);
-    let mut total = 2; // Welcome + Tips
+    // Welcome + Language + Tips are always shown.
+    let mut total = 3;
     if app.onboarding_needs_api_key {
         total += 1;
     }
@@ -76,13 +79,11 @@ fn onboarding_step(app: &App) -> (usize, usize) {
 
     let step = match app.onboarding {
         OnboardingState::Welcome => 1,
-        OnboardingState::ApiKey => 2,
+        OnboardingState::Language => 2,
+        OnboardingState::ApiKey => 3,
         OnboardingState::TrustDirectory => {
-            if app.onboarding_needs_api_key {
-                3
-            } else {
-                2
-            }
+            // Welcome (1) + Language (2) + optional ApiKey
+            if app.onboarding_needs_api_key { 4 } else { 3 }
         }
         OnboardingState::Tips => total,
         OnboardingState::None => total,
