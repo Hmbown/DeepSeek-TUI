@@ -65,6 +65,7 @@ mod tools;
 mod tui;
 mod utils;
 mod working_set;
+mod worktree;
 mod workspace_trust;
 
 use crate::config::{Config, DEFAULT_TEXT_MODEL, MAX_SUBAGENTS};
@@ -241,6 +242,8 @@ enum Commands {
         #[arg(long = "last", default_value_t = false, conflicts_with = "session_id")]
         last: bool,
     },
+    /// Manage git worktrees for branch-isolated development
+    Worktree(WorktreeArgs),
     /// Internal: run the responses API proxy.
     #[command(hide = true)]
     ResponsesApiProxy(responses_api_proxy::Args),
@@ -379,6 +382,28 @@ struct ApplyArgs {
     /// Patch file to apply (defaults to stdin)
     #[arg(value_name = "PATCH_FILE")]
     patch_file: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone)]
+struct WorktreeArgs {
+    #[command(subcommand)]
+    command: WorktreeSubcommand,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum WorktreeSubcommand {
+    /// Create a new worktree for the given branch and start a TUI session
+    Create {
+        /// Branch name
+        branch: String,
+    },
+    /// List active worktrees
+    List,
+    /// Remove a worktree by branch name
+    Rm {
+        /// Branch name
+        branch: String,
+    },
 }
 
 #[derive(Args, Debug, Clone)]
@@ -723,6 +748,23 @@ async fn main() -> Result<()> {
                 let config = load_config_from_cli(&cli)?;
                 let new_session_id = fork_session(session_id, last)?;
                 run_interactive(&cli, &config, Some(new_session_id), None).await
+            }
+            Commands::Worktree(args) => {
+                let workspace = cli.workspace.clone().unwrap_or_else(|| {
+                    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+                });
+                match args.command {
+                    WorktreeSubcommand::Create { branch } => {
+                        worktree::run_worktree_create(&branch, &workspace)?;
+                    }
+                    WorktreeSubcommand::List => {
+                        worktree::run_worktree_list(&workspace)?;
+                    }
+                    WorktreeSubcommand::Rm { branch } => {
+                        worktree::run_worktree_rm(&branch, &workspace)?;
+                    }
+                }
+                Ok(())
             }
             Commands::ResponsesApiProxy(args) => {
                 responses_api_proxy::run_main(args)?;
