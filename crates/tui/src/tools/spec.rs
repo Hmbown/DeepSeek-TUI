@@ -7,12 +7,14 @@
 //! - `ToolCapability`: Capabilities and requirements of tools
 
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use crate::features::Features;
+use crate::lsp::LspManager;
 use crate::network_policy::NetworkPolicyDecider;
 use crate::tools::shell::{SharedShellManager, new_shared_shell_manager};
 #[allow(unused_imports)]
@@ -110,6 +112,11 @@ pub struct ToolContext {
     /// short-circuit on `None` rather than fall back to a workspace-local
     /// default.
     pub memory_path: Option<PathBuf>,
+    /// LSP manager for post-edit diagnostics injection (#428). `None` when
+    /// LSP is disabled or the context is constructed in a test that does not
+    /// need diagnostics. Edit tools append a `<diagnostics>` block to their
+    /// result when this is present and the manager is enabled.
+    pub lsp_manager: Option<Arc<LspManager>>,
 }
 
 impl ToolContext {
@@ -136,6 +143,7 @@ impl ToolContext {
             runtime: RuntimeToolServices::default(),
             cancel_token: None,
             memory_path: None,
+            lsp_manager: None,
         }
     }
 
@@ -165,6 +173,7 @@ impl ToolContext {
             runtime: RuntimeToolServices::default(),
             cancel_token: None,
             memory_path: None,
+            lsp_manager: None,
         }
     }
 
@@ -194,6 +203,7 @@ impl ToolContext {
             runtime: RuntimeToolServices::default(),
             cancel_token: None,
             memory_path: None,
+            lsp_manager: None,
         }
     }
 
@@ -224,6 +234,15 @@ impl ToolContext {
     #[must_use]
     pub fn with_trusted_external_paths(mut self, paths: Vec<PathBuf>) -> Self {
         self.trusted_external_paths = paths;
+        self
+    }
+
+    /// Attach an LSP manager so that edit tools can auto-inject diagnostics
+    /// into their results after a successful file modification (#428).
+    #[must_use]
+    #[allow(dead_code)]
+    pub fn with_lsp_manager(mut self, manager: Arc<LspManager>) -> Self {
+        self.lsp_manager = Some(manager);
         self
     }
 
@@ -399,6 +418,35 @@ impl ToolContext {
         self.state_namespace = namespace.into();
         self
     }
+}
+
+/// Gather LSP diagnostics for `paths` using the manager stored in `context`,
+/// and return the rendered `<diagnostics …>` blocks joined by newlines.
+///
+/// Returns an empty string when:
+/// - `context.lsp_manager` is `None`
+/// - the manager's `enabled` flag is `false`
+/// - none of the files produce diagnostics (e.g. all clean, or language unknown)
+///
+/// This function is non-blocking by design: every failure mode (missing LSP
+/// binary, timeout, unknown language) degrades to an empty string rather than
+/// propagating an error to the caller.
+pub async fn lsp_diagnostics_for_paths(context: &ToolContext, paths: &[PathBuf]) -> String {
+    use crate::lsp::render_blocks;
+
+    let manager = match context.lsp_manager.as_ref() {
+        Some(m) if m.config().enabled => m,
+        _ => return String::new(),
+    };
+
+    let mut blocks = Vec::new();
+    for (idx, path) in paths.iter().enumerate() {
+        if let Some(block) = manager.diagnostics_for(path, idx as u64).await {
+            blocks.push(block);
+        }
+    }
+
+    render_blocks(&blocks)
 }
 
 fn normalize_path(path: &Path) -> PathBuf {
