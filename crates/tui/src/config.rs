@@ -771,6 +771,27 @@ pub struct Config {
     /// Sub-agent model overrides.
     #[serde(default)]
     pub subagents: Option<SubagentsConfig>,
+
+    /// Runtime API server tuning (`deepseek serve --http`). Currently only
+    /// hosts the CORS allow-list extension (whalescale#255 / #561). When the
+    /// table is absent, the daemon ships with localhost:3000 / localhost:1420
+    /// / tauri://localhost as the only allowed dev origins.
+    #[serde(default)]
+    pub runtime_api: Option<RuntimeApiConfig>,
+}
+
+/// `[runtime_api]` table — knobs for the local HTTP/SSE daemon.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct RuntimeApiConfig {
+    /// Additional CORS origins to allow on top of the built-in defaults
+    /// (`http://localhost:{3000,1420}`, `http://127.0.0.1:{3000,1420}`,
+    /// `tauri://localhost`). Useful when developing a UI against a non-default
+    /// dev server port (e.g. Vite's default `:5173`).
+    ///
+    /// Resolution order (highest priority first): `--cors-origin` CLI flag,
+    /// `DEEPSEEK_CORS_ORIGINS` env var (comma-separated), this field. Whalescale#255 / #561.
+    #[serde(default)]
+    pub cors_origins: Option<Vec<String>>,
 }
 
 /// `[skills]` table — knobs for the community-skill installer.
@@ -2004,6 +2025,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
             per_model: override_cfg.context.per_model.or(base.context.per_model),
         },
         subagents: override_cfg.subagents.or(base.subagents),
+        runtime_api: override_cfg.runtime_api.or(base.runtime_api),
     }
 }
 

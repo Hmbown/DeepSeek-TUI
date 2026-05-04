@@ -114,13 +114,34 @@ there is no `[app_server]` config section.
 - `POST /v1/sessions/{id}/resume-thread`
 
 **Threads** (durable runtime data model)
-- `GET /v1/threads?limit=50&include_archived=false`
-- `GET /v1/threads/summary?limit=50&search=<optional>&include_archived=false`
+- `GET /v1/threads?limit=50&include_archived=false&archived_only=false`
+- `GET /v1/threads/summary?limit=50&search=<optional>&include_archived=false&archived_only=false`
 - `POST /v1/threads`
 - `GET /v1/threads/{id}`
-- `PATCH /v1/threads/{id}` (currently supports `{ "archived": true|false }`)
+- `PATCH /v1/threads/{id}` (see body shape below)
 - `POST /v1/threads/{id}/resume`
 - `POST /v1/threads/{id}/fork`
+
+`archived_only=true` returns archived threads only (mutually overrides
+`include_archived`). Default behavior is unchanged: `include_archived=false`
+and `archived_only=false` returns active threads. Added in v0.8.10 (#563).
+
+`PATCH /v1/threads/{id}` body — every field is optional, missing means
+"no change". At least one field must be present. `title` and `system_prompt`
+accept an empty string to clear a previously-set value. Added in v0.8.10 (#562):
+
+```json
+{
+  "archived": true,
+  "allow_shell": false,
+  "trust_mode": false,
+  "auto_approve": false,
+  "model": "deepseek-v4-pro",
+  "mode": "agent",
+  "title": "User-set thread title",
+  "system_prompt": "You are a useful assistant."
+}
+```
 
 **Turns** (within a thread)
 - `POST /v1/threads/{id}/turns`
@@ -156,6 +177,42 @@ there is no `[app_server]` config section.
 - `GET /v1/skills`
 - `GET /v1/apps/mcp/servers`
 - `GET /v1/apps/mcp/tools?server=<optional>`
+
+**Usage** (token/cost aggregation across threads)
+- `GET /v1/usage?since=<rfc3339>&until=<rfc3339>&group_by=<day|model|provider|thread>`
+
+`since` / `until` are inclusive RFC 3339 timestamps and may be omitted (no
+bound). `group_by` defaults to `day`. Buckets are sorted by ascending key.
+Empty time ranges produce empty `buckets` (never a 404). Cost is computed via
+the model→pricing map; turns whose model has no pricing entry contribute
+tokens but `0.0` cost. Added in v0.8.10 (#564).
+
+```json
+{
+  "since": "2026-04-01T00:00:00Z",
+  "until": "2026-04-30T23:59:59Z",
+  "group_by": "day",
+  "totals": {
+    "input_tokens": 12345,
+    "output_tokens": 6789,
+    "cached_tokens": 0,
+    "reasoning_tokens": 0,
+    "cost_usd": 0.012,
+    "turns": 42
+  },
+  "buckets": [
+    {
+      "key": "2026-04-30",
+      "input_tokens": 1234,
+      "output_tokens": 678,
+      "cached_tokens": 0,
+      "reasoning_tokens": 0,
+      "cost_usd": 0.001,
+      "turns": 3
+    }
+  ]
+}
+```
 
 ## Runtime data model
 
@@ -225,6 +282,25 @@ Common event names: `thread.started`, `thread.forked`, `turn.started`,
   control. There is no cloud component.
 - **Capability responses** never leak secrets, file contents, or session
   message bodies. They report *metadata*: presence, counts, status flags.
+
+### CORS allow-list
+
+The runtime API ships with a built-in dev-origin allow-list:
+`http://localhost:3000`, `http://127.0.0.1:3000`, `http://localhost:1420`,
+`http://127.0.0.1:1420`, `tauri://localhost`. To add additional origins (e.g.
+when developing a UI on Vite's default `:5173`), use any of:
+
+- CLI flag (repeatable): `deepseek serve --http --cors-origin http://localhost:5173`
+- Env var (comma-separated): `DEEPSEEK_CORS_ORIGINS="http://localhost:5173,http://localhost:8080"`
+- Config (`~/.deepseek/config.toml`):
+  ```toml
+  [runtime_api]
+  cors_origins = ["http://localhost:5173"]
+  ```
+
+User-supplied origins **stack on top of** the built-in defaults; they do not
+replace them. Wildcard origins are not supported — the explicit allow-list
+model is preserved. Added in v0.8.10 (#561).
 
 ## Session lifecycle (native UI supervision)
 
