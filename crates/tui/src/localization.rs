@@ -261,6 +261,7 @@ pub enum MessageId {
     CmdSwarmDescription,
     CmdSystemDescription,
     CmdTaskDescription,
+    CmdThinkDescription,
     CmdTokensDescription,
     CmdTrustDescription,
     CmdLspDescription,
@@ -448,6 +449,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CmdSwarmDescription,
     MessageId::CmdSystemDescription,
     MessageId::CmdTaskDescription,
+    MessageId::CmdThinkDescription,
     MessageId::CmdTokensDescription,
     MessageId::CmdTrustDescription,
     MessageId::CmdLspDescription,
@@ -782,6 +784,9 @@ fn english(id: MessageId) -> &'static str {
         }
         MessageId::CmdSystemDescription => "Show current system prompt",
         MessageId::CmdTaskDescription => "Manage background tasks",
+        MessageId::CmdThinkDescription => {
+            "Set reasoning effort: /think off | /think high | /think max"
+        }
         MessageId::CmdTokensDescription => "Show token usage for session",
         MessageId::CmdTrustDescription => {
             "Manage workspace trust and per-path allowlist (`/trust add <path>`, `/trust list`, `/trust on|off`)"
@@ -1062,6 +1067,9 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         }
         MessageId::CmdSystemDescription => "現在のシステムプロンプトを表示",
         MessageId::CmdTaskDescription => "バックグラウンドタスクを管理",
+        MessageId::CmdThinkDescription => {
+            "推論強度を設定: /think off | /think high | /think max"
+        }
         MessageId::CmdTokensDescription => "セッションのトークン使用量を表示",
         MessageId::CmdTrustDescription => {
             "ワークスペースの信頼設定とパス別許可リストを管理（`/trust add <path>`、`/trust list`、`/trust on|off`）"
@@ -1314,6 +1322,9 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         }
         MessageId::CmdSystemDescription => "显示当前系统提示词",
         MessageId::CmdTaskDescription => "管理后台任务",
+        MessageId::CmdThinkDescription => {
+            "设置推理强度: /think off | /think high | /think max"
+        }
         MessageId::CmdTokensDescription => "显示本次会话的 token 用量",
         MessageId::CmdTrustDescription => {
             "管理工作区信任与按路径的白名单（`/trust add <path>`、`/trust list`、`/trust on|off`）"
@@ -1582,6 +1593,9 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         }
         MessageId::CmdSystemDescription => "Exibir o prompt de sistema atual",
         MessageId::CmdTaskDescription => "Gerenciar tarefas em segundo plano",
+        MessageId::CmdThinkDescription => {
+            "Definir esforço de raciocínio: /think off | /think high | /think max"
+        }
         MessageId::CmdTokensDescription => "Exibir o uso de tokens da sessão",
         MessageId::CmdTrustDescription => {
             "Gerenciar a confiança do workspace e a allowlist por caminho (`/trust add <path>`, `/trust list`, `/trust on|off`)"
