@@ -510,7 +510,7 @@ fn render_table_row(cells: &[String], width: usize, base_style: Style) -> Vec<Li
     if cells.is_empty() {
         return vec![Line::from("")];
     }
-    let col_width = (width.saturating_sub(cells.len() + 1)) / cells.len();
+    let col_width = (width.saturating_sub(3 * cells.len() + 1)) / cells.len();
     let col_width = col_width.max(4);
     let sep_style = Style::default().fg(palette::TEXT_DIM);
     let mut spans: Vec<Span> = vec![Span::styled("│ ".to_string(), sep_style)];
