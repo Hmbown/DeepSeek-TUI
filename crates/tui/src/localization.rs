@@ -266,6 +266,7 @@ pub enum MessageId {
     CmdLspDescription,
     CmdShareDescription,
     CmdUndoDescription,
+    CmdVerifyDescription,
     CmdYoloDescription,
     CmdCacheAdvice,
     CmdCacheFootnote,
@@ -453,6 +454,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CmdLspDescription,
     MessageId::CmdShareDescription,
     MessageId::CmdUndoDescription,
+    MessageId::CmdVerifyDescription,
     MessageId::CmdYoloDescription,
     MessageId::CmdCacheAdvice,
     MessageId::CmdCacheFootnote,
@@ -787,6 +789,9 @@ fn english(id: MessageId) -> &'static str {
             "Manage workspace trust and per-path allowlist (`/trust add <path>`, `/trust list`, `/trust on|off`)"
         }
         MessageId::CmdUndoDescription => "Remove last message pair",
+        MessageId::CmdVerifyDescription => {
+            "Verify a claim about the codebase (spawns a sub-agent with full repo context)"
+        }
         MessageId::CmdYoloDescription => "Enable YOLO mode (shell + trust + auto-approve)",
         MessageId::CmdCacheAdvice => {
             "Hit/miss ratios over ~70% after the third turn indicate a stable cache prefix; \n\
@@ -1067,6 +1072,9 @@ fn japanese(id: MessageId) -> Option<&'static str> {
             "ワークスペースの信頼設定とパス別許可リストを管理（`/trust add <path>`、`/trust list`、`/trust on|off`）"
         }
         MessageId::CmdUndoDescription => "最後のメッセージ対を削除",
+        MessageId::CmdVerifyDescription => {
+            "コードベースに関する主張を検証（サブエージェントを起動し、完全なリポジトリコンテキストで調査）"
+        }
         MessageId::CmdYoloDescription => "YOLO モードを有効化（shell + 信頼 + 自動承認）",
         MessageId::CmdCacheAdvice => {
             "3 ターン目以降にヒット率が ~70% 以上で安定していれば、プレフィックスキャッシュは健全。\n\
@@ -1319,6 +1327,9 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
             "管理工作区信任与按路径的白名单（`/trust add <path>`、`/trust list`、`/trust on|off`）"
         }
         MessageId::CmdUndoDescription => "移除最后一组消息对",
+        MessageId::CmdVerifyDescription => {
+            "验证关于代码库的断言（生成子代理，携带完整仓库上下文进行调查）"
+        }
         MessageId::CmdYoloDescription => "启用 YOLO 模式（shell + 信任 + 自动批准）",
         MessageId::CmdCacheAdvice => {
             "第 3 轮起命中率稳定在 ~70% 以上即表示前缀缓存稳定；\n\
@@ -1587,6 +1598,9 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
             "Gerenciar a confiança do workspace e a allowlist por caminho (`/trust add <path>`, `/trust list`, `/trust on|off`)"
         }
         MessageId::CmdUndoDescription => "Remover o último par de mensagens",
+        MessageId::CmdVerifyDescription => {
+            "Verificar uma afirmação sobre o código (cria um sub-agente com contexto completo do repositório)"
+        }
         MessageId::CmdYoloDescription => {
             "Ativar o modo YOLO (shell + confiança + aprovação automática)"
         }

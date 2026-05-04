@@ -3271,6 +3271,13 @@ pub enum AppAction {
         model: String,
         mode: String,
     },
+    /// Verify a claim about the codebase by spawning a sub-agent with
+    /// full repo context. The claim is a specific statement (e.g.
+    /// "function X never returns null") that the sub-agent researches
+    /// and reports pass/fail with evidence.
+    Verify {
+        claim: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

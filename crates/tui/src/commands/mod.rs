@@ -444,6 +444,13 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "/cost",
         description_id: MessageId::CmdCostDescription,
     },
+    // Verify command (#530)
+    CommandInfo {
+        name: "verify",
+        aliases: &["v"],
+        usage: "/verify <claim>",
+        description_id: MessageId::CmdVerifyDescription,
+    },
     // Profile switching (#390)
     CommandInfo {
         name: "profile",
@@ -554,6 +561,9 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         // Profile switch (#390)
         "profile" => core::profile_switch(app, arg),
 
+        // Verify command (#530)
+        "verify" | "v" => verify(app, arg),
+
         // RLM command
         "rlm" | "recursive" => rlm(app, arg),
 
@@ -607,6 +617,34 @@ pub fn persist_root_string_key(key: &str, value: &str) -> anyhow::Result<std::pa
 /// Auto-select a model based on request complexity.
 pub fn auto_model_heuristic(input: &str, current_model: &str) -> String {
     config::auto_model_heuristic(input, current_model)
+}
+
+/// Execute a codebase verification turn.
+///
+/// Spawns a sub-agent with full repo context to verify a specific claim
+/// about the codebase (e.g. "function X never returns null"). The sub-agent
+/// researches the code and reports pass/fail with evidence.
+pub fn verify(_app: &mut App, arg: Option<&str>) -> CommandResult {
+    let claim = match arg {
+        Some(s) if !s.trim().is_empty() => s.trim().to_string(),
+        _ => {
+            return CommandResult::error(
+                "Usage: /verify <claim>\n\n\
+                 Verify a claim about the codebase by spawning a sub-agent \
+                 with full repository context.\n\n\
+                 Examples:\n\
+                   /verify function X never returns null\n\
+                   /verify the error type implements std::error::Error\n\
+                   /verify every public API has a doc comment"
+                    .to_string(),
+            );
+        }
+    };
+
+    CommandResult::with_message_and_action(
+        format!("Starting verification for: {}", claim),
+        AppAction::Verify { claim },
+    )
 }
 
 /// Execute a Recursive Language Model (RLM) turn — Algorithm 1 from
