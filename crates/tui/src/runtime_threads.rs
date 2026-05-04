@@ -1781,6 +1781,7 @@ impl RuntimeThreadManager {
             workspace: thread.workspace.clone(),
             allow_shell: thread.allow_shell,
             trust_mode: thread.trust_mode,
+            allow_external_writes: self.config.allow_external_writes(),
             notes_path: self.config.notes_path(),
             mcp_config_path: self.config.mcp_config_path(),
             skills_dir: self.config.skills_dir(),

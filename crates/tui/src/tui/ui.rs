@@ -508,6 +508,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         workspace: app.workspace.clone(),
         allow_shell: app.allow_shell,
         trust_mode: app.trust_mode,
+        allow_external_writes: app.allow_external_writes,
         notes_path: config.notes_path(),
         mcp_config_path: config.mcp_config_path(),
         skills_dir: app.skills_dir.clone(),
@@ -1162,9 +1163,26 @@ async fn run_event_loop(
                         description,
                         approval_key,
                     } => {
+                        // Pre-compute the broad session key so it's available
+                        // for both the approval check here and the decision
+                        // handler later (#412).
+                        let tool_input = app
+                            .pending_tool_uses
+                            .iter()
+                            .find(|(tool_id, _, _)| tool_id == &id)
+                            .map(|(_, _, input)| input.clone())
+                            .unwrap_or_else(|| serde_json::json!({}));
+                        let approval_key_broad = crate::tools::approval_cache::build_session_approval_key(
+                            &tool_name,
+                            &tool_input,
+                        );
+                        app.pending_approval_broad_keys
+                            .insert(id.clone(), approval_key_broad.0.clone());
+
                         let session_approved =
                             app.approval_session_approved.contains(&approval_key)
-                                || app.approval_session_approved.contains(&tool_name);
+                                || app.approval_session_approved.contains(&tool_name)
+                                || app.approval_session_approved.contains(&approval_key_broad.0);
                         let session_denied = app.approval_session_denied.contains(&approval_key)
                             || app.approval_session_denied.contains(&tool_name);
                         if session_denied {
@@ -1205,13 +1223,6 @@ async fn run_event_loop(
                             app.status_message =
                                 Some(format!("Blocked tool '{tool_name}' (approval_mode=never)"));
                         } else {
-                            let tool_input = app
-                                .pending_tool_uses
-                                .iter()
-                                .find(|(tool_id, _, _)| tool_id == &id)
-                                .map(|(_, _, input)| input.clone())
-                                .unwrap_or_else(|| serde_json::json!({}));
-
                             if tool_name == "apply_patch" {
                                 maybe_add_patch_preview(app, &tool_input);
                             }
@@ -4793,11 +4804,19 @@ async fn handle_view_events(
                 approval_key,
             } => {
                 if decision == ReviewDecision::ApprovedForSession {
-                    // Store both the tool name (backward compat) and the
-                    // approval key (fingerprint-based).
-                    app.approval_session_approved.insert(tool_name.clone());
+                    // Store the exact approval key and the broader
+                    // session‑level key so that "always allow" on a
+                    // read_file("src/main.rs") also covers read_file
+                    // operations in the same directory (#412).
                     app.approval_session_approved.insert(approval_key.clone());
+                    if let Some(broad_key) = app.pending_approval_broad_keys.remove(&tool_id) {
+                        app.approval_session_approved.insert(broad_key);
+                    }
                 }
+
+                // Clean up the pending broad key — it's no longer needed
+                // and we don't want unbounded map growth (#412).
+                app.pending_approval_broad_keys.remove(&tool_id);
 
                 match decision {
                     ReviewDecision::Approved | ReviewDecision::ApprovedForSession => {

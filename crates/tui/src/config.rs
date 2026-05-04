@@ -712,6 +712,12 @@ pub struct Config {
     /// missing optional file doesn't fail the launch.
     pub instructions: Option<Vec<String>>,
     pub allow_shell: Option<bool>,
+    /// When false (default), tools that try to write outside the workspace
+    /// directory get a `PermissionDenied` error with a message suggesting
+    /// the user set `allow_external_writes = true` or trust the path.
+    /// When true, external writes proceed with the existing workspace-trust
+    /// and `trust_mode` validation.
+    pub allow_external_writes: Option<bool>,
     pub approval_policy: Option<String>,
     pub sandbox_mode: Option<String>,
     pub managed_config_path: Option<String>,
@@ -1353,6 +1359,12 @@ impl Config {
         self.allow_shell.unwrap_or(true)
     }
 
+    /// Return whether external writes are allowed.
+    #[must_use]
+    pub fn allow_external_writes(&self) -> bool {
+        self.allow_external_writes.unwrap_or(false)
+    }
+
     /// Return the maximum number of concurrent sub-agents.
     /// Checks `[subagents] max_concurrent` first, then top-level `max_subagents`,
     /// then falls back to `DEFAULT_MAX_SUBAGENTS`.
@@ -1980,6 +1992,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         // both — they list `~/global.md` inside the project array.
         instructions: override_cfg.instructions.or(base.instructions),
         allow_shell: override_cfg.allow_shell.or(base.allow_shell),
+        allow_external_writes: override_cfg.allow_external_writes.or(base.allow_external_writes),
         approval_policy: override_cfg.approval_policy.or(base.approval_policy),
         sandbox_mode: override_cfg.sandbox_mode.or(base.sandbox_mode),
         managed_config_path: override_cfg
