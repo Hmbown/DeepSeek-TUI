@@ -309,6 +309,10 @@ pub struct Engine {
     /// Diagnostics collected during the current step's tool calls. Drained
     /// and forwarded as a synthetic user message before the next API call.
     pending_lsp_blocks: Vec<crate::lsp::DiagnosticBlock>,
+
+    /// Persistent workshop agent that summarises large tool outputs (>4 KB)
+    /// across turns, protecting the parent context (#547).
+    pub(super) workshop: crate::core::workshop::WorkshopAgent,
 }
 
 // === Internal tool helpers ===
@@ -442,6 +446,7 @@ impl Engine {
             turn_counter: 0,
             lsp_manager,
             pending_lsp_blocks: Vec::new(),
+            workshop: crate::core::workshop::WorkshopAgent::new(),
         };
         engine.rehydrate_latest_canonical_state();
 
