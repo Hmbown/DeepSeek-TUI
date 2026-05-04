@@ -778,6 +778,13 @@ pub struct Config {
     /// / tauri://localhost as the only allowed dev origins.
     #[serde(default)]
     pub runtime_api: Option<RuntimeApiConfig>,
+
+    /// Session receipt ingestion (#545). When `true`, the TUI extracts key
+    /// decisions and outcomes from the transcript at session end and stores
+    /// them as notes with a `session_receipt` tag in the notes file.
+    /// Default `false` (opt-in).
+    #[serde(default)]
+    pub ingest_session_receipts: Option<bool>,
 }
 
 /// `[runtime_api]` table — knobs for the local HTTP/SSE daemon.
@@ -1344,6 +1351,21 @@ impl Config {
         self.memory
             .as_ref()
             .and_then(|m| m.enabled)
+            .unwrap_or(false)
+    }
+
+    /// Whether session receipt ingestion is enabled (#545).
+    /// Opt-in: returns `false` unless the user sets `ingest_session_receipts = true`
+    /// in `config.toml` or `DEEPSEEK_INGEST_SESSION_RECEIPTS=on` in the environment.
+    #[must_use]
+    pub fn ingest_session_receipts(&self) -> bool {
+        self.ingest_session_receipts
+            .or_else(|| {
+                std::env::var("DEEPSEEK_INGEST_SESSION_RECEIPTS")
+                    .ok()
+                    .as_deref()
+                    .map(|v| v == "on" || v == "true" || v == "1")
+            })
             .unwrap_or(false)
     }
 
@@ -1975,6 +1997,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         mcp_config_path: override_cfg.mcp_config_path.or(base.mcp_config_path),
         notes_path: override_cfg.notes_path.or(base.notes_path),
         memory_path: override_cfg.memory_path.or(base.memory_path),
+        ingest_session_receipts: override_cfg.ingest_session_receipts.or(base.ingest_session_receipts),
         // #454: project's instructions array replaces user's array
         // wholesale. The typical "merge" pattern is for users who want
         // both — they list `~/global.md` inside the project array.

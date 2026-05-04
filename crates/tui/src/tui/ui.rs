@@ -427,6 +427,20 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         let _ = app.execute_hooks(HookEvent::SessionEnd, &context);
     }
 
+    // Session receipt ingestion (#545): write a structured receipt note to
+    // the notes file when the user has opted in.
+    if config.ingest_session_receipts() {
+        let session_id = app
+            .current_session_id
+            .as_deref()
+            .unwrap_or("unsaved");
+        let notes_path = config.notes_path();
+        let model = &app.model;
+        let messages = &app.api_messages;
+        let total_tokens = u64::from(app.session.total_conversation_tokens);
+        crate::receipt::write_session_receipt(&notes_path, session_id, model, messages, total_tokens);
+    }
+
     // Flush the persistence actor: clear checkpoint + graceful shutdown.
     persistence_actor::persist(PersistRequest::ClearCheckpoint);
     persistence_actor::persist(PersistRequest::Shutdown);
