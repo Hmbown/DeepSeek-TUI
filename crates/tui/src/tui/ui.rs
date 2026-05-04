@@ -489,7 +489,7 @@ fn is_memory_quick_add(input: &str) -> bool {
 fn handle_memory_quick_add(app: &mut App, input: &str, config: &Config) {
     let path = config.memory_path();
     match crate::memory::append_entry(&path, input) {
-        Ok(()) => {
+        Ok(_) => {
             app.status_message = Some(format!("memory: appended to {}", path.display()));
         }
         Err(err) => {
