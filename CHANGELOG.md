@@ -5,6 +5,81 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.11] - 2026-05-05
+
+A feature release: LSP tool, Exa search backend, `--full-auto`/`--ephemeral`/`--json`
+exec modes, pluggable sandbox backend with OpenSandbox adapter, VS Code extension
+scaffold, `/think` reasoning-level control, `/pin`/`/unpin` resident file context,
+`/watch` background file watcher, memory improvements, serve enhancements, and a
+__/non-interactive `-p` flag__. No breaking changes.
+
+### Added
+- **`/think off|high|max` dispatcher** (#543) — slash command to control
+  DeepSeek reasoning effort at runtime. `off` disables thinking blocks; `high`
+  and `max` set progressively deeper reasoning budgets. Persisted per-session.
+- **`/pin` / `/unpin` resident file context** (#528) — pin files into the
+  model's context window so they survive compaction and `/compact` without
+  re-loading. Unpin removes them. List pinned files with `/pin` alone.
+- **`/watch` background file watcher** (#531) — watch a file for changes and
+  automatically inject diffs into the conversation. Useful for monitoring logs
+  or live-updating a spec during development.
+- **Exa API backend for `web_search`** (#431) — alternative search provider
+  alongside DuckDuckGo and Bing. Configure via `[search] exa_api_key` or
+  `DEEPSEEK_EXA_API_KEY`. Returns richer metadata (published date, site
+  category, estimated recency) when available.
+- **Codex-CLI-compatible `--full-auto` / `--ephemeral` / `--json`** (#644) —
+  new CLI flags for CI/CD and tool integration. `--full-auto` enables
+  auto-approve mode from launch; `--ephemeral` skips session persistence;
+  `--json` outputs structured JSON for machine consumption.
+- **Pluggable `SandboxBackend` + OpenSandbox adapter** (#645) — sandbox
+  abstraction layer replacing hard-coded Docker-only execution. Ships with
+  a Docker backend and an OpenSandbox adapter. Implement `SandboxBackend`
+  trait to add custom sandbox runtimes without touching core dispatch.
+- **`-p` / `--prompt` non-interactive mode** (#643) — pass a prompt string
+  directly: `deepseek -p "summarize this PR"`. Exits after one response.
+  Pipe-compatible: `echo "hello" | deepseek -p -`.
+- **9-operation LSP tool** (#427) — model-callable `lsp` tool exposing
+  hover, go-to-definition, references, completion, signature help,
+  document symbols, workspace symbols, code action, and formatting. Wired
+  through a per-workspace LSP client pool. Works best with `rust-analyzer`,
+  `typescript-language-server`, and `pyright`.
+- **VS Code extension scaffold** (#461–#469) — new `extensions/vscode/`
+  directory with extension manifest, activation events, and webview panel
+  wiring. Not yet published; install from source via `code --install-extension`.
+- **Worktree-aware memory dedup, scope budget, session receipts**
+  (#495, #496, #545) — memory system improvements:
+  - Worktree-aware dedup prevents cross-worktree duplicate entries.
+  - Scope budget caps memory injection per turn so long memory files
+    don't consume the entire context window.
+  - Session receipts log memory usage per turn for audit and debugging.
+- **`/openapi.json` OpenAPI spec** (#459) — runtime API now serves a
+  machine-readable OpenAPI 3.0 spec at `GET /openapi.json` for automated
+  client generation.
+- **mDNS broadcasting for runtime API** (#458) — the HTTP server
+  announces itself via mDNS (`_deepseek._tcp` service type) so
+  network-local clients discover the runtime API without manual
+  address configuration.
+
+### Fixed
+- **Mirror user language in reasoning and reply** (#588) — the model now
+  responds and thinks in the user's detected language instead of defaulting
+  to English. If the user writes in Japanese, both the reasoning block and
+  the final answer are in Japanese; code and technical terms stay in their
+  native form.
+- **Write new API key to OS keyring on onboarding** (#593) — first-run
+  setup now persists the entered API key to the system keyring
+  (macOS Keychain, Linux Secret Service, Windows Credential Manager)
+  instead of leaving it only in-memory for the session.
+- **Use terminal-default background** (#586) — the TUI now reads the
+  terminal's default background colour instead of assuming black. Fixes
+  invisible text on light-background terminals that don't set `COLORFGBG`.
+- **Suppress raw BEL on Windows** (#583) — notification bell characters
+  (ASCII 7) were rendering as audible beeps or visible `^G` on Windows
+  console. Now filtered before display.
+- **Print confirmation with forked session name** (#576) — `deepseek fork`
+  now prints the new session's display name after creation so the user
+  can identify it without listing all sessions.
+
 ## [0.8.10] - 2026-05-04
 
 A patch release: hotfixes, small UX polish, and four whalescale-unblocking
