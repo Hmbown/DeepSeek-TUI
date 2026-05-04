@@ -5,13 +5,135 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.8.9] - Unreleased
+## [0.8.10] - 2026-05-04
+
+A patch release: hotfixes, small UX polish, and four whalescale-unblocking
+runtime API additions. No breaking changes.
+
+### Added
+- **OPENCODE shell.env hook** (#456) — lifecycle hooks can now inject
+  shell environment into spawned commands without hard-coding env in
+  prompts or wrapper scripts.
+- **Stacked toast overlay** (#439) — status toasts can queue and render
+  together instead of overwriting each other.
+- **File @-mention frecency** (#441) — file mention suggestions learn
+  from recent selections via `~/.deepseek/file-frecency.jsonl`.
+- **Durable keybinding catalog** (#559) — `docs/KEYBINDINGS.md` is now
+  the source-of-truth audit for current shortcuts and the future
+  configurable-keymap registry.
+- **Runtime API quartet for whalescale-desktop integration** (#561, #562, #563,
+  #564, #567) — addresses whalescale#255/256/260/261:
+  - `[runtime_api] cors_origins` config / `--cors-origin URL` flag (repeatable) /
+    `DEEPSEEK_CORS_ORIGINS` env var, all stacking on top of the built-in
+    dev-origin defaults (#561 / whalescale#255).
+  - `PATCH /v1/threads/{id}` extended from `archived`-only to the full
+    editable field set: `allow_shell`, `trust_mode`, `auto_approve`, `model`,
+    `mode`, `title`, `system_prompt`. Empty string clears `title` /
+    `system_prompt`. New `title` field on `ThreadRecord` is additive — no
+    schema_version bump (#562 / whalescale#256).
+  - `archived_only=true` query param on `GET /v1/threads` and
+    `/v1/threads/summary`, backed by a new `ThreadListFilter` enum
+    (#563 / whalescale#260).
+  - `GET /v1/usage?since=&until=&group_by=<day|model|provider|thread>`
+    aggregates token totals + cost (via `pricing.rs`) across all
+    threads/turns. Empty time ranges yield empty `buckets` (never 404)
+    (#564 / whalescale#261).
+- **Language picker in first-run onboarding** (#566) — new step between
+  Welcome and ApiKey lists every shipped locale (`auto` / `en` / `ja` /
+  `zh-Hans` / `pt-BR`) with the native name (日本語, 简体中文, …) plus an
+  English label so the target language is reachable without already
+  speaking it. Hotkeys 1-5 select; persists immediately to
+  `~/.deepseek/settings.toml`.
+- **Windows + China install documentation** (#578) — expanded
+  `docs/INSTALL.md` with Windows source-build setup, Visual Studio Build
+  Tools / MSVC environment notes, rustup and Cargo mirror guidance, and
+  antivirus troubleshooting. *Thanks to
+  [@loongmiaow-pixel](https://github.com/loongmiaow-pixel) for this PR.*
 
 ### Changed
-- **User memory docs + help polish** (#497) — `/memory` is now listed in
-  slash-command help, supports `/memory help`, and the README /
-  configuration docs now point at the full `docs/MEMORY.md` guide and
-  document both `[memory].enabled` and `DEEPSEEK_MEMORY`.
+- **Agent prompt now explicitly describes DeepSeek cache-aware behavior**
+  — long-session guidance explains why stable prompt prefixes, sub-agents,
+  RLM, and late compaction matter for V4 cache economics.
+- **Whale sub-agent nicknames now interleave Simplified Chinese with
+  English** (`Blue` / `蓝鲸` / `Humpback` / `座头鲸` / …). Pure cosmetic;
+  doubles the labeling pool size and gives a roughly even mix on each
+  new spawn.
+- **User memory docs + help polish** (#497, #569) — `/memory` is now
+  listed in slash-command help, supports `/memory help`, and the README
+  / configuration docs now point at the full `docs/MEMORY.md` guide and
+  document both `[memory].enabled` and `DEEPSEEK_MEMORY`. *Thanks to
+  [@20bytes](https://github.com/20bytes) for this PR.*
+
+### Fixed
+- **Compaction summaries are cache-aligned for DeepSeek V4** (#575, #580)
+  — when the summarized message prefix fits the large V4 context budget,
+  the summary request now reuses the original messages and appends the
+  summary instruction as a normal user message instead of rebuilding a
+  fresh `SUMMARY_PROMPT + dropped messages` input. This lets the summary
+  call benefit from DeepSeek prefix caching. *Thanks to
+  [@lloydzhou](https://github.com/lloydzhou) and
+  [@jeoor](https://github.com/jeoor) for the cost reports and concrete
+  strategy.*
+- **Windows Terminal API-key paste during onboarding** (#577) — the
+  setup wizard now handles Ctrl/Cmd+V before generic character input and
+  filters control/meta-modified keys out of the API-key text path.
+  *Thanks to [@toi500](https://github.com/toi500) for the report and
+  workaround details.*
+- **Terminal startup repaint** (#581) — the TUI clears the terminal
+  immediately after initialization so normal-screen startup no longer
+  leaves stale default-background rows above the first frame. *Thanks to
+  [@xsstomy](https://github.com/xsstomy) for the screenshot.*
+- **Markdown rendering for tables, bold/italic, and horizontal rules**
+  (#579) — transcript markdown now handles table rows, strips separator
+  rows, renders horizontal rules, applies inline bold/italic styles, and
+  avoids an infinite-loop edge case on unclosed markers. *Thanks to
+  [@WyxBUPT-22](https://github.com/WyxBUPT-22) for the PR, screenshots,
+  and tests.*
+- **Slash-prefix Enter activation** (#573) — typing a short prefix such
+  as `/mo` and pressing Enter now activates the first slash-command
+  match. *Thanks to [@melody0709](https://github.com/melody0709) for
+  the report.*
+- **macOS seatbelt blocked `~/.cargo/registry`** (#558) — `cargo publish`
+  / `cargo build` from inside the TUI's shell tool was getting
+  sandbox-denied. The seatbelt now allows read on `(param "CARGO_HOME")`
+  and write on the `registry/` and `git/` subpaths whenever the policy
+  isn't read-only. Honors `CARGO_HOME` env with a `$HOME/.cargo`
+  fallback.
+- **Stdio MCP servers now receive SIGTERM on shutdown** (#420) — instead
+  of SIGKILL via `kill_on_drop`. New `async fn shutdown` on
+  `McpTransport` overrides on `StdioTransport` to send SIGTERM and wait
+  up to 2s for graceful exit before drop fires SIGKILL as the backstop.
+  Wired into the engine's `Op::Shutdown` path so graceful exit is the
+  default. A Drop fallback still SIGTERMs on abnormal exit paths.
+- **Shell-spawned children get `PR_SET_PDEATHSIG(SIGTERM)` on Linux**
+  (#421) — the kernel sends SIGTERM the moment the parent (TUI) exits,
+  even on SIGKILL of the parent. Closes the leak window the cooperative
+  cancellation path can't cover. macOS / Windows watchdog tracked as a
+  follow-up; the existing `kill_on_drop` + process_group SIGKILL on
+  cancellation still cover normal shutdown there.
+- **npm install on older glibc now fails fast** (#555, #560, #556, #565)
+  — the prebuilt Linux x64 / arm64 binaries are now built via
+  `cargo zigbuild` targeting `x86_64-unknown-linux-gnu.2.28` /
+  `aarch64-unknown-linux-gnu.2.28`, lowering the requirement from glibc
+  ≥ 2.39 to ≥ 2.28. The npm postinstall also runs a Linux-only glibc
+  preflight that fails fast with a clear "build from source" message
+  when the host is incompatible (or musl). *Thanks to
+  [@staryxchen](https://github.com/staryxchen) (#556) and
+  [@Vishnu1837](https://github.com/Vishnu1837) (#565) for these PRs.*
+- **Shell tool `cwd` parameter now validated against the workspace
+  boundary** (#524) — the model could previously pass `cwd` paths
+  outside the workspace; now `exec_shell` runs `ToolContext::resolve_path`
+  on `cwd` like every other path-taking file tool, returning
+  `PathEscape` on violations. `trust_mode = true` still bypasses,
+  consistent with the file-tool pattern. *Thanks to
+  [@shentoumengxin](https://github.com/shentoumengxin) for this PR.*
+
+### Contributors
+
+First-time contributors to this release: **@staryxchen** (#556),
+**@shentoumengxin** (#524), **@Vishnu1837** (#565), **@20bytes**
+(#569), **@loongmiaow-pixel** (#578), and **@WyxBUPT-22** (#579).
+Welcome — and thank you.
 
 ## [0.8.8] - 2026-05-03
 
