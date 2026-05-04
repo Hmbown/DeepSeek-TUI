@@ -2468,7 +2468,20 @@ fn fork_session(session_id: Option<String>, last: bool) -> Result<String> {
         system_prompt.as_ref(),
     );
     manager.save_session(&forked)?;
+
+    let source_title = &saved.metadata.title;
+    let source_id_short = truncate_id(&saved.metadata.id);
+    let new_id_short = truncate_id(&forked.metadata.id);
+    println!(
+        "Forked session \"{source_title}\" ({source_id_short}) → new session {new_id_short}"
+    );
+
     Ok(forked.metadata.id)
+}
+
+fn truncate_id(id: &str) -> String {
+    let limit = id.len().min(8);
+    format!("{}", &id[..limit])
 }
 
 fn pick_session_id() -> Result<String> {
