@@ -57,7 +57,18 @@ fn resolve_method() -> Method {
 #[must_use]
 fn build_escape(method: Method, in_tmux: bool, msg: &str) -> Vec<u8> {
     match method {
-        Method::Bel => vec![b'\x07'],
+        Method::Bel => {
+            #[cfg(not(windows))]
+            {
+                vec![b'\x07']
+            }
+            #[cfg(windows)]
+            {
+                // On Windows, raw BEL triggers the system error chime rather
+                // than a desktop notification. Suppress it silently.
+                vec![]
+            }
+        }
         Method::Osc9 => {
             let inner = format!("\x1b]9;{msg}\x07");
             if in_tmux {
@@ -220,9 +231,14 @@ mod tests {
     }
 
     #[test]
-    fn bel_emits_exactly_one_byte() {
+    fn bel_emits_exactly_one_byte_or_none_on_windows() {
         let out = capture(Method::Bel, false, "ignored", 0, 1);
+        #[cfg(not(windows))]
         assert_eq!(out, b"\x07");
+        // On Windows, raw BEL is suppressed (empty vec) to avoid the system
+        // error chime — see the cfg-gate in `build_escape`.
+        #[cfg(windows)]
+        assert!(out.is_empty());
     }
 
     #[test]
