@@ -235,7 +235,7 @@ deepseek mcp-server                            # 启动 dispatcher MCP stdio 服
 | `NO_ANIMATIONS=1` | 启动时强制无障碍模式 |
 | `SSL_CERT_FILE` | 企业代理的自定义 CA 包 |
 
-UI 语言与模型输出语言相互独立——在 `settings.toml` 中设置 `locale`、使用 `/config locale zh-Hans`、或依赖 `LC_ALL`/`LANG`。详见 [docs/CONFIGURATION.md](docs/CONFIGURATION.md) 和 [docs/MCP.md](docs/MCP.md)。
+UI 语言与模型输出语言相互独立——在 `config.toml` 中设置 `locale`、使用 `/config locale zh-Hans`、或依赖 `LC_ALL`/`LANG`。详见 [docs/LOCALIZATION.md](docs/LOCALIZATION.md) 和 [docs/CONFIGURATION.md](docs/CONFIGURATION.md)。
 
 ### 切换为中文界面
 
@@ -246,7 +246,19 @@ UI 语言与模型输出语言相互独立——在 `settings.toml` 中设置 `l
 
 可选语言：`auto` | `en` | `ja` | `zh-Hans` | `pt-BR`。
 
-也可以在 `~/.deepseek/settings.toml` 里直接设置 `locale = "zh-Hans"`，或通过 `LC_ALL` / `LANG` 环境变量自动选择。
+也可以在 `~/.deepseek/config.toml` 里直接设置 `locale = "zh-Hans"`，或通过 `LC_ALL` / `LANG` 环境变量自动选择：
+
+```toml
+# ~/.deepseek/config.toml
+[tui]
+locale = "zh-Hans"
+```
+
+或者通过环境变量（中文系统通常已自动生效）：
+
+```bash
+LANG=zh_CN.UTF-8 deepseek run
+```
 
 ---
 
