@@ -250,15 +250,21 @@ pub fn system_prompt_for_mode_with_context(
 ///
 ///   1. mode prompt (compile-time constant)
 ///   2. project context / fallback (workspace-static)
-///   3. skills block (skills-dir-static)
-///   4. `## Context Management` (compile-time constant, Agent/Yolo only)
-///   5. compaction handoff template (compile-time constant)
-///   6. handoff block — file-backed; rewritten by `/compact` and on exit
-///   7. working-set summary — drifts when a new path is observed
+///   3. instructions block — file-backed; workspace-static
+///   4. user memory block — session-stable (edits via `/memory` or tool)
+///   5. session goal — stable for the session duration
+///   6. skills block (skills-dir-static)
+///   7. `## Context Management` (compile-time constant, Agent/Yolo only)
+///   8. compaction handoff template (compile-time constant)
+///   ── volatile-content boundary (#533) ──
+///   9. handoff block — file-backed; rewritten by `/compact` and on exit
+///  10. working-set summary — drifts when a new path is observed
 ///
-/// Anything appended after a volatile block forfeits the cache for the rest
-/// of the request. New blocks belong above the handoff/working-set boundary
-/// unless they themselves are turn-volatile.
+/// **Cache discipline (#533):** Any block above the volatile boundary MUST
+/// be byte-stable turn-over-turn. Never inject timestamps, turn counters,
+/// random IDs, or any other non-deterministic content into blocks above
+/// that boundary. New byte-stable blocks go above; new turn-volatile blocks
+/// go below.
 pub fn system_prompt_for_mode_with_context_and_skills(
     mode: AppMode,
     workspace: &Path,
@@ -374,6 +380,28 @@ pub fn system_prompt_for_mode_with_context_skills_and_session(
     full_prompt.push_str(COMPACT_TEMPLATE);
 
     // ── Volatile-content boundary ─────────────────────────────────────────
+    //
+    // ## Prompt-cache discipline (#533)
+    //
+    // DeepSeek's KV prefix cache charges ~100× less for cache-hit tokens
+    // than miss tokens. The cache is keyed on the **byte-stable prefix** of
+    // each request — any byte change from one turn to the next invalidates
+    // the cache for everything after the change.
+    //
+    // **Rule:** All blocks above this boundary are byte-stable across turns
+    // (compile-time constants, workspace-static files, session-stable
+    // blocks). Blocks below it are turn-volatile — their content drifts
+    // mid-session.
+    //
+    // **If you need to add a new block:**
+    //   - Is it byte-stable turn-over-turn? Place it ABOVE this boundary.
+    //   - Does it change mid-session (handoff, working-set, LLM-generated
+    //     summary, timestamps)? Place it BELOW this boundary.
+    //   - Never insert a volatile block above a static one — the volatile
+    //     bytes would drag the static suffix out of the cached prefix.
+    //   - Never inject timestamps, turn counters, random IDs, or any other
+    //     non-deterministic content into any block above this boundary.
+    //
     // Everything below drifts mid-session and busts the prefix cache for
     // bytes that follow. Keep new static blocks above this comment.
 
@@ -764,6 +792,66 @@ mod tests {
         );
         assert!(a.contains(HANDOFF_BLOCK_MARKER), "handoff must be embedded");
         assert!(a.contains("Finish #280."), "handoff body must be present");
+    }
+
+    #[test]
+    fn full_assembly_is_byte_stable_for_identical_inputs() {
+        // #533: the full `system_prompt_for_mode_with_context_skills_and_session`
+        // pipeline (mode prompt + project context + instructions + memory +
+        // goal + skills + context management + compact template + handoff +
+        // working-set) must produce identical bytes when called twice with
+        // identical inputs. Any non-determinism here (timestamps, UUIDs,
+        // turn counters, HashMap iteration order, etc.) busts DeepSeek's KV
+        // prefix cache for the ENTIRE system prompt.
+        let tmp = tempdir().expect("tempdir");
+        let workspace = tmp.path();
+        let handoff_dir = workspace.join(".deepseek");
+        std::fs::create_dir_all(&handoff_dir).unwrap();
+        // Fixed handoff and working-set content so the volatile tail is
+        // also identical across calls.
+        std::fs::write(
+            handoff_dir.join("handoff.md"),
+            "## Active task\nVerify #533.\n\n## Open blockers\nNone.",
+        )
+        .unwrap();
+
+        let summary = "## Repo Working Set\nWorkspace: /tmp/x\nActive paths:\n- src/main.rs (file)\n- Cargo.toml (file)";
+
+        // Simulate the full input surface the engine passes each turn.
+        let ctx = PromptSessionContext {
+            user_memory_block: Some("<user_memory source=\"memory.md\">\n- remember the milk\n</user_memory>"),
+            goal_objective: Some("Fix #533 prompt prefix audit"),
+        };
+
+        for mode in [AppMode::Agent, AppMode::Yolo, AppMode::Plan] {
+            let a = match system_prompt_for_mode_with_context_skills_and_session(
+                mode,
+                workspace,
+                Some(summary),
+                None,
+                None,
+                ctx,
+            ) {
+                SystemPrompt::Text(text) => text,
+                SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
+            };
+            let b = match system_prompt_for_mode_with_context_skills_and_session(
+                mode,
+                workspace,
+                Some(summary),
+                None,
+                None,
+                ctx,
+            ) {
+                SystemPrompt::Text(text) => text,
+                SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
+            };
+            assert_byte_identical(
+                &format!("full_assembly(mode={mode:?}) — identical inputs must produce identical bytes (#533)"),
+                &a,
+                &b,
+            );
+        }
     }
 
     #[test]
