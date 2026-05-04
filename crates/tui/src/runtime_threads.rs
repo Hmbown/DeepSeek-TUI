@@ -106,6 +106,13 @@ pub struct ThreadRecord {
     pub system_prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
+    /// User-set title for the thread. When `None`, consumers fall back to a
+    /// derived title (typically the latest turn's input summary). Added in
+    /// v0.8.10 (#562); old runtime records simply have no `title` and behave
+    /// as before. Schema version is not bumped because this field is purely
+    /// additive metadata — older readers ignore it without misinterpretation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     #[serde(default)]
     pub coherence_state: CoherenceState,
 }
@@ -502,6 +509,20 @@ impl RuntimeThreadManagerConfig {
     }
 }
 
+/// Visibility filter for `list_threads`. Default is `ActiveOnly`. The runtime
+/// API exposes this as the combination of `include_archived` and
+/// `archived_only` query params (see `runtime_api.rs`); whalescale#260 / #563.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ThreadListFilter {
+    /// Only `archived = false` threads. The original default.
+    #[default]
+    ActiveOnly,
+    /// Active and archived threads, sorted as the store returns them.
+    IncludeArchived,
+    /// Only `archived = true` threads.
+    ArchivedOnly,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateThreadRequest {
     pub model: Option<String>,
@@ -518,9 +539,21 @@ pub struct CreateThreadRequest {
     pub task_id: Option<String>,
 }
 
+/// Mutable fields accepted by `PATCH /v1/threads/{id}`.
+///
+/// Each field is optional — missing means "no change". Extended in v0.8.10
+/// (#562, whalescale#256) so the UI can flip persistent thread state without
+/// having to recreate a thread or pass per-turn overrides on every send.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct UpdateThreadRequest {
     pub archived: Option<bool>,
+    pub allow_shell: Option<bool>,
+    pub trust_mode: Option<bool>,
+    pub auto_approve: Option<bool>,
+    pub model: Option<String>,
+    pub mode: Option<String>,
+    pub title: Option<String>,
+    pub system_prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -552,6 +585,60 @@ pub struct ThreadDetail {
     pub turns: Vec<TurnRecord>,
     pub items: Vec<TurnItemRecord>,
     pub latest_seq: u64,
+}
+
+/// Aggregation key for `aggregate_usage`. Whalescale#261 / #564.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsageGroupBy {
+    Day,
+    Model,
+    Provider,
+    Thread,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct UsageTotals {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cached_tokens: u64,
+    pub reasoning_tokens: u64,
+    pub cost_usd: f64,
+    pub turns: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct UsageBucket {
+    pub key: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cached_tokens: u64,
+    pub reasoning_tokens: u64,
+    pub cost_usd: f64,
+    pub turns: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UsageAggregation {
+    pub since: Option<DateTime<Utc>>,
+    pub until: Option<DateTime<Utc>>,
+    pub group_by: String,
+    pub totals: UsageTotals,
+    pub buckets: Vec<UsageBucket>,
+}
+
+/// Best-effort provider classification from a model name. Used as a grouping
+/// key for `/v1/usage?group_by=provider`. Cost-tracking already runs the
+/// model→pricing→cost path; this only labels the bucket.
+fn provider_label_for_model(model: &str) -> &'static str {
+    if model.starts_with("deepseek-ai/") {
+        "nvidia-nim"
+    } else if model.starts_with("deepseek-") {
+        "deepseek"
+    } else if model.starts_with("openai/") || model.starts_with("anthropic/") {
+        "openrouter"
+    } else {
+        "unknown"
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -719,6 +806,7 @@ impl RuntimeThreadManager {
             archived: req.archived,
             system_prompt: req.system_prompt,
             task_id: req.task_id,
+            title: None,
             coherence_state: CoherenceState::default(),
         };
         self.store.save_thread(&thread)?;
@@ -735,17 +823,103 @@ impl RuntimeThreadManager {
 
     pub async fn list_threads(
         &self,
-        include_archived: bool,
+        filter: ThreadListFilter,
         limit: Option<usize>,
     ) -> Result<Vec<ThreadRecord>> {
         let mut threads = self.store.list_threads()?;
-        if !include_archived {
-            threads.retain(|t| !t.archived);
+        match filter {
+            ThreadListFilter::ActiveOnly => threads.retain(|t| !t.archived),
+            ThreadListFilter::ArchivedOnly => threads.retain(|t| t.archived),
+            ThreadListFilter::IncludeArchived => {}
         }
         if let Some(limit) = limit {
             threads.truncate(limit);
         }
         Ok(threads)
+    }
+
+    /// Aggregate token + cost usage across all threads/turns inside the time
+    /// range `[since, until]`. Each turn's cost is computed via
+    /// `pricing::calculate_turn_cost_from_usage` using the *thread*'s model
+    /// (turns inherit it). Whalescale#261 / #564.
+    ///
+    /// Buckets are sorted by ascending key for deterministic output. Empty
+    /// ranges produce empty `buckets` (never an error).
+    pub async fn aggregate_usage(
+        &self,
+        since: Option<DateTime<Utc>>,
+        until: Option<DateTime<Utc>>,
+        group_by: UsageGroupBy,
+    ) -> Result<UsageAggregation> {
+        use std::collections::BTreeMap;
+
+        let mut buckets: BTreeMap<String, UsageBucket> = BTreeMap::new();
+        let mut totals = UsageTotals::default();
+
+        for thread in self.store.list_threads()? {
+            let turns = self.store.list_turns_for_thread(&thread.id)?;
+            for turn in turns {
+                if let Some(s) = since
+                    && turn.created_at < s
+                {
+                    continue;
+                }
+                if let Some(u) = until
+                    && turn.created_at > u
+                {
+                    continue;
+                }
+                let Some(usage) = turn.usage.as_ref() else {
+                    continue;
+                };
+                let cached = usage.prompt_cache_hit_tokens.unwrap_or(0) as u64;
+                let reasoning = usage.reasoning_tokens.unwrap_or(0) as u64;
+                let input = usage.input_tokens as u64;
+                let output = usage.output_tokens as u64;
+                let cost = crate::pricing::calculate_turn_cost_from_usage(&thread.model, usage)
+                    .unwrap_or(0.0);
+
+                totals.input_tokens += input;
+                totals.output_tokens += output;
+                totals.cached_tokens += cached;
+                totals.reasoning_tokens += reasoning;
+                totals.cost_usd += cost;
+                totals.turns += 1;
+
+                let key = match group_by {
+                    UsageGroupBy::Day => turn.created_at.format("%Y-%m-%d").to_string(),
+                    UsageGroupBy::Model => thread.model.clone(),
+                    UsageGroupBy::Provider => provider_label_for_model(&thread.model).to_string(),
+                    UsageGroupBy::Thread => thread.id.clone(),
+                };
+                let bucket = buckets.entry(key.clone()).or_insert_with(|| UsageBucket {
+                    key,
+                    ..UsageBucket::default()
+                });
+                bucket.input_tokens += input;
+                bucket.output_tokens += output;
+                bucket.cached_tokens += cached;
+                bucket.reasoning_tokens += reasoning;
+                bucket.cost_usd += cost;
+                bucket.turns += 1;
+            }
+        }
+
+        let group_by_str = match group_by {
+            UsageGroupBy::Day => "day",
+            UsageGroupBy::Model => "model",
+            UsageGroupBy::Provider => "provider",
+            UsageGroupBy::Thread => "thread",
+        }
+        .to_string();
+
+        Ok(UsageAggregation {
+            since,
+            until,
+            group_by: group_by_str,
+            totals,
+            buckets: buckets.into_values().collect(),
+        })
     }
 
     pub async fn get_thread(&self, id: &str) -> Result<ThreadRecord> {
@@ -755,21 +929,93 @@ impl RuntimeThreadManager {
     }
 
     pub async fn update_thread(&self, id: &str, req: UpdateThreadRequest) -> Result<ThreadRecord> {
-        if req.archived.is_none() {
+        if req.archived.is_none()
+            && req.allow_shell.is_none()
+            && req.trust_mode.is_none()
+            && req.auto_approve.is_none()
+            && req.model.is_none()
+            && req.mode.is_none()
+            && req.title.is_none()
+            && req.system_prompt.is_none()
+        {
             bail!("At least one thread field is required");
         }
 
+        if let Some(model) = req.model.as_ref()
+            && model.trim().is_empty()
+        {
+            bail!("model must not be empty");
+        }
+        if let Some(mode) = req.mode.as_ref()
+            && mode.trim().is_empty()
+        {
+            bail!("mode must not be empty");
+        }
+
         let mut thread = self.get_thread(id).await?;
-        let mut changed = false;
+        let mut changes = serde_json::Map::new();
 
         if let Some(archived) = req.archived
             && thread.archived != archived
         {
             thread.archived = archived;
-            changed = true;
+            changes.insert("archived".to_string(), json!(archived));
+        }
+        if let Some(allow_shell) = req.allow_shell
+            && thread.allow_shell != allow_shell
+        {
+            thread.allow_shell = allow_shell;
+            changes.insert("allow_shell".to_string(), json!(allow_shell));
+        }
+        if let Some(trust_mode) = req.trust_mode
+            && thread.trust_mode != trust_mode
+        {
+            thread.trust_mode = trust_mode;
+            changes.insert("trust_mode".to_string(), json!(trust_mode));
+        }
+        if let Some(auto_approve) = req.auto_approve
+            && thread.auto_approve != auto_approve
+        {
+            thread.auto_approve = auto_approve;
+            changes.insert("auto_approve".to_string(), json!(auto_approve));
+        }
+        if let Some(model) = req.model
+            && thread.model != model
+        {
+            thread.model = model.clone();
+            changes.insert("model".to_string(), json!(model));
+        }
+        if let Some(mode) = req.mode
+            && thread.mode != mode
+        {
+            thread.mode = mode.clone();
+            changes.insert("mode".to_string(), json!(mode));
+        }
+        if let Some(title) = req.title {
+            // Empty string clears a previously-set title and reverts to derived.
+            let new_title = if title.trim().is_empty() {
+                None
+            } else {
+                Some(title)
+            };
+            if thread.title != new_title {
+                thread.title = new_title.clone();
+                changes.insert("title".to_string(), json!(new_title));
+            }
+        }
+        if let Some(system_prompt) = req.system_prompt {
+            let new_sys = if system_prompt.trim().is_empty() {
+                None
+            } else {
+                Some(system_prompt)
+            };
+            if thread.system_prompt != new_sys {
+                thread.system_prompt = new_sys.clone();
+                changes.insert("system_prompt".to_string(), json!(new_sys));
+            }
         }
 
-        if changed {
+        if !changes.is_empty() {
             thread.updated_at = Utc::now();
             self.store.save_thread(&thread)?;
             self.emit_event(
@@ -779,9 +1025,7 @@ impl RuntimeThreadManager {
                 "thread.updated",
                 json!({
                     "thread": thread.clone(),
-                    "changes": {
-                        "archived": thread.archived
-                    }
+                    "changes": Value::Object(changes),
                 }),
             )
             .await?;
@@ -2696,6 +2940,7 @@ mod tests {
             archived: false,
             system_prompt: None,
             task_id: None,
+            title: None,
             coherence_state: CoherenceState::default(),
         }
     }
@@ -3991,6 +4236,7 @@ mod tests {
             archived: false,
             system_prompt: None,
             task_id: None,
+            title: None,
             coherence_state: CoherenceState::default(),
         };
         manager.store.save_thread(&thread)?;

@@ -33,8 +33,8 @@ use crate::config::{Config, DEFAULT_TEXT_MODEL};
 use crate::mcp::{McpConfig, McpPool};
 use crate::runtime_threads::{
     CompactThreadRequest, CreateThreadRequest, RuntimeThreadManager, RuntimeThreadManagerConfig,
-    SharedRuntimeThreadManager, StartTurnRequest, SteerTurnRequest, ThreadDetail, ThreadRecord,
-    TurnItemKind, TurnRecord, UpdateThreadRequest,
+    SharedRuntimeThreadManager, StartTurnRequest, SteerTurnRequest, ThreadDetail, ThreadListFilter,
+    ThreadRecord, TurnItemKind, TurnRecord, UpdateThreadRequest, UsageGroupBy,
 };
 use crate::session_manager::{SavedSession, SessionManager, SessionMetadata, default_sessions_dir};
 use crate::skills::SkillRegistry;
@@ -48,6 +48,7 @@ pub struct RuntimeApiState {
     workspace: PathBuf,
     task_manager: SharedTaskManager,
     runtime_threads: SharedRuntimeThreadManager,
+    cors_origins: Vec<String>,
     sessions_dir: PathBuf,
     mcp_config_path: PathBuf,
     automations: SharedAutomationManager,
@@ -58,6 +59,23 @@ pub struct RuntimeApiOptions {
     pub host: String,
     pub port: u16,
     pub workers: usize,
+    /// Additional CORS origins to allow on top of the built-in defaults
+    /// (`http://localhost:{3000,1420}`, `http://127.0.0.1:{3000,1420}`,
+    /// `tauri://localhost`). Populated by `--cors-origin` (repeatable),
+    /// `DEEPSEEK_CORS_ORIGINS` (comma-separated), and `[runtime_api]
+    /// cors_origins` in `config.toml`. Whalescale#255 / #561.
+    pub cors_origins: Vec<String>,
+}
+
+impl Default for RuntimeApiOptions {
+    fn default() -> Self {
+        Self {
+            host: "127.0.0.1".to_string(),
+            port: 7878,
+            workers: 2,
+            cors_origins: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -125,6 +143,9 @@ struct TasksQuery {
 struct ThreadsQuery {
     limit: Option<usize>,
     include_archived: Option<bool>,
+    /// When `true`, returns archived threads only (overrides `include_archived`).
+    /// Whalescale#260 / #563.
+    archived_only: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -132,6 +153,22 @@ struct ThreadSummaryQuery {
     limit: Option<usize>,
     search: Option<String>,
     include_archived: Option<bool>,
+    /// When `true`, returns archived threads only (overrides `include_archived`).
+    /// Whalescale#260 / #563.
+    archived_only: Option<bool>,
+}
+
+fn resolve_thread_filter(
+    include_archived: Option<bool>,
+    archived_only: Option<bool>,
+) -> ThreadListFilter {
+    if archived_only.unwrap_or(false) {
+        ThreadListFilter::ArchivedOnly
+    } else if include_archived.unwrap_or(false) {
+        ThreadListFilter::IncludeArchived
+    } else {
+        ThreadListFilter::ActiveOnly
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -269,6 +306,7 @@ pub async fn run_http_server(
         workspace,
         task_manager,
         runtime_threads,
+        cors_origins: options.cors_origins.clone(),
         sessions_dir,
         mcp_config_path: config.mcp_config_path(),
         automations,
@@ -339,7 +377,8 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/v1/automations/{id}/pause", post(pause_automation))
         .route("/v1/automations/{id}/resume", post(resume_automation))
         .route("/v1/automations/{id}/runs", get(list_automation_runs))
-        .layer(cors_layer())
+        .route("/v1/usage", get(get_usage))
+        .layer(cors_layer(&state.cors_origins))
         .with_state(state)
 }
 
@@ -557,9 +596,10 @@ async fn list_threads(
     State(state): State<RuntimeApiState>,
     Query(query): Query<ThreadsQuery>,
 ) -> Result<Json<Vec<ThreadRecord>>, ApiError> {
+    let filter = resolve_thread_filter(query.include_archived, query.archived_only);
     let threads = state
         .runtime_threads
-        .list_threads(query.include_archived.unwrap_or(false), query.limit)
+        .list_threads(filter, query.limit)
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?;
     Ok(Json(threads))
@@ -571,9 +611,10 @@ async fn list_threads_summary(
 ) -> Result<Json<Vec<ThreadSummary>>, ApiError> {
     let limit = query.limit.unwrap_or(50).clamp(1, 500);
     let search = query.search.as_deref().map(str::to_ascii_lowercase);
+    let filter = resolve_thread_filter(query.include_archived, query.archived_only);
     let threads = state
         .runtime_threads
-        .list_threads(query.include_archived.unwrap_or(false), Some(limit))
+        .list_threads(filter, Some(limit))
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?;
 
@@ -588,15 +629,23 @@ async fn list_threads_summary(
         let latest_status =
             latest_turn.map(|turn| format!("{:?}", turn.status).to_ascii_lowercase());
 
-        let title = latest_turn
-            .map(|turn| {
-                if turn.input_summary.trim().is_empty() {
-                    "New Thread".to_string()
-                } else {
-                    truncate_text(&turn.input_summary, 72)
-                }
-            })
-            .unwrap_or_else(|| "New Thread".to_string());
+        let title = thread
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(|t| truncate_text(t, 72))
+            .unwrap_or_else(|| {
+                latest_turn
+                    .map(|turn| {
+                        if turn.input_summary.trim().is_empty() {
+                            "New Thread".to_string()
+                        } else {
+                            truncate_text(&turn.input_summary, 72)
+                        }
+                    })
+                    .unwrap_or_else(|| "New Thread".to_string())
+            });
 
         let preview = detail
             .items
@@ -1366,15 +1415,88 @@ fn load_mcp_config_or_default(path: &std::path::Path) -> Result<McpConfig, ApiEr
     })
 }
 
-fn cors_layer() -> CorsLayer {
+#[derive(Debug, Deserialize)]
+struct UsageQuery {
+    /// ISO-8601 lower bound (inclusive). When omitted, no lower bound.
+    since: Option<String>,
+    /// ISO-8601 upper bound (inclusive). When omitted, no upper bound.
+    until: Option<String>,
+    /// Bucket key. One of `day` (default), `model`, `provider`, `thread`.
+    group_by: Option<String>,
+}
+
+fn parse_iso8601(raw: &str, field: &str) -> Result<chrono::DateTime<Utc>, ApiError> {
+    chrono::DateTime::parse_from_rfc3339(raw)
+        .map(|dt| dt.with_timezone(&Utc))
+        .map_err(|e| ApiError::bad_request(format!("Invalid {field} (expected RFC 3339): {e}")))
+}
+
+async fn get_usage(
+    State(state): State<RuntimeApiState>,
+    Query(query): Query<UsageQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let since = match query.since.as_deref() {
+        Some(raw) => Some(parse_iso8601(raw, "since")?),
+        None => None,
+    };
+    let until = match query.until.as_deref() {
+        Some(raw) => Some(parse_iso8601(raw, "until")?),
+        None => None,
+    };
+    if let (Some(s), Some(u)) = (since, until)
+        && s > u
+    {
+        return Err(ApiError::bad_request("since must be <= until".to_string()));
+    }
+    let group_by = match query.group_by.as_deref().unwrap_or("day") {
+        "day" => UsageGroupBy::Day,
+        "model" => UsageGroupBy::Model,
+        "provider" => UsageGroupBy::Provider,
+        "thread" => UsageGroupBy::Thread,
+        other => {
+            return Err(ApiError::bad_request(format!(
+                "Unsupported group_by '{other}': expected one of day, model, provider, thread"
+            )));
+        }
+    };
+
+    let aggregation = state
+        .runtime_threads
+        .aggregate_usage(since, until, group_by)
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    Ok(Json(json!(aggregation)))
+}
+
+/// Built-in dev origins always allowed by the runtime API (whalescale#255).
+const DEFAULT_CORS_ORIGINS: &[&str] = &[
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:1420",
+    "http://127.0.0.1:1420",
+    "tauri://localhost",
+];
+
+fn cors_layer(extra_origins: &[String]) -> CorsLayer {
+    let mut origins: Vec<HeaderValue> = DEFAULT_CORS_ORIGINS
+        .iter()
+        .filter_map(|o| HeaderValue::from_str(o).ok())
+        .collect();
+    for raw in extra_origins {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        match HeaderValue::from_str(trimmed) {
+            Ok(value) if !origins.contains(&value) => origins.push(value),
+            Ok(_) => {}
+            Err(err) => tracing::warn!(
+                "Ignoring invalid CORS origin '{trimmed}': {err}; expected scheme://host[:port]"
+            ),
+        }
+    }
     CorsLayer::new()
-        .allow_origin([
-            HeaderValue::from_static("http://localhost:3000"),
-            HeaderValue::from_static("http://127.0.0.1:3000"),
-            HeaderValue::from_static("http://localhost:1420"),
-            HeaderValue::from_static("http://127.0.0.1:1420"),
-            HeaderValue::from_static("tauri://localhost"),
-        ])
+        .allow_origin(origins)
         .allow_methods([
             Method::GET,
             Method::POST,
@@ -1569,6 +1691,7 @@ mod tests {
             workspace: PathBuf::from("."),
             task_manager: manager,
             runtime_threads: runtime_threads.clone(),
+            cors_origins: Vec::new(),
             sessions_dir,
             mcp_config_path: root.join("mcp.json"),
             automations,
@@ -2723,6 +2846,352 @@ mod tests {
             .send()
             .await?;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        handle.abort();
+        Ok(())
+    }
+
+    /// #561 / whalescale#255 — extra CORS origins from `RuntimeApiOptions`
+    /// are added on top of the built-in defaults and propagate through to the
+    /// `Access-Control-Allow-Origin` response header for preflight requests.
+    /// Built-in defaults must keep working unchanged.
+    #[tokio::test]
+    async fn cors_layer_appends_extra_origins_and_keeps_defaults() -> Result<()> {
+        // The cors_layer fn is the layer factory — exercise it through a
+        // Router with a single trivial route so we can issue OPTIONS preflights
+        // and observe the response headers.
+        let extra = vec!["http://localhost:5173".to_string()];
+        let layer = cors_layer(&extra);
+        let router: Router = Router::new()
+            .route("/probe", get(|| async { "ok" }))
+            .layer(layer);
+
+        let listener = match TcpListener::bind("127.0.0.1:0").await {
+            Ok(listener) => listener,
+            Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => return Ok(()),
+            Err(err) => return Err(err.into()),
+        };
+        let addr = listener.local_addr()?;
+        let handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+
+        let client = reqwest::Client::new();
+
+        // The user-supplied origin is allowed.
+        let resp = client
+            .request(reqwest::Method::OPTIONS, format!("http://{addr}/probe"))
+            .header("Origin", "http://localhost:5173")
+            .header("Access-Control-Request-Method", "GET")
+            .send()
+            .await?;
+        assert_eq!(
+            resp.headers()
+                .get("access-control-allow-origin")
+                .and_then(|v| v.to_str().ok()),
+            Some("http://localhost:5173")
+        );
+
+        // A built-in default origin still works.
+        let resp = client
+            .request(reqwest::Method::OPTIONS, format!("http://{addr}/probe"))
+            .header("Origin", "http://localhost:1420")
+            .header("Access-Control-Request-Method", "GET")
+            .send()
+            .await?;
+        assert_eq!(
+            resp.headers()
+                .get("access-control-allow-origin")
+                .and_then(|v| v.to_str().ok()),
+            Some("http://localhost:1420")
+        );
+
+        // An origin that's neither configured nor a default is rejected
+        // (CorsLayer omits the Allow-Origin header on mismatch).
+        let resp = client
+            .request(reqwest::Method::OPTIONS, format!("http://{addr}/probe"))
+            .header("Origin", "http://malicious.example")
+            .header("Access-Control-Request-Method", "GET")
+            .send()
+            .await?;
+        assert!(
+            resp.headers().get("access-control-allow-origin").is_none(),
+            "non-allowed origin must not be echoed back"
+        );
+
+        handle.abort();
+        Ok(())
+    }
+
+    /// #561 — invalid origins (non-ASCII, etc.) are skipped without aborting
+    /// the layer build.
+    #[test]
+    fn cors_layer_skips_invalid_origins() {
+        let extras = vec![
+            "http://valid.example".to_string(),
+            // Embedded NUL char makes `HeaderValue::from_str` fail.
+            "http://invalid.example\0".to_string(),
+            "  ".to_string(), // whitespace-only is dropped
+        ];
+        // Should not panic.
+        let _ = cors_layer(&extras);
+    }
+
+    /// #562 / whalescale#256 — `PATCH /v1/threads/{id}` accepts the new
+    /// fields (allow_shell, trust_mode, auto_approve, model, mode, title,
+    /// system_prompt). Each is independently optional; an empty string clears
+    /// `title` / `system_prompt` back to None.
+    #[tokio::test]
+    async fn patch_thread_accepts_extended_field_set() -> Result<()> {
+        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+            return Ok(());
+        };
+        let client = reqwest::Client::new();
+
+        let created: serde_json::Value = client
+            .post(format!("http://{addr}/v1/threads"))
+            .json(&json!({
+                "model": "deepseek-v4-flash",
+                "mode": "agent"
+            }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        let thread_id = created["id"]
+            .as_str()
+            .context("missing thread id")?
+            .to_string();
+
+        // Patch every new field at once.
+        let patched: serde_json::Value = client
+            .patch(format!("http://{addr}/v1/threads/{thread_id}"))
+            .json(&json!({
+                "allow_shell": true,
+                "trust_mode": true,
+                "auto_approve": true,
+                "model": "deepseek-v4-pro",
+                "mode": "yolo",
+                "title": "Whalescale UI test thread",
+                "system_prompt": "You are a useful assistant."
+            }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+
+        assert_eq!(patched["allow_shell"], true);
+        assert_eq!(patched["trust_mode"], true);
+        assert_eq!(patched["auto_approve"], true);
+        assert_eq!(patched["model"], "deepseek-v4-pro");
+        assert_eq!(patched["mode"], "yolo");
+        assert_eq!(patched["title"], "Whalescale UI test thread");
+        assert_eq!(patched["system_prompt"], "You are a useful assistant.");
+
+        // Empty string clears title back to None.
+        let cleared: serde_json::Value = client
+            .patch(format!("http://{addr}/v1/threads/{thread_id}"))
+            .json(&json!({ "title": "" }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert!(
+            cleared["title"].is_null() || !cleared.as_object().unwrap().contains_key("title"),
+            "empty title must serialize as None: {cleared:?}"
+        );
+
+        // Empty patch (no fields) is still rejected.
+        let empty = client
+            .patch(format!("http://{addr}/v1/threads/{thread_id}"))
+            .json(&json!({}))
+            .send()
+            .await?;
+        assert_eq!(empty.status(), StatusCode::BAD_REQUEST);
+
+        // Empty model is rejected (validation).
+        let bad_model = client
+            .patch(format!("http://{addr}/v1/threads/{thread_id}"))
+            .json(&json!({ "model": "  " }))
+            .send()
+            .await?;
+        assert_eq!(bad_model.status(), StatusCode::BAD_REQUEST);
+
+        handle.abort();
+        Ok(())
+    }
+
+    /// #563 / whalescale#260 — `archived_only=true` returns archived-only
+    /// (no active threads), distinct from `include_archived=true` which
+    /// returns both.
+    #[tokio::test]
+    async fn list_threads_archived_only_filter_matches_only_archived() -> Result<()> {
+        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+            return Ok(());
+        };
+        let client = reqwest::Client::new();
+
+        // Two threads — keep one active, archive the other.
+        let active: serde_json::Value = client
+            .post(format!("http://{addr}/v1/threads"))
+            .json(&json!({}))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        let active_id = active["id"].as_str().unwrap().to_string();
+
+        let archived: serde_json::Value = client
+            .post(format!("http://{addr}/v1/threads"))
+            .json(&json!({}))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        let archived_id = archived["id"].as_str().unwrap().to_string();
+
+        client
+            .patch(format!("http://{addr}/v1/threads/{archived_id}"))
+            .json(&json!({ "archived": true }))
+            .send()
+            .await?
+            .error_for_status()?;
+
+        // Default (active only) → only the unarchived one.
+        let active_list: serde_json::Value = client
+            .get(format!("http://{addr}/v1/threads"))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        let ids: Vec<&str> = active_list
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["id"].as_str())
+            .collect();
+        assert!(ids.contains(&active_id.as_str()));
+        assert!(!ids.contains(&archived_id.as_str()));
+
+        // archived_only=true → only the archived one.
+        let archived_list: serde_json::Value = client
+            .get(format!("http://{addr}/v1/threads?archived_only=true"))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        let ids: Vec<&str> = archived_list
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["id"].as_str())
+            .collect();
+        assert_eq!(ids, vec![archived_id.as_str()]);
+
+        // archived_only=true takes precedence over include_archived=true.
+        let archived_list: serde_json::Value = client
+            .get(format!(
+                "http://{addr}/v1/threads?include_archived=true&archived_only=true"
+            ))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        let ids: Vec<&str> = archived_list
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["id"].as_str())
+            .collect();
+        assert_eq!(ids, vec![archived_id.as_str()]);
+
+        // Same filter works on the summary endpoint.
+        let summary: serde_json::Value = client
+            .get(format!(
+                "http://{addr}/v1/threads/summary?archived_only=true&limit=10"
+            ))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        let summary_ids: Vec<&str> = summary
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["id"].as_str())
+            .collect();
+        assert_eq!(summary_ids, vec![archived_id.as_str()]);
+
+        handle.abort();
+        Ok(())
+    }
+
+    /// #564 / whalescale#261 — `GET /v1/usage` aggregates per-turn token +
+    /// cost data. With no threads the response is well-formed and totals are
+    /// zero with empty buckets (never a 404).
+    #[tokio::test]
+    async fn usage_endpoint_returns_empty_aggregation_for_fresh_store() -> Result<()> {
+        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+            return Ok(());
+        };
+        let client = reqwest::Client::new();
+
+        let body: serde_json::Value = client
+            .get(format!("http://{addr}/v1/usage"))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert_eq!(body["group_by"], "day");
+        assert_eq!(body["totals"]["input_tokens"], 0);
+        assert_eq!(body["totals"]["output_tokens"], 0);
+        assert_eq!(body["totals"]["turns"], 0);
+        assert!(
+            body["buckets"].as_array().unwrap().is_empty(),
+            "buckets must be empty when no turns exist: {body}"
+        );
+
+        // group_by query options are validated.
+        let bad_group = client
+            .get(format!("http://{addr}/v1/usage?group_by=galaxy"))
+            .send()
+            .await?;
+        assert_eq!(bad_group.status(), StatusCode::BAD_REQUEST);
+
+        // Each accepted group_by value succeeds.
+        for gb in ["day", "model", "provider", "thread"] {
+            let resp = client
+                .get(format!("http://{addr}/v1/usage?group_by={gb}"))
+                .send()
+                .await?;
+            assert!(resp.status().is_success(), "group_by={gb} failed: {resp:?}");
+        }
+
+        // Bad ISO-8601 timestamp rejected.
+        let bad_since = client
+            .get(format!("http://{addr}/v1/usage?since=not-a-date"))
+            .send()
+            .await?;
+        assert_eq!(bad_since.status(), StatusCode::BAD_REQUEST);
+
+        // since > until rejected.
+        let inverted = client
+            .get(format!(
+                "http://{addr}/v1/usage?since=2030-01-02T00:00:00Z&until=2030-01-01T00:00:00Z"
+            ))
+            .send()
+            .await?;
+        assert_eq!(inverted.status(), StatusCode::BAD_REQUEST);
+
         handle.abort();
         Ok(())
     }

@@ -398,6 +398,12 @@ struct ServeArgs {
     /// Background task worker count (1-8)
     #[arg(long, default_value_t = 2)]
     workers: usize,
+    /// Additional CORS origin to allow (repeatable). Stacks on top of the
+    /// built-in defaults (localhost:3000, localhost:1420, tauri://localhost).
+    /// Also reads `DEEPSEEK_CORS_ORIGINS` (comma-separated) and
+    /// `[runtime_api] cors_origins` from `config.toml`. Whalescale#255.
+    #[arg(long = "cors-origin", value_name = "URL")]
+    cors_origin: Vec<String>,
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -692,6 +698,7 @@ async fn main() -> Result<()> {
                     mcp_server::run_mcp_server(workspace)
                 } else if args.http {
                     let config = load_config_from_cli(&cli)?;
+                    let cors_origins = resolve_cors_origins(&config, &args.cors_origin);
                     runtime_api::run_http_server(
                         config,
                         workspace,
@@ -699,6 +706,7 @@ async fn main() -> Result<()> {
                             host: args.host,
                             port: args.port,
                             workers: args.workers.clamp(1, 8),
+                            cors_origins,
                         },
                     )
                     .await
@@ -999,6 +1007,46 @@ fn init_plugins_dir(
     let example_status = write_template_file(&example_path, plugin_example_template(), force)?;
 
     Ok((readme_path, example_path, readme_status, example_status))
+}
+
+/// Resolve the user-supplied CORS origins for `deepseek serve --http`.
+///
+/// Sources, in priority order (later sources extend earlier ones):
+/// 1. `--cors-origin URL` flags (repeatable)
+/// 2. `DEEPSEEK_CORS_ORIGINS` env var (comma-separated)
+/// 3. `[runtime_api] cors_origins = [...]` in `config.toml`
+///
+/// The runtime API always allows the built-in dev defaults
+/// (localhost:3000, localhost:1420, tauri://localhost). User entries are
+/// appended on top — empty strings are skipped, and duplicates are deduped
+/// while preserving first-seen order. Whalescale#255 / #561.
+fn resolve_cors_origins(config: &Config, flag_origins: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |raw: &str| {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        if !out.iter().any(|existing| existing == trimmed) {
+            out.push(trimmed.to_string());
+        }
+    };
+    for o in flag_origins {
+        push(o);
+    }
+    if let Ok(env_value) = std::env::var("DEEPSEEK_CORS_ORIGINS") {
+        for piece in env_value.split(',') {
+            push(piece);
+        }
+    }
+    if let Some(rt) = &config.runtime_api
+        && let Some(list) = &rt.cors_origins
+    {
+        for o in list {
+            push(o);
+        }
+    }
+    out
 }
 
 fn deepseek_home_dir() -> PathBuf {

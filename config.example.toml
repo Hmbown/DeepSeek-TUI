@@ -361,6 +361,27 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 # command = "echo 'DeepSeek TUI session started'"
 
 # ─────────────────────────────────────────────────────────────────────────────────
+# Runtime API (`deepseek serve --http`) (#561)
+# ─────────────────────────────────────────────────────────────────────────────────
+# Tuning knobs for the local HTTP/SSE daemon. The server binds to 127.0.0.1
+# by default and is intended for local UIs (whalescale-desktop, dashboards,
+# automation scripts). Today this section only controls the CORS allow-list;
+# host/port/workers stay on `--host`, `--port`, and `--workers` flags.
+#
+# Built-in defaults always include:
+#   http://localhost:3000   http://127.0.0.1:3000
+#   http://localhost:1420   http://127.0.0.1:1420
+#   tauri://localhost
+#
+# Use `cors_origins` to add extra dev origins (e.g. Vite's default `:5173`).
+# User entries STACK on top of the defaults — they do not replace them. The
+# CLI flag `--cors-origin URL` (repeatable) and env var
+# `DEEPSEEK_CORS_ORIGINS=url1,url2` resolve to the same merged list.
+#
+# [runtime_api]
+# cors_origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
+
+# ─────────────────────────────────────────────────────────────────────────────────
 # Requirements (admin constraints) example file
 # ─────────────────────────────────────────────────────────────────────────────────
 # allowed_approval_policies = ["on-request", "untrusted", "never"]
