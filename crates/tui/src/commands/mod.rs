@@ -25,6 +25,7 @@ mod skills;
 mod stash;
 mod task;
 mod user_commands;
+pub mod watch;
 
 use crate::localization::{Locale, MessageId, tr};
 use crate::tui::app::{App, AppAction};
@@ -458,6 +459,13 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "/cache [count]",
         description_id: MessageId::CmdCacheDescription,
     },
+    // File watcher (#531)
+    CommandInfo {
+        name: "watch",
+        aliases: &[],
+        usage: "/watch <path>",
+        description_id: MessageId::CmdWatchDescription,
+    },
 ];
 
 /// Execute a slash command
@@ -550,6 +558,9 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "skill" => skills::run_skill(app, arg),
         "review" => review::review(app, arg),
         "restore" => restore::restore(app, arg),
+
+        // File watcher (#531)
+        "watch" => watch::watch_command(app, arg),
 
         // Profile switch (#390)
         "profile" => core::profile_switch(app, arg),

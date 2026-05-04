@@ -47,6 +47,7 @@ pub mod transcript_cache;
 pub mod ui;
 mod ui_text;
 pub mod user_input;
+pub mod watch;
 pub mod views;
 pub mod widgets;
 

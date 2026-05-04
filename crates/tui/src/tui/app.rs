@@ -835,6 +835,17 @@ pub struct App {
     /// Whether LSP diagnostics are currently enabled. Mirrors the config file
     /// `[lsp].enabled` setting. Toggled at runtime via `/lsp on|off`.
     pub lsp_enabled: bool,
+
+    // === File Watcher (#531) ===
+
+    /// Active background file-watcher instance. `None` when no watcher is running.
+    pub watch_instance: Option<crate::tui::watch::WatchInstance>,
+    /// Path being watched (for display/stop).
+    pub watch_path: Option<PathBuf>,
+    /// When the current watcher was started.
+    pub watch_started_at: Option<Instant>,
+    /// Cached file snapshots for diff display keyed by path.
+    pub watch_snapshots: HashMap<PathBuf, Option<String>>,
 }
 
 /// Message queued while the engine is busy.
@@ -1238,6 +1249,12 @@ impl App {
             collapsed_cell_map: Vec::new(),
             edit_in_progress: false,
             lsp_enabled: config.lsp.as_ref().and_then(|l| l.enabled).unwrap_or(true),
+
+            // File watcher (#531)
+            watch_instance: None,
+            watch_path: None,
+            watch_started_at: None,
+            watch_snapshots: HashMap::new(),
         }
     }
 
