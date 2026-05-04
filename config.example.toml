@@ -80,6 +80,12 @@ memory_path = "~/.deepseek/memory.md"
 # enabled = true            # turn the feature on (default: false)
 # Override the env-var equivalent: `DEEPSEEK_MEMORY=on`
 
+# learn_from_tool_failures = true  # #546: when true, the engine detects
+                                  # repeated tool failures within a turn
+                                  # (same tool fails 2+ times) and writes
+                                  # a learning-signal note to the memory
+                                  # file. Default: false (opt-in).
+
 # Parsed but currently unused (reserved for future versions):
 # tools_file = "./tools.json"
 

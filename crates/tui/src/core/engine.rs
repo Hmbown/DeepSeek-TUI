@@ -139,6 +139,10 @@ pub struct EngineConfig {
     /// Path to the user memory file (#489). Always populated; only
     /// consulted when `memory_enabled` is `true`.
     pub memory_path: PathBuf,
+    /// When `true`, the engine detects repeated tool failures within a turn
+    /// and writes a learning-signal note to the memory file. Default is `false`
+    /// (opt-in). Gated behind `[memory] learn_from_tool_failures` in config.
+    pub learn_from_tool_failures: bool,
     pub goal_objective: Option<String>,
 }
 
@@ -169,6 +173,7 @@ impl Default for EngineConfig {
             subagent_model_overrides: HashMap::new(),
             memory_enabled: false,
             memory_path: PathBuf::from("./memory.md"),
+            learn_from_tool_failures: false,
             goal_objective: None,
         }
     }
