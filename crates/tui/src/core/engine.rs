@@ -187,6 +187,8 @@ pub struct EngineHandle {
     tx_approval: mpsc::Sender<ApprovalDecision>,
     /// Send user input responses to the engine
     tx_user_input: mpsc::Sender<UserInputDecision>,
+    /// Send question answers to the engine
+    tx_question: mpsc::Sender<QuestionDecision>,
     /// Send steer input for an in-flight turn.
     tx_steer: mpsc::Sender<String>,
 }
@@ -262,6 +264,29 @@ impl EngineHandle {
         Ok(())
     }
 
+    /// Submit a response for the question tool.
+    pub async fn submit_question(
+        &self,
+        id: impl Into<String>,
+        answer: impl Into<String>,
+    ) -> Result<()> {
+        self.tx_question
+            .send(QuestionDecision::Answered {
+                id: id.into(),
+                answer: answer.into(),
+            })
+            .await?;
+        Ok(())
+    }
+
+    /// Cancel a question tool prompt.
+    pub async fn cancel_question(&self, id: impl Into<String>) -> Result<()> {
+        self.tx_question
+            .send(QuestionDecision::Cancelled { id: id.into() })
+            .await?;
+        Ok(())
+    }
+
     /// Cancel a request_user_input prompt.
     pub async fn cancel_user_input(&self, id: impl Into<String>) -> Result<()> {
         self.tx_user_input
@@ -290,6 +315,7 @@ pub struct Engine {
     mcp_pool: Option<Arc<AsyncMutex<McpPool>>>,
     rx_op: mpsc::Receiver<Op>,
     rx_approval: mpsc::Receiver<ApprovalDecision>,
+    rx_question: mpsc::Receiver<QuestionDecision>,
     rx_user_input: mpsc::Receiver<UserInputDecision>,
     rx_steer: mpsc::Receiver<String>,
     tx_event: mpsc::Sender<Event>,
@@ -333,6 +359,7 @@ impl Engine {
         let (tx_event, rx_event) = mpsc::channel(256);
         let (tx_approval, rx_approval) = mpsc::channel(64);
         let (tx_user_input, rx_user_input) = mpsc::channel(32);
+        let (tx_question, rx_question) = mpsc::channel(32);
         let (tx_steer, rx_steer) = mpsc::channel(64);
         let cancel_token = CancellationToken::new();
         let shared_cancel_token = Arc::new(StdMutex::new(cancel_token.clone()));
@@ -430,6 +457,7 @@ impl Engine {
             mcp_pool: None,
             rx_op,
             rx_approval,
+            rx_question,
             rx_user_input,
             rx_steer,
             tx_event,
@@ -451,6 +479,7 @@ impl Engine {
             cancel_token: shared_cancel_token,
             tx_approval,
             tx_user_input,
+            tx_question,
             tx_steer,
         };
 
@@ -1788,7 +1817,7 @@ mod tool_execution;
 mod tool_setup;
 mod turn_loop;
 
-use self::approval::{ApprovalDecision, ApprovalResult, UserInputDecision};
+use self::approval::{ApprovalDecision, ApprovalResult, QuestionDecision, UserInputDecision};
 use self::dispatch::{
     ParallelToolResult, ParallelToolResultEntry, ToolExecGuard, ToolExecOutcome, ToolExecutionPlan,
     caller_allowed_for_tool, caller_type_for_tool_use, final_tool_input, format_tool_error,
@@ -1807,7 +1836,7 @@ use self::streaming::{
     should_transparently_retry_stream,
 };
 use self::tool_catalog::{
-    CODE_EXECUTION_TOOL_NAME, MULTI_TOOL_PARALLEL_NAME, REQUEST_USER_INPUT_NAME,
+    CODE_EXECUTION_TOOL_NAME, MULTI_TOOL_PARALLEL_NAME, QUESTION_TOOL_NAME, REQUEST_USER_INPUT_NAME,
     active_tools_for_step, build_model_tool_catalog, ensure_advanced_tooling,
     execute_code_execution_tool, execute_tool_search, initial_active_tools, is_tool_search_tool,
     maybe_activate_requested_deferred_tool, missing_tool_error_message,

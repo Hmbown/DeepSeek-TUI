@@ -217,6 +217,12 @@ pub enum Event {
     /// Resume terminal input events after subprocess completion
     ResumeEvents,
 
+    /// Request user input for the question tool
+    QuestionRequired {
+        id: String,
+        question: String,
+    },
+
     /// Request user approval for a tool call
     ApprovalRequired {
         id: String,

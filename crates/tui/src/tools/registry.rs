@@ -457,6 +457,14 @@ impl ToolRegistryBuilder {
         self
     }
 
+    /// Include the `question` tool (#424) — the model asks the user
+    /// a clarifying question and waits for a freeform text response.
+    #[must_use]
+    pub fn with_question_tool(self) -> Self {
+        use super::question::QuestionTool;
+        self.with_tool(Arc::new(QuestionTool))
+    }
+
     /// Include request_user_input tool.
     #[must_use]
     pub fn with_user_input_tool(self) -> Self {

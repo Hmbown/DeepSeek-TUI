@@ -37,6 +37,61 @@ pub(super) enum UserInputDecision {
     },
 }
 
+#[derive(Debug, Clone)]
+pub(super) enum QuestionDecision {
+    Answered {
+        id: String,
+        answer: String,
+    },
+    Cancelled {
+        id: String,
+    },
+}
+
+impl Engine {
+    pub(super) async fn await_question(
+        &mut self,
+        tool_id: &str,
+        question: &str,
+    ) -> Result<String, ToolError> {
+        let _ = self
+            .tx_event
+            .send(Event::QuestionRequired {
+                id: tool_id.to_string(),
+                question: question.to_string(),
+            })
+            .await;
+
+        loop {
+            tokio::select! {
+                _ = self.cancel_token.cancelled() => {
+                    return Err(ToolError::execution_failed(
+                        "Request cancelled while awaiting question answer".to_string(),
+                    ));
+                }
+                decision = self.rx_question.recv() => {
+                    let Some(decision) = decision else {
+                        return Err(ToolError::execution_failed(
+                            "Question channel closed".to_string(),
+                        ));
+                    };
+                    match decision {
+                        QuestionDecision::Answered { id, answer } if id == tool_id => {
+                            return Ok(answer);
+                        }
+                        QuestionDecision::Cancelled { id } if id == tool_id => {
+                            return Err(ToolError::execution_failed(
+                                "Question cancelled by user".to_string(),
+                            ));
+                        }
+                        _ => continue,
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Result of awaiting tool approval from the user.
 #[derive(Debug)]
 pub(super) enum ApprovalResult {

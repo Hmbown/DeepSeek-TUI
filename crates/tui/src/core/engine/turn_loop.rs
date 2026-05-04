@@ -956,7 +956,8 @@ impl Engine {
                         .get("interactive")
                         .and_then(serde_json::Value::as_bool)
                         == Some(true))
-                    || tool_name == REQUEST_USER_INPUT_NAME;
+                    || tool_name == REQUEST_USER_INPUT_NAME
+                    || tool_name == QUESTION_TOOL_NAME;
 
                 let mut approval_required = false;
                 let mut approval_description = "Tool execution requires approval".to_string();
@@ -1251,6 +1252,48 @@ impl Engine {
                                         .map_err(|e| ToolError::execution_failed(e.to_string()))
                                 },
                             ),
+                            Err(err) => Err(err),
+                        };
+
+                        let _ = self
+                            .tx_event
+                            .send(Event::ToolCallComplete {
+                                id: tool_id.clone(),
+                                name: tool_name.clone(),
+                                result: result.clone(),
+                            })
+                            .await;
+
+                        outcomes[plan.index] = Some(ToolExecOutcome {
+                            index: plan.index,
+                            id: tool_id,
+                            name: tool_name,
+                            input: tool_input,
+                            started_at,
+                            result,
+                        });
+                        continue;
+                    }
+
+                    if tool_name == QUESTION_TOOL_NAME {
+                        let started_at = Instant::now();
+                        let result = match crate::tools::question::QuestionRequest::from_value(&tool_input) {
+                            Ok(request) => {
+                                // In auto-approve mode (YOLO, --auto), skip
+                                // the interactive prompt and return "proceed".
+                                if self.session.auto_approve || mode == AppMode::Yolo {
+                                    tracing::info!(
+                                        "question tool (auto mode): {}",
+                                        request.text
+                                    );
+                                    Ok(ToolResult::success("proceed"))
+                                } else {
+                                    match self.await_question(&tool_id, &request.text).await {
+                                        Ok(answer) => Ok(ToolResult::success(&answer)),
+                                        Err(e) => Err(e),
+                                    }
+                                }
+                            }
                             Err(err) => Err(err),
                         };
 

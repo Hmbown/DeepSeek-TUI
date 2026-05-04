@@ -17,6 +17,7 @@ pub mod status_picker;
 pub enum ModalKind {
     Approval,
     Elevation,
+    Question,
     UserInput,
     PlanPrompt,
     CommandPalette,
@@ -93,6 +94,13 @@ pub enum ViewEvent {
         tool_id: String,
         tool_name: String,
         option: ElevationOption,
+    },
+    QuestionAnswered {
+        tool_id: String,
+        answer: String,
+    },
+    QuestionCancelled {
+        tool_id: String,
     },
     UserInputSubmitted {
         tool_id: String,

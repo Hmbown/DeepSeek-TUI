@@ -15,6 +15,7 @@ pub mod git_history;
 pub mod github;
 pub mod parallel;
 pub mod plan;
+pub mod question;
 pub mod project;
 pub mod recall_archive;
 pub mod registry;
