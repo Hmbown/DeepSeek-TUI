@@ -567,6 +567,11 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         ),
 
         _ => {
+            // Third source: skills (lowest precedence after native and user-config).
+            // Try to run a skill whose name matches the command.
+            if skills::run_skill_by_name(app, command, arg).is_some() {
+                return skills::run_skill_by_name(app, command, arg).unwrap();
+            }
             let suggestions = suggest_command_names(command, 3);
             if suggestions.is_empty() {
                 CommandResult::error(format!(

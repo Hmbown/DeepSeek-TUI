@@ -78,6 +78,18 @@ pub fn list_skills(app: &mut App, arg: Option<&str>) -> CommandResult {
 
 /// Run a specific skill — activates skill for next user message, or
 /// dispatches a sub-command (`install`, `update`, `uninstall`, `trust`).
+/// Try to run a skill by exact name (used for unified slash-command namespace, #435).
+/// Returns None when no skill with that name exists, so the caller can try other sources.
+pub fn run_skill_by_name(app: &mut App, name: &str, _arg: Option<&str>) -> Option<CommandResult> {
+    let skills_dir = app.skills_dir.clone();
+    let registry = crate::skills::SkillRegistry::discover(&skills_dir);
+    if registry.get(name).is_some() {
+        Some(activate_skill(app, name))
+    } else {
+        None
+    }
+}
+
 pub fn run_skill(app: &mut App, name: Option<&str>) -> CommandResult {
     let raw = match name {
         Some(n) => n.trim(),
