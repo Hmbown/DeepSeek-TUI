@@ -14,6 +14,7 @@ use wait_timeout::ChildExt;
 
 mod audit;
 mod automation_manager;
+mod claude_import;
 mod client;
 mod command_safety;
 mod commands;
@@ -3543,6 +3544,19 @@ async fn run_interactive(
             ?err,
             "spillover prune skipped on boot"
         ),
+    }
+
+    // #453: Auto-import MCP servers from Claude Code's `.claude/settings.json`.
+    // Runs as a dry-run + apply: detects the Claude config, parses MCP server
+    // definitions, and merges them into `mcp.json`. Servers that already exist
+    // with matching config are skipped; conflicts are reported without
+    // overwriting. The diff is printed to stdout before the TUI starts so the
+    // user sees exactly what was imported.
+    let mcp_config_path = config.mcp_config_path();
+    let workspace_dir = workspace.clone();
+    let import_result = claude_import::run_import(&workspace_dir, &mcp_config_path, true);
+    if !import_result.diff.is_empty() {
+        println!("{}", import_result.diff);
     }
 
     tui::run_tui(
