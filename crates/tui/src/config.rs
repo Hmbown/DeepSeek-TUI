@@ -901,6 +901,10 @@ pub struct LspConfigToml {
     /// are language slugs (`"rust"`, `"go"`, etc.).
     #[serde(default)]
     pub servers: Option<HashMap<String, Vec<String>>>,
+    /// When `true`, skip the built-in LSP shim and read diagnostics from a
+    /// VS Code extension sidecar (local socket/file). Defaults to `false`.
+    #[serde(default)]
+    pub vscode_diagnostics: Option<bool>,
 }
 
 impl LspConfigToml {
@@ -919,6 +923,7 @@ impl LspConfigToml {
                 .unwrap_or(defaults.max_diagnostics_per_file),
             include_warnings: self.include_warnings.unwrap_or(defaults.include_warnings),
             servers: self.servers.unwrap_or_default(),
+            vscode_diagnostics: self.vscode_diagnostics.unwrap_or(defaults.vscode_diagnostics),
         }
     }
 }

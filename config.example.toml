@@ -337,11 +337,19 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 #   c, cpp     → clangd
 #
 # Override the defaults via the `servers` table below.
+#
+# VS Code extension sidecar (#466): Set `vscode_diagnostics = true` to skip
+# the built-in LSP shim entirely. Instead, the engine reads diagnostics from
+# a Unix socket at `/tmp/deepseek-vscode.sock`, served by a companion VS Code
+# extension. The extension sends JSON lines of the form:
+#   {"file": "relative/path.rs", "diagnostics": [{"line": 1, "column": 5, "severity": 1, "message": "..."}]}
+# A missing or unresponsive sidecar degrades gracefully (no diagnostics).
 [lsp]
 # enabled = true
 # poll_after_edit_ms = 5000
 # max_diagnostics_per_file = 20
 # include_warnings = false
+# vscode_diagnostics = false     # #466: skip LSP shim, use VS Code extension sidecar
 # [lsp.servers]
 # rust = ["rust-analyzer"]
 # go = ["gopls", "serve"]
