@@ -2164,6 +2164,8 @@ pub fn ensure_parent_dir(path: &Path) -> Result<()> {
 pub enum SavedCredential {
     /// Stored in the deepseek config file at the given path.
     ConfigFile(PathBuf),
+    /// Stored in the OS keyring (also written to config file as fallback).
+    Keyring(PathBuf),
 }
 
 impl SavedCredential {
@@ -2172,16 +2174,20 @@ impl SavedCredential {
     #[must_use]
     pub fn describe(&self) -> String {
         match self {
-            Self::ConfigFile(path) => path.display().to_string(),
+            Self::ConfigFile(path) | Self::Keyring(path) => path.display().to_string(),
         }
     }
 }
 
-/// Save the active provider's API key to `~/.deepseek/config.toml`.
+/// Save the active provider's API key to `~/.deepseek/config.toml` and
+/// the OS keyring.
 ///
 /// v0.8.8 intentionally uses the shared config file as the default
 /// setup path. It works in every folder, in npm installs, in IDE
-/// terminals, and without platform credential prompts.
+/// terminals, and without platform credential prompts. The keyring
+/// write is a best-effort side effect so a stale keyring entry doesn't
+/// shadow the new config-file key (resolution order: keyring → env →
+/// config-file).
 pub fn save_api_key(api_key: &str) -> Result<SavedCredential> {
     let trimmed = api_key.trim();
     if trimmed.is_empty() {
@@ -2189,7 +2195,17 @@ pub fn save_api_key(api_key: &str) -> Result<SavedCredential> {
     }
 
     let path = save_api_key_to_config_file(trimmed)?;
-    Ok(SavedCredential::ConfigFile(path))
+
+    // Best-effort: also write to the OS keyring so a stale entry doesn't
+    // shadow the new key. Log on failure but don't bail.
+    let secrets = deepseek_secrets::Secrets::auto_detect();
+    match secrets.set("deepseek", trimmed) {
+        Ok(()) => Ok(SavedCredential::Keyring(path)),
+        Err(e) => {
+            tracing::warn!("Failed to save API key to OS keyring: {e}");
+            Ok(SavedCredential::ConfigFile(path))
+        }
+    }
 }
 
 /// Write the `api_key` slot directly to `config.toml`.
@@ -2349,7 +2365,7 @@ pub fn has_api_key_for(config: &Config, provider: ApiProvider) -> bool {
 pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf> {
     if matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN) {
         return match save_api_key(api_key)? {
-            SavedCredential::ConfigFile(path) => Ok(path),
+            SavedCredential::ConfigFile(path) | SavedCredential::Keyring(path) => Ok(path),
         };
     }
 
@@ -2697,7 +2713,8 @@ mod tests {
 
         let saved = save_api_key("test-key")?;
         let expected = temp_root.join(".deepseek").join("config.toml");
-        assert_eq!(saved, SavedCredential::ConfigFile(expected.clone()));
+        // The returned variant depends on whether the OS keyring probe
+        // succeeds in the test environment. Either way the path must match.
         assert_eq!(saved.describe(), expected.display().to_string());
 
         let contents = fs::read_to_string(&expected)?;
@@ -3035,7 +3052,8 @@ api_key = "old-openrouter-key"
         )?;
 
         let saved = save_api_key("new-key")?;
-        assert_eq!(saved, SavedCredential::ConfigFile(config_path.clone()));
+        // Variant may be ConfigFile or Keyring depending on test env.
+        assert_eq!(saved.describe(), config_path.display().to_string());
 
         let contents = fs::read_to_string(&config_path)?;
         assert!(contents.contains("api_key_backup = \"old\""));
