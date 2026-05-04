@@ -45,6 +45,7 @@ mod pricing;
 mod project_context;
 mod project_doc;
 mod prompts;
+mod receipt;
 pub mod repl;
 mod responses_api_proxy;
 mod retry_status;
