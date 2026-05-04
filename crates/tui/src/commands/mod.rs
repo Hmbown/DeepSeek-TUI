@@ -211,6 +211,12 @@ pub const COMMANDS: &[CommandInfo] = &[
         description_id: MessageId::CmdNoteDescription,
     },
     CommandInfo {
+        name: "memory",
+        aliases: &[],
+        usage: "/memory [show|path|clear|edit|help]",
+        description_id: MessageId::CmdMemoryDescription,
+    },
+    CommandInfo {
         name: "attach",
         aliases: &["image", "media"],
         usage: "/attach <path>",
@@ -812,6 +818,7 @@ mod tests {
     fn command_registry_contains_config_and_links_but_not_set_or_deepseek() {
         assert!(COMMANDS.iter().any(|cmd| cmd.name == "config"));
         assert!(COMMANDS.iter().any(|cmd| cmd.name == "links"));
+        assert!(COMMANDS.iter().any(|cmd| cmd.name == "memory"));
         assert!(!COMMANDS.iter().any(|cmd| cmd.name == "set"));
         assert!(!COMMANDS.iter().any(|cmd| cmd.name == "deepseek"));
     }

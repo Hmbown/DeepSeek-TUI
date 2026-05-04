@@ -128,6 +128,7 @@ These override config values:
 - `DEEPSEEK_SKILLS_DIR`
 - `DEEPSEEK_MCP_CONFIG`
 - `DEEPSEEK_NOTES_PATH`
+- `DEEPSEEK_MEMORY` (`1|on|true|yes|y|enabled` turns user memory on)
 - `DEEPSEEK_MEMORY_PATH`
 - `DEEPSEEK_ALLOW_SHELL` (`1`/`true` enables)
 - `DEEPSEEK_APPROVAL_POLICY` (`on-request|untrusted|never`)
@@ -320,6 +321,11 @@ If you are upgrading from older releases:
   used immediately by `/mcp`, but rebuilding the model-visible MCP tool pool
   requires restarting the TUI.
 - `notes_path` (string, optional): defaults to `~/.deepseek/notes.txt` and is used by the `note` tool.
+- `[memory].enabled` (bool, optional): defaults to `false`. When `true`,
+  the TUI loads the user memory file into a `<user_memory>` prompt block,
+  enables `# foo` quick-capture in the composer, surfaces the `/memory`
+  slash command, and registers the `remember` tool. The same toggle is
+  available via `DEEPSEEK_MEMORY=on`.
 - `memory_path` (string, optional): defaults to `~/.deepseek/memory.md`.
   Used by the user-memory feature when enabled — see
   [`MEMORY.md`](MEMORY.md) for the full feature surface (`# foo`
@@ -368,6 +374,31 @@ If you are upgrading from older releases:
 - `tui.osc8_links` (bool, optional, default `true`): emit OSC 8 escape sequences around URLs in transcript output so terminals that support them (iTerm2, Terminal.app 13+, Ghostty, Kitty, WezTerm, Alacritty, recent gnome-terminal/konsole) render them as Cmd+click hyperlinks. Terminals without OSC 8 support render the plain URL and ignore the escape. Set `false` for terminals that misrender the sequence; selection/clipboard output always strips the escapes.
 - `hooks` (optional): lifecycle hooks configuration (see `config.example.toml`).
 - `features.*` (optional): feature flag overrides (see below).
+
+### User memory
+
+User memory is split across one top-level path setting and one opt-in
+toggle table:
+
+```toml
+memory_path = "~/.deepseek/memory.md"
+
+[memory]
+enabled = true
+```
+
+Notes:
+
+- `memory_path` stays at the top level beside `notes_path` and
+  `skills_dir`; it is not nested under `[memory]`.
+- `DEEPSEEK_MEMORY_PATH` overrides the file path from the environment.
+- `DEEPSEEK_MEMORY=on` (also `1`, `true`, `yes`, `y`, or `enabled`)
+  flips the feature on without editing `config.toml`.
+- The feature is inert when disabled: no file is injected, `# foo`
+  falls through to normal message submission, and the model does not
+  see the `remember` tool.
+- See [`MEMORY.md`](MEMORY.md) for examples and the full `/memory`
+  command surface.
 
 ### Parsed but currently unused (reserved for future versions)
 

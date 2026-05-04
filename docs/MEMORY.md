@@ -20,6 +20,9 @@ Either set the env var:
 export DEEPSEEK_MEMORY=on
 ```
 
+Accepted truthy values are `1`, `on`, `true`, `yes`, `y`, and
+`enabled`.
+
 …or add to `~/.deepseek/config.toml`:
 
 ```toml
@@ -31,7 +34,25 @@ Restart the TUI after toggling. Disabling is the same in reverse.
 
 The memory file lives at `~/.deepseek/memory.md` by default; override
 with `memory_path` in `config.toml` or `DEEPSEEK_MEMORY_PATH` in
-the environment.
+the environment. `DEEPSEEK_MEMORY_PATH` wins over the config file when
+both are set.
+
+## Quick examples
+
+```text
+# remember that this repo prefers cargo fmt before commits
+/memory
+/memory path
+/memory edit
+/memory help
+```
+
+- Type `# remember that this repo prefers cargo fmt before commits` in
+  the composer to append a timestamped bullet without firing a turn.
+- Run `/memory` to confirm where the feature is writing and what is
+  currently stored.
+- Run `/memory edit` when you want to groom the file manually in your
+  editor.
 
 ## What gets injected
 
@@ -84,10 +105,17 @@ Inspect, clear, or get hints about editing the file:
 | `/memory path`      | Print just the resolved path                          |
 | `/memory clear`     | Replace the file with an empty marker                 |
 | `/memory edit`      | Print the `${VISUAL:-${EDITOR:-vi}} <path>` shell line |
+| `/memory help`      | Show command-specific help and the current path       |
 
 The `/memory edit` form intentionally just prints the command rather
 than spawning the editor in-process — that keeps the slash-command
 handler simple and consistent regardless of which editor you use.
+
+You can also discover the feature from the general help surfaces:
+
+- `/help memory` shows the slash-command summary and usage line.
+- `/memory help` prints the memory-specific subcommands plus the
+  resolved path.
 
 ### 3. The `remember` tool (auto-update, #489)
 
@@ -133,6 +161,22 @@ You can hand-edit the file in any editor — the loader doesn't care
 about the timestamp format; it just reads the whole file as the
 memory block. The timestamp is convention so you can tell when each
 note was added when grooming the file.
+
+## Hierarchy and imports
+
+Memory is intentionally **user-scoped** rather than repo-scoped. It
+sits alongside — not inside — project instruction sources such as
+`AGENTS.md`, `.deepseek/instructions.md`, and `instructions = [...]`.
+
+- Use **memory** for durable personal preferences that should follow
+  you across repos and sessions.
+- Use **project instructions** for repo-specific conventions that
+  should travel with the codebase.
+
+The memory loader currently reads one resolved file path verbatim.
+`@path` imports / includes are **not** supported today; if you need a
+larger reusable instruction bundle, put it in a project instruction
+file or a skill instead.
 
 ## What stays out of memory
 

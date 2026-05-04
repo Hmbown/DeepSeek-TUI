@@ -347,6 +347,16 @@ mod tests {
     }
 
     #[test]
+    fn test_help_memory_topic_shows_usage_and_description() {
+        let mut app = create_test_app();
+        let result = help(&mut app, Some("memory"));
+        let msg = result.message.expect("help topic should return message");
+        assert!(msg.contains("memory"));
+        assert!(msg.contains("persistent user-memory file"));
+        assert!(msg.contains("Usage: /memory [show|path|clear|edit|help]"));
+    }
+
+    #[test]
     fn test_help_pushes_overlay() {
         let mut app = create_test_app();
         assert_ne!(app.view_stack.top_kind(), Some(ModalKind::Help));
