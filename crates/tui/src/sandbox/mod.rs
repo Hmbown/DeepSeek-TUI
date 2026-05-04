@@ -25,6 +25,8 @@
 //! // exec_env.command now contains the sandboxed command
 //! ```
 
+pub mod backend;
+pub mod opensandbox;
 pub mod policy;
 
 #[cfg(target_os = "macos")]
