@@ -541,6 +541,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         subagent_model_overrides: config.subagent_model_overrides(),
         memory_enabled: config.memory_enabled(),
         memory_path: config.memory_path(),
+        capture_reasoning_memory: config.capture_reasoning_memory_enabled(),
         goal_objective: app.goal.goal_objective.clone(),
     }
 }

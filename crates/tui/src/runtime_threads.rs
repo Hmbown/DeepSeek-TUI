@@ -1811,6 +1811,7 @@ impl RuntimeThreadManager {
             subagent_model_overrides: self.config.subagent_model_overrides(),
             memory_enabled: self.config.memory_enabled(),
             memory_path: self.config.memory_path(),
+            capture_reasoning_memory: self.config.capture_reasoning_memory_enabled(),
             goal_objective: None,
         };
 

@@ -772,6 +772,14 @@ pub struct Config {
     #[serde(default)]
     pub subagents: Option<SubagentsConfig>,
 
+    /// Capture reasoning_content (thinking tokens) as reflective memory
+    /// notes (#544). When `true`, after each turn the engine inspects the
+    /// model's reasoning_content for decision-like signals (heuristic:
+    /// "because", "therefore", "decision", "should") and appends matching
+    /// snippets to the notes file with a `[reasoning]` tag. Default `false`.
+    #[serde(default)]
+    pub capture_reasoning_memory: Option<bool>,
+
     /// Runtime API server tuning (`deepseek serve --http`). Currently only
     /// hosts the CORS allow-list extension (whalescale#255 / #561). When the
     /// table is absent, the daemon ships with localhost:3000 / localhost:1420
@@ -1345,6 +1353,15 @@ impl Config {
             .as_ref()
             .and_then(|m| m.enabled)
             .unwrap_or(false)
+    }
+
+    /// Whether reasoning-content memory capture is enabled (#544). The
+    /// default is **off** — opt-in only. When `true`, the engine inspects
+    /// reasoning_content after each turn and stores decision-like snippets
+    /// to the notes file with a `[reasoning]` tag.
+    #[must_use]
+    pub fn capture_reasoning_memory_enabled(&self) -> bool {
+        self.capture_reasoning_memory.unwrap_or(false)
     }
 
     /// Return whether shell execution is allowed.
@@ -2025,6 +2042,9 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
             per_model: override_cfg.context.per_model.or(base.context.per_model),
         },
         subagents: override_cfg.subagents.or(base.subagents),
+        capture_reasoning_memory: override_cfg
+            .capture_reasoning_memory
+            .or(base.capture_reasoning_memory),
         runtime_api: override_cfg.runtime_api.or(base.runtime_api),
     }
 }
