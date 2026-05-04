@@ -611,6 +611,9 @@ async fn run_event_loop(
             app.needs_redraw = true;
         }
 
+        // Poll the background file watcher for change events.
+        crate::commands::watch::poll_watcher(app);
+
         // First, poll for engine events (non-blocking)
         let mut received_engine_event = false;
         let mut transcript_batch_updated = false;
@@ -1599,12 +1602,13 @@ async fn run_event_loop(
                     // Language picker hotkeys: 1-5 select + persist (#566).
                     KeyCode::Char(c)
                         if app.onboarding == OnboardingState::Language
-                            && c.is_ascii_digit()
-                            && let Some((_, tag, _, _)) =
-                                onboarding::language::LANGUAGE_OPTIONS
-                                    .iter()
-                                    .find(|(hotkey, _, _, _)| *hotkey == c) =>
+                            && c.is_ascii_digit() =>
                     {
+                        let tag = onboarding::language::LANGUAGE_OPTIONS
+                            .iter()
+                            .find(|(hotkey, _, _, _)| *hotkey == c)
+                            .map(|(_, tag, _, _)| *tag);
+                        let Some(tag) = tag else { break Ok(()) };
                         match app.set_locale_from_onboarding(tag) {
                             Ok(()) => {
                                 app.push_status_toast(
