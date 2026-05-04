@@ -86,6 +86,9 @@ struct Cli {
     no_mouse_capture: bool,
     #[arg(long = "skip-onboarding")]
     skip_onboarding: bool,
+
+    #[arg(long = "status-file", value_name = "PATH")]
+    status_file: Option<PathBuf>,
     #[arg(
         short = 'p',
         long = "prompt",
@@ -1034,6 +1037,9 @@ fn delegate_to_tui(
     }
     if cli.skip_onboarding {
         cmd.arg("--skip-onboarding");
+    }
+    if let Some(status_file) = cli.status_file.as_ref() {
+        cmd.arg("--status-file").arg(status_file);
     }
     cmd.args(passthrough);
 

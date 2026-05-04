@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use ratatui::layout::Rect;
-use serde_json::Value;
+use serde_json::{Value, json};
 use thiserror::Error;
 
 use crate::compaction::CompactionConfig;
@@ -419,6 +419,10 @@ pub struct TuiOptions {
     /// session with the PR context already typed — the user can edit
     /// before sending or hit Enter to fire as-is.
     pub initial_input: Option<String>,
+
+    /// Path to write a JSON status file updated on every mode/model change.
+    /// A VS Code extension can poll/watch this file.
+    pub status_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -669,6 +673,10 @@ pub struct App {
     /// live by `/statusline`. The renderer iterates this slice; no item is
     /// hardcoded in the footer code path.
     pub status_items: Vec<crate::config::StatusItem>,
+
+    /// Path to write a JSON file with current mode/model, updated on every
+    /// mode change. A VS Code extension can poll/watch this file.
+    pub status_file: Option<PathBuf>,
     /// Project documentation (AGENTS.md or CLAUDE.md)
     #[allow(dead_code)]
     pub project_doc: Option<String>,
@@ -972,6 +980,7 @@ impl App {
             yolo,
             resume_session_id: _,
             initial_input,
+            status_file,
         } = options;
 
         // If no provider is explicitly configured AND the system locale
@@ -1167,6 +1176,7 @@ impl App {
             backtrack: crate::tui::backtrack::BacktrackState::new(),
             current_session_id: None,
             trust_mode: initial_mode == AppMode::Yolo,
+            status_file,
             status_items: config
                 .tui
                 .as_ref()
@@ -1330,8 +1340,33 @@ impl App {
             .with_workspace(self.workspace.clone())
             .with_model(&self.model);
         let _ = self.hooks.execute(HookEvent::ModeChange, &context);
+        self.write_status_file();
         self.needs_redraw = true;
         true
+    }
+
+    /// Write current mode + model state as JSON to `status_file`, if set.
+    /// Called after every mode change so a VS Code extension polling this
+    /// file always sees up-to-date state.
+    pub fn write_status_file(&self) {
+        let Some(ref path) = self.status_file else {
+            return;
+        };
+        let state = json!({
+            "mode": self.mode.label(),
+            "model": self.model,
+            "provider": self.api_provider.as_str(),
+            "approval_mode": self.approval_mode.label(),
+            "reasoning_effort": self.reasoning_effort.short_label(),
+        });
+        // Best-effort: failure to write should not crash the TUI.
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let content = serde_json::to_string(&state).unwrap_or_default();
+        let _ = std::fs::write(path, content);
     }
 
     /// Cycle through modes: Plan → Agent → YOLO → Plan.

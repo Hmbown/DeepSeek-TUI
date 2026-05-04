@@ -241,6 +241,10 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     let config = &mut config;
     let mut app = App::new(options.clone(), config);
 
+    // Write initial status file so a VS Code extension sees the starting state
+    // immediately, before any user interaction triggers a mode change.
+    app.write_status_file();
+
     // Load existing session if resuming.
     if let Some(ref session_id) = options.resume_session_id
         && let Ok(manager) = SessionManager::default_location()

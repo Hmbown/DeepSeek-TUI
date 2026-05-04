@@ -151,6 +151,12 @@ struct Cli {
     /// Skip loading project-level config from $WORKSPACE/.deepseek/config.toml
     #[arg(long = "no-project-config")]
     no_project_config: bool,
+
+    /// Path to write current model and mode as JSON. Updated on every mode
+    /// change. A VS Code extension can poll/watch this file to show the
+    /// current state in the status bar.
+    #[arg(long = "status-file", value_name = "PATH")]
+    status_file: Option<PathBuf>,
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -3545,6 +3551,8 @@ async fn run_interactive(
         ),
     }
 
+    let status_file = cli.status_file.clone();
+
     tui::run_tui(
         config,
         tui::TuiOptions {
@@ -3567,6 +3575,7 @@ async fn run_interactive(
             resume_session_id,
             initial_input,
             max_subagents,
+            status_file,
         },
     )
     .await
