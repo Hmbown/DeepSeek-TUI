@@ -143,7 +143,10 @@ pub fn parse(content: &str) -> ParsedMarkdown {
         }
 
         match parse_table_row(trimmed) {
-            Some(cells) => { blocks.push(Block::TableRow(cells)); continue; }
+            Some(cells) => {
+                blocks.push(Block::TableRow(cells));
+                continue;
+            }
             None if trimmed.starts_with('|') => continue, // separator row — drop it
             None => {}
         }
@@ -371,7 +374,7 @@ fn render_line_with_links(
         if word == " " {
             // Space: emit only if we're mid-line and it fits; otherwise drop
             // (it's a potential wrap point, not content).
-            if !current_spans.is_empty() && current_width + 1 <= width {
+            if !current_spans.is_empty() && current_width < width {
                 current_spans.push(Span::raw(" "));
                 current_width += 1;
             }
@@ -380,10 +383,10 @@ fn render_line_with_links(
         // Wrap before this word if it doesn't fit.
         if current_width > 0 && current_width + ww > width {
             // Trim trailing space span before breaking.
-            if let Some(last) = current_spans.last() {
-                if last.content.as_ref() == " " {
-                    current_spans.pop();
-                }
+            if let Some(last) = current_spans.last()
+                && last.content.as_ref() == " "
+            {
+                current_spans.pop();
             }
             lines.push(Line::from(current_spans));
             current_spans = Vec::new();
@@ -426,28 +429,34 @@ fn parse_inline_spans(line: &str, base_style: Style, link_style: Style) -> Vec<(
             continue;
         }
         // *italic*
-        if rest.starts_with('*') && !rest.starts_with("**") {
-            if let Some(end) = rest[1..].find('*') {
-                let inner = &rest[1..1 + end];
-                out.push((inner.to_string(), italic_style));
-                rest = &rest[1 + end + 1..];
-                continue;
-            }
+        if rest.starts_with('*')
+            && !rest.starts_with("**")
+            && let Some(end) = rest[1..].find('*')
+        {
+            let inner = &rest[1..1 + end];
+            out.push((inner.to_string(), italic_style));
+            rest = &rest[1 + end + 1..];
+            continue;
         }
         // _italic_
-        if rest.starts_with('_') && !rest.starts_with("__") {
-            if let Some(end) = rest[1..].find('_') {
-                let inner = &rest[1..1 + end];
-                out.push((inner.to_string(), italic_style));
-                rest = &rest[1 + end + 1..];
-                continue;
-            }
+        if rest.starts_with('_')
+            && !rest.starts_with("__")
+            && let Some(end) = rest[1..].find('_')
+        {
+            let inner = &rest[1..1 + end];
+            out.push((inner.to_string(), italic_style));
+            rest = &rest[1 + end + 1..];
+            continue;
         }
         // URL: consume until whitespace
         if rest.starts_with("http://") || rest.starts_with("https://") {
             let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
             let url = &rest[..end];
-            let content = if osc8::enabled() { osc8::wrap_link(url, url) } else { url.to_string() };
+            let content = if osc8::enabled() {
+                osc8::wrap_link(url, url)
+            } else {
+                url.to_string()
+            };
             out.push((content, link_style));
             rest = &rest[end..];
             continue;
@@ -468,7 +477,8 @@ fn find_next_marker(s: &str) -> usize {
     while i < bytes.len() {
         let ch_len = s[i..].chars().next().map_or(1, |c| c.len_utf8());
         let slice = &s[i..];
-        if slice.starts_with("**") || slice.starts_with("__")
+        if slice.starts_with("**")
+            || slice.starts_with("__")
             || (slice.starts_with('*') && !slice.starts_with("**"))
             || (slice.starts_with('_') && !slice.starts_with("__"))
             || slice.starts_with("http://")
@@ -481,10 +491,11 @@ fn find_next_marker(s: &str) -> usize {
     s.len()
 }
 
-
 fn is_horizontal_rule(line: &str) -> bool {
     let stripped: String = line.chars().filter(|c| !c.is_whitespace()).collect();
-    (stripped.chars().all(|c| c == '-') || stripped.chars().all(|c| c == '*') || stripped.chars().all(|c| c == '_'))
+    (stripped.chars().all(|c| c == '-')
+        || stripped.chars().all(|c| c == '*')
+        || stripped.chars().all(|c| c == '_'))
         && stripped.len() >= 3
 }
 
@@ -495,12 +506,12 @@ fn parse_table_row(line: &str) -> Option<Vec<String>> {
         return None;
     }
     let inner = line.trim_matches('|');
-    let cells: Vec<String> = inner
-        .split('|')
-        .map(|c| c.trim().to_string())
-        .collect();
+    let cells: Vec<String> = inner.split('|').map(|c| c.trim().to_string()).collect();
     // Separator row: every non-empty cell is only dashes/colons/spaces
-    if cells.iter().all(|c| c.is_empty() || c.chars().all(|ch| ch == '-' || ch == ':' || ch == ' ')) {
+    if cells
+        .iter()
+        .all(|c| c.is_empty() || c.chars().all(|ch| ch == '-' || ch == ':' || ch == ' '))
+    {
         return None;
     }
     Some(cells)
@@ -510,7 +521,7 @@ fn render_table_row(cells: &[String], width: usize, base_style: Style) -> Vec<Li
     if cells.is_empty() {
         return vec![Line::from("")];
     }
-    let col_width = (width.saturating_sub(cells.len() + 1)) / cells.len();
+    let col_width = (width.saturating_sub(3 * cells.len() + 1)) / cells.len();
     let col_width = col_width.max(4);
     let sep_style = Style::default().fg(palette::TEXT_DIM);
     let mut spans: Vec<Span> = vec![Span::styled("│ ".to_string(), sep_style)];
@@ -520,7 +531,10 @@ fn render_table_row(cells: &[String], width: usize, base_style: Style) -> Vec<Li
             let mut w = 0;
             for ch in cell.chars() {
                 let cw = ch.width().unwrap_or(1);
-                if w + cw + 1 > col_width { s.push('…'); break; }
+                if w + cw + 1 > col_width {
+                    s.push('…');
+                    break;
+                }
                 s.push(ch);
                 w += cw;
             }
@@ -528,7 +542,8 @@ fn render_table_row(cells: &[String], width: usize, base_style: Style) -> Vec<Li
         } else {
             cell.clone()
         };
-        let cell_spans: Vec<(String, Style)> = parse_inline_spans(&truncated, base_style, link_style());
+        let cell_spans: Vec<(String, Style)> =
+            parse_inline_spans(&truncated, base_style, link_style());
         let cell_width: usize = cell_spans.iter().map(|(t, _)| t.width()).sum();
         let pad = col_width.saturating_sub(cell_width);
         for (text, style) in cell_spans {
@@ -592,7 +607,6 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
 mod tests {
     use super::*;
     use ratatui::style::Style;
-
 
     #[test]
     fn render_markdown_matches_parse_then_render() {
@@ -739,16 +753,30 @@ mod tests {
         let parsed = parse(src);
         let blocks: Vec<_> = parsed.blocks.iter().collect();
         // Should have 2 TableRow blocks (header + data), no separator
-        let table_rows: Vec<_> = blocks.iter().filter(|b| matches!(b, Block::TableRow(_))).collect();
-        assert_eq!(table_rows.len(), 2, "expected 2 table rows, got {}: {blocks:?}", table_rows.len());
+        let table_rows: Vec<_> = blocks
+            .iter()
+            .filter(|b| matches!(b, Block::TableRow(_)))
+            .collect();
+        assert_eq!(
+            table_rows.len(),
+            2,
+            "expected 2 table rows, got {}: {blocks:?}",
+            table_rows.len()
+        );
     }
 
     #[test]
     fn bold_markers_stripped_in_render() {
         let src = "这是一个 **Rust 工作区项目**，包含多个 crate。\n";
         let lines = render_markdown(src, 80, Style::default());
-        let text: String = lines.iter().flat_map(|l| l.spans.iter().map(|s| s.content.as_ref())).collect();
-        assert!(!text.contains("**"), "bold markers leaked into output: {text:?}");
+        let text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+        assert!(
+            !text.contains("**"),
+            "bold markers leaked into output: {text:?}"
+        );
         assert!(text.contains("Rust"), "bold content missing: {text:?}");
     }
 
@@ -756,7 +784,10 @@ mod tests {
     fn table_renders_with_pipe_separator() {
         let src = "| 文件 | 改动 |\n|---|---|\n| foo.rs | 重写 |\n";
         let lines = render_markdown(src, 60, Style::default());
-        let text: String = lines.iter().flat_map(|l| l.spans.iter().map(|s| s.content.as_ref())).collect();
+        let text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
         assert!(text.contains('│'), "table pipe separator missing: {text:?}");
         assert!(!text.contains("|---|"), "separator row leaked: {text:?}");
     }
