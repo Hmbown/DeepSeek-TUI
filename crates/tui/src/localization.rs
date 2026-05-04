@@ -238,6 +238,7 @@ pub enum MessageId {
     CmdLoadDescription,
     CmdLogoutDescription,
     CmdMcpDescription,
+    CmdMemoryDescription,
     CmdModelDescription,
     CmdModelsDescription,
     CmdNoteDescription,
@@ -424,6 +425,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CmdLoadDescription,
     MessageId::CmdLogoutDescription,
     MessageId::CmdMcpDescription,
+    MessageId::CmdMemoryDescription,
     MessageId::CmdModelDescription,
     MessageId::CmdModelsDescription,
     MessageId::CmdNoteDescription,
@@ -739,6 +741,7 @@ fn english(id: MessageId) -> &'static str {
         MessageId::CmdLoadDescription => "Load session from file",
         MessageId::CmdLogoutDescription => "Clear API key and return to setup",
         MessageId::CmdMcpDescription => "Open or manage MCP servers",
+        MessageId::CmdMemoryDescription => "Inspect or manage the persistent user-memory file",
         MessageId::CmdModelDescription => "Switch or view current model",
         MessageId::CmdModelsDescription => "List available models from API",
         MessageId::CmdNoteDescription => {
@@ -1020,6 +1023,7 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::CmdLoadDescription => "ファイルからセッションを読み込み",
         MessageId::CmdLogoutDescription => "API キーを消去してセットアップに戻る",
         MessageId::CmdMcpDescription => "MCP サーバを開く・管理する",
+        MessageId::CmdMemoryDescription => "永続ユーザーメモリファイルを確認・管理",
         MessageId::CmdModelDescription => "現在のモデルを切り替え・確認",
         MessageId::CmdModelsDescription => "API から利用可能なモデルを一覧表示",
         MessageId::CmdNoteDescription => "永続ノートファイル（.deepseek/notes.md）に追記",
@@ -1281,6 +1285,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::CmdLoadDescription => "从文件加载会话",
         MessageId::CmdLogoutDescription => "清除 API 密钥并返回设置",
         MessageId::CmdMcpDescription => "打开或管理 MCP 服务器",
+        MessageId::CmdMemoryDescription => "查看或管理持久用户记忆文件",
         MessageId::CmdModelDescription => "切换或查看当前模型",
         MessageId::CmdModelsDescription => "列出 API 中可用的模型",
         MessageId::CmdNoteDescription => "将笔记追加到持久笔记文件（.deepseek/notes.md）",
@@ -1530,6 +1535,9 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         MessageId::CmdLoadDescription => "Carregar a sessão de um arquivo",
         MessageId::CmdLogoutDescription => "Limpar a chave de API e voltar à configuração",
         MessageId::CmdMcpDescription => "Abrir ou gerenciar servidores MCP",
+        MessageId::CmdMemoryDescription => {
+            "Inspecionar ou gerenciar o arquivo persistente de memória do usuário"
+        }
         MessageId::CmdModelDescription => "Trocar ou exibir o modelo atual",
         MessageId::CmdModelsDescription => "Listar os modelos disponíveis pela API",
         MessageId::CmdNoteDescription => {

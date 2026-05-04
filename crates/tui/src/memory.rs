@@ -9,7 +9,9 @@
 //!   prompt alongside the existing `<project_instructions>` block.
 //! - **`# foo`** typed in the composer appends `foo` to the memory
 //!   file as a timestamped bullet — fast capture without leaving the TUI.
-//! - **`/memory`** opens the memory file in `$VISUAL` / `$EDITOR`.
+//! - **`/memory`** shows the resolved file path and current contents, and
+//!   **`/memory edit`** prints a copy-pasteable `$VISUAL` / `$EDITOR`
+//!   command for opening the file yourself.
 //! - **`remember` tool** lets the model itself append a bullet when it
 //!   notices a durable preference or convention worth keeping across
 //!   sessions.
