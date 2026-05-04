@@ -608,7 +608,12 @@ mod tests {
 
     /// #588: language-mirroring directive must ship in every mode so
     /// DeepSeek's `reasoning_content` and final reply follow the user's
-    /// language. Structural test — wording is not a test concern.
+    /// language. Structural test — wording is not a test concern, but
+    /// the cross-cutting commitment of #588 is specifically that the
+    /// `reasoning_content` field tracks the user's language (not just
+    /// the visible reply); pin that anchor token so a future edit
+    /// can't silently weaken the section to a generic "respond in the
+    /// user's language" directive while keeping the heading.
     #[test]
     fn language_mirroring_section_present_in_all_modes() {
         for mode in [AppMode::Agent, AppMode::Yolo, AppMode::Plan] {
@@ -616,6 +621,12 @@ mod tests {
             assert!(
                 prompt.contains("## Language"),
                 "## Language section missing from mode {mode:?}"
+            );
+            assert!(
+                prompt.contains("reasoning_content"),
+                "## Language section in {mode:?} must mention `reasoning_content` — \
+                 that field name is the structural anchor for the #588 commitment that \
+                 internal reasoning, not just the visible reply, follows the user's language"
             );
         }
     }
