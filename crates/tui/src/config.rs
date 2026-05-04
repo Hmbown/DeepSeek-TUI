@@ -1091,7 +1091,7 @@ impl Config {
             })
     }
 
-    fn provider_config_for(&self, provider: ApiProvider) -> Option<&ProviderConfig> {
+    pub(crate) fn provider_config_for(&self, provider: ApiProvider) -> Option<&ProviderConfig> {
         let providers = self.providers.as_ref()?;
         Some(match provider {
             ApiProvider::Deepseek => &providers.deepseek,
@@ -1104,7 +1104,7 @@ impl Config {
         })
     }
 
-    fn provider_config(&self) -> Option<&ProviderConfig> {
+    pub(crate) fn provider_config(&self) -> Option<&ProviderConfig> {
         self.provider_config_for(self.api_provider())
     }
 
@@ -1175,16 +1175,12 @@ impl Config {
 
     /// Read the API key.
     ///
-    /// Precedence: **explicit in-memory override → OS keyring → environment
-    /// → provider-scoped config → legacy root config**. The keyring + env
-    /// layers are collapsed by [`deepseek_secrets::Secrets::resolve`].
+    /// Precedence: **explicit in-memory override → provider/root config
+    /// → environment**.
     ///
-    /// The in-memory `self.api_key` override takes priority over the
-    /// keyring so a fresh key entered via `/logout` + onboarding actually
-    /// takes effect even when an old key is still cached in the OS keyring
-    /// (#343). The override is only honored when the user *explicitly* set
-    /// the field (not the legacy `API_KEYRING_SENTINEL` placeholder, not
-    /// empty whitespace).
+    /// The in-memory `self.api_key` override is only honored when the user
+    /// explicitly set the field (not the legacy `API_KEYRING_SENTINEL`
+    /// placeholder, not empty whitespace).
     pub fn deepseek_api_key(&self) -> Result<String> {
         let provider = self.api_provider();
         let slot = match provider {
@@ -1197,9 +1193,7 @@ impl Config {
         };
 
         // 0. Explicit in-memory override (set by onboarding / provider
-        //    picker). Wins over keyring + env so a freshly-entered key
-        //    takes effect immediately even if a stale credential lingers
-        //    in the OS keyring (#343).
+        //    picker). Wins so a freshly-entered key takes effect immediately.
         if let Some(configured) = self.api_key.as_ref()
             && !configured.trim().is_empty()
             && configured != API_KEYRING_SENTINEL
@@ -1207,33 +1201,37 @@ impl Config {
             return Ok(configured.clone());
         }
 
-        // 1. OS keyring + 2. environment variables (handled by Secrets).
-        let secrets = deepseek_secrets::Secrets::auto_detect();
-        if let Some(value) = secrets.resolve(slot)
-            && !value.trim().is_empty()
-        {
-            return Ok(value);
-        }
-
-        // 3. config file (provider-scoped slot).
+        // 1. Config file (provider-scoped slot). This intentionally wins
+        // over ambient env so `deepseek auth set` fixes stale shell exports.
         if let Some(configured) = self
             .provider_config_for(provider)
             .and_then(|provider| provider.api_key.clone())
             && !configured.trim().is_empty()
         {
-            tracing::warn!(
-                "[providers.{slot}] api_key in config.toml is deprecated; \
-                 run 'deepseek auth set --provider {slot}' to move it to the OS keyring"
-            );
             return Ok(configured);
+        }
+
+        // 2. Environment variables. Do not query platform credential stores
+        // here; routine startup and doctor checks must stay prompt-free.
+        if let Some(value) = deepseek_secrets::env_for(slot)
+            && !value.trim().is_empty()
+        {
+            return Ok(value);
         }
 
         match provider {
             ApiProvider::Deepseek | ApiProvider::DeepseekCN => anyhow::bail!(
-                "DeepSeek API key not found. Set it using one of these methods:\n\
-                 1. Run 'deepseek auth set --provider deepseek' to save it in the OS keyring (recommended)\n\
-                 2. Set DEEPSEEK_API_KEY environment variable\n\
-                 3. Add 'api_key = \"your-key\"' to ~/.deepseek/config.toml (deprecated)"
+                "DeepSeek API key not found.\n\
+                 \n\
+                 1. Get a key:  https://platform.deepseek.com/api_keys\n\
+                 2. Save it (works in every folder, no OS prompts):\n\
+                        deepseek auth set --provider deepseek\n\
+                 \n\
+                 Alternatives:\n\
+                   • export DEEPSEEK_API_KEY=<your-key>      (current shell only;\n\
+                     also note: zsh users — exports in ~/.zshrc only reach interactive\n\
+                     shells, prefer ~/.zshenv for everything)\n\
+                   • api_key = \"<your-key>\"  in ~/.deepseek/config.toml"
             ),
             ApiProvider::NvidiaNim => anyhow::bail!(
                 "NVIDIA NIM API key not found. Run 'deepseek auth set --provider nvidia-nim', \
@@ -1595,11 +1593,6 @@ fn default_memory_path() -> Option<PathBuf> {
 fn apply_env_overrides(config: &mut Config) {
     if let Ok(value) = std::env::var("DEEPSEEK_PROVIDER") {
         config.provider = Some(value);
-    }
-    if let Ok(value) = std::env::var("DEEPSEEK_API_KEY")
-        && !value.trim().is_empty()
-    {
-        config.api_key = Some(value);
     }
     if let Ok(value) = std::env::var("DEEPSEEK_BASE_URL") {
         if matches!(config.api_provider(), ApiProvider::NvidiaNim) {
@@ -2143,8 +2136,42 @@ pub fn ensure_parent_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Save an API key to the config file. Creates the file if it doesn't exist.
-pub fn save_api_key(api_key: &str) -> Result<PathBuf> {
+/// Where a saved credential ended up. Returned by [`save_api_key`] so
+/// the caller can show a confirmation message without leaking the key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SavedCredential {
+    /// Stored in the deepseek config file at the given path.
+    ConfigFile(PathBuf),
+}
+
+impl SavedCredential {
+    /// Human-readable description for status / log output. Never
+    /// includes the key value.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        match self {
+            Self::ConfigFile(path) => path.display().to_string(),
+        }
+    }
+}
+
+/// Save the active provider's API key to `~/.deepseek/config.toml`.
+///
+/// v0.8.8 intentionally uses the shared config file as the default
+/// setup path. It works in every folder, in npm installs, in IDE
+/// terminals, and without platform credential prompts.
+pub fn save_api_key(api_key: &str) -> Result<SavedCredential> {
+    let trimmed = api_key.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("Refusing to save an empty API key.");
+    }
+
+    let path = save_api_key_to_config_file(trimmed)?;
+    Ok(SavedCredential::ConfigFile(path))
+}
+
+/// Write the `api_key` slot directly to `config.toml`.
+fn save_api_key_to_config_file(api_key: &str) -> Result<PathBuf> {
     fn is_api_key_assignment(line: &str) -> bool {
         let trimmed = line.trim_start();
         trimmed
@@ -2157,8 +2184,6 @@ pub fn save_api_key(api_key: &str) -> Result<PathBuf> {
 
     ensure_parent_dir(&config_path)?;
 
-    // Don't use keychain - just write directly to config file
-    // Keychain causes permission prompts on macOS for unsigned binaries
     let key_to_write = api_key.to_string();
 
     let content = if config_path.exists() {
@@ -2217,23 +2242,40 @@ reasoning_effort = "max"
     Ok(config_path)
 }
 
-/// Check if an API key is configured (either in config or environment)
+/// Check if an API key is configured anywhere the runtime can resolve it.
+///
+/// Order of inspection:
+///   1. `DEEPSEEK_API_KEY` env var (fast, no I/O, no OS prompts).
+///   2. In-memory override on the config (set by onboarding / picker).
+///   3. Config-file `api_key` slot (cheap file read already done by
+///      the loaded `Config`).
+///
+/// Platform credential stores are intentionally not queried here.
+/// Startup/onboarding checks must be cheap and prompt-free, so v0.8.8
+/// keeps the default auth path to environment variables and
+/// `~/.deepseek/config.toml`.
+///
+/// Used by [`crate::tui::app::App::new`] to decide whether to gate
+/// the user behind the in-TUI api-key onboarding screen — getting
+/// this wrong made users get prompted for credentials in situations
+/// where normal env/config auth was already available.
 pub fn has_api_key(config: &Config) -> bool {
-    // Check environment variable first (highest priority)
     if std::env::var("DEEPSEEK_API_KEY").is_ok_and(|k| !k.trim().is_empty()) {
         return true;
     }
-
-    // Then check config file
-    config
+    if config
         .api_key
         .as_ref()
         .is_some_and(|k| !k.trim().is_empty() && k != API_KEYRING_SENTINEL)
+    {
+        return true;
+    }
+    false
 }
 
-/// Check whether the given provider has any usable API key — either via env
-/// var or the corresponding `[providers.<name>]` config entry. Used by the
-/// `/provider` picker to decide whether to prompt for a key inline.
+/// Check whether the given provider has any usable API key — via env var,
+/// provider/root config. Used by the `/provider` picker to decide whether to
+/// prompt for a key inline.
 #[must_use]
 pub fn has_api_key_for(config: &Config, provider: ApiProvider) -> bool {
     let env_var = match provider {
@@ -2258,39 +2300,35 @@ pub fn has_api_key_for(config: &Config, provider: ApiProvider) -> bool {
         return true;
     }
 
-    if let Some(providers) = config.providers.as_ref() {
-        let entry = match provider {
-            ApiProvider::Deepseek | ApiProvider::DeepseekCN => &providers.deepseek,
-            ApiProvider::NvidiaNim => &providers.nvidia_nim,
-            ApiProvider::Openrouter => &providers.openrouter,
-            ApiProvider::Novita => &providers.novita,
-            ApiProvider::Fireworks => &providers.fireworks,
-            ApiProvider::Sglang => &providers.sglang,
-        };
-        if entry
-            .api_key
-            .as_ref()
-            .is_some_and(|k| !k.trim().is_empty() && k != API_KEYRING_SENTINEL)
-        {
-            return true;
-        }
+    if config
+        .provider_config_for(provider)
+        .and_then(|entry| entry.api_key.as_ref())
+        .is_some_and(|k| !k.trim().is_empty() && k != API_KEYRING_SENTINEL)
+    {
+        return true;
     }
 
-    // Legacy root field is DeepSeek-only (both global and CN share it).
-    matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN)
+    if matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN)
         && config
             .api_key
             .as_ref()
             .is_some_and(|k| !k.trim().is_empty() && k != API_KEYRING_SENTINEL)
+    {
+        return true;
+    }
+
+    false
 }
 
-/// Save an API key to the appropriate place in `~/.deepseek/config.toml` for
-/// the given provider. DeepSeek writes the legacy root `api_key`; other
-/// providers write `[providers.<name>] api_key = "..."` (creating the table
-/// if needed). Returns the config file path.
+/// Save an API key to the appropriate place for the given provider.
+/// DeepSeek goes through [`save_api_key`]. Other providers write
+/// `[providers.<name>] api_key = "..."` to `~/.deepseek/config.toml`.
+/// Returns the config file path.
 pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf> {
-    if matches!(provider, ApiProvider::Deepseek) {
-        return save_api_key(api_key);
+    if matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN) {
+        return match save_api_key(api_key)? {
+            SavedCredential::ConfigFile(path) => Ok(path),
+        };
     }
 
     let config_path = default_config_path()
@@ -2357,17 +2395,12 @@ pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf>
     Ok(config_path)
 }
 
-/// Clear the API key from every storage layer the resolver consults.
+/// Clear the API key from config-file storage.
 ///
 /// `/logout` calls this to wipe credentials so the next request can't
-/// silently use a stale key (#343). The function clears:
-///
-/// 1. **OS keyring** — every known provider slot (`deepseek`, `nvidia-nim`,
-///    `openrouter`, `novita`, `fireworks`, `sglang`). A leftover keyring
-///    entry would otherwise be returned by [`Config::deepseek_api_key`]
-///    even after the user enters a new key.
-/// 2. **Config file** — strips the legacy root `api_key = ...` line *and*
-///    every `api_key` line nested in a `[providers.<name>]` table.
+/// silently use a stale config key (#343). The function strips the legacy
+/// root `api_key = ...` line *and* every `api_key` line nested in a
+/// `[providers.<name>]` table.
 ///
 /// Environment variables (`DEEPSEEK_API_KEY`, etc.) are intentionally
 /// **not** unset — they are managed by the user's shell and outside the
@@ -2375,31 +2408,9 @@ pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf>
 /// (Path 0) ensures a freshly-entered key still wins over a stale env
 /// var that lingers from a previous session.
 pub fn clear_api_key() -> Result<()> {
-    // 1. Clear every known provider slot from the OS keyring (or
-    //    file-backed fallback). Errors are warned-and-continued because
-    //    a missing entry is a no-op and a transient keyring failure
-    //    shouldn't block the rest of the wipe.
-    let secrets = deepseek_secrets::Secrets::auto_detect();
-    let backend = secrets.backend_name();
-    for slot in &[
-        "deepseek",
-        "nvidia-nim",
-        "openrouter",
-        "novita",
-        "fireworks",
-        "sglang",
-    ] {
-        if let Err(err) = secrets.delete(slot) {
-            tracing::warn!("Failed to clear keyring slot '{slot}': {err}");
-        }
-    }
-    log_sensitive_event(
-        "credential.clear",
-        json!({ "backend": backend, "scope": "keyring_all_slots" }),
-    );
-
-    // 2. Strip api_key lines from config.toml, including provider-scoped
-    //    nested entries.
+    // Strip api_key lines from config.toml, including provider-scoped nested
+    // entries. Clearing a config file must not trigger platform credential
+    // prompts.
     let config_path = default_config_path()
         .context("Failed to resolve config path: home directory not found.")?;
 
@@ -2645,7 +2656,10 @@ mod tests {
     }
 
     #[test]
-    fn save_api_key_writes_config() -> Result<()> {
+    fn save_api_key_writes_config_file_under_cfg_test() -> Result<()> {
+        // `save_api_key` writes to the shared user config file. This
+        // pins the boring v0.8.8 setup path and avoids platform
+        // credential prompts during onboarding.
         let _lock = lock_test_env();
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -2659,12 +2673,61 @@ mod tests {
         fs::create_dir_all(&temp_root)?;
         let _guard = EnvGuard::new(&temp_root);
 
-        let path = save_api_key("test-key")?;
+        let saved = save_api_key("test-key")?;
         let expected = temp_root.join(".deepseek").join("config.toml");
-        assert_eq!(path, expected);
+        assert_eq!(saved, SavedCredential::ConfigFile(expected.clone()));
+        assert_eq!(saved.describe(), expected.display().to_string());
 
-        let contents = fs::read_to_string(&path)?;
+        let contents = fs::read_to_string(&expected)?;
         assert!(contents.contains("api_key = \""));
+        Ok(())
+    }
+
+    #[test]
+    fn save_api_key_rejects_empty_input() {
+        let _lock = lock_test_env();
+        let err = save_api_key("   ").expect_err("empty should bail");
+        assert!(
+            err.to_string().contains("empty"),
+            "expected error to mention empty, got: {err}"
+        );
+    }
+
+    #[test]
+    fn saved_credential_describe_returns_config_file_path() {
+        let cf = SavedCredential::ConfigFile(PathBuf::from("/tmp/x.toml"));
+        assert_eq!(cf.describe(), "/tmp/x.toml");
+    }
+
+    #[test]
+    fn has_api_key_detects_in_memory_override_and_env_var() -> Result<()> {
+        // Pins the v0.8.8 contract: `has_api_key` covers the prompt-free
+        // sources used by `Config::deepseek_api_key` (in-memory override,
+        // env var, config-file slot).
+        let _lock = lock_test_env();
+        // Explicit in-memory key wins over every other source per
+        // `Config::deepseek_api_key`'s "Path 0" override.
+        let cfg = Config {
+            api_key: Some("sk-in-memory-override".to_string()),
+            ..Default::default()
+        };
+        assert!(
+            has_api_key(&cfg),
+            "in-memory override must be detected as a usable key"
+        );
+
+        // Env var path.
+        let env_cfg = Config::default();
+        unsafe {
+            std::env::set_var("DEEPSEEK_API_KEY", "sk-test-from-env");
+        }
+        assert!(
+            has_api_key(&env_cfg),
+            "env-var key must be detected even with empty config"
+        );
+        unsafe {
+            std::env::remove_var("DEEPSEEK_API_KEY");
+        }
         Ok(())
     }
 
@@ -2725,8 +2788,8 @@ api_key = "old-openrouter-key"
     }
 
     /// Regression for #343: explicit in-memory `api_key` (non-empty,
-    /// non-sentinel) wins over the keyring/env layer so a freshly-typed
-    /// onboarding key takes effect even if a stale credential lingers.
+    /// non-sentinel) wins over env/config so a freshly-typed onboarding
+    /// key takes effect immediately.
     #[test]
     fn deepseek_api_key_prefers_explicit_in_memory_override() -> Result<()> {
         let _lock = lock_test_env();
@@ -2754,6 +2817,35 @@ api_key = "old-openrouter-key"
     }
 
     #[test]
+    fn deepseek_api_key_prefers_saved_config_over_stale_env() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-config-over-env-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        unsafe {
+            env::set_var("DEEPSEEK_API_KEY", "stale-env-key");
+        }
+        let config = Config {
+            api_key: Some("fresh-config-key".to_string()),
+            ..Config::default()
+        };
+        assert_eq!(config.deepseek_api_key()?, "fresh-config-key");
+        unsafe {
+            env::remove_var("DEEPSEEK_API_KEY");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn deepseek_api_key_ignores_sentinel_placeholder() -> Result<()> {
         let _lock = lock_test_env();
         let nanos = SystemTime::now()
@@ -2773,8 +2865,8 @@ api_key = "old-openrouter-key"
             ..Config::default()
         };
         // Sentinel must not be treated as a real key — the resolver should
-        // fall through to keyring / env / config-provider and ultimately
-        // bail out with a "key not found" error.
+        // fall through to env / config-provider and ultimately bail out
+        // with a "key not found" error.
         let _err = config
             .deepseek_api_key()
             .expect_err("sentinel placeholder must not satisfy the API key check");
@@ -2920,8 +3012,8 @@ api_key = "old-openrouter-key"
             "api_key_backup = \"old\"\napi_key = \"current\"\n",
         )?;
 
-        let path = save_api_key("new-key")?;
-        assert_eq!(path, config_path);
+        let saved = save_api_key("new-key")?;
+        assert_eq!(saved, SavedCredential::ConfigFile(config_path.clone()));
 
         let contents = fs::read_to_string(&config_path)?;
         assert!(contents.contains("api_key_backup = \"old\""));
@@ -2975,6 +3067,35 @@ api_key = "old-openrouter-key"
 
         assert_eq!(config.api_key.as_deref(), Some("from-config-file"));
         config.validate()?;
+        Ok(())
+    }
+
+    #[test]
+    fn apply_env_overrides_does_not_copy_api_key_into_config() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-env-key-not-config-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        unsafe {
+            env::set_var("DEEPSEEK_API_KEY", "env-key");
+        }
+        let mut config = Config::default();
+        apply_env_overrides(&mut config);
+
+        assert_eq!(config.api_key, None);
+        assert_eq!(config.deepseek_api_key()?, "env-key");
+        unsafe {
+            env::remove_var("DEEPSEEK_API_KEY");
+        }
         Ok(())
     }
 
@@ -3522,6 +3643,32 @@ api_key = "novita-table-key"
     }
 
     #[test]
+    fn has_api_key_for_uses_deepseek_cn_provider_table() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-has-key-cn-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        let mut providers = ProvidersConfig::default();
+        providers.deepseek_cn.api_key = Some("cn-file-key".to_string());
+        let config = Config {
+            providers: Some(providers),
+            ..Config::default()
+        };
+
+        assert!(has_api_key_for(&config, ApiProvider::DeepseekCN));
+        Ok(())
+    }
+
+    #[test]
     fn save_api_key_for_openrouter_writes_provider_table() -> Result<()> {
         let _lock = lock_test_env();
         let nanos = SystemTime::now()
@@ -3586,6 +3733,32 @@ api_key = "novita-table-key"
                 .and_then(|t| t.get("api_key"))
                 .and_then(toml::Value::as_str),
             Some("sglang-saved-key")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn save_api_key_for_deepseek_cn_uses_root_deepseek_storage() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-save-key-cn-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        let path = save_api_key_for(ApiProvider::DeepseekCN, "cn-saved-key")?;
+        let contents = fs::read_to_string(&path)?;
+        let parsed: toml::Value = toml::from_str(&contents)?;
+
+        assert_eq!(
+            parsed.get("api_key").and_then(toml::Value::as_str),
+            Some("cn-saved-key")
         );
         Ok(())
     }

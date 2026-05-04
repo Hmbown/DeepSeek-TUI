@@ -9,7 +9,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::compaction::CompactionConfig;
-use crate::config::{ApiProvider, Config, has_api_key, save_api_key};
+use crate::config::{ApiProvider, Config, SavedCredential, has_api_key, save_api_key};
 use crate::config_ui::ConfigUiMode;
 use crate::core::coherence::CoherenceState;
 use crate::cycle_manager::{CycleBriefing, CycleConfig};
@@ -756,12 +756,12 @@ pub struct App {
     pub submit_pending_steers_after_interrupt: bool,
     /// Start time for current turn
     pub turn_started_at: Option<Instant>,
-    /// When this `App` instance was constructed (#448). Used to render
-    /// the footer's `worked Nh Mm` indicator. Resets per launch — we
-    /// deliberately don't try to persist across full restarts because
-    /// "since I sat down" is the more useful framing than wall-clock
-    /// session age.
-    pub session_started_at: Instant,
+    /// Sum of completed turn durations for this `App` instance (#448
+    /// follow-up). Drives the footer's `worked Nh Mm` chip so the
+    /// label reflects actual model work, not wall-clock since launch.
+    /// Incremented on `TurnComplete` from the elapsed time of the
+    /// just-finished turn. Resets per launch.
+    pub cumulative_turn_duration: std::time::Duration,
     /// Current runtime turn id (if known).
     pub runtime_turn_id: Option<String>,
     /// Current runtime turn status (if known).
@@ -1207,7 +1207,7 @@ impl App {
             rejected_steers: VecDeque::new(),
             submit_pending_steers_after_interrupt: false,
             turn_started_at: None,
-            session_started_at: Instant::now(),
+            cumulative_turn_duration: std::time::Duration::ZERO,
             runtime_turn_id: None,
             runtime_turn_status: None,
             workspace_context: None,
@@ -1231,18 +1231,18 @@ impl App {
         }
     }
 
-    pub fn submit_api_key(&mut self) -> Result<PathBuf, ApiKeyError> {
+    pub fn submit_api_key(&mut self) -> Result<SavedCredential, ApiKeyError> {
         let key = self.api_key_input.trim().to_string();
         if key.is_empty() {
             return Err(ApiKeyError::Empty);
         }
 
         match save_api_key(&key) {
-            Ok(path) => {
+            Ok(saved) => {
                 self.api_key_input.clear();
                 self.api_key_cursor = 0;
                 self.onboarding_needs_api_key = false;
-                Ok(path)
+                Ok(saved)
             }
             Err(source) => Err(ApiKeyError::SaveFailed { source }),
         }

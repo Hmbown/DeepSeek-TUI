@@ -55,6 +55,74 @@ pub fn wrap_link(target: &str, label: &str) -> String {
     out
 }
 
+/// Strip every ANSI escape sequence from `s` into `out`, preserving only the
+/// visible characters. ratatui's buffer drops the leading `ESC` byte but
+/// happily paints every other byte of an escape (`[`, `0`, `;`, `m`, OSC
+/// payloads, etc.) into a buffer cell, drifting columns. Tool stdout that
+/// includes ANSI (e.g. `gh`/`git` with color forced on, anything run through
+/// a PTY) must be sanitized before it enters the transcript.
+///
+/// Handles CSI (`ESC [ … final`), OSC (`ESC ] … BEL` or `ESC \`), DCS, SOS,
+/// PM, APC, and standalone two-byte ESC sequences. OSC 8 hyperlink wrappers
+/// (`ESC ] 8 ; … BEL` / `ESC \`) are stripped along with the rest.
+pub fn strip_ansi_into(s: &str, out: &mut String) {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == 0x1b && i + 1 < bytes.len() {
+            let next = bytes[i + 1];
+            match next {
+                // CSI: ESC [ ... <final byte 0x40..=0x7E>
+                b'[' => {
+                    let mut j = i + 2;
+                    while j < bytes.len() {
+                        let b = bytes[j];
+                        if (0x40..=0x7e).contains(&b) {
+                            j += 1;
+                            break;
+                        }
+                        j += 1;
+                    }
+                    i = j;
+                    continue;
+                }
+                // OSC / DCS / SOS / PM / APC: ESC ] | P | X | ^ | _ ... ST(ESC \) or BEL
+                b']' | b'P' | b'X' | b'^' | b'_' => {
+                    let mut j = i + 2;
+                    while j < bytes.len() {
+                        if bytes[j] == 0x07 {
+                            j += 1;
+                            break;
+                        }
+                        if bytes[j] == 0x1b && j + 1 < bytes.len() && bytes[j + 1] == b'\\' {
+                            j += 2;
+                            break;
+                        }
+                        j += 1;
+                    }
+                    i = j;
+                    continue;
+                }
+                // Standalone two-byte ESC sequence (RIS, charset selection, etc.)
+                _ => {
+                    i += 2;
+                    continue;
+                }
+            }
+        }
+        // Strip lone control bytes that ratatui would otherwise drop (and which
+        // mean nothing in transcript output) but keep \n, \r, \t as legitimate
+        // formatting.
+        let b = bytes[i];
+        if b < 0x20 && b != b'\n' && b != b'\r' && b != b'\t' {
+            i += 1;
+            continue;
+        }
+        out.push(b as char);
+        i += 1;
+    }
+}
+
 /// Strip OSC 8 escape sequences from `s` into `out`, preserving the visible
 /// label text. Other escapes (color, style) pass through untouched. The
 /// implementation handles both the standard `ESC \` and the lone `BEL`
@@ -141,6 +209,38 @@ mod tests {
             wrapped = wrap_link("https://example.com", "click")
         );
         assert_eq!(strip(&mixed), "\x1b[31mred\x1b[0m click");
+    }
+
+    fn strip_ansi(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        strip_ansi_into(s, &mut out);
+        out
+    }
+
+    #[test]
+    fn strip_ansi_removes_csi_sgr_and_keeps_text() {
+        let coloured = "526   \x1b[1;32mOPEN\x1b[0m  bug fix";
+        assert_eq!(strip_ansi(coloured), "526   OPEN  bug fix");
+    }
+
+    #[test]
+    fn strip_ansi_removes_osc_8_wrapper() {
+        let wrapped = wrap_link("https://example.com", "click");
+        assert_eq!(strip_ansi(&wrapped), "click");
+    }
+
+    #[test]
+    fn strip_ansi_preserves_newlines_tabs_and_cr() {
+        let s = "a\nb\tc\rd";
+        assert_eq!(strip_ansi(s), "a\nb\tc\rd");
+    }
+
+    #[test]
+    fn strip_ansi_drops_lone_control_bytes() {
+        // Bare BEL or other C0 control bytes that aren't \n/\r/\t are dropped
+        // so they can't paint as visible cells.
+        let s = "a\x07b\x01c";
+        assert_eq!(strip_ansi(s), "abc");
     }
 
     #[test]

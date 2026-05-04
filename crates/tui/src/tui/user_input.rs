@@ -222,6 +222,14 @@ impl UserInputView {
                 self.other_input.pop();
                 ViewAction::None
             }
+            KeyCode::Char('h')
+                if key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+            {
+                self.other_input.pop();
+                ViewAction::None
+            }
             KeyCode::Char(ch) => {
                 if !ch.is_control() {
                     self.other_input.push(ch);

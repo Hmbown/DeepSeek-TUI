@@ -121,16 +121,29 @@ GitHub release assets are reachable. TUNA, rsproxy, Tencent COS, or Aliyun OSS
 mirrors can also be used with `DEEPSEEK_TUI_RELEASE_BASE_URL` when a mirrored
 release-asset directory is available.
 
-On first launch you'll be prompted for your [DeepSeek API key](https://platform.deepseek.com/api_keys). You can also set it ahead of time:
+On first launch you'll be prompted for your [DeepSeek API key](https://platform.deepseek.com/api_keys). The TUI saves it to your user config at `~/.deepseek/config.toml` so it works from every folder without OS credential prompts.
+
+You can also set it ahead of time:
 
 ```bash
-# via CLI
-deepseek login --api-key "YOUR_DEEPSEEK_API_KEY"
+# Recommended — saves to ~/.deepseek/config.toml; works everywhere
+# (interactive shells, IDE terminals, scripts, cron):
+deepseek auth set --provider deepseek
 
-# via env var
+# Env var alternative — note that on zsh, exports in ~/.zshrc only
+# reach interactive shells. Put it in ~/.zshenv if you want it in
+# every context (login shells, IDEs, scripts):
 export DEEPSEEK_API_KEY="YOUR_DEEPSEEK_API_KEY"
 deepseek
+
+# Verify which source the binary is reading:
+deepseek doctor
 ```
+
+> To rotate or remove a saved key, run
+> `deepseek auth clear --provider deepseek` (or `deepseek logout` for
+> the legacy alias), then run `deepseek auth set --provider deepseek`
+> again.
 
 ### Using NVIDIA NIM
 
@@ -239,6 +252,14 @@ A stabilization-focused release: a thick band of UX polish on top of the v0.8.6 
 - **Offline composer queue is session-scoped** — legacy unscoped queues fail closed instead of leaking content into unrelated chats ([#487](https://github.com/Hmbown/DeepSeek-TUI/issues/487)).
 - **`display_path` test race + Windows separator** — tests no longer mutate `$HOME`; home-relative suffix joins with `MAIN_SEPARATOR_STR` so Windows shows `~\projects\foo` ([#506](https://github.com/Hmbown/DeepSeek-TUI/issues/506)).
 - **Footer reads statusline colours from `app.ui_theme`** ([#449](https://github.com/Hmbown/DeepSeek-TUI/issues/449)).
+
+### 🔑 Auth & onboarding
+
+- **No automatic OS credential prompts** — startup, `doctor`, `doctor --json`, and normal dispatcher setup now use CLI flag → `~/.deepseek/config.toml` → env.
+- **One setup command works everywhere** — `deepseek auth set --provider deepseek` and the in-TUI onboarding screen both write the shared user config file, so the key is available from any folder without relying on `~/.zshrc` propagation.
+- **Onboarding screen wording rewritten** — "Step 1: open https://platform.deepseek.com/api_keys" / "Step 2: paste below and press Enter" with an explicit note showing where the key is saved.
+- **Missing-key error is now actionable** — the `DeepSeek API key not found` bail message lists the config-backed CLI command first and the env-var alternative second, with a `~/.zshrc` vs `~/.zshenv` note for zsh users whose env var only reaches interactive shells.
+- **Dispatcher provider/auth parity** — the canonical `deepseek` entry point now accepts the same DeepSeek V4 providers advertised by the TUI (`fireworks`, `sglang` included), and legacy `deepseek login --api-key` / `deepseek logout` now share the same config-backed path.
 
 Full changelog: [CHANGELOG.md](CHANGELOG.md).
 
@@ -509,7 +530,7 @@ deepseek                                      # interactive TUI
 deepseek "explain this function"              # one-shot prompt
 deepseek --model deepseek-v4-flash "summarize" # model override
 deepseek --yolo                               # YOLO mode (auto-approve tools)
-deepseek login --api-key "..."                # save API key
+deepseek auth set --provider deepseek         # save API key to ~/.deepseek/config.toml
 deepseek doctor                               # check setup & connectivity
 deepseek doctor --json                        # machine-readable diagnostics
 deepseek setup --status                       # read-only setup status

@@ -9,26 +9,27 @@ use crate::tui::app::App;
 pub fn lines(app: &App) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(Span::styled(
-            "API Key Setup",
+            "Connect your DeepSeek API key",
             Style::default()
                 .fg(palette::DEEPSEEK_SKY)
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(Span::styled(
-            "Enter your DEEPSEEK_API_KEY to continue.",
+            "Step 1.  Open https://platform.deepseek.com/api_keys and create a key.",
             Style::default().fg(palette::TEXT_PRIMARY),
         )),
         Line::from(Span::styled(
-            "Get your key at https://platform.deepseek.com",
-            Style::default().fg(palette::DEEPSEEK_SKY),
+            "Step 2.  Paste it below and press Enter.",
+            Style::default().fg(palette::TEXT_PRIMARY),
         )),
+        Line::from(""),
         Line::from(Span::styled(
-            "Paste the full key exactly as issued (no spaces/newlines).",
+            "Saved to ~/.deepseek/config.toml so it works from any folder.",
             Style::default().fg(palette::TEXT_MUTED),
         )),
         Line::from(Span::styled(
-            "Unusual-looking formats warn, but setup only blocks clearly broken input.",
+            "Paste the full key exactly as issued (no spaces or newlines).",
             Style::default().fg(palette::TEXT_MUTED),
         )),
         Line::from(""),

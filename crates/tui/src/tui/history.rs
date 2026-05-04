@@ -2322,15 +2322,18 @@ fn render_preserved_output_mode(
 fn output_rows(output: &str, width: u16) -> Vec<OutputRow> {
     let wrap_width = width.saturating_sub(4).max(1) as usize;
     let mut rows = Vec::new();
+    let mut sanitized = String::with_capacity(output.len());
     for line in output.lines() {
-        let intact = is_path_or_url_like(line);
+        sanitized.clear();
+        crate::tui::osc8::strip_ansi_into(line, &mut sanitized);
+        let intact = is_path_or_url_like(&sanitized);
         if intact {
             rows.push(OutputRow {
-                text: line.to_string(),
+                text: sanitized.clone(),
                 intact: true,
             });
         } else {
-            for wrapped in wrap_text(line, wrap_width) {
+            for wrapped in wrap_text(&sanitized, wrap_width) {
                 rows.push(OutputRow {
                     text: wrapped,
                     intact: false,

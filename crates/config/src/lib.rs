@@ -19,8 +19,13 @@ const DEFAULT_OPENROUTER_MODEL: &str = "deepseek/deepseek-v4-pro";
 const DEFAULT_OPENROUTER_FLASH_MODEL: &str = "deepseek/deepseek-v4-flash";
 const DEFAULT_NOVITA_MODEL: &str = "deepseek/deepseek-v4-pro";
 const DEFAULT_NOVITA_FLASH_MODEL: &str = "deepseek/deepseek-v4-flash";
+const DEFAULT_FIREWORKS_MODEL: &str = "accounts/fireworks/models/deepseek-v4-pro";
+const DEFAULT_SGLANG_MODEL: &str = "deepseek-ai/DeepSeek-V4-Pro";
+const DEFAULT_SGLANG_FLASH_MODEL: &str = "deepseek-ai/DeepSeek-V4-Flash";
 const DEFAULT_OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 const DEFAULT_NOVITA_BASE_URL: &str = "https://api.novita.ai/v1";
+const DEFAULT_FIREWORKS_BASE_URL: &str = "https://api.fireworks.ai/inference/v1";
+const DEFAULT_SGLANG_BASE_URL: &str = "http://localhost:30000/v1";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
@@ -31,6 +36,8 @@ pub enum ProviderKind {
     Openai,
     Openrouter,
     Novita,
+    Fireworks,
+    Sglang,
 }
 
 impl ProviderKind {
@@ -42,6 +49,8 @@ impl ProviderKind {
             Self::Openai => "openai",
             Self::Openrouter => "openrouter",
             Self::Novita => "novita",
+            Self::Fireworks => "fireworks",
+            Self::Sglang => "sglang",
         }
     }
 
@@ -53,6 +62,8 @@ impl ProviderKind {
             "openai" | "open-ai" => Some(Self::Openai),
             "openrouter" | "open_router" => Some(Self::Openrouter),
             "novita" => Some(Self::Novita),
+            "fireworks" | "fireworks-ai" => Some(Self::Fireworks),
+            "sglang" | "sg-lang" => Some(Self::Sglang),
             _ => None,
         }
     }
@@ -77,6 +88,10 @@ pub struct ProvidersToml {
     pub openrouter: ProviderConfigToml,
     #[serde(default)]
     pub novita: ProviderConfigToml,
+    #[serde(default)]
+    pub fireworks: ProviderConfigToml,
+    #[serde(default)]
+    pub sglang: ProviderConfigToml,
 }
 
 impl ProvidersToml {
@@ -88,6 +103,8 @@ impl ProvidersToml {
             ProviderKind::Openai => &self.openai,
             ProviderKind::Openrouter => &self.openrouter,
             ProviderKind::Novita => &self.novita,
+            ProviderKind::Fireworks => &self.fireworks,
+            ProviderKind::Sglang => &self.sglang,
         }
     }
 
@@ -98,6 +115,8 @@ impl ProvidersToml {
             ProviderKind::Openai => &mut self.openai,
             ProviderKind::Openrouter => &mut self.openrouter,
             ProviderKind::Novita => &mut self.novita,
+            ProviderKind::Fireworks => &mut self.fireworks,
+            ProviderKind::Sglang => &mut self.sglang,
         }
     }
 }
@@ -297,6 +316,8 @@ impl ConfigToml {
             &project.providers.openrouter,
         );
         merge_provider_config(&mut self.providers.novita, &project.providers.novita);
+        merge_provider_config(&mut self.providers.fireworks, &project.providers.fireworks);
+        merge_provider_config(&mut self.providers.sglang, &project.providers.sglang);
 
         if project.network.is_some() {
             self.network = project.network;
@@ -346,6 +367,12 @@ impl ConfigToml {
             "providers.novita.api_key" => self.providers.novita.api_key.clone(),
             "providers.novita.base_url" => self.providers.novita.base_url.clone(),
             "providers.novita.model" => self.providers.novita.model.clone(),
+            "providers.fireworks.api_key" => self.providers.fireworks.api_key.clone(),
+            "providers.fireworks.base_url" => self.providers.fireworks.base_url.clone(),
+            "providers.fireworks.model" => self.providers.fireworks.model.clone(),
+            "providers.sglang.api_key" => self.providers.sglang.api_key.clone(),
+            "providers.sglang.base_url" => self.providers.sglang.base_url.clone(),
+            "providers.sglang.model" => self.providers.sglang.model.clone(),
             _ => self.extras.get(key).map(toml::Value::to_string),
         }
     }
@@ -415,6 +442,24 @@ impl ConfigToml {
             "providers.novita.model" => {
                 self.providers.novita.model = Some(value.to_string());
             }
+            "providers.fireworks.api_key" => {
+                self.providers.fireworks.api_key = Some(value.to_string());
+            }
+            "providers.fireworks.base_url" => {
+                self.providers.fireworks.base_url = Some(value.to_string());
+            }
+            "providers.fireworks.model" => {
+                self.providers.fireworks.model = Some(value.to_string());
+            }
+            "providers.sglang.api_key" => {
+                self.providers.sglang.api_key = Some(value.to_string());
+            }
+            "providers.sglang.base_url" => {
+                self.providers.sglang.base_url = Some(value.to_string());
+            }
+            "providers.sglang.model" => {
+                self.providers.sglang.model = Some(value.to_string());
+            }
             _ => {
                 self.extras
                     .insert(key.to_string(), toml::Value::String(value.to_string()));
@@ -462,6 +507,12 @@ impl ConfigToml {
             "providers.novita.api_key" => self.providers.novita.api_key = None,
             "providers.novita.base_url" => self.providers.novita.base_url = None,
             "providers.novita.model" => self.providers.novita.model = None,
+            "providers.fireworks.api_key" => self.providers.fireworks.api_key = None,
+            "providers.fireworks.base_url" => self.providers.fireworks.base_url = None,
+            "providers.fireworks.model" => self.providers.fireworks.model = None,
+            "providers.sglang.api_key" => self.providers.sglang.api_key = None,
+            "providers.sglang.base_url" => self.providers.sglang.base_url = None,
+            "providers.sglang.model" => self.providers.sglang.model = None,
             _ => {
                 self.extras.remove(key);
             }
@@ -555,6 +606,24 @@ impl ConfigToml {
         if let Some(v) = self.providers.novita.model.as_ref() {
             out.insert("providers.novita.model".to_string(), v.clone());
         }
+        if let Some(v) = self.providers.fireworks.api_key.as_ref() {
+            out.insert("providers.fireworks.api_key".to_string(), redact_secret(v));
+        }
+        if let Some(v) = self.providers.fireworks.base_url.as_ref() {
+            out.insert("providers.fireworks.base_url".to_string(), v.clone());
+        }
+        if let Some(v) = self.providers.fireworks.model.as_ref() {
+            out.insert("providers.fireworks.model".to_string(), v.clone());
+        }
+        if let Some(v) = self.providers.sglang.api_key.as_ref() {
+            out.insert("providers.sglang.api_key".to_string(), redact_secret(v));
+        }
+        if let Some(v) = self.providers.sglang.base_url.as_ref() {
+            out.insert("providers.sglang.base_url".to_string(), v.clone());
+        }
+        if let Some(v) = self.providers.sglang.model.as_ref() {
+            out.insert("providers.sglang.model".to_string(), v.clone());
+        }
 
         for (k, v) in &self.extras {
             out.insert(k.clone(), v.to_string());
@@ -562,19 +631,25 @@ impl ConfigToml {
         out
     }
 
-    /// Resolve runtime options with the default secrets façade
-    /// ([`Secrets::auto_detect`]). For test injection or custom backends,
-    /// use [`Self::resolve_runtime_options_with_secrets`].
+    /// Resolve runtime options without touching platform credential stores.
+    ///
+    /// v0.8.8 keeps the default auth path deliberately boring:
+    /// CLI flag → config file → environment. Explicit keyring migration
+    /// remains available through auth commands, but normal startup and
+    /// diagnostics must not trigger platform credential prompts.
     #[must_use]
     pub fn resolve_runtime_options(&self, cli: &CliRuntimeOverrides) -> ResolvedRuntimeOptions {
-        self.resolve_runtime_options_with_secrets(cli, default_secrets())
+        let no_keyring = Secrets::new(std::sync::Arc::new(
+            deepseek_secrets::InMemoryKeyringStore::new(),
+        ));
+        self.resolve_runtime_options_with_secrets(cli, &no_keyring)
     }
 
     /// Resolve runtime options using an explicit secrets façade.
     ///
-    /// API-key precedence is **CLI flag → keyring → env → config-file**.
-    /// (`Secrets::resolve` already collapses keyring → env, so we layer
-    /// CLI on top and TOML on the bottom.)
+    /// API-key precedence is **CLI flag → config-file → environment**.
+    /// If a caller explicitly injects a secrets façade with a populated
+    /// credential store, that store is used only when config/env are empty.
     #[must_use]
     pub fn resolve_runtime_options_with_secrets(
         &self,
@@ -594,18 +669,17 @@ impl ConfigToml {
         let root_deepseek_model = (provider == ProviderKind::Deepseek)
             .then(|| self.default_text_model.clone())
             .flatten();
-        // CLI flag wins outright. Otherwise: keyring → env (via Secrets) → config-file.
+        // CLI flag wins outright. Otherwise: config-file → injected secrets/env.
+        // This makes `deepseek auth set` a reliable fix even when the user's
+        // shell still exports an old key. The default caller injects an empty
+        // in-memory store, so this path does not touch platform credential
+        // stores during ordinary startup.
+        let from_file = provider_cfg.api_key.clone().or(root_deepseek_api_key);
         let api_key = cli
             .api_key
             .clone()
-            .or_else(|| secrets.resolve(provider.as_str()))
-            .or_else(|| {
-                let from_file = provider_cfg.api_key.clone().or(root_deepseek_api_key);
-                if from_file.is_some() {
-                    warn_legacy_api_key_in_toml_once();
-                }
-                from_file
-            });
+            .or_else(|| from_file.clone())
+            .or_else(|| secrets.resolve(provider.as_str()));
 
         let base_url = cli
             .base_url
@@ -619,6 +693,8 @@ impl ConfigToml {
                 ProviderKind::Openai => DEFAULT_OPENAI_BASE_URL.to_string(),
                 ProviderKind::Openrouter => DEFAULT_OPENROUTER_BASE_URL.to_string(),
                 ProviderKind::Novita => DEFAULT_NOVITA_BASE_URL.to_string(),
+                ProviderKind::Fireworks => DEFAULT_FIREWORKS_BASE_URL.to_string(),
+                ProviderKind::Sglang => DEFAULT_SGLANG_BASE_URL.to_string(),
             });
 
         let model = cli
@@ -634,6 +710,8 @@ impl ConfigToml {
                 ProviderKind::Openai => DEFAULT_OPENAI_MODEL.to_string(),
                 ProviderKind::Openrouter => DEFAULT_OPENROUTER_MODEL.to_string(),
                 ProviderKind::Novita => DEFAULT_NOVITA_MODEL.to_string(),
+                ProviderKind::Fireworks => DEFAULT_FIREWORKS_MODEL.to_string(),
+                ProviderKind::Sglang => DEFAULT_SGLANG_MODEL.to_string(),
             });
         let model = normalize_model_for_provider(provider, &model);
 
@@ -733,6 +811,17 @@ fn normalize_model_for_provider(provider: ProviderKind, model: &str) -> String {
             "deepseek-v4-flash" | "deepseek-v4flash" | "deepseek-chat" | "deepseek-reasoner"
             | "deepseek-r1" | "deepseek-v3" | "deepseek-v3.2",
         ) => DEFAULT_NOVITA_FLASH_MODEL.to_string(),
+        (ProviderKind::Fireworks, "deepseek-v4-pro" | "deepseek-v4pro") => {
+            DEFAULT_FIREWORKS_MODEL.to_string()
+        }
+        (ProviderKind::Sglang, "deepseek-v4-pro" | "deepseek-v4pro") => {
+            DEFAULT_SGLANG_MODEL.to_string()
+        }
+        (
+            ProviderKind::Sglang,
+            "deepseek-v4-flash" | "deepseek-v4flash" | "deepseek-chat" | "deepseek-reasoner"
+            | "deepseek-r1" | "deepseek-v3" | "deepseek-v3.2",
+        ) => DEFAULT_SGLANG_FLASH_MODEL.to_string(),
         _ => model.to_string(),
     }
 }
@@ -810,18 +899,6 @@ impl ConfigStore {
     }
 }
 
-/// One-time deprecation warning emitted whenever a TOML `api_key`
-/// value is read by the resolver. Callers should migrate to the
-/// keyring via `deepseek auth set` / `deepseek auth migrate`.
-fn warn_legacy_api_key_in_toml_once() {
-    static WARNED: OnceLock<()> = OnceLock::new();
-    let _ = WARNED.get_or_init(|| {
-        tracing::warn!(
-            "api_key in config.toml is deprecated; use 'deepseek auth set' or 'deepseek auth migrate' to move it to the OS keyring"
-        );
-    });
-}
-
 /// Process-wide default [`Secrets`] façade. The first caller wins; the
 /// lock is exposed so test or CLI code can install an explicit
 /// backend (e.g. an [`deepseek_secrets::InMemoryKeyringStore`]) before
@@ -829,13 +906,10 @@ fn warn_legacy_api_key_in_toml_once() {
 pub fn default_secrets() -> &'static Secrets {
     static SECRETS: OnceLock<Secrets> = OnceLock::new();
     SECRETS.get_or_init(|| {
-        // Tests should never poke the real OS keyring — using
-        // auto_detect would surface stale macOS Keychain entries
-        // from the developer's session and break the precedence
-        // assertions. Cargo sets the `RUST_TEST_*` family of env
-        // vars (and `CARGO_PKG_NAME` is always populated), but the
-        // `cfg(test)` flag is the canonical signal here. See
-        // `install_test_secrets` for explicit installs.
+        // Tests should never poke real platform credential stores. Cargo sets the
+        // `RUST_TEST_*` family of env vars (and `CARGO_PKG_NAME` is
+        // always populated), but the `cfg(test)` flag is the canonical
+        // signal here. See `install_test_secrets` for explicit installs.
         #[cfg(test)]
         {
             Secrets::new(std::sync::Arc::new(
@@ -897,6 +971,8 @@ struct EnvRuntimeOverrides {
     openai_base_url: Option<String>,
     openrouter_base_url: Option<String>,
     novita_base_url: Option<String>,
+    fireworks_base_url: Option<String>,
+    sglang_base_url: Option<String>,
 }
 
 impl EnvRuntimeOverrides {
@@ -931,6 +1007,12 @@ impl EnvRuntimeOverrides {
             novita_base_url: std::env::var("NOVITA_BASE_URL")
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
+            fireworks_base_url: std::env::var("FIREWORKS_BASE_URL")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+            sglang_base_url: std::env::var("SGLANG_BASE_URL")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
         }
     }
 
@@ -943,6 +1025,8 @@ impl EnvRuntimeOverrides {
             ProviderKind::Openai => self.openai_base_url.clone(),
             ProviderKind::Openrouter => self.openrouter_base_url.clone(),
             ProviderKind::Novita => self.novita_base_url.clone(),
+            ProviderKind::Fireworks => self.fireworks_base_url.clone(),
+            ProviderKind::Sglang => self.sglang_base_url.clone(),
         }
     }
 }
@@ -973,6 +1057,10 @@ mod tests {
         openrouter_base_url: Option<OsString>,
         novita_api_key: Option<OsString>,
         novita_base_url: Option<OsString>,
+        fireworks_api_key: Option<OsString>,
+        fireworks_base_url: Option<OsString>,
+        sglang_api_key: Option<OsString>,
+        sglang_base_url: Option<OsString>,
     }
 
     impl EnvGuard {
@@ -991,6 +1079,10 @@ mod tests {
                 openrouter_base_url: env::var_os("OPENROUTER_BASE_URL"),
                 novita_api_key: env::var_os("NOVITA_API_KEY"),
                 novita_base_url: env::var_os("NOVITA_BASE_URL"),
+                fireworks_api_key: env::var_os("FIREWORKS_API_KEY"),
+                fireworks_base_url: env::var_os("FIREWORKS_BASE_URL"),
+                sglang_api_key: env::var_os("SGLANG_API_KEY"),
+                sglang_base_url: env::var_os("SGLANG_BASE_URL"),
             };
             // Safety: test-only environment mutation guarded by a module mutex.
             unsafe {
@@ -1007,6 +1099,10 @@ mod tests {
                 env::remove_var("OPENROUTER_BASE_URL");
                 env::remove_var("NOVITA_API_KEY");
                 env::remove_var("NOVITA_BASE_URL");
+                env::remove_var("FIREWORKS_API_KEY");
+                env::remove_var("FIREWORKS_BASE_URL");
+                env::remove_var("SGLANG_API_KEY");
+                env::remove_var("SGLANG_BASE_URL");
             }
             guard
         }
@@ -1037,6 +1133,10 @@ mod tests {
                 Self::restore_var("OPENROUTER_BASE_URL", self.openrouter_base_url.take());
                 Self::restore_var("NOVITA_API_KEY", self.novita_api_key.take());
                 Self::restore_var("NOVITA_BASE_URL", self.novita_base_url.take());
+                Self::restore_var("FIREWORKS_API_KEY", self.fireworks_api_key.take());
+                Self::restore_var("FIREWORKS_BASE_URL", self.fireworks_base_url.take());
+                Self::restore_var("SGLANG_API_KEY", self.sglang_api_key.take());
+                Self::restore_var("SGLANG_BASE_URL", self.sglang_base_url.take());
             }
         }
     }
@@ -1215,6 +1315,11 @@ mod tests {
         );
         assert_eq!(ProviderKind::parse("novita"), Some(ProviderKind::Novita));
         assert_eq!(ProviderKind::parse("Novita"), Some(ProviderKind::Novita));
+        assert_eq!(
+            ProviderKind::parse("fireworks-ai"),
+            Some(ProviderKind::Fireworks)
+        );
+        assert_eq!(ProviderKind::parse("sg-lang"), Some(ProviderKind::Sglang));
     }
 
     #[test]
@@ -1247,6 +1352,38 @@ mod tests {
         assert_eq!(resolved.provider, ProviderKind::Novita);
         assert_eq!(resolved.base_url, DEFAULT_NOVITA_BASE_URL);
         assert_eq!(resolved.model, DEFAULT_NOVITA_MODEL);
+    }
+
+    #[test]
+    fn fireworks_provider_defaults_to_canonical_endpoint_and_model() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let config = ConfigToml {
+            provider: ProviderKind::Fireworks,
+            ..ConfigToml::default()
+        };
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Fireworks);
+        assert_eq!(resolved.base_url, DEFAULT_FIREWORKS_BASE_URL);
+        assert_eq!(resolved.model, DEFAULT_FIREWORKS_MODEL);
+    }
+
+    #[test]
+    fn sglang_provider_defaults_to_local_endpoint_and_model() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let config = ConfigToml {
+            provider: ProviderKind::Sglang,
+            ..ConfigToml::default()
+        };
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Sglang);
+        assert_eq!(resolved.base_url, DEFAULT_SGLANG_BASE_URL);
+        assert_eq!(resolved.model, DEFAULT_SGLANG_MODEL);
     }
 
     #[test]
@@ -1286,6 +1423,24 @@ mod tests {
     }
 
     #[test]
+    fn fireworks_env_api_key_falls_back_when_config_missing() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        // Safety: test-only environment mutation guarded by a module mutex.
+        unsafe {
+            env::set_var("DEEPSEEK_PROVIDER", "fireworks");
+            env::set_var("FIREWORKS_API_KEY", "fw-env-key");
+        }
+
+        let resolved =
+            ConfigToml::default().resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Fireworks);
+        assert_eq!(resolved.api_key.as_deref(), Some("fw-env-key"));
+        assert_eq!(resolved.base_url, DEFAULT_FIREWORKS_BASE_URL);
+    }
+
+    #[test]
     fn openrouter_provider_normalizes_flash_aliases() {
         let _lock = env_lock();
         let _env = EnvGuard::without_deepseek_runtime_overrides();
@@ -1318,6 +1473,22 @@ mod tests {
     }
 
     #[test]
+    fn sglang_provider_normalizes_flash_aliases() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let cli = CliRuntimeOverrides {
+            provider: Some(ProviderKind::Sglang),
+            model: Some("deepseek-v4-flash".to_string()),
+            ..CliRuntimeOverrides::default()
+        };
+
+        let resolved = ConfigToml::default().resolve_runtime_options(&cli);
+
+        assert_eq!(resolved.provider, ProviderKind::Sglang);
+        assert_eq!(resolved.model, DEFAULT_SGLANG_FLASH_MODEL);
+    }
+
+    #[test]
     fn openrouter_provider_specific_config_overrides_env() {
         let _lock = env_lock();
         let _env = EnvGuard::without_deepseek_runtime_overrides();
@@ -1335,7 +1506,7 @@ mod tests {
     }
 
     #[test]
-    fn keyring_resolves_above_env_and_toml() {
+    fn config_file_resolves_above_env_and_keyring() {
         use deepseek_secrets::KeyringStore;
         let _lock = env_lock();
         let _env = EnvGuard::without_deepseek_runtime_overrides();
@@ -1351,14 +1522,14 @@ mod tests {
 
         let resolved =
             config.resolve_runtime_options_with_secrets(&CliRuntimeOverrides::default(), &secrets);
-        assert_eq!(resolved.api_key.as_deref(), Some("ring-key"));
+        assert_eq!(resolved.api_key.as_deref(), Some("file-key"));
 
         // Safety: env mutation guarded by env_lock().
         unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
     }
 
     #[test]
-    fn env_resolves_when_keyring_empty_above_toml() {
+    fn env_resolves_when_config_file_and_keyring_empty() {
         let _lock = env_lock();
         let _env = EnvGuard::without_deepseek_runtime_overrides();
         // Safety: env mutation guarded by env_lock().
@@ -1367,8 +1538,7 @@ mod tests {
         let secrets = Secrets::new(std::sync::Arc::new(
             deepseek_secrets::InMemoryKeyringStore::new(),
         ));
-        let mut config = ConfigToml::default();
-        config.providers.deepseek.api_key = Some("file-key".to_string());
+        let config = ConfigToml::default();
 
         let resolved =
             config.resolve_runtime_options_with_secrets(&CliRuntimeOverrides::default(), &secrets);

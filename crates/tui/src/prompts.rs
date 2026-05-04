@@ -12,6 +12,12 @@ use crate::project_context::{ProjectContext, load_project_context_with_parents};
 use crate::tui::app::AppMode;
 use std::path::{Path, PathBuf};
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PromptSessionContext<'a> {
+    pub user_memory_block: Option<&'a str>,
+    pub goal_objective: Option<&'a str>,
+}
+
 /// Conventional location for the structured session-handoff artifact (#32).
 /// A previous session writes it on exit / `/compact`; the next session reads
 /// it back on startup and prepends it to the system prompt so a fresh agent
@@ -261,6 +267,27 @@ pub fn system_prompt_for_mode_with_context_and_skills(
     instructions: Option<&[PathBuf]>,
     user_memory_block: Option<&str>,
 ) -> SystemPrompt {
+    system_prompt_for_mode_with_context_skills_and_session(
+        mode,
+        workspace,
+        working_set_summary,
+        skills_dir,
+        instructions,
+        PromptSessionContext {
+            user_memory_block,
+            goal_objective: None,
+        },
+    )
+}
+
+pub fn system_prompt_for_mode_with_context_skills_and_session(
+    mode: AppMode,
+    workspace: &Path,
+    working_set_summary: Option<&str>,
+    skills_dir: Option<&Path>,
+    instructions: Option<&[PathBuf]>,
+    session_context: PromptSessionContext<'_>,
+) -> SystemPrompt {
     let mode_prompt = compose_mode_prompt(mode);
 
     // Load project context from workspace
@@ -293,10 +320,19 @@ pub fn system_prompt_for_mode_with_context_and_skills(
     // 2.5b. User memory block (#489). Goes above skills/context-management
     // because it's session-stable: the memory file changes when the user
     // edits it via `/memory` or `# foo` quick-add, but not turn-over-turn.
-    if let Some(memory_block) = user_memory_block
+    if let Some(memory_block) = session_context.user_memory_block
         && !memory_block.trim().is_empty()
     {
         full_prompt = format!("{full_prompt}\n\n{memory_block}");
+    }
+
+    if let Some(goal_objective) = session_context.goal_objective
+        && !goal_objective.trim().is_empty()
+    {
+        full_prompt = format!(
+            "{full_prompt}\n\n## Current Session Goal\n\n<session_goal>\n{}\n</session_goal>",
+            goal_objective.trim()
+        );
     }
 
     // 3. Skills block. #432: walks every candidate workspace
@@ -501,6 +537,55 @@ mod tests {
         assert!(prompt.contains("#### Blocked"));
         assert!(prompt.contains("### Key Decisions"));
         assert!(prompt.contains("### Next step"));
+    }
+
+    #[test]
+    fn session_goal_is_injected_above_volatile_prompt_tail() {
+        let tmp = tempdir().expect("tempdir");
+        let prompt = match system_prompt_for_mode_with_context_skills_and_session(
+            AppMode::Agent,
+            tmp.path(),
+            Some("## Repo Working Set\nsrc/lib.rs"),
+            None,
+            None,
+            PromptSessionContext {
+                user_memory_block: None,
+                goal_objective: Some("Fix transcript corruption"),
+            },
+        ) {
+            SystemPrompt::Text(text) => text,
+            SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
+        };
+
+        let goal_pos = prompt.find("<session_goal>").expect("goal block");
+        let compact_pos = prompt.find("## Compaction Handoff").expect("compact block");
+        let working_set_pos = prompt.find("## Repo Working Set").expect("working set");
+
+        assert!(prompt.contains("Fix transcript corruption"));
+        assert!(goal_pos < compact_pos);
+        assert!(goal_pos < working_set_pos);
+    }
+
+    #[test]
+    fn empty_session_goal_is_not_injected() {
+        let tmp = tempdir().expect("tempdir");
+        let prompt = match system_prompt_for_mode_with_context_skills_and_session(
+            AppMode::Agent,
+            tmp.path(),
+            None,
+            None,
+            None,
+            PromptSessionContext {
+                user_memory_block: None,
+                goal_objective: Some("   "),
+            },
+        ) {
+            SystemPrompt::Text(text) => text,
+            SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
+        };
+
+        assert!(!prompt.contains("<session_goal>"));
+        assert!(!prompt.contains("## Current Session Goal"));
     }
 
     #[test]

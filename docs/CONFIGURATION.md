@@ -50,13 +50,14 @@ user-global. If your repo needs more, file an issue describing the
 specific use case.
 
 The `deepseek` facade and `deepseek-tui` binary share the same config file for
-DeepSeek auth and model defaults. `deepseek login --api-key ...` writes the
-root `api_key` field that `deepseek-tui` reads directly, and `deepseek --model
-deepseek-v4-flash` is forwarded to the TUI as `DEEPSEEK_MODEL`.
+DeepSeek auth and model defaults. `deepseek auth set --provider deepseek` (and
+the legacy `deepseek login --api-key ...` alias) saves the key to
+`~/.deepseek/config.toml`, and `deepseek --model deepseek-v4-flash` is forwarded
+to the TUI as `DEEPSEEK_MODEL`.
 
 For hosted or self-hosted DeepSeek V4 providers, set `provider = "nvidia-nim"`,
 `"fireworks"`, or `"sglang"` or pass `deepseek --provider <name>`. The facade
-stores provider credentials under `[providers.<name>]` and forwards the resolved
+saves provider credentials to the shared user config and forwards the resolved
 key, base URL, provider, and model to the TUI process. Use
 `deepseek auth set --provider nvidia-nim --api-key "YOUR_NVIDIA_API_KEY"` or
 `deepseek auth set --provider fireworks --api-key "YOUR_FIREWORKS_API_KEY"` to

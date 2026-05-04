@@ -67,6 +67,27 @@ fn engine_handle_cancel_tracks_latest_turn_token() {
 }
 
 #[test]
+fn engine_initial_prompt_includes_configured_goal() {
+    let config = EngineConfig {
+        goal_objective: Some("Fix goal handoff".to_string()),
+        ..Default::default()
+    };
+    let (engine, _handle) = Engine::new(config, &Config::default());
+    let prompt = match engine.session.system_prompt {
+        Some(SystemPrompt::Text(text)) => text,
+        Some(SystemPrompt::Blocks(blocks)) => blocks
+            .into_iter()
+            .map(|block| block.text)
+            .collect::<Vec<_>>()
+            .join("\n"),
+        None => panic!("expected system prompt"),
+    };
+
+    assert!(prompt.contains("<session_goal>"));
+    assert!(prompt.contains("Fix goal handoff"));
+}
+
+#[test]
 fn parallel_batch_requires_read_only_parallel_tools() {
     let plans = vec![make_plan(true, true, false, false)];
     assert!(should_parallelize_tool_batch(&plans));

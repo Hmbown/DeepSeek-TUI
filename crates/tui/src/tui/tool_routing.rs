@@ -330,6 +330,61 @@ fn store_tool_detail_output(
 }
 
 #[allow(clippy::too_many_lines)]
+/// Inspect a tool's success metadata for the `child_*` token-usage
+/// fields that tools spawning their own LLM calls populate (e.g.
+/// `rlm`). Roll any reported child-token cost into the session's
+/// running sub-agent cost counter so the footer total reflects all
+/// tokens the user is actually billed for, not just the parent turn's
+/// tokens.
+///
+/// Without this hook, an RLM-heavy session shows a fraction of the
+/// real spend because the parent turn's `Usage` only counts the
+/// orchestrator's tokens, not the dozens of `deepseek-v4-flash` child
+/// rounds RLM fans out under the hood (#524).
+fn accrue_child_token_cost_if_any(app: &mut App, result: &Result<ToolResult, ToolError>) {
+    let Ok(tool_result) = result else { return };
+    let Some(metadata) = tool_result.metadata.as_ref() else {
+        return;
+    };
+    let Some(model) = metadata
+        .get("child_model")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return;
+    };
+    let input_tokens = metadata
+        .get("child_input_tokens")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let output_tokens = metadata
+        .get("child_output_tokens")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    if input_tokens == 0 && output_tokens == 0 {
+        return;
+    }
+    let prompt_cache_hit_tokens = metadata
+        .get("child_prompt_cache_hit_tokens")
+        .and_then(serde_json::Value::as_u64)
+        .map(|v| u32::try_from(v).unwrap_or(u32::MAX));
+    let prompt_cache_miss_tokens = metadata
+        .get("child_prompt_cache_miss_tokens")
+        .and_then(serde_json::Value::as_u64)
+        .map(|v| u32::try_from(v).unwrap_or(u32::MAX));
+    let usage = crate::models::Usage {
+        input_tokens: u32::try_from(input_tokens).unwrap_or(u32::MAX),
+        output_tokens: u32::try_from(output_tokens).unwrap_or(u32::MAX),
+        prompt_cache_hit_tokens,
+        prompt_cache_miss_tokens,
+        reasoning_tokens: None,
+        reasoning_replay_tokens: None,
+        server_tool_use: None,
+    };
+    if let Some(cost) = crate::pricing::calculate_turn_cost_from_usage(model, &usage) {
+        app.accrue_subagent_cost(cost);
+    }
+}
+
 pub(super) fn handle_tool_call_complete(
     app: &mut App,
     id: &str,
@@ -339,6 +394,11 @@ pub(super) fn handle_tool_call_complete(
     if app.ignored_tool_calls.remove(id) {
         return;
     }
+    // Roll any child-LLM token usage the tool reports into the
+    // session-cost counter. Runs unconditionally so future tools that
+    // spawn their own LLM calls (RLM, summarizers, retrieval helpers)
+    // get accrued without needing a per-tool hook (#524).
+    accrue_child_token_cost_if_any(app, result);
 
     // Exploring entries land in the per-tool map regardless of whether they
     // live in the active cell or in finalized history; the path is the same.

@@ -296,13 +296,24 @@ impl ToolSpec for RlmTool {
             })
             .collect();
 
+        // The `child_*` keys are the contract the engine reads in
+        // `tool_routing::accrue_child_token_cost_if_any` to roll
+        // sub-LLM token usage into the session-cost counter. RLM
+        // spawns its own DeepSeek calls under `child_model`; without
+        // this accrual the dashboard under-reports a session that
+        // uses RLM heavily by 10-20× because only the parent turn's
+        // tokens hit `accrue_session_cost` (#524).
         let metadata = json!({
             "iterations": result.iterations,
             "duration_ms": result.duration.as_millis() as u64,
             "input_tokens": result.usage.input_tokens,
             "output_tokens": result.usage.output_tokens,
-            "termination": format!("{:?}", result.termination).to_lowercase(),
+            "child_input_tokens": result.usage.input_tokens,
+            "child_output_tokens": result.usage.output_tokens,
+            "child_prompt_cache_hit_tokens": result.usage.prompt_cache_hit_tokens,
+            "child_prompt_cache_miss_tokens": result.usage.prompt_cache_miss_tokens,
             "child_model": child_model,
+            "termination": format!("{:?}", result.termination).to_lowercase(),
             "max_depth": max_depth,
             "total_rpcs": result.total_rpcs,
             "trace": trace_json,

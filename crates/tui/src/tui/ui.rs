@@ -148,13 +148,29 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     let use_mouse_capture = options.use_mouse_capture;
     let use_bracketed_paste = options.use_bracketed_paste;
 
-    // Apply OSC 8 hyperlink toggle from config; default `true`.
+    // Apply OSC 8 hyperlink toggle from config.
+    //
+    // Default-off on Windows because legacy `cmd.exe` and pre-Win11
+    // PowerShell consoles don't always honor the OSC 8 string
+    // terminator (`ESC \`) cleanly — emitting the escape can leave
+    // stray bytes that eat the leading column of the next line and
+    // duplicate the composer panel during scroll. Reported on a
+    // Windows session (issue forthcoming, screenshot showed
+    // "eepseek-v4-flash" with the leading `d` consumed and three
+    // overlapping composer panels). v0.8.8 also surfaced macOS
+    // corruption ("526sOPEN" instead of "526   OPEN") because OSC 8
+    // wrappers are emitted inside ratatui `Span` content; ratatui's
+    // grapheme filter drops the bare ESC byte but paints every other
+    // byte of the wrapper into a buffer cell, drifting columns. Until
+    // OSC 8 is emitted out-of-band of the buffer pipeline, default off
+    // on every platform; opt back in via `[ui] osc8_links = true`.
+    let osc8_default_on = false;
     crate::tui::osc8::set_enabled(
         config
             .tui
             .as_ref()
             .and_then(|tui| tui.osc8_links)
-            .unwrap_or(true),
+            .unwrap_or(osc8_default_on),
     );
 
     // Terminal probe with timeout to prevent hanging on unresponsive terminals
@@ -521,6 +537,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         subagent_model_overrides: config.subagent_model_overrides(),
         memory_enabled: config.memory_enabled(),
         memory_path: config.memory_path(),
+        goal_objective: app.goal.goal_objective.clone(),
     }
 }
 
@@ -845,6 +862,13 @@ async fn run_event_loop(
                         let turn_elapsed =
                             app.turn_started_at.map(|t| t.elapsed()).unwrap_or_default();
                         app.turn_started_at = None;
+                        // Roll the just-finished turn's elapsed time into the
+                        // cumulative session work-time (#448 follow-up). The
+                        // footer's `worked Nh Mm` chip reads this so the
+                        // label reflects actual model work, not idle
+                        // uptime since launch.
+                        app.cumulative_turn_duration =
+                            app.cumulative_turn_duration.saturating_add(turn_elapsed);
                         // Stream lock applies per-turn; clear it so the next
                         // turn's chunks pull the view down again until the
                         // user opts out by scrolling up.
@@ -1340,6 +1364,17 @@ async fn run_event_loop(
         let now = Instant::now();
         app.flush_paste_burst_if_enabled(now);
         app.sync_status_message_to_toasts();
+        // Drain background-LLM cost (compaction summaries, seam
+        // recompaction, cycle briefings) accumulated since the last
+        // tick and fold it into the session-cost counter (#526).
+        // Background callers populate `cost_status::report`; we sweep
+        // the pool once per loop iteration so the footer chip matches
+        // the DeepSeek website's billing.
+        let pending_bg_cost = crate::cost_status::drain();
+        if pending_bg_cost > 0.0 {
+            app.accrue_subagent_cost(pending_bg_cost);
+            app.needs_redraw = true;
+        }
         // Expire the "Press Ctrl+C again to quit" prompt silently after its
         // window. Triggers a redraw if the prompt was visible.
         app.tick_quit_armed();
@@ -1389,6 +1424,14 @@ async fn run_event_loop(
             let remaining = deadline.saturating_duration_since(now);
             poll_timeout = poll_timeout.min(remaining.max(Duration::from_millis(50)));
         }
+        poll_timeout = clamp_event_poll_timeout(poll_timeout);
+
+        // #549: this async task also performs a blocking terminal poll. Give
+        // the engine task a scheduler turn before we block again so an
+        // interactive submit can reach the API instead of appearing stuck on
+        // `working.` with no network activity.
+        tokio::task::yield_now().await;
+
         if event::poll(poll_timeout)? {
             let evt = event::read()?;
             app.needs_redraw = true;
@@ -1550,7 +1593,19 @@ async fn run_event_loop(
                                 continue;
                             }
                             match app.submit_api_key() {
-                                Ok(_) => {
+                                Ok(saved) => {
+                                    // Surface where the key landed so the
+                                    // user can verify the shared config
+                                    // file path before the welcome
+                                    // screen advances. The toast queue
+                                    // outlives the onboarding state
+                                    // transition, so it stays visible on
+                                    // the next screen too.
+                                    app.push_status_toast(
+                                        format!("API key saved to {}", saved.describe()),
+                                        StatusToastLevel::Info,
+                                        Some(4_000),
+                                    );
                                     app.status_message = None;
                                     // Recreate the engine so it picks up the newly saved key
                                     // without requiring a full process restart.
@@ -1560,8 +1615,7 @@ async fn run_event_loop(
                                     // (e.g. a subsequent /provider switch)
                                     // sees it; the explicit-override path
                                     // in `deepseek_api_key` (#343) makes
-                                    // this win even if the OS keyring
-                                    // still holds a stale credential.
+                                    // this win immediately.
                                     config.api_key = Some(key.clone());
                                     let mut refreshed_config = config.clone();
                                     refreshed_config.api_key = Some(key);
@@ -1614,6 +1668,13 @@ async fn run_event_loop(
                         app.onboarding = OnboardingState::Tips;
                     }
                     KeyCode::Backspace if app.onboarding == OnboardingState::ApiKey => {
+                        app.delete_api_key_char();
+                        sync_api_key_validation_status(app, false);
+                    }
+                    KeyCode::Char('h')
+                        if is_ctrl_h_backspace(&key)
+                            && app.onboarding == OnboardingState::ApiKey =>
+                    {
                         app.delete_api_key_char();
                         sync_api_key_validation_status(app, false);
                     }
@@ -2367,6 +2428,12 @@ async fn run_event_loop(
                     app.delete_char();
                 }
                 KeyCode::Backspace => {}
+                KeyCode::Char('h')
+                    if is_ctrl_h_backspace(&key) && !app.remove_selected_composer_attachment() =>
+                {
+                    app.delete_char();
+                }
+                KeyCode::Char('h') if is_ctrl_h_backspace(&key) => {}
                 KeyCode::Delete if !app.remove_selected_composer_attachment() => {
                     app.delete_char_forward();
                 }
@@ -2986,11 +3053,19 @@ async fn dispatch_user_message(
     );
     let content = queued_message_content_for_app(app, &message, cwd);
     let message_index = app.api_messages.len();
-    app.system_prompt = Some(prompts::system_prompt_for_mode_with_context(
-        app.mode,
-        &app.workspace,
-        None,
-    ));
+    app.system_prompt = Some(
+        prompts::system_prompt_for_mode_with_context_skills_and_session(
+            app.mode,
+            &app.workspace,
+            None,
+            None,
+            None,
+            prompts::PromptSessionContext {
+                user_memory_block: None,
+                goal_objective: app.goal.goal_objective.as_deref(),
+            },
+        ),
+    );
     app.add_message(HistoryCell::User {
         content: message.display.clone(),
     });
@@ -3034,6 +3109,7 @@ async fn dispatch_user_message(
             content,
             mode: app.mode,
             model: effective_model,
+            goal_objective: app.goal.goal_objective.clone(),
             reasoning_effort: app.reasoning_effort.api_value().map(str::to_string),
             allow_shell: app.allow_shell,
             trust_mode: app.trust_mode,
@@ -4055,8 +4131,8 @@ async fn execute_command_input(
     let result = commands::execute(input, app);
     // After /logout: clear the in-memory api_key fields so the next
     // onboarding round entering a new key doesn't see the stale value
-    // (#343). The on-disk + keyring side is handled by clear_api_key()
-    // inside commands::config::logout.
+    // (#343). The on-disk side is handled by clear_api_key() inside
+    // commands::config::logout.
     if input.trim().eq_ignore_ascii_case("/logout") {
         config.api_key = None;
         if let Some(providers) = config.providers.as_mut() {
@@ -6270,6 +6346,11 @@ fn idle_poll_ms(app: &App) -> u64 {
     if app.low_motion { 120 } else { UI_IDLE_POLL_MS }
 }
 
+fn clamp_event_poll_timeout(timeout: Duration) -> Duration {
+    const MIN_EVENT_POLL_TIMEOUT: Duration = Duration::from_millis(1);
+    timeout.max(MIN_EVENT_POLL_TIMEOUT)
+}
+
 fn history_has_live_motion(history: &[HistoryCell]) -> bool {
     use crate::tui::history::SubAgentCell;
     use crate::tui::widgets::agent_card::AgentLifecycle;
@@ -7033,6 +7114,13 @@ fn is_paste_shortcut(key: &KeyEvent) -> bool {
 
     // Ctrl+V on Linux/Windows
     key.modifiers.contains(KeyModifiers::CONTROL)
+}
+
+fn is_ctrl_h_backspace(key: &KeyEvent) -> bool {
+    matches!(key.code, KeyCode::Char('h'))
+        && key.modifiers.contains(KeyModifiers::CONTROL)
+        && !key.modifiers.contains(KeyModifiers::ALT)
+        && !key.modifiers.contains(KeyModifiers::SUPER)
 }
 
 fn should_scroll_with_arrows(_app: &App) -> bool {

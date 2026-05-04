@@ -23,6 +23,7 @@ mod composer_stash;
 mod config;
 mod config_ui;
 mod core;
+mod cost_status;
 mod cycle_manager;
 mod deepseek_theme;
 mod error_taxonomy;
@@ -176,7 +177,7 @@ enum Commands {
     },
     /// Create default AGENTS.md in current directory
     Init,
-    /// Save a DeepSeek API key to the config file
+    /// Save a DeepSeek API key to the shared user config
     Login {
         /// API key to store (otherwise read from stdin)
         #[arg(long)]
@@ -542,9 +543,16 @@ async fn main() -> Result<()> {
         // Restore the terminal first so the panic message itself, plus the
         // user's shell after exit, are visible. Best-effort — we may not be
         // in raw / alt-screen mode if the panic happens pre-TUI.
-        use crossterm::event::PopKeyboardEnhancementFlags;
+        use crossterm::event::{
+            DisableBracketedPaste, DisableMouseCapture, PopKeyboardEnhancementFlags,
+        };
         use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
         let _ = crossterm::execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
+        // Best-effort: turn off bracketed paste + mouse capture so the user's
+        // parent shell doesn't get stuck wrapping pastes in `\e[200~…\e[201~`
+        // or printing `\e[<…M` on every click after a TUI panic.
+        let _ = crossterm::execute!(std::io::stdout(), DisableBracketedPaste);
+        let _ = crossterm::execute!(std::io::stdout(), DisableMouseCapture);
         let _ = disable_raw_mode();
         let _ = crossterm::execute!(std::io::stdout(), LeaveAlternateScreen);
 
@@ -1171,14 +1179,22 @@ enum ApiKeySource {
 }
 
 fn resolve_api_key_source(config: &Config) -> ApiKeySource {
-    if std::env::var("DEEPSEEK_API_KEY")
+    if config
+        .api_key
+        .as_ref()
+        .is_some_and(|k| !k.trim().is_empty())
+        || config
+            .provider_config()
+            .and_then(|entry| entry.api_key.as_ref())
+            .is_some_and(|k| !k.trim().is_empty())
+    {
+        ApiKeySource::Config
+    } else if std::env::var("DEEPSEEK_API_KEY")
         .ok()
         .filter(|k| !k.trim().is_empty())
         .is_some()
     {
         ApiKeySource::Env
-    } else if config.deepseek_api_key().is_ok() {
-        ApiKeySource::Config
     } else {
         ApiKeySource::Missing
     }
@@ -1244,7 +1260,7 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
                     "deepseek auth set --provider sglang --api-key \"...\"",
                 ),
                 crate::config::ApiProvider::Deepseek | crate::config::ApiProvider::DeepseekCN => {
-                    ("DEEPSEEK_API_KEY", "deepseek login --api-key \"...\"")
+                    ("DEEPSEEK_API_KEY", "deepseek auth set --provider deepseek")
                 }
             };
             println!(
@@ -1453,40 +1469,68 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     println!();
     println!("{}", "API Keys:".bold());
 
-    // Report the active keyring backend (system / file-based / unavailable).
-    let secrets = deepseek_secrets::Secrets::auto_detect();
-    println!("  · keyring backend: {}", secrets.backend_name());
-
-    // Per-provider state: keyring, env, config file (no values printed).
-    for (slot, env_names) in [
-        ("deepseek", &["DEEPSEEK_API_KEY"][..]),
-        ("nvidia-nim", &["NVIDIA_API_KEY", "NVIDIA_NIM_API_KEY"][..]),
-        ("openrouter", &["OPENROUTER_API_KEY"][..]),
-        ("novita", &["NOVITA_API_KEY"][..]),
+    // Per-provider state: env + config file only (no values printed).
+    // Keep doctor/status prompt-free even for unsigned rebuilt binaries.
+    for (provider, slot, env_names) in [
+        (
+            crate::config::ApiProvider::Deepseek,
+            "deepseek",
+            &["DEEPSEEK_API_KEY"][..],
+        ),
+        (
+            crate::config::ApiProvider::NvidiaNim,
+            "nvidia-nim",
+            &["NVIDIA_API_KEY", "NVIDIA_NIM_API_KEY"][..],
+        ),
+        (
+            crate::config::ApiProvider::Openrouter,
+            "openrouter",
+            &["OPENROUTER_API_KEY"][..],
+        ),
+        (
+            crate::config::ApiProvider::Novita,
+            "novita",
+            &["NOVITA_API_KEY"][..],
+        ),
+        (
+            crate::config::ApiProvider::Fireworks,
+            "fireworks",
+            &["FIREWORKS_API_KEY"][..],
+        ),
+        (
+            crate::config::ApiProvider::Sglang,
+            "sglang",
+            &["SGLANG_API_KEY"][..],
+        ),
     ] {
-        let in_keyring = secrets
-            .get(slot)
-            .ok()
-            .flatten()
-            .is_some_and(|v| !v.trim().is_empty());
         let in_env = env_names.iter().any(|n| {
             std::env::var(n)
                 .ok()
                 .filter(|v| !v.trim().is_empty())
                 .is_some()
         });
-        let icon = if in_keyring || in_env {
+        let in_config = config
+            .provider_config_for(provider)
+            .and_then(|entry| entry.api_key.as_ref())
+            .is_some_and(|v| !v.trim().is_empty())
+            || (matches!(provider, crate::config::ApiProvider::Deepseek)
+                && config
+                    .api_key
+                    .as_ref()
+                    .is_some_and(|v| !v.trim().is_empty()));
+        let icon = if in_env || in_config {
             "✓".truecolor(aqua_r, aqua_g, aqua_b)
         } else {
             "·".dimmed()
         };
         println!(
-            "  {} {slot}: keyring={}, env={}",
+            "  {} {slot}: env={}, config={}",
             icon,
-            if in_keyring { "yes" } else { "no" },
-            if in_env { "yes" } else { "no" }
+            if in_env { "yes" } else { "no" },
+            if in_config { "yes" } else { "no" }
         );
     }
+    println!("  · credential sources: env, ~/.deepseek/config.toml");
 
     let has_api_key = if config.deepseek_api_key().is_ok() {
         println!(
@@ -1499,7 +1543,9 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             "  {} active provider key not configured",
             "✗".truecolor(red_r, red_g, red_b)
         );
-        println!("    Run 'deepseek auth set --provider <name>' to save a key to the OS keyring.");
+        println!(
+            "    Run 'deepseek auth set --provider <name>' to save a key to ~/.deepseek/config.toml."
+        );
         false
     };
 
@@ -2329,8 +2375,8 @@ fn run_login(api_key: Option<String>) -> Result<()> {
         Some(key) => key,
         None => read_api_key_from_stdin()?,
     };
-    let path = config::save_api_key(&api_key)?;
-    println!("Saved API key to {}", path.display());
+    let saved = config::save_api_key(&api_key)?;
+    println!("Saved API key to {}", saved.describe());
     Ok(())
 }
 
@@ -3630,6 +3676,7 @@ async fn run_exec_agent(
         subagent_model_overrides: config.subagent_model_overrides(),
         memory_enabled: config.memory_enabled(),
         memory_path: config.memory_path(),
+        goal_objective: None,
     };
 
     let engine_handle = spawn_engine(engine_config, config);
@@ -4514,6 +4561,24 @@ mod setup_helper_tests {
             None => unsafe { std::env::remove_var("DEEPSEEK_API_KEY") },
         }
         assert_eq!(source, ApiKeySource::Env);
+    }
+
+    #[test]
+    fn resolve_api_key_source_prefers_config_over_env() {
+        let prev = std::env::var("DEEPSEEK_API_KEY").ok();
+        unsafe {
+            std::env::set_var("DEEPSEEK_API_KEY", "stale-env-key");
+        }
+        let cfg = Config {
+            api_key: Some("fresh-config-key".to_string()),
+            ..Config::default()
+        };
+        let source = resolve_api_key_source(&cfg);
+        match prev {
+            Some(value) => unsafe { std::env::set_var("DEEPSEEK_API_KEY", value) },
+            None => unsafe { std::env::remove_var("DEEPSEEK_API_KEY") },
+        }
+        assert_eq!(source, ApiKeySource::Config);
     }
 
     #[test]

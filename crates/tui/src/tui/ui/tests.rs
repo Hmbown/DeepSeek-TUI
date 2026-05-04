@@ -917,6 +917,22 @@ fn footer_state_label_drops_thinking_and_prefers_compacting() {
 }
 
 #[test]
+fn event_poll_timeout_has_nonzero_floor() {
+    assert_eq!(
+        clamp_event_poll_timeout(Duration::ZERO),
+        Duration::from_millis(1)
+    );
+    assert_eq!(
+        clamp_event_poll_timeout(Duration::from_micros(250)),
+        Duration::from_millis(1)
+    );
+    assert_eq!(
+        clamp_event_poll_timeout(Duration::from_millis(24)),
+        Duration::from_millis(24)
+    );
+}
+
+#[test]
 fn footer_status_line_spans_show_mode_and_model_idle_and_active() {
     let mut app = create_test_app();
     app.model = "deepseek-v4-flash".to_string();
@@ -1742,6 +1758,22 @@ fn details_shortcut_modifiers_accept_plain_shift_and_alt_only() {
 }
 
 #[test]
+fn ctrl_h_is_treated_as_terminal_backspace() {
+    assert!(is_ctrl_h_backspace(&KeyEvent::new(
+        KeyCode::Char('h'),
+        KeyModifiers::CONTROL
+    )));
+    assert!(!is_ctrl_h_backspace(&KeyEvent::new(
+        KeyCode::Char('h'),
+        KeyModifiers::NONE
+    )));
+    assert!(!is_ctrl_h_backspace(&KeyEvent::new(
+        KeyCode::Char('h'),
+        KeyModifiers::CONTROL | KeyModifiers::ALT
+    )));
+}
+
+#[test]
 fn partial_file_mention_finds_token_under_cursor() {
     // Cursor in middle of `@docs/de` should be detected as a partial mention.
     let input = "look at @docs/de please";
@@ -1974,6 +2006,24 @@ fn ok_result(
     content: &str,
 ) -> Result<crate::tools::spec::ToolResult, crate::tools::spec::ToolError> {
     Ok(crate::tools::spec::ToolResult::success(content))
+}
+
+#[test]
+fn tool_child_usage_metadata_updates_live_cost_counter() {
+    let mut app = create_test_app();
+    let result = Ok(crate::tools::spec::ToolResult::success("ok").with_metadata(
+        serde_json::json!({
+            "child_model": "deepseek-v4-flash",
+            "child_input_tokens": 10_000,
+            "child_output_tokens": 1_000,
+            "child_prompt_cache_hit_tokens": 7_000,
+            "child_prompt_cache_miss_tokens": 3_000,
+        }),
+    ));
+
+    handle_tool_call_complete(&mut app, "review-usage", "review", &result);
+
+    assert!(app.session.subagent_cost > 0.0);
 }
 
 #[test]
