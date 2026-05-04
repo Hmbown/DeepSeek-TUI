@@ -606,6 +606,20 @@ mod tests {
         assert!(prompt.contains("### `rlm`"));
     }
 
+    /// #588: language-mirroring directive must ship in every mode so
+    /// DeepSeek's `reasoning_content` and final reply follow the user's
+    /// language. Structural test — wording is not a test concern.
+    #[test]
+    fn language_mirroring_section_present_in_all_modes() {
+        for mode in [AppMode::Agent, AppMode::Yolo, AppMode::Plan] {
+            let prompt = compose_prompt(mode, Personality::Calm);
+            assert!(
+                prompt.contains("## Language"),
+                "## Language section missing from mode {mode:?}"
+            );
+        }
+    }
+
     /// #358: rlm guidance was reframed from "first-class" to "specialty
     /// tool" — verify the structural markers are present so a future
     /// change doesn't silently remove the RLM section entirely.
