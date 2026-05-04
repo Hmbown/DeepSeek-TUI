@@ -81,6 +81,7 @@ use crate::tui::tool_routing::{
     handle_tool_call_complete, handle_tool_call_started, maybe_add_patch_preview,
 };
 use crate::tui::ui_text::{history_cell_to_text, line_to_plain, slice_text, text_display_width};
+use crate::tui::question::QuestionView;
 use crate::tui::user_input::UserInputView;
 
 use super::active_cell::ActiveCell;
@@ -1238,6 +1239,14 @@ async fn run_event_loop(
                                 "Approval required for '{tool_name}': {description}"
                             ));
                         }
+                    }
+                    EngineEvent::QuestionRequired { id, question } => {
+                        app.view_stack.push(QuestionView::new(id.clone(), question));
+                        app.status_message = Some(
+                            "The model needs clarification — type your answer and press Enter"
+                                .to_string(),
+                        );
+                        app.needs_redraw = true;
                     }
                     EngineEvent::UserInputRequired { id, request } => {
                         app.view_stack.push(UserInputView::new(id.clone(), request));
@@ -4858,6 +4867,17 @@ async fn handle_view_events(
                         let _ = engine_handle.retry_tool_with_policy(tool_id, policy).await;
                     }
                 }
+            }
+            ViewEvent::QuestionAnswered { tool_id, answer } => {
+                let _ = engine_handle.submit_question(tool_id, answer).await;
+            }
+            ViewEvent::QuestionCancelled { tool_id } => {
+                let _ = engine_handle.cancel_question(tool_id).await;
+                app.add_message(HistoryCell::System {
+                    content: "Question cancelled by user".to_string(),
+                });
+                app.status_message = Some("Question cancelled".to_string());
+                app.needs_redraw = true;
             }
             ViewEvent::UserInputSubmitted { tool_id, response } => {
                 let _ = engine_handle.submit_user_input(tool_id, response).await;

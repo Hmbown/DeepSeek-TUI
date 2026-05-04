@@ -515,7 +515,8 @@ impl Engine {
                 .get("interactive")
                 .and_then(serde_json::Value::as_bool)
                 == Some(true))
-            || candidate.name == REQUEST_USER_INPUT_NAME;
+            || candidate.name == REQUEST_USER_INPUT_NAME
+            || candidate.name == QUESTION_TOOL_NAME;
 
         let replay_result = Self::execute_tool_with_lock(
             tool_exec_lock,
@@ -747,7 +748,10 @@ impl Engine {
         tool_name: &str,
         tool_registry: Option<&crate::tools::ToolRegistry>,
     ) -> bool {
-        if tool_name == MULTI_TOOL_PARALLEL_NAME || tool_name == REQUEST_USER_INPUT_NAME {
+        if tool_name == MULTI_TOOL_PARALLEL_NAME
+            || tool_name == REQUEST_USER_INPUT_NAME
+            || tool_name == QUESTION_TOOL_NAME
+        {
             return false;
         }
         if McpPool::is_mcp_tool(tool_name) {

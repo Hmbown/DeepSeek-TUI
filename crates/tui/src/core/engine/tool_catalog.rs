@@ -17,6 +17,7 @@ use crate::tui::app::AppMode;
 
 pub(super) const MULTI_TOOL_PARALLEL_NAME: &str = "multi_tool_use.parallel";
 pub(super) const REQUEST_USER_INPUT_NAME: &str = "request_user_input";
+pub(super) const QUESTION_TOOL_NAME: &str = "question";
 pub(super) const CODE_EXECUTION_TOOL_NAME: &str = "code_execution";
 const CODE_EXECUTION_TOOL_TYPE: &str = "code_execution_20250825";
 const TOOL_SEARCH_REGEX_NAME: &str = "tool_search_tool_regex";
@@ -71,6 +72,7 @@ pub(super) fn should_default_defer_tool(name: &str, mode: AppMode) -> bool {
             | "github_issue_context"
             | "github_pr_context"
             | REQUEST_USER_INPUT_NAME
+            | QUESTION_TOOL_NAME
     )
 }
 

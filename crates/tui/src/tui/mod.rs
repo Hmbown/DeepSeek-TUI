@@ -30,6 +30,7 @@ pub mod osc8;
 pub mod pager;
 pub mod paste;
 pub mod paste_burst;
+pub mod question;
 pub mod persistence_actor;
 pub mod plan_prompt;
 pub mod provider_picker;
