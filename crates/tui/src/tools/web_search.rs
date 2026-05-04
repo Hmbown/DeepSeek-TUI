@@ -1,5 +1,10 @@
 //! Web search tool backed by DuckDuckGo HTML results (with Bing fallback).
 //!
+//! When the `EXA_API_KEY` environment variable is set, the tool routes all
+//! search queries through the Exa API (`api.exa.ai/search`) instead, giving
+//! higher-quality structured results without HTML-scraping or bot-detection
+//! issues.
+//!
 //! This is the primary web search surface for agents. For browsing workflows
 //! (page open, click, screenshot) use a direct URL approach instead.
 
@@ -14,6 +19,8 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use std::sync::OnceLock;
 use std::time::Duration;
+
+const EXA_SEARCH_URL: &str = "https://api.exa.ai/search";
 
 const DUCKDUCKGO_HOST: &str = "html.duckduckgo.com";
 const BING_HOST: &str = "www.bing.com";
@@ -115,7 +122,7 @@ impl ToolSpec for WebSearchTool {
     }
 
     fn description(&self) -> &'static str {
-        "Search the web using DuckDuckGo or Bing and return structured results with URLs and snippets."
+        "Search the web using DuckDuckGo (or Exa when EXA_API_KEY is set) and return structured results with URLs and snippets."
     }
 
     fn input_schema(&self) -> Value {
@@ -171,6 +178,16 @@ impl ToolSpec for WebSearchTool {
             usize::try_from(optional_search_max_results(&input)).unwrap_or(DEFAULT_MAX_RESULTS);
         let max_results = max_results.clamp(1, MAX_RESULTS);
         let timeout_ms = optional_u64(&input, "timeout_ms", DEFAULT_TIMEOUT_MS).min(60_000);
+
+        // Exa API route: if EXA_API_KEY env var is set, use Exa instead of
+        // DuckDuckGo/Bing. This gives users with an Exa account higher-quality
+        // results and avoids bot-detection issues (#431).
+        if let Ok(exa_api_key) = std::env::var("EXA_API_KEY") {
+            let exa_key = exa_api_key.trim().to_string();
+            if !exa_key.is_empty() {
+                return run_exa_search(&query, max_results, timeout_ms, &exa_key).await;
+            }
+        }
 
         // Per-domain network policy gate (#135). The "host" for web search is
         // the upstream search engine domain — DuckDuckGo first, Bing on
@@ -520,6 +537,82 @@ fn extract_query_param(url: &str, key: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Run a web search query through the Exa API (`api.exa.ai/search`).
+///
+/// Exa returns structured JSON results with `title`, `url`, and `snippet`
+/// fields, avoiding the HTML-scraping and bot-detection issues of the
+/// DuckDuckGo/Bing fallback chain.
+async fn run_exa_search(
+    query: &str,
+    max_results: usize,
+    timeout_ms: u64,
+    api_key: &str,
+) -> Result<ToolResult, ToolError> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_millis(timeout_ms))
+        .build()
+        .map_err(|e| ToolError::execution_failed(format!("Failed to build HTTP client: {e}")))?;
+
+    let body = json!({
+        "query": query,
+        "numResults": max_results,
+    });
+
+    let resp = client
+        .post(EXA_SEARCH_URL)
+        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| ToolError::execution_failed(format!("Exa search request failed: {e}")))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let text = resp
+            .text()
+            .await
+            .unwrap_or_else(|_| "no body".to_string());
+        return Err(ToolError::execution_failed(format!(
+            "Exa search failed: HTTP {} — {text}",
+            status.as_u16()
+        )));
+    }
+
+    let response_data: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| ToolError::execution_failed(format!("Failed to parse Exa response: {e}")))?;
+
+    let entries: Vec<WebSearchEntry> = response_data["results"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .map(|r| WebSearchEntry {
+                    title: r["title"].as_str().unwrap_or("").to_string(),
+                    url: r["url"].as_str().unwrap_or("").to_string(),
+                    snippet: r["snippet"].as_str().map(|s| s.to_string()),
+                })
+                .filter(|e| !e.title.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let response = WebSearchResponse {
+        query: query.to_string(),
+        source: "exa".to_string(),
+        count: entries.len(),
+        message: if entries.is_empty() {
+            "No results found".to_string()
+        } else {
+            format!("Found {} result(s)", entries.len())
+        },
+        results: entries,
+    };
+
+    ToolResult::json(&response).map_err(|e| ToolError::execution_failed(e.to_string()))
 }
 
 #[cfg(test)]
