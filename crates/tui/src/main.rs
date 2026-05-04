@@ -4338,6 +4338,13 @@ mod setup_helper_tests {
     use std::collections::BTreeSet;
     use tempfile::TempDir;
 
+    // Serialize tests that mutate process-global env vars. Without this,
+    // `cargo test` runs them in parallel and they race on `DEEPSEEK_API_KEY`,
+    // causing intermittent CI failures (one test reads while another's set
+    // is still active). `unwrap_or_else` recovers from poisoning so a panic
+    // in one test doesn't cascade through the whole module.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn init_tools_dir_creates_readme_and_example() {
         let tmp = TempDir::new().unwrap();
@@ -4546,11 +4553,8 @@ mod setup_helper_tests {
 
     #[test]
     fn resolve_api_key_source_reports_env_when_set() {
-        // Snapshot env so we can restore it.
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var("DEEPSEEK_API_KEY").ok();
-        // SAFETY: tests in this binary may run in parallel; use a marker that
-        // is unmistakably a test value so concurrent reads can detect it.
-        // To avoid clobbering CI keys we save/restore around the assertion.
         unsafe {
             std::env::set_var("DEEPSEEK_API_KEY", "test-helper-value");
         }
@@ -4565,6 +4569,7 @@ mod setup_helper_tests {
 
     #[test]
     fn resolve_api_key_source_prefers_config_over_env() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var("DEEPSEEK_API_KEY").ok();
         unsafe {
             std::env::set_var("DEEPSEEK_API_KEY", "stale-env-key");
