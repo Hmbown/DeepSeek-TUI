@@ -419,6 +419,11 @@ pub struct MemoryConfig {
     /// `# foo` typed in the composer to append to that file. Default `false`.
     #[serde(default)]
     pub enabled: Option<bool>,
+    /// Maximum tokens of memory content to inject into the system prompt
+    /// (#495). Older / lower-priority entries are truncated first to stay
+    /// within this budget. Default 4000 (~16 KiB of text).
+    #[serde(default)]
+    pub max_memory_tokens: Option<u32>,
 }
 
 impl SnapshotsConfig {
@@ -1345,6 +1350,16 @@ impl Config {
             .as_ref()
             .and_then(|m| m.enabled)
             .unwrap_or(false)
+    }
+
+    /// Maximum tokens of memory content to inject into the system prompt
+    /// (#495). Falls back to 4000 when unset.
+    #[must_use]
+    pub fn memory_max_tokens(&self) -> u32 {
+        self.memory
+            .as_ref()
+            .and_then(|m| m.max_memory_tokens)
+            .unwrap_or(4000)
     }
 
     /// Return whether shell execution is allowed.
