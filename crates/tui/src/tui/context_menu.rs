@@ -191,8 +191,7 @@ impl ModalView for ContextMenuView {
                         .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default()
-                        .fg(palette::TEXT_SOFT)
-                        .bg(palette::SURFACE_ELEVATED)
+                        .fg(palette::TEXT_MUTED)
                 };
                 Line::from(Span::styled(text, style))
             })
@@ -202,7 +201,7 @@ impl ModalView for ContextMenuView {
             .title(" Right click ")
             .borders(Borders::ALL)
             .border_style(Style::default().fg(palette::DEEPSEEK_SKY))
-            .style(Style::default().bg(palette::SURFACE_ELEVATED))
+            .style(Style::default())
             .padding(Padding::horizontal(0));
 
         Paragraph::new(lines).block(block).render(menu_area, buf);
