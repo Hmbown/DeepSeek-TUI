@@ -95,6 +95,18 @@ struct Cli {
     prompt_flag: Option<String>,
     #[arg(value_name = "PROMPT")]
     prompt: Option<String>,
+    /// Output format for non-interactive mode (text, json, stream-json)
+    #[arg(long = "output-format")]
+    output_format: Option<String>,
+    /// Add a directory to the file context (repeatable)
+    #[arg(long = "add-dir", value_name = "PATH")]
+    add_dir: Vec<PathBuf>,
+    /// Do not persist the session to disk
+    #[arg(long = "no-session-persistence")]
+    no_session_persistence: bool,
+    /// Auto-approve all tool calls (dangerous)
+    #[arg(long = "dangerously-skip-permissions")]
+    dangerously_skip_permissions: bool,
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -456,9 +468,27 @@ fn run() -> Result<()> {
         Some(Commands::Update) => update::run_update(),
         None => {
             let mut forwarded = Vec::new();
-            if let Some(prompt) = cli.prompt_flag.clone().or_else(|| cli.prompt.clone()) {
+            let prompt = cli.prompt_flag.clone().or_else(|| cli.prompt.clone());
+            if let Some(prompt) = prompt {
                 forwarded.push("--prompt".to_string());
                 forwarded.push(prompt);
+            }
+            // Forward non-interactive flags when -p is used
+            if cli.prompt_flag.is_some() || cli.prompt.is_some() {
+                if let Some(fmt) = &cli.output_format {
+                    forwarded.push("--output-format".to_string());
+                    forwarded.push(fmt.clone());
+                }
+                for dir in &cli.add_dir {
+                    forwarded.push("--add-dir".to_string());
+                    forwarded.push(dir.to_string_lossy().to_string());
+                }
+                if cli.no_session_persistence {
+                    forwarded.push("--no-session-persistence".to_string());
+                }
+                if cli.dangerously_skip_permissions {
+                    forwarded.push("--dangerously-skip-permissions".to_string());
+                }
             }
             delegate_to_tui(&cli, &resolved_runtime, forwarded)
         }

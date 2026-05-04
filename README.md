@@ -171,6 +171,7 @@ Thanks also to [@lloydzhou](https://github.com/lloydzhou), [@jeoor](https://gith
 ```bash
 deepseek                                       # interactive TUI
 deepseek "explain this function"              # one-shot prompt
+deepseek -p "agentic non-interactive mode"    # Claude Code CLI-compatible -p flag
 deepseek --model deepseek-v4-flash "summarize" # model override
 deepseek --yolo                                # auto-approve tools
 deepseek auth set --provider deepseek         # save API key
@@ -205,6 +206,70 @@ deepseek mcp-server                            # run dispatcher MCP stdio server
 | `Alt+↑` | Edit last queued message |
 
 Full shortcut catalog: [docs/KEYBINDINGS.md](docs/KEYBINDINGS.md).
+
+---
+
+## Non-interactive / CI mode
+
+Run `deepseek -p "prompt"` for Claude Code CLI-compatible non-interactive agent mode.
+The model runs with tool access, auto-approves tool calls, prints progress to stderr,
+and writes the final answer to stdout.
+
+```bash
+deepseek -p "explain this codebase"                     # basic usage
+deepseek -p --model deepseek-v4-flash "summarize"       # model override
+deepseek -p "find all unused dependencies" --add-dir ./src  # add dir context
+deepseek -p "fix the bug" --dangerously-skip-permissions     # auto-approve all tools
+deepseek -p --no-session-persistence "list files"       # stateless (no history saved)
+echo "translate to french: hello" | deepseek -p         # read prompt from stdin
+deepseek -p "list files" --output-format json           # JSON output envelope
+deepseek -p "list files" --output-format stream-json    # streaming JSON events
+```
+
+### Output formats
+
+- **text** (default): Final assistant message printed as plain text to stdout.
+  Tool progress, errors, and debug info go to stderr.
+- **json**: Print a single JSON envelope at the end:
+  ```json
+  {"type":"result","subtype":"success","result":"...","cost_usd":0.0}
+  ```
+- **stream-json**: Stream each event as newline-delimited JSON to stdout:
+  ```
+  {"type":"message","content":"Analyzing..."}
+  {"type":"tool_start","name":"grep_files","input":"pattern"}
+  {"type":"tool_end","name":"grep_files","success":true,"output":"..."}
+  {"type":"turn_complete","status":"completed","error":null}
+  {"type":"result","subtype":"success","result":"...","cost_usd":0.0}
+  ```
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | Success — agent completed the task |
+| 1 | Error — agent failed or API error |
+| 2 | Interrupted — timeout or signal |
+
+### Piped / stdin usage
+
+When no prompt argument is given after `-p`, the prompt is read from stdin:
+
+```bash
+echo "Explain this Makefile" | deepseek -p
+deepseek -p < /tmp/prompt.txt
+```
+
+### CI integration example
+
+```bash
+# GitHub Actions / CI pipeline
+deepseek -p "Review the diff and report any bugs" \
+  --output-format json \
+  --dangerously-skip-permissions \
+  --add-dir ./src \
+  --no-session-persistence
+```
 
 ---
 
