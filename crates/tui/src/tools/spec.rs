@@ -39,6 +39,10 @@ pub struct RuntimeToolServices {
     /// tool-side hook events. `None` outside the live engine — test
     /// contexts that don't care about hooks get a no-op.
     pub hook_executor: Option<std::sync::Arc<crate::hooks::HookExecutor>>,
+    /// LSP manager for code intelligence operations (hover, definition,
+    /// references, completion, etc.). When `None`, the LSP tool degrades
+    /// gracefully with a "LSP unavailable" message.
+    pub lsp_manager: Option<std::sync::Arc<crate::lsp::LspManager>>,
 }
 
 impl std::fmt::Debug for RuntimeToolServices {
@@ -397,6 +401,15 @@ impl ToolContext {
     /// Set the namespace used for session-scoped tool state.
     pub fn with_state_namespace(mut self, namespace: impl Into<String>) -> Self {
         self.state_namespace = namespace.into();
+        self
+    }
+
+    /// Mutate the attached runtime services in place. Returns self for
+    /// chaining. This is a lower-level escape hatch used by the engine to
+    /// inject session-scoped services (like `LspManager`) that aren't known
+    /// when `RuntimeToolServices` is first constructed.
+    pub fn map_runtime(mut self, f: impl FnOnce(&mut RuntimeToolServices)) -> Self {
+        f(&mut self.runtime);
         self
     }
 }

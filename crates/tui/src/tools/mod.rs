@@ -12,6 +12,7 @@ pub mod finance;
 pub mod fetch_url;
 pub mod git;
 pub mod git_history;
+pub mod lsp;
 pub mod github;
 pub mod parallel;
 pub mod plan;

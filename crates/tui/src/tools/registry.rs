@@ -471,6 +471,15 @@ impl ToolRegistryBuilder {
         self.with_tool(Arc::new(ApplyPatchTool))
     }
 
+    /// Include the LSP code-intelligence tool (9 operations: hover,
+    /// definition, references, rename, codeAction, completion,
+    /// signatureHelp, documentSymbol, workspaceSymbol).
+    #[must_use]
+    pub fn with_lsp_tool(self) -> Self {
+        use super::lsp::LspTool;
+        self.with_tool(Arc::new(LspTool))
+    }
+
     /// Include the `revert_turn` tool. Approval-gated since it mutates
     /// the workspace; the model uses it when the user asks to "undo my
     /// last edit". Backed by the per-workspace snapshot side-repo

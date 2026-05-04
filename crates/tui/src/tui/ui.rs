@@ -376,6 +376,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         // #456: plumb the App's HookExecutor so `exec_shell` can surface
         // the configured `shell_env` hooks. Wrapped in Arc once and shared.
         hook_executor: Some(std::sync::Arc::new(app.hooks.clone())),
+        lsp_manager: None,
     };
     refresh_active_task_panel(&mut app, &task_manager).await;
 

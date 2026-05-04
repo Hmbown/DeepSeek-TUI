@@ -37,6 +37,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde::Deserialize;
+use serde_json::Value;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::timeout;
 
@@ -215,6 +216,74 @@ impl LspManager {
         }
     }
 
+    /// Send a generic LSP request for a file (e.g. `textDocument/hover`,
+    /// `textDocument/definition`, `textDocument/references`).
+    ///
+    /// Reads the file, ensures the transport is spawned, opens/updates the
+    /// file in the LSP server via `ensure_open`, then sends the request and
+    /// returns the raw JSON `result`. Returns `None` when the manager is
+    /// disabled, the language is unsupported, or the transport is
+    /// unavailable.
+    ///
+    /// The caller is responsible for passing the correct JSON params for the
+    /// LSP method. For `workspace/symbol`, pass `Path::new("")` as the file
+    /// — it will skip the file-read and open steps.
+    pub async fn request_for(
+        &self,
+        file: &Path,
+        method: &str,
+        params: Value,
+    ) -> Option<Value> {
+        if !self.config.enabled {
+            return None;
+        }
+
+        let is_workspace_request = file.as_os_str().is_empty();
+        let lang = if is_workspace_request {
+            // workspace/symbol doesn't need a file; use a placeholder
+            Language::Other
+        } else {
+            let l = registry::detect_language(file);
+            if l == Language::Other {
+                return None;
+            }
+            l
+        };
+
+        let transport = match self.transport_for(lang).await {
+            Some(t) => t,
+            None => return None,
+        };
+
+        if !is_workspace_request {
+            // Read file content and ensure it's open in the server.
+            let text = match tokio::fs::read_to_string(file).await {
+                Ok(text) => text,
+                Err(err) => {
+                    tracing::debug!(?err, file = %file.display(), "lsp: read file failed for request");
+                    return None;
+                }
+            };
+            if let Err(err) = transport.ensure_open(file, &text).await {
+                tracing::debug!(?err, file = %file.display(), method, "lsp: ensure_open failed");
+                return None;
+            }
+        }
+
+        let wait = Duration::from_secs(30);
+        match timeout(wait, transport.request(method, params)).await {
+            Ok(Ok(value)) => Some(value),
+            Ok(Err(err)) => {
+                tracing::debug!(?err, method, file = %file.display(), "lsp: request failed");
+                None
+            }
+            Err(_) => {
+                tracing::debug!(method, file = %file.display(), "lsp: request timed out");
+                None
+            }
+        }
+    }
+
     /// Resolve (and lazily spawn) the transport for `lang`. Tests can
     /// short-circuit this via `install_test_transport` (cfg-test only).
     async fn transport_for(&self, lang: Language) -> Option<Arc<dyn LspTransport>> {
@@ -298,6 +367,7 @@ impl LspManager {
 pub(crate) mod tests {
     use super::*;
     use async_trait::async_trait;
+    use serde_json::Value;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// Fake transport: returns a fixed list of diagnostics. Used by
@@ -330,6 +400,20 @@ pub(crate) mod tests {
         ) -> anyhow::Result<Vec<Diagnostic>> {
             self.calls.fetch_add(1, Ordering::Relaxed);
             Ok(self.items.clone())
+        }
+
+        async fn request(
+            &self,
+            _method: &str,
+            _params: Value,
+        ) -> anyhow::Result<Value> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            Ok(Value::Null)
+        }
+
+        async fn ensure_open(&self, _path: &Path, _text: &str) -> anyhow::Result<()> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            Ok(())
         }
 
         async fn shutdown(&self) {}
