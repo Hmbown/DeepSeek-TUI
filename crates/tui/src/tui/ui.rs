@@ -1145,6 +1145,19 @@ async fn run_event_loop(
                         sorted.retain(|a| !a.from_prior_session);
                         app.subagent_cache = sorted.clone();
                         reconcile_subagent_activity_state(app);
+
+                        // #407: auto-switch sidebar to Agents when sub-agents
+                        // are running, then back to Auto when they settle.
+                        let has_running = app
+                            .subagent_cache
+                            .iter()
+                            .any(|a| matches!(a.status, SubAgentStatus::Running));
+                        if has_running && app.sidebar_focus == SidebarFocus::Auto {
+                            app.set_sidebar_focus(SidebarFocus::Agents);
+                        } else if !has_running && app.sidebar_focus == SidebarFocus::Agents {
+                            app.set_sidebar_focus(SidebarFocus::Auto);
+                        }
+
                         if app.view_stack.update_subagents(&sorted) {
                             app.status_message =
                                 Some(format!("Sub-agents: {} total", sorted.len()));
