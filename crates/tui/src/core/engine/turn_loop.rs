@@ -1449,6 +1449,35 @@ impl Engine {
                             &outcome.name,
                             &output,
                         );
+                        // #547: workshop summarization for large tool outputs.
+                        // When the raw output exceeds 4 KB, ask the workshop
+                        // agent to produce an LLM-generated summary instead
+                        // of head/tail truncation. The workshop call is
+                        // best-effort — a failure or timeout falls back to
+                        // the standard compacted output.
+                        let output_for_context = if output.success
+                            && self.workshop.should_summarize(&output.content)
+                        {
+                            match self
+                                .workshop
+                                .summarize(&client, &outcome.name, &output.content)
+                                .await
+                            {
+                                Some(summary) => {
+                                    let raw_chars = output.content.chars().count();
+                                    format!(
+                                        "[{} output summarised by workshop agent]\n\
+                                         Summary: {summary}\n\
+                                         (Original: {raw_chars} chars.)",
+                                        outcome.name
+                                    )
+                                }
+                                None => output_for_context,
+                            }
+                        } else {
+                            output_for_context
+                        };
+
                         let output_content = output.content;
 
                         tool_call.set_result(output_content.clone(), duration);
