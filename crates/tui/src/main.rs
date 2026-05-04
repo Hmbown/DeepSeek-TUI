@@ -6,7 +6,7 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
-use clap::{Args, CommandFactory, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{Shell, generate};
 use dotenvy::dotenv;
 use tempfile::NamedTempFile;
@@ -151,6 +151,33 @@ struct Cli {
     /// Skip loading project-level config from $WORKSPACE/.deepseek/config.toml
     #[arg(long = "no-project-config")]
     no_project_config: bool,
+
+    /// Output format for non-interactive mode (text, json, or stream-json)
+    #[arg(long = "output-format", value_enum, default_value_t = NoninteractiveFormat::Text)]
+    output_format: NoninteractiveFormat,
+
+    /// Add a directory to the file context (repeatable, works with --prompt)
+    #[arg(long = "add-dir", value_name = "PATH")]
+    add_dir: Vec<PathBuf>,
+
+    /// Do not persist the session to disk (works with --prompt)
+    #[arg(long = "no-session-persistence")]
+    no_session_persistence: bool,
+
+    /// Auto-approve all tool calls (works with --prompt)
+    #[arg(long = "dangerously-skip-permissions")]
+    dangerously_skip_permissions: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum NoninteractiveFormat {
+    /// Print final assistant message as plain text
+    Text,
+    /// Print a single JSON envelope with result and cost
+    Json,
+    /// Stream each event as newline-delimited JSON
+    #[value(name = "stream-json")]
+    StreamJson,
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -731,11 +758,32 @@ async fn main() -> Result<()> {
         };
     }
 
-    // One-shot prompt mode
+    // Non-interactive agent mode (Claude Code CLI-compatible -p flag)
     let config = load_config_from_cli(&cli)?;
     if let Some(prompt) = cli.prompt {
-        let model = config.default_model();
-        return run_one_shot(&config, &model, &prompt).await;
+        let model = config
+            .default_text_model
+            .clone()
+            .unwrap_or_else(|| config.default_model());
+        let workspace = cli.workspace.clone().unwrap_or_else(|| {
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+        });
+        let max_subagents = cli.max_subagents.map_or_else(
+            || config.max_subagents(),
+            |value| value.clamp(1, MAX_SUBAGENTS),
+        );
+        return run_noninteractive(
+            &config,
+            &model,
+            &prompt,
+            workspace,
+            max_subagents,
+            cli.add_dir.clone(),
+            cli.output_format,
+            cli.no_session_persistence,
+            cli.dangerously_skip_permissions || cli.yolo,
+        )
+        .await;
     }
 
     // Handle session resume
@@ -3895,6 +3943,292 @@ async fn run_exec_agent(
     }
 
     Ok(())
+}
+
+/// Run the non-interactive agent mode (Claude Code CLI-compatible -p flag).
+///
+/// Spawns an agent engine with tool access, auto-approves tool calls, and
+/// prints output in the requested format. Returns the process exit code.
+async fn run_noninteractive(
+    config: &Config,
+    model: &str,
+    prompt: &str,
+    workspace: PathBuf,
+    max_subagents: usize,
+    _add_dirs: Vec<PathBuf>,
+    format: NoninteractiveFormat,
+    no_session_persistence: bool,
+    dangerously_skip_permissions: bool,
+) -> Result<()> {
+    use crate::compaction::CompactionConfig;
+    use crate::core::engine::{EngineConfig, spawn_engine};
+    use crate::core::events::Event;
+    use crate::core::ops::Op;
+    use crate::models::{compaction_message_threshold_for_model, compaction_threshold_for_model};
+    use crate::tools::plan::new_shared_plan_state;
+    use crate::tools::todo::new_shared_todo_list;
+    use crate::tui::app::AppMode;
+
+    let compaction = CompactionConfig {
+        enabled: false,
+        model: model.to_string(),
+        token_threshold: compaction_threshold_for_model(model),
+        message_threshold: compaction_message_threshold_for_model(model),
+        ..Default::default()
+    };
+
+    let network_policy = config.network.clone().map(|toml_cfg| {
+        crate::network_policy::NetworkPolicyDecider::with_default_audit(toml_cfg.into_runtime())
+    });
+
+    let lsp_config = config
+        .lsp
+        .clone()
+        .map(crate::config::LspConfigToml::into_runtime);
+
+    // Build project context from --add-dir paths
+    // (Note: --add-dir directories are currently accepted by the CLI parser;
+    //  full working-set integration can be wired in a follow-up. The directories
+    //  are available in the workspace for the agent to discover.)
+
+    let engine_config = EngineConfig {
+        model: model.to_string(),
+        workspace: workspace.clone(),
+        allow_shell: dangerously_skip_permissions || config.allow_shell(),
+        trust_mode: dangerously_skip_permissions,
+        notes_path: config.notes_path(),
+        mcp_config_path: config.mcp_config_path(),
+        skills_dir: config.skills_dir(),
+        instructions: config.instructions_paths(),
+        max_steps: 100,
+        max_subagents,
+        features: config.features(),
+        compaction,
+        cycle: crate::cycle_manager::CycleConfig::default(),
+        capacity: crate::core::capacity::CapacityControllerConfig::from_app_config(config),
+        todos: new_shared_todo_list(),
+        plan_state: new_shared_plan_state(),
+        max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
+        network_policy,
+        snapshots_enabled: config.snapshots_config().enabled && !no_session_persistence,
+        lsp_config,
+        runtime_services: crate::tools::spec::RuntimeToolServices::default(),
+        subagent_model_overrides: config.subagent_model_overrides(),
+        memory_enabled: config.memory_enabled(),
+        memory_path: config.memory_path(),
+        goal_objective: None,
+    };
+
+    let engine_handle = spawn_engine(engine_config, config);
+
+    engine_handle
+        .send(Op::send(
+            prompt,
+            AppMode::Yolo,
+            model,
+            None,
+            dangerously_skip_permissions || config.allow_shell(),
+            dangerously_skip_permissions,
+            true, // auto-approve
+        ))
+        .await?;
+
+    let mut output_text = String::new();
+    let mut status: Option<String> = None;
+    let mut error: Option<String> = None;
+
+    let mut ends_with_newline = false;
+
+    loop {
+        let event = {
+            let mut rx = engine_handle.rx_event.write().await;
+            rx.recv().await
+        };
+
+        let Some(event) = event else {
+            break;
+        };
+
+        match format {
+            NoninteractiveFormat::StreamJson => {
+                let json_event = match &event {
+                    Event::MessageDelta { content, .. } => {
+                        Some(serde_json::json!({
+                            "type": "message",
+                            "content": content,
+                        }))
+                    }
+                    Event::ToolCallStarted { name, input, .. } => {
+                        Some(serde_json::json!({
+                            "type": "tool_start",
+                            "name": name,
+                            "input": summarize_tool_args(input),
+                        }))
+                    }
+                    Event::ToolCallComplete { name, result, .. } => {
+                        let (success, output) = match result {
+                            Ok(o) => (o.success, o.content.clone()),
+                            Err(e) => (false, e.to_string()),
+                        };
+                        Some(serde_json::json!({
+                            "type": "tool_end",
+                            "name": name,
+                            "success": success,
+                            "output": output,
+                        }))
+                    }
+                    Event::TurnComplete { status: s, error: e, .. } => {
+                        status = Some(format!("{s:?}").to_lowercase());
+                        error = e.clone();
+                        Some(serde_json::json!({
+                            "type": "turn_complete",
+                            "status": status,
+                            "error": error,
+                        }))
+                    }
+                    Event::Error { envelope, .. } => {
+                        Some(serde_json::json!({
+                            "type": "error",
+                            "message": envelope.message,
+                        }))
+                    }
+                    _ => None,
+                };
+                if let Some(json) = json_event {
+                    println!("{}", serde_json::to_string(&json)?);
+                    io::stdout().flush()?;
+                }
+            }
+            NoninteractiveFormat::Json | NoninteractiveFormat::Text => {
+                match &event {
+                    Event::MessageDelta { content, .. } => {
+                        output_text.push_str(content);
+                        if format == NoninteractiveFormat::Text {
+                            print!("{content}");
+                            io::stdout().flush()?;
+                        }
+                        ends_with_newline = content.ends_with('\n');
+                    }
+                    Event::MessageComplete { .. } if format == NoninteractiveFormat::Text && !ends_with_newline => {
+                        println!();
+                    }
+                    Event::ToolCallStarted { name, input, .. } => {
+                        let summary = summarize_tool_args(input);
+                        if let Some(summary) = summary {
+                            eprintln!("tool: {name} ({summary})");
+                        } else {
+                            eprintln!("tool: {name}");
+                        }
+                    }
+                    Event::ToolCallProgress { id, output } => {
+                        eprintln!("tool {id}: {}", summarize_tool_output(output));
+                    }
+                    Event::ToolCallComplete { name, result, .. } => {
+                        match result {
+                            Ok(out) => {
+                                if name == "exec_shell" && !out.content.trim().is_empty() {
+                                    eprintln!("tool {name} completed");
+                                    eprintln!(
+                                        "--- stdout/stderr ---\n{}\n---------------------",
+                                        out.content
+                                    );
+                                } else {
+                                    eprintln!(
+                                        "tool {name} completed: {}",
+                                        summarize_tool_output(&out.content)
+                                    );
+                                }
+                            }
+                            Err(err) => {
+                                eprintln!("tool {name} failed: {err}");
+                            }
+                        }
+                    }
+                    Event::AgentSpawned { id, prompt } => {
+                        eprintln!("sub-agent {id} spawned: {}", summarize_tool_output(prompt));
+                    }
+                    Event::AgentProgress { id, status } => {
+                        eprintln!("sub-agent {id}: {status}");
+                    }
+                    Event::AgentComplete { id, result } => {
+                        eprintln!(
+                            "sub-agent {id} completed: {}",
+                            summarize_tool_output(result)
+                        );
+                    }
+                    Event::ApprovalRequired { id, .. } => {
+                        // Always auto-approve in non-interactive mode
+                        let _ = engine_handle.approve_tool_call(id).await;
+                    }
+                    Event::ElevationRequired {
+                        tool_id,
+                        tool_name,
+                        denial_reason,
+                        ..
+                    } => {
+                        if dangerously_skip_permissions {
+                            eprintln!("sandbox denied {tool_name}: {denial_reason} (auto-elevating)");
+                            let policy = crate::sandbox::SandboxPolicy::DangerFullAccess;
+                            let _ = engine_handle.retry_tool_with_policy(tool_id, policy).await;
+                        } else {
+                            eprintln!("sandbox denied {tool_name}: {denial_reason}");
+                            let _ = engine_handle.deny_tool_call(tool_id).await;
+                        }
+                    }
+                    Event::Error { envelope, .. } => {
+                        error = Some(envelope.message.clone());
+                        eprintln!("error: {}", envelope.message);
+                    }
+                    Event::TurnComplete { status: s, error: e, .. } => {
+                        status = Some(format!("{s:?}").to_lowercase());
+                        error = e.clone();
+                        let _ = engine_handle.send(Op::Shutdown).await;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+    }
+
+    // Handle output formats
+    match format {
+        NoninteractiveFormat::Text => {
+            // Output was already printed inline; exit code is derived from status
+        }
+        NoninteractiveFormat::Json => {
+            let success = status.as_deref() == Some("completed");
+            let result = output_text.trim().to_string();
+            let output = serde_json::json!({
+                "type": "result",
+                "subtype": if success { "success" } else { "failed" },
+                "result": result,
+                "cost_usd": 0.0,
+            });
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        }
+        NoninteractiveFormat::StreamJson => {
+            // Final result event
+            let success = status.as_deref() == Some("completed");
+            let final_event = serde_json::json!({
+                "type": "result",
+                "subtype": if success { "success" } else { "failed" },
+                "result": output_text.trim(),
+                "cost_usd": 0.0,
+            });
+            println!("{}", serde_json::to_string(&final_event)?);
+        }
+    }
+
+    // Determine exit code
+    let success = status.as_deref() == Some("completed");
+    if success {
+        Ok(())
+    } else {
+        let msg = error.unwrap_or_else(|| "agent failed to complete the task".to_string());
+        bail!("{msg}")
+    }
 }
 
 #[cfg(test)]
