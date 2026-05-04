@@ -32,6 +32,61 @@ pub enum SessionSource {
     Unknown,
 }
 
+/// Agent fine-grained activity status — mirrors openclaw-office 6-state visual model.
+/// Emitted as ThreadStatusChanged events so the TUI can render richer agent state.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentActivityStatus {
+    Idle,
+    Thinking,
+    ToolCalling,
+    Speaking,
+    Error,
+    Spawning,
+}
+
+impl AgentActivityStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Thinking => "thinking",
+            Self::ToolCalling => "tool_calling",
+            Self::Speaking => "speaking",
+            Self::Error => "error",
+            Self::Spawning => "spawning",
+        }
+    }
+}
+
+/// Zone metaphor for thread lifecycle — maps openclaw-office 5-zone system
+/// to thread/job state for spatialized TUI views.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentZone {
+    /// Main agent thread — fixed workspace
+    Desk,
+    /// Active sub-agent — temporary task execution
+    HotDesk,
+    /// Idle sub-agent pool — awaiting assignment
+    Lounge,
+    /// Collaborating agents — inter-thread communication active
+    Meeting,
+    /// New unconfirmed thread — initialization phase
+    Corridor,
+}
+
+impl AgentZone {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Desk => "desk",
+            Self::HotDesk => "hot_desk",
+            Self::Lounge => "lounge",
+            Self::Meeting => "meeting",
+            Self::Corridor => "corridor",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Thread {
     pub id: String,
@@ -48,6 +103,12 @@ pub struct Thread {
     pub source: SessionSource,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Spatial zone for TUI rendering — desk/hot_desk/lounge/meeting/corridor
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zone: Option<AgentZone>,
+    /// Fine-grained activity status for real-time TUI display
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activity: Option<AgentActivityStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -447,5 +508,35 @@ pub enum EventFrame {
     Error {
         response_id: String,
         message: String,
+    },
+    /// Agent fine-grained activity status change (6-state model)
+    ThreadActivityChanged {
+        thread_id: String,
+        activity: AgentActivityStatus,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        current_tool: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        speech_preview: Option<String>,
+    },
+    /// Thread zone transition (desk/hot_desk/lounge/meeting/corridor)
+    ThreadZoneChanged {
+        thread_id: String,
+        zone: AgentZone,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        from_zone: Option<AgentZone>,
+    },
+    /// A new sub-thread was spawned from a parent
+    ThreadSpawned {
+        parent_thread_id: String,
+        thread_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+    },
+    /// Collaboration link between two threads (active communication detected)
+    CollaborationLink {
+        source_thread_id: String,
+        target_thread_id: String,
+        #[serde(default)]
+        strength: f64,
     },
 }

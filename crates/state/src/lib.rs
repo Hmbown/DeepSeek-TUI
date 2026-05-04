@@ -53,6 +53,10 @@ pub struct ThreadMetadata {
     pub git_branch: Option<String>,
     pub git_origin_url: Option<String>,
     pub memory_mode: Option<String>,
+    /// Spatial zone for TUI rendering (desk/hot_desk/lounge/meeting/corridor)
+    pub zone: Option<String>,
+    /// Fine-grained activity status (idle/thinking/tool_calling/speaking/error/spawning)
+    pub activity: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -185,7 +189,9 @@ impl StateStore {
                 git_sha TEXT,
                 git_branch TEXT,
                 git_origin_url TEXT,
-                memory_mode TEXT
+                memory_mode TEXT,
+                zone TEXT,
+                activity TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_threads_updated_at ON threads(updated_at DESC);
             CREATE INDEX IF NOT EXISTS idx_threads_archived_at ON threads(archived_at DESC);
@@ -232,9 +238,16 @@ impl StateStore {
                 updated_at INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_jobs_updated_at ON jobs(updated_at DESC);
+
+            -- Migration: add zone and activity columns for existing databases
+            ALTER TABLE threads ADD COLUMN zone TEXT;
             "#,
         )
         .context("failed to initialize thread schema")?;
+
+        // Silently ignore migration errors (column already exists)
+        let _ = conn.execute_batch("ALTER TABLE threads ADD COLUMN activity TEXT;");
+
         Ok(())
     }
 
@@ -245,11 +258,11 @@ impl StateStore {
             INSERT INTO threads (
                 id, rollout_path, preview, ephemeral, model_provider, created_at, updated_at, status, path, cwd,
                 cli_version, source, title, sandbox_policy, approval_mode, archived, archived_at,
-                git_sha, git_branch, git_origin_url, memory_mode
+                git_sha, git_branch, git_origin_url, memory_mode, zone, activity
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
                 ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-                ?18, ?19, ?20, ?21
+                ?18, ?19, ?20, ?21, ?22, ?23
             )
             ON CONFLICT(id) DO UPDATE SET
                 rollout_path=excluded.rollout_path,
@@ -271,7 +284,9 @@ impl StateStore {
                 git_sha=excluded.git_sha,
                 git_branch=excluded.git_branch,
                 git_origin_url=excluded.git_origin_url,
-                memory_mode=excluded.memory_mode
+                memory_mode=excluded.memory_mode,
+                zone=excluded.zone,
+                activity=excluded.activity
             "#,
             params![
                 thread.id,
@@ -295,6 +310,8 @@ impl StateStore {
                 thread.git_branch,
                 thread.git_origin_url,
                 thread.memory_mode,
+                thread.zone,
+                thread.activity,
             ],
         )
         .context("failed to upsert thread metadata")?;
@@ -314,7 +331,7 @@ impl StateStore {
             r#"
             SELECT id, rollout_path, preview, ephemeral, model_provider, created_at, updated_at, status, path, cwd,
                    cli_version, source, title, sandbox_policy, approval_mode, archived, archived_at,
-                   git_sha, git_branch, git_origin_url, memory_mode
+                   git_sha, git_branch, git_origin_url, memory_mode, zone, activity
             FROM threads
             WHERE id = ?1
             "#,
@@ -328,9 +345,9 @@ impl StateStore {
     pub fn list_threads(&self, filters: ThreadListFilters) -> Result<Vec<ThreadMetadata>> {
         let conn = self.conn()?;
         let sql = if filters.include_archived {
-            "SELECT id, rollout_path, preview, ephemeral, model_provider, created_at, updated_at, status, path, cwd, cli_version, source, title, sandbox_policy, approval_mode, archived, archived_at, git_sha, git_branch, git_origin_url, memory_mode FROM threads ORDER BY updated_at DESC LIMIT ?1"
+            "SELECT id, rollout_path, preview, ephemeral, model_provider, created_at, updated_at, status, path, cwd, cli_version, source, title, sandbox_policy, approval_mode, archived, archived_at, git_sha, git_branch, git_origin_url, memory_mode, zone, activity FROM threads ORDER BY updated_at DESC LIMIT ?1"
         } else {
-            "SELECT id, rollout_path, preview, ephemeral, model_provider, created_at, updated_at, status, path, cwd, cli_version, source, title, sandbox_policy, approval_mode, archived, archived_at, git_sha, git_branch, git_origin_url, memory_mode FROM threads WHERE archived = 0 ORDER BY updated_at DESC LIMIT ?1"
+            "SELECT id, rollout_path, preview, ephemeral, model_provider, created_at, updated_at, status, path, cwd, cli_version, source, title, sandbox_policy, approval_mode, archived, archived_at, git_sha, git_branch, git_origin_url, memory_mode, zone, activity FROM threads WHERE archived = 0 ORDER BY updated_at DESC LIMIT ?1"
         };
 
         let mut stmt = conn.prepare(sql).context("failed to prepare list query")?;
@@ -946,5 +963,7 @@ fn row_to_thread(row: &rusqlite::Row<'_>) -> rusqlite::Result<ThreadMetadata> {
         git_branch: row.get(18)?,
         git_origin_url: row.get(19)?,
         memory_mode: row.get(20)?,
+        zone: row.get(21)?,
+        activity: row.get(22)?,
     })
 }

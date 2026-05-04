@@ -14,9 +14,10 @@ use deepseek_mcp::{
     McpManager, McpStartupCompleteEvent, McpStartupStatus as McpManagerStartupStatus,
 };
 use deepseek_protocol::{
-    AppResponse, EventFrame, ExecApprovalRequestEvent, PromptRequest, PromptResponse,
-    ReviewDecision, Thread, ThreadForkParams, ThreadListParams, ThreadReadParams, ThreadRequest,
-    ThreadResponse, ThreadResumeParams, ThreadSetNameParams, ThreadStatus, ToolPayload,
+    AgentActivityStatus, AgentZone, AppResponse, EventFrame, ExecApprovalRequestEvent,
+    PromptRequest, PromptResponse, ReviewDecision, Thread, ThreadForkParams, ThreadListParams,
+    ThreadReadParams, ThreadRequest, ThreadResponse, ThreadResumeParams, ThreadSetNameParams,
+    ThreadStatus, ToolPayload,
 };
 use deepseek_state::{
     JobStateRecord, JobStateStatus, SessionSource, StateStore, ThreadListFilters, ThreadMetadata,
@@ -431,6 +432,8 @@ impl ThreadManager {
                 SessionSource::Unknown => deepseek_protocol::SessionSource::Unknown,
             },
             name: None,
+            zone: Some(AgentZone::Corridor), // new threads start in corridor
+            activity: Some(AgentActivityStatus::Spawning),
         };
         self.persist_thread(&thread, None)?;
         match &initial_history {
@@ -642,6 +645,8 @@ impl ThreadManager {
             git_branch: None,
             git_origin_url: None,
             memory_mode: None,
+            zone: thread.zone.map(|z| z.as_str().to_string()),
+            activity: thread.activity.map(|a| a.as_str().to_string()),
         })
     }
 }
@@ -1399,6 +1404,11 @@ fn truncate_preview(value: &str) -> String {
 }
 
 fn to_protocol_thread(thread: ThreadMetadata) -> Thread {
+    let zone = thread.zone.as_deref().and_then(zone_from_str);
+    let activity = thread
+        .activity
+        .as_deref()
+        .and_then(activity_from_str);
     Thread {
         id: thread.id,
         preview: thread.preview,
@@ -1425,6 +1435,31 @@ fn to_protocol_thread(thread: ThreadMetadata) -> Thread {
             SessionSource::Unknown => deepseek_protocol::SessionSource::Unknown,
         },
         name: thread.name,
+        zone,
+        activity,
+    }
+}
+
+fn zone_from_str(s: &str) -> Option<AgentZone> {
+    match s {
+        "desk" => Some(AgentZone::Desk),
+        "hot_desk" => Some(AgentZone::HotDesk),
+        "lounge" => Some(AgentZone::Lounge),
+        "meeting" => Some(AgentZone::Meeting),
+        "corridor" => Some(AgentZone::Corridor),
+        _ => None,
+    }
+}
+
+fn activity_from_str(s: &str) -> Option<AgentActivityStatus> {
+    match s {
+        "idle" => Some(AgentActivityStatus::Idle),
+        "thinking" => Some(AgentActivityStatus::Thinking),
+        "tool_calling" => Some(AgentActivityStatus::ToolCalling),
+        "speaking" => Some(AgentActivityStatus::Speaking),
+        "error" => Some(AgentActivityStatus::Error),
+        "spawning" => Some(AgentActivityStatus::Spawning),
+        _ => None,
     }
 }
 
