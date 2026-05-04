@@ -604,6 +604,118 @@ pub fn persist_root_string_key(key: &str, value: &str) -> anyhow::Result<std::pa
     config::persist_root_string_key(key, value)
 }
 
+/// Write a machine-readable JSON manifest of all slash commands and
+/// keybindings to `~/.deepseek/commands.json`.
+///
+/// The output is consumed by the VS Code extension and other external
+/// tools that need to discover what the TUI exposes without parsing
+/// the help screen or config files.
+///
+/// On success, returns the path that was written. Best-effort: write
+/// failures are silently swallowed (the TUI must not fail to boot just
+/// because the home directory is read-only).
+pub fn write_commands_json(config_overrides: Option<&crate::config::Config>) {
+    use std::time::SystemTime;
+
+    let home = match dirs::home_dir() {
+        Some(h) => h,
+        None => return,
+    };
+    let path = home.join(".deepseek").join("commands.json");
+
+    let generated_at = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| {
+            use chrono::{DateTime, Utc};
+            let dt: DateTime<Utc> = (std::time::UNIX_EPOCH + d).into();
+            dt.to_rfc3339()
+        })
+        .unwrap_or_else(|_| String::new());
+
+    // Built-in slash commands
+    let commands: Vec<serde_json::Value> = COMMANDS
+        .iter()
+        .map(|cmd| {
+            serde_json::json!({
+                "name": cmd.name,
+                "aliases": cmd.aliases,
+                "usage": cmd.usage,
+                "description": cmd.description_for(Locale::En),
+            })
+        })
+        .collect();
+
+    // Keybindings
+    let keybindings: Vec<serde_json::Value> = crate::tui::keybindings::KEYBINDINGS
+        .iter()
+        .map(|kb| {
+            serde_json::json!({
+                "chord": kb.chord,
+                "description": crate::localization::tr(Locale::En, kb.description_id),
+                "section": format!("{:?}", kb.section),
+            })
+        })
+        .collect();
+
+    // User-defined commands
+    let user_commands: Vec<serde_json::Value> =
+        crate::commands::user_commands::load_user_commands()
+            .iter()
+            .map(|(name, _content)| {
+                serde_json::json!({
+                    "name": name,
+                    "path": format!("~/.deepseek/commands/{name}.md"),
+                })
+            })
+            .collect();
+
+    // Skills (if a skills_dir can be resolved)
+    let skills_list: Vec<serde_json::Value> = (|| -> Option<Vec<serde_json::Value>> {
+        let skills_dir = if let Some(cfg) = config_overrides {
+            cfg.skills_dir()
+        } else {
+            let home = dirs::home_dir()?;
+            home.join(".deepseek").join("skills")
+        };
+        if !skills_dir.exists() {
+            return Some(Vec::new());
+        }
+        let registry = crate::skills::SkillRegistry::discover(&skills_dir);
+        Some(
+            registry
+                .list()
+                .iter()
+                .map(|skill| {
+                    let path = skills_dir.join(&skill.name).join("SKILL.md");
+                    serde_json::json!({
+                        "name": skill.name,
+                        "description": skill.description,
+                        "path": path.to_string_lossy(),
+                    })
+                })
+                .collect(),
+        )
+    })()
+    .unwrap_or_default();
+
+    let payload = serde_json::json!({
+        "version": 1,
+        "generated_at": generated_at,
+        "commands": commands,
+        "keybindings": keybindings,
+        "user_commands": user_commands,
+        "skills": skills_list,
+    });
+
+    let json = serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "{}".to_string());
+
+    // Best-effort write: ensure parent dir exists, then write.
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&path, &json);
+}
+
 /// Auto-select a model based on request complexity.
 pub fn auto_model_heuristic(input: &str, current_model: &str) -> String {
     config::auto_model_heuristic(input, current_model)

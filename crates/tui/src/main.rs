@@ -3545,6 +3545,11 @@ async fn run_interactive(
         ),
     }
 
+    // Write machine-readable commands.json for VS Code extension
+    // discovery. Best-effort: failures are silently ignored so the
+    // TUI never fails to boot due to a write issue in ~/.deepseek/.
+    commands::write_commands_json(Some(config));
+
     tui::run_tui(
         config,
         tui::TuiOptions {
