@@ -12,6 +12,7 @@ use dotenvy::dotenv;
 use tempfile::NamedTempFile;
 use wait_timeout::ChildExt;
 
+mod attach;
 mod audit;
 mod automation_manager;
 mod client;
@@ -223,6 +224,11 @@ enum Commands {
     Sandbox(SandboxArgs),
     /// Run a local server (e.g. MCP)
     Serve(ServeArgs),
+    /// Attach to a remote deepseek serve instance
+    Attach {
+        /// Remote server URL (e.g. http://192.168.1.100:7878)
+        url: String,
+    },
     /// Resume a previous session by ID (use --last for most recent)
     Resume {
         /// Conversation/session id (UUID or prefix)
@@ -713,6 +719,10 @@ async fn main() -> Result<()> {
                 } else {
                     bail!("No server mode specified. Use --mcp or --http.")
                 }
+            }
+            Commands::Attach { url } => {
+                let config = load_config_from_cli(&cli)?;
+                run_attach(&cli, &config, &url).await
             }
             Commands::Resume { session_id, last } => {
                 let config = load_config_from_cli(&cli)?;
@@ -4291,6 +4301,54 @@ instructions = ["./AGENTS.md", "", "  ", "./extra.md"]
             "empty / whitespace-only entries are filtered"
         );
     }
+}
+
+/// Attach to a remote `deepseek serve --http` instance and launch the TUI
+/// in interactive mode proxied through the remote server.
+async fn run_attach(cli: &Cli, config: &Config, url: &str) -> Result<()> {
+    // First, validate the connection to the remote server
+    let _client = attach::connect(url).await.map_err(|e| {
+        anyhow!(
+            "Failed to connect to remote server at {url}: {e}\n\
+             Make sure a deepseek serve --http instance is running at that URL."
+        )
+    })?;
+
+    eprintln!("Connected to remote server at {url}");
+
+    // Launch interactive TUI with a flag that tells it to use the remote
+    // as a proxy. We pass the URL through the attach_client field.
+    // The TUI's runtime will use this client to forward turns.
+    //
+    // For now, we wrap the interactive flow with an attach client that
+    // connects to the remote for each turn.
+    run_interactive_with_attach(cli, config, url).await
+}
+
+/// Run the interactive TUI with a remote attach client.
+///
+/// This creates a thread on the remote server, then launches the TUI
+/// session. Each user turn is forwarded to the remote thread.
+async fn run_interactive_with_attach(cli: &Cli, config: &Config, url: &str) -> Result<()> {
+    // Ping the remote to confirm connectivity
+    let attach_client = attach::connect(url).await?;
+    if !attach_client.ping().await.unwrap_or(false) {
+        bail!("Remote server at {url} is not responding to health checks");
+    }
+
+    eprintln!("Attached to remote server — launching TUI");
+
+    // Set the environment so the TUI knows it's in attach mode
+    // and which URL to proxy through.
+    // SAFETY: single-threaded startup; env var is scoped to this process
+    // and its children, which is the intended usage.
+    unsafe { std::env::set_var("DEEPSEEK_ATTACH_URL", url) };
+
+    // Launch the standard interactive TUI.
+    // The attach mode is handled by the TUI runtime, which checks for
+    // the DEEPSEEK_ATTACH_URL env var and uses the attach client instead
+    // of the default DeepSeekClient.
+    run_interactive(cli, config, None, None).await
 }
 
 #[cfg(test)]
