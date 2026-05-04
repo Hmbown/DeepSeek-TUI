@@ -3289,13 +3289,18 @@ fn emit_agent_progress(
 
 /// Per-sub-agent tool registry.
 ///
-/// Two modes:
-/// - **Full inheritance** (`allowed_tools = None`): the child sees the same
-///   tool surface as the parent's Agent mode — every tool family including
-///   `with_subagent_tools` (so it can recurse). This is the v0.6.6 default.
-/// - **Explicit narrow** (`allowed_tools = Some(list)`): legacy / Custom
+/// Three modes:
+/// - **Auto-derived read-only** (`allowed_tools = Some(read_only_list)`):
+///   when the spawner provides no explicit `allowed_tools`, the child
+///   automatically inherits only read-only tools from the parent registry
+///   (#414). Write tools (filesystem mutation, code execution) are excluded
+///   and require explicit grant.
+/// - **Explicit narrow** (`allowed_tools = Some(user_list)`): legacy / Custom
 ///   path. The registry still builds the full surface, but only the listed
 ///   tool names are visible to the model and callable.
+/// - **Full inheritance** (`allowed_tools = None`): the child sees every
+///   tool the parent has. Retained for backward compat in edge paths; the
+///   default Agent-mode spawn now uses auto-derived read-only.
 struct SubAgentToolRegistry {
     /// `None` → full inheritance (no filter applied). `Some(list)` →
     /// only the listed tools are visible to the model and callable.
@@ -3327,14 +3332,36 @@ impl SubAgentToolRegistry {
             )
             .build(context);
 
+        // Feature #414: auto-derive sub-agent permissions.
+        //
+        // When the spawner omits `allowed_tools`, the child does NOT get
+        // full inheritance of every parent tool. Instead, only tools
+        // whose `is_read_only()` returns true are auto-derived. Write
+        // tools (WritesFiles, ExecutesCode capabilities) require explicit
+        // grant via the `allowed_tools` parameter at spawn time.
+        //
+        // The full registry is still built so grandchildren can spawn
+        // through the sub-agent management family, but model-visible
+        // tool listing and execution gating both use the filtered list.
+        let allowed_tools = explicit_allowed_tools.or_else(|| {
+            let read_only: Vec<String> = registry
+                .all()
+                .iter()
+                .filter(|tool| tool.is_read_only())
+                .map(|tool| tool.name().to_string())
+                .collect();
+            Some(read_only)
+        });
+
         Self {
-            allowed_tools: explicit_allowed_tools,
+            allowed_tools,
             registry,
         }
     }
 
     /// Whether a given tool name is permitted under this child's filter.
-    /// `None` filter = everything permitted.
+    /// Always `false` for unknown tools; filtered by the auto-derived or
+    /// explicit list.
     fn is_tool_allowed(&self, name: &str) -> bool {
         match &self.allowed_tools {
             None => true,
@@ -3377,10 +3404,13 @@ impl SubAgentToolRegistry {
 
 /// Resolve the effective allowed-tools list for a child.
 ///
-/// **v0.6.6 default: full inheritance.** Returning `Ok(None)` means the
-/// child sees the same tool surface as the parent's Agent mode — every
-/// family including `with_subagent_tools` so it can recurse. The narrowing
-/// path (`Ok(Some(list))`) is only used by:
+/// Returns `Ok(None)` for the default path, meaning the child's tool
+/// permissions will be auto-derived downstream in
+/// `SubAgentToolRegistry::new()` (#414): only read-only tools from the
+/// parent's surface are inherited; write tools require explicit grant
+/// via the `allowed_tools` parameter.
+///
+/// The narrowing path (`Ok(Some(list))`) is only used by:
 /// - `Custom` agent types (which require an explicit list).
 /// - Callers that pass `explicit_tools` (advanced / legacy use).
 ///
