@@ -247,43 +247,115 @@ impl Engine {
                 top_p: None,
             };
 
-            // Stream the response. Keep the request around (cloned into the
-            // first call) so we can resend it on a transparent retry below
-            // when the wire dies before any content was streamed (#103).
-            let stream_request = request;
-            let stream_result = client.create_message_stream(stream_request.clone()).await;
-            let stream = match stream_result {
-                Ok(s) => {
-                    context_recovery_attempts = 0;
-                    s
-                }
-                Err(e) => {
-                    let message = e.to_string();
-                    if is_context_length_error_message(&message)
-                        && context_recovery_attempts < MAX_CONTEXT_RECOVERY_ATTEMPTS
-                        && self
-                            .recover_context_overflow(
-                                &client,
-                                "provider context-length rejection",
-                                TURN_MAX_OUTPUT_TOKENS,
-                            )
-                            .await
-                    {
-                        context_recovery_attempts = context_recovery_attempts.saturating_add(1);
-                        continue;
+            // ── Speculative cached-prefix branching (#532) ──────────────
+            //
+            // When enabled, fire two parallel requests with different
+            // reasoning depths (think=off + user's configured effort).
+            // The winning response (by verifier score) is converted to
+            // synthetic stream events and processed normally.
+            //
+            // This ONLY applies to the first step of the turn loop (no
+            // prior tool calls). Subsequent steps (tool-call → result →
+            // next LLM call) use the normal streaming path.
+            let speculative_turn_enabled = self.config.speculative.enabled
+                && turn.tool_calls.is_empty()
+                && self.config.speculative.fast_model.is_some();
+            let mut synthetic_stream: Option<std::vec::IntoIter<StreamEvent>> = None;
+
+            if speculative_turn_enabled {
+                let _ = self.tx_event.send(Event::status(
+                    format!("⚡ speculative branching (fast={}, deep={})",
+                        self.config.speculative.fast_model.as_deref().unwrap_or(&self.session.model),
+                        self.session.reasoning_effort.as_deref().unwrap_or("max"),
+                    )
+                )).await;
+
+                let spec_cfg = &self.config.speculative;
+                match crate::speculative::run_speculative_turn(
+                    &client,
+                    spec_cfg,
+                    &self.session.model,
+                    self.session.messages.clone(),
+                    self.session.system_prompt.clone(),
+                    active_tools.clone(),
+                    if active_tools.is_some() {
+                        Some(json!({ "type": "auto" }))
+                    } else {
+                        None
+                    },
+                    TURN_MAX_OUTPUT_TOKENS,
+                    self.session.reasoning_effort.as_deref(),
+                )
+                .await {
+                    Ok((winner, loser_usage)) => {
+                        let _ = self.tx_event.send(Event::status(
+                            format!("⚡ speculative: {} branch won (score: {:.3})",
+                                winner.label, winner.score.overall)
+                        )).await;
+
+                        // Track both usages for cost accounting.
+                        turn.add_usage(&winner.response.usage);
+                        turn.add_usage(&loser_usage);
+
+                        // Convert winner response to stream events.
+                        let events = crate::speculative::response_to_stream_events(
+                            winner.response,
+                        );
+                        synthetic_stream = Some(events.into_iter());
                     }
-                    turn_error = Some(message.clone());
-                    let _ = self
-                        .tx_event
-                        .send(Event::error(ErrorEnvelope::classify(message, true)))
-                        .await;
-                    return (TurnOutcomeStatus::Failed, turn_error);
+                    Err(e) => {
+                        // Speculative branch failed — fall back to normal
+                        // streaming path with the original request.
+                        crate::logging::warn(format!(
+                            "Speculative branch failed, falling back to normal streaming: {e}"
+                        ));
+                    }
+                }
+            }
+
+            // Normal streaming path (also used as fallback when speculative
+            // fails). Keep the request around so we can resend it on a
+            // transparent retry below when the wire dies before any content
+            // was streamed (#103).
+            let stream_request = request;
+            let mut stream: crate::llm_client::StreamEventBox = match synthetic_stream {
+                Some(syn) => {
+                    // Speculative path: wrap synthetic events as a stream.
+                    futures_util::stream::iter(syn.map(Ok)).boxed()
+                }
+                None => {
+                    // Normal path: call the API.
+                    let stream_result = client.create_message_stream(stream_request.clone()).await;
+                    match stream_result {
+                        Ok(s) => {
+                            context_recovery_attempts = 0;
+                            s
+                        }
+                        Err(e) => {
+                            let message = e.to_string();
+                            if is_context_length_error_message(&message)
+                                && context_recovery_attempts < MAX_CONTEXT_RECOVERY_ATTEMPTS
+                                && self
+                                    .recover_context_overflow(
+                                        &client,
+                                        "provider context-length rejection",
+                                        TURN_MAX_OUTPUT_TOKENS,
+                                    )
+                                    .await
+                            {
+                                context_recovery_attempts = context_recovery_attempts.saturating_add(1);
+                                continue;
+                            }
+                            turn_error = Some(message.clone());
+                            let _ = self
+                                .tx_event
+                                .send(Event::error(ErrorEnvelope::classify(message, true)))
+                                .await;
+                            return (TurnOutcomeStatus::Failed, turn_error);
+                        }
+                    }
                 }
             };
-            // The stream value is itself `Pin<Box<dyn Stream + Send>>`, which
-            // is `Unpin`, so we can rebind it on a transparent retry without
-            // breaking the existing pin invariants.
-            let mut stream = stream;
 
             // Track content blocks
             let mut content_blocks: Vec<ContentBlock> = Vec::new();

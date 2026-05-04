@@ -160,6 +160,12 @@ pub struct ConfigToml {
     /// applies the defaults documented in [`LspConfigToml`].
     #[serde(default)]
     pub lsp: Option<LspConfigToml>,
+    /// Speculative cached-prefix turn branches (#532). When enabled, the
+    /// engine fires two parallel requests per user turn with different
+    /// reasoning depths (think=off and the configured effort), scores both
+    /// with a lightweight verifier, and selects the better result.
+    #[serde(default)]
+    pub speculative: Option<SpeculativeConfigToml>,
     #[serde(flatten)]
     pub extras: BTreeMap<String, toml::Value>,
 }
@@ -259,6 +265,29 @@ pub struct LspConfigToml {
     pub include_warnings: Option<bool>,
     /// Optional override for the `language -> [cmd, ...args]` table.
     pub servers: Option<BTreeMap<String, Vec<String>>>,
+}
+
+/// On-disk schema for the `[speculative]` table (#532).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SpeculativeConfigToml {
+    /// Master switch. When `true`, the engine runs two parallel LLM calls
+    /// per user turn (one with thinking enabled, one without) and selects
+    /// the better result. Default: `false`.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Model used for the fast (think=off) speculative branch. When unset,
+    /// the primary model is used. The fast model should be cheaper/faster
+    /// (e.g. `deepseek-v4-flash`) but must share the same prefix cache.
+    #[serde(default)]
+    pub fast_model: Option<String>,
+    /// Maximum wall-clock time in milliseconds to wait for both branches
+    /// before falling back to the primary result. Default: 30000.
+    #[serde(default = "default_speculative_timeout_ms")]
+    pub timeout_ms: u64,
+}
+
+fn default_speculative_timeout_ms() -> u64 {
+    30000
 }
 
 impl ConfigToml {

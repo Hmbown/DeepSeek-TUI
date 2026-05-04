@@ -539,6 +539,11 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
             .map(crate::config::LspConfigToml::into_runtime),
         runtime_services: app.runtime_services.clone(),
         subagent_model_overrides: config.subagent_model_overrides(),
+        speculative: config.speculative.as_ref().map(|c| crate::speculative::SpeculativeConfig {
+            enabled: c.enabled,
+            fast_model: c.fast_model.clone(),
+            timeout: std::time::Duration::from_millis(c.timeout_ms),
+        }).unwrap_or_default(),
         memory_enabled: config.memory_enabled(),
         memory_path: config.memory_path(),
         goal_objective: app.goal.goal_objective.clone(),
