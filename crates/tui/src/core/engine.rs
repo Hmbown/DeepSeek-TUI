@@ -140,6 +140,8 @@ pub struct EngineConfig {
     /// consulted when `memory_enabled` is `true`.
     pub memory_path: PathBuf,
     pub goal_objective: Option<String>,
+    /// Workshop / large-tool-output routing (#548). `None` disables routing.
+    pub workshop: Option<crate::tools::large_output_router::WorkshopConfig>,
 }
 
 impl Default for EngineConfig {
@@ -170,6 +172,7 @@ impl Default for EngineConfig {
             memory_enabled: false,
             memory_path: PathBuf::from("./memory.md"),
             goal_objective: None,
+            workshop: None,
         }
     }
 }
@@ -306,6 +309,10 @@ pub struct Engine {
     /// — when LSP is disabled in config, this is an inert manager that
     /// always returns `None` from `diagnostics_for`.
     lsp_manager: Arc<crate::lsp::LspManager>,
+    /// Session-scoped workshop variable store (#548). Shared across all tool
+    /// calls so `last_tool_result` persists within the session and can be
+    /// promoted to the parent context via `promote_to_context`.
+    workshop_vars: Option<std::sync::Arc<tokio::sync::Mutex<crate::tools::large_output_router::WorkshopVariables>>>,
     /// Diagnostics collected during the current step's tool calls. Drained
     /// and forwarded as a synthetic user message before the next API call.
     pending_lsp_blocks: Vec<crate::lsp::DiagnosticBlock>,
@@ -420,6 +427,18 @@ impl Engine {
             None => crate::lsp::LspManager::disabled(),
         });
 
+        // Workshop variable store (#548). Created unconditionally so the Arc
+        // can be handed to every ToolContext; routing is gated on the router
+        // field being Some rather than on the vars Arc being present.
+        let workshop_vars: Option<std::sync::Arc<tokio::sync::Mutex<crate::tools::large_output_router::WorkshopVariables>>> =
+            if config.workshop.is_some() {
+                Some(std::sync::Arc::new(tokio::sync::Mutex::new(
+                    crate::tools::large_output_router::WorkshopVariables::default(),
+                )))
+            } else {
+                None
+            };
+
         let mut engine = Engine {
             config,
             deepseek_client,
@@ -442,6 +461,7 @@ impl Engine {
             turn_counter: 0,
             lsp_manager,
             pending_lsp_blocks: Vec::new(),
+            workshop_vars,
         };
         engine.rehydrate_latest_canonical_state();
 
@@ -1280,6 +1300,19 @@ impl Engine {
 
         if let Some(decider) = self.config.network_policy.as_ref() {
             ctx = ctx.with_network_policy(decider.clone());
+        }
+
+        // Wire the large-output router (#548). Only attaches when the
+        // [workshop] config table is present; sub-agents don't inherit the
+        // router (their ToolContext is built separately) to prevent recursive
+        // routing of the synthesis call itself.
+        if let Some(workshop_cfg) = self.config.workshop.as_ref() {
+            if let Some(vars_arc) = self.workshop_vars.as_ref() {
+                let router = crate::tools::large_output_router::LargeOutputRouter::new(
+                    workshop_cfg.clone(),
+                );
+                ctx = ctx.with_large_output_router(router, vars_arc.clone());
+            }
         }
 
         match mode {

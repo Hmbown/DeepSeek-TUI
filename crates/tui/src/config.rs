@@ -778,6 +778,11 @@ pub struct Config {
     /// / tauri://localhost as the only allowed dev origins.
     #[serde(default)]
     pub runtime_api: Option<RuntimeApiConfig>,
+
+    /// Workshop / large-tool-output routing (#548). When absent, the global
+    /// default threshold of 4 096 tokens applies and routing is active.
+    #[serde(default)]
+    pub workshop: Option<crate::tools::large_output_router::WorkshopConfig>,
 }
 
 /// `[runtime_api]` table — knobs for the local HTTP/SSE daemon.
@@ -2026,6 +2031,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         },
         subagents: override_cfg.subagents.or(base.subagents),
         runtime_api: override_cfg.runtime_api.or(base.runtime_api),
+        workshop: override_cfg.workshop.or(base.workshop),
     }
 }
 

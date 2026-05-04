@@ -3725,6 +3725,7 @@ async fn run_exec_agent(
         memory_enabled: config.memory_enabled(),
         memory_path: config.memory_path(),
         goal_objective: None,
+        workshop: config.workshop.clone(),
     };
 
     let engine_handle = spawn_engine(engine_config, config);
