@@ -203,6 +203,7 @@ async function getBinaryPath(name) {
 }
 
 module.exports = {
+  binaryPaths,
   getBinaryPath,
   run,
 };
