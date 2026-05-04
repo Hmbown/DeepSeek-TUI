@@ -3724,6 +3724,7 @@ async fn run_exec_agent(
         subagent_model_overrides: config.subagent_model_overrides(),
         memory_enabled: config.memory_enabled(),
         memory_path: config.memory_path(),
+        capture_reasoning_memory: config.capture_reasoning_memory_enabled(),
         goal_objective: None,
     };
 

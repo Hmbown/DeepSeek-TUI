@@ -139,6 +139,11 @@ pub struct EngineConfig {
     /// Path to the user memory file (#489). Always populated; only
     /// consulted when `memory_enabled` is `true`.
     pub memory_path: PathBuf,
+    /// Capture reasoning_content as reflective memory notes (#544).
+    /// When `true`, after each turn the engine inspects reasoning_content
+    /// for decision-like signals and appends matching snippets to the
+    /// notes file with a `[reasoning]` tag. Default `false`.
+    pub capture_reasoning_memory: bool,
     pub goal_objective: Option<String>,
 }
 
@@ -169,6 +174,7 @@ impl Default for EngineConfig {
             subagent_model_overrides: HashMap::new(),
             memory_enabled: false,
             memory_path: PathBuf::from("./memory.md"),
+            capture_reasoning_memory: false,
             goal_objective: None,
         }
     }

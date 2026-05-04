@@ -5,6 +5,9 @@
 //! event handling, tool planning/execution, LSP post-edit hooks, capacity
 //! checkpoints, and loop termination.
 
+use std::io::Write;
+use std::path::Path;
+
 use super::*;
 
 impl Engine {
@@ -39,6 +42,9 @@ impl Engine {
         // proxy disconnects.
         const MAX_STREAM_RETRIES: u32 = 3;
         let mut stream_retry_attempts: u32 = 0;
+        // Captured reasoning_content from the last step for post-turn
+        // memory capture (#544).
+        let mut last_step_reasoning: Option<String> = None;
 
         loop {
             if self.cancel_token.is_cancelled() {
@@ -731,6 +737,10 @@ impl Engine {
             } else {
                 None
             };
+            // Preserve the raw reasoning for post-turn memory capture (#544).
+            if !current_thinking.is_empty() {
+                last_step_reasoning = Some(current_thinking.clone());
+            }
             if let Some(thinking) = thinking_to_persist {
                 content_blocks.push(ContentBlock::Thinking { thinking });
             }
@@ -1586,6 +1596,15 @@ impl Engine {
             turn.next_step();
         }
 
+        // #544: capture reasoning_content as reflective memory notes on
+        // completed turns, when the feature is enabled and the thinking
+        // content contains decision-like signals.
+        if self.config.capture_reasoning_memory {
+            if let Some(reasoning) = last_step_reasoning.as_deref() {
+                capture_reasoning_memory(&self.config.notes_path, reasoning);
+            }
+        }
+
         if self.cancel_token.is_cancelled() {
             return (TurnOutcomeStatus::Interrupted, None);
         }
@@ -1593,5 +1612,54 @@ impl Engine {
             return (TurnOutcomeStatus::Failed, Some(err));
         }
         (TurnOutcomeStatus::Completed, None)
+    }
+}
+
+/// A simple heuristic check: returns `true` if `text` contains any of the
+/// decision-like signal words that suggest the reasoning is worth preserving.
+fn has_reasoning_signal(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    lower.contains("because")
+        || lower.contains("therefore")
+        || lower.contains("decision")
+        || lower.contains("should")
+        || lower.contains("conclude")
+        || lower.contains("instead")
+        || lower.contains("better to")
+        || lower.contains("reason")
+}
+
+/// Capture reasoning_content as a reflective memory note appended to the
+/// notes file with a `[reasoning]` tag (#544). Only stores the first
+/// sentence (up to ~200 chars) of thinking that passes the heuristic
+/// signal check. Best-effort: failures are silently ignored.
+fn capture_reasoning_memory(notes_path: &Path, reasoning: &str) {
+    let reasoning = reasoning.trim();
+    if reasoning.is_empty() || !has_reasoning_signal(reasoning) {
+        return;
+    }
+
+    // Extract the first thought segment (split on sentence boundaries).
+    let insight = reasoning
+        .split(|c| c == '.' || c == '!' || c == '?')
+        .next()
+        .unwrap_or(reasoning)
+        .trim();
+
+    // Cap at 200 characters so a single note doesn't overwhelm the file.
+    let insight: String = insight.chars().take(200).collect();
+
+    // Ensure parent directory exists.
+    if let Some(parent) = notes_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    // Append to notes file.
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(notes_path)
+    {
+        let _ = writeln!(file, "\n---\n[reasoning] {insight}");
     }
 }
