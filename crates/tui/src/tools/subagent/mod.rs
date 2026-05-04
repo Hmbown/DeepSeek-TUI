@@ -470,6 +470,11 @@ struct SpawnRequest {
     /// into separate git worktrees: parent runs `git worktree add` first,
     /// then spawns children with the worktree path as `cwd`.
     cwd: Option<PathBuf>,
+    /// Optional file path for cache-aware resident mode (#529). When set,
+    /// the child's prompt is prefixed with the file contents for prefix-cache
+    /// locality. A global ownership table prevents two agents from holding
+    /// a resident lease on the same file simultaneously.
+    resident_file: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1525,6 +1530,10 @@ impl ToolSpec for AgentSpawnTool {
                 "cwd": {
                     "type": "string",
                     "description": "Optional working directory for the child. Must be inside the parent's workspace (use a relative path or an absolute path under the workspace root). Used for the parallel-worktree pattern: parent runs `git worktree add .worktrees/feature-x ...` then spawns the child with `cwd: \".worktrees/feature-x\"`."
+                },
+                "resident_file": {
+                    "type": "string",
+                    "description": "Optional file path for cache-aware resident mode. When set, the child's system prefix is augmented with the full contents of this file so DeepSeek's prefix cache stays warm across follow-up send_input calls. Only one agent may hold a resident lease on a given file at a time — a second spawn with the same path receives a conflict warning in the result."
                 }
             }
         })
@@ -1604,6 +1613,44 @@ impl ToolSpec for AgentSpawnTool {
         };
         child_runtime.model = effective_model.clone();
 
+        // Cache-aware resident mode (#529): prepend file contents to the prompt
+        // so the child's prefix is byte-stable for DeepSeek prefix caching.
+        let (effective_prompt, resident_conflict) =
+            if let Some(ref file_path) = spawn_request.resident_file {
+                let abs_path = if std::path::Path::new(file_path).is_absolute() {
+                    std::path::PathBuf::from(file_path)
+                } else {
+                    self.runtime.context.workspace.join(file_path)
+                };
+                let file_contents = std::fs::read_to_string(&abs_path).unwrap_or_else(|e| {
+                    format!("<!-- resident_file read error: {e} -->")
+                });
+                let prefixed = format!(
+                    "<!-- resident_file: {file_path} -->\n```\n{file_contents}\n```\n\n{}",
+                    spawn_request.prompt
+                );
+                // Check ownership (best-effort, non-blocking).
+                let conflict = {
+                    static RESIDENT_LEASES: std::sync::OnceLock<
+                        std::sync::Mutex<std::collections::HashMap<String, String>>,
+                    > = std::sync::OnceLock::new();
+                    let leases = RESIDENT_LEASES
+                        .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+                    let mut guard = leases.lock().unwrap_or_else(|p| p.into_inner());
+                    if let Some(owner) = guard.get(file_path) {
+                        Some(format!(
+                            "Warning: agent {owner} already holds a resident lease on {file_path}"
+                        ))
+                    } else {
+                        guard.insert(file_path.clone(), "pending".to_string());
+                        None
+                    }
+                };
+                (prefixed, conflict)
+            } else {
+                (spawn_request.prompt, None)
+            };
+
         let mut manager = self.manager.write().await;
 
         let result = manager
@@ -1611,7 +1658,7 @@ impl ToolSpec for AgentSpawnTool {
                 Arc::clone(&self.manager),
                 child_runtime,
                 spawn_request.agent_type,
-                spawn_request.prompt,
+                effective_prompt,
                 spawn_request.assignment,
                 spawn_request.allowed_tools,
                 SubAgentSpawnOptions {
@@ -1622,11 +1669,14 @@ impl ToolSpec for AgentSpawnTool {
             .map_err(|e| ToolError::execution_failed(format!("Failed to spawn sub-agent: {e}")))?;
 
         let mut tool_result = if self.name == "spawn_agent" {
-            let payload = json!({
+            let mut payload = json!({
                 "agent_id": result.agent_id.clone(),
                 "nickname": result.nickname.clone(),
                 "model": result.model.clone()
             });
+            if let Some(ref warning) = resident_conflict {
+                payload["resident_conflict"] = json!(warning);
+            }
             ToolResult::json(&payload).map_err(|e| ToolError::execution_failed(e.to_string()))?
         } else {
             ToolResult::json(&result).map_err(|e| ToolError::execution_failed(e.to_string()))?
@@ -3138,6 +3188,11 @@ fn parse_spawn_request(input: &Value) -> Result<SpawnRequest, ToolError> {
 
     let cwd = parse_optional_cwd(input)?;
     let model = parse_optional_subagent_model(input, "model")?;
+    let resident_file = input
+        .get("resident_file")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .filter(|s| !s.trim().is_empty());
 
     Ok(SpawnRequest {
         prompt: prompt.clone(),
@@ -3146,6 +3201,7 @@ fn parse_spawn_request(input: &Value) -> Result<SpawnRequest, ToolError> {
         allowed_tools,
         model,
         cwd,
+        resident_file,
     })
 }
 
