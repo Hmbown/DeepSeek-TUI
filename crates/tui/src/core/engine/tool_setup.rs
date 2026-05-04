@@ -48,6 +48,10 @@ impl Engine {
             builder = builder.with_shell_tools();
         }
 
+        // Register the LSP code-intelligence tool (#427) — available in
+        // both Plan and Agent modes since it's read-only.
+        builder = builder.with_lsp_tool();
+
         // Register the `remember` tool only when the user has opted in to
         // user-memory (#489). Without that opt-in the tool would always
         // fail; surfacing it would just waste catalog slots.

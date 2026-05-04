@@ -57,6 +57,20 @@ pub trait LspTransport: Send + Sync {
         wait: Duration,
     ) -> Result<Vec<Diagnostic>>;
 
+    /// Send a generic JSON-RPC request to the LSP server (e.g.
+    /// `textDocument/hover`, `textDocument/definition`). Returns the
+    /// `result` field of the response, or an error on timeout / LSP
+    /// error response. The caller is responsible for ensuring the
+    /// relevant file is opened (via `ensure_open` or a prior
+    /// `diagnostics_for`) before sending document-scoped requests.
+    async fn request(&self, method: &str, params: Value) -> Result<Value>;
+
+    /// Ensure the file is opened (didOpen) or up-to-date (didChange) in
+    /// the LSP server. Called by `LspManager` before sending
+    /// textDocument-scoped requests for files that may not have been
+    /// seen yet.
+    async fn ensure_open(&self, path: &Path, text: &str) -> Result<()>;
+
     /// Best-effort shutdown. Called via `LspManager::shutdown_all`.
     #[allow(dead_code)]
     async fn shutdown(&self);
@@ -75,14 +89,10 @@ pub struct StdioLspTransport {
     /// Inbound diagnostics queue. We push every `publishDiagnostics`
     /// notification into here and the public API drains the relevant entries.
     diagnostics_rx: AsyncMutex<mpsc::Receiver<(PathBuf, Vec<Diagnostic>)>>,
-    /// Map of in-flight request id -> reply slot. We do not currently call
-    /// methods that need replies after `initialize`, but this is the hook
-    /// for it.
-    #[allow(dead_code)]
+    /// Map of in-flight request id -> reply slot. Used by the `request`
+    /// method for request/response LSP operations (hover, definition, etc.).
     pending: Arc<AsyncMutex<HashMap<i64, oneshot::Sender<Value>>>>,
-    /// Monotonic request id counter. Reserved for future LSP request/reply
-    /// methods (workspace symbol queries, etc.).
-    #[allow(dead_code)]
+    /// Monotonic request id counter. Used by the `request` method.
     next_id: AsyncMutex<i64>,
     /// Language id passed in `textDocument/didOpen` (e.g. "rust").
     language_id: &'static str,
@@ -201,42 +211,9 @@ impl LspTransport for StdioLspTransport {
         wait: Duration,
     ) -> Result<Vec<Diagnostic>> {
         let path_buf = path.to_path_buf();
-        let uri = uri_from_path(&path_buf);
 
-        // Either send didOpen (first time) or didChange (subsequent edits).
-        let mut opened = self.opened.lock().await;
-        let is_new = !opened.contains_key(&path_buf);
-        let new_version = opened.get(&path_buf).copied().unwrap_or(0) + 1;
-        opened.insert(path_buf.clone(), new_version);
-        drop(opened);
-
-        let payload = if is_new {
-            json!({
-                "jsonrpc": "2.0",
-                "method": "textDocument/didOpen",
-                "params": {
-                    "textDocument": {
-                        "uri": uri.clone(),
-                        "languageId": self.language_id,
-                        "version": new_version,
-                        "text": text
-                    }
-                }
-            })
-        } else {
-            json!({
-                "jsonrpc": "2.0",
-                "method": "textDocument/didChange",
-                "params": {
-                    "textDocument": {
-                        "uri": uri.clone(),
-                        "version": new_version
-                    },
-                    "contentChanges": [{ "text": text }]
-                }
-            })
-        };
-        send_message(&self.tx_outbound, &payload).await?;
+        // Ensure the file is opened/updated before waiting for diagnostics.
+        self.ensure_open(path, text).await?;
 
         // Drain matching `publishDiagnostics` notifications until `wait`
         // elapses. Servers typically publish within a few hundred ms; for
@@ -269,6 +246,81 @@ impl LspTransport for StdioLspTransport {
             // opened. Discard and continue waiting.
         }
         Ok(latest.unwrap_or_default())
+    }
+
+    async fn ensure_open(&self, path: &Path, text: &str) -> Result<()> {
+        let path_buf = path.to_path_buf();
+        let uri = uri_from_path(&path_buf);
+
+        let mut opened = self.opened.lock().await;
+        let is_new = !opened.contains_key(&path_buf);
+        let new_version = opened.get(&path_buf).copied().unwrap_or(0) + 1;
+        opened.insert(path_buf.clone(), new_version);
+        drop(opened);
+
+        let payload = if is_new {
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": uri,
+                        "languageId": self.language_id,
+                        "version": new_version,
+                        "text": text,
+                    }
+                }
+            })
+        } else {
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didChange",
+                "params": {
+                    "textDocument": {
+                        "uri": uri,
+                        "version": new_version,
+                    },
+                    "contentChanges": [{ "text": text }],
+                }
+            })
+        };
+        send_message(&self.tx_outbound, &payload).await?;
+        Ok(())
+    }
+
+    async fn request(&self, method: &str, params: Value) -> Result<Value> {
+        let mut id_lock = self.next_id.lock().await;
+        let id = *id_lock;
+        *id_lock += 1;
+        drop(id_lock);
+
+        let (tx, rx) = oneshot::channel();
+        self.pending.lock().await.insert(id, tx);
+
+        let request_body = json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params,
+        });
+        send_message(&self.tx_outbound, &request_body).await?;
+
+        // Wait up to 30 seconds for a response.
+        let response = tokio::time::timeout(Duration::from_secs(30), rx)
+            .await
+            .map_err(|_| anyhow!("LSP {method} timed out after 30s"))?
+            .map_err(|_| anyhow!("LSP {method} response channel closed"))?;
+
+        if let Some(error) = response.get("error") {
+            let code = error.get("code").and_then(|v| v.as_i64()).unwrap_or(-1);
+            let msg = error
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown error");
+            return Err(anyhow!("LSP {method} error (code {code}): {msg}"));
+        }
+
+        Ok(response.get("result").cloned().unwrap_or(Value::Null))
     }
 
     async fn shutdown(&self) {

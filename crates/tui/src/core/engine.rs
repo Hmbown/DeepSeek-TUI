@@ -1269,6 +1269,13 @@ impl Engine {
         .with_shell_manager(self.shell_manager.clone())
         .with_runtime_services(self.config.runtime_services.clone())
         .with_cancel_token(self.cancel_token.clone())
+        // Inject the LSP manager so the LSP tool can call code-intelligence
+        // operations (hover, definition, references, etc.).
+        .map_runtime(|rt| {
+            if rt.lsp_manager.is_none() {
+                rt.lsp_manager = Some(Arc::clone(&self.lsp_manager));
+            }
+        })
         .with_trusted_external_paths(trusted.paths().to_vec());
 
         // Hand the user-memory path to tools so the model-callable
