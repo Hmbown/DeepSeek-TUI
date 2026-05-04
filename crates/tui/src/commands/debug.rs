@@ -250,6 +250,20 @@ fn format_cache_history(app: &App, count: usize, locale: Locale) -> String {
     format!("{header}{body}{footer}")
 }
 
+/// Toggle verbose thinking display.
+///
+/// When enabled, full chain-of-thought (reasoning_content) is shown in the
+/// transcript for completed thinking blocks. When disabled (default), only
+/// a compact summary is shown.
+pub fn verbose_thinking(app: &mut App) -> CommandResult {
+    app.verbose_thinking = !app.verbose_thinking;
+    let state = if app.verbose_thinking { "on" } else { "off" };
+    CommandResult::message(format!(
+        "Verbose thinking display: {state}. Now showing {} chain-of-thought.",
+        if app.verbose_thinking { "full" } else { "compact" }
+    ))
+}
+
 fn humanize_age(d: std::time::Duration) -> String {
     let secs = d.as_secs();
     if secs < 60 {

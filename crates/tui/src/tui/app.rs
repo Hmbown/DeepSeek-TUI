@@ -598,6 +598,7 @@ pub struct App {
     pub fancy_animations: bool,
     pub show_thinking: bool,
     pub show_tool_details: bool,
+    pub verbose_thinking: bool,
     pub ui_locale: Locale,
     pub composer_density: ComposerDensity,
     pub composer_border: bool,
@@ -1121,6 +1122,7 @@ impl App {
             fancy_animations,
             show_thinking,
             show_tool_details,
+            verbose_thinking: false,
             ui_locale,
             composer_density,
             composer_border,
@@ -2182,6 +2184,7 @@ impl App {
         TranscriptRenderOptions {
             show_thinking: self.show_thinking,
             show_tool_details: self.show_tool_details,
+            verbose_thinking: self.verbose_thinking,
             calm_mode: self.calm_mode,
             low_motion: self.low_motion,
             spacing: self.transcript_spacing,

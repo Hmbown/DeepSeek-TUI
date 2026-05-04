@@ -1600,11 +1600,18 @@ async fn run_event_loop(
                     KeyCode::Char(c)
                         if app.onboarding == OnboardingState::Language
                             && c.is_ascii_digit()
-                            && let Some((_, tag, _, _)) =
+                            && matches!(
                                 onboarding::language::LANGUAGE_OPTIONS
                                     .iter()
-                                    .find(|(hotkey, _, _, _)| *hotkey == c) =>
+                                    .find(|(hotkey, _, _, _)| *hotkey == c),
+                                Some((_, _, _, _))
+                            ) =>
                     {
+                        let tag = onboarding::language::LANGUAGE_OPTIONS
+                            .iter()
+                            .find(|(hotkey, _, _, _)| *hotkey == c)
+                            .map(|(_, tag, _, _)| tag)
+                            .expect("digit matched in guard");
                         match app.set_locale_from_onboarding(tag) {
                             Ok(()) => {
                                 app.push_status_toast(

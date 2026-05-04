@@ -145,6 +145,7 @@ impl SubAgentCell {
 pub struct TranscriptRenderOptions {
     pub show_thinking: bool,
     pub show_tool_details: bool,
+    pub verbose_thinking: bool,
     pub calm_mode: bool,
     pub low_motion: bool,
     pub spacing: TranscriptSpacing,
@@ -155,6 +156,7 @@ impl Default for TranscriptRenderOptions {
         Self {
             show_thinking: true,
             show_tool_details: true,
+            verbose_thinking: false,
             calm_mode: false,
             low_motion: false,
             spacing: TranscriptSpacing::Comfortable,
@@ -234,7 +236,7 @@ impl HistoryCell {
                 width,
                 *streaming,
                 *duration_secs,
-                !*streaming,
+                !*streaming && !options.verbose_thinking,
                 options.low_motion,
             ),
             HistoryCell::Tool(cell) if !options.show_tool_details => {
