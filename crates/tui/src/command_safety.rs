@@ -299,6 +299,64 @@ pub fn classify_command(tokens: &[&str]) -> String {
     positional[0].clone()
 }
 
+/// Return `true` when an allow-rule `pattern` (a command-prefix string such
+/// as `"git status"`) matches the concrete `command` string using the
+/// arity-aware prefix classification from [`classify_command`].
+///
+/// This is the canonical entry point for config `allow` / `auto_allow` rule
+/// evaluation.  It correctly handles:
+///
+/// * `"git status"` → matches `git status -s`, `git status --porcelain`;
+///   does **not** match `git push origin main`.
+/// * `"npm run dev"` → matches only `npm run dev`, not `npm run build`.
+/// * `"cargo check"` → matches `cargo check --workspace`.
+/// * `"make"` → matches `make all`, `make clean` (arity 1).
+///
+/// For allow rules that contain wildcards (`*`) or regex metacharacters, the
+/// caller should additionally invoke the pattern-matching path from
+/// `crate::execpolicy::matcher::pattern_matches`.
+///
+/// # Examples
+///
+/// ```
+/// # use deepseek_tui::command_safety::prefix_allow_matches;
+/// assert!( prefix_allow_matches("git status",    "git status --porcelain"));
+/// assert!(!prefix_allow_matches("git status",    "git push origin main"));
+/// assert!( prefix_allow_matches("cargo check",   "cargo check --workspace"));
+/// assert!( prefix_allow_matches("npm run dev",   "npm run dev"));
+/// assert!(!prefix_allow_matches("npm run dev",   "npm run build"));
+/// ```
+pub fn prefix_allow_matches(pattern: &str, command: &str) -> bool {
+    // Normalise the pattern: trim + lowercase + collapse whitespace.
+    let pattern_norm: String = pattern
+        .trim()
+        .to_ascii_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    let tokens: Vec<&str> = command.split_whitespace().collect();
+    if tokens.is_empty() {
+        return pattern_norm.is_empty();
+    }
+
+    // Primary path: arity-aware classification.
+    let canonical = classify_command(&tokens);
+    if canonical == pattern_norm {
+        return true;
+    }
+
+    // Fallback: normalised exact match for patterns not in the arity table
+    // (e.g. exact-match rules like `"ls -la"` that lack a dictionary entry).
+    let command_norm: String = command
+        .trim()
+        .to_ascii_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    command_norm == pattern_norm || command_norm.starts_with(&format!("{pattern_norm} "))
+}
+
 /// Safety classification of a command
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SafetyLevel {

@@ -1,6 +1,9 @@
+pub mod bash_arity;
+
 use std::collections::HashSet;
 
 use anyhow::Result;
+use bash_arity::BashArityDict;
 use deepseek_protocol::{NetworkPolicyAmendment, NetworkPolicyRuleAction};
 use serde::{Deserialize, Serialize};
 
@@ -79,11 +82,24 @@ pub struct ExecPolicyContext<'a> {
     pub sandbox_mode: Option<&'a str>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ExecPolicyEngine {
     trusted_prefixes: Vec<String>,
     denied_prefixes: Vec<String>,
     approved_for_session: HashSet<String>,
+    /// Arity dictionary for command-prefix allow-rule matching.
+    arity_dict: BashArityDict,
+}
+
+impl Default for ExecPolicyEngine {
+    fn default() -> Self {
+        Self {
+            trusted_prefixes: Vec::new(),
+            denied_prefixes: Vec::new(),
+            approved_for_session: HashSet::new(),
+            arity_dict: BashArityDict::new(),
+        }
+    }
 }
 
 impl ExecPolicyEngine {
@@ -92,6 +108,7 @@ impl ExecPolicyEngine {
             trusted_prefixes,
             denied_prefixes,
             approved_for_session: HashSet::new(),
+            arity_dict: BashArityDict::new(),
         }
     }
 
@@ -105,6 +122,7 @@ impl ExecPolicyEngine {
 
     pub fn check(&self, ctx: ExecPolicyContext<'_>) -> Result<ExecPolicyDecision> {
         let normalized = normalize_command(ctx.command);
+        // Deny rules use simple prefix matching (no arity semantics needed).
         if let Some(rule) = self
             .denied_prefixes
             .iter()
@@ -120,10 +138,13 @@ impl ExecPolicyEngine {
             });
         }
 
+        // Allow (trusted) rules use arity-aware prefix matching so that
+        // `auto_allow = ["git status"]` matches `git status -s` but NOT
+        // `git push origin main`.
         let trusted_rule = self
             .trusted_prefixes
             .iter()
-            .find(|rule| normalized.starts_with(&normalize_command(rule)))
+            .find(|rule| self.arity_dict.allow_rule_matches(rule, ctx.command))
             .cloned();
         let is_trusted = trusted_rule.is_some();
 

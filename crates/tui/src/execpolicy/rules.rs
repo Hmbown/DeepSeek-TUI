@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 
 use super::matcher::pattern_matches;
+use crate::command_safety::prefix_allow_matches;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExecPolicyDecision {
@@ -28,6 +29,7 @@ pub struct RuleSet {
     #[serde(default)]
     pub deny: Vec<String>,
 }
+
 
 impl ExecPolicyConfig {
     pub fn from_str(contents: &str) -> Result<Self> {
@@ -53,7 +55,11 @@ impl ExecPolicyConfig {
 
         for (group, rules) in &self.rules {
             for pattern in &rules.allow {
-                if pattern_matches(pattern, command) {
+                // Allow rules use arity-aware prefix matching first so that
+                // `allow = ["git status"]` matches `git status -s` but NOT
+                // `git push origin main`.  Fall back to regex-style
+                // `pattern_matches` for wildcard patterns (e.g. `cargo *`).
+                if prefix_allow_matches(pattern, command) || pattern_matches(pattern, command) {
                     let _ = group;
                     return ExecPolicyDecision::Allow;
                 }
@@ -117,6 +123,60 @@ mod tests {
         ));
         assert!(matches!(
             config.evaluate("unknown command"),
+            ExecPolicyDecision::AskUser(_)
+        ));
+    }
+
+    #[test]
+    fn test_prefix_rule_allows_git_status_with_flags() {
+        // Arity-aware: `allow = ["git status"]` must match `git status -s`.
+        let config = ExecPolicyConfig {
+            rules: BTreeMap::from([(
+                "git".to_string(),
+                RuleSet {
+                    allow: vec!["git status".to_string()],
+                    deny: vec![],
+                },
+            )]),
+        };
+
+        assert!(matches!(
+            config.evaluate("git status -s"),
+            ExecPolicyDecision::Allow
+        ));
+        assert!(matches!(
+            config.evaluate("git status --porcelain"),
+            ExecPolicyDecision::Allow
+        ));
+        // Push must NOT match the "git status" allow rule.
+        assert!(matches!(
+            config.evaluate("git push origin main"),
+            ExecPolicyDecision::AskUser(_)
+        ));
+    }
+
+    #[test]
+    fn test_prefix_rule_allows_cargo_check_variants() {
+        let config = ExecPolicyConfig {
+            rules: BTreeMap::from([(
+                "cargo".to_string(),
+                RuleSet {
+                    allow: vec!["cargo check".to_string()],
+                    deny: vec![],
+                },
+            )]),
+        };
+
+        assert!(matches!(
+            config.evaluate("cargo check"),
+            ExecPolicyDecision::Allow
+        ));
+        assert!(matches!(
+            config.evaluate("cargo check --workspace"),
+            ExecPolicyDecision::Allow
+        ));
+        assert!(matches!(
+            config.evaluate("cargo build --release"),
             ExecPolicyDecision::AskUser(_)
         ));
     }
