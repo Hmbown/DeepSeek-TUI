@@ -139,6 +139,10 @@ pub struct EngineConfig {
     /// Path to the user memory file (#489). Always populated; only
     /// consulted when `memory_enabled` is `true`.
     pub memory_path: PathBuf,
+    /// Git repository root for the current workspace (#496). `None` when
+    /// the workspace is not inside a git repository. Used by the memory
+    /// system to tag and filter entries by project.
+    pub git_root: Option<PathBuf>,
     pub goal_objective: Option<String>,
 }
 
@@ -169,6 +173,7 @@ impl Default for EngineConfig {
             subagent_model_overrides: HashMap::new(),
             memory_enabled: false,
             memory_path: PathBuf::from("./memory.md"),
+            git_root: None,
             goal_objective: None,
         }
     }
@@ -355,8 +360,11 @@ impl Engine {
 
         // Set up system prompt with project context (default to agent mode)
         let working_set_summary = session.working_set.summary_block(&config.workspace);
-        let user_memory_block =
-            crate::memory::compose_block(config.memory_enabled, &config.memory_path);
+        let user_memory_block = crate::memory::compose_block(
+            config.memory_enabled,
+            &config.memory_path,
+            config.git_root.as_deref(),
+        );
         let system_prompt = prompts::system_prompt_for_mode_with_context_skills_and_session(
             AppMode::Agent,
             &config.workspace,
@@ -1278,6 +1286,10 @@ impl Engine {
             ctx.memory_path = Some(self.config.memory_path.clone());
         }
 
+        // Pass the git root so tools (especially `remember`) can tag memory
+        // entries with the current project repo (#496).
+        ctx.git_root = self.config.git_root.clone();
+
         if let Some(decider) = self.config.network_policy.as_ref() {
             ctx = ctx.with_network_policy(decider.clone());
         }
@@ -1649,8 +1661,11 @@ impl Engine {
             .session
             .working_set
             .summary_block(&self.config.workspace);
-        let user_memory_block =
-            crate::memory::compose_block(self.config.memory_enabled, &self.config.memory_path);
+        let user_memory_block = crate::memory::compose_block(
+            self.config.memory_enabled,
+            &self.config.memory_path,
+            self.config.git_root.as_deref(),
+        );
         let base = prompts::system_prompt_for_mode_with_context_skills_and_session(
             mode,
             &self.config.workspace,

@@ -1811,6 +1811,7 @@ impl RuntimeThreadManager {
             subagent_model_overrides: self.config.subagent_model_overrides(),
             memory_enabled: self.config.memory_enabled(),
             memory_path: self.config.memory_path(),
+            git_root: crate::memory::discover_git_root(&thread.workspace),
             goal_objective: None,
         };
 
