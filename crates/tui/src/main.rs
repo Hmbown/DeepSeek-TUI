@@ -389,6 +389,10 @@ struct ServeArgs {
     /// Start runtime HTTP/SSE API server
     #[arg(long)]
     http: bool,
+    /// Advertise the HTTP server via mDNS (zeroconf) so other machines on the
+    /// local network can discover it as `_deepseek._tcp.local.`
+    #[arg(long)]
+    mdns: bool,
     /// Bind host for HTTP server (default localhost)
     #[arg(long, default_value = "127.0.0.1")]
     host: String,
@@ -707,6 +711,7 @@ async fn main() -> Result<()> {
                             port: args.port,
                             workers: args.workers.clamp(1, 8),
                             cors_origins,
+                            mdns: args.mdns,
                         },
                     )
                     .await
