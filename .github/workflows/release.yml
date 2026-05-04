@@ -58,10 +58,12 @@ jobs:
           # --- deepseek (cli) ---
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            target_zig: x86_64-unknown-linux-gnu.2.28
             binary: deepseek
             artifact_name: deepseek-linux-x64
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
+            target_zig: aarch64-unknown-linux-gnu.2.28
             binary: deepseek
             artifact_name: deepseek-linux-arm64
           - os: macos-latest
@@ -79,10 +81,12 @@ jobs:
           # --- deepseek-tui (TUI) ---
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            target_zig: x86_64-unknown-linux-gnu.2.28
             binary: deepseek-tui
             artifact_name: deepseek-tui-linux-x64
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
+            target_zig: aarch64-unknown-linux-gnu.2.28
             binary: deepseek-tui
             artifact_name: deepseek-tui-linux-arm64
           - os: macos-latest
@@ -103,14 +107,31 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
-      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Install zig
+        if: runner.os == 'Linux'
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: '0.13.0'
+      - name: Install cargo-zigbuild
+        if: runner.os == 'Linux'
+        run: cargo install cargo-zigbuild --locked
+      - name: Build
+        shell: bash
+        run: |
+          if [ -n "${{ matrix.target_zig }}" ]; then
+            cargo zigbuild --release --locked --target ${{ matrix.target_zig }}
+          else
+            cargo build --release --locked --target ${{ matrix.target }}
+          fi
       - name: Rename binary
         shell: bash
         run: |
-          cp target/${{ matrix.target }}/release/${{ matrix.binary }} ${{ matrix.artifact_name }}
+          TARGET_DIR="${{ matrix.target_zig || matrix.target }}"
+          cp "target/${TARGET_DIR}/release/${{ matrix.binary }}" ${{ matrix.artifact_name }}
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
