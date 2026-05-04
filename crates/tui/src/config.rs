@@ -2162,7 +2162,24 @@ pub fn ensure_parent_dir(path: &Path) -> Result<()> {
 /// the caller can show a confirmation message without leaking the key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SavedCredential {
-    /// Stored in the deepseek config file at the given path.
+    /// Stored in **both** the OS keyring and the deepseek config file.
+    /// This is the default outcome on platforms with a working keyring
+    /// backend: writing both layers defeats the
+    /// `keyring → env → config-file` resolution-order shadow that
+    /// would otherwise let a stale OS-keyring entry from a previous
+    /// install hide the freshly-entered key (#593). The `backend`
+    /// label is the value of [`deepseek_secrets::Secrets::backend_name`]
+    /// at write time so the toast text can name the actual backend
+    /// (`"system keyring"`, `"file-based (~/.deepseek/secrets/)"`).
+    KeyringAndConfigFile {
+        /// `Secrets::backend_name()` at write time.
+        backend: String,
+        /// Absolute path to the config file that was also updated.
+        path: PathBuf,
+    },
+    /// Stored in the deepseek config file only. Fallback when no
+    /// keyring backend is reachable, or under `cfg(test)` so unit
+    /// tests don't pollute the host keyring.
     ConfigFile(PathBuf),
 }
 
@@ -2172,23 +2189,76 @@ impl SavedCredential {
     #[must_use]
     pub fn describe(&self) -> String {
         match self {
+            Self::KeyringAndConfigFile { backend, path } => {
+                format!("OS keyring ({backend}) and {}", path.display())
+            }
             Self::ConfigFile(path) => path.display().to_string(),
         }
     }
 }
 
-/// Save the active provider's API key to `~/.deepseek/config.toml`.
+/// Save the active provider's API key.
 ///
-/// v0.8.8 intentionally uses the shared config file as the default
-/// setup path. It works in every folder, in npm installs, in IDE
-/// terminals, and without platform credential prompts.
+/// **Dual-write strategy (#593):** writes to `~/.deepseek/config.toml`
+/// (always) and to the OS keyring via [`deepseek_secrets::Secrets`]
+/// (when a backend is reachable). The runtime resolves credentials in
+/// `keyring → env → config-file` order; writing to the config file
+/// alone — as v0.8.8 through v0.8.10 did — let a stale keyring entry
+/// from a prior install silently shadow the fresh value the user just
+/// typed during in-TUI onboarding, producing the "no response" symptom
+/// reported in #593.
+///
+/// The config file remains the inspectable durable record (works in
+/// npm installs, IDE terminals, and headless boxes alike), and the
+/// keyring acts as the layered override that defeats stale-shadow on
+/// the resolution path. When the keyring write fails (no backend, OS
+/// permission denied, etc.) the config-file write still stands and
+/// the function reports a [`SavedCredential::ConfigFile`] outcome —
+/// callers should not treat that as a failure.
+///
+/// Skipped under `cfg(test)` so the suite never touches the host
+/// keyring. The `secrets` crate has its own test coverage for
+/// keyring set/get.
 pub fn save_api_key(api_key: &str) -> Result<SavedCredential> {
     let trimmed = api_key.trim();
     if trimmed.is_empty() {
         anyhow::bail!("Refusing to save an empty API key.");
     }
 
+    // Always write the inspectable copy first. The config file is the
+    // durable record everyone — including macOS Keychain-prompted
+    // first-run, headless CI, and IDE terminals — can rely on.
     let path = save_api_key_to_config_file(trimmed)?;
+
+    // Then mirror to the OS keyring when one is reachable. This
+    // overwrites any stale entry from a prior install so
+    // `Secrets::resolve` (keyring → env → config-file) no longer
+    // shadows the fresh key. Skipped under `cfg(test)` so unit tests
+    // can't pollute the host keyring (macOS Always-Allow prompts,
+    // cross-test contamination).
+    #[cfg(not(test))]
+    {
+        let secrets = deepseek_secrets::Secrets::auto_detect();
+        match secrets.set("deepseek", trimmed) {
+            Ok(()) => {
+                let backend = secrets.backend_name().to_string();
+                log_sensitive_event(
+                    "credential.save",
+                    json!({
+                        "backend": backend.clone(),
+                        "config_path": path.display().to_string(),
+                        "dual_write": true,
+                    }),
+                );
+                return Ok(SavedCredential::KeyringAndConfigFile { backend, path });
+            }
+            Err(err) => {
+                tracing::warn!("OS keyring write failed; key saved to config.toml only: {err}");
+                // Fall through to the ConfigFile-only outcome below.
+            }
+        }
+    }
+
     Ok(SavedCredential::ConfigFile(path))
 }
 
@@ -2349,7 +2419,8 @@ pub fn has_api_key_for(config: &Config, provider: ApiProvider) -> bool {
 pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf> {
     if matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN) {
         return match save_api_key(api_key)? {
-            SavedCredential::ConfigFile(path) => Ok(path),
+            SavedCredential::KeyringAndConfigFile { path, .. }
+            | SavedCredential::ConfigFile(path) => Ok(path),
         };
     }
 
@@ -2719,6 +2790,23 @@ mod tests {
     fn saved_credential_describe_returns_config_file_path() {
         let cf = SavedCredential::ConfigFile(PathBuf::from("/tmp/x.toml"));
         assert_eq!(cf.describe(), "/tmp/x.toml");
+    }
+
+    /// #593: the dual-write outcome describes both targets so the
+    /// onboarding toast (`API key saved to {describe}`) tells the user
+    /// the key landed in *both* the keyring and the config file —
+    /// which is the whole point of the fix (defeats stale-keyring
+    /// shadow while keeping the config file inspectable).
+    #[test]
+    fn saved_credential_describe_lists_both_targets_for_keyring_and_config() {
+        let dual = SavedCredential::KeyringAndConfigFile {
+            backend: "system keyring".to_string(),
+            path: PathBuf::from("/tmp/x.toml"),
+        };
+        assert_eq!(
+            dual.describe(),
+            "OS keyring (system keyring) and /tmp/x.toml"
+        );
     }
 
     #[test]
