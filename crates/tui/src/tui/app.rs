@@ -169,6 +169,7 @@ pub enum SidebarFocus {
     Todos,
     Tasks,
     Agents,
+    Context,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,6 +216,7 @@ impl SidebarFocus {
             "todos" => Self::Todos,
             "tasks" => Self::Tasks,
             "agents" | "subagents" | "sub-agents" => Self::Agents,
+            "context" | "session" => Self::Context,
             _ => Self::Auto,
         }
     }
@@ -228,6 +230,7 @@ impl SidebarFocus {
             Self::Todos => "todos",
             Self::Tasks => "tasks",
             Self::Agents => "agents",
+            Self::Context => "context",
         }
     }
 }
@@ -597,6 +600,8 @@ pub struct App {
     pub transcript_spacing: TranscriptSpacing,
     pub sidebar_width_percent: u16,
     pub sidebar_focus: SidebarFocus,
+    /// Whether the session-context panel is enabled (#504).
+    pub context_panel: bool,
     /// File-tree pane state. `None` when hidden; `Some` when visible.
     pub file_tree: Option<crate::tui::file_tree::FileTreeState>,
     #[allow(dead_code)]
@@ -1118,6 +1123,7 @@ impl App {
             transcript_spacing,
             sidebar_width_percent,
             sidebar_focus,
+            context_panel: settings.context_panel,
             file_tree: None,
             compact_threshold,
             max_input_history,
@@ -2834,14 +2840,13 @@ impl App {
             self.paste_burst.clear_after_explicit_paste();
             return None;
         }
-        let mut input = self.input.clone();
-        if char_count(&input) > MAX_SUBMITTED_INPUT_CHARS {
-            input = input.chars().take(MAX_SUBMITTED_INPUT_CHARS).collect();
-            self.status_message = Some(format!(
-                "Input truncated to {} characters for safety",
-                MAX_SUBMITTED_INPUT_CHARS
-            ));
+        // When the input exceeds the safety cap, consolidate it into a
+        // workspace paste file and replace it with an @mention so the
+        // model can read the full content at turn time (#553).
+        if char_count(&self.input) > MAX_SUBMITTED_INPUT_CHARS {
+            self.consolidate_large_input();
         }
+        let input = self.input.clone();
         if !input.starts_with('/') {
             self.input_history.push(input.clone());
             if self.max_input_history == 0 {
@@ -2859,6 +2864,61 @@ impl App {
         self.history_navigation_draft = None;
         self.clear_input();
         Some(input)
+    }
+
+    /// When the composer input exceeds [`MAX_SUBMITTED_INPUT_CHARS`], write
+    /// the full content to a timestamped paste file under
+    /// `.deepseek/pastes/` and replace `self.input` with an `@`-mention
+    /// pointing at it so the model can read the full content via the
+    /// normal file-mention resolution path (#553).
+    fn consolidate_large_input(&mut self) {
+        let full_input = std::mem::take(&mut self.input);
+        self.cursor_position = 0;
+
+        let now = chrono::Local::now();
+        let suffix = uuid::Uuid::new_v4().to_string()[..8].to_string();
+        let filename = format!("paste-{}-{}.md", now.format("%Y-%m-%d-%H%M%S"), suffix);
+        let rel_path = format!(".deepseek/pastes/{filename}");
+
+        let pastes_dir = self.workspace.join(".deepseek/pastes");
+        if let Err(e) = std::fs::create_dir_all(&pastes_dir) {
+            // Fallback: keep a truncated version so we don't lose the
+            // user's input entirely when the filesystem is unhappy.
+            self.input = full_input
+                .chars()
+                .take(MAX_SUBMITTED_INPUT_CHARS)
+                .collect();
+            self.cursor_position = char_count(&self.input);
+            self.push_status_toast(
+                format!("Failed to create paste directory: {e}"),
+                StatusToastLevel::Error,
+                Some(8_000),
+            );
+            return;
+        }
+
+        let file_path = self.workspace.join(&rel_path);
+        if let Err(e) = std::fs::write(&file_path, &full_input) {
+            self.input = full_input
+                .chars()
+                .take(MAX_SUBMITTED_INPUT_CHARS)
+                .collect();
+            self.cursor_position = char_count(&self.input);
+            self.push_status_toast(
+                format!("Failed to write paste file: {e}"),
+                StatusToastLevel::Error,
+                Some(8_000),
+            );
+            return;
+        }
+
+        self.input = format!("@{rel_path}");
+        self.cursor_position = char_count(&self.input);
+        self.push_status_toast(
+            "Large paste consolidated — sent as @mention",
+            StatusToastLevel::Info,
+            Some(5_000),
+        );
     }
 
     pub fn queue_message(&mut self, message: QueuedMessage) {
@@ -3231,18 +3291,46 @@ mod tests {
     }
 
     #[test]
-    fn submit_input_truncates_oversized_payloads() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.input = "x".repeat(MAX_SUBMITTED_INPUT_CHARS + 128);
+    fn submit_input_consolidates_oversized_input_into_paste_file() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let mut opts = test_options(false);
+        opts.workspace = tmp.path().to_path_buf();
+        let mut app = App::new(opts, &Config::default());
+        let full_content = "x".repeat(MAX_SUBMITTED_INPUT_CHARS + 128);
+        app.input = full_content.clone();
         app.cursor_position = app.input.chars().count();
 
         let submitted = app.submit_input().expect("expected submitted input");
-        assert_eq!(submitted.chars().count(), MAX_SUBMITTED_INPUT_CHARS);
+
+        // The submitted text should be the @mention, not the truncated
+        // original (#553).
         assert!(
-            app.status_message
-                .as_ref()
-                .is_some_and(|msg| msg.contains("Input truncated"))
+            submitted.starts_with("@.deepseek/pastes/paste-"),
+            "expected @mention, got: {submitted}"
         );
+        assert!(
+            submitted.ends_with(".md"),
+            "expected .md extension, got: {submitted}"
+        );
+
+        // The paste file must exist on disk with the full original content.
+        let rel_path = &submitted[1..]; // strip leading '@'
+        let abs_path = tmp.path().join(rel_path);
+        assert!(abs_path.is_file(), "paste file must exist at {abs_path:?}");
+        let written = std::fs::read_to_string(&abs_path).expect("read paste file");
+        assert_eq!(written, full_content);
+
+        // A status toast should have been pushed.
+        assert!(
+            app.status_toasts
+                .iter()
+                .any(|toast| toast.text.contains("consolidated")),
+            "expected consolidation toast, got: {:?}",
+            app.status_toasts.iter().map(|t| &t.text).collect::<Vec<_>>()
+        );
+
+        // The composer must be clear after submit.
+        assert!(app.input.is_empty());
     }
 
     #[test]

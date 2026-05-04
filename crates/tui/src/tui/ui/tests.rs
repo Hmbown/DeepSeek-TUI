@@ -1468,7 +1468,7 @@ async fn dismissed_plan_prompt_leaves_non_numeric_input_for_normal_send_path() {
     );
     assert_eq!(
         app.status_message.as_deref(),
-        Some("Offline mode: queued 1 message(s) - /queue to review")
+        Some("Offline: 1 queued — ↑ to edit, /queue list")
     );
 }
 
@@ -2839,7 +2839,7 @@ fn tab_queues_running_turn_draft_for_next_turn() {
     assert!(
         app.status_message
             .as_deref()
-            .is_some_and(|msg| msg.contains("Queued follow-up"))
+            .is_some_and(|msg| msg.contains("queued — ↑"))
     );
 }
 

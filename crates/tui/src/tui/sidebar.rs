@@ -42,6 +42,7 @@ pub fn render_sidebar(f: &mut Frame, area: Rect, app: &App) {
         SidebarFocus::Todos => render_sidebar_todos(f, area, app),
         SidebarFocus::Tasks => render_sidebar_tasks(f, area, app),
         SidebarFocus::Agents => render_sidebar_subagents(f, area, app),
+        SidebarFocus::Context => render_context_panel(f, area, app),
     }
 }
 
@@ -57,6 +58,7 @@ fn render_sidebar_auto(f: &mut Frame, area: Rect, app: &App) {
         Todos,
         Tasks,
         Agents,
+        Context,
     }
 
     let todos_empty = app
@@ -70,7 +72,7 @@ fn render_sidebar_auto(f: &mut Frame, area: Rect, app: &App) {
         && active_fanout_counts(app).is_none()
         && !foreground_rlm_running(app);
 
-    let mut visible: Vec<Panel> = Vec::with_capacity(4);
+    let mut visible: Vec<Panel> = Vec::with_capacity(5);
     visible.push(Panel::Plan);
     if !todos_empty {
         visible.push(Panel::Todos);
@@ -81,6 +83,9 @@ fn render_sidebar_auto(f: &mut Frame, area: Rect, app: &App) {
     if !agents_empty {
         visible.push(Panel::Agents);
     }
+    if app.context_panel {
+        visible.push(Panel::Context);
+    }
 
     let constraints: Vec<Constraint> = match visible.len() {
         1 => vec![Constraint::Min(0)],
@@ -90,10 +95,17 @@ fn render_sidebar_auto(f: &mut Frame, area: Rect, app: &App) {
             Constraint::Percentage(33),
             Constraint::Min(0),
         ],
+        4 => vec![
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Min(6),
+        ],
         _ => vec![
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
+            Constraint::Percentage(20),
+            Constraint::Percentage(20),
+            Constraint::Percentage(20),
+            Constraint::Percentage(20),
             Constraint::Min(6),
         ],
     };
@@ -109,6 +121,7 @@ fn render_sidebar_auto(f: &mut Frame, area: Rect, app: &App) {
             Panel::Todos => render_sidebar_todos(f, *rect, app),
             Panel::Tasks => render_sidebar_tasks(f, *rect, app),
             Panel::Agents => render_sidebar_subagents(f, *rect, app),
+            Panel::Context => render_context_panel(f, *rect, app),
         }
     }
 }
@@ -597,6 +610,123 @@ pub fn subagent_navigator_lines(
     )));
 
     lines
+}
+
+/// Session-context panel (#504) — consolidated session state overview.
+///
+/// Surfaces at-a-glance: working set, token usage / context %, running
+/// cost, MCP server count, LSP toggle state, cycle count, and memory
+/// file size + mtime. Each section is a compact one-liner so the panel
+/// reads as a dashboard rather than a scrolling list.
+fn render_context_panel(f: &mut Frame, area: Rect, app: &App) {
+    if area.height < 3 {
+        return;
+    }
+
+    let content_width = area.width.saturating_sub(4) as usize;
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(usize::from(area.height).max(4));
+
+    // ── Working set ──────────────────────────────────────────────
+    let ws_name = app
+        .workspace
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("(root)")
+        .to_string();
+    lines.push(Line::from(vec![
+        Span::styled(
+            truncate_line_to_width(&ws_name, content_width.max(1)),
+            Style::default().fg(palette::DEEPSEEK_SKY).bold(),
+        ),
+        Span::styled(
+            format!(
+                "  {}",
+                app.workspace_context.as_deref().unwrap_or("")
+            ),
+            Style::default().fg(palette::TEXT_DIM),
+        ),
+    ]));
+
+    // ── Token usage ──────────────────────────────────────────────
+    let total_tokens = app.session.total_conversation_tokens;
+    let window = crate::models::context_window_for_model(&app.model).unwrap_or(1_048_576);
+    let pct = if window > 0 {
+        ((total_tokens as f64 / window as f64) * 100.0).clamp(0.0, 100.0)
+    } else {
+        0.0
+    };
+    let bar_width = content_width.min(20);
+    let filled = ((pct / 100.0) * bar_width as f64) as usize;
+    let bar = format!(
+        "[{}{}] {:.0}%",
+        "█".repeat(filled),
+        "░".repeat(bar_width.saturating_sub(filled)),
+        pct
+    );
+    lines.push(Line::from(Span::styled(
+        format!(
+            "context: {}/{} tokens  {}",
+            total_tokens,
+            window,
+            truncate_line_to_width(&bar, content_width.saturating_sub(32).max(8))
+        ),
+        Style::default().fg(palette::TEXT_MUTED),
+    )));
+
+    // ── Session cost ─────────────────────────────────────────────
+    let total_cost = app.session.session_cost + app.session.subagent_cost;
+    lines.push(Line::from(Span::styled(
+        format!("cost: ${total_cost:.4} (session ${:.4} + agents ${:.4})",
+            app.session.session_cost, app.session.subagent_cost),
+        Style::default().fg(palette::TEXT_MUTED),
+    )));
+
+    // ── MCP servers ──────────────────────────────────────────────
+    if app.mcp_configured_count > 0 {
+        let restart_hint = if app.mcp_restart_required { " (restart needed)" } else { "" };
+        lines.push(Line::from(Span::styled(
+            format!("mcp: {} server(s){}", app.mcp_configured_count, restart_hint),
+            Style::default().fg(palette::TEXT_MUTED),
+        )));
+    }
+
+    // ── LSP ──────────────────────────────────────────────────────
+    let lsp_label = if app.lsp_enabled { "on" } else { "off" };
+    lines.push(Line::from(Span::styled(
+        format!("lsp: {}", lsp_label),
+        Style::default().fg(palette::TEXT_MUTED),
+    )));
+
+    // ── Cycles ───────────────────────────────────────────────────
+    if app.cycle_count > 0 {
+        lines.push(Line::from(Span::styled(
+            format!("cycles: {} crossed, {} briefing(s)",
+                app.cycle_count, app.cycle_briefings.len()),
+            Style::default().fg(palette::TEXT_MUTED),
+        )));
+    }
+
+    // ── Memory ───────────────────────────────────────────────────
+    if app.use_memory {
+        let size_hint = std::fs::metadata(&app.memory_path)
+            .map(|m| m.len())
+            .map(|bytes| {
+                if bytes >= 1024 * 1024 {
+                    format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+                } else if bytes >= 1024 {
+                    format!("{:.1} KB", bytes as f64 / 1024.0)
+                } else {
+                    format!("{} B", bytes)
+                }
+            })
+            .unwrap_or_else(|_| "—".to_string());
+        lines.push(Line::from(Span::styled(
+            format!("memory: {} ({})", app.memory_path.display(), size_hint),
+            Style::default().fg(palette::TEXT_MUTED),
+        )));
+    }
+
+    render_sidebar_section(f, area, "Session", lines);
 }
 
 fn render_sidebar_section(f: &mut Frame, area: Rect, title: &str, lines: Vec<Line<'static>>) {

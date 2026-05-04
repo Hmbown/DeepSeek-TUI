@@ -189,6 +189,7 @@ pub enum SidebarFocusValue {
     Todos,
     Tasks,
     Agents,
+    Context,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -666,6 +667,7 @@ impl SidebarFocusValue {
             Self::Todos => "todos",
             Self::Tasks => "tasks",
             Self::Agents => "agents",
+            Self::Context => "context",
         }
     }
 }
@@ -754,6 +756,7 @@ impl From<&str> for SidebarFocusValue {
             SidebarFocus::Todos => Self::Todos,
             SidebarFocus::Tasks => Self::Tasks,
             SidebarFocus::Agents => Self::Agents,
+            SidebarFocus::Context => Self::Context,
         }
     }
 }

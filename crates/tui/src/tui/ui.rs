@@ -1138,6 +1138,7 @@ async fn run_event_loop(
                     EngineEvent::AgentList { agents } => {
                         let mut sorted = agents.clone();
                         sort_subagents_in_place(&mut sorted);
+                        sorted.retain(|a| !a.from_prior_session);
                         app.subagent_cache = sorted.clone();
                         reconcile_subagent_activity_state(app);
                         if app.view_stack.update_subagents(&sorted) {
@@ -1988,6 +1989,11 @@ async fn run_event_loop(
                 KeyCode::Char('$') if key.modifiers.contains(KeyModifiers::ALT) => {
                     app.set_sidebar_focus(SidebarFocus::Agents);
                     app.status_message = Some("Sidebar focus: agents".to_string());
+                    continue;
+                }
+                KeyCode::Char('%') if key.modifiers.contains(KeyModifiers::ALT) => {
+                    app.set_sidebar_focus(SidebarFocus::Context);
+                    app.status_message = Some("Sidebar focus: context".to_string());
                     continue;
                 }
                 KeyCode::Char(')') if key.modifiers.contains(KeyModifiers::ALT) => {
@@ -2997,7 +3003,7 @@ fn queue_current_draft_for_next_turn(app: &mut App) -> bool {
     };
     app.queue_message(queued);
     app.status_message = Some(format!(
-        "Queued follow-up for next turn ({} queued) - /queue to review",
+        "{} queued — ↑ to edit, /queue list",
         app.queued_message_count()
     ));
     true
@@ -4198,7 +4204,7 @@ async fn queue_follow_up(app: &mut App, message: QueuedMessage) -> Result<()> {
     let display = message.display.clone();
     app.queue_message(message);
     app.status_message = Some(format!(
-        "Queued follow-up: {} ({} queued) - /queue to review",
+        "Queued: {} ({} total) — ↑ to edit",
         display,
         app.queued_message_count()
     ));
@@ -4217,11 +4223,11 @@ async fn submit_or_steer_message(
             app.queue_message(message);
             if app.offline_mode {
                 app.status_message = Some(format!(
-                    "Offline mode: queued {count} message(s) - /queue to review"
+                    "Offline: {count} queued — ↑ to edit, /queue list"
                 ));
             } else {
                 app.status_message = Some(format!(
-                    "Queued for next turn: {count} message(s) - Ctrl+Enter to steer, /queue to review"
+                    "{count} queued — ↑ to edit, /queue list"
                 ));
             }
             Ok(())
@@ -4231,7 +4237,7 @@ async fn submit_or_steer_message(
             if let Err(err) = steer_user_message(app, engine_handle, message.clone()).await {
                 app.queue_message(message);
                 app.status_message = Some(format!(
-                    "Steer failed ({err}); queued {} message(s) - /queue to view/edit",
+                    "Steer failed ({err}); {} queued — ↑ to edit, /queue list",
                     app.queued_message_count()
                 ));
             } else {
@@ -6441,10 +6447,18 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) -> Vec<ViewEvent> {
         MouseEventKind::ScrollUp => {
             let update = app.viewport.mouse_scroll.on_scroll(ScrollDirection::Up);
             app.viewport.pending_scroll_delta += update.delta_lines;
+            if update.delta_lines != 0 {
+                app.user_scrolled_during_stream = true;
+                app.needs_redraw = true;
+            }
         }
         MouseEventKind::ScrollDown => {
             let update = app.viewport.mouse_scroll.on_scroll(ScrollDirection::Down);
             app.viewport.pending_scroll_delta += update.delta_lines;
+            if update.delta_lines != 0 {
+                app.user_scrolled_during_stream = true;
+                app.needs_redraw = true;
+            }
         }
         MouseEventKind::Down(MouseButton::Left) => {
             if let Some(point) = selection_point_from_mouse(app, mouse) {

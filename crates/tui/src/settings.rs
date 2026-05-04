@@ -45,8 +45,11 @@ pub struct Settings {
     pub default_mode: String,
     /// Sidebar width as percentage of terminal width
     pub sidebar_width_percent: u16,
-    /// Sidebar focus mode: auto, plan, todos, tasks, agents
+    /// Sidebar focus mode: auto, plan, todos, tasks, agents, context
     pub sidebar_focus: String,
+    /// Enable the session-context panel (#504). Shows working set, tokens,
+    /// cost, MCP/LSP status, cycle count, and memory info.
+    pub context_panel: bool,
     /// Maximum number of input history entries to save
     pub max_input_history: usize,
     /// Default model to use
@@ -71,6 +74,7 @@ impl Default for Settings {
             default_mode: "agent".to_string(),
             sidebar_width_percent: 28,
             sidebar_focus: "auto".to_string(),
+            context_panel: false,
             max_input_history: 100,
             default_model: None,
         }
@@ -423,6 +427,7 @@ fn normalize_sidebar_focus(value: &str) -> &str {
         "todos" => "todos",
         "tasks" => "tasks",
         "agents" | "subagents" | "sub-agents" => "agents",
+        "context" | "session" => "context",
         _ => "auto",
     }
 }
