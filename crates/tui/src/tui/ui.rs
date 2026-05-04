@@ -2381,6 +2381,19 @@ async fn run_event_loop(
                     }
                 }
                 KeyCode::Enter => {
+                    // #573: when the user typed a slash-command prefix that
+                    // the popup is matching (e.g. `/mo` → `/model`), Enter
+                    // should run the *highlighted match* rather than
+                    // sending the literal `/mo` text. Only kick in when the
+                    // popup has at least one entry; otherwise fall through
+                    // to the legacy submit path.
+                    if slash_menu_open
+                        && !slash_menu_entries.is_empty()
+                        && app.input.starts_with('/')
+                        && apply_slash_menu_selection(app, &slash_menu_entries, false)
+                    {
+                        app.close_slash_menu();
+                    }
                     if let Some(input) = app.submit_input() {
                         if handle_plan_choice(app, &engine_handle, &input).await? {
                             continue;
