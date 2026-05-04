@@ -653,6 +653,12 @@ pub struct App {
     /// dangerous command after being told no, but the user shouldn't
     /// have to keep dismissing the same dialog.
     pub approval_session_denied: HashSet<String>,
+    /// Pre-computed broad approval keys for pending approval requests,
+    /// keyed by tool_id. Set in the `ApprovalRequired` handler so the
+    /// `ApprovalDecision` handler can store the broad key without
+    /// re-deriving it from tool_input (which is not available at that
+    /// point). Used by #412 (always-allow broader-pattern memory).
+    pub pending_approval_broad_keys: HashMap<String, String>,
     pub approval_mode: ApprovalMode,
     // Modal view stack (approval/help/etc.)
     pub view_stack: ViewStack,
@@ -664,6 +670,9 @@ pub struct App {
     pub current_session_id: Option<String>,
     /// Trust mode - allow access outside workspace
     pub trust_mode: bool,
+    /// When false (default), deny external directory writes with a permission
+    /// error. When true, external writes use the existing trust validation.
+    pub allow_external_writes: bool,
     /// Ordered list of footer items the user wants visible. Sourced from
     /// `tui.status_items` in `~/.deepseek/config.toml` at startup; mutated
     /// live by `/statusline`. The renderer iterates this slice; no item is
@@ -1158,6 +1167,7 @@ impl App {
             clipboard: ClipboardHandler::new(),
             approval_session_approved: HashSet::new(),
             approval_session_denied: HashSet::new(),
+            pending_approval_broad_keys: HashMap::new(),
             approval_mode: if matches!(initial_mode, AppMode::Yolo) {
                 ApprovalMode::Auto
             } else {
@@ -1167,6 +1177,7 @@ impl App {
             backtrack: crate::tui::backtrack::BacktrackState::new(),
             current_session_id: None,
             trust_mode: initial_mode == AppMode::Yolo,
+            allow_external_writes: config.allow_external_writes(),
             status_items: config
                 .tui
                 .as_ref()

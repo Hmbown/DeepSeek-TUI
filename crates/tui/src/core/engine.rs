@@ -81,6 +81,10 @@ pub struct EngineConfig {
     pub allow_shell: bool,
     /// Enable trust mode (skip approvals) when true.
     pub trust_mode: bool,
+    /// When false (default), tools that try to write outside the workspace
+    /// get a `PermissionDenied` error. When true, external writes proceed
+    /// with the existing workspace-trust and trust_mode validation.
+    pub allow_external_writes: bool,
     /// Path to the notes file used by the notes tool.
     pub notes_path: PathBuf,
     /// Path to the MCP configuration file.
@@ -149,6 +153,7 @@ impl Default for EngineConfig {
             workspace: PathBuf::from("."),
             allow_shell: true,
             trust_mode: false,
+            allow_external_writes: false,
             notes_path: PathBuf::from("notes.txt"),
             mcp_config_path: PathBuf::from("mcp.json"),
             skills_dir: crate::skills::default_skills_dir(),
@@ -1269,7 +1274,8 @@ impl Engine {
         .with_shell_manager(self.shell_manager.clone())
         .with_runtime_services(self.config.runtime_services.clone())
         .with_cancel_token(self.cancel_token.clone())
-        .with_trusted_external_paths(trusted.paths().to_vec());
+        .with_trusted_external_paths(trusted.paths().to_vec())
+        .with_allow_external_writes(self.config.allow_external_writes);
 
         // Hand the user-memory path to tools so the model-callable
         // `remember` tool can append entries (#489). `None` when the

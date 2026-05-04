@@ -110,6 +110,16 @@ pub struct ToolContext {
     /// short-circuit on `None` rather than fall back to a workspace-local
     /// default.
     pub memory_path: Option<PathBuf>,
+
+    /// When false (default), tools that try to write outside the workspace
+    /// directory get a `PermissionDenied` error instead of the usual
+    /// `PathEscape` — the denial carries a message suggesting the user set
+    /// `allow_external_writes = true` in their config or trust the specific
+    /// path via `/trust add <path>`.
+    ///
+    /// When `true`, external writes proceed with the existing workspace-trust
+    /// and `trust_mode` validation.
+    pub allow_external_writes: bool,
 }
 
 impl ToolContext {
@@ -136,6 +146,7 @@ impl ToolContext {
             runtime: RuntimeToolServices::default(),
             cancel_token: None,
             memory_path: None,
+            allow_external_writes: false,
         }
     }
 
@@ -165,6 +176,7 @@ impl ToolContext {
             runtime: RuntimeToolServices::default(),
             cancel_token: None,
             memory_path: None,
+            allow_external_writes: false,
         }
     }
 
@@ -194,6 +206,7 @@ impl ToolContext {
             runtime: RuntimeToolServices::default(),
             cancel_token: None,
             memory_path: None,
+            allow_external_writes: false,
         }
     }
 
@@ -278,9 +291,7 @@ impl ToolContext {
                 && !self.is_trusted_external_path(&candidate_canonical)
                 && !self.is_trusted_external_path(&candidate_normalized)
             {
-                return Err(ToolError::PathEscape {
-                    path: candidate_canonical,
-                });
+                return self.external_path_error(candidate_canonical);
             }
         }
 
@@ -297,7 +308,7 @@ impl ToolContext {
             if !canonical.starts_with(&workspace_canonical)
                 && !self.is_trusted_external_path(&canonical)
             {
-                return Err(ToolError::PathEscape { path: canonical });
+                return self.external_path_error(canonical);
             }
 
             return Ok(canonical);
@@ -345,7 +356,7 @@ impl ToolContext {
             && !canonical.starts_with(&workspace_normalized)
             && !self.is_trusted_external_path(&canonical)
         {
-            return Err(ToolError::PathEscape { path: canonical });
+            return self.external_path_error(canonical);
         }
 
         Ok(canonical)
@@ -357,6 +368,32 @@ impl ToolContext {
         self.trusted_external_paths
             .iter()
             .any(|trusted| path.starts_with(trusted))
+    }
+
+    /// Return a `PermissionDenied` error when `allow_external_writes` is
+    /// false, or a `PathEscape` error when the user has opted in via config.
+    /// The PermissionDenied variant triggers a more actionable UI message
+    /// suggesting the user set `allow_external_writes = true` or trust the
+    /// path.
+    fn external_path_error(&self, path: PathBuf) -> Result<PathBuf, ToolError> {
+        if self.allow_external_writes {
+            Err(ToolError::PathEscape { path })
+        } else {
+            Err(ToolError::permission_denied(format!(
+                "Path '{}' is outside the workspace directory. \
+                 Set `allow_external_writes = true` in config, \
+                 use `/trust add <path>` to trust the directory, \
+                 or use a path within the workspace.",
+                path.display()
+            )))
+        }
+    }
+
+    /// Set the allow_external_writes mode.
+    #[must_use]
+    pub fn with_allow_external_writes(mut self, allow: bool) -> Self {
+        self.allow_external_writes = allow;
+        self
     }
 
     /// Set the trust mode.
