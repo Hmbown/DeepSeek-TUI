@@ -400,6 +400,26 @@ Notes:
 - See [`MEMORY.md`](MEMORY.md) for examples and the full `/memory`
   command surface.
 
+### Notifications
+
+The TUI can emit a desktop notification (OSC 9 escape or plain BEL) when a turn takes longer than a threshold, so you can tab away while a long task runs. Configuration lives under `[notifications]`:
+
+```toml
+[notifications]
+method          = "auto"  # auto | osc9 | bel | off
+threshold_secs  = 30      # only notify when the turn took >= this many seconds
+include_summary = false   # include elapsed time + cost in the notification body
+```
+
+Method semantics:
+
+- `auto` (default) — picks `osc9` for `iTerm.app`, `Ghostty`, and `WezTerm` (detected via `$TERM_PROGRAM`). On macOS and Linux it falls back to `bel`. **On Windows the fallback is `off`** instead of `bel`, because the Windows audio stack maps `\x07` to the `SystemAsterisk` / `MB_OK` chime — the same sound application error popups use, so a successful-turn notification ends up sounding like an error (#583).
+- `osc9` — emit `\x1b]9;<msg>\x07`. Inside tmux the sequence is wrapped in DCS passthrough so it reaches the outer terminal.
+- `bel` — emit a single `\x07` byte. Use this on Windows only if you actively want the chime back.
+- `off` — disable post-turn notifications entirely.
+
+Windows users who run inside a known OSC-9 terminal (e.g. WezTerm on Windows) keep getting OSC-9 notifications; the `off` fallback only applies when no recognised `TERM_PROGRAM` is detected.
+
 ### Parsed but currently unused (reserved for future versions)
 
 These keys are accepted by the config loader but not currently used by the interactive TUI or built-in tools:

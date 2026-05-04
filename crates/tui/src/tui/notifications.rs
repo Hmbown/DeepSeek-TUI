@@ -12,7 +12,13 @@ use std::time::Duration;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Method {
     /// Automatically pick `Osc9` for known capable terminals
-    /// (`iTerm.app`, `Ghostty`, `WezTerm`) and fall back to `Bel` otherwise.
+    /// (`iTerm.app`, `Ghostty`, `WezTerm`); fall back to `Bel` on
+    /// macOS / Linux. On Windows the fallback is `Off` instead of
+    /// `Bel`, because the OS audio stack maps `\x07` to the
+    /// `SystemAsterisk` / `MB_OK` chime — the same sound used by
+    /// application error popups (#583). Windows users who want an
+    /// audible cue can opt in by setting
+    /// `[notifications].method = "bel"` explicitly.
     #[default]
     Auto,
     /// OSC 9 escape: `\x1b]9;<msg>\x07`
@@ -38,13 +44,24 @@ impl Method {
 
 /// Resolve `Auto` to a concrete method by inspecting `$TERM_PROGRAM`.
 ///
-/// Known OSC-9 capable programs: `iTerm.app`, `Ghostty`, `WezTerm`.
-/// Everything else falls back to `Bel`.
+/// Known OSC-9 capable programs: `iTerm.app`, `Ghostty`, `WezTerm`
+/// (these resolve to `Osc9` on every platform, including Windows
+/// when running inside WezTerm).
+///
+/// Otherwise the fallback is platform-dependent:
+/// - **macOS / Linux / other Unix:** `Bel` (a single `\x07` byte).
+/// - **Windows:** `Off`. BEL is mapped by the Windows audio stack
+///   to `SystemAsterisk` / `MB_OK`, the same chime used by
+///   application error popups, so it sounds like an error
+///   notification even though the turn completed successfully (#583).
+///   Users can opt back in with `[notifications].method = "bel"` or
+///   pick a known OSC-9 terminal.
 #[must_use]
 fn resolve_method() -> Method {
     let term_program = std::env::var("TERM_PROGRAM").unwrap_or_default();
     match term_program.as_str() {
         "iTerm.app" | "Ghostty" | "WezTerm" => Method::Osc9,
+        _ if cfg!(target_os = "windows") => Method::Off,
         _ => Method::Bel,
     }
 }
@@ -274,7 +291,8 @@ mod tests {
     }
 
     #[test]
-    fn auto_detect_picks_bel_for_unknown() {
+    #[cfg(not(target_os = "windows"))]
+    fn auto_detect_picks_bel_for_unknown_on_unix() {
         let _lock = env_lock();
         let prev = std::env::var_os("TERM_PROGRAM");
         // SAFETY: test-only; serialised by env_lock().
@@ -288,6 +306,29 @@ mod tests {
             }
         }
         assert_eq!(resolved, Method::Bel);
+    }
+
+    /// #583: on Windows, an unknown TERM_PROGRAM resolves to `Off`
+    /// (not `Bel`) so the post-turn notification doesn't ring the
+    /// `SystemAsterisk` / `MB_OK` chime. Known OSC-9 terminals like
+    /// WezTerm still resolve to `Osc9` — see the iTerm test, which
+    /// also exercises the OSC-9 branch on Windows.
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn auto_detect_picks_off_for_unknown_on_windows() {
+        let _lock = env_lock();
+        let prev = std::env::var_os("TERM_PROGRAM");
+        // SAFETY: test-only; serialised by env_lock().
+        unsafe { std::env::set_var("TERM_PROGRAM", "Windows Terminal") };
+        let resolved = resolve_method();
+        // SAFETY: test-only; serialised by env_lock().
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("TERM_PROGRAM", v),
+                None => std::env::remove_var("TERM_PROGRAM"),
+            }
+        }
+        assert_eq!(resolved, Method::Off);
     }
 
     #[test]

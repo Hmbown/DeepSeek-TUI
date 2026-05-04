@@ -349,7 +349,9 @@ pub struct TuiConfig {
 #[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum NotificationMethod {
-    /// Auto-detect: OSC 9 for iTerm.app / Ghostty / WezTerm; BEL otherwise.
+    /// Auto-detect: OSC 9 for iTerm.app / Ghostty / WezTerm; BEL on
+    /// macOS / Linux otherwise; on Windows the fallback is `Off`
+    /// because BEL maps to the system error chime there (#583).
     #[default]
     Auto,
     /// OSC 9 escape.
@@ -368,6 +370,10 @@ fn default_threshold_secs() -> u64 {
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct NotificationsConfig {
     /// Delivery method: `auto` | `osc9` | `bel` | `off`. Default: `auto`.
+    /// `auto` resolves to OSC 9 in iTerm.app / Ghostty / WezTerm; on
+    /// macOS / Linux it falls back to BEL, and on Windows it falls
+    /// back to `Off` so the post-turn notification doesn't ring the
+    /// system error chime (#583).
     #[serde(default)]
     pub method: NotificationMethod,
     /// Only notify when the turn took at least this many seconds. Default: 30.
