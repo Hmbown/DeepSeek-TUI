@@ -1812,6 +1812,11 @@ impl RuntimeThreadManager {
             memory_enabled: self.config.memory_enabled(),
             memory_path: self.config.memory_path(),
             goal_objective: None,
+            speculative: self.config.speculative.as_ref().map(|c| crate::speculative::SpeculativeConfig {
+                enabled: c.enabled,
+                fast_model: c.fast_model.clone(),
+                timeout: std::time::Duration::from_millis(c.timeout_ms),
+            }).unwrap_or_default(),
         };
 
         let engine = spawn_engine(engine_cfg, &self.config);

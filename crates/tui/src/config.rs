@@ -778,6 +778,31 @@ pub struct Config {
     /// / tauri://localhost as the only allowed dev origins.
     #[serde(default)]
     pub runtime_api: Option<RuntimeApiConfig>,
+
+    /// Speculative cached-prefix turn branches (#532). When enabled via the
+    /// `[speculative]` table in `config.toml`, the engine parallel-fires a
+    /// fast (think=off) and deep branch every turn and selects the winner.
+    #[serde(default)]
+    pub speculative: Option<SpeculativeConfig>,
+}
+
+/// Resolved speculative branching configuration from `[speculative]` table.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct SpeculativeConfig {
+    /// Master switch. Default: false.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Override model for the fast (think=off) branch. When unset, the
+    /// primary model is used.
+    #[serde(default)]
+    pub fast_model: Option<String>,
+    /// Maximum wall-clock wait for both branches, in milliseconds. Default: 30000.
+    #[serde(default = "default_speculative_timeout_ms")]
+    pub timeout_ms: u64,
+}
+
+const fn default_speculative_timeout_ms() -> u64 {
+    30000
 }
 
 /// `[runtime_api]` table — knobs for the local HTTP/SSE daemon.
@@ -2026,6 +2051,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         },
         subagents: override_cfg.subagents.or(base.subagents),
         runtime_api: override_cfg.runtime_api.or(base.runtime_api),
+        speculative: override_cfg.speculative.or(base.speculative),
     }
 }
 

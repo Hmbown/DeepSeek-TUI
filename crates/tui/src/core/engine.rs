@@ -140,6 +140,10 @@ pub struct EngineConfig {
     /// consulted when `memory_enabled` is `true`.
     pub memory_path: PathBuf,
     pub goal_objective: Option<String>,
+    /// Speculative cached-prefix turn branches (#532). When enabled, the
+    /// engine fires two parallel requests per turn with different reasoning
+    /// depths and selects the higher-scored response.
+    pub speculative: crate::speculative::SpeculativeConfig,
 }
 
 impl Default for EngineConfig {
@@ -170,6 +174,7 @@ impl Default for EngineConfig {
             memory_enabled: false,
             memory_path: PathBuf::from("./memory.md"),
             goal_objective: None,
+            speculative: crate::speculative::SpeculativeConfig::default(),
         }
     }
 }

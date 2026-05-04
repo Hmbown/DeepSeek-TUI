@@ -347,6 +347,26 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 # go = ["gopls", "serve"]
 
 # ─────────────────────────────────────────────────────────────────────────────────
+# Speculative Cached-Prefix Turn Branches (#532)
+# ─────────────────────────────────────────────────────────────────────────────────
+# When enabled, every user turn fires two parallel LLM requests with different
+# reasoning depths (thinking=off and your configured reasoning_effort). A
+# lightweight verifier scores both responses and selects the better result.
+#
+# This leverages DeepSeek's prefix-caching: the second branch's request shares
+# the same byte-stable prefix as the first, so most of its prompt cost is a
+# cache hit (~100x cheaper). The fast (think=off) branch returns quickly; the
+# deep branch produces higher quality for complex reasoning tasks.
+#
+# The verifier considers: response length balance, presence of code blocks,
+# structured sections, repetition markers, and actionability.
+#
+# [speculative]
+# enabled = true
+# fast_model = "deepseek-v4-flash"     # model for the fast branch (default: primary model)
+# timeout_ms = 30000                    # max wait for both branches (default: 30000)
+
+# ─────────────────────────────────────────────────────────────────────────────────
 # Hooks (optional)
 # ─────────────────────────────────────────────────────────────────────────────────
 # Hooks run shell commands on lifecycle events (session start/end, tool calls, etc.).

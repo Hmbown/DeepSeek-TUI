@@ -49,6 +49,7 @@ pub mod repl;
 mod responses_api_proxy;
 mod retry_status;
 pub mod rlm;
+mod speculative;
 mod runtime_api;
 mod runtime_threads;
 mod sandbox;
@@ -3725,6 +3726,11 @@ async fn run_exec_agent(
         memory_enabled: config.memory_enabled(),
         memory_path: config.memory_path(),
         goal_objective: None,
+        speculative: config.speculative.as_ref().map(|c| crate::speculative::SpeculativeConfig {
+            enabled: c.enabled,
+            fast_model: c.fast_model.clone(),
+            timeout: std::time::Duration::from_millis(c.timeout_ms),
+        }).unwrap_or_default(),
     };
 
     let engine_handle = spawn_engine(engine_config, config);
