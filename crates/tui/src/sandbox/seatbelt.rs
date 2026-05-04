@@ -174,7 +174,42 @@ fn generate_policy(policy: &SandboxPolicy, cwd: &Path) -> String {
     full_policy.push('\n');
     full_policy.push_str(r#"(allow file-read* (subpath "/private/var/db"))"#);
 
+    // Cargo home (#558): cargo build/test/publish reach into ~/.cargo/registry
+    // and ~/.cargo/git for crate metadata, downloaded tarballs, and unpacked
+    // sources. Sandboxed workspace-write was previously rejecting these,
+    // making `cargo publish` unrunnable from inside the TUI's shell tool.
+    // Read access is always allowed; write access is granted whenever the
+    // policy allows any write at all (the registry caches need to be
+    // mutable for `cargo build` to populate them on a cache miss). Skipped
+    // entirely when neither `CARGO_HOME` nor `HOME` is set — without one of
+    // those we have no path to plumb into the policy params.
+    if resolve_cargo_home().is_some() {
+        full_policy.push_str("\n\n; Cargo home (~/.cargo) — registry/index/git caches\n");
+        full_policy.push_str(r#"(allow file-read* (subpath (param "CARGO_HOME")))"#);
+        if !matches!(policy, SandboxPolicy::ReadOnly) {
+            full_policy.push('\n');
+            full_policy
+                .push_str(r#"(allow file-write* (subpath (param "CARGO_HOME_REGISTRY")))"#);
+            full_policy.push('\n');
+            full_policy.push_str(r#"(allow file-write* (subpath (param "CARGO_HOME_GIT")))"#);
+        }
+    }
+
     full_policy
+}
+
+/// Resolve the user's cargo home — `CARGO_HOME` if set, else `$HOME/.cargo`.
+/// Returns `None` only on hosts where neither env var is set (essentially
+/// never on a real macOS user account; can happen in CI containers without
+/// `HOME` exported).
+fn resolve_cargo_home() -> Option<PathBuf> {
+    if let Ok(explicit) = std::env::var("CARGO_HOME") {
+        if !explicit.trim().is_empty() {
+            return Some(PathBuf::from(explicit));
+        }
+    }
+    let home = std::env::var("HOME").ok()?;
+    Some(PathBuf::from(home).join(".cargo"))
 }
 
 /// Generate the write access portion of the Seatbelt policy.
@@ -264,6 +299,21 @@ fn generate_params(policy: &SandboxPolicy, cwd: &Path) -> Vec<(String, PathBuf)>
         }
     }
 
+    // Cargo home (#558): paired with the policy lines emitted by
+    // `generate_policy` when `resolve_cargo_home()` succeeds. Both helpers
+    // use the same fallback chain so the policy text and the -DKEY=VALUE
+    // params stay in sync — emit one without the other and sandbox-exec
+    // refuses to load the profile.
+    if let Some(home) = resolve_cargo_home() {
+        let canonical_home = home.canonicalize().unwrap_or_else(|_| home.clone());
+        params.push((
+            "CARGO_HOME_REGISTRY".to_string(),
+            canonical_home.join("registry"),
+        ));
+        params.push(("CARGO_HOME_GIT".to_string(), canonical_home.join("git")));
+        params.push(("CARGO_HOME".to_string(), canonical_home));
+    }
+
     params
 }
 
@@ -316,6 +366,12 @@ pub fn detect_denial(exit_code: i32, stderr: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// Serializes tests that mutate process-global env vars (HOME, CARGO_HOME)
+    /// so they don't race with each other or with sibling tests in this
+    /// crate that read those vars. Mirrors the pattern in main.rs::tests
+    /// (commit d06eaed0).
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn test_is_available() {
         // This test just checks the function doesn't panic
@@ -366,6 +422,100 @@ mod tests {
 
         // Should have at least the cache dir param
         assert!(params.iter().any(|(k, _)| k == "DARWIN_USER_CACHE_DIR"));
+    }
+
+    /// #558: cargo publish reaches into ~/.cargo/registry; the seatbelt has
+    /// to allow read+write inside it. Both the policy text and the param
+    /// table must be in sync — emitting one without the other makes
+    /// sandbox-exec refuse to load the profile.
+    #[test]
+    fn test_cargo_home_paths_emitted_in_policy_and_params_when_home_set() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+        // SAFETY: HOME / CARGO_HOME are process-global. ENV_LOCK serializes
+        // all tests in this module that mutate them, and we always restore
+        // the prior value before returning.
+        let saved_home = std::env::var_os("HOME");
+        let saved_cargo = std::env::var_os("CARGO_HOME");
+        unsafe {
+            std::env::set_var("HOME", "/tmp/seatbelt-cargo-test");
+            std::env::remove_var("CARGO_HOME");
+        }
+
+        let policy = SandboxPolicy::default();
+        let cwd = Path::new("/tmp/test");
+
+        let policy_text = generate_policy(&policy, cwd);
+        assert!(policy_text.contains(r#"(allow file-read* (subpath (param "CARGO_HOME")))"#));
+        assert!(policy_text.contains("CARGO_HOME_REGISTRY"));
+        assert!(policy_text.contains("CARGO_HOME_GIT"));
+
+        let params = generate_params(&policy, cwd);
+        assert!(params.iter().any(|(k, _)| k == "CARGO_HOME"));
+        assert!(params.iter().any(|(k, _)| k == "CARGO_HOME_REGISTRY"));
+        assert!(params.iter().any(|(k, _)| k == "CARGO_HOME_GIT"));
+
+        // Read-only policy should still emit CARGO_HOME read rule but skip writes.
+        let read_only_text = generate_policy(&SandboxPolicy::ReadOnly, cwd);
+        assert!(
+            read_only_text.contains(r#"(allow file-read* (subpath (param "CARGO_HOME")))"#),
+            "read-only mode should still allow reading the cargo registry: {read_only_text}"
+        );
+        assert!(
+            !read_only_text.contains(r#"(allow file-write* (subpath (param "CARGO_HOME_REGISTRY")))"#),
+            "read-only mode must NOT grant write access to the cargo registry"
+        );
+
+        // Restore.
+        // SAFETY: restoring the prior value the test stashed at entry.
+        unsafe {
+            match saved_home {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+            match saved_cargo {
+                Some(v) => std::env::set_var("CARGO_HOME", v),
+                None => std::env::remove_var("CARGO_HOME"),
+            }
+        }
+    }
+
+    /// #558: if neither `CARGO_HOME` nor `HOME` is set, the cargo lines and
+    /// their params must both be omitted — emitting one without the other
+    /// would crash sandbox-exec on profile load.
+    #[test]
+    fn test_cargo_home_skipped_when_no_env() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+        let saved_home = std::env::var_os("HOME");
+        let saved_cargo = std::env::var_os("CARGO_HOME");
+        // SAFETY: HOME/CARGO_HOME are process-global; ENV_LOCK serializes
+        // mutations here and we restore the prior values before returning.
+        unsafe {
+            std::env::remove_var("HOME");
+            std::env::remove_var("CARGO_HOME");
+        }
+
+        let policy = SandboxPolicy::default();
+        let cwd = Path::new("/tmp/test");
+        let policy_text = generate_policy(&policy, cwd);
+        let params = generate_params(&policy, cwd);
+
+        assert!(!policy_text.contains("CARGO_HOME"));
+        assert!(!params.iter().any(|(k, _)| k.starts_with("CARGO_HOME")));
+
+        // Restore.
+        // SAFETY: restoring the prior values the test stashed at entry.
+        unsafe {
+            match saved_home {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+            match saved_cargo {
+                Some(v) => std::env::set_var("CARGO_HOME", v),
+                None => std::env::remove_var("CARGO_HOME"),
+            }
+        }
     }
 
     #[test]
