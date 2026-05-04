@@ -353,7 +353,7 @@ fn render_line_with_links(
             if !first {
                 // The space consumed by split — attach as a plain space word
                 // so the wrap loop can decide whether to keep or break it.
-                words.push((" ".to_string(), base_style));
+                words.push((" ".to_string(), style));
             }
             if !part.is_empty() {
                 words.push((part.to_string(), style));
