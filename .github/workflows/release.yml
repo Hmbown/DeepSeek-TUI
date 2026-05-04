@@ -130,8 +130,16 @@ jobs:
       - name: Rename binary
         shell: bash
         run: |
-          TARGET_DIR="${{ matrix.target_zig || matrix.target }}"
-          cp "target/${TARGET_DIR}/release/${{ matrix.binary }}" ${{ matrix.artifact_name }}
+          # cargo zigbuild writes binaries to target/<rust-target>/release/ —
+          # the .glibc suffix in matrix.target_zig is consumed by zig as a CC
+          # flag, not by cargo as a target dir. Always use the rust target.
+          BIN_PATH="target/${{ matrix.target }}/release/${{ matrix.binary }}"
+          if [ ! -f "${BIN_PATH}" ]; then
+            echo "Binary not at ${BIN_PATH}; searching target/ for ${{ matrix.binary }}:"
+            find target -name "${{ matrix.binary }}" -type f
+            exit 1
+          fi
+          cp "${BIN_PATH}" "${{ matrix.artifact_name }}"
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
