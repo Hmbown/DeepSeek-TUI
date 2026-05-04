@@ -188,8 +188,7 @@ fn generate_policy(policy: &SandboxPolicy, cwd: &Path) -> String {
         full_policy.push_str(r#"(allow file-read* (subpath (param "CARGO_HOME")))"#);
         if !matches!(policy, SandboxPolicy::ReadOnly) {
             full_policy.push('\n');
-            full_policy
-                .push_str(r#"(allow file-write* (subpath (param "CARGO_HOME_REGISTRY")))"#);
+            full_policy.push_str(r#"(allow file-write* (subpath (param "CARGO_HOME_REGISTRY")))"#);
             full_policy.push('\n');
             full_policy.push_str(r#"(allow file-write* (subpath (param "CARGO_HOME_GIT")))"#);
         }
@@ -462,7 +461,8 @@ mod tests {
             "read-only mode should still allow reading the cargo registry: {read_only_text}"
         );
         assert!(
-            !read_only_text.contains(r#"(allow file-write* (subpath (param "CARGO_HOME_REGISTRY")))"#),
+            !read_only_text
+                .contains(r#"(allow file-write* (subpath (param "CARGO_HOME_REGISTRY")))"#),
             "read-only mode must NOT grant write access to the cargo registry"
         );
 
