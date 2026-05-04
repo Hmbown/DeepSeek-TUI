@@ -1522,6 +1522,16 @@ fn api_key_validation_warns_without_blocking_unusual_formats() {
 }
 
 #[test]
+fn api_key_paste_shortcut_is_not_plain_text_input() {
+    let ctrl_v = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
+    assert!(is_paste_shortcut(&ctrl_v));
+    assert!(!is_text_input_key(&ctrl_v));
+
+    let shifted = KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT);
+    assert!(is_text_input_key(&shifted));
+}
+
+#[test]
 fn jump_to_adjacent_tool_cell_finds_next_and_previous() {
     let mut app = create_test_app();
     app.history = vec![

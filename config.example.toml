@@ -352,6 +352,18 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 # Hooks run shell commands on lifecycle events (session start/end, tool calls, etc.).
 # Configure as `[[hooks.hooks]]` under a `[hooks]` table.
 #
+# Available events: session_start, session_end, message_submit,
+# tool_call_before, tool_call_after, mode_change, on_error, shell_env.
+#
+# `shell_env` (#456) is special: the hook runs immediately before each
+# `exec_shell` invocation and its stdout is parsed as `KEY=VALUE\n` lines.
+# Those vars are merged into the spawned process environment (later hooks
+# override earlier ones). Use this for ephemeral credentials, per-skill
+# PATH adjustments, or short-lived tokens. The resolved KEY names (NEVER
+# values) are written to `~/.deepseek/audit.log` so each session can be
+# reconciled later. Hook failure / timeout simply contributes no vars —
+# it does not abort the shell call.
+#
 # [hooks]
 # enabled = true
 # default_timeout_secs = 30
@@ -359,6 +371,15 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 # [[hooks.hooks]]
 # event = "session_start"
 # command = "echo 'DeepSeek TUI session started'"
+#
+# # Inject ephemeral creds into every shell call. Output one
+# # KEY=VALUE per line on stdout (export prefix optional).
+# [[hooks.hooks]]
+# name = "aws-creds"
+# event = "shell_env"
+# command = "aws-vault export my-profile --format=env"
+# # Optionally limit to specific tool names / categories:
+# # condition = { type = "tool_category", category = "shell" }
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Runtime API (`deepseek serve --http`) (#561)

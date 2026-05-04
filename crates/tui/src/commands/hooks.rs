@@ -138,6 +138,7 @@ fn event_label(event: HookEvent) -> &'static str {
         HookEvent::ToolCallAfter => "tool_call_after",
         HookEvent::ModeChange => "mode_change",
         HookEvent::OnError => "on_error",
+        HookEvent::ShellEnv => "shell_env",
     }
 }
 

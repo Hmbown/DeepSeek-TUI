@@ -1806,6 +1806,7 @@ impl RuntimeThreadManager {
                 active_task_id: thread.task_id.clone(),
                 active_thread_id: Some(thread.id.clone()),
                 shell_manager: None,
+                hook_executor: None,
             },
             subagent_model_overrides: self.config.subagent_model_overrides(),
             memory_enabled: self.config.memory_enabled(),

@@ -39,6 +39,13 @@ pub enum HookEvent {
     ModeChange,
     /// Triggered when an error occurs
     OnError,
+    /// Triggered immediately before each `exec_shell` invocation. The hook's
+    /// stdout is parsed as `KEY=VALUE\n` lines and merged on top of the
+    /// shell command's environment — useful for ephemeral credentials,
+    /// per-skill PATH adjustments, or short-lived tokens (#456). Hooks that
+    /// fail or time out are logged but do *not* abort the shell call; they
+    /// simply contribute no env vars.
+    ShellEnv,
 }
 
 impl HookEvent {
@@ -53,6 +60,7 @@ impl HookEvent {
             HookEvent::ToolCallAfter => "tool_call_after",
             HookEvent::ModeChange => "mode_change",
             HookEvent::OnError => "on_error",
+            HookEvent::ShellEnv => "shell_env",
         }
     }
 }
@@ -492,6 +500,61 @@ impl HookExecutor {
         self.config.enabled && self.config.hooks.iter().any(|h| h.event == event)
     }
 
+    /// Run every `ShellEnv` hook for this context and merge their stdout
+    /// (`KEY=VALUE\n` lines) into a single env-var map. Used by the
+    /// `exec_shell` tool to inject ephemeral credentials, per-skill PATH
+    /// adjustments, etc. (#456). Failures don't abort the shell call —
+    /// the hook simply contributes no vars and a `tracing::warn!` lands.
+    ///
+    /// Each successful hook's keys (NOT values) are written to the audit
+    /// log so a session can be reconciled later without leaking the
+    /// secret material itself.
+    pub fn collect_shell_env(&self, context: &HookContext) -> HashMap<String, String> {
+        let mut merged: HashMap<String, String> = HashMap::new();
+        if !self.config.enabled {
+            return merged;
+        }
+        let hooks = self.config.hooks_for_event(HookEvent::ShellEnv);
+        if hooks.is_empty() {
+            return merged;
+        }
+        let env_vars = context.to_env_vars();
+        for hook in hooks {
+            if !self.matches_condition(hook, context) {
+                continue;
+            }
+            // ShellEnv hooks must be synchronous — their stdout is the contract.
+            let result = self.execute_sync(hook, &env_vars);
+            if !result.success {
+                tracing::warn!(
+                    target: "hooks",
+                    hook = result.name.as_deref().unwrap_or("(unnamed)"),
+                    event = "shell_env",
+                    exit_code = ?result.exit_code,
+                    error = result.error.as_deref().unwrap_or(""),
+                    "shell_env hook failed; contributing no env vars"
+                );
+                continue;
+            }
+            let parsed = parse_env_lines(&result.stdout);
+            if parsed.is_empty() {
+                continue;
+            }
+            // Audit-log the *keys* — never the values.
+            crate::audit::log_sensitive_event(
+                "shell_env_hook",
+                serde_json::json!({
+                    "hook": result.name,
+                    "tool": context.tool_name,
+                    "keys": parsed.keys().cloned().collect::<Vec<_>>(),
+                }),
+            );
+            // Later hooks override earlier ones. Documented behavior.
+            merged.extend(parsed);
+        }
+        merged
+    }
+
     /// Execute all hooks for an event
     pub fn execute(&self, event: HookEvent, context: &HookContext) -> Vec<HookResult> {
         if !self.config.enabled {
@@ -705,6 +768,40 @@ impl HookExecutor {
     }
 }
 
+/// Parse `KEY=VALUE\n` lines from a `shell_env` hook's stdout into a map.
+///
+/// Tolerated: blank lines, leading whitespace, `#` comment lines (ignored),
+/// `export KEY=VALUE` (the `export ` prefix is dropped), surrounding quotes
+/// on the value. Lines without `=` are silently dropped — easier than
+/// failing the whole hook for one stray line of human-friendly output.
+/// Values are otherwise taken verbatim; we don't run them through a shell
+/// for variable expansion to avoid surprises.
+fn parse_env_lines(stdout: &str) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for raw in stdout.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let line = line.strip_prefix("export ").unwrap_or(line);
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        if key.is_empty() {
+            continue;
+        }
+        let value = value.trim();
+        let stripped = value
+            .strip_prefix('"')
+            .and_then(|v| v.strip_suffix('"'))
+            .or_else(|| value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')))
+            .unwrap_or(value);
+        out.insert(key.to_string(), stripped.to_string());
+    }
+    out
+}
+
 // === Unit Tests ===
 
 #[cfg(test)]
@@ -712,6 +809,46 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use std::path::PathBuf;
+
+    /// #456 — `parse_env_lines` covers the formats users actually emit from
+    /// shell hooks: bare `KEY=VAL`, `export KEY=VAL`, quoted values, comments,
+    /// blank lines. Lines without `=` are dropped; values are taken verbatim
+    /// (no shell expansion).
+    #[test]
+    fn parse_env_lines_handles_realistic_hook_output() {
+        let stdout = r#"
+# Aux comment line, ignored
+AWS_ACCESS_KEY_ID=AKIAEXAMPLE
+export GITHUB_TOKEN=ghp_examplevalue
+QUOTED="value with spaces"
+SINGLE='also valid'
+
+= empty key dropped
+NOEQUAL line dropped
+"#;
+        let parsed = super::parse_env_lines(stdout);
+        assert_eq!(
+            parsed.get("AWS_ACCESS_KEY_ID"),
+            Some(&"AKIAEXAMPLE".to_string())
+        );
+        assert_eq!(
+            parsed.get("GITHUB_TOKEN"),
+            Some(&"ghp_examplevalue".to_string())
+        );
+        assert_eq!(parsed.get("QUOTED"), Some(&"value with spaces".to_string()));
+        assert_eq!(parsed.get("SINGLE"), Some(&"also valid".to_string()));
+        assert!(!parsed.contains_key(""));
+        assert!(!parsed.contains_key("NOEQUAL line dropped"));
+        // 4 valid entries above; nothing else.
+        assert_eq!(parsed.len(), 4);
+    }
+
+    /// #456 — empty stdout (or only blank/comments) yields an empty map.
+    #[test]
+    fn parse_env_lines_empty_when_no_assignments() {
+        let parsed = super::parse_env_lines("# nothing\n\n  \n");
+        assert!(parsed.is_empty());
+    }
 
     #[test]
     fn test_hook_event_as_str() {

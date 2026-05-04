@@ -232,6 +232,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     }
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
+    terminal.clear()?;
     let event_broker = EventBroker::new();
 
     // Local mutable copy so runtime config flips (e.g. `/provider` switch)
@@ -372,6 +373,9 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         task_data_dir: Some(task_manager.data_dir()),
         active_task_id: None,
         active_thread_id: None,
+        // #456: plumb the App's HookExecutor so `exec_shell` can surface
+        // the configured `shell_env` hooks. Wrapped in Arc once and shared.
+        hook_executor: Some(std::sync::Arc::new(app.hooks.clone())),
     };
     refresh_active_task_panel(&mut app, &task_manager).await;
 
@@ -1718,15 +1722,17 @@ async fn run_event_loop(
                         app.delete_api_key_char();
                         sync_api_key_validation_status(app, false);
                     }
-                    KeyCode::Char(c) if app.onboarding == OnboardingState::ApiKey => {
-                        app.insert_api_key_char(c);
-                        sync_api_key_validation_status(app, false);
-                    }
                     KeyCode::Char('v') | KeyCode::Char('V')
                         if is_paste_shortcut(&key) && app.onboarding == OnboardingState::ApiKey =>
                     {
                         // Cmd+V / Ctrl+V paste (bracketed paste handled above)
                         app.paste_api_key_from_clipboard();
+                        sync_api_key_validation_status(app, false);
+                    }
+                    KeyCode::Char(c)
+                        if app.onboarding == OnboardingState::ApiKey && is_text_input_key(&key) =>
+                    {
+                        app.insert_api_key_char(c);
                         sync_api_key_validation_status(app, false);
                     }
                     _ => {}
@@ -2378,6 +2384,19 @@ async fn run_event_loop(
                     }
                 }
                 KeyCode::Enter => {
+                    // #573: when the user typed a slash-command prefix that
+                    // the popup is matching (e.g. `/mo` → `/model`), Enter
+                    // should run the *highlighted match* rather than
+                    // sending the literal `/mo` text. Only kick in when the
+                    // popup has at least one entry; otherwise fall through
+                    // to the legacy submit path.
+                    if slash_menu_open
+                        && !slash_menu_entries.is_empty()
+                        && app.input.starts_with('/')
+                        && apply_slash_menu_selection(app, &slash_menu_entries, false)
+                    {
+                        app.close_slash_menu();
+                    }
                     if let Some(input) = app.submit_input() {
                         if handle_plan_choice(app, &engine_handle, &input).await? {
                             continue;
@@ -4662,6 +4681,10 @@ fn render(f: &mut Frame, app: &mut App) {
 
     // Render footer
     render_footer(f, chunks[4], app);
+    // Toast stack overlay (#439): when multiple status toasts are queued,
+    // surface the older ones as a 1-2 line strip above the footer so a
+    // burst of events isn't collapsed to a single visible message.
+    render_toast_stack_overlay(f, size, chunks[4], app);
 
     if !app.view_stack.is_empty() {
         // The live transcript overlay snapshots the app's history + active
@@ -5459,6 +5482,54 @@ fn status_color(level: StatusToastLevel) -> ratatui::style::Color {
         StatusToastLevel::Success => palette::STATUS_SUCCESS,
         StatusToastLevel::Warning => palette::STATUS_WARNING,
         StatusToastLevel::Error => palette::STATUS_ERROR,
+    }
+}
+
+/// Maximum stacked toasts rendered above the footer (#439). The footer line
+/// itself stays the most-recent; this overlay surfaces up to two older
+/// queued toasts so a burst of status events isn't dropped silently.
+const TOAST_STACK_MAX_VISIBLE: usize = 3;
+
+/// Render up to `TOAST_STACK_MAX_VISIBLE - 1` *additional* toasts as an
+/// overlay just above the footer when multiple are active. The most recent
+/// toast continues to render in the footer line itself; this strip is for
+/// the older entries the user would otherwise miss when statuses arrive in
+/// bursts.
+fn render_toast_stack_overlay(f: &mut Frame, full_area: Rect, footer_area: Rect, app: &mut App) {
+    let toasts = app.active_status_toasts(TOAST_STACK_MAX_VISIBLE);
+    if toasts.len() < 2 || footer_area.y == 0 {
+        return;
+    }
+    // Drop the most recent (rendered inline by the footer), keep the rest.
+    let extra = toasts.len() - 1;
+    let stack_height = extra.min(TOAST_STACK_MAX_VISIBLE - 1) as u16;
+    let max_above = footer_area.y.min(full_area.height);
+    if stack_height == 0 || max_above == 0 {
+        return;
+    }
+    let height = stack_height.min(max_above);
+    let stack_area = Rect {
+        x: full_area.x,
+        y: footer_area.y.saturating_sub(height),
+        width: full_area.width,
+        height,
+    };
+    // Iterate oldest-first so the freshest *non-inline* toast is closest to
+    // the footer (visually nearest the most-recent message in the line below).
+    let visible = &toasts[..extra];
+    for (i, toast) in visible.iter().take(height as usize).enumerate() {
+        let row_y = stack_area.y + i as u16;
+        let row = Rect {
+            x: stack_area.x,
+            y: row_y,
+            width: stack_area.width,
+            height: 1,
+        };
+        let style = ratatui::style::Style::default()
+            .fg(status_color(toast.level))
+            .add_modifier(ratatui::style::Modifier::DIM);
+        let line = ratatui::text::Line::styled(format!(" {} ", toast.text), style);
+        f.render_widget(ratatui::widgets::Paragraph::new(line), row);
     }
 }
 
@@ -7164,6 +7235,12 @@ fn is_paste_shortcut(key: &KeyEvent) -> bool {
 
     // Ctrl+V on Linux/Windows
     key.modifiers.contains(KeyModifiers::CONTROL)
+}
+
+fn is_text_input_key(key: &KeyEvent) -> bool {
+    !key.modifiers.contains(KeyModifiers::CONTROL)
+        && !key.modifiers.contains(KeyModifiers::ALT)
+        && !key.modifiers.contains(KeyModifiers::SUPER)
 }
 
 fn is_ctrl_h_backspace(key: &KeyEvent) -> bool {
