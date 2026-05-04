@@ -458,6 +458,12 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "/cache [count]",
         description_id: MessageId::CmdCacheDescription,
     },
+    CommandInfo {
+        name: "verbose",
+        aliases: &[],
+        usage: "/verbose",
+        description_id: MessageId::CmdVerboseDescription,
+    },
 ];
 
 /// Execute a slash command
@@ -518,6 +524,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "tokens" => debug::tokens(app),
         "cost" => debug::cost(app),
         "cache" => debug::cache(app, arg),
+        "verbose" => debug::verbose_thinking(app),
         "system" => debug::system_prompt(app),
         "context" | "ctx" => debug::context(app),
         "edit" => debug::edit(app),
