@@ -21,7 +21,7 @@ use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
     prelude::Widget,
-    style::Style,
+    style::{Color, Style},
     text::Span,
     widgets::Block,
 };
@@ -4502,8 +4502,8 @@ fn build_pending_input_preview(app: &App) -> PendingInputPreview {
 fn render(f: &mut Frame, app: &mut App) {
     let size = f.area();
 
-    // Clear entire area with background color
-    let background = Block::default().style(Style::default().bg(app.ui_theme.header_bg));
+    // Clear entire area with terminal default background
+    let background = Block::default().style(Style::default().bg(Color::Reset));
     f.render_widget(background, size);
 
     // Show onboarding screen if needed
