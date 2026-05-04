@@ -820,11 +820,19 @@ async fn create_summary(
     model: &str,
 ) -> Result<String> {
     let limits = summary_input_limits_for_model(model);
-    let request = if should_use_cache_aligned_summary(model, messages) {
+    let use_cache_aligned = should_use_cache_aligned_summary(model, messages);
+    let request = if use_cache_aligned {
         build_cache_aligned_summary_request(model, messages, limits)
     } else {
         build_formatted_summary_request(model, messages, limits)
     };
+
+    logging::info(format!(
+        "[compaction] summary path:{} ({} msgs, {} chan)",
+        if use_cache_aligned { "cache-aligned" } else { "fallback" },
+        messages.len(),
+        limits.input_max_chars,
+    ));
 
     let response = client.create_message(request).await?;
     // Compaction summary calls are billed by DeepSeek; route the
@@ -889,7 +897,9 @@ fn build_cache_aligned_summary_request(
         model: model.to_string(),
         messages: request_messages,
         max_tokens: limits.max_tokens,
-        system: None,
+        system: Some(SystemPrompt::Text(
+            "You are a helpful assistant that creates concise conversation summaries.".to_string(),
+        )),
         tools: None,
         tool_choice: None,
         metadata: None,
@@ -954,7 +964,7 @@ fn build_formatted_summary_request(
             role: "user".to_string(),
             content: vec![ContentBlock::Text {
                 text: format!(
-                    "{}\n\n---\n\n{conversation_text}",
+                    "{conversation_text}\n\n---\n\n{}",
                     summary_instruction(limits.word_limit)
                 ),
                 cache_control: None,
@@ -1200,7 +1210,7 @@ mod tests {
         let limits = summary_input_limits_for_model("deepseek-v4-pro");
         let request = build_cache_aligned_summary_request("deepseek-v4-pro", &messages, limits);
 
-        assert_eq!(request.system, None);
+        assert!(request.system.is_some(), "cache-aligned path should have a system prompt");
         assert_eq!(&request.messages[..messages.len()], &messages[..]);
         assert_eq!(request.messages.len(), messages.len() + 1);
         let last = request.messages.last().expect("summary instruction");
