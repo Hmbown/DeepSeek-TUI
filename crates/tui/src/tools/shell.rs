@@ -139,6 +139,47 @@ fn kill_child_process_group(child: &mut Child) -> std::io::Result<()> {
     }
 }
 
+/// Configure parent-death signaling so shell-spawned children are reaped when
+/// the TUI dies abnormally (#421). On Linux this installs
+/// `PR_SET_PDEATHSIG(SIGTERM)` via `pre_exec` — the kernel then sends SIGTERM
+/// to the child the moment the parent process exits, even on SIGKILL of the
+/// TUI. The cancellation path already SIGKILLs the whole process group, so
+/// this only fires when the parent dies without running its drop / cleanup
+/// code (panic during shutdown, OOM, hardware crash, etc.).
+///
+/// On macOS / Windows there's no kernel equivalent. The existing graceful
+/// path (`kill_child_process_group` from the cancellation token) still
+/// handles normal shutdown; abnormal exit can leak children — tracked as a
+/// follow-up watchdog item per the original issue's acceptance criteria.
+#[cfg(target_os = "linux")]
+fn install_parent_death_signal(cmd: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: `pre_exec` runs in the child between fork and exec. The closure
+    // only calls `libc::prctl` with stack-allocated constant arguments and
+    // does not touch heap memory or the parent's locks. Both requirements
+    // (async-signal-safe + no allocation in the post-fork window) are met.
+    unsafe {
+        cmd.pre_exec(|| {
+            let result = libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM, 0, 0, 0);
+            if result == -1 {
+                // Surface the errno but do not abort the spawn — the child
+                // will simply lose the parent-death cleanup safety net.
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        });
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn install_parent_death_signal(_cmd: &mut Command) {
+    // No kernel-level equivalent on macOS / Windows. The cooperative
+    // cancellation + process_group SIGKILL path covers normal shutdown;
+    // abnormal exit (panic without unwind, SIGKILL of the TUI) can still
+    // leak children on those platforms — tracked as a follow-up.
+}
+
 #[derive(Clone, Copy, Debug)]
 struct ShellExitStatus {
     code: Option<i32>,
@@ -669,6 +710,7 @@ impl ShellManager {
         {
             cmd.process_group(0);
         }
+        install_parent_death_signal(&mut cmd);
 
         if stdin_data.is_some() {
             cmd.stdin(Stdio::piped());
@@ -811,6 +853,7 @@ impl ShellManager {
         {
             cmd.process_group(0);
         }
+        install_parent_death_signal(&mut cmd);
 
         for (key, value) in &exec_env.env {
             cmd.env(key, value);
