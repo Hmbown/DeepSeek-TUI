@@ -1,6 +1,9 @@
 //! Settings system - Persistent user preferences
 //!
 //! Settings are stored at ~/.config/deepseek/settings.toml
+//!
+//! TUI-specific preferences (theme, keybinds, font_size) that survive project
+//! switches are stored separately at ~/.deepseek/tui.toml. See [`TuiPrefs`].
 
 use std::path::PathBuf;
 
@@ -9,6 +12,153 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::{expand_path, normalize_model_name};
 use crate::localization::normalize_configured_locale;
+
+// ============================================================================
+// TuiPrefs — ~/.deepseek/tui.toml
+// ============================================================================
+
+/// TUI-specific preferences that are decoupled from agent/project config so
+/// they survive project switches (issue #437).
+///
+/// Stored at `~/.deepseek/tui.toml`. When the file is absent the values fall
+/// back to the `[tui]` section of the normal `config.toml` (via
+/// [`TuiPrefs::load`]), and then to the struct's own defaults.
+///
+/// # Example `~/.deepseek/tui.toml`
+///
+/// ```toml
+/// theme    = "dark"        # "dark" | "light" | "system"
+/// font_size = 14
+///
+/// [keybinds]
+/// submit   = "ctrl+enter"
+/// new_line = "enter"
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TuiPrefs {
+    /// UI colour theme: `"dark"` | `"light"` | `"system"`. Default `"dark"`.
+    pub theme: String,
+    /// Terminal font size hint forwarded to supporting front-ends (e.g. the
+    /// Tauri shell). `0` means "use terminal default". Default `0`.
+    pub font_size: u16,
+    /// Key-binding overrides. Each field accepts an xterm-style chord string
+    /// such as `"ctrl+enter"`, `"alt+n"`, or `"f1"`.
+    pub keybinds: KeybindPrefs,
+}
+
+impl Default for TuiPrefs {
+    fn default() -> Self {
+        Self {
+            theme: "dark".to_string(),
+            font_size: 0,
+            keybinds: KeybindPrefs::default(),
+        }
+    }
+}
+
+/// Per-action keybinding overrides stored inside [`TuiPrefs`].
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct KeybindPrefs {
+    /// Key to submit the current composer input to the model.
+    /// Default: `"ctrl+enter"`.
+    pub submit: Option<String>,
+    /// Key to insert a literal newline inside the composer.
+    /// Default: `"enter"`.
+    pub new_line: Option<String>,
+    /// Key to open the command palette.
+    /// Default: `"ctrl+k"`.
+    pub command_palette: Option<String>,
+    /// Key to cancel / interrupt a running turn.
+    /// Default: `"ctrl+c"`.
+    pub cancel: Option<String>,
+    /// Key to toggle the sidebar.
+    /// Default: `"ctrl+b"`.
+    pub toggle_sidebar: Option<String>,
+}
+
+impl TuiPrefs {
+    /// Return the canonical path of the TUI preferences file:
+    /// `~/.deepseek/tui.toml`.
+    ///
+    /// Tests may override the home directory through the
+    /// `DEEPSEEK_CONFIG_PATH` environment variable (the parent directory of
+    /// the pointed-to config is used instead of `~/.deepseek`).
+    pub fn path() -> Result<PathBuf> {
+        // Honour the same env-var escape hatch used by Settings::path so that
+        // integration tests can redirect all config I/O to a temp directory.
+        if let Ok(config_path) = std::env::var("DEEPSEEK_CONFIG_PATH") {
+            let config_path = config_path.trim();
+            if !config_path.is_empty() {
+                let p = expand_path(config_path);
+                if let Some(parent) = p.parent() {
+                    return Ok(parent.join("tui.toml"));
+                }
+            }
+        }
+
+        let home = dirs::home_dir().context(
+            "Failed to resolve home directory: cannot determine tui.toml path.",
+        )?;
+        Ok(home.join(".deepseek").join("tui.toml"))
+    }
+
+    /// Load TUI preferences from `~/.deepseek/tui.toml`.
+    ///
+    /// If the file does not exist the struct defaults are returned — no error
+    /// is produced. Parse errors surface as `Err` so the caller can warn the
+    /// user without crashing the session.
+    pub fn load() -> Result<Self> {
+        let path = Self::path()?;
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+        let content = std::fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read tui.toml from {}", path.display()))?;
+        let prefs: TuiPrefs = toml::from_str(&content)
+            .with_context(|| format!("Failed to parse tui.toml from {}", path.display()))?;
+        Ok(prefs)
+    }
+
+    /// Save TUI preferences to `~/.deepseek/tui.toml`, creating the
+    /// `~/.deepseek` directory if needed.
+    pub fn save(&self) -> Result<()> {
+        let path = Self::path()?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "Failed to create config directory {}",
+                    parent.display()
+                )
+            })?;
+        }
+        let content =
+            toml::to_string_pretty(self).context("Failed to serialize TuiPrefs")?;
+        std::fs::write(&path, content)
+            .with_context(|| format!("Failed to write tui.toml to {}", path.display()))?;
+        Ok(())
+    }
+
+    /// Validate field values and normalise them in place.
+    ///
+    /// Returns `Err` if an unrecognised `theme` value is found so callers can
+    /// surface a helpful message rather than silently ignoring a typo.
+    pub fn validate(&mut self) -> Result<()> {
+        let theme = self.theme.trim().to_ascii_lowercase();
+        match theme.as_str() {
+            "dark" | "light" | "system" => {
+                self.theme = theme;
+            }
+            other => {
+                anyhow::bail!(
+                    "Invalid tui.toml theme '{other}': expected dark, light, or system."
+                );
+            }
+        }
+        Ok(())
+    }
+}
 
 /// User settings with defaults
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -597,6 +747,152 @@ mod tests {
         // SAFETY: cleanup under the guard.
         unsafe {
             std::env::remove_var("NO_ANIMATIONS");
+        }
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // TuiPrefs tests
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// Serialise tests that mutate `DEEPSEEK_CONFIG_PATH` through this guard
+    /// so the parallel test runner doesn't observe interleaved env values.
+    fn config_path_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        static GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        GUARD.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[test]
+    fn tui_prefs_defaults_are_dark_theme_zero_font() {
+        let prefs = TuiPrefs::default();
+        assert_eq!(prefs.theme, "dark");
+        assert_eq!(prefs.font_size, 0);
+        assert!(prefs.keybinds.submit.is_none());
+        assert!(prefs.keybinds.new_line.is_none());
+    }
+
+    #[test]
+    fn tui_prefs_validate_accepts_known_themes() {
+        for theme in ["dark", "light", "system"] {
+            let mut prefs = TuiPrefs {
+                theme: theme.to_string(),
+                ..TuiPrefs::default()
+            };
+            prefs.validate().unwrap_or_else(|e| panic!("validate({theme}) failed: {e}"));
+            assert_eq!(prefs.theme, theme);
+        }
+    }
+
+    #[test]
+    fn tui_prefs_validate_normalises_theme_case() {
+        let mut prefs = TuiPrefs {
+            theme: "DARK".to_string(),
+            ..TuiPrefs::default()
+        };
+        prefs.validate().expect("DARK should normalise to dark");
+        assert_eq!(prefs.theme, "dark");
+    }
+
+    #[test]
+    fn tui_prefs_validate_rejects_unknown_theme() {
+        let mut prefs = TuiPrefs {
+            theme: "solarized".to_string(),
+            ..TuiPrefs::default()
+        };
+        let err = prefs.validate().expect_err("solarized is not a valid theme");
+        assert!(err.to_string().contains("Invalid tui.toml theme"));
+    }
+
+    #[test]
+    fn tui_prefs_round_trips_through_toml() {
+        let prefs = TuiPrefs {
+            theme: "light".to_string(),
+            font_size: 16,
+            keybinds: KeybindPrefs {
+                submit: Some("ctrl+enter".to_string()),
+                new_line: Some("enter".to_string()),
+                command_palette: None,
+                cancel: None,
+                toggle_sidebar: None,
+            },
+        };
+        let serialised = toml::to_string_pretty(&prefs).expect("serialise");
+        let de: TuiPrefs = toml::from_str(&serialised).expect("deserialise");
+        assert_eq!(de.theme, "light");
+        assert_eq!(de.font_size, 16);
+        assert_eq!(de.keybinds.submit.as_deref(), Some("ctrl+enter"));
+        assert_eq!(de.keybinds.new_line.as_deref(), Some("enter"));
+        assert!(de.keybinds.command_palette.is_none());
+    }
+
+    #[test]
+    fn tui_prefs_load_returns_defaults_when_file_absent() {
+        let _g = config_path_test_guard();
+        // Point config path at a non-existent location so tui.toml is absent.
+        let tmp = std::env::temp_dir().join("dst_tui_prefs_absent_test");
+        std::fs::create_dir_all(&tmp).unwrap();
+        // SAFETY: test-only env mutation guarded by config_path_test_guard.
+        unsafe {
+            std::env::set_var(
+                "DEEPSEEK_CONFIG_PATH",
+                tmp.join("config.toml").to_str().unwrap(),
+            );
+        }
+        let prefs = TuiPrefs::load().expect("load should not fail when file absent");
+        assert_eq!(prefs.theme, "dark", "should fall back to default theme");
+        // SAFETY: cleanup under the guard.
+        unsafe {
+            std::env::remove_var("DEEPSEEK_CONFIG_PATH");
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn tui_prefs_save_and_load_round_trip() {
+        let _g = config_path_test_guard();
+        let tmp = std::env::temp_dir().join("dst_tui_prefs_save_test");
+        std::fs::create_dir_all(&tmp).unwrap();
+        // SAFETY: test-only env mutation guarded by config_path_test_guard.
+        unsafe {
+            std::env::set_var(
+                "DEEPSEEK_CONFIG_PATH",
+                tmp.join("config.toml").to_str().unwrap(),
+            );
+        }
+
+        let prefs = TuiPrefs {
+            theme: "light".to_string(),
+            font_size: 14,
+            keybinds: KeybindPrefs {
+                submit: Some("ctrl+enter".to_string()),
+                ..KeybindPrefs::default()
+            },
+        };
+        prefs.save().expect("save should succeed");
+
+        let loaded = TuiPrefs::load().expect("load after save");
+        assert_eq!(loaded.theme, "light");
+        assert_eq!(loaded.font_size, 14);
+        assert_eq!(loaded.keybinds.submit.as_deref(), Some("ctrl+enter"));
+
+        // SAFETY: cleanup under the guard.
+        unsafe {
+            std::env::remove_var("DEEPSEEK_CONFIG_PATH");
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn tui_prefs_path_uses_home_deepseek_subdir_by_default() {
+        // Without DEEPSEEK_CONFIG_PATH the path should end with
+        // .deepseek/tui.toml relative to the home directory.
+        // We skip this check if home_dir() is unavailable (CI without HOME).
+        if let Some(home) = dirs::home_dir() {
+            let expected = home.join(".deepseek").join("tui.toml");
+            // Only compare when no env override is active.
+            if std::env::var("DEEPSEEK_CONFIG_PATH").is_err() {
+                let got = TuiPrefs::path().expect("path should resolve");
+                assert_eq!(got, expected);
+            }
         }
     }
 }
