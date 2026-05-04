@@ -778,6 +778,13 @@ pub struct Config {
     /// / tauri://localhost as the only allowed dev origins.
     #[serde(default)]
     pub runtime_api: Option<RuntimeApiConfig>,
+
+    /// Configurable keymap (#436). Maps action names (e.g. "approve_once",
+    /// "deny") to key characters (e.g. "y", "n"). When absent, the TUI
+    /// falls back to built-in defaults. See config.example.toml for a
+    /// complete list of remappable actions and their default values.
+    #[serde(default)]
+    pub keymap: Option<HashMap<String, String>>,
 }
 
 /// `[runtime_api]` table — knobs for the local HTTP/SSE daemon.
@@ -792,6 +799,70 @@ pub struct RuntimeApiConfig {
     /// `DEEPSEEK_CORS_ORIGINS` env var (comma-separated), this field. Whalescale#255 / #561.
     #[serde(default)]
     pub cors_origins: Option<Vec<String>>,
+}
+
+/// Action names for the configurable keymap (#436).
+///
+/// Each variant corresponds to one remappable keyboard action in the TUI.
+/// Default key bindings are listed in the doc comment for each variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum KeymapAction {
+    /// Approve a tool execution once (default: "y")
+    ApproveOnce,
+    /// Approve a tool execution for the entire session (default: "a")
+    ApproveAlways,
+    /// Deny a tool execution (default: "n")
+    Deny,
+    /// Abort the current turn (default: "d")
+    ///
+    /// Note: This is an alias — `Esc` always aborts regardless of config.
+    Abort,
+    /// View tool parameters in a pager (default: "v")
+    ViewParams,
+    /// Elevation: allow network access (default: "n")
+    ElevateNetwork,
+    /// Elevation: allow full filesystem access (default: "f")
+    ElevateFullAccess,
+}
+
+impl KeymapAction {
+    /// Canonical config key name (snake_case) for this action.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ApproveOnce => "approve_once",
+            Self::ApproveAlways => "approve_always",
+            Self::Deny => "deny",
+            Self::Abort => "abort",
+            Self::ViewParams => "view_params",
+            Self::ElevateNetwork => "elevate_network",
+            Self::ElevateFullAccess => "elevate_full_access",
+        }
+    }
+
+    /// Return the default character for this action.
+    pub fn default_char(self) -> char {
+        match self {
+            Self::ApproveOnce => 'y',
+            Self::ApproveAlways => 'a',
+            Self::Deny => 'n',
+            Self::Abort => 'd',
+            Self::ViewParams => 'v',
+            Self::ElevateNetwork => 'n',
+            Self::ElevateFullAccess => 'f',
+        }
+    }
+
+    /// Resolve the effective key character for this action from config,
+    /// falling back to the built-in default.
+    pub fn resolve(self, config: &Config) -> char {
+        config
+            .keymap
+            .as_ref()
+            .and_then(|km| km.get(self.as_str()))
+            .and_then(|s| s.chars().next())
+            .unwrap_or_else(|| self.default_char())
+    }
 }
 
 /// `[skills]` table — knobs for the community-skill installer.
@@ -2026,6 +2097,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         },
         subagents: override_cfg.subagents.or(base.subagents),
         runtime_api: override_cfg.runtime_api.or(base.runtime_api),
+        keymap: override_cfg.keymap.or(base.keymap),
     }
 }
 

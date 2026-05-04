@@ -387,6 +387,42 @@ impl ApprovalOption {
     }
 }
 
+/// Resolved key bindings for approval actions.
+///
+/// Built from the user's `[keymap]` config once at view construction so
+/// the hot path (`handle_key`) never needs to consult a `HashMap`.
+#[derive(Debug, Clone, Copy)]
+pub struct ApprovalKeys {
+    pub approve_once: char,
+    pub approve_always: char,
+    pub deny: char,
+    pub view_params: char,
+}
+
+impl ApprovalKeys {
+    pub fn from_config(config: &crate::config::Config) -> Self {
+        use crate::config::KeymapAction;
+        Self {
+            approve_once: KeymapAction::ApproveOnce.resolve(config),
+            approve_always: KeymapAction::ApproveAlways.resolve(config),
+            deny: KeymapAction::Deny.resolve(config),
+            view_params: KeymapAction::ViewParams.resolve(config),
+        }
+    }
+}
+
+impl Default for ApprovalKeys {
+    fn default() -> Self {
+        use crate::config::KeymapAction;
+        Self {
+            approve_once: KeymapAction::ApproveOnce.default_char(),
+            approve_always: KeymapAction::ApproveAlways.default_char(),
+            deny: KeymapAction::Deny.default_char(),
+            view_params: KeymapAction::ViewParams.default_char(),
+        }
+    }
+}
+
 /// Approval overlay state managed by the modal view stack
 #[derive(Debug, Clone)]
 pub struct ApprovalView {
@@ -398,17 +434,25 @@ pub struct ApprovalView {
     pending_confirm: Option<ApprovalOption>,
     timeout: Option<Duration>,
     requested_at: Instant,
+    /// Resolved key overrides from config.
+    keys: ApprovalKeys,
 }
 
 impl ApprovalView {
-    pub fn new(request: ApprovalRequest) -> Self {
+    pub fn new(request: ApprovalRequest, keys: ApprovalKeys) -> Self {
         Self {
             request,
             selected: 0,
             pending_confirm: None,
             timeout: None,
             requested_at: Instant::now(),
+            keys,
         }
+    }
+
+    /// Convenience constructor with built-in default keys.
+    pub fn new_default(request: ApprovalRequest) -> Self {
+        Self::new(request, ApprovalKeys::default())
     }
 
     fn select_prev(&mut self) {
@@ -518,18 +562,21 @@ impl ModalView for ApprovalView {
                 ViewAction::None
             }
             KeyCode::Enter => self.commit_or_stage(self.current_option()),
-            // Direct shortcuts; '1' / '2' map to the first two options
-            // so a numeric pad still works for benign approve flows.
-            KeyCode::Char('y') | KeyCode::Char('1') => {
+            // Numeric shortcuts always work: '1' / '2' / '3' map to
+            // the first three options so muscle memory from the old
+            // hardcoded defaults still works. The configurable char
+            // comes from `self.keys` which is populated from the
+            // user's `[keymap]` section (or built-in defaults).
+            KeyCode::Char(c) if c == '1' || c == self.keys.approve_once => {
                 self.commit_or_stage(ApprovalOption::ApproveOnce)
             }
-            KeyCode::Char('a') | KeyCode::Char('2') => {
+            KeyCode::Char(c) if c == '2' || c == self.keys.approve_always => {
                 self.commit_or_stage(ApprovalOption::ApproveAlways)
             }
-            KeyCode::Char('n') | KeyCode::Char('d') | KeyCode::Char('3') => {
+            KeyCode::Char(c) if c == '3' || c == self.keys.deny => {
                 self.commit_or_stage(ApprovalOption::Deny)
             }
-            KeyCode::Char('v') | KeyCode::Char('V') => {
+            KeyCode::Char(c) if c == self.keys.view_params || c == 'V' => {
                 self.pending_confirm = None;
                 self.emit_params_pager()
             }
@@ -712,19 +759,52 @@ impl ElevationRequest {
     }
 }
 
+/// Resolved key bindings for elevation actions.
+#[derive(Debug, Clone, Copy)]
+pub struct ElevationKeys {
+    pub network: char,
+    pub full_access: char,
+}
+
+impl ElevationKeys {
+    pub fn from_config(config: &crate::config::Config) -> Self {
+        use crate::config::KeymapAction;
+        Self {
+            network: KeymapAction::ElevateNetwork.resolve(config),
+            full_access: KeymapAction::ElevateFullAccess.resolve(config),
+        }
+    }
+}
+
+impl Default for ElevationKeys {
+    fn default() -> Self {
+        use crate::config::KeymapAction;
+        Self {
+            network: KeymapAction::ElevateNetwork.default_char(),
+            full_access: KeymapAction::ElevateFullAccess.default_char(),
+        }
+    }
+}
+
 /// Elevation overlay state managed by the modal view stack.
 #[derive(Debug, Clone)]
 pub struct ElevationView {
     request: ElevationRequest,
     selected: usize,
+    keys: ElevationKeys,
 }
 
 impl ElevationView {
-    pub fn new(request: ElevationRequest) -> Self {
+    pub fn new(request: ElevationRequest, keys: ElevationKeys) -> Self {
         Self {
             request,
             selected: 0,
+            keys,
         }
+    }
+
+    pub fn new_default(request: ElevationRequest) -> Self {
+        Self::new(request, ElevationKeys::default())
     }
 
     fn select_prev(&mut self) {
@@ -781,7 +861,9 @@ impl ModalView for ElevationView {
                 ViewAction::None
             }
             KeyCode::Enter => self.emit_decision(self.current_option().clone()),
-            KeyCode::Char('n') => self.emit_decision(ElevationOption::WithNetwork),
+            KeyCode::Char(c) if c == self.keys.network => {
+                self.emit_decision(ElevationOption::WithNetwork)
+            }
             KeyCode::Char('w') => {
                 // Find the write access option if available
                 for opt in &self.request.options {
@@ -791,7 +873,9 @@ impl ModalView for ElevationView {
                 }
                 ViewAction::None
             }
-            KeyCode::Char('f') => self.emit_decision(ElevationOption::FullAccess),
+            KeyCode::Char(c) if c == self.keys.full_access => {
+                self.emit_decision(ElevationOption::FullAccess)
+            }
             KeyCode::Esc | KeyCode::Char('a') => self.emit_decision(ElevationOption::Abort),
             _ => ViewAction::None,
         }
@@ -1028,7 +1112,7 @@ mod tests {
 
     #[test]
     fn test_approval_view_initial_state() {
-        let view = ApprovalView::new(benign_request());
+        let view = ApprovalView::new_default(benign_request());
         assert_eq!(view.selected, 0);
         assert!(view.timeout.is_none());
         assert_eq!(view.pending_confirm(), None);
@@ -1037,7 +1121,7 @@ mod tests {
 
     #[test]
     fn test_approval_view_navigation() {
-        let mut view = ApprovalView::new(benign_request());
+        let mut view = ApprovalView::new_default(benign_request());
         assert_eq!(view.selected, 0);
 
         view.select_next();
@@ -1057,7 +1141,7 @@ mod tests {
 
     #[test]
     fn benign_y_one_step_approves() {
-        let mut view = ApprovalView::new(benign_request());
+        let mut view = ApprovalView::new_default(benign_request());
         let action = view.handle_key(create_key_event(KeyCode::Char('y')));
         assert!(matches!(
             action,
@@ -1070,7 +1154,7 @@ mod tests {
 
     #[test]
     fn benign_one_key_approves_via_numeric_pad() {
-        let mut view = ApprovalView::new(benign_request());
+        let mut view = ApprovalView::new_default(benign_request());
         let action = view.handle_key(create_key_event(KeyCode::Char('1')));
         assert!(matches!(
             action,
@@ -1083,7 +1167,7 @@ mod tests {
 
     #[test]
     fn benign_enter_approves_in_one_step() {
-        let mut view = ApprovalView::new(benign_request());
+        let mut view = ApprovalView::new_default(benign_request());
         let action = view.handle_key(create_key_event(KeyCode::Enter));
         assert!(matches!(
             action,
@@ -1096,7 +1180,7 @@ mod tests {
 
     #[test]
     fn benign_a_two_approves_for_session() {
-        let mut view = ApprovalView::new(benign_request());
+        let mut view = ApprovalView::new_default(benign_request());
         let action = view.handle_key(create_key_event(KeyCode::Char('a')));
         assert!(matches!(
             action,
@@ -1106,7 +1190,7 @@ mod tests {
             })
         ));
 
-        let mut view = ApprovalView::new(benign_request());
+        let mut view = ApprovalView::new_default(benign_request());
         let action = view.handle_key(create_key_event(KeyCode::Char('2')));
         assert!(matches!(
             action,
@@ -1120,7 +1204,7 @@ mod tests {
     #[test]
     fn benign_n_d_three_all_deny() {
         for code in [KeyCode::Char('n'), KeyCode::Char('d'), KeyCode::Char('3')] {
-            let mut view = ApprovalView::new(benign_request());
+            let mut view = ApprovalView::new_default(benign_request());
             let action = view.handle_key(create_key_event(code));
             assert!(
                 matches!(
@@ -1137,7 +1221,7 @@ mod tests {
 
     #[test]
     fn benign_esc_aborts() {
-        let mut view = ApprovalView::new(benign_request());
+        let mut view = ApprovalView::new_default(benign_request());
         let action = view.handle_key(create_key_event(KeyCode::Esc));
         assert!(matches!(
             action,
@@ -1150,7 +1234,7 @@ mod tests {
 
     #[test]
     fn test_approval_view_enter_uses_selected_option() {
-        let mut view = ApprovalView::new(benign_request());
+        let mut view = ApprovalView::new_default(benign_request());
 
         // Navigate to index 2 (Denied)
         view.select_next();
@@ -1169,7 +1253,7 @@ mod tests {
 
     #[test]
     fn test_approval_view_navigation_keys() {
-        let mut view = ApprovalView::new(benign_request());
+        let mut view = ApprovalView::new_default(benign_request());
 
         view.handle_key(create_key_event(KeyCode::Up));
         assert_eq!(view.selected, 0); // clamped at 0
@@ -1186,14 +1270,14 @@ mod tests {
 
     #[test]
     fn test_approval_view_view_params() {
-        let mut view = ApprovalView::new(benign_request());
+        let mut view = ApprovalView::new_default(benign_request());
         let action = view.handle_key(create_key_event(KeyCode::Char('v')));
         assert!(matches!(
             action,
             ViewAction::Emit(ViewEvent::OpenTextPager { .. })
         ));
 
-        let mut view = ApprovalView::new(benign_request());
+        let mut view = ApprovalView::new_default(benign_request());
         let action = view.handle_key(create_key_event(KeyCode::Char('V')));
         assert!(matches!(
             action,
@@ -1203,7 +1287,7 @@ mod tests {
 
     #[test]
     fn test_approval_view_current_decision_mapping() {
-        let mut view = ApprovalView::new(benign_request());
+        let mut view = ApprovalView::new_default(benign_request());
 
         view.selected = 0;
         assert_eq!(view.current_decision(), ReviewDecision::Approved);
@@ -1221,13 +1305,13 @@ mod tests {
 
     #[test]
     fn destructive_request_routes_destructive() {
-        let view = ApprovalView::new(destructive_request());
+        let view = ApprovalView::new_default(destructive_request());
         assert_eq!(view.risk(), RiskLevel::Destructive);
     }
 
     #[test]
     fn destructive_y_first_press_stages_then_second_commits() {
-        let mut view = ApprovalView::new(destructive_request());
+        let mut view = ApprovalView::new_default(destructive_request());
 
         // First press stages — no decision emitted yet.
         let action = view.handle_key(create_key_event(KeyCode::Char('y')));
@@ -1247,7 +1331,7 @@ mod tests {
 
     #[test]
     fn destructive_enter_first_press_stages_then_second_commits() {
-        let mut view = ApprovalView::new(destructive_request());
+        let mut view = ApprovalView::new_default(destructive_request());
 
         // Selection starts at ApproveOnce — Enter stages.
         let action = view.handle_key(create_key_event(KeyCode::Enter));
@@ -1267,7 +1351,7 @@ mod tests {
 
     #[test]
     fn destructive_navigation_clears_staged_confirmation() {
-        let mut view = ApprovalView::new(destructive_request());
+        let mut view = ApprovalView::new_default(destructive_request());
 
         view.handle_key(create_key_event(KeyCode::Char('y')));
         assert_eq!(view.pending_confirm(), Some(ApprovalOption::ApproveOnce));
@@ -1279,7 +1363,7 @@ mod tests {
 
     #[test]
     fn destructive_unrelated_key_clears_staged_confirmation() {
-        let mut view = ApprovalView::new(destructive_request());
+        let mut view = ApprovalView::new_default(destructive_request());
 
         view.handle_key(create_key_event(KeyCode::Char('y')));
         assert_eq!(view.pending_confirm(), Some(ApprovalOption::ApproveOnce));
@@ -1292,7 +1376,7 @@ mod tests {
 
     #[test]
     fn destructive_a_first_press_stages_then_second_commits_session() {
-        let mut view = ApprovalView::new(destructive_request());
+        let mut view = ApprovalView::new_default(destructive_request());
 
         let action = view.handle_key(create_key_event(KeyCode::Char('a')));
         assert!(matches!(action, ViewAction::None));
@@ -1312,7 +1396,7 @@ mod tests {
     fn destructive_y_then_a_does_not_commit_either() {
         // Pressing 'y' then 'a' must NOT commit ApproveAlways — the
         // second key is a different option, so it re-stages instead.
-        let mut view = ApprovalView::new(destructive_request());
+        let mut view = ApprovalView::new_default(destructive_request());
 
         let action = view.handle_key(create_key_event(KeyCode::Char('y')));
         assert!(matches!(action, ViewAction::None));
@@ -1326,7 +1410,7 @@ mod tests {
     #[test]
     fn destructive_deny_does_not_require_confirmation() {
         // Deny / Abort skip the two-key dance — the user is bailing.
-        let mut view = ApprovalView::new(destructive_request());
+        let mut view = ApprovalView::new_default(destructive_request());
         let action = view.handle_key(create_key_event(KeyCode::Char('n')));
         assert!(matches!(
             action,
@@ -1339,7 +1423,7 @@ mod tests {
 
     #[test]
     fn destructive_esc_aborts_immediately() {
-        let mut view = ApprovalView::new(destructive_request());
+        let mut view = ApprovalView::new_default(destructive_request());
         // Stage something first.
         view.handle_key(create_key_event(KeyCode::Char('y')));
         // Esc still aborts in one press.
@@ -1374,7 +1458,7 @@ mod tests {
 
     #[test]
     fn render_benign_includes_review_badge_and_one_step_hint() {
-        let view = ApprovalView::new(benign_request());
+        let view = ApprovalView::new_default(benign_request());
         let lines = render_lines(&view, 100, 40);
         let joined = lines.join("\n");
         assert!(joined.contains("REVIEW"), "missing REVIEW badge:\n{joined}");
@@ -1387,7 +1471,7 @@ mod tests {
 
     #[test]
     fn render_destructive_shows_warning_badge_and_two_step_hint() {
-        let view = ApprovalView::new(destructive_request());
+        let view = ApprovalView::new_default(destructive_request());
         let lines = render_lines(&view, 100, 40);
         let joined = lines.join("\n");
         assert!(
@@ -1403,7 +1487,7 @@ mod tests {
 
     #[test]
     fn render_destructive_after_stage_shows_confirm_banner() {
-        let mut view = ApprovalView::new(destructive_request());
+        let mut view = ApprovalView::new_default(destructive_request());
         view.handle_key(create_key_event(KeyCode::Char('y')));
         let lines = render_lines(&view, 100, 40);
         let joined = lines.join("\n");
@@ -1422,7 +1506,7 @@ mod tests {
         // The card should be wider than the old 65-cell popup whenever
         // the terminal can hold it; this guards against a regression
         // back to the centered popup.
-        let view = ApprovalView::new(benign_request());
+        let view = ApprovalView::new_default(benign_request());
         let lines = render_lines(&view, 120, 40);
         // Find the widest non-blank rendered row.
         let widest = lines
@@ -1444,7 +1528,7 @@ mod tests {
     fn test_elevation_view_initial_state() {
         let request =
             ElevationRequest::for_shell("test-id", "cargo build", "network blocked", true, false);
-        let view = ElevationView::new(request);
+        let view = ElevationView::new_default(request);
         assert_eq!(view.selected, 0);
     }
 
@@ -1452,7 +1536,7 @@ mod tests {
     fn test_elevation_view_keybindings() {
         let request =
             ElevationRequest::for_shell("test-id", "cargo test", "write blocked", false, true);
-        let mut view = ElevationView::new(request);
+        let mut view = ElevationView::new_default(request);
 
         let action = view.handle_key(create_key_event(KeyCode::Char('n')));
         assert!(matches!(
@@ -1465,7 +1549,7 @@ mod tests {
 
         let request =
             ElevationRequest::for_shell("test-id", "cargo build", "write blocked", false, true);
-        let mut view = ElevationView::new(request);
+        let mut view = ElevationView::new_default(request);
         let action = view.handle_key(create_key_event(KeyCode::Char('w')));
         assert!(matches!(
             action,
@@ -1477,7 +1561,7 @@ mod tests {
 
         let request =
             ElevationRequest::for_shell("test-id", "cargo build", "blocked", false, false);
-        let mut view = ElevationView::new(request);
+        let mut view = ElevationView::new_default(request);
         let action = view.handle_key(create_key_event(KeyCode::Char('f')));
         assert!(matches!(
             action,
@@ -1489,7 +1573,7 @@ mod tests {
 
         let request =
             ElevationRequest::for_shell("test-id", "cargo build", "blocked", false, false);
-        let mut view = ElevationView::new(request);
+        let mut view = ElevationView::new_default(request);
         let action = view.handle_key(create_key_event(KeyCode::Esc));
         assert!(matches!(
             action,
@@ -1501,7 +1585,7 @@ mod tests {
 
         let request =
             ElevationRequest::for_shell("test-id", "cargo build", "blocked", false, false);
-        let mut view = ElevationView::new(request);
+        let mut view = ElevationView::new_default(request);
         let action = view.handle_key(create_key_event(KeyCode::Char('a')));
         assert!(matches!(
             action,
@@ -1515,7 +1599,7 @@ mod tests {
     #[test]
     fn test_elevation_view_navigation() {
         let request = ElevationRequest::for_shell("test-id", "cargo build", "blocked", true, false);
-        let mut view = ElevationView::new(request);
+        let mut view = ElevationView::new_default(request);
 
         assert_eq!(view.selected, 0);
 
@@ -1535,7 +1619,7 @@ mod tests {
     #[test]
     fn test_elevation_view_enter_uses_selected_option() {
         let request = ElevationRequest::for_shell("test-id", "cargo build", "blocked", true, false);
-        let mut view = ElevationView::new(request);
+        let mut view = ElevationView::new_default(request);
 
         view.handle_key(create_key_event(KeyCode::Down));
         assert_eq!(view.selected, 1);
