@@ -140,6 +140,32 @@ deepseek --provider fireworks --model deepseek-v4-pro
 SGLANG_BASE_URL="http://localhost:30000/v1" deepseek --provider sglang --model deepseek-v4-flash
 ```
 
+### Using a local VLLM deployment
+
+[VLLM](https://github.com/vllm-project/vllm) serves an OpenAI-compatible API, so you can point DeepSeek TUI at any locally deployed VLLM instance:
+
+```bash
+# Via environment variables (no provider prefix needed)
+DEEPSEEK_BASE_URL="http://localhost:8000/v1" \
+DEEPSEEK_API_KEY="not-used" \
+DEEPSEEK_MODEL="my-model" \
+deepseek
+```
+
+Or via `~/.deepseek/config.toml`:
+
+```toml
+provider = "sglang"            # self-hosted OpenAI-compatible server
+base_url = "http://localhost:8000/v1"
+api_key = "not-used"           # VLLM does not require a real key
+default_text_model = "my-model" # the model loaded in VLLM
+```
+
+**Notes:**
+- VLLM accepts any non-empty string as `api_key` — a real token is not required.
+- The model name must match the exact name loaded in your VLLM instance (e.g. `deepseek-ai/DeepSeek-V4-Pro`).
+- Set `reasoning_effort = "off"` for models that do not support chain-of-thought.
+
 ---
 
 ## What's new in v0.8.10

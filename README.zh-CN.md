@@ -138,6 +138,32 @@ deepseek --provider fireworks --model deepseek-v4-pro
 SGLANG_BASE_URL="http://localhost:30000/v1" deepseek --provider sglang --model deepseek-v4-flash
 ```
 
+### 使用本地 VLLM 部署
+
+[VLLM](https://github.com/vllm-project/vllm) 提供 OpenAI 兼容的 API，因此你可以将 DeepSeek TUI 指向任何本地部署的 VLLM 实例：
+
+```bash
+# 通过环境变量（无需提供 provider 前缀）
+DEEPSEEK_BASE_URL="http://localhost:8000/v1" \
+DEEPSEEK_API_KEY="not-used" \
+DEEPSEEK_MODEL="my-model" \
+deepseek
+```
+
+或者通过 `~/.deepseek/config.toml`：
+
+```toml
+provider = "sglang"            # 自托管 OpenAI 兼容服务器
+base_url = "http://localhost:8000/v1"
+api_key = "not-used"           # VLLM 不需要真实密钥
+default_text_model = "my-model" # VLLM 中加载的模型名称
+```
+
+**注意：**
+- VLLM 接受任意非空字符串作为 `api_key`，不需要真实 token。
+- 模型名称必须与 VLLM 实例中加载的名称完全一致（例如 `deepseek-ai/DeepSeek-V4-Pro`）。
+- 对于不支持思维链的模型，请设置 `reasoning_effort = "off"`。
+
 ---
 
 ## v0.8.10 新功能
