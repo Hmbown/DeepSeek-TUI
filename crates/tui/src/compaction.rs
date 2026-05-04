@@ -835,9 +835,11 @@ async fn create_summary(
 
     // #584: emit one debug-level event per summary call so the
     // V4 cache-aligned win is observable post-deploy without
-    // adding UI surface. Filter with `RUST_LOG=compaction=debug`
-    // (or the full module path
-    // `RUST_LOG=deepseek_tui::compaction=debug`).
+    // adding UI surface. The event is emitted with
+    // `target = "compaction"`, so the filter is
+    // `RUST_LOG=compaction=debug` (the module-path form
+    // `deepseek_tui::compaction=debug` does NOT match — `EnvFilter`
+    // matches the explicit target string when one is set).
     log_summary_cache_telemetry(used_cache_aligned, &response.usage);
 
     // Extract text from response
@@ -854,6 +856,23 @@ async fn create_summary(
     Ok(summary)
 }
 
+/// Cache-hit percentage for a compaction summary call.
+///
+/// Denominator is `input_tokens` (the total prompt size), not
+/// `cache_hit + cache_miss`. Some providers populate
+/// `prompt_cache_hit_tokens` but not `prompt_cache_miss_tokens` — using
+/// the sum as the denominator there reports an inflated 100% even when
+/// most of the prompt was uncached. Anchoring on `input_tokens` matches
+/// how the rest of the codebase (cost reporting, `/cache`) infers
+/// missing miss counts. (#584)
+fn summary_cache_hit_percent(cache_hit: u32, input_tokens: u32) -> f64 {
+    if input_tokens > 0 {
+        (f64::from(cache_hit) * 100.0) / f64::from(input_tokens)
+    } else {
+        0.0
+    }
+}
+
 /// Emit one `tracing::debug!` event per compaction summary call so the
 /// path choice (cache-aligned vs fallback) and the resulting cache-hit
 /// rate are observable. Both raw token counts and the percentage are
@@ -867,12 +886,7 @@ fn log_summary_cache_telemetry(used_cache_aligned: bool, usage: &crate::models::
     };
     let cache_hit = usage.prompt_cache_hit_tokens.unwrap_or(0);
     let cache_miss = usage.prompt_cache_miss_tokens.unwrap_or(0);
-    let cached_window = u64::from(cache_hit) + u64::from(cache_miss);
-    let cache_hit_pct = if cached_window > 0 {
-        (f64::from(cache_hit) * 100.0) / cached_window as f64
-    } else {
-        0.0
-    };
+    let cache_hit_pct = summary_cache_hit_percent(cache_hit, usage.input_tokens);
     tracing::debug!(
         target: "compaction",
         "compaction summary call: path={} prompt_tokens={} cache_hit_tokens={} cache_miss_tokens={} cache_hit_pct={:.1}",
@@ -1266,6 +1280,30 @@ mod tests {
             "deepseek-v3.2-128k",
             &messages
         ));
+    }
+
+    /// #584: the summary cache-hit percentage must be computed against
+    /// `input_tokens`, not `cache_hit + cache_miss`. Providers that
+    /// only populate `prompt_cache_hit_tokens` (and leave the miss
+    /// field at `None`) would otherwise be reported as a flat 100%
+    /// hit rate even when most of the prompt was uncached.
+    #[test]
+    fn summary_cache_hit_percent_uses_input_tokens_as_denominator() {
+        // Both fields populated and consistent.
+        assert!((summary_cache_hit_percent(800, 1000) - 80.0).abs() < f64::EPSILON);
+        // No cache hit at all.
+        assert!((summary_cache_hit_percent(0, 1000) - 0.0).abs() < f64::EPSILON);
+        // Full cache hit.
+        assert!((summary_cache_hit_percent(1000, 1000) - 100.0).abs() < f64::EPSILON);
+        // Partial-telemetry guard: provider reports `cache_hit` only,
+        // miss is unknown (treated as 0 by the caller). Naive
+        // `hit / (hit + miss)` would have reported 100%; against
+        // `input_tokens` the answer is the real share.
+        assert!((summary_cache_hit_percent(200, 1000) - 20.0).abs() < f64::EPSILON);
+        // Defensive: zero `input_tokens` short-circuits without a
+        // divide-by-zero.
+        assert!((summary_cache_hit_percent(0, 0) - 0.0).abs() < f64::EPSILON);
+        assert!((summary_cache_hit_percent(50, 0) - 0.0).abs() < f64::EPSILON);
     }
 
     #[test]
