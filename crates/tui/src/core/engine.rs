@@ -140,6 +140,9 @@ pub struct EngineConfig {
     /// consulted when `memory_enabled` is `true`.
     pub memory_path: PathBuf,
     pub goal_objective: Option<String>,
+    /// Auto-load repo defaults (README.md, AGENTS.md, directory listing)
+    /// at session start when in a git repository (#542).
+    pub auto_load_repo: bool,
 }
 
 impl Default for EngineConfig {
@@ -170,6 +173,7 @@ impl Default for EngineConfig {
             memory_enabled: false,
             memory_path: PathBuf::from("./memory.md"),
             goal_objective: None,
+            auto_load_repo: false,
         }
     }
 }
@@ -366,6 +370,7 @@ impl Engine {
             prompts::PromptSessionContext {
                 user_memory_block: user_memory_block.as_deref(),
                 goal_objective: config.goal_objective.as_deref(),
+                auto_load_repo: config.auto_load_repo,
             },
         );
         session.system_prompt =
@@ -1660,6 +1665,7 @@ impl Engine {
             prompts::PromptSessionContext {
                 user_memory_block: user_memory_block.as_deref(),
                 goal_objective: self.config.goal_objective.as_deref(),
+                auto_load_repo: self.config.auto_load_repo,
             },
         );
         let stable_prompt =

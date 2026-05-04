@@ -198,6 +198,19 @@ terminal_probe_timeout_ms = 500 # optional startup terminal-mode timeout (100-50
 osc8_links = true            # emit OSC 8 escapes around URLs (Cmd+click in iTerm2/Ghostty/Kitty/WezTerm/Terminal.app 13+); set false for terminals that misrender
 
 # ─────────────────────────────────────────────────────────────────────────────────
+# Auto-load repo defaults (#542)
+# ─────────────────────────────────────────────────────────────────────────────────
+# When true (the default) and the workspace is a git repository, the agent's
+# system prompt is seeded at session start with the full contents of
+# README.md, any existing AGENTS.md / CLAUDE.md, and a top-level directory
+# listing. This gives the model immediate project context without waiting
+# for the first user message.
+#
+# Set to false in a non-repo or very large repo that makes README inclusion
+# wasteful, or if you prefer to load context manually.
+# auto_load_repo = true
+
+# ─────────────────────────────────────────────────────────────────────────────────
 # Feature Flags
 # ─────────────────────────────────────────────────────────────────────────────────
 [features]

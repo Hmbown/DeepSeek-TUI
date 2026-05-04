@@ -768,6 +768,11 @@ pub struct Config {
     #[serde(default)]
     pub context: ContextConfig,
 
+    /// Auto-load repo defaults (README.md, AGENTS.md, directory listing)
+    /// at session start when in a git repository (#542).
+    #[serde(default = "default_auto_load_repo")]
+    pub auto_load_repo: Option<bool>,
+
     /// Sub-agent model overrides.
     #[serde(default)]
     pub subagents: Option<SubagentsConfig>,
@@ -844,6 +849,10 @@ pub struct NetworkPolicyToml {
     /// Whether to record one audit-log line per outbound network call.
     #[serde(default = "default_network_audit")]
     pub audit: bool,
+}
+
+fn default_auto_load_repo() -> Option<bool> {
+    Some(true)
 }
 
 fn default_network_decision() -> String {
@@ -1345,6 +1354,15 @@ impl Config {
             .as_ref()
             .and_then(|m| m.enabled)
             .unwrap_or(false)
+    }
+
+    /// Whether to auto-load repo defaults (README.md, AGENTS.md, directory
+    /// listing) at session start when in a git repository (#542).
+    ///
+    /// Default: `true` (load repo defaults on supported workspaces).
+    #[must_use]
+    pub fn auto_load_repo(&self) -> bool {
+        self.auto_load_repo.unwrap_or(true)
     }
 
     /// Return whether shell execution is allowed.
@@ -2024,6 +2042,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
             seam_model: override_cfg.context.seam_model.or(base.context.seam_model),
             per_model: override_cfg.context.per_model.or(base.context.per_model),
         },
+        auto_load_repo: override_cfg.auto_load_repo.or(base.auto_load_repo),
         subagents: override_cfg.subagents.or(base.subagents),
         runtime_api: override_cfg.runtime_api.or(base.runtime_api),
     }
