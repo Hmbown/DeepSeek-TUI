@@ -28,7 +28,7 @@ use crate::tools::plan::{PlanState, SharedPlanState};
 use crate::tools::registry::{ToolRegistry, ToolRegistryBuilder};
 use crate::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
-    optional_bool, optional_u64, required_str,
+    optional_bool, optional_u64,
 };
 use crate::tools::todo::{SharedTodoList, TodoList};
 use crate::utils::spawn_supervised;
@@ -416,6 +416,10 @@ fn is_false(b: &bool) -> bool {
 pub(crate) struct SubAgentSpawnOptions {
     pub model: Option<String>,
     pub nickname: Option<String>,
+    /// Optional explicit agent_id. When set, used instead of an auto-generated
+    /// UUID-based id. Must not conflict with an existing agent in the
+    /// manager's map (#425).
+    pub agent_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -470,6 +474,10 @@ struct SpawnRequest {
     /// into separate git worktrees: parent runs `git worktree add` first,
     /// then spawns children with the worktree path as `cwd`.
     cwd: Option<PathBuf>,
+    /// Optional stable identifier for this agent. When provided, used as the
+    /// agent_id instead of auto-generating one. Enables resumable sub-agents
+    /// via a known task_id across sessions (#425).
+    agent_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -697,8 +705,13 @@ pub struct SubAgent {
 
 impl SubAgent {
     /// Create a new sub-agent.
+    ///
+    /// When `agent_id` is `Some`, it is used as the agent's identifier instead
+    /// of auto-generating one. This enables resumable sub-agents with a
+    /// caller-chosen stable task_id (#425).
     #[allow(clippy::too_many_arguments)]
     fn new(
+        agent_id: Option<String>,
         agent_type: SubAgentType,
         prompt: String,
         assignment: SubAgentAssignment,
@@ -708,7 +721,9 @@ impl SubAgent {
         input_tx: mpsc::UnboundedSender<SubAgentInput>,
         session_boot_id: String,
     ) -> Self {
-        let id = format!("agent_{}", &Uuid::new_v4().to_string()[..8]);
+        let id = agent_id.unwrap_or_else(|| {
+            format!("agent_{}", &Uuid::new_v4().to_string()[..8])
+        });
 
         Self {
             id,
@@ -995,9 +1010,20 @@ impl SubAgentManager {
         let nickname = options
             .nickname
             .or_else(|| Some(whale_nickname_for_index(self.agents.len())));
+        // Validate explicit agent_id uniqueness before proceeding (#425).
+        if let Some(ref explicit_id) = options.agent_id {
+            if self.agents.contains_key(explicit_id) {
+                return Err(anyhow!(
+                    "Agent with id '{explicit_id}' already exists. Choose a different agent_id \
+                     or omit it to auto-generate one."
+                ));
+            }
+        }
+
         let tools = build_allowed_tools(&agent_type, allowed_tools, runtime.allow_shell)?;
         let (input_tx, input_rx) = mpsc::unbounded_channel();
         let mut agent = SubAgent::new(
+            options.agent_id.clone(),
             agent_type.clone(),
             prompt.clone(),
             assignment.clone(),
@@ -1525,6 +1551,14 @@ impl ToolSpec for AgentSpawnTool {
                 "cwd": {
                     "type": "string",
                     "description": "Optional working directory for the child. Must be inside the parent's workspace (use a relative path or an absolute path under the workspace root). Used for the parallel-worktree pattern: parent runs `git worktree add .worktrees/feature-x ...` then spawns the child with `cwd: \".worktrees/feature-x\"`."
+                },
+                "agent_id": {
+                    "type": "string",
+                    "description": "Optional stable identifier for this sub-agent. When provided, used as the agent_id instead of auto-generating one. Enables resumable sub-agents via a known task_id across sessions (#425). Must not conflict with an existing agent_id."
+                },
+                "task_id": {
+                    "type": "string",
+                    "description": "Alias for agent_id"
                 }
             }
         })
@@ -1617,6 +1651,7 @@ impl ToolSpec for AgentSpawnTool {
                 SubAgentSpawnOptions {
                     model: Some(effective_model),
                     nickname: None,
+                    agent_id: spawn_request.agent_id.clone(),
                 },
             )
             .map_err(|e| ToolError::execution_failed(format!("Failed to spawn sub-agent: {e}")))?;
@@ -1686,6 +1721,10 @@ impl ToolSpec for AgentResultTool {
                     "type": "string",
                     "description": "Alias for agent_id"
                 },
+                "task_id": {
+                    "type": "string",
+                    "description": "Alias for agent_id (resumable sub-agents via stable task_id, #425)"
+                },
                 "block": {
                     "type": "boolean",
                     "description": "Wait for completion (default: false)"
@@ -1706,6 +1745,7 @@ impl ToolSpec for AgentResultTool {
         let agent_id = input
             .get("agent_id")
             .or_else(|| input.get("id"))
+            .or_else(|| input.get("task_id"))
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::missing_field("agent_id"))?;
         let block = optional_bool(&input, "block", false);
@@ -1769,9 +1809,16 @@ impl ToolSpec for AgentCancelTool {
                 "agent_id": {
                     "type": "string",
                     "description": "ID returned by agent_spawn"
+                },
+                "id": {
+                    "type": "string",
+                    "description": "Alias for agent_id"
+                },
+                "task_id": {
+                    "type": "string",
+                    "description": "Alias for agent_id (resumable sub-agents via stable task_id, #425)"
                 }
-            },
-            "required": ["agent_id"]
+            }
         })
     }
 
@@ -1787,7 +1834,12 @@ impl ToolSpec for AgentCancelTool {
     }
 
     async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let agent_id = required_str(&input, "agent_id")?;
+        let agent_id = input
+            .get("agent_id")
+            .or_else(|| input.get("id"))
+            .or_else(|| input.get("task_id"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError::missing_field("agent_id"))?;
         let mut manager = self.manager.write().await;
         let result = manager
             .cancel(agent_id)
@@ -1836,6 +1888,10 @@ impl ToolSpec for AgentCloseTool {
                 "agent_id": {
                     "type": "string",
                     "description": "Alias for id"
+                },
+                "task_id": {
+                    "type": "string",
+                    "description": "Alias for id (resumable sub-agents via stable task_id, #425)"
                 }
             }
         })
@@ -1856,6 +1912,7 @@ impl ToolSpec for AgentCloseTool {
         let agent_id = input
             .get("id")
             .or_else(|| input.get("agent_id"))
+            .or_else(|| input.get("task_id"))
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::missing_field("id"))?;
         let mut manager = self.manager.write().await;
@@ -1907,6 +1964,10 @@ impl ToolSpec for AgentResumeTool {
                 "agent_id": {
                     "type": "string",
                     "description": "Alias for id"
+                },
+                "task_id": {
+                    "type": "string",
+                    "description": "Alias for id (resumable sub-agents via stable task_id, #425)"
                 }
             }
         })
@@ -1927,6 +1988,7 @@ impl ToolSpec for AgentResumeTool {
         let agent_id = input
             .get("id")
             .or_else(|| input.get("agent_id"))
+            .or_else(|| input.get("task_id"))
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::missing_field("id"))?;
         let mut manager = self.manager.write().await;
@@ -2022,6 +2084,10 @@ impl ToolSpec for AgentSendInputTool {
                 "id": {
                     "type": "string",
                     "description": "Alias for agent_id"
+                },
+                "task_id": {
+                    "type": "string",
+                    "description": "Alias for agent_id (resumable sub-agents via stable task_id, #425)"
                 },
                 "message": {
                     "type": "string",
@@ -2120,6 +2186,10 @@ impl ToolSpec for AgentAssignTool {
                 "id": {
                     "type": "string",
                     "description": "Alias for agent_id"
+                },
+                "task_id": {
+                    "type": "string",
+                    "description": "Alias for agent_id (resumable sub-agents via stable task_id, #425)"
                 },
                 "objective": {
                     "type": "string",
@@ -2224,6 +2294,10 @@ impl ToolSpec for AgentWaitTool {
                 "id": {
                     "type": "string",
                     "description": "Alias for agent_id"
+                },
+                "task_id": {
+                    "type": "string",
+                    "description": "Alias for agent_id (resumable sub-agents via stable task_id, #425)"
                 },
                 "wait_mode": {
                     "type": "string",
@@ -2918,7 +2992,7 @@ fn parse_wait_ids(input: &Value) -> Vec<String> {
         }
     }
 
-    for key in ["agent_id", "id"] {
+    for key in ["agent_id", "id", "task_id"] {
         if let Some(id) = input.get(key).and_then(|v| v.as_str()) {
             let id = id.trim();
             if !id.is_empty() && !ids.iter().any(|existing| existing == id) {
@@ -3138,6 +3212,7 @@ fn parse_spawn_request(input: &Value) -> Result<SpawnRequest, ToolError> {
 
     let cwd = parse_optional_cwd(input)?;
     let model = parse_optional_subagent_model(input, "model")?;
+    let agent_id = parse_optional_agent_id(input)?;
 
     Ok(SpawnRequest {
         prompt: prompt.clone(),
@@ -3146,6 +3221,7 @@ fn parse_spawn_request(input: &Value) -> Result<SpawnRequest, ToolError> {
         allowed_tools,
         model,
         cwd,
+        agent_id,
     })
 }
 
@@ -3201,6 +3277,40 @@ fn parse_optional_cwd(input: &Value) -> Result<Option<PathBuf>, ToolError> {
     match raw {
         None | Some("") => Ok(None),
         Some(s) => Ok(Some(PathBuf::from(s))),
+    }
+}
+
+/// Extract an optional `agent_id` or `task_id` from spawn input (#425).
+fn parse_optional_agent_id(input: &Value) -> Result<Option<String>, ToolError> {
+    let raw = input
+        .get("agent_id")
+        .or_else(|| input.get("task_id"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|id| !id.is_empty());
+    match raw {
+        None => Ok(None),
+        Some(id) => {
+            // Reject if the id matches the auto-generated UUID fragment
+            // pattern (`agent_` + 8 hex chars) to prevent ambiguity (#425).
+            if is_auto_generated_agent_id(id) {
+                return Err(ToolError::invalid_input(format!(
+                    "agent_id '{id}' matches the auto-generated id pattern. \
+                     Choose a different value or omit the field to auto-generate."
+                )));
+            }
+            Ok(Some(id.to_string()))
+        }
+    }
+}
+
+/// Returns `true` when `id` matches the auto-generated `agent_XXXXXXXX` pattern
+/// (8 hex characters after the `agent_` prefix).
+fn is_auto_generated_agent_id(id: &str) -> bool {
+    if let Some(suffix) = id.strip_prefix("agent_") {
+        suffix.len() == 8 && suffix.chars().all(|c| c.is_ascii_hexdigit())
+    } else {
+        false
     }
 }
 
