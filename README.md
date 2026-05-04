@@ -218,6 +218,73 @@ Full shortcut catalog: [docs/KEYBINDINGS.md](docs/KEYBINDINGS.md).
 
 ---
 
+## CI/CD & Scripting
+
+`deepseek exec` supports a **Codex-CLI-compatible** interface for non-interactive, scriptable agent runs — no TUI, no approval prompts, just stdin/stdout JSONL events.
+
+```bash
+# Basic agent run (mirrors: codex exec --full-auto "prompt")
+deepseek exec --full-auto "implement the feature described in README"
+
+# JSON output for scripts and CI pipelines
+deepseek exec --full-auto --json "fix failing tests" | jq .
+
+# Pipe prompt from stdin
+git diff | deepseek exec --full-auto --stdin
+
+# CI pipeline with explicit policy and sandbox
+deepseek exec \
+  --approval-policy never \
+  --sandbox workspace-write \
+  --model deepseek-v4-flash \
+  --json \
+  "Run tests and fix any failures"
+
+# Override API base URL for self-hosted or proxy endpoints
+deepseek exec --base-url https://api.deepseek.com/v1 -c model=deepseek-v4-pro "review this PR"
+
+# Ephemeral mode — no session state written to disk
+deepseek exec --ephemeral --full-auto "clean up temp files"
+```
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Agent completed the task successfully |
+| `1` | Error (API error, tool failure, agent stuck) |
+| `2` | Interrupted (SIGTERM, timeout) |
+
+### JSONL event stream
+
+When `--json` is set, events are emitted as JSONL to stdout:
+
+- `{"type":"thread.started","thread_id":"..."}`
+- `{"type":"turn.started","turn_id":"...","thread_id":"..."}`
+- `{"type":"item.completed","item":{"type":"agent_message","thread_id":"...","text":"..."}}`
+- `{"type":"item.completed","item":{"type":"reasoning","thread_id":"...","text":"..."}}`
+- `{"type":"turn.completed","thread_id":"...","usage":{"input_tokens":100,"output_tokens":50,"cached_input_tokens":80,"output_tokens_details":{"reasoning_tokens":10}}}`
+- `{"type":"thread.completed","thread_id":"..."}`
+
+### Flags
+
+| Flag | Description |
+|---|---|
+| `--full-auto` | Alias for `--approval-policy never --sandbox workspace-write` |
+| `--sandbox <MODE>` | `none`, `read-only`, `workspace-write`, `danger-full-access` |
+| `--approval-policy <POLICY>` | `never`, `on-request`, `untrusted` |
+| `--base-url <URL>` | Override API base URL (default: `https://api.deepseek.com/v1`) |
+| `--model <MODEL>` | Model ID (any string accepted, no whitelist) |
+| `--json` | Emit JSONL events to stdout |
+| `--ephemeral` | Skip session persistence |
+| `--skip-git-repo-check` | Skip git-repository pre-flight check |
+| `--stdin` | Read prompt from stdin instead of positional argument |
+| `-c key=value` | Inline config override (repeatable) |
+
+> **DeepSeek V4 specific**: The Codex runner extracts `reasoning_content` from DeepSeek thinking-mode responses and emits it as separate `{"type":"reasoning"}` events. Model validation is open — any model string is accepted, and `--base-url` defaults to `https://api.deepseek.com/v1`, not `api.openai.com`.
+
+---
+
 ## Configuration
 
 User config: `~/.deepseek/config.toml`. Project overlay: `<workspace>/.deepseek/config.toml` (denied: `api_key`, `base_url`, `provider`, `mcp_config_path`). [config.example.toml](config.example.toml) has every option.

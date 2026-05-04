@@ -15,6 +15,7 @@ use wait_timeout::ChildExt;
 mod audit;
 mod automation_manager;
 mod client;
+mod codex;
 mod command_safety;
 mod commands;
 mod compaction;
@@ -259,6 +260,30 @@ struct ExecArgs {
     /// Emit machine-readable JSON output
     #[arg(long, default_value_t = false)]
     json: bool,
+    /// Full-auto mode: approval_policy=never + sandbox=workspace-write
+    #[arg(long, default_value_t = false)]
+    full_auto: bool,
+    /// Sandbox mode (none, read-only, workspace-write, danger-full-access)
+    #[arg(long, value_name = "MODE")]
+    sandbox: Option<String>,
+    /// Approval policy (never, on-request, untrusted)
+    #[arg(long, value_name = "POLICY")]
+    approval_policy: Option<String>,
+    /// Override the API base URL (default: https://api.deepseek.com/v1)
+    #[arg(long, value_name = "URL")]
+    base_url: Option<String>,
+    /// Skip session persistence (no saved state)
+    #[arg(long, default_value_t = false)]
+    ephemeral: bool,
+    /// Skip the git-repository pre-flight check
+    #[arg(long, default_value_t = false)]
+    skip_git_repo_check: bool,
+    /// Inline config override (e.g. -c model=deepseek-v4-flash)
+    #[arg(short = 'c', value_name = "KEY=VALUE")]
+    config_override: Vec<String>,
+    /// Read prompt from stdin instead of positional argument
+    #[arg(long, default_value_t = false)]
+    stdin: bool,
 }
 
 #[derive(Args, Debug, Clone, Default)]
@@ -625,6 +650,19 @@ async fn main() -> Result<()> {
             }
             Commands::Exec(args) => {
                 let config = load_config_from_cli(&cli)?;
+                // Route to CodexRunner when Codex-CLI-compatible flags are present.
+                let use_codex = args.full_auto
+                    || args.sandbox.is_some()
+                    || args.approval_policy.is_some()
+                    || args.base_url.is_some()
+                    || args.ephemeral
+                    || args.skip_git_repo_check
+                    || !args.config_override.is_empty()
+                    || args.stdin;
+                if use_codex {
+                    return run_codex_exec(&config, &cli, &args).await;
+                }
+
                 let model = args
                     .model
                     .or_else(|| config.default_text_model.clone())
@@ -4731,4 +4769,88 @@ mod pr_prompt_tests {
             "missing command should return false, not panic"
         );
     }
+}
+
+/// Codex-CLI-compatible execution path.
+///
+/// Routes `deepseek exec` with `--full-auto`, `--sandbox`, `--json`, etc.
+/// through the [`codex::CodexRunner`], which handles:
+/// - JSONL event streaming to stdout
+/// - DeepSeek V4 reasoning_content extraction
+/// - No model whitelist enforcement
+/// - Proper exit codes (0, 1, 2)
+async fn run_codex_exec(config: &Config, cli: &Cli, args: &ExecArgs) -> Result<()> {
+    let mut codex_config = codex::CodexConfig::from_tui_config(config)?;
+
+    if let Some(ref model) = args.model {
+        codex_config.model = model.clone();
+    }
+
+    if args.json {
+        codex_config.output_format = codex::OutputFormat::Json;
+    }
+
+    if args.full_auto {
+        codex_config.sandbox = codex::SandboxMode::WorkspaceWrite;
+        codex_config.approval_policy = codex::ApprovalPolicy::Never;
+    }
+
+    if let Some(ref mode) = args.sandbox {
+        codex_config.sandbox = codex::SandboxMode::from_str(mode)
+            .unwrap_or_else(|| {
+                eprintln!("warning: unknown sandbox mode '{}', using default", mode);
+                codex::SandboxMode::default()
+            });
+    }
+
+    if let Some(ref policy) = args.approval_policy {
+        codex_config.approval_policy = codex::ApprovalPolicy::from_str(policy)
+            .unwrap_or_else(|| {
+                eprintln!("warning: unknown approval policy '{}', using default", policy);
+                codex::ApprovalPolicy::default()
+            });
+    }
+
+    if let Some(ref url) = args.base_url {
+        codex_config.base_url = url.clone();
+    }
+
+    codex_config.ephemeral = args.ephemeral;
+    codex_config.skip_git_check = args.skip_git_repo_check;
+
+    let prompt = if args.stdin {
+        let mut buf = String::new();
+        std::io::stdin()
+            .read_to_string(&mut buf)
+            .context("failed to read prompt from stdin")?;
+        let trimmed = buf.trim().to_string();
+        if trimmed.is_empty() {
+            bail!("empty prompt from stdin");
+        }
+        trimmed
+    } else {
+        args.prompt.clone()
+    };
+    codex_config.prompt = prompt;
+
+    let overrides = codex::parse_config_overrides(&args.config_override);
+    if !overrides.is_empty() {
+        codex::apply_overrides(&mut codex_config, &overrides);
+    }
+
+    if let Some(ref ws) = cli.workspace {
+        codex_config.add_dirs.push(ws.clone());
+    }
+
+    if let Ok(env_url) = std::env::var("DEEPSEEK_BASE_URL")
+        && codex_config.base_url.is_empty()
+    {
+        codex_config.base_url = env_url;
+    }
+
+    codex::CodexRunner::install_signal_handlers();
+
+    let runner = codex::CodexRunner::new(codex_config);
+    let exit_code = runner.run().await;
+    std::process::exit(exit_code);
 }
