@@ -6,7 +6,12 @@ Thank you for your interest in contributing to DeepSeek TUI! This document provi
 
 ### Prerequisites
 
-- Rust 1.85 or later (edition 2024)
+- **Nightly Rust toolchain** — DeepSeek TUI uses unstable Rust features (e.g. `if_let_guard`).
+  Install nightly and make it available for this workspace:
+  ```bash
+  rustup toolchain install nightly
+  ```
+- Rust 1.85 or later (edition 2024) — the nightly toolchain covers this.
 - Cargo package manager
 - Git
 
@@ -20,36 +25,46 @@ Thank you for your interest in contributing to DeepSeek TUI! This document provi
 
 2. Build the project:
    ```bash
-   cargo build
+   cargo +nightly build
    ```
 
 3. Run tests:
    ```bash
-   cargo test
+   cargo +nightly test
    ```
 
 4. Run with development settings:
    ```bash
-   cargo run
+   cargo +nightly run
    ```
 
 ## Development Workflow
 
+### Running Tests
+
+Run the full workspace test suite before submitting changes:
+
+```bash
+cargo +nightly test --workspace --all-features
+```
+
+- Colocate unit tests beside the code they cover (standard Rust `#[cfg(test)]` modules).
+- Add integration tests under the owning crate's `tests/` directory (e.g. `crates/tui/tests/` or `crates/state/tests/`).
+- The repository root `tests/` directory is not used.
+
 ### Code Style
 
-- Run `cargo fmt` before committing to ensure consistent formatting
-- Run `cargo clippy` and address all warnings
-- Follow Rust naming conventions (snake_case for functions/variables, CamelCase for types)
-- Add documentation comments for public APIs
+Run these commands before every commit or PR submission to ensure consistent formatting and catch common issues:
 
-### Testing
+```bash
+cargo +nightly fmt
+cargo +nightly clippy --workspace --all-targets --all-features
+```
 
-- Write tests for new functionality
-- Ensure all existing tests pass: `cargo test --workspace --all-features`
-- Colocate unit tests beside the code they cover (standard Rust `#[cfg(test)]`
-  modules), and add integration tests under the owning crate's `tests/`
-  directory (for example `crates/tui/tests/` or `crates/state/tests/`). The
-  repository root `tests/` directory is not used
+- Follow Rust naming conventions: `snake_case` for functions and variables, `CamelCase` for types.
+- Add documentation comments (`///`) for all public APIs.
+- Address all clippy warnings — do not leave `#[allow(...)]` suppressions without a documented reason.
+- Run `cargo +nightly fmt --check` in CI to verify formatting.
 
 ### Commit Messages
 
@@ -101,9 +116,9 @@ these crates and [DEPENDENCY_GRAPH.md](DEPENDENCY_GRAPH.md) for build ordering.
 
 3. Ensure CI passes:
    ```bash
-   cargo fmt --check
-   cargo clippy
-   cargo test
+   cargo +nightly fmt --check
+   cargo +nightly clippy --workspace --all-targets --all-features
+   cargo +nightly test --workspace --all-features
    ```
 
 4. Push your branch and create a Pull Request
@@ -138,10 +153,23 @@ doing, open a separate issue rather than expanding the PR scope.
 
 Before submitting, run:
 ```bash
-cargo fmt --check
-cargo clippy --workspace --all-targets --all-features 2>&1 | head -50
-cargo check
+cargo +nightly fmt --check
+cargo +nightly clippy --workspace --all-targets --all-features 2>&1 | head -50
+cargo +nightly check
 ```
+
+## PR Checklist
+
+Before marking a pull request ready for review, verify each item:
+
+- [ ] `cargo +nightly check` — compiles without errors
+- [ ] `cargo +nightly clippy --workspace --all-targets --all-features` — no new warnings (existing warnings in untouched code are acceptable)
+- [ ] `cargo +nightly test --workspace --all-features` — all tests pass
+- [ ] `cargo +nightly fmt --check` — formatting is correct
+- [ ] New public items have doc comments
+- [ ] New functionality includes tests (unit tests beside the code, integration tests in the crate's `tests/` dir)
+- [ ] Breaking changes to public APIs or config formats have been discussed in an issue first
+- [ ] The PR description clearly states what changed and why
 
 ## Reporting Issues
 
