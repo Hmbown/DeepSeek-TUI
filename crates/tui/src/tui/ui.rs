@@ -542,6 +542,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         memory_enabled: config.memory_enabled(),
         memory_path: config.memory_path(),
         goal_objective: app.goal.goal_objective.clone(),
+        auto_load_repo: config.auto_load_repo(),
     }
 }
 
@@ -3127,6 +3128,7 @@ async fn dispatch_user_message(
             prompts::PromptSessionContext {
                 user_memory_block: None,
                 goal_objective: app.goal.goal_objective.as_deref(),
+                auto_load_repo: false,
             },
         ),
     );

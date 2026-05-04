@@ -16,6 +16,10 @@ use std::path::{Path, PathBuf};
 pub struct PromptSessionContext<'a> {
     pub user_memory_block: Option<&'a str>,
     pub goal_objective: Option<&'a str>,
+    /// Automatically load README.md, AGENTS.md and top-level directory
+    /// listing into the system prompt at session start when in a git
+    /// repository (#542).
+    pub auto_load_repo: bool,
 }
 
 /// Conventional location for the structured session-handoff artifact (#32).
@@ -91,6 +95,63 @@ fn load_handoff_block(workspace: &Path) -> Option<String> {
         "## Previous Session Handoff\n\nThe previous session in this workspace left a handoff at `{}`. Consider it the first artifact to read on this turn — open blockers, in-flight changes, and recent decisions live there. Update or rewrite it before exiting if state changes materially.\n\n{}",
         HANDOFF_RELATIVE_PATH, trimmed
     ))
+}
+
+/// Read README.md content and list top-level directory entries for git
+/// repos at session start (#542). Returns a formatted block suitable for
+/// injection into the system prompt, or `None` when the workspace is not
+/// a git repository.
+fn render_repo_defaults(workspace: &Path) -> Option<String> {
+    // Only load defaults for git repos.
+    if !workspace.join(".git").exists() {
+        return None;
+    }
+
+    let mut sections: Vec<String> = Vec::new();
+
+    // 1. README.md content
+    let readme_path = workspace.join("README.md");
+    if let Ok(text) = std::fs::read_to_string(&readme_path) {
+        let trimmed = text.trim();
+        if !trimmed.is_empty() {
+            let body = if trimmed.len() > INSTRUCTIONS_FILE_MAX_BYTES {
+                let head_end = (0..=INSTRUCTIONS_FILE_MAX_BYTES)
+                    .rev()
+                    .find(|&i| trimmed.is_char_boundary(i))
+                    .unwrap_or(0);
+                format!("{}\n[…elided]", &trimmed[..head_end])
+            } else {
+                trimmed.to_string()
+            };
+            sections.push(format!("## README.md\n\n{}", body));
+        }
+    }
+
+    // 2. Top-level directory listing
+    let mut entries = match std::fs::read_dir(workspace) {
+        Ok(dir) => dir
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy() != ".git")
+            .map(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                let ty = e.file_type().map(|t| {
+                    if t.is_dir() { "dir" } else if t.is_symlink() { "link" } else { "file" }
+                }).unwrap_or("unknown");
+                format!("{:<6} {}", ty, name)
+            })
+            .collect::<Vec<_>>(),
+        Err(_) => Vec::new(),
+    };
+    entries.sort();
+    if !entries.is_empty() {
+        sections.push(format!("## Top-level Directory\n\n```\n{}\n```", entries.join("\n")));
+    }
+
+    if sections.is_empty() {
+        None
+    } else {
+        Some(sections.join("\n\n"))
+    }
 }
 
 // ── Prompt layers loaded at compile time ──────────────────────────────
@@ -276,6 +337,7 @@ pub fn system_prompt_for_mode_with_context_and_skills(
         PromptSessionContext {
             user_memory_block,
             goal_objective: None,
+            auto_load_repo: false,
         },
     )
 }
@@ -305,6 +367,14 @@ pub fn system_prompt_for_mode_with_context_skills_and_session(
             mode_prompt, summary, tree
         )
     };
+
+    // 2.5. Auto-loaded repo defaults (README.md, dir listing) for git
+    // repos (#542). Gated by `auto_load_repo` in the session context.
+    if session_context.auto_load_repo {
+        if let Some(block) = render_repo_defaults(workspace) {
+            full_prompt = format!("{full_prompt}\n\n{block}");
+        }
+    }
 
     // 2.5a. Configured `instructions = [...]` files (#454). Loaded
     // and concatenated in declared order. Lives above the skills
@@ -558,6 +628,7 @@ mod tests {
             PromptSessionContext {
                 user_memory_block: None,
                 goal_objective: Some("Fix transcript corruption"),
+                auto_load_repo: false,
             },
         ) {
             SystemPrompt::Text(text) => text,
@@ -585,6 +656,7 @@ mod tests {
             PromptSessionContext {
                 user_memory_block: None,
                 goal_objective: Some("   "),
+                auto_load_repo: false,
             },
         ) {
             SystemPrompt::Text(text) => text,

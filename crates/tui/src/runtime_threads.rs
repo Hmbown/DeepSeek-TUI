@@ -1812,6 +1812,7 @@ impl RuntimeThreadManager {
             memory_enabled: self.config.memory_enabled(),
             memory_path: self.config.memory_path(),
             goal_objective: None,
+            auto_load_repo: self.config.auto_load_repo(),
         };
 
         let engine = spawn_engine(engine_cfg, &self.config);
