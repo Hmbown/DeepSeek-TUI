@@ -35,6 +35,10 @@ pub struct RuntimeToolServices {
     pub task_data_dir: Option<PathBuf>,
     pub active_task_id: Option<String>,
     pub active_thread_id: Option<String>,
+    /// Hook executor for `shell_env` injection (#456) and any future
+    /// tool-side hook events. `None` outside the live engine — test
+    /// contexts that don't care about hooks get a no-op.
+    pub hook_executor: Option<std::sync::Arc<crate::hooks::HookExecutor>>,
 }
 
 impl std::fmt::Debug for RuntimeToolServices {
@@ -46,6 +50,7 @@ impl std::fmt::Debug for RuntimeToolServices {
             .field("task_data_dir", &self.task_data_dir)
             .field("active_task_id", &self.active_task_id)
             .field("active_thread_id", &self.active_thread_id)
+            .field("hook_executor", &self.hook_executor.is_some())
             .finish()
     }
 }

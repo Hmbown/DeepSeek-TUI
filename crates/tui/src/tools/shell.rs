@@ -628,6 +628,34 @@ impl ShellManager {
         tty: bool,
         policy_override: Option<ExecutionSandboxPolicy>,
     ) -> Result<ShellResult> {
+        self.execute_with_options_env(
+            command,
+            working_dir,
+            timeout_ms,
+            background,
+            stdin_data,
+            tty,
+            policy_override,
+            HashMap::new(),
+        )
+    }
+
+    /// Same as `execute_with_options`, plus an extra env-var map that is
+    /// merged into the spawned process environment. Used by the `shell_env`
+    /// hook injection path (#456); other callers should use the simpler
+    /// wrapper above.
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute_with_options_env(
+        &mut self,
+        command: &str,
+        working_dir: Option<&str>,
+        timeout_ms: u64,
+        background: bool,
+        stdin_data: Option<&str>,
+        tty: bool,
+        policy_override: Option<ExecutionSandboxPolicy>,
+        extra_env: HashMap<String, String>,
+    ) -> Result<ShellResult> {
         let work_dir = working_dir.map_or_else(|| self.default_workspace.clone(), PathBuf::from);
 
         // Clamp timeout to max 10 minutes (600000ms)
@@ -638,7 +666,8 @@ impl ShellManager {
 
         // Create command spec and prepare sandboxed environment
         let spec = CommandSpec::shell(command, work_dir.clone(), Duration::from_millis(timeout_ms))
-            .with_policy(policy);
+            .with_policy(policy)
+            .with_env(extra_env);
         let exec_env = self.sandbox_manager.prepare(&spec);
 
         if background {
@@ -672,13 +701,32 @@ impl ShellManager {
         timeout_ms: u64,
         policy_override: Option<ExecutionSandboxPolicy>,
     ) -> Result<ShellResult> {
+        self.execute_interactive_with_policy_env(
+            command,
+            working_dir,
+            timeout_ms,
+            policy_override,
+            HashMap::new(),
+        )
+    }
+
+    /// Interactive variant that accepts extra env vars (#456 shell_env hook).
+    pub fn execute_interactive_with_policy_env(
+        &mut self,
+        command: &str,
+        working_dir: Option<&str>,
+        timeout_ms: u64,
+        policy_override: Option<ExecutionSandboxPolicy>,
+        extra_env: HashMap<String, String>,
+    ) -> Result<ShellResult> {
         let work_dir = working_dir.map_or_else(|| self.default_workspace.clone(), PathBuf::from);
 
         let timeout_ms = timeout_ms.clamp(1000, 600_000);
         let policy = policy_override.unwrap_or_else(|| self.sandbox_policy.clone());
 
         let spec = CommandSpec::shell(command, work_dir.clone(), Duration::from_millis(timeout_ms))
-            .with_policy(policy);
+            .with_policy(policy)
+            .with_env(extra_env);
         let exec_env = self.sandbox_manager.prepare(&spec);
 
         Self::execute_interactive_sandboxed(command, &work_dir, timeout_ms, &exec_env)
@@ -1381,6 +1429,7 @@ async fn execute_foreground_via_background(
     timeout_ms: u64,
     stdin_data: Option<&str>,
     policy_override: Option<ExecutionSandboxPolicy>,
+    extra_env: HashMap<String, String>,
 ) -> Result<ShellResult> {
     let timeout_ms = timeout_ms.clamp(1000, 600_000);
     let spawned = {
@@ -1389,7 +1438,7 @@ async fn execute_foreground_via_background(
             .lock()
             .map_err(|_| anyhow!("shell manager lock poisoned"))?;
         manager.clear_foreground_background_request();
-        manager.execute_with_options(
+        manager.execute_with_options_env(
             command,
             None,
             timeout_ms,
@@ -1397,6 +1446,7 @@ async fn execute_foreground_via_background(
             stdin_data,
             false,
             policy_override,
+            extra_env,
         )?
     };
     let task_id = spawned
@@ -1616,23 +1666,37 @@ impl ToolSpec for ExecShellTool {
             None => None,
         };
 
+        // #456 — collect env from any configured `shell_env` hooks. Runs
+        // synchronously, captures stdout, parses `KEY=VAL` lines, audit-logs
+        // the keys (never the values). Empty / no-op when no hook is
+        // configured.
+        let extra_env = if let Some(hook_executor) = &context.runtime.hook_executor {
+            let hook_ctx = crate::hooks::HookContext::new()
+                .with_tool_name("exec_shell")
+                .with_tool_args(&input);
+            hook_executor.collect_shell_env(&hook_ctx)
+        } else {
+            std::collections::HashMap::new()
+        };
+
         let result = if interactive {
             let mut manager = context
                 .shell_manager
                 .lock()
                 .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
-            manager.execute_interactive_with_policy(
+            manager.execute_interactive_with_policy_env(
                 command,
                 working_dir.as_deref(),
                 timeout_ms,
                 policy_override,
+                extra_env,
             )
         } else if background {
             let mut manager = context
                 .shell_manager
                 .lock()
                 .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
-            manager.execute_with_options(
+            manager.execute_with_options_env(
                 command,
                 working_dir.as_deref(),
                 timeout_ms,
@@ -1640,6 +1704,7 @@ impl ToolSpec for ExecShellTool {
                 stdin_data.as_deref(),
                 tty,
                 policy_override,
+                extra_env,
             )
         } else {
             execute_foreground_via_background(
@@ -1648,6 +1713,7 @@ impl ToolSpec for ExecShellTool {
                 timeout_ms,
                 stdin_data.as_deref(),
                 policy_override,
+                extra_env,
             )
             .await
         };
