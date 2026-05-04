@@ -1679,6 +1679,107 @@ impl ToolSpec for ExecShellTool {
             std::collections::HashMap::new()
         };
 
+        // Route through external sandbox backend when configured.
+        if let Some(backend) = &context.sandbox_backend {
+            if interactive {
+                return Ok(ToolResult::error(
+                    "Interactive mode is not supported with external sandbox backends.",
+                ));
+            }
+            if background {
+                return Ok(ToolResult::error(
+                    "Background mode is not supported with external sandbox backends.",
+                ));
+            }
+            if tty {
+                return Ok(ToolResult::error(
+                    "TTY mode is not supported with external sandbox backends.",
+                ));
+            }
+
+            let started = std::time::Instant::now();
+            let backend_result = backend.exec(command, &extra_env).await;
+
+            let result = match backend_result {
+                Ok(output) => {
+                    let (stdout, stdout_meta) = truncate_with_meta(&output.stdout);
+                    let (stderr, stderr_meta) = truncate_with_meta(&output.stderr);
+                    ShellResult {
+                        task_id: None,
+                        status: if output.exit_code == 0 {
+                            ShellStatus::Completed
+                        } else {
+                            ShellStatus::Failed
+                        },
+                        exit_code: Some(output.exit_code),
+                        stdout,
+                        stderr,
+                        duration_ms: u64::try_from(started.elapsed().as_millis())
+                            .unwrap_or(u64::MAX),
+                        stdout_len: stdout_meta.original_len,
+                        stderr_len: stderr_meta.original_len,
+                        stdout_omitted: stdout_meta.omitted,
+                        stderr_omitted: stderr_meta.omitted,
+                        stdout_truncated: stdout_meta.truncated,
+                        stderr_truncated: stderr_meta.truncated,
+                        sandboxed: true,
+                        sandbox_type: Some("opensandbox".to_string()),
+                        sandbox_denied: false,
+                    }
+                }
+                Err(e) => {
+                    return Ok(ToolResult::error(format!(
+                        "Sandbox backend error: {e}"
+                    )));
+                }
+            };
+
+            // Build result (reuse the existing output rendering below).
+            let stdout_summary = summarize_output(&result.stdout);
+            let stderr_summary = summarize_output(&result.stderr);
+            let summary = if !stderr_summary.is_empty() {
+                stderr_summary.clone()
+            } else {
+                stdout_summary.clone()
+            };
+            let output = if result.stdout.is_empty() && result.stderr.is_empty() {
+                "(no output)".to_string()
+            } else if result.stderr.is_empty() {
+                result.stdout.clone()
+            } else {
+                format!("{}\n\nSTDERR:\n{}", result.stdout, result.stderr)
+            };
+
+            let metadata = json!({
+                "exit_code": result.exit_code,
+                "status": format!("{:?}", result.status),
+                "duration_ms": result.duration_ms,
+                "sandboxed": true,
+                "sandbox_type": "opensandbox",
+                "sandbox_denied": false,
+                "task_id": result.task_id,
+                "stdout_len": result.stdout_len,
+                "stderr_len": result.stderr_len,
+                "stdout_truncated": result.stdout_truncated,
+                "stderr_truncated": result.stderr_truncated,
+                "stdout_omitted": result.stdout_omitted,
+                "stderr_omitted": result.stderr_omitted,
+                "summary": summary,
+                "stdout_summary": stdout_summary,
+                "stderr_summary": stderr_summary,
+                "safety_level": format!("{:?}", safety.level),
+                "interactive": false,
+                "canceled": false,
+                "sandbox_backend": "opensandbox",
+            });
+
+            return Ok(ToolResult {
+                content: output,
+                success: result.status == ShellStatus::Completed,
+                metadata: Some(metadata),
+            });
+        }
+
         let result = if interactive {
             let mut manager = context
                 .shell_manager

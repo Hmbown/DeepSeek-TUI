@@ -14,6 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::features::Features;
 use crate::network_policy::NetworkPolicyDecider;
+use crate::sandbox::backend::SandboxBackend;
 use crate::tools::shell::{SharedShellManager, new_shared_shell_manager};
 #[allow(unused_imports)]
 pub use deepseek_tools::{
@@ -105,6 +106,10 @@ pub struct ToolContext {
     /// Cancellation token for the active engine turn. Tools that may wait on
     /// external work should observe this so UI cancel can interrupt them.
     pub cancel_token: Option<CancellationToken>,
+    /// Optional external sandbox backend for shell execution.
+    /// When set, exec_shell routes commands through this instead of spawning
+    /// a local process.
+    pub sandbox_backend: Option<std::sync::Arc<dyn SandboxBackend>>,
     /// Path to the user memory file. `None` when the user-memory feature
     /// (#489) is disabled — tools that read or write the file should
     /// short-circuit on `None` rather than fall back to a workspace-local
@@ -135,6 +140,7 @@ impl ToolContext {
             network_policy: None,
             runtime: RuntimeToolServices::default(),
             cancel_token: None,
+            sandbox_backend: None,
             memory_path: None,
         }
     }
@@ -164,6 +170,7 @@ impl ToolContext {
             network_policy: None,
             runtime: RuntimeToolServices::default(),
             cancel_token: None,
+            sandbox_backend: None,
             memory_path: None,
         }
     }
@@ -193,6 +200,7 @@ impl ToolContext {
             network_policy: None,
             runtime: RuntimeToolServices::default(),
             cancel_token: None,
+            sandbox_backend: None,
             memory_path: None,
         }
     }
@@ -215,6 +223,14 @@ impl ToolContext {
     #[must_use]
     pub fn with_cancel_token(mut self, cancel_token: CancellationToken) -> Self {
         self.cancel_token = Some(cancel_token);
+        self
+    }
+
+    /// Attach an external sandbox backend for remote shell execution.
+    #[must_use]
+    #[allow(dead_code)]
+    pub fn with_sandbox_backend(mut self, backend: std::sync::Arc<dyn SandboxBackend>) -> Self {
+        self.sandbox_backend = Some(backend);
         self
     }
 
