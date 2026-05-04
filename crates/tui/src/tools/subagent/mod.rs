@@ -56,31 +56,59 @@ const SUBAGENT_RESTART_REASON: &str = "Interrupted by process restart";
 
 const VALID_SUBAGENT_TYPES: &str = "general, explore, plan, review, implementer, verifier, custom, \
      worker, explorer, awaiter, default, implement, builder, verify, validator, tester";
+/// Whale species names rotated through `whale_nickname_for_index` to label
+/// sub-agents in the UI. English and Simplified-Chinese names are interleaved
+/// so any newly spawned agent has a roughly even chance of either — the goal
+/// is friendly variety, not a strict locale match.
 pub const WHALE_NICKNAMES: &[&str] = &[
     "Blue",
+    "蓝鲸",
     "Humpback",
+    "座头鲸",
     "Sperm",
+    "抹香鲸",
     "Fin",
+    "长须鲸",
     "Sei",
+    "塞鲸",
     "Bryde's",
+    "布氏鲸",
     "Minke",
+    "小须鲸",
     "Antarctic Minke",
+    "南极小须鲸",
     "Gray",
+    "灰鲸",
     "Bowhead",
+    "弓头鲸",
     "North Atlantic Right",
+    "北大西洋露脊鲸",
     "North Pacific Right",
+    "北太平洋露脊鲸",
     "Southern Right",
+    "南露脊鲸",
     "Beluga",
+    "白鲸",
     "Narwhal",
+    "独角鲸",
     "Orca",
+    "虎鲸",
     "Pilot",
+    "领航鲸",
     "False Killer",
+    "伪虎鲸",
     "Pygmy Killer",
+    "小虎鲸",
     "Melon-headed",
+    "瓜头鲸",
     "Beaked",
+    "喙鲸",
     "Cuvier's Beaked",
+    "柯氏喙鲸",
     "Baird's Beaked",
+    "贝氏喙鲸",
     "Blainville's Beaked",
+    "柏氏喙鲸",
 ];
 
 /// Removal version for deprecated tool aliases.
