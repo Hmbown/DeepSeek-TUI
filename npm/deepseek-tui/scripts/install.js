@@ -13,6 +13,7 @@ const {
   releaseAssetUrl,
   releaseBinaryDirectory,
 } = require("./artifacts");
+const { preflightGlibc } = require("./preflight-glibc");
 const pkg = require("../package.json");
 
 function resolvePackageVersion() {
@@ -154,6 +155,7 @@ async function ensureBinary(targetPath, assetName, version, repo, getChecksums) 
   await download(url, destination);
   try {
     await verifyChecksum(destination, assetName, checksums);
+    preflightGlibc(destination);
   } catch (error) {
     await unlink(destination).catch(() => {});
     throw error;
