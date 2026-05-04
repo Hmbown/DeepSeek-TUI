@@ -60,6 +60,7 @@ const LARGE_CONTEXT_SUMMARY_INPUT_HEAD_CHARS: usize = 72_000;
 const LARGE_CONTEXT_SUMMARY_INPUT_TAIL_CHARS: usize = 36_000;
 const LARGE_CONTEXT_SUMMARY_MAX_TOKENS: u32 = 2_048;
 const LARGE_CONTEXT_WINDOW_TOKENS: u32 = 500_000;
+const CACHE_ALIGNED_SUMMARY_CONTEXT_BUDGET_PERCENT: usize = 85;
 
 #[derive(Debug, Clone, Copy)]
 struct SummaryInputLimits {
@@ -819,6 +820,92 @@ async fn create_summary(
     model: &str,
 ) -> Result<String> {
     let limits = summary_input_limits_for_model(model);
+    let request = if should_use_cache_aligned_summary(model, messages) {
+        build_cache_aligned_summary_request(model, messages, limits)
+    } else {
+        build_formatted_summary_request(model, messages, limits)
+    };
+
+    let response = client.create_message(request).await?;
+    // Compaction summary calls are billed by DeepSeek; route the
+    // tokens through the side-channel so the dashboard total
+    // matches the website (#526).
+    crate::cost_status::report(&response.model, &response.usage);
+
+    // Extract text from response
+    let summary = response
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    Ok(summary)
+}
+
+fn should_use_cache_aligned_summary(model: &str, messages: &[Message]) -> bool {
+    let Some(window) = context_window_for_model(model) else {
+        return false;
+    };
+    if window < LARGE_CONTEXT_WINDOW_TOKENS {
+        return false;
+    }
+
+    let budget = usize::try_from(window).unwrap_or(usize::MAX)
+        * CACHE_ALIGNED_SUMMARY_CONTEXT_BUDGET_PERCENT
+        / 100;
+    let summary_prompt_tokens = 512usize;
+    estimate_tokens(messages).saturating_add(summary_prompt_tokens) <= budget
+}
+
+fn summary_instruction(word_limit: usize) -> String {
+    format!(
+        "Summarize the conversation above in a concise but comprehensive way. \
+         Preserve key information, decisions made, exact file paths, commands, \
+         errors, and tool-result facts needed to continue the work. \
+         Tool outputs may be abbreviated only when they are repetitive. \
+         Keep it under {word_limit} words."
+    )
+}
+
+fn build_cache_aligned_summary_request(
+    model: &str,
+    messages: &[Message],
+    limits: SummaryInputLimits,
+) -> MessageRequest {
+    let mut request_messages = messages.to_vec();
+    request_messages.push(Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: summary_instruction(limits.word_limit),
+            cache_control: None,
+        }],
+    });
+
+    MessageRequest {
+        model: model.to_string(),
+        messages: request_messages,
+        max_tokens: limits.max_tokens,
+        system: None,
+        tools: None,
+        tool_choice: None,
+        metadata: None,
+        thinking: None,
+        reasoning_effort: None,
+        stream: Some(false),
+        temperature: Some(0.3),
+        top_p: None,
+    }
+}
+
+fn build_formatted_summary_request(
+    model: &str,
+    messages: &[Message],
+    limits: SummaryInputLimits,
+) -> MessageRequest {
     // Format messages for summarization
     let mut conversation_text = String::new();
     for msg in messages {
@@ -861,18 +948,14 @@ async fn create_summary(
             format!("{head}\n\n[... {omitted} characters omitted before summary ...]\n\n{tail}");
     }
 
-    let request = MessageRequest {
+    MessageRequest {
         model: model.to_string(),
         messages: vec![Message {
             role: "user".to_string(),
             content: vec![ContentBlock::Text {
                 text: format!(
-                    "Summarize the following conversation in a concise but comprehensive way. \
-                     Preserve key information, decisions made, exact file paths, commands, \
-                     errors, and tool-result facts needed to continue the work. \
-                     Tool outputs may be abbreviated only when they are repetitive. \
-                     Keep it under {} words.\n\n---\n\n{conversation_text}",
-                    limits.word_limit
+                    "{}\n\n---\n\n{conversation_text}",
+                    summary_instruction(limits.word_limit)
                 ),
                 cache_control: None,
             }],
@@ -889,26 +972,7 @@ async fn create_summary(
         stream: Some(false),
         temperature: Some(0.3),
         top_p: None,
-    };
-
-    let response = client.create_message(request).await?;
-    // Compaction summary calls are billed by DeepSeek; route the
-    // tokens through the side-channel so the dashboard total
-    // matches the website (#526).
-    crate::cost_status::report(&response.model, &response.usage);
-
-    // Extract text from response
-    let summary = response
-        .content
-        .iter()
-        .filter_map(|block| match block {
-            ContentBlock::Text { text, .. } => Some(text.clone()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    Ok(summary)
+    }
 }
 
 /// Extract workflow context from messages (files touched, tasks, etc.)
@@ -1111,6 +1175,40 @@ mod tests {
         assert!(v4.input_max_chars > legacy.input_max_chars);
         assert!(v4.tool_result_snippet_chars > legacy.tool_result_snippet_chars);
         assert!(v4.max_tokens > legacy.max_tokens);
+    }
+
+    #[test]
+    fn cache_aligned_summary_is_used_for_v4_scale_contexts() {
+        let messages = vec![msg("user", "Please edit crates/tui/src/compaction.rs")];
+
+        assert!(should_use_cache_aligned_summary(
+            "deepseek-v4-flash",
+            &messages
+        ));
+        assert!(!should_use_cache_aligned_summary(
+            "deepseek-v3.2-128k",
+            &messages
+        ));
+    }
+
+    #[test]
+    fn cache_aligned_summary_request_preserves_message_prefix() {
+        let messages = vec![
+            msg("user", "Please edit crates/tui/src/compaction.rs"),
+            msg("assistant", "I will inspect the file."),
+        ];
+        let limits = summary_input_limits_for_model("deepseek-v4-pro");
+        let request = build_cache_aligned_summary_request("deepseek-v4-pro", &messages, limits);
+
+        assert_eq!(request.system, None);
+        assert_eq!(&request.messages[..messages.len()], &messages[..]);
+        assert_eq!(request.messages.len(), messages.len() + 1);
+        let last = request.messages.last().expect("summary instruction");
+        assert_eq!(last.role, "user");
+        assert!(matches!(
+            &last.content[..],
+            [ContentBlock::Text { text, .. }] if text.contains("conversation above")
+        ));
     }
 
     #[test]

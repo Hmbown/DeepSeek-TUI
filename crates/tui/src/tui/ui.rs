@@ -232,6 +232,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     }
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
+    terminal.clear()?;
     let event_broker = EventBroker::new();
 
     // Local mutable copy so runtime config flips (e.g. `/provider` switch)
@@ -1721,15 +1722,17 @@ async fn run_event_loop(
                         app.delete_api_key_char();
                         sync_api_key_validation_status(app, false);
                     }
-                    KeyCode::Char(c) if app.onboarding == OnboardingState::ApiKey => {
-                        app.insert_api_key_char(c);
-                        sync_api_key_validation_status(app, false);
-                    }
                     KeyCode::Char('v') | KeyCode::Char('V')
                         if is_paste_shortcut(&key) && app.onboarding == OnboardingState::ApiKey =>
                     {
                         // Cmd+V / Ctrl+V paste (bracketed paste handled above)
                         app.paste_api_key_from_clipboard();
+                        sync_api_key_validation_status(app, false);
+                    }
+                    KeyCode::Char(c)
+                        if app.onboarding == OnboardingState::ApiKey && is_text_input_key(&key) =>
+                    {
+                        app.insert_api_key_char(c);
                         sync_api_key_validation_status(app, false);
                     }
                     _ => {}
@@ -7232,6 +7235,12 @@ fn is_paste_shortcut(key: &KeyEvent) -> bool {
 
     // Ctrl+V on Linux/Windows
     key.modifiers.contains(KeyModifiers::CONTROL)
+}
+
+fn is_text_input_key(key: &KeyEvent) -> bool {
+    !key.modifiers.contains(KeyModifiers::CONTROL)
+        && !key.modifiers.contains(KeyModifiers::ALT)
+        && !key.modifiers.contains(KeyModifiers::SUPER)
 }
 
 fn is_ctrl_h_backspace(key: &KeyEvent) -> bool {
