@@ -259,6 +259,68 @@ pub fn pulse_brightness(color: Color, now_ms: u64) -> Color {
     }
 }
 
+/// Parse a color string into a `ratatui::style::Color`.
+///
+/// Accepts:
+///   - Hex `#rrggbb` (e.g. `"#0B1526"`)
+///   - Hex `#rgb` (e.g. `"#FFF"` → `"#FFFFFF"`)
+///   - Named CSS/terminal colors: `"black"`, `"white"`, `"red"`, `"green"`,
+///     `"yellow"`, `"blue"`, `"magenta"`, `"cyan"`, `"gray"`, `"darkgray"`,
+///     `"lightred"`, `"lightgreen"`, `"lightyellow"`, `"lightblue"`,
+///     `"lightmagenta"`, `"lightcyan"`.
+///
+/// Returns `None` when the string cannot be parsed.
+#[must_use]
+pub fn parse_color(s: &str) -> Option<Color> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    // Hex #rrggbb or #rgb
+    if let Some(hex) = trimmed.strip_prefix('#') {
+        let hex = hex.trim();
+        let rgb = match hex.len() {
+            3 => {
+                let r = u8::from_str_radix(&hex[0..1].repeat(2), 16).ok()?;
+                let g = u8::from_str_radix(&hex[1..2].repeat(2), 16).ok()?;
+                let b = u8::from_str_radix(&hex[2..3].repeat(2), 16).ok()?;
+                (r, g, b)
+            }
+            6 => {
+                let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+                let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+                let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+                (r, g, b)
+            }
+            _ => return None,
+        };
+        return Some(Color::Rgb(rgb.0, rgb.1, rgb.2));
+    }
+
+    // Named colors
+    Some(match trimmed.to_ascii_lowercase().as_str() {
+        "black" => Color::Black,
+        "white" => Color::White,
+        "red" => Color::Red,
+        "green" => Color::Green,
+        "yellow" => Color::Yellow,
+        "blue" => Color::Blue,
+        "magenta" => Color::Magenta,
+        "cyan" => Color::Cyan,
+        "gray" | "grey" => Color::Gray,
+        "darkgray" | "darkgrey" => Color::DarkGray,
+        "lightred" | "light-red" => Color::LightRed,
+        "lightgreen" | "light-green" => Color::LightGreen,
+        "lightyellow" | "light-yellow" => Color::LightYellow,
+        "lightblue" | "light-blue" => Color::LightBlue,
+        "lightmagenta" | "light-magenta" => Color::LightMagenta,
+        "lightcyan" | "light-cyan" => Color::LightCyan,
+        "reset" => Color::Reset,
+        _ => return None,
+    })
+}
+
 /// Map an RGB triple to its closest ANSI-16 named color. Only used by
 /// `adapt_color` on Ansi16 terminals; we lean on hue dominance + lightness so
 /// brand colors land on the obviously-related named entry (sky → cyan, blue →
@@ -331,8 +393,8 @@ fn nearest_ansi16(r: u8, g: u8, b: u8) -> Color {
 mod tests {
     use super::{
         ACCENT_REASONING_LIVE, ColorDepth, DEEPSEEK_INK, DEEPSEEK_RED, DEEPSEEK_SKY,
-        SURFACE_REASONING, adapt_bg, adapt_color, blend, nearest_ansi16, pulse_brightness,
-        reasoning_surface_tint,
+        SURFACE_REASONING, adapt_bg, adapt_color, blend, nearest_ansi16, parse_color,
+        pulse_brightness, reasoning_surface_tint,
     };
     use ratatui::style::Color;
 
@@ -430,5 +492,40 @@ mod tests {
         // exercise the path so a panic would surface.
         let _ = ColorDepth::detect();
         let _ = adapt_color(DEEPSEEK_INK, ColorDepth::detect());
+    }
+
+    #[test]
+    fn parse_color_handles_hex_rrggbb() {
+        assert_eq!(
+            parse_color("#0B1526"),
+            Some(Color::Rgb(11, 21, 38)),
+        );
+        assert_eq!(parse_color("#3578E5"), Some(Color::Rgb(53, 120, 229)));
+    }
+
+    #[test]
+    fn parse_color_handles_hex_rgb() {
+        assert_eq!(parse_color("#FFF"), Some(Color::Rgb(255, 255, 255)));
+        assert_eq!(parse_color("#000"), Some(Color::Rgb(0, 0, 0)));
+        assert_eq!(parse_color("#0B1"), Some(Color::Rgb(0x00, 0xBB, 0x11)));
+    }
+
+    #[test]
+    fn parse_color_handles_named_colors() {
+        assert_eq!(parse_color("black"), Some(Color::Black));
+        assert_eq!(parse_color("white"), Some(Color::White));
+        assert_eq!(parse_color("red"), Some(Color::Red));
+        assert_eq!(parse_color("lightblue"), Some(Color::LightBlue));
+        assert_eq!(parse_color("light-blue"), Some(Color::LightBlue));
+        assert_eq!(parse_color("reset"), Some(Color::Reset));
+    }
+
+    #[test]
+    fn parse_color_rejects_invalid_inputs() {
+        assert_eq!(parse_color(""), None);
+        assert_eq!(parse_color("#XYZ"), None);
+        assert_eq!(parse_color("#1234567"), None);
+        assert_eq!(parse_color("notacolor"), None);
+        assert_eq!(parse_color("  "), None);
     }
 }

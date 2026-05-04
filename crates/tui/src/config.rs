@@ -772,12 +772,37 @@ pub struct Config {
     #[serde(default)]
     pub subagents: Option<SubagentsConfig>,
 
+    /// Visual appearance overrides (#596). When absent, the built-in dark
+    /// palette applies unchanged.
+    #[serde(default)]
+    pub theme: Option<ThemeConfig>,
+
     /// Runtime API server tuning (`deepseek serve --http`). Currently only
     /// hosts the CORS allow-list extension (whalescale#255 / #561). When the
     /// table is absent, the daemon ships with localhost:3000 / localhost:1420
     /// / tauri://localhost as the only allowed dev origins.
     #[serde(default)]
     pub runtime_api: Option<RuntimeApiConfig>,
+}
+
+/// `[theme]` table — visual appearance overrides for the TUI (#596).
+///
+/// Currently supports only `background_color`. When the table is absent,
+/// the built-in dark palette applies unchanged.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct ThemeConfig {
+    /// Custom background color for the TUI canvas. Accepted formats:
+    ///
+    ///   - `"#rrggbb"` — hex RGB (e.g. `"#0B1526"` matches the default ink)
+    ///   - Named CSS/terminal colors: `"black"`, `"white"`, `"red"`,
+    ///     `"green"`, `"yellow"`, `"blue"`, `"magenta"`, `"cyan"`, `"gray"`,
+    ///     `"darkgray"`, `"lightred"`, `"lightgreen"`, `"lightyellow"`,
+    ///     `"lightblue"`, `"lightmagenta"`, `"lightcyan"`.
+    ///
+    /// When unset or invalid, the default dark-ink background (`#0B1526`)
+    /// is used with a logged warning.
+    #[serde(default)]
+    pub background_color: Option<String>,
 }
 
 /// `[runtime_api]` table — knobs for the local HTTP/SSE daemon.
@@ -2025,6 +2050,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
             per_model: override_cfg.context.per_model.or(base.context.per_model),
         },
         subagents: override_cfg.subagents.or(base.subagents),
+        theme: override_cfg.theme.or(base.theme),
         runtime_api: override_cfg.runtime_api.or(base.runtime_api),
     }
 }

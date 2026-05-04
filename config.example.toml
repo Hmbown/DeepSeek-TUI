@@ -189,6 +189,24 @@ max_subagents = 10 # optional (1-20)
 # max_install_size_bytes = 5_242_880
 
 # ─────────────────────────────────────────────────────────────────────────────────
+# Theme (#596)
+# ─────────────────────────────────────────────────────────────────────────────────
+# Custom visual appearance overrides.
+
+[theme]
+# Custom background color for the entire TUI canvas.
+#
+# Accepted formats:
+#   - Hex: `#rrggbb` (e.g. `"#0B1526"` is the default ink color)
+#   - Hex: `#rgb`   (e.g. `"#FFF"` for white)
+#   - Named: black, white, red, green, yellow, blue, magenta, cyan,
+#            gray, darkgray, lightred, lightgreen, lightyellow,
+#            lightblue, lightmagenta, lightcyan, reset
+#
+# When unset the built-in dark palette applies unchanged.
+# background_color = "#0B1526"
+
+# ─────────────────────────────────────────────────────────────────────────────────
 # TUI
 # ─────────────────────────────────────────────────────────────────────────────────
 [tui]
