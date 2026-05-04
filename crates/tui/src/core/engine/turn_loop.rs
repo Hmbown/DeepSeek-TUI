@@ -1425,6 +1425,9 @@ impl Engine {
             // (e.g.) a Tool failure that should escalate from a permission
             // denial that should not.
             let mut step_error_categories: Vec<ErrorCategory> = Vec::new();
+            // #546: per-tool failure frequency for learning-signal notes.
+            let mut tool_failures: std::collections::HashMap<String, (usize, String)> =
+                std::collections::HashMap::new();
             let mut stop_after_plan_tool = false;
 
             for outcome in outcomes.into_iter().flatten() {
@@ -1493,6 +1496,14 @@ impl Engine {
                         step_error_count += 1;
                         step_error_categories.push(envelope.category);
                         let error = format_tool_error(&e, &outcome.name);
+                        // #546: count repeated tool failures for learning signal.
+                        let entry = tool_failures
+                            .entry(outcome.name.clone())
+                            .or_insert_with(|| (0, String::new()));
+                        entry.0 += 1;
+                        if entry.1.is_empty() {
+                            entry.1 = error.clone();
+                        }
                         tool_call.set_error(error.clone(), duration);
                         self.session.working_set.observe_tool_call(
                             &tool_name_for_ws,
@@ -1515,6 +1526,27 @@ impl Engine {
 
                 turn.record_tool_call(tool_call);
                 stop_after_plan_tool |= should_stop_this_turn;
+            }
+
+            // #546: tool-failure learning signal — when the same tool fails
+            // 2+ times in this step and the feature is enabled, write a
+            // durable memory note so future sessions can avoid the pattern.
+            if self.config.learn_from_tool_failures {
+                for (tool_name, (count, error_msg)) in &tool_failures {
+                    if *count >= 2 {
+                        let note = format!(
+                            "Tool '{}' failed {} times with error: {} — avoid this pattern",
+                            tool_name, count, error_msg
+                        );
+                        let _ = crate::memory::append_entry(&self.config.memory_path, &note);
+                        let _ = self
+                            .tx_event
+                            .send(Event::status(format!(
+                                "🧠 learned: tool '{tool_name}' failure pattern written to memory"
+                            )))
+                            .await;
+                    }
+                }
             }
 
             if stop_after_plan_tool {

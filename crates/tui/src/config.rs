@@ -419,6 +419,11 @@ pub struct MemoryConfig {
     /// `# foo` typed in the composer to append to that file. Default `false`.
     #[serde(default)]
     pub enabled: Option<bool>,
+    /// When `true`, the engine detects repeated tool failures within a turn
+    /// and writes a learning-signal note to the memory file. Default `false`
+    /// (opt-in).
+    #[serde(default)]
+    pub learn_from_tool_failures: Option<bool>,
 }
 
 impl SnapshotsConfig {
@@ -1344,6 +1349,16 @@ impl Config {
         self.memory
             .as_ref()
             .and_then(|m| m.enabled)
+            .unwrap_or(false)
+    }
+
+    /// Whether the tool-failure learning-signal feature is enabled (#546).
+    /// Opt-in; defaults to `false`.
+    #[must_use]
+    pub fn learn_from_tool_failures(&self) -> bool {
+        self.memory
+            .as_ref()
+            .and_then(|m| m.learn_from_tool_failures)
             .unwrap_or(false)
     }
 
