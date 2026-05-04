@@ -1466,7 +1466,13 @@ async fn run_event_loop(
             }
 
             if let Event::Resize(width, height) = evt {
-                tracing::debug!(width, height, "Event::Resize received; clearing terminal");
+                tracing::debug!(
+                    width,
+                    height,
+                    coherence = ?app.coherence_state,
+                    use_alt_screen = app.use_alt_screen,
+                    "Event::Resize received; clearing terminal"
+                );
                 // Drain any further Resize events queued in this poll cycle so we
                 // act on the final size only, then issue a single clear + redraw.
                 // crossterm coalesces some resize events but rapid drag-resizes
@@ -1495,6 +1501,28 @@ async fn run_event_loop(
                         Err(_) => break,
                     }
                 }
+
+                // #582: commit the event-reported size to ratatui's
+                // viewport explicitly before the redraw, instead of
+                // relying on `crossterm::terminal::size()` which gets
+                // queried internally during `terminal.draw`. On
+                // Windows ConHost specifically, `terminal::size()` has
+                // been observed to return stale dimensions briefly
+                // during a maximize→windowed transition; the next
+                // `draw` then paints into a buffer that does not
+                // match the post-restore viewport, producing the
+                // unrecoverable black screen reported by @imakid.
+                // The `Event::Resize` payload itself carries the
+                // authoritative new size, so we forward it.
+                if let Err(err) = terminal.resize(Rect::new(0, 0, final_w, final_h)) {
+                    tracing::warn!(
+                        ?err,
+                        final_w,
+                        final_h,
+                        "terminal.resize during Resize event failed; falling back to clear+draw"
+                    );
+                }
+
                 terminal.clear()?;
                 app.handle_resize(final_w, final_h);
                 // Draw immediately so the cleared screen gets repainted before
