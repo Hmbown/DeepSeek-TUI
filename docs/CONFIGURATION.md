@@ -368,6 +368,20 @@ If you are upgrading from older releases:
   - `[capacity].deepseek_v4_pro_prior` (float, default `3.5`)
   - `[capacity].deepseek_v4_flash_prior` (float, default `4.2`)
   - `[capacity].fallback_default_prior` (float, default `3.8`)
+- `[notifications].method` (string, optional): `auto`, `osc9`, `bel`, or
+  `off`. Defaults to `auto`. The TUI fires this on completed (successful)
+  turns whose elapsed time meets `threshold_secs`; failed and cancelled
+  turns are silent. `auto` resolves to `osc9` for `iTerm.app`, `Ghostty`,
+  and `WezTerm` (detected via `$TERM_PROGRAM`). Otherwise the fallback is
+  `bel` on macOS / Linux and `off` on Windows (where BEL maps to the
+  system error chime — see the [Notifications](#notifications) section
+  for the full rationale, #583).
+- `[notifications].threshold_secs` (int, optional): defaults to `30`.
+  Only completed turns whose elapsed time meets or exceeds this fire a
+  notification.
+- `[notifications].include_summary` (bool, optional): defaults to
+  `false`. When `true`, the notification body includes the elapsed
+  duration and the turn's USD cost.
 - `tui.alternate_screen` (string, optional): `auto`, `always`, or `never`. `auto` disables the alternate screen in Zellij; `--no-alt-screen` forces inline mode. Set `never` or run with `--no-alt-screen` when you want real terminal scrollback.
 - `tui.mouse_capture` (bool, optional, default `true` when the alternate screen is active): enable internal mouse scrolling, transcript selection, and right-click context actions. TUI-owned drag selection copies only user/assistant transcript text. Set this to `false` or run with `--no-mouse-capture` for raw terminal selection.
 - `tui.terminal_probe_timeout_ms` (int, optional, default `500`): startup terminal-mode probe timeout in milliseconds. Values are clamped to `100..=5000`; timeout emits a warning and aborts startup instead of hanging indefinitely.
@@ -402,7 +416,7 @@ Notes:
 
 ### Notifications
 
-The TUI can emit a desktop notification (OSC 9 escape or plain BEL) when a turn takes longer than a threshold, so you can tab away while a long task runs. Configuration lives under `[notifications]`:
+The TUI can emit a desktop notification (OSC 9 escape or plain BEL) when a turn **completes successfully** and took longer than a threshold, so you can tab away while a long task runs. Failed or cancelled turns are intentionally silent — the notification is a "your task is ready" cue, not a generic ping. Configuration lives under `[notifications]`:
 
 ```toml
 [notifications]

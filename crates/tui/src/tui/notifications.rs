@@ -122,9 +122,13 @@ pub fn notify_done_to<W: Write>(
 
 /// Emit a turn-complete notification to **stdout** if `elapsed >= threshold`.
 ///
-/// With `method = Auto`, selects `Osc9` for known capable terminals and `Bel`
-/// otherwise. Pass `in_tmux = true` (i.e. `$TMUX` is non-empty at runtime)
-/// to wrap OSC 9 in a DCS passthrough.
+/// With `method = Auto`, selects `Osc9` for known capable terminals
+/// (`iTerm.app`, `Ghostty`, `WezTerm`); the unknown-terminal fallback is
+/// platform-aware — `Bel` on macOS / Linux, `Off` on Windows (where BEL
+/// maps to the `SystemAsterisk` / `MB_OK` error chime, #583). See
+/// [`resolve_method`] for the canonical resolution table. Pass
+/// `in_tmux = true` (i.e. `$TMUX` is non-empty at runtime) to wrap OSC 9
+/// in a DCS passthrough.
 pub fn notify_done(
     method: Method,
     in_tmux: bool,
@@ -310,9 +314,7 @@ mod tests {
 
     /// #583: on Windows, an unknown TERM_PROGRAM resolves to `Off`
     /// (not `Bel`) so the post-turn notification doesn't ring the
-    /// `SystemAsterisk` / `MB_OK` chime. Known OSC-9 terminals like
-    /// WezTerm still resolve to `Osc9` — see the iTerm test, which
-    /// also exercises the OSC-9 branch on Windows.
+    /// `SystemAsterisk` / `MB_OK` chime.
     #[test]
     #[cfg(target_os = "windows")]
     fn auto_detect_picks_off_for_unknown_on_windows() {
@@ -329,6 +331,31 @@ mod tests {
             }
         }
         assert_eq!(resolved, Method::Off);
+    }
+
+    /// #583: known OSC-9 terminals must still resolve to `Osc9` on
+    /// Windows — the off-fallback only applies to unrecognised
+    /// `TERM_PROGRAM`. The cross-platform iTerm test above is a thin
+    /// proxy because iTerm itself only runs on macOS; if the WezTerm
+    /// arm of the match silently disappeared, that test would still
+    /// pass on the Windows runner and we'd lose the WezTerm-on-Windows
+    /// compatibility guarantee. Pin it directly.
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn auto_detect_picks_osc9_for_wezterm_on_windows() {
+        let _lock = env_lock();
+        let prev = std::env::var_os("TERM_PROGRAM");
+        // SAFETY: test-only; serialised by env_lock().
+        unsafe { std::env::set_var("TERM_PROGRAM", "WezTerm") };
+        let resolved = resolve_method();
+        // SAFETY: test-only; serialised by env_lock().
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("TERM_PROGRAM", v),
+                None => std::env::remove_var("TERM_PROGRAM"),
+            }
+        }
+        assert_eq!(resolved, Method::Osc9);
     }
 
     #[test]
