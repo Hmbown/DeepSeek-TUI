@@ -17,7 +17,7 @@
 //! Pressing Esc backs out: from key entry returns to the list; from the
 //! list closes the modal without changes.
 
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
@@ -289,6 +289,10 @@ impl ModalView for ProviderPickerView {
                     ViewAction::None
                 }
                 KeyCode::Backspace => {
+                    self.api_key_input.pop();
+                    ViewAction::None
+                }
+                KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     self.api_key_input.pop();
                     ViewAction::None
                 }

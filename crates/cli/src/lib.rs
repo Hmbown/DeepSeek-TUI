@@ -26,6 +26,8 @@ enum ProviderArg {
     Openai,
     Openrouter,
     Novita,
+    Fireworks,
+    Sglang,
 }
 
 impl From<ProviderArg> for ProviderKind {
@@ -36,6 +38,8 @@ impl From<ProviderArg> for ProviderKind {
             ProviderArg::Openai => ProviderKind::Openai,
             ProviderArg::Openrouter => ProviderKind::Openrouter,
             ProviderArg::Novita => ProviderKind::Novita,
+            ProviderArg::Fireworks => ProviderKind::Fireworks,
+            ProviderArg::Sglang => ProviderKind::Sglang,
         }
     }
 }
@@ -129,7 +133,7 @@ enum Commands {
     Serve(TuiPassthroughArgs),
     /// Generate shell completions for the TUI binary.
     Completions(TuiPassthroughArgs),
-    /// Save a DeepSeek API key to the shared config.
+    /// Save a provider API key to the shared user config file.
     Login(LoginArgs),
     /// Remove saved authentication state.
     Logout,
@@ -204,9 +208,9 @@ struct AuthArgs {
 enum AuthCommand {
     /// Show current provider, env vars, and config-file presence.
     Status,
-    /// Save an API key to the OS keyring (never written to disk in
-    /// plaintext). Reads from `--api-key`, `--api-key-stdin`, or
-    /// prompts on stdin when neither is given. Does not echo the key.
+    /// Save an API key to the shared user config file. Reads from
+    /// `--api-key`, `--api-key-stdin`, or prompts on stdin when
+    /// neither is given. Does not echo the key.
     Set {
         #[arg(long, value_enum)]
         provider: ProviderArg,
@@ -223,8 +227,7 @@ enum AuthCommand {
         #[arg(long, value_enum)]
         provider: ProviderArg,
     },
-    /// Delete a provider's key from the OS keyring (and from the
-    /// plaintext config slot, if present, for parity).
+    /// Delete a provider's key from the shared user config file.
     Clear {
         #[arg(long, value_enum)]
         provider: ProviderArg,
@@ -232,8 +235,8 @@ enum AuthCommand {
     /// List all known providers with their auth state, without
     /// revealing keys.
     List,
-    /// Migrate plaintext `api_key` values from `~/.deepseek/config.toml`
-    /// into the OS keyring, then strip them from the file.
+    /// Advanced: migrate config-file keys into a platform credential store.
+    #[command(hide = true)]
     Migrate {
         /// Don't actually write anything; print what would change.
         #[arg(long, default_value_t = false)]
@@ -470,6 +473,14 @@ fn tui_args(command: &str, args: TuiPassthroughArgs) -> Vec<String> {
 }
 
 fn run_login_command(store: &mut ConfigStore, args: LoginArgs) -> Result<()> {
+    run_login_command_with_secrets(store, args, &no_keyring_secrets())
+}
+
+fn run_login_command_with_secrets(
+    store: &mut ConfigStore,
+    args: LoginArgs,
+    _secrets: &Secrets,
+) -> Result<()> {
     let provider: ProviderKind = args.provider.into();
     store.config.provider = provider;
 
@@ -506,10 +517,80 @@ fn run_login_command(store: &mut ConfigStore, args: LoginArgs) -> Result<()> {
         Some(v) => v,
         None => read_api_key_from_stdin()?,
     };
-    store.config.auth_mode = Some("api_key".to_string());
-    store.config.providers.for_provider_mut(provider).api_key = Some(api_key);
+    write_provider_api_key_to_config(store, provider, &api_key);
+    store.save()?;
     if provider == ProviderKind::Deepseek {
-        store.config.api_key = store.config.providers.deepseek.api_key.clone();
+        println!(
+            "logged in using API key mode (deepseek); saved key to {}",
+            store.path().display()
+        );
+    } else {
+        println!(
+            "logged in using API key mode ({}); saved key to {}",
+            provider.as_str(),
+            store.path().display()
+        );
+    }
+    Ok(())
+}
+
+fn run_logout_command(store: &mut ConfigStore) -> Result<()> {
+    run_logout_command_with_secrets(store, &no_keyring_secrets())
+}
+
+fn run_logout_command_with_secrets(store: &mut ConfigStore, _secrets: &Secrets) -> Result<()> {
+    store.config.api_key = None;
+    for provider in PROVIDER_LIST {
+        clear_provider_api_key_from_config(store, provider);
+    }
+    store.config.auth_mode = None;
+    store.config.chatgpt_access_token = None;
+    store.config.device_code_session = None;
+    store.save()?;
+    println!("logged out");
+    Ok(())
+}
+
+/// Map [`ProviderKind`] to the canonical provider credential slot.
+fn provider_slot(provider: ProviderKind) -> &'static str {
+    match provider {
+        ProviderKind::Deepseek => "deepseek",
+        ProviderKind::NvidiaNim => "nvidia-nim",
+        ProviderKind::Openai => "openai",
+        ProviderKind::Openrouter => "openrouter",
+        ProviderKind::Novita => "novita",
+        ProviderKind::Fireworks => "fireworks",
+        ProviderKind::Sglang => "sglang",
+    }
+}
+
+/// Provider order used by the `auth list` and `auth status` outputs.
+const PROVIDER_LIST: [ProviderKind; 7] = [
+    ProviderKind::Deepseek,
+    ProviderKind::NvidiaNim,
+    ProviderKind::Openrouter,
+    ProviderKind::Novita,
+    ProviderKind::Fireworks,
+    ProviderKind::Sglang,
+    ProviderKind::Openai,
+];
+
+fn no_keyring_secrets() -> Secrets {
+    Secrets::new(std::sync::Arc::new(
+        deepseek_secrets::InMemoryKeyringStore::new(),
+    ))
+}
+
+fn write_provider_api_key_to_config(
+    store: &mut ConfigStore,
+    provider: ProviderKind,
+    api_key: &str,
+) {
+    store.config.provider = provider;
+    store.config.auth_mode = Some("api_key".to_string());
+    store.config.providers.for_provider_mut(provider).api_key = Some(api_key.to_string());
+    if provider == ProviderKind::Deepseek {
+        store.config.api_key = Some(api_key.to_string());
         if store.config.default_text_model.is_none() {
             store.config.default_text_model = Some(
                 store
@@ -522,53 +603,17 @@ fn run_login_command(store: &mut ConfigStore, args: LoginArgs) -> Result<()> {
             );
         }
     }
-    store.save()?;
+}
+
+fn clear_provider_api_key_from_config(store: &mut ConfigStore, provider: ProviderKind) {
+    store.config.providers.for_provider_mut(provider).api_key = None;
     if provider == ProviderKind::Deepseek {
-        println!(
-            "logged in using API key mode (deepseek). This also updates the shared deepseek-tui config."
-        );
-    } else {
-        println!("logged in using API key mode ({})", provider.as_str());
-    }
-    Ok(())
-}
-
-fn run_logout_command(store: &mut ConfigStore) -> Result<()> {
-    store.config.api_key = None;
-    store.config.providers.deepseek.api_key = None;
-    store.config.providers.nvidia_nim.api_key = None;
-    store.config.providers.openai.api_key = None;
-    store.config.auth_mode = None;
-    store.config.chatgpt_access_token = None;
-    store.config.device_code_session = None;
-    store.save()?;
-    println!("logged out");
-    Ok(())
-}
-
-/// Map [`ProviderKind`] to the canonical keyring slot name (`-a` arg
-/// in `security find-generic-password`).
-fn keyring_slot(provider: ProviderKind) -> &'static str {
-    match provider {
-        ProviderKind::Deepseek => "deepseek",
-        ProviderKind::NvidiaNim => "nvidia-nim",
-        ProviderKind::Openai => "openai",
-        ProviderKind::Openrouter => "openrouter",
-        ProviderKind::Novita => "novita",
+        store.config.api_key = None;
     }
 }
-
-/// Provider order used by the `auth list` and `auth status` outputs.
-const PROVIDER_LIST: [ProviderKind; 5] = [
-    ProviderKind::Deepseek,
-    ProviderKind::NvidiaNim,
-    ProviderKind::Openrouter,
-    ProviderKind::Novita,
-    ProviderKind::Openai,
-];
 
 fn provider_env_set(provider: ProviderKind) -> bool {
-    deepseek_secrets::env_for(keyring_slot(provider)).is_some()
+    deepseek_secrets::env_for(provider_slot(provider)).is_some()
 }
 
 fn provider_config_set(store: &ConfigStore, provider: ProviderKind) -> bool {
@@ -585,7 +630,14 @@ fn provider_config_set(store: &ConfigStore, provider: ProviderKind) -> bool {
 }
 
 fn run_auth_command(store: &mut ConfigStore, command: AuthCommand) -> Result<()> {
-    run_auth_command_with_secrets(store, command, &Secrets::auto_detect())
+    match command {
+        AuthCommand::Migrate { dry_run } => run_auth_command_with_secrets(
+            store,
+            AuthCommand::Migrate { dry_run },
+            &Secrets::auto_detect(),
+        ),
+        other => run_auth_command_with_secrets(store, other, &no_keyring_secrets()),
+    }
 }
 
 fn run_auth_command_with_secrets(
@@ -596,20 +648,11 @@ fn run_auth_command_with_secrets(
     match command {
         AuthCommand::Status => {
             println!("provider: {}", store.config.provider.as_str());
-            println!("keyring backend: {}", secrets.backend_name());
             for provider in PROVIDER_LIST {
-                let slot = keyring_slot(provider);
-                let keyring_set = secrets
-                    .get(slot)
-                    .ok()
-                    .flatten()
-                    .is_some_and(|v| !v.trim().is_empty());
+                let slot = provider_slot(provider);
                 let env_set = provider_env_set(provider);
                 let file_set = provider_config_set(store, provider);
-                println!(
-                    "{slot} auth: keyring={}, env={}, config={}",
-                    keyring_set, env_set, file_set
-                );
+                println!("{slot} auth: env={}, config={}", env_set, file_set);
             }
             Ok(())
         }
@@ -619,39 +662,27 @@ fn run_auth_command_with_secrets(
             api_key_stdin,
         } => {
             let provider: ProviderKind = provider.into();
-            let slot = keyring_slot(provider);
+            let slot = provider_slot(provider);
             let api_key = match (api_key, api_key_stdin) {
                 (Some(v), _) => v,
                 (None, true) => read_api_key_from_stdin()?,
                 (None, false) => prompt_api_key(slot)?,
             };
-            secrets
-                .set(slot, &api_key)
-                .with_context(|| format!("failed to write {slot} key to keyring"))?;
+            write_provider_api_key_to_config(store, provider, &api_key);
+            store.save()?;
             // Don't print the key. Don't echo length.
-            println!("saved API key for {slot} to {}", secrets.backend_name());
+            println!("saved API key for {slot} to {}", store.path().display());
             Ok(())
         }
         AuthCommand::Get { provider } => {
             let provider: ProviderKind = provider.into();
-            let slot = keyring_slot(provider);
-            let in_keyring = secrets
-                .get(slot)
-                .ok()
-                .flatten()
-                .is_some_and(|v| !v.trim().is_empty());
+            let slot = provider_slot(provider);
             let in_env = provider_env_set(provider);
             let in_file = provider_config_set(store, provider);
             // Report the highest-priority source that has it.
-            let resolved = secrets.resolve(slot).is_some() || in_file;
+            let resolved = in_env || in_file;
             if resolved {
-                let source = if in_keyring {
-                    "keyring"
-                } else if in_env {
-                    "env"
-                } else {
-                    "config-file"
-                };
+                let source = if in_file { "config-file" } else { "env" };
                 println!("{slot}: set (source: {source})");
             } else {
                 println!("{slot}: not set");
@@ -660,37 +691,19 @@ fn run_auth_command_with_secrets(
         }
         AuthCommand::Clear { provider } => {
             let provider: ProviderKind = provider.into();
-            let slot = keyring_slot(provider);
-            secrets
-                .delete(slot)
-                .with_context(|| format!("failed to delete {slot} key from keyring"))?;
-            // Also clear the plaintext slot in config.toml for parity.
-            store.config.providers.for_provider_mut(provider).api_key = None;
-            if provider == ProviderKind::Deepseek {
-                store.config.api_key = None;
-            }
+            let slot = provider_slot(provider);
+            clear_provider_api_key_from_config(store, provider);
             store.save()?;
             println!("cleared API key for {slot}");
             Ok(())
         }
         AuthCommand::List => {
-            println!("keyring backend: {}", secrets.backend_name());
-            println!("provider     keyring  env  config");
+            println!("provider     env  config");
             for provider in PROVIDER_LIST {
-                let slot = keyring_slot(provider);
-                let kr = secrets
-                    .get(slot)
-                    .ok()
-                    .flatten()
-                    .is_some_and(|v| !v.trim().is_empty());
+                let slot = provider_slot(provider);
                 let env = provider_env_set(provider);
                 let file = provider_config_set(store, provider);
-                println!(
-                    "{slot:<12}  {}        {}     {}",
-                    yes_no(kr),
-                    yes_no(env),
-                    yes_no(file)
-                );
+                println!("{slot:<12}  {}     {}", yes_no(env), yes_no(file));
             }
             Ok(())
         }
@@ -721,14 +734,14 @@ fn prompt_api_key(slot: &str) -> Result<String> {
     Ok(key)
 }
 
-/// Move plaintext keys from config.toml into the keyring. Stays
-/// idempotent: rerunning is a no-op once the file is clean.
+/// Move plaintext keys from config.toml into an explicit platform credential
+/// store. Hidden in v0.8.8 because the normal setup path is config/env only.
 fn run_auth_migrate(store: &mut ConfigStore, secrets: &Secrets, dry_run: bool) -> Result<()> {
     let mut migrated: Vec<(ProviderKind, &'static str)> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
 
     for provider in PROVIDER_LIST {
-        let slot = keyring_slot(provider);
+        let slot = provider_slot(provider);
         let from_provider_block = store
             .config
             .providers
@@ -1030,9 +1043,11 @@ fn delegate_to_tui(
             | ProviderKind::NvidiaNim
             | ProviderKind::Openrouter
             | ProviderKind::Novita
+            | ProviderKind::Fireworks
+            | ProviderKind::Sglang
     ) {
         bail!(
-            "The interactive TUI supports DeepSeek, NVIDIA NIM, OpenRouter, and Novita providers. Remove --provider {} or use `deepseek model ...` for provider registry inspection.",
+            "The interactive TUI supports DeepSeek, NVIDIA NIM, OpenRouter, Novita, Fireworks, and SGLang providers. Remove --provider {} or use `deepseek model ...` for provider registry inspection.",
             resolved_runtime.provider.as_str()
         );
     }
@@ -1042,6 +1057,7 @@ fn delegate_to_tui(
     cmd.env("DEEPSEEK_PROVIDER", resolved_runtime.provider.as_str());
     if let Some(api_key) = resolved_runtime.api_key.as_ref() {
         cmd.env("DEEPSEEK_API_KEY", api_key);
+        cmd.env("DEEPSEEK_API_KEY_SOURCE", "dispatcher");
     }
 
     if let Some(model) = cli.model.as_ref() {
@@ -1064,6 +1080,7 @@ fn delegate_to_tui(
     }
     if let Some(api_key) = cli.api_key.as_ref() {
         cmd.env("DEEPSEEK_API_KEY", api_key);
+        cmd.env("DEEPSEEK_API_KEY_SOURCE", "cli");
     }
     if let Some(base_url) = cli.base_url.as_ref() {
         cmd.env("DEEPSEEK_BASE_URL", base_url);
@@ -1432,15 +1449,16 @@ mod tests {
     }
 
     #[test]
-    fn deepseek_login_writes_tui_compatible_config() {
+    fn deepseek_login_writes_shared_config_and_preserves_tui_defaults() {
         let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
         let path = std::env::temp_dir().join(format!(
             "deepseek-cli-login-test-{}-{nanos}.toml",
             std::process::id()
         ));
         let mut store = ConfigStore::load(Some(path.clone())).expect("store should load");
+        let secrets = no_keyring_secrets();
 
-        run_login_command(
+        run_login_command_with_secrets(
             &mut store,
             LoginArgs {
                 provider: ProviderArg::Deepseek,
@@ -1449,10 +1467,15 @@ mod tests {
                 device_code: false,
                 token: None,
             },
+            &secrets,
         )
         .expect("login should write config");
 
         assert_eq!(store.config.api_key.as_deref(), Some("sk-test"));
+        assert_eq!(
+            store.config.providers.deepseek.api_key.as_deref(),
+            Some("sk-test")
+        );
         assert_eq!(
             store.config.default_text_model.as_deref(),
             Some("deepseek-v4-pro")
@@ -1517,6 +1540,28 @@ mod tests {
             }))
         ));
 
+        let cli = parse_ok(&["deepseek", "auth", "set", "--provider", "fireworks"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Auth(AuthArgs {
+                command: AuthCommand::Set {
+                    provider: ProviderArg::Fireworks,
+                    api_key: None,
+                    api_key_stdin: false,
+                }
+            }))
+        ));
+
+        let cli = parse_ok(&["deepseek", "auth", "get", "--provider", "sglang"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Auth(AuthArgs {
+                command: AuthCommand::Get {
+                    provider: ProviderArg::Sglang
+                }
+            }))
+        ));
+
         let cli = parse_ok(&["deepseek", "auth", "list"]);
         assert!(matches!(
             cli.command,
@@ -1543,18 +1588,14 @@ mod tests {
     }
 
     #[test]
-    fn auth_set_writes_to_keyring_and_not_to_config_file() {
-        use deepseek_secrets::{InMemoryKeyringStore, KeyringStore};
-        use std::sync::Arc;
-
+    fn auth_set_writes_to_shared_config_file() {
         let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
         let path = std::env::temp_dir().join(format!(
             "deepseek-cli-auth-set-test-{}-{nanos}.toml",
             std::process::id()
         ));
         let mut store = ConfigStore::load(Some(path.clone())).expect("store should load");
-        let inner = Arc::new(InMemoryKeyringStore::new());
-        let secrets = Secrets::new(inner.clone());
+        let secrets = no_keyring_secrets();
 
         run_auth_command_with_secrets(
             &mut store,
@@ -1567,27 +1608,19 @@ mod tests {
         )
         .expect("set should succeed");
 
+        assert_eq!(store.config.api_key.as_deref(), Some("sk-keyring"));
         assert_eq!(
-            inner.get("deepseek").unwrap(),
-            Some("sk-keyring".to_string())
+            store.config.providers.deepseek.api_key.as_deref(),
+            Some("sk-keyring")
         );
-        // Plaintext config slot must not be written.
-        assert!(store.config.api_key.is_none());
-        assert!(store.config.providers.deepseek.api_key.is_none());
         let saved = std::fs::read_to_string(&path).unwrap_or_default();
-        assert!(
-            !saved.contains("sk-keyring"),
-            "plaintext key leaked into config: {saved}"
-        );
+        assert!(saved.contains("api_key = \"sk-keyring\""));
 
         let _ = std::fs::remove_file(path);
     }
 
     #[test]
-    fn auth_clear_removes_from_keyring_and_config() {
-        use deepseek_secrets::{InMemoryKeyringStore, KeyringStore};
-        use std::sync::Arc;
-
+    fn auth_clear_removes_from_config() {
         let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
         let path = std::env::temp_dir().join(format!(
             "deepseek-cli-auth-clear-test-{}-{nanos}.toml",
@@ -1598,9 +1631,7 @@ mod tests {
         store.config.providers.deepseek.api_key = Some("sk-stale".to_string());
         store.save().unwrap();
 
-        let inner = Arc::new(InMemoryKeyringStore::new());
-        inner.set("deepseek", "sk-keyring").unwrap();
-        let secrets = Secrets::new(inner.clone());
+        let secrets = no_keyring_secrets();
 
         run_auth_command_with_secrets(
             &mut store,
@@ -1611,9 +1642,32 @@ mod tests {
         )
         .expect("clear should succeed");
 
-        assert_eq!(inner.get("deepseek").unwrap(), None);
         assert!(store.config.api_key.is_none());
         assert!(store.config.providers.deepseek.api_key.is_none());
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn logout_removes_plaintext_provider_keys() {
+        let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
+        let path = std::env::temp_dir().join(format!(
+            "deepseek-cli-logout-test-{}-{nanos}.toml",
+            std::process::id()
+        ));
+        let mut store = ConfigStore::load(Some(path.clone())).expect("store should load");
+        store.config.api_key = Some("sk-stale".to_string());
+        store.config.providers.deepseek.api_key = Some("sk-stale".to_string());
+        store.config.providers.fireworks.api_key = Some("fw-stale".to_string());
+        store.save().unwrap();
+
+        let secrets = no_keyring_secrets();
+
+        run_logout_command_with_secrets(&mut store, &secrets).expect("logout should succeed");
+
+        assert!(store.config.api_key.is_none());
+        assert!(store.config.providers.deepseek.api_key.is_none());
+        assert!(store.config.providers.fireworks.api_key.is_none());
 
         let _ = std::fs::remove_file(path);
     }

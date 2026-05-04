@@ -369,6 +369,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   automatically on `arm64` Linux hosts, so HarmonyOS thin-and-light,
   openEuler/Kylin, Asahi Linux, Raspberry Pi, AWS Graviton, etc. now work
   with a plain `npm i -g deepseek-tui`.
+- **Interactive TUI hangs on `working.` at 100% CPU (#549)** — the event
+  loop's blocking terminal poll starved the tokio runtime, preventing the
+  engine task from dispatching the API request. Fixed by yielding to the
+  scheduler before each poll cycle and clamping the event-poll timeout to
+  a minimum of 1ms so a zero-timeout hot-loop can't monopolize the thread.
+- **Backspace key inserts "h" instead of deleting (#550)** — terminals
+  that send `^H` (Ctrl+H) for Backspace were not recognized. Added
+  `is_ctrl_h_backspace()` guard in both the composer and API-key input
+  handlers so Ctrl+H is treated as a delete, matching the existing
+  `KeyCode::Backspace` behavior.
 
 ### Changed
 - **npm `postinstall` failure messages** — when no prebuilt is available for

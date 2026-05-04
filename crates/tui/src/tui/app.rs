@@ -9,7 +9,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::compaction::CompactionConfig;
-use crate::config::{ApiProvider, Config, has_api_key, save_api_key};
+use crate::config::{ApiProvider, Config, SavedCredential, has_api_key, save_api_key};
 use crate::config_ui::ConfigUiMode;
 use crate::core::coherence::CoherenceState;
 use crate::cycle_manager::{CycleBriefing, CycleConfig};
@@ -1231,18 +1231,18 @@ impl App {
         }
     }
 
-    pub fn submit_api_key(&mut self) -> Result<PathBuf, ApiKeyError> {
+    pub fn submit_api_key(&mut self) -> Result<SavedCredential, ApiKeyError> {
         let key = self.api_key_input.trim().to_string();
         if key.is_empty() {
             return Err(ApiKeyError::Empty);
         }
 
         match save_api_key(&key) {
-            Ok(path) => {
+            Ok(saved) => {
                 self.api_key_input.clear();
                 self.api_key_cursor = 0;
                 self.onboarding_needs_api_key = false;
-                Ok(path)
+                Ok(saved)
             }
             Err(source) => Err(ApiKeyError::SaveFailed { source }),
         }

@@ -401,6 +401,8 @@ pub fn env_for(name: &str) -> Option<String> {
         "nvidia" | "nvidia-nim" | "nvidia_nim" | "nim" => {
             &["NVIDIA_API_KEY", "NVIDIA_NIM_API_KEY", "DEEPSEEK_API_KEY"]
         }
+        "fireworks" | "fireworks-ai" => &["FIREWORKS_API_KEY"],
+        "sglang" | "sg-lang" => &["SGLANG_API_KEY"],
         "openai" => &["OPENAI_API_KEY"],
         _ => return None,
     };
@@ -435,6 +437,8 @@ mod tests {
             "NOVITA_API_KEY",
             "NVIDIA_API_KEY",
             "NVIDIA_NIM_API_KEY",
+            "FIREWORKS_API_KEY",
+            "SGLANG_API_KEY",
             "OPENAI_API_KEY",
         ] {
             // Safety: tests serialise on env_lock(); the broader
@@ -523,6 +527,32 @@ mod tests {
         assert_eq!(secrets.resolve("nvidia").as_deref(), Some("nim-key"));
         // Safety: env mutation guarded by env_lock().
         unsafe { std::env::remove_var("NVIDIA_NIM_API_KEY") };
+    }
+
+    #[test]
+    fn fireworks_env_aliases_resolve() {
+        let _lock = env_lock();
+        clear_known_envs();
+        // Safety: env mutation guarded by env_lock().
+        unsafe { std::env::set_var("FIREWORKS_API_KEY", "fw-key") };
+
+        assert_eq!(env_for("fireworks").as_deref(), Some("fw-key"));
+        assert_eq!(env_for("fireworks-ai").as_deref(), Some("fw-key"));
+        // Safety: env mutation guarded by env_lock().
+        unsafe { std::env::remove_var("FIREWORKS_API_KEY") };
+    }
+
+    #[test]
+    fn sglang_env_aliases_resolve() {
+        let _lock = env_lock();
+        clear_known_envs();
+        // Safety: env mutation guarded by env_lock().
+        unsafe { std::env::set_var("SGLANG_API_KEY", "sglang-key") };
+
+        assert_eq!(env_for("sglang").as_deref(), Some("sglang-key"));
+        assert_eq!(env_for("sg-lang").as_deref(), Some("sglang-key"));
+        // Safety: env mutation guarded by env_lock().
+        unsafe { std::env::remove_var("SGLANG_API_KEY") };
     }
 
     #[cfg(unix)]
