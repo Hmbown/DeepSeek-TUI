@@ -835,6 +835,13 @@ pub struct App {
     /// Whether LSP diagnostics are currently enabled. Mirrors the config file
     /// `[lsp].enabled` setting. Toggled at runtime via `/lsp on|off`.
     pub lsp_enabled: bool,
+
+    /// Paths to files that are re-read and injected into context at every turn
+    /// (#528). `/pin <file>` adds a path; `/unpin <file>` removes it.
+    pub resident_files: Vec<PathBuf>,
+    /// Cached content of resident files, keyed by canonical path. Updated every
+    /// time the file is re-read; used to compute a diff for the model.
+    pub resident_file_cache: HashMap<PathBuf, String>,
 }
 
 /// Message queued while the engine is busy.
@@ -1238,6 +1245,8 @@ impl App {
             collapsed_cell_map: Vec::new(),
             edit_in_progress: false,
             lsp_enabled: config.lsp.as_ref().and_then(|l| l.enabled).unwrap_or(true),
+            resident_files: Vec::new(),
+            resident_file_cache: HashMap::new(),
         }
     }
 

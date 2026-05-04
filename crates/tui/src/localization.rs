@@ -243,6 +243,8 @@ pub enum MessageId {
     CmdModelsDescription,
     CmdNoteDescription,
     CmdPlanDescription,
+    CmdPinDescription,
+    CmdUnpinDescription,
     CmdProviderDescription,
     CmdQueueDescription,
     CmdRecallDescription,
@@ -430,6 +432,8 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CmdModelsDescription,
     MessageId::CmdNoteDescription,
     MessageId::CmdPlanDescription,
+    MessageId::CmdPinDescription,
+    MessageId::CmdUnpinDescription,
     MessageId::CmdProviderDescription,
     MessageId::CmdQueueDescription,
     MessageId::CmdRecallDescription,
@@ -750,6 +754,12 @@ fn english(id: MessageId) -> &'static str {
         MessageId::CmdPlanDescription => {
             "Switch to plan mode and review suggested implementation steps"
         }
+        MessageId::CmdPinDescription => {
+            "Pin a file that will be re-read and injected into context at every turn (#528)"
+        }
+        MessageId::CmdUnpinDescription => {
+            "Unpin a file so it is no longer re-read and injected into context each turn"
+        }
         MessageId::CmdProviderDescription => {
             "Switch or view the active LLM backend (deepseek | nvidia-nim)"
         }
@@ -1028,6 +1038,12 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::CmdModelsDescription => "API から利用可能なモデルを一覧表示",
         MessageId::CmdNoteDescription => "永続ノートファイル（.deepseek/notes.md）に追記",
         MessageId::CmdPlanDescription => "Plan モードに切り替え、推奨される実装手順を確認",
+        MessageId::CmdPinDescription => {
+            "Pin — ファイルを固定し、毎ターンコンテキストに再読込・注入する (#528)"
+        }
+        MessageId::CmdUnpinDescription => {
+            "Unpin — 固定を解除し、毎ターンの再読込・注入を停止する"
+        }
         MessageId::CmdProviderDescription => {
             "現在の LLM バックエンドを切り替え・確認（deepseek | nvidia-nim）"
         }
@@ -1290,6 +1306,12 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::CmdModelsDescription => "列出 API 中可用的模型",
         MessageId::CmdNoteDescription => "将笔记追加到持久笔记文件（.deepseek/notes.md）",
         MessageId::CmdPlanDescription => "切换到 Plan 模式并查看建议的实现步骤",
+        MessageId::CmdPinDescription => {
+            "Pin — 固定文件，每轮对话将重新读取并注入上下文 (#528)"
+        }
+        MessageId::CmdUnpinDescription => {
+            "Unpin — 取消固定，停止每轮重新读取并注入上下文"
+        }
         MessageId::CmdProviderDescription => "切换或查看当前 LLM 后端（deepseek | nvidia-nim）",
         MessageId::CmdQueueDescription => "查看或编辑已排队的消息",
         MessageId::CmdRecallDescription => "搜索此前的循环归档（基于消息文本的 BM25 检索）",
@@ -1545,6 +1567,12 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         }
         MessageId::CmdPlanDescription => {
             "Mudar para o modo plan e revisar os passos de implementação sugeridos"
+        }
+        MessageId::CmdPinDescription => {
+            "Pin — fixar um arquivo que será relido e injetado no contexto a cada turno (#528)"
+        }
+        MessageId::CmdUnpinDescription => {
+            "Unpin — desafixar um arquivo para que não seja mais relido e injetado no contexto"
         }
         MessageId::CmdProviderDescription => {
             "Trocar ou exibir o backend LLM ativo (deepseek | nvidia-nim)"

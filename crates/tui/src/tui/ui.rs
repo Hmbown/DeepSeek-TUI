@@ -483,6 +483,80 @@ fn is_memory_quick_add(input: &str) -> bool {
     !trimmed.trim_start_matches('#').trim().is_empty()
 }
 
+/// Build a context block for pinned resident files (#528).
+///
+/// Re-reads each pinned file, computes a diff against the cached version,
+/// and returns a formatted block. Updates the cache with current content.
+/// Returns an empty string when no files are pinned.
+fn build_resident_file_context(app: &mut App) -> String {
+    if app.resident_files.is_empty() {
+        return String::new();
+    }
+
+    let mut blocks: Vec<String> = Vec::new();
+    let files: Vec<PathBuf> = app.resident_files.clone();
+
+    for path in files {
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(e) => {
+                blocks.push(format!(
+                    "⚠ Could not read pinned file `{}`: {e}",
+                    path.display()
+                ));
+                continue;
+            }
+        };
+
+        // Compute diff against cached version
+        let diff_section = if let Some(cached) = app.resident_file_cache.get(&path) {
+            if cached != &content {
+                let diff = similar::TextDiff::from_lines(cached.as_str(), &content);
+                let mut diff_text = String::new();
+                for change in diff.iter_all_changes() {
+                    let marker = match change.tag() {
+                        similar::ChangeTag::Delete => "-",
+                        similar::ChangeTag::Insert => "+",
+                        similar::ChangeTag::Equal => " ",
+                    };
+                    if diff_text.len() < 4000 {
+                        diff_text.push_str(marker);
+                        diff_text.push_str(change.value());
+                    }
+                }
+                if !diff_text.is_empty() {
+                    format!("\n── Diff since last read ──\n```diff\n{}```\n", diff_text)
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+
+        // Update cache
+        app.resident_file_cache.insert(path.clone(), content.clone());
+
+        blocks.push(format!(
+            "\n## Pinned file: `{}`\n```\n{}\n```{}",
+            path.display(),
+            content,
+            diff_section,
+        ));
+    }
+
+    if blocks.is_empty() {
+        return String::new();
+    }
+
+    format!(
+        "[Resident files — re-read at turn start]\n{}\n",
+        blocks.join("\n---\n")
+    )
+}
+
 /// Persist a `# foo` quick-add to the memory file and surface a status
 /// note to the user. Errors land in the same status channel so a missing
 /// memory directory becomes visible without crashing the composer.
@@ -3136,6 +3210,13 @@ async fn dispatch_user_message(
     let history_cell = app.history.len().saturating_sub(1);
     app.record_context_references(history_cell, message_index, references);
     app.scroll_to_bottom();
+    // Prepend resident file context (#528) if any files are pinned
+    let resident_context = build_resident_file_context(app);
+    let content = if !resident_context.is_empty() {
+        format!("{}\n\n---\n\n{}", resident_context, content)
+    } else {
+        content
+    };
     app.api_messages.push(Message {
         role: "user".to_string(),
         content: vec![ContentBlock::Text {
@@ -3143,6 +3224,7 @@ async fn dispatch_user_message(
             cache_control: None,
         }],
     });
+
     maybe_warn_context_pressure(app);
     if should_auto_compact_before_send(app) {
         app.status_message = Some("Context critical; compacting before send...".to_string());

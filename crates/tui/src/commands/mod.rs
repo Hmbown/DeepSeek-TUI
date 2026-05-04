@@ -211,6 +211,18 @@ pub const COMMANDS: &[CommandInfo] = &[
         description_id: MessageId::CmdNoteDescription,
     },
     CommandInfo {
+        name: "pin",
+        aliases: &[],
+        usage: "/pin <file>",
+        description_id: MessageId::CmdPinDescription,
+    },
+    CommandInfo {
+        name: "unpin",
+        aliases: &[],
+        usage: "/unpin <file>",
+        description_id: MessageId::CmdUnpinDescription,
+    },
+    CommandInfo {
         name: "memory",
         aliases: &[],
         usage: "/memory [show|path|clear|edit|help]",
@@ -488,6 +500,8 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "links" | "dashboard" | "api" => core::deepseek_links(app),
         "home" | "stats" | "overview" => core::home_dashboard(app),
         "note" => note::note(app, arg),
+        "pin" => core::pin_command(app, arg),
+        "unpin" => core::unpin_command(app, arg),
         "memory" => memory::memory(app, arg),
         "attach" | "image" | "media" => attachment::attach(app, arg),
         "task" | "tasks" => task::task(app, arg),
