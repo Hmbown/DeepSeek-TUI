@@ -488,7 +488,8 @@ fn is_memory_quick_add(input: &str) -> bool {
 /// memory directory becomes visible without crashing the composer.
 fn handle_memory_quick_add(app: &mut App, input: &str, config: &Config) {
     let path = config.memory_path();
-    match crate::memory::append_entry(&path, input) {
+    let git_root = crate::memory::discover_git_root(&app.workspace);
+    match crate::memory::append_entry(&path, input, git_root.as_deref()) {
         Ok(()) => {
             app.status_message = Some(format!("memory: appended to {}", path.display()));
         }
@@ -541,6 +542,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         subagent_model_overrides: config.subagent_model_overrides(),
         memory_enabled: config.memory_enabled(),
         memory_path: config.memory_path(),
+        git_root: crate::memory::discover_git_root(&app.workspace),
         goal_objective: app.goal.goal_objective.clone(),
     }
 }

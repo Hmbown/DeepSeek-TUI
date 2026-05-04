@@ -69,7 +69,7 @@ impl ToolSpec for RememberTool {
             )
         })?;
 
-        crate::memory::append_entry(path, note).map_err(|err| {
+        crate::memory::append_entry(path, note, context.git_root.as_deref()).map_err(|err| {
             ToolError::execution_failed(format!("failed to append to {}: {err}", path.display()))
         })?;
 

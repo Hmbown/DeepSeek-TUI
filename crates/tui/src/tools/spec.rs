@@ -110,6 +110,10 @@ pub struct ToolContext {
     /// short-circuit on `None` rather than fall back to a workspace-local
     /// default.
     pub memory_path: Option<PathBuf>,
+    /// Git repository root for the current workspace (#496). `None` when
+    /// the workspace is not inside a git repository. Used by the memory
+    /// system to tag and filter entries by project.
+    pub git_root: Option<PathBuf>,
 }
 
 impl ToolContext {
@@ -136,6 +140,7 @@ impl ToolContext {
             runtime: RuntimeToolServices::default(),
             cancel_token: None,
             memory_path: None,
+            git_root: None,
         }
     }
 
@@ -165,6 +170,7 @@ impl ToolContext {
             runtime: RuntimeToolServices::default(),
             cancel_token: None,
             memory_path: None,
+            git_root: None,
         }
     }
 
@@ -194,6 +200,7 @@ impl ToolContext {
             runtime: RuntimeToolServices::default(),
             cancel_token: None,
             memory_path: None,
+            git_root: None,
         }
     }
 

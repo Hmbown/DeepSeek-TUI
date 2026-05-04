@@ -7,6 +7,13 @@ sessions — "I prefer pytest over unittest", "this codebase uses
 4-space indentation", "always run `cargo fmt` before committing" —
 without having to repeat them in every conversation.
 
+As of v0.8.9, memory is **worktree-aware** (#496): entries created
+inside a git repository are tagged with the repo's root path. When
+loading, only entries matching the current repo (plus untagged global
+entries) are injected into the system prompt. This prevents memories
+from one project bleeding into another while keeping cross-project
+preferences visible everywhere.
+
 Memory is **opt-in**. When disabled (the default), nothing is loaded,
 nothing is intercepted, and the `remember` tool isn't surfaced to the
 model. This keeps zero-overhead behavior for users who haven't asked
@@ -57,7 +64,8 @@ both are set.
 ## What gets injected
 
 When memory is enabled and the file exists, every turn's system
-prompt carries an extra block:
+prompt carries an extra block. When inside a git repository, entries
+tagged with other repos are filtered out (#496):
 
 ```xml
 <user_memory source="/Users/you/.deepseek/memory.md">
@@ -149,18 +157,23 @@ to do that — durable, single-sentence notes only.
 
 ## File format
 
-Memory is plain Markdown with timestamped bullets:
+Memory is plain Markdown with timestamped bullets. Entries created
+inside a git repository are tagged with the repo root path (#496):
 
 ```markdown
 - (2026-05-03 22:14 UTC) prefer pytest over unittest
-- (2026-05-03 22:31 UTC) this codebase uses 4-space indentation
+- (2026-05-03 22:31 UTC) [/home/user/project-a] this project uses 4-space indentation
 - (2026-05-04 09:02 UTC) all PRs need 2 reviewers before merge
+- (2026-05-04 14:15 UTC) [/home/user/project-b] this project uses tabs
 ```
 
-You can hand-edit the file in any editor — the loader doesn't care
-about the timestamp format; it just reads the whole file as the
-memory block. The timestamp is convention so you can tell when each
-note was added when grooming the file.
+When working in `project-a`, the loader includes:
+- Untagged global entries (cross-project preferences)
+- Entries tagged with `/home/user/project-a` (the tag is stripped
+  before injection so the model only sees a clean entry)
+- Entries tagged with `/home/user/project-b` are **filtered out**
+
+When working outside any git repository, all entries are shown.
 
 ## Hierarchy and imports
 
@@ -201,11 +214,16 @@ receives, and only when memory is enabled. If you switch providers
 (DeepSeek / NVIDIA NIM / Fireworks / etc.) the same memory file is
 used; the file is provider-agnostic.
 
-The file is per-user, not per-project. If you want project-specific
-memory, use the project-level `AGENTS.md` or
+The file is per-user, with **worktree-aware scoping** (#496).
+Entries created inside a git repository are tagged with the repo
+root path; only entries matching the current repo (plus untagged
+global entries) are injected into the system prompt. This prevents
+project-specific conventions from leaking into unrelated sessions.
+
+If you want instructions that travel with the codebase itself (so
+all contributors see them), use the project-level `AGENTS.md` or
 `.deepseek/instructions.md` files instead — those are loaded by
-`project_context` and live in the repo (or wherever you commit
-them).
+`project_context` and live in the repo.
 
 ## Configuration reference
 
@@ -230,3 +248,5 @@ memory_path = "~/.deepseek/memory.md"
 - `docs/CONFIGURATION.md` — full config reference.
 - Issue [#489](https://github.com/Hmbown/DeepSeek-TUI/issues/489)
   — phase-1 EPIC tracking the work.
+- Issue [#496](https://github.com/Hmbown/DeepSeek-TUI/issues/496)
+  — worktree-aware deduplication.
