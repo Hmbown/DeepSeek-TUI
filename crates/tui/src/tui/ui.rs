@@ -89,7 +89,9 @@ use super::app::{
     SubmitDisposition, TaskPanelEntry, ToolDetailRecord, TuiOptions,
 };
 use super::approval::{
-    ApprovalMode, ApprovalRequest, ApprovalView, ElevationRequest, ElevationView, ReviewDecision,
+    ApprovalKeys, ApprovalMode, ApprovalRequest, ApprovalView, ElevationKeys, ElevationRequest,
+    ElevationView,
+    ReviewDecision,
 };
 use super::history::{
     HistoryCell, ToolCell, ToolStatus, history_cells_from_message, summarize_tool_output,
@@ -1233,7 +1235,10 @@ async fn run_event_loop(
                                     "mode": app.mode.label(),
                                 }),
                             );
-                            app.view_stack.push(ApprovalView::new(request));
+                            app.view_stack.push(ApprovalView::new(
+                                request,
+                                ApprovalKeys::from_config(config),
+                            ));
                             app.status_message = Some(format!(
                                 "Approval required for '{tool_name}': {description}"
                             ));
@@ -1295,7 +1300,7 @@ async fn run_event_loop(
                                 blocked_network,
                                 blocked_write,
                             );
-                            app.view_stack.push(ElevationView::new(request));
+                            app.view_stack.push(ElevationView::new(request, ElevationKeys::from_config(config)));
                             app.status_message =
                                 Some(format!("Sandbox blocked {tool_name}: {denial_reason}"));
                         }
