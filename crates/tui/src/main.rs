@@ -41,6 +41,7 @@ mod mcp;
 mod mcp_server;
 mod memory;
 mod models;
+mod module_resolver;
 mod network_policy;
 mod palette;
 mod pricing;

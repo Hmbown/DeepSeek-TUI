@@ -15,6 +15,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::features::Features;
 use crate::lsp::LspManager;
+use crate::module_resolver::ModuleResolver;
 use crate::network_policy::NetworkPolicyDecider;
 use crate::sandbox::backend::SandboxBackend;
 use crate::tools::shell::{SharedShellManager, new_shared_shell_manager};
@@ -105,6 +106,15 @@ pub struct ToolContext {
     /// Durable runtime services for task, gate, PR-attempt, GitHub evidence,
     /// and automation tools.
     pub runtime: RuntimeToolServices,
+    /// Hint for resolving frontend import aliases when the importer file is
+    /// not explicitly supplied.
+    pub cwd_hint: Option<PathBuf>,
+    /// High-priority workspace paths recently mentioned or read in the
+    /// session. Used only as importer hints for read-only import resolution.
+    pub active_paths: Vec<PathBuf>,
+    /// Shared frontend module resolver. Kept outside `resolve_path` so the
+    /// filesystem safety boundary stays independent from language semantics.
+    pub module_resolver: Option<Arc<ModuleResolver>>,
     /// Cancellation token for the active engine turn. Tools that may wait on
     /// external work should observe this so UI cancel can interrupt them.
     pub cancel_token: Option<CancellationToken>,
@@ -145,6 +155,7 @@ impl ToolContext {
         let shell_manager = new_shared_shell_manager(workspace.clone());
         let notes_path = workspace.join(".deepseek").join("notes.md");
         let mcp_config_path = workspace.join(".deepseek").join("mcp.json");
+        let module_resolver = Some(Arc::new(ModuleResolver::new(workspace.clone())));
         Self {
             workspace,
             shell_manager,
@@ -159,6 +170,9 @@ impl ToolContext {
             trusted_external_paths: Vec::new(),
             network_policy: None,
             runtime: RuntimeToolServices::default(),
+            cwd_hint: None,
+            active_paths: Vec::new(),
+            module_resolver,
             cancel_token: None,
             sandbox_backend: None,
             memory_path: None,
@@ -178,6 +192,7 @@ impl ToolContext {
     ) -> Self {
         let workspace = workspace.into();
         let shell_manager = new_shared_shell_manager(workspace.clone());
+        let module_resolver = Some(Arc::new(ModuleResolver::new(workspace.clone())));
         Self {
             workspace,
             shell_manager,
@@ -192,6 +207,9 @@ impl ToolContext {
             trusted_external_paths: Vec::new(),
             network_policy: None,
             runtime: RuntimeToolServices::default(),
+            cwd_hint: None,
+            active_paths: Vec::new(),
+            module_resolver,
             cancel_token: None,
             sandbox_backend: None,
             memory_path: None,
@@ -211,6 +229,7 @@ impl ToolContext {
     ) -> Self {
         let workspace = workspace.into();
         let shell_manager = new_shared_shell_manager(workspace.clone());
+        let module_resolver = Some(Arc::new(ModuleResolver::new(workspace.clone())));
         Self {
             workspace,
             shell_manager,
@@ -225,6 +244,9 @@ impl ToolContext {
             trusted_external_paths: Vec::new(),
             network_policy: None,
             runtime: RuntimeToolServices::default(),
+            cwd_hint: None,
+            active_paths: Vec::new(),
+            module_resolver,
             cancel_token: None,
             sandbox_backend: None,
             memory_path: None,
@@ -245,6 +267,29 @@ impl ToolContext {
     #[must_use]
     pub fn with_runtime_services(mut self, runtime: RuntimeToolServices) -> Self {
         self.runtime = runtime;
+        self
+    }
+
+    /// Set the current process or project CWD hint used by `resolve_import`
+    /// when the caller omits `from`.
+    #[must_use]
+    pub fn with_cwd_hint(mut self, cwd: Option<PathBuf>) -> Self {
+        self.cwd_hint = cwd;
+        self
+    }
+
+    /// Attach active working-set paths as importer hints for read-only module
+    /// resolution. Relative paths are interpreted from the workspace root.
+    #[must_use]
+    pub fn with_active_paths(mut self, paths: Vec<String>) -> Self {
+        self.active_paths = paths.into_iter().map(PathBuf::from).collect();
+        self
+    }
+
+    /// Attach a shared module resolver cache.
+    #[must_use]
+    pub fn with_module_resolver(mut self, resolver: Arc<ModuleResolver>) -> Self {
+        self.module_resolver = Some(resolver);
         self
     }
 

@@ -55,6 +55,7 @@ pub(super) fn should_default_defer_tool(name: &str, mode: AppMode) -> bool {
             | "list_dir"
             | "grep_files"
             | "file_search"
+            | "resolve_import"
             | "diagnostics"
             | "rlm"
             | "recall_archive"
