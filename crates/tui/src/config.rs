@@ -726,6 +726,14 @@ pub struct Config {
     pub allow_shell: Option<bool>,
     pub approval_policy: Option<String>,
     pub sandbox_mode: Option<String>,
+    /// External sandbox backend: `"none"` or `"opensandbox"`.
+    /// When set, exec_shell routes commands through the backend's HTTP API
+    /// instead of spawning a local process.
+    pub sandbox_backend: Option<String>,
+    /// Base URL for the external sandbox backend (default: `"http://localhost:8080"`).
+    pub sandbox_url: Option<String>,
+    /// Optional API key for the external sandbox backend (sent as Bearer token).
+    pub sandbox_api_key: Option<String>,
     pub managed_config_path: Option<String>,
     pub requirements_path: Option<String>,
     pub max_subagents: Option<usize>,
@@ -1742,6 +1750,15 @@ fn apply_env_overrides(config: &mut Config) {
     if let Ok(value) = std::env::var("DEEPSEEK_SANDBOX_MODE") {
         config.sandbox_mode = Some(value);
     }
+    if let Ok(value) = std::env::var("DEEPSEEK_SANDBOX_BACKEND") {
+        config.sandbox_backend = Some(value);
+    }
+    if let Ok(value) = std::env::var("DEEPSEEK_SANDBOX_URL") {
+        config.sandbox_url = Some(value);
+    }
+    if let Ok(value) = std::env::var("DEEPSEEK_SANDBOX_API_KEY") {
+        config.sandbox_api_key = Some(value);
+    }
     if let Ok(value) = std::env::var("DEEPSEEK_MANAGED_CONFIG_PATH") {
         config.managed_config_path = Some(value);
     }
@@ -1999,6 +2016,9 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         allow_shell: override_cfg.allow_shell.or(base.allow_shell),
         approval_policy: override_cfg.approval_policy.or(base.approval_policy),
         sandbox_mode: override_cfg.sandbox_mode.or(base.sandbox_mode),
+        sandbox_backend: override_cfg.sandbox_backend.or(base.sandbox_backend),
+        sandbox_url: override_cfg.sandbox_url.or(base.sandbox_url),
+        sandbox_api_key: override_cfg.sandbox_api_key.or(base.sandbox_api_key),
         managed_config_path: override_cfg
             .managed_config_path
             .or(base.managed_config_path),

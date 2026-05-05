@@ -90,6 +90,34 @@ allow_shell = true
 approval_policy = "on-request" # on-request | untrusted | never
 sandbox_mode = "workspace-write" # read-only | workspace-write | danger-full-access | external-sandbox
 
+# ─────────────────────────────────────────────────────────────────────────────────
+# External Sandbox Backend (pluggable remote execution)
+# ─────────────────────────────────────────────────────────────────────────────────
+# When sandbox_backend is set to "opensandbox", all exec_shell calls are
+# routed through an external OpenSandbox-compatible HTTP API instead of
+# spawning a local process. The backend sends `POST {sandbox_url}/v1/sandbox/run`
+# with `{"cmd": "...", "env": {...}}` and expects
+# `{"stdout": "...", "stderr": "...", "exit_code": 0}`.
+#
+# sandbox_backend = "none"          # "none" (default) or "opensandbox"
+# sandbox_url = "http://localhost:8080"  # OpenSandbox-compatible API base URL
+# sandbox_api_key = "YOUR_API_KEY"  # Optional Bearer token sent with requests
+#
+# Env-var overrides:
+#   DEEPSEEK_SANDBOX_BACKEND   → sandbox_backend
+#   DEEPSEEK_SANDBOX_URL       → sandbox_url
+#   DEEPSEEK_SANDBOX_API_KEY   → sandbox_api_key
+#
+# Example OpenSandbox setup:
+#
+#   sandbox_backend = "opensandbox"
+#   sandbox_url = "http://localhost:8080"
+#   sandbox_api_key = "sk-opensandbox-secret"
+#
+# The backend uses a 30-second HTTP timeout. Background, interactive, and
+# TTY modes are not supported with external backends — all commands run
+# synchronously via HTTP.
+
 # auto_allow entries match by command prefix, not raw string.
 # See command_safety.rs for the prefix dictionary.
 #
