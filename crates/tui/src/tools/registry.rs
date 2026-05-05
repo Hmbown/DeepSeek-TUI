@@ -14,6 +14,7 @@ use serde_json::Value;
 use crate::client::DeepSeekClient;
 use crate::models::Tool;
 
+use super::schema_sanitize;
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
@@ -218,16 +219,20 @@ impl ToolRegistry {
         tools.sort_by(|a, b| a.name().cmp(b.name()));
         tools
             .into_iter()
-            .map(|tool| Tool {
-                tool_type: None,
-                name: tool.name().to_string(),
-                description: tool.description().to_string(),
-                input_schema: tool.input_schema(),
-                allowed_callers: Some(vec!["direct".to_string()]),
-                defer_loading: Some(tool.defer_loading()),
-                input_examples: None,
-                strict: None,
-                cache_control: None,
+            .map(|tool| {
+                let mut schema = tool.input_schema();
+                schema_sanitize::sanitize(&mut schema);
+                Tool {
+                    tool_type: None,
+                    name: tool.name().to_string(),
+                    description: tool.description().to_string(),
+                    input_schema: schema,
+                    allowed_callers: Some(vec!["direct".to_string()]),
+                    defer_loading: Some(tool.defer_loading()),
+                    input_examples: None,
+                    strict: None,
+                    cache_control: None,
+                }
             })
             .collect()
     }
