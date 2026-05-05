@@ -1,16 +1,36 @@
-# DeepSeek TUI
+# 🐳 DeepSeek TUI
 
-> **A terminal-native coding agent built around DeepSeek V4's 1M-token context and prefix cache. Single binary, no Node/Python runtime required — ships an MCP client, sandbox, and durable task queue out of the box.**
+> **This terminal-native coding agent is built around DeepSeek V4's 1M-token context window and prefix cache capability. It is distributed as a single binary and requires no Node.js or Python runtime. It also includes an MCP client, a sandbox, and a durable task queue out of the box.**
 
 [简体中文 README](README.zh-CN.md)
 
+Before proceeding, ensure that `Node.js` and `npm` are installed.
+
 ```bash
-npm i -g deepseek-tui
+node --version
+npm --version
+```
+
+If `Node.js` and `npm` are not installed in your environment, refer to the installation guides provided below:
+
+* English version: [https://nodejs.org/en/download](https://nodejs.org/en/download)
+* Chinese version: [https://nodejs.org/zh-cn/download](https://nodejs.org/zh-cn/download)
+
+Select the version that best matches your device specifications and operating system. 
+
+Install the `deepseek-tui` now:
+
+```bash
+npm install -g deepseek-tui
+
+# When installing deepseek-tui in China's internet environment, you can use an npm mirror to speed up the installation process.
+# npm install -g deepseek-tui@latest --registry=https://registry.npmmirror.com
 ```
 
 [![CI](https://github.com/Hmbown/DeepSeek-TUI/actions/workflows/ci.yml/badge.svg)](https://github.com/Hmbown/DeepSeek-TUI/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/deepseek-tui)](https://www.npmjs.com/package/deepseek-tui)
 [![crates.io](https://img.shields.io/crates/v/deepseek-tui-cli?label=crates.io)](https://crates.io/crates/deepseek-tui-cli)
+[![DeepWiki](https://img.shields.io/badge/DeepWiki-Ask_AI-_.svg?style=flat&color=0052D9&labelColor=000000&logo=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACwAAAAyCAYAAAAnWDnqAAAAAXNSR0IArs4c6QAAA05JREFUaEPtmUtyEzEQhtWTQyQLHNak2AB7ZnyXZMEjXMGeK/AIi+QuHrMnbChYY7MIh8g01fJoopFb0uhhEqqcbWTp06/uv1saEDv4O3n3dV60RfP947Mm9/SQc0ICFQgzfc4CYZoTPAswgSJCCUJUnAAoRHOAUOcATwbmVLWdGoH//PB8mnKqScAhsD0kYP3j/Yt5LPQe2KvcXmGvRHcDnpxfL2zOYJ1mFwrryWTz0advv1Ut4CJgf5uhDuDj5eUcAUoahrdY/56ebRWeraTjMt/00Sh3UDtjgHtQNHwcRGOC98BJEAEymycmYcWwOprTgcB6VZ5JK5TAJ+fXGLBm3FDAmn6oPPjR4rKCAoJCal2eAiQp2x0vxTPB3ALO2CRkwmDy5WohzBDwSEFKRwPbknEggCPB/imwrycgxX2NzoMCHhPkDwqYMr9tRcP5qNrMZHkVnOjRMWwLCcr8ohBVb1OMjxLwGCvjTikrsBOiA6fNyCrm8V1rP93iVPpwaE+gO0SsWmPiXB+jikdf6SizrT5qKasx5j8ABbHpFTx+vFXp9EnYQmLx02h1QTTrl6eDqxLnGjporxl3NL3agEvXdT0WmEost648sQOYAeJS9Q7bfUVoMGnjo4AZdUMQku50McDcMWcBPvr0SzbTAFDfvJqwLzgxwATnCgnp4wDl6Aa+Ax283gghmj+vj7feE2KBBRMW3FzOpLOADl0Isb5587h/U4gGvkt5v60Z1VLG8BhYjbzRwyQZemwAd6cCR5/XFWLYZRIMpX39AR0tjaGGiGzLVyhse5C9RKC6ai42ppWPKiBagOvaYk8lO7DajerabOZP46Lby5wKjw1HCRx7p9sVMOWGzb/vA1hwiWc6jm3MvQDTogQkiqIhJV0nBQBTU+3okKCFDy9WwferkHjtxib7t3xIUQtHxnIwtx4mpg26/HfwVNVDb4oI9RHmx5WGelRVlrtiw43zboCLaxv46AZeB3IlTkwouebTr1y2NjSpHz68WNFjHvupy3q8TFn3Hos2IAk4Ju5dCo8B3wP7VPr/FGaKiG+T+v+TQqIrOqMTL1VdWV1DdmcbO8KXBz6esmYWYKPwDL5b5FA1a0hwapHiom0r/cKaoqr+27/XcrS5UwSMbQAAAABJRU5ErkJggg==)](https://deepwiki.com/Hmbown/DeepSeek-TUI)
 
 <a href="https://www.buymeacoffee.com/hmbown" target="_blank"><img src="https://img.shields.io/badge/Buy%20me%20a%20coffee-5F7FFF?style=for-the-badge&logo=buymeacoffee&logoColor=white" alt="Buy me a coffee" /></a>
 
@@ -18,11 +38,11 @@ npm i -g deepseek-tui
 
 ---
 
-## What is it?
+## What Is It?
 
 DeepSeek TUI is a coding agent that runs entirely in your terminal. It gives DeepSeek's frontier models direct access to your workspace — reading and editing files, running shell commands, searching the web, managing git, and orchestrating sub-agents — all through a fast, keyboard-driven TUI.
 
-**Built for DeepSeek V4** (`deepseek-v4-pro` / `deepseek-v4-flash`) with 1M-token context windows and native thinking-mode (chain-of-thought) streaming.
+**Built for DeepSeek V4** (`deepseek-v4-pro` / `deepseek-v4-flash`) with 1M-token context window and native thinking-mode (chain-of-thought) streaming.
 
 ### Key Features
 
@@ -31,12 +51,12 @@ DeepSeek TUI is a coding agent that runs entirely in your terminal. It gives Dee
 - **Full tool suite** — file ops, shell execution, git, web search/browse, apply-patch, sub-agents, MCP servers
 - **1M-token context** — automatic intelligent compaction when context fills up; prefix-cache aware for cost efficiency
 - **Three modes** — Plan (read-only explore), Agent (interactive with approval), YOLO (auto-approved)
-- **Reasoning-effort tiers** — cycle through `off → high → max` with `Shift+Tab`
+- **Reasoning-effort tiers** — cycle through `off → high → max` with `Shift + Tab`
 - **Session save/resume** — checkpoint and resume long-running sessions
 - **Workspace rollback** — side-git pre/post-turn snapshots with `/restore` and `revert_turn`, without touching your repo's `.git`
 - **Durable task queue** — background tasks survive restarts; think scheduled automation, long-running reviews
 - **HTTP/SSE runtime API** — `deepseek serve --http` for headless agent workflows
-- **MCP protocol** — connect to Model Context Protocol servers for extended tooling; see [docs/MCP.md](docs/MCP.md)
+- **MCP protocol** — connect to Model Context Protocol servers for extended tooling; please see [docs/MCP.md](docs/MCP.md)
 - **LSP diagnostics** — inline error/warning surfacing after every edit via rust-analyzer, pyright, typescript-language-server, gopls, clangd
 - **User memory** — optional persistent note file injected into the system prompt for cross-session preferences
 - **Localized UI** — `en`, `ja`, `zh-Hans`, `pt-BR` with auto-detection
@@ -45,7 +65,7 @@ DeepSeek TUI is a coding agent that runs entirely in your terminal. It gives Dee
 
 ---
 
-## How it's wired
+## How It's Wired
 
 `deepseek` (dispatcher CLI) → `deepseek-tui` (companion binary) → ratatui interface ↔ async engine ↔ OpenAI-compatible streaming client. Tool calls route through a typed registry (shell, file ops, git, web, sub-agents, MCP, RLM) and results stream back into the transcript. The engine manages session state, turn tracking, the durable task queue, and an LSP subsystem that feeds post-edit diagnostics into the model's context before the next reasoning step.
 
@@ -57,6 +77,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full walkthrough.
 
 ```bash
 npm install -g deepseek-tui
+deepseek --version
 deepseek
 ```
 
@@ -72,7 +93,7 @@ deepseek auth set --provider deepseek   # saves to ~/.deepseek/config.toml
 export DEEPSEEK_API_KEY="YOUR_KEY"      # env var alternative; use ~/.zshenv for non-interactive shells
 deepseek
 
-deepseek doctor                          # verify setup
+deepseek doctor                         # verify setup
 ```
 
 > To rotate or remove a saved key: `deepseek auth clear --provider deepseek`.
@@ -81,7 +102,7 @@ deepseek doctor                          # verify setup
 
 `npm i -g deepseek-tui` works on glibc-based ARM64 Linux from v0.8.8 onward. You can also download prebuilt binaries from the [Releases page](https://github.com/Hmbown/DeepSeek-TUI/releases) and place them side by side on your `PATH`.
 
-### China / mirror-friendly install
+### China / Mirror-friendly Installation
 
 If GitHub or npm downloads are slow from mainland China, use a Cargo registry mirror:
 
@@ -125,7 +146,7 @@ Both binaries are required. Cross-compilation and platform-specific notes: [docs
 
 </details>
 
-### Other API providers
+### Other API Providers
 
 ```bash
 # NVIDIA NIM
@@ -142,7 +163,7 @@ SGLANG_BASE_URL="http://localhost:30000/v1" deepseek --provider sglang --model d
 
 ---
 
-## What's new in v0.8.10
+## What's New In v0.8.10
 
 A patch release: hotfixes, UX polish, and runtime API additions for the whalescale desktop integration. No breaking changes. [Full changelog](CHANGELOG.md).
 
@@ -169,26 +190,26 @@ Thanks also to [@lloydzhou](https://github.com/lloydzhou), [@jeoor](https://gith
 ## Usage
 
 ```bash
-deepseek                                       # interactive TUI
-deepseek "explain this function"              # one-shot prompt
-deepseek --model deepseek-v4-flash "summarize" # model override
-deepseek --yolo                                # auto-approve tools
-deepseek auth set --provider deepseek         # save API key
-deepseek doctor                                # check setup & connectivity
-deepseek doctor --json                         # machine-readable diagnostics
-deepseek setup --status                        # read-only setup status
-deepseek setup --tools --plugins               # scaffold tool/plugin dirs
-deepseek models                                # list live API models
-deepseek sessions                              # list saved sessions
-deepseek resume --last                         # resume latest session
-deepseek serve --http                          # HTTP/SSE API server
-deepseek pr <N>                                # fetch PR and pre-seed review prompt
-deepseek mcp list                              # list configured MCP servers
-deepseek mcp validate                          # validate MCP config/connectivity
-deepseek mcp-server                            # run dispatcher MCP stdio server
+deepseek                                         # interactive TUI
+deepseek "explain this function"                 # one-shot prompt
+deepseek --model deepseek-v4-flash "summarize"   # model override
+deepseek --yolo                                  # auto-approve tools
+deepseek auth set --provider deepseek            # save API key
+deepseek doctor                                  # check setup & connectivity
+deepseek doctor --json                           # machine-readable diagnostics
+deepseek setup --status                          # read-only setup status
+deepseek setup --tools --plugins                 # scaffold tool/plugin dirs
+deepseek models                                  # list live API models
+deepseek sessions                                # list saved sessions
+deepseek resume --last                           # resume latest session
+deepseek serve --http                            # HTTP/SSE API server
+deepseek pr <N>                                  # fetch PR and pre-seed review prompt
+deepseek mcp list                                # list configured MCP servers
+deepseek mcp validate                            # validate MCP config/connectivity
+deepseek mcp-server                              # run dispatcher MCP stdio server
 ```
 
-### Keyboard shortcuts
+### Keyboard Shortcuts
 
 | Key | Action |
 |---|---|
@@ -211,7 +232,7 @@ Full shortcut catalog: [docs/KEYBINDINGS.md](docs/KEYBINDINGS.md).
 ## Modes
 
 | Mode | Behavior |
-|---|---|
+| --- | --- |
 | **Plan** 🔍 | Read-only investigation — model explores and proposes a plan (`update_plan` + `checklist_write`) before making changes |
 | **Agent** 🤖 | Default interactive mode — multi-step tool use with approval gates; model outlines work via `checklist_write` |
 | **YOLO** ⚡ | Auto-approve all tools in a trusted workspace; still maintains plan and checklist for visibility |
@@ -250,11 +271,11 @@ UI locale is separate from model language — set `locale` in `settings.toml`, u
 
 Legacy aliases `deepseek-chat` / `deepseek-reasoner` map to `deepseek-v4-flash`. NVIDIA NIM variants use your NVIDIA account terms.
 
-*\*DeepSeek Pro rates are a limited-time 75% discount valid until 2026-05-05 15:59 UTC; the TUI cost estimator falls back to base Pro rates after that timestamp.*
+*DeepSeek Pro rates currently reflect a limited-time 75% discount, which remains valid until 15:59 UTC on 5 May 2026. After that time, the TUI cost estimator will revert to the base Pro rates.*
 
 ---
 
-## Publishing your own skill
+## Publishing Your Own Skill
 
 DeepSeek TUI discovers skills from workspace directories (`.agents/skills` → `skills` → `.opencode/skills` → `.claude/skills`) and the global `~/.deepseek/skills`. Each skill is a directory with a `SKILL.md` file:
 
@@ -295,7 +316,7 @@ Commands: `/skills` (list), `/skill <name>` (activate), `/skill new` (scaffold),
 | [RELEASE_RUNBOOK.md](docs/RELEASE_RUNBOOK.md) | Release process |
 | [OPERATIONS_RUNBOOK.md](docs/OPERATIONS_RUNBOOK.md) | Ops & recovery |
 
-Full changelog: [CHANGELOG.md](CHANGELOG.md).
+Full Changelog: [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -313,7 +334,8 @@ Earlier releases shipped with help from these contributors:
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Pull requests welcome — check the [open issues](https://github.com/Hmbown/DeepSeek-TUI/issues) for good first contributions.
 
-*Not affiliated with DeepSeek Inc.*
+> [!Note]
+> *Not affiliated with DeepSeek Inc.*
 
 ## License
 
