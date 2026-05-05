@@ -140,11 +140,10 @@ impl ToolSpec for FimEditTool {
 /// Find a line index matching an anchor string or line number.
 fn find_anchor(lines: &[&str], anchor: &str) -> Option<usize> {
     // Try parsing as a 1-based line number first
-    if let Ok(line_num) = anchor.trim().parse::<usize>() {
-        if line_num >= 1 && line_num <= lines.len() {
+    if let Ok(line_num) = anchor.trim().parse::<usize>()
+        && line_num >= 1 && line_num <= lines.len() {
             return Some(line_num - 1); // convert to 0-based
         }
-    }
 
     // Otherwise, search for a line containing the anchor text
     lines.iter().position(|line| line.contains(anchor))

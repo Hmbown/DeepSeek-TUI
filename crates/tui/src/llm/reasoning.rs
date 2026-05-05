@@ -225,8 +225,8 @@ impl AutoReasoningSelector {
         let mut reasons: Vec<String> = vec![format!("task={:?}", complexity)];
 
         // 3. Cache pressure: if hit ratio is low, drop one tier to rebuild cache.
-        if let Some(hit_ratio) = inputs.cache_hit_ratio {
-            if hit_ratio < self.cache_pressure_threshold && effort > ReasoningEffort::Off {
+        if let Some(hit_ratio) = inputs.cache_hit_ratio
+            && hit_ratio < self.cache_pressure_threshold && effort > ReasoningEffort::Off {
                 let old = effort;
                 effort = match effort {
                     ReasoningEffort::Off => ReasoningEffort::Off,
@@ -243,11 +243,10 @@ impl AutoReasoningSelector {
                     ));
                 }
             }
-        }
 
         // 4. Cost budget: throttle if approaching ceiling.
-        if let (Some(cost), Some(budget)) = (inputs.session_cost, inputs.cost_budget) {
-            if budget > 0.0 {
+        if let (Some(cost), Some(budget)) = (inputs.session_cost, inputs.cost_budget)
+            && budget > 0.0 {
                 let ratio = cost / budget;
                 if ratio >= self.cost_throttle_ratio && effort > ReasoningEffort::Low {
                     let old = effort;
@@ -260,7 +259,6 @@ impl AutoReasoningSelector {
                     ));
                 }
             }
-        }
 
         // 5. Sub-agent fanout: always route to flash.
         if inputs.is_subagent {

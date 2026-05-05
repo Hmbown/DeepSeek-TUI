@@ -181,7 +181,7 @@ impl ToolSpec for ObscuraTool {
 
                 let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
                 let (stdout, stderr) = run_obscura(&args_refs)
-                    .map_err(|e| ToolError::execution_failed(e))?;
+                    .map_err(ToolError::execution_failed)?;
 
                 // If eval was requested, run it separately (obscura's --eval prints to stderr)
                 let eval_result = if let Some(ref js) = eval_js {
@@ -252,7 +252,7 @@ impl ToolSpec for ObscuraTool {
 
                 let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
                 let (stdout, stderr) = run_obscura(&args_refs)
-                    .map_err(|e| ToolError::execution_failed(e))?;
+                    .map_err(ToolError::execution_failed)?;
 
                 let content = clean_obscura_output(&stdout, &stderr);
 

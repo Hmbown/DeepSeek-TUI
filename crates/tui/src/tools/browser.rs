@@ -222,7 +222,7 @@ impl ToolSpec for BrowserTool {
             "navigate" => {
                 let url = get_str(&input, "url")?;
                 let (stdout, _) = run_agent_browser(&["open", &url])
-                    .map_err(|e| ToolError::execution_failed(e))?;
+                    .map_err(ToolError::execution_failed)?;
                 Ok(ToolResult::success(format_navigate(&stdout, &url)))
             }
 
@@ -236,7 +236,7 @@ impl ToolSpec for BrowserTool {
                 let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
 
                 let (stdout, _) = run_agent_browser(&args_refs)
-                    .map_err(|e| ToolError::execution_failed(e))?;
+                    .map_err(ToolError::execution_failed)?;
 
                 let formatted = format_snapshot(&stdout);
                 Ok(ToolResult::success(formatted))
@@ -245,7 +245,7 @@ impl ToolSpec for BrowserTool {
             "click" => {
                 let target = get_str(&input, "target")?;
                 let (stdout, _) = run_agent_browser(&["click", &target])
-                    .map_err(|e| ToolError::execution_failed(e))?;
+                    .map_err(ToolError::execution_failed)?;
                 Ok(ToolResult::success(format_click(&stdout, &target)))
             }
 
@@ -253,7 +253,7 @@ impl ToolSpec for BrowserTool {
                 let target = get_str(&input, "target")?;
                 let text = get_str(&input, "text")?;
                 let _ = run_agent_browser(&["fill", &target, &text])
-                    .map_err(|e| ToolError::execution_failed(e))?;
+                    .map_err(ToolError::execution_failed)?;
                 Ok(ToolResult::success(format!("Filled {} with text ({} chars)", target, text.len())))
             }
 
@@ -261,7 +261,7 @@ impl ToolSpec for BrowserTool {
                 let target = get_str(&input, "target")?;
                 let text = get_str(&input, "text")?;
                 let _ = run_agent_browser(&["type", &target, &text])
-                    .map_err(|e| ToolError::execution_failed(e))?;
+                    .map_err(ToolError::execution_failed)?;
                 Ok(ToolResult::success(format!("Typed into {} ({} chars)", target, text.len())))
             }
 
@@ -278,7 +278,7 @@ impl ToolSpec for BrowserTool {
 
                 // Screenshot doesn't use --json; captures raw output
                 let (stdout, stderr) = run_agent_browser_raw(&args_refs)
-                    .map_err(|e| ToolError::execution_failed(e))?;
+                    .map_err(ToolError::execution_failed)?;
 
                 let output_path = extract_screenshot_path(&stdout, &stderr)
                     .unwrap_or_else(|| path.unwrap_or_else(|| "screenshot.png".into()));
@@ -292,20 +292,20 @@ impl ToolSpec for BrowserTool {
             "get_text" => {
                 let target = get_str(&input, "target")?;
                 let (stdout, _) = run_agent_browser(&["get", "text", &target])
-                    .map_err(|e| ToolError::execution_failed(e))?;
+                    .map_err(ToolError::execution_failed)?;
                 Ok(ToolResult::success(format_get_text(&stdout, &target)))
             }
 
             "get_url" => {
                 let (stdout, _) = run_agent_browser(&["get", "url"])
-                    .map_err(|e| ToolError::execution_failed(e))?;
+                    .map_err(ToolError::execution_failed)?;
                 let url = try_parse_json_string(&stdout, "url").unwrap_or_else(|| stdout.trim().to_string());
                 Ok(ToolResult::success(format!("Current URL: {url}")))
             }
 
             "get_title" => {
                 let (stdout, _) = run_agent_browser(&["get", "title"])
-                    .map_err(|e| ToolError::execution_failed(e))?;
+                    .map_err(ToolError::execution_failed)?;
                 let title = try_parse_json_string(&stdout, "title").unwrap_or_else(|| stdout.trim().to_string());
                 Ok(ToolResult::success(format!("Page title: {title}")))
             }
@@ -315,7 +315,7 @@ impl ToolSpec for BrowserTool {
                 let timeout = input.get("timeout_ms").and_then(|v| v.as_u64());
 
                 // Determine the right wait command
-                let (stdout, _) = if target.parse::<u64>().is_ok() {
+                let (_stdout, _) = if target.parse::<u64>().is_ok() {
                     // Numeric → wait milliseconds
                     run_agent_browser(&["wait", &target])
                 } else if target.starts_with('@') {
@@ -333,7 +333,7 @@ impl ToolSpec for BrowserTool {
                 } else {
                     // Text → wait --text
                     run_agent_browser(&["wait", "--text", &target])
-                }.map_err(|e| ToolError::execution_failed(e))?;
+                }.map_err(ToolError::execution_failed)?;
 
                 let timeout_note = timeout.map(|t| format!(" (timeout: {t}ms)")).unwrap_or_default();
                 Ok(ToolResult::success(format!("Wait complete for '{target}'{timeout_note}")))
@@ -378,7 +378,7 @@ impl ToolSpec for BrowserTool {
             "press_key" => {
                 let key = get_str(&input, "key")?;
                 let _ = run_agent_browser(&["press", &key])
-                    .map_err(|e| ToolError::execution_failed(e))?;
+                    .map_err(ToolError::execution_failed)?;
                 Ok(ToolResult::success(format!("Pressed key: {key}")))
             }
 
@@ -396,14 +396,14 @@ impl ToolSpec for BrowserTool {
                 let args_refs: Vec<&str> = all_args.iter().map(String::as_str).collect();
 
                 let _ = run_agent_browser(&args_refs)
-                    .map_err(|e| ToolError::execution_failed(e))?;
+                    .map_err(ToolError::execution_failed)?;
                 let target_note = target.map(|t| format!(" on {t}")).unwrap_or_default();
                 Ok(ToolResult::success(format!("Scrolled {direction} by {amount}px{target_note}")))
             }
 
             "close" => {
                 let (_stdout, _) = run_agent_browser_raw(&["close"])
-                    .map_err(|e| ToolError::execution_failed(e))?;
+                    .map_err(ToolError::execution_failed)?;
                 Ok(ToolResult::success("Browser closed"))
             }
 

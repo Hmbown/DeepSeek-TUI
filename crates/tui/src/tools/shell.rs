@@ -2456,10 +2456,9 @@ impl ToolSpec for NoteTool {
                 let line = line.map_err(|e| {
                     ToolError::execution_failed(format!("Failed to read notes file: {e}"))
                 })?;
-                if let Ok(record) = serde_json::from_str::<serde_json::Value>(&line) {
-                    if let Some(existing_hash) = record.get("content_hash").and_then(|v| v.as_str())
-                    {
-                        if existing_hash == content_hash {
+                if let Ok(record) = serde_json::from_str::<serde_json::Value>(&line)
+                    && let Some(existing_hash) = record.get("content_hash").and_then(|v| v.as_str())
+                        && existing_hash == content_hash {
                             return Ok(ToolResult {
                                 content: format!(
                                     "deduplicated: note with content hash {content_hash} already exists in {}",
@@ -2474,8 +2473,6 @@ impl ToolSpec for NoteTool {
                                 })),
                             });
                         }
-                    }
-                }
             }
         }
 

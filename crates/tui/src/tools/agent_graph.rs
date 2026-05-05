@@ -118,18 +118,12 @@ pub struct RouteCondition {
 
 /// Shared key-value state carried through the graph.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct GraphState {
     /// Key-value pairs.
     data: HashMap<String, String>,
 }
 
-impl Default for GraphState {
-    fn default() -> Self {
-        Self {
-            data: HashMap::new(),
-        }
-    }
-}
 
 impl GraphState {
     pub fn new() -> Self {
@@ -169,7 +163,7 @@ impl GraphState {
             if parts.len() == 2 {
                 let key = parts[0].trim();
                 let value = parts[1].trim().trim_matches('"').trim_matches('\'');
-                return self.get(key).map_or(false, |v| v.contains(value));
+                return self.get(key).is_some_and(|v| v.contains(value));
             }
         }
 

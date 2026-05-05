@@ -412,7 +412,9 @@ pub enum SubAgentStatus {
 /// - `Finished`: terminal — agent has completed execution
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum SubAgentLifecycle {
+    #[default]
     Spawning,
     TrustRequired,
     Ready,
@@ -421,11 +423,6 @@ pub enum SubAgentLifecycle {
     Finished,
 }
 
-impl Default for SubAgentLifecycle {
-    fn default() -> Self {
-        Self::Spawning
-    }
-}
 
 impl SubAgentLifecycle {
     #[must_use]
@@ -1729,9 +1726,9 @@ impl ToolSpec for AgentSpawnTool {
         // ── Router wiring: auto-select agent type ──────────────────────
         // When no explicit type was specified (defaults to General), use the
         // capability router to match the prompt against known task keywords.
-        if spawn_request.agent_type == SubAgentType::General {
-            if let Some(ref router) = self.runtime.agent_router {
-                if let Some(routed) = router.route(&spawn_request.prompt) {
+        if spawn_request.agent_type == SubAgentType::General
+            && let Some(ref router) = self.runtime.agent_router
+                && let Some(routed) = router.route(&spawn_request.prompt) {
                     tracing::info!(
                         original = "general",
                         routed = routed.as_str(),
@@ -1739,14 +1736,12 @@ impl ToolSpec for AgentSpawnTool {
                     );
                     spawn_request.agent_type = routed;
                 }
-            }
-        }
 
         // ── Router wiring: auto-select model per agent type ────────────
         // When no explicit model is given, try the model router before
         // falling back to the parent's model (the existing default).
-        if spawn_request.model.is_none() {
-            if let Some(ref router) = self.runtime.model_router {
+        if spawn_request.model.is_none()
+            && let Some(ref router) = self.runtime.model_router {
                 let routed_model = router.route(&spawn_request.agent_type).to_string();
                 if routed_model != self.runtime.model {
                     tracing::info!(
@@ -1757,13 +1752,12 @@ impl ToolSpec for AgentSpawnTool {
                     spawn_request.model = Some(routed_model);
                 }
             }
-        }
 
         // ── Profile resolution ──────────────────────────────────────
         // When a profile name is given, look it up in the registry and
         // apply its settings: agent_type, model, posture_prompt.
-        if let Some(ref profile_name) = spawn_request.profile_name {
-            if let Some(ref registry) = self.runtime.profile_registry {
+        if let Some(ref profile_name) = spawn_request.profile_name
+            && let Some(ref registry) = self.runtime.profile_registry {
                 if let Some(profile) = registry.find(profile_name) {
                     tracing::info!(
                         profile = %profile_name,
@@ -1788,7 +1782,6 @@ impl ToolSpec for AgentSpawnTool {
                     );
                 }
             }
-        }
 
         // Dry-run: return a preflight readiness report without spawning.
         if optional_bool(&input, "dry_run", false) {
@@ -1831,8 +1824,8 @@ impl ToolSpec for AgentSpawnTool {
                 }
             });
 
-            return Ok(ToolResult::json(&report)
-                .map_err(|e| ToolError::execution_failed(e.to_string()))?);
+            return ToolResult::json(&report)
+                .map_err(|e| ToolError::execution_failed(e.to_string()));
         }
 
         // Depth cap: reject before locking the manager so we don't introduce

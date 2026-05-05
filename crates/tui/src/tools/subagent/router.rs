@@ -197,7 +197,7 @@ impl AgentRouter {
                         None => {
                             best = Some((entry, kw_len));
                         }
-                        Some((ref best_entry, best_len)) => {
+                        Some((best_entry, best_len)) => {
                             if entry.priority > best_entry.priority
                                 || (entry.priority == best_entry.priority && kw_len > best_len)
                             {
