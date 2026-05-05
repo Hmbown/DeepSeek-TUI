@@ -37,6 +37,7 @@ pub mod mailbox;
 pub mod middleware;
 pub mod model_router;
 pub mod router;
+use crate::tools::profiles::ProfileRegistry;
 #[allow(unused_imports)]
 pub use mailbox::{Mailbox, MailboxEnvelope, MailboxMessage, MailboxReceiver};
 #[allow(unused_imports)]
@@ -526,6 +527,11 @@ struct SpawnRequest {
     /// into separate git worktrees: parent runs `git worktree add` first,
     /// then spawns children with the worktree path as `cwd`.
     cwd: Option<PathBuf>,
+    /// Named agent profile (e.g., "code-reviewer"). Resolved at spawn time.
+    profile_name: Option<String>,
+    /// Posture prompt from the resolved profile (if any). Injected into the
+    /// sub-agent's system prompt at build time.
+    profile_posture: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -619,6 +625,16 @@ pub struct SubAgentRuntime {
     /// Optional capability router for auto-routing spawn requests that
     /// don't specify an agent type. Children inherit this.
     pub agent_router: Option<AgentRouter>,
+    /// Optional model router for auto-selecting per-type models. Children
+    /// inherit this.
+    pub model_router: Option<ModelRouter>,
+    /// Optional profile registry for named agent profiles (code-reviewer,
+    /// architect, etc.). Children inherit this.
+    pub profile_registry: Option<ProfileRegistry>,
+    /// Shared token-usage counter updated after each API response. When set,
+    /// the agent loop increments it so middleware like CompactionGuard can
+    /// react to context-pressure thresholds.
+    pub token_counter: Option<Arc<std::sync::atomic::AtomicU64>>,
 }
 
 impl SubAgentRuntime {
@@ -649,6 +665,9 @@ impl SubAgentRuntime {
             mailbox: None,
             middleware_chain: MiddlewareChain::empty(),
             agent_router: None,
+            model_router: None,
+            profile_registry: None,
+            token_counter: None,
         }
     }
 
@@ -686,6 +705,47 @@ impl SubAgentRuntime {
     #[must_use]
     pub fn with_role_models(mut self, role_models: HashMap<String, String>) -> Self {
         self.role_models = role_models;
+        self
+    }
+
+    /// Attach a capability router for auto-routing spawn requests that
+    /// don't specify an agent type. Children inherit the router.
+    #[must_use]
+    pub fn with_agent_router(mut self, router: AgentRouter) -> Self {
+        self.agent_router = Some(router);
+        self
+    }
+
+    /// Attach a model router for auto-selecting per-type models. Children
+    /// inherit the router.
+    #[must_use]
+    pub fn with_model_router(mut self, router: ModelRouter) -> Self {
+        self.model_router = Some(router);
+        self
+    }
+
+    /// Attach a profile registry for named agent profiles (code-reviewer,
+    /// architect, etc.). Children inherit the registry.
+    #[must_use]
+    pub fn with_profile_registry(mut self, registry: ProfileRegistry) -> Self {
+        self.profile_registry = Some(registry);
+        self
+    }
+
+    /// Attach a shared token-usage counter. The agent loop increments this
+    /// after each API response so middleware like CompactionGuard can watch
+    /// for context-pressure thresholds. Children inherit the counter.
+    #[must_use]
+    pub fn with_token_counter(mut self, counter: Arc<std::sync::atomic::AtomicU64>) -> Self {
+        self.token_counter = Some(counter);
+        self
+    }
+
+    /// Attach a middleware chain for lifecycle hooks (spawn, step, finish).
+    /// Children inherit the chain via `child_runtime()`.
+    #[must_use]
+    pub fn with_middleware_chain(mut self, chain: MiddlewareChain) -> Self {
+        self.middleware_chain = chain;
         self
     }
 
@@ -729,6 +789,9 @@ impl SubAgentRuntime {
             mailbox: self.mailbox.clone(),
             middleware_chain: self.middleware_chain.clone(),
             agent_router: self.agent_router.clone(),
+            model_router: self.model_router.clone(),
+            profile_registry: self.profile_registry.clone(),
+            token_counter: self.token_counter.clone(),
         }
     }
 
@@ -1661,7 +1724,71 @@ impl ToolSpec for AgentSpawnTool {
     }
 
     async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let spawn_request = parse_spawn_request(&input)?;
+        let mut spawn_request = parse_spawn_request(&input)?;
+
+        // ── Router wiring: auto-select agent type ──────────────────────
+        // When no explicit type was specified (defaults to General), use the
+        // capability router to match the prompt against known task keywords.
+        if spawn_request.agent_type == SubAgentType::General {
+            if let Some(ref router) = self.runtime.agent_router {
+                if let Some(routed) = router.route(&spawn_request.prompt) {
+                    tracing::info!(
+                        original = "general",
+                        routed = routed.as_str(),
+                        "agent_spawn: auto-routed agent type"
+                    );
+                    spawn_request.agent_type = routed;
+                }
+            }
+        }
+
+        // ── Router wiring: auto-select model per agent type ────────────
+        // When no explicit model is given, try the model router before
+        // falling back to the parent's model (the existing default).
+        if spawn_request.model.is_none() {
+            if let Some(ref router) = self.runtime.model_router {
+                let routed_model = router.route(&spawn_request.agent_type).to_string();
+                if routed_model != self.runtime.model {
+                    tracing::info!(
+                        agent_type = spawn_request.agent_type.as_str(),
+                        model = %routed_model,
+                        "agent_spawn: model-routed to {routed_model}"
+                    );
+                    spawn_request.model = Some(routed_model);
+                }
+            }
+        }
+
+        // ── Profile resolution ──────────────────────────────────────
+        // When a profile name is given, look it up in the registry and
+        // apply its settings: agent_type, model, posture_prompt.
+        if let Some(ref profile_name) = spawn_request.profile_name {
+            if let Some(ref registry) = self.runtime.profile_registry {
+                if let Some(profile) = registry.find(profile_name) {
+                    tracing::info!(
+                        profile = %profile_name,
+                        agent_type = profile.agent_type.as_str(),
+                        model = %profile.model,
+                        "agent_spawn: resolved profile"
+                    );
+                    // Only override agent_type if it wasn't explicitly set
+                    // (i.e., it's still the default General from parsing).
+                    if spawn_request.agent_type == SubAgentType::General {
+                        spawn_request.agent_type = profile.agent_type.clone();
+                    }
+                    // Only override model if not already set by explicit arg or router.
+                    if spawn_request.model.is_none() {
+                        spawn_request.model = Some(profile.model.clone());
+                    }
+                    spawn_request.profile_posture = Some(profile.posture_prompt.clone());
+                } else {
+                    tracing::warn!(
+                        profile = %profile_name,
+                        "agent_spawn: unknown profile, ignoring"
+                    );
+                }
+            }
+        }
 
         // Dry-run: return a preflight readiness report without spawning.
         if optional_bool(&input, "dry_run", false) {
@@ -1770,6 +1897,13 @@ impl ToolSpec for AgentSpawnTool {
         } else {
             None
         };
+
+        // ── Inject profile posture into the agent's prompt ───────────
+        // The profile posture becomes part of the first user message,
+        // establishing the agent's persona before the task objective.
+        if let Some(ref posture) = spawn_request.profile_posture {
+            spawn_request.prompt = format!("{posture}\n\n## Task\n\n{}", spawn_request.prompt);
+        }
 
         // Derive the child's runtime as a durable background job: it keeps
         // its own cancellation token, forces auto_approve, and optionally
@@ -2784,14 +2918,14 @@ async fn run_subagent(
     let mut final_result: Option<String> = None;
     let mut pending_inputs: VecDeque<SubAgentInput> = VecDeque::new();
 
+    // Middleware context persists across all lifecycle calls so data
+    // set by early hooks (e.g. CompactionGuard in on_step) survives.
+    let mut mw_ctx = MiddlewareContext::new();
+
     // Fire middleware: on_spawn (before first step)
     if let Err(e) = runtime
         .middleware_chain
-        .fire_on_spawn(
-            &agent_id,
-            agent_type.as_str(),
-            &mut MiddlewareContext::new(),
-        )
+        .fire_on_spawn(&agent_id, agent_type.as_str(), &mut mw_ctx)
         .await
     {
         tracing::warn!(agent_id=%agent_id, error=%e, "middleware on_spawn failed");
@@ -2804,11 +2938,7 @@ async fn run_subagent(
         if runtime.cancel_token.is_cancelled() {
             let _ = runtime
                 .middleware_chain
-                .fire_on_finish(
-                    &agent_id,
-                    &SubAgentStatus::Cancelled,
-                    &mut MiddlewareContext::new(),
-                )
+                .fire_on_finish(&agent_id, &SubAgentStatus::Cancelled, &mut mw_ctx)
                 .await;
             emit_agent_progress(
                 runtime.event_tx.as_ref(),
@@ -2884,7 +3014,7 @@ async fn run_subagent(
         let response = tokio::select! {
             biased;
             () = runtime.cancel_token.cancelled() => {
-                let _ = runtime.middleware_chain.fire_on_finish(&agent_id, &SubAgentStatus::Cancelled, &mut MiddlewareContext::new()).await;
+                let _ = runtime.middleware_chain.fire_on_finish(&agent_id, &SubAgentStatus::Cancelled, &mut mw_ctx).await;
                 emit_agent_progress(
                     runtime.event_tx.as_ref(),
                     runtime.mailbox.as_ref(),
@@ -2925,6 +3055,16 @@ async fn run_subagent(
                 response.model.clone(),
                 response.usage.clone(),
             ));
+        }
+
+        // ── Token counter update ────────────────────────────────────
+        // If a shared token counter is attached (e.g. for CompactionGuard),
+        // update it with this response's total tokens so middleware can
+        // track context-pressure in real time.
+        if let Some(ref counter) = runtime.token_counter {
+            let total =
+                u64::from(response.usage.input_tokens) + u64::from(response.usage.output_tokens);
+            counter.fetch_add(total, std::sync::atomic::Ordering::Relaxed);
         }
 
         for block in &response.content {
@@ -3034,21 +3174,31 @@ async fn run_subagent(
         // Fire middleware: on_step (after tool results processed)
         if let Err(e) = runtime
             .middleware_chain
-            .fire_on_step(&agent_id, steps, &mut MiddlewareContext::new())
+            .fire_on_step(&agent_id, steps, &mut mw_ctx)
             .await
         {
             tracing::warn!(agent_id=%agent_id, step=steps, error=%e, "middleware on_step failed");
+        }
+
+        // ── Compaction gate ────────────────────────────────────────
+        // After each step, check whether the CompactionGuard middleware
+        // flagged the context. When the threshold is crossed, emit an
+        // event so the parent can decide whether to trigger a handoff.
+        if mw_ctx.get("compaction_needed") == Some("true") {
+            let pct = mw_ctx.get("compaction_usage_pct").unwrap_or("?");
+            emit_agent_progress(
+                runtime.event_tx.as_ref(),
+                runtime.mailbox.as_ref(),
+                &agent_id,
+                format!("step {steps}/{max_steps}: compaction threshold ({pct}%)"),
+            );
         }
     }
 
     // Fire middleware: on_finish (completed)
     let _ = runtime
         .middleware_chain
-        .fire_on_finish(
-            &agent_id,
-            &SubAgentStatus::Completed,
-            &mut MiddlewareContext::new(),
-        )
+        .fire_on_finish(&agent_id, &SubAgentStatus::Completed, &mut mw_ctx)
         .await;
 
     Ok(SubAgentResult {
@@ -3368,6 +3518,7 @@ fn parse_spawn_request(input: &Value) -> Result<SpawnRequest, ToolError> {
 
     let cwd = parse_optional_cwd(input)?;
     let model = parse_optional_subagent_model(input, "model")?;
+    let profile_name = optional_input_str(input, &["profile"]).map(str::to_string);
 
     Ok(SpawnRequest {
         prompt: prompt.clone(),
@@ -3376,6 +3527,8 @@ fn parse_spawn_request(input: &Value) -> Result<SpawnRequest, ToolError> {
         allowed_tools,
         model,
         cwd,
+        profile_name,
+        profile_posture: None, // filled in during execute when profile resolves
     })
 }
 

@@ -1114,6 +1114,9 @@ fn stub_runtime() -> SubAgentRuntime {
         mailbox: None,
         middleware_chain: MiddlewareChain::empty(),
         agent_router: None,
+        model_router: None,
+        profile_registry: None,
+        token_counter: None,
     }
 }
 

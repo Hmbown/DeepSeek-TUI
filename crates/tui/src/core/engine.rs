@@ -41,11 +41,13 @@ use crate::models::{
 use crate::prompts;
 use crate::seam_manager::{SeamConfig, SeamManager};
 use crate::tools::plan::{SharedPlanState, new_shared_plan_state};
+use crate::tools::profiles::ProfileRegistry;
 use crate::tools::shell::{SharedShellManager, new_shared_shell_manager};
 use crate::tools::spec::RuntimeToolServices;
 use crate::tools::spec::{ApprovalRequirement, ToolError, ToolResult};
 use crate::tools::subagent::{
-    Mailbox, SharedSubAgentManager, SubAgentRuntime, SubAgentType, new_shared_subagent_manager,
+    AgentRouter, CompactionGuard, HandoffPrompt, Mailbox, MiddlewareChain, ModelRouter,
+    SharedSubAgentManager, SubAgentRuntime, SubAgentType, new_shared_subagent_manager,
 };
 use crate::tools::todo::{SharedTodoList, new_shared_todo_list};
 use crate::tools::user_input::{UserInputRequest, UserInputResponse};
@@ -309,11 +311,105 @@ pub struct Engine {
     /// Diagnostics collected during the current step's tool calls. Drained
     /// and forwarded as a synthetic user message before the next API call.
     pending_lsp_blocks: Vec<crate::lsp::DiagnosticBlock>,
+    /// Shared token-usage counter updated after each API response (both
+    /// main engine turns and sub-agent steps). The CompactionGuard
+    /// middleware reads this to detect context-pressure thresholds.
+    token_counter: Arc<std::sync::atomic::AtomicU64>,
 }
 
 // === Internal tool helpers ===
 
 impl Engine {
+    /// Build a fresh middleware chain containing a CompactionGuard that
+    /// shares the engine's token_counter. Since MiddlewareChain::clone()
+    /// returns empty (Box<dyn AgentMiddleware> isn't Clone), callers
+    /// must build a new chain at each SubAgentRuntime construction point.
+    /// The CompactionGuard is cheap to construct — it only wraps an
+    /// Arc::clone of the shared counter.
+    fn build_middleware_chain(&self) -> MiddlewareChain {
+        let guard = CompactionGuard::new(
+            self.token_counter.clone(),
+            DEFAULT_CONTEXT_WINDOW_TOKENS as u64,
+            0.80,
+        );
+        MiddlewareChain::new(vec![Box::new(guard)])
+    }
+
+    /// Increment the shared token counter by the sum of input + output
+    /// tokens from a Usage struct. Called after each API response.
+    fn update_token_counter(&self, usage: &Usage) {
+        let total = u64::from(usage.input_tokens) + u64::from(usage.output_tokens);
+        if total > 0 {
+            self.token_counter
+                .fetch_add(total, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// Build a [`HandoffPrompt`] from the current session state (plan,
+    /// todos, working set). Used when the CompactionGuard middleware
+    /// signals that context is approaching the model limit.
+    async fn build_handoff_prompt(&self) -> HandoffPrompt {
+        let tokens_used = self
+            .token_counter
+            .load(std::sync::atomic::Ordering::Relaxed);
+
+        let mut handoff = HandoffPrompt::new(
+            "Context handoff — continuation of prior agent session.",
+            &self.session.model,
+            tokens_used,
+        );
+
+        // Populate plan progress
+        let plan_state = self.config.plan_state.lock().await;
+        let pct = plan_state.progress_percent();
+        for step in plan_state.steps() {
+            match step.status {
+                crate::tools::plan::StepStatus::Completed => {
+                    handoff = handoff.add_completed(&step.text);
+                }
+                crate::tools::plan::StepStatus::InProgress => {
+                    handoff = handoff.add_in_progress(&step.text);
+                }
+                crate::tools::plan::StepStatus::Paused
+                | crate::tools::plan::StepStatus::Interrupted => {
+                    handoff = handoff.add_blocker(format!(
+                        "Step '{}' is {:?}",
+                        step.text, step.status
+                    ));
+                }
+                _ => {
+                    handoff = handoff.add_pending(&step.text);
+                }
+            }
+        }
+        handoff = handoff.with_pct_complete(pct);
+        drop(plan_state);
+
+        // Populate open loops from todos
+        let todos = self.config.todos.lock().await;
+        let todo_snapshot = todos.snapshot();
+        for item in &todo_snapshot.items {
+            if item.status != crate::tools::todo::TodoStatus::Completed {
+                handoff = handoff.add_open_loop(&item.content);
+            }
+        }
+        drop(todos);
+
+        // Populate working set
+        let paths = self.session.working_set.top_paths(24);
+        for path in &paths {
+            handoff = handoff.add_file(path);
+        }
+
+        tracing::info!(
+            tokens_used = tokens_used,
+            plan_pct = pct,
+            "built handoff prompt"
+        );
+
+        handoff
+    }
+
     fn reset_cancel_token(&mut self) {
         let token = CancellationToken::new();
         self.cancel_token = token.clone();
@@ -380,6 +476,13 @@ impl Engine {
             .unwrap_or_else(|| new_shared_shell_manager(config.workspace.clone()));
         let capacity_controller = CapacityController::new(config.capacity.clone());
 
+        // Shared token counter for CompactionGuard middleware. Updated
+        // after each API response (engine turns + sub-agent steps).
+        // The chain is built fresh at each SubAgentRuntime construction
+        // point via build_middleware_chain() since MiddlewareChain's
+        // Clone returns empty (trait objects aren't clonable).
+        let token_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
+
         // Create Flash seam manager for layered context (#159). v0.7.5 keeps
         // this opt-in until the prefix-cache audit proves when seam production
         // is worth the extra request and transcript mutation.
@@ -442,6 +545,7 @@ impl Engine {
             turn_counter: 0,
             lsp_manager,
             pending_lsp_blocks: Vec::new(),
+            token_counter,
         };
         engine.rehydrate_latest_canonical_state();
 
@@ -528,6 +632,11 @@ impl Engine {
                     )
                     .with_role_models(self.config.subagent_model_overrides.clone())
                     .with_max_spawn_depth(self.config.max_spawn_depth)
+                    .with_agent_router(AgentRouter::with_defaults())
+                    .with_model_router(ModelRouter::with_defaults())
+                    .with_profile_registry(ProfileRegistry::with_builtins())
+                    .with_middleware_chain(self.build_middleware_chain())
+                    .with_token_counter(self.token_counter.clone())
                     .background_runtime();
 
                     let result = {
@@ -853,7 +962,12 @@ impl Engine {
                             Arc::clone(&self.subagent_manager),
                         )
                         .with_role_models(self.config.subagent_model_overrides.clone())
-                        .with_max_spawn_depth(self.config.max_spawn_depth);
+                        .with_max_spawn_depth(self.config.max_spawn_depth)
+                        .with_agent_router(AgentRouter::with_defaults())
+                        .with_model_router(ModelRouter::with_defaults())
+                        .with_profile_registry(ProfileRegistry::with_builtins())
+                        .with_middleware_chain(self.build_middleware_chain())
+                        .with_token_counter(self.token_counter.clone());
                         if let Some((mailbox, cancel_token)) = mailbox_for_runtime.as_ref() {
                             rt = rt
                                 .with_mailbox(mailbox.clone())
@@ -910,6 +1024,7 @@ impl Engine {
 
         // Update session usage
         self.session.total_usage.add(&turn.usage);
+        self.update_token_counter(&turn.usage);
 
         // Emit turn complete event — after all post-turn bookkeeping so
         // the terminal is immediately responsive when the UI receives it.
