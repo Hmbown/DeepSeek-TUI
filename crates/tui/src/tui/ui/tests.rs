@@ -3134,3 +3134,34 @@ fn checklist_write_renders_dedicated_card() {
         "raw JSON must NOT appear: {joined}"
     );
 }
+
+// ---- scroll_with_arrows ----
+
+#[test]
+fn scroll_with_arrows_returns_true_when_input_empty() {
+    let app = create_test_app();
+    assert!(
+        super::should_scroll_with_arrows(&app),
+        "empty composer: Up/Down should scroll transcript"
+    );
+}
+
+#[test]
+fn scroll_with_arrows_returns_true_when_input_only_whitespace() {
+    let mut app = create_test_app();
+    app.input = "   ".to_string();
+    assert!(
+        super::should_scroll_with_arrows(&app),
+        "whitespace-only composer: Up/Down should scroll transcript"
+    );
+}
+
+#[test]
+fn scroll_with_arrows_returns_false_when_input_has_text() {
+    let mut app = create_test_app();
+    app.input = "hello".to_string();
+    assert!(
+        !super::should_scroll_with_arrows(&app),
+        "text in composer: Up/Down should navigate history"
+    );
+}

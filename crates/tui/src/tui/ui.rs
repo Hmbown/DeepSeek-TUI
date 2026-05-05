@@ -7378,8 +7378,12 @@ fn is_ctrl_h_backspace(key: &KeyEvent) -> bool {
         && !key.modifiers.contains(KeyModifiers::SUPER)
 }
 
-fn should_scroll_with_arrows(_app: &App) -> bool {
-    false
+fn should_scroll_with_arrows(app: &App) -> bool {
+    // When the composer is empty (or only whitespace), Up/Down arrows
+    // scroll the transcript. When the composer has text, they navigate
+    // composer history so the user can recall previous prompts.
+    // Cmd+Up / Alt+Up always scroll regardless, handled upstream.
+    app.input.trim().is_empty()
 }
 
 fn extract_reasoning_header(text: &str) -> Option<String> {
