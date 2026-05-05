@@ -671,6 +671,19 @@ impl ToolRegistryBuilder {
         self.with_tool(Arc::new(GraphExecuteTool::new()))
     }
 
+    /// Include the browser automation tool — wraps agent-browser CLI
+    /// for real Chrome browser control. Only registered when `agent-browser`
+    /// is found on PATH (checked via `which agent-browser`).
+    #[must_use]
+    pub fn with_browser_tool(self) -> Self {
+        if super::browser::is_agent_browser_available() {
+            use super::browser::BrowserTool;
+            return self.with_tool(std::sync::Arc::new(BrowserTool::new()));
+        }
+        tracing::info!("agent-browser not found on PATH; skipping browser tool registration");
+        self
+    }
+
     /// Include the web pipeline tool — deep crawl, filter, chunk.
     #[must_use]
     pub fn with_web_pipeline_tool(self) -> Self {

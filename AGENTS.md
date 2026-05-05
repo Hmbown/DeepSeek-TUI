@@ -88,6 +88,30 @@ The layers are designed to compose: `goap_plan` produces a step plan → `manage
 - `crates/tui/src/tools/web_pipeline.rs` — Deep crawl, BM25 filter, smart chunking
 - `crates/tui/src/tools/subagent/middleware.rs` — CompactionGuard, AgentRouter, ModelRouter
 - `crates/tui/src/tools/profiles.rs` — Named agent profiles (code-reviewer, architect, etc.)
+- `crates/tui/src/tools/browser.rs` — Browser automation via agent-browser CLI (snapshot+refs, click, fill, screenshot, evaluate, wait)
+
+## Browser Automation (agent-browser)
+
+DeepSeek TUI integrates with [agent-browser](https://github.com/vercel-labs/agent-browser) for real Chrome browser control. The `browser` tool wraps agent-browser's CLI commands as a first-class ToolSpec. The tool is only registered when `agent-browser` is found on PATH.
+
+### Installation
+
+```bash
+npm i -g agent-browser && agent-browser install
+```
+
+### Core workflow
+
+```
+browser { action: "navigate", url: "https://example.com" }
+browser { action: "snapshot" }           → returns @e1, @e2, ... refs
+browser { action: "click", target: "@e3" }
+browser { action: "fill", target: "@e4", text: "hello" }
+browser { action: "screenshot", annotate: true }
+browser { action: "close" }
+```
+
+For advanced operations (tabs, network interception, auth vault, session management, React DevTools), fall back to `exec_shell agent-browser ...`.
 
 ## Session Longevity (Critical)
 

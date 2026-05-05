@@ -6,6 +6,7 @@ pub mod agent_memory;
 pub mod apply_patch;
 pub mod approval_cache;
 pub mod automation;
+pub mod browser;
 pub mod diagnostics;
 pub mod diff_format;
 pub mod file;
