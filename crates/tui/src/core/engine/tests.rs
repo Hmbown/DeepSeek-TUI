@@ -957,6 +957,68 @@ async fn error_escalation_triggers_replan_when_severe_or_repeated_failures() {
     }
 }
 
+/// v0.8.11: `CapacityControllerConfig::default()` ships with
+/// `enabled = false`. The capacity controller's destructive
+/// interventions (TargetedContextRefresh silently runs compaction;
+/// VerifyAndReplan clears the session message log) silently rewrote
+/// or nuked the user's transcript ("resetting plan" footer +
+/// black-screen symptom). v0.8.11 commits to "trust the model with
+/// the full 1M-token context, only compact on explicit user
+/// /compact" — auto-managing the prefix contradicts that posture.
+/// Power users can still opt in via `capacity.enabled = true`.
+#[tokio::test]
+async fn capacity_disabled_by_default_keeps_messages_intact() {
+    let tmp = tempdir().expect("tempdir");
+    unsafe {
+        std::env::set_var(
+            "DEEPSEEK_CAPACITY_MEMORY_DIR",
+            tmp.path().to_string_lossy().to_string(),
+        );
+    }
+
+    // Default config — what real users get.
+    let mut engine = build_engine_with_capacity(CapacityControllerConfig::default());
+    assert!(
+        !engine.config.capacity.enabled,
+        "capacity controller must be off by default in v0.8.11+"
+    );
+    engine.turn_counter = 6;
+    engine
+        .capacity_controller
+        .mark_turn_start(engine.turn_counter);
+
+    for i in 0..10 {
+        engine.session.messages.push(Message {
+            role: if i % 2 == 0 { "user" } else { "assistant" }.to_string(),
+            content: vec![ContentBlock::Text {
+                text: format!("noise message {i}"),
+                cache_control: None,
+            }],
+        });
+    }
+    engine.session.messages.push(Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "Please finish task".to_string(),
+            cache_control: None,
+        }],
+    });
+
+    let before_len = engine.session.messages.len();
+    let turn = TurnContext::new(10);
+    let restarted = engine
+        .run_capacity_error_escalation_checkpoint(&turn, AppMode::Agent, 2, 2, &[])
+        .await;
+
+    // Capacity is disabled → no replan, no message clear.
+    assert!(!restarted);
+    assert_eq!(engine.session.messages.len(), before_len);
+
+    unsafe {
+        std::env::remove_var("DEEPSEEK_CAPACITY_MEMORY_DIR");
+    }
+}
+
 #[tokio::test]
 async fn controller_disabled_keeps_behavior_unchanged() {
     let capacity = CapacityControllerConfig {

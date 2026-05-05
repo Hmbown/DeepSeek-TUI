@@ -28,16 +28,17 @@ impl Default for CapacityControllerConfig {
         model_priors.insert("deepseek_v4_flash".to_string(), 4.2);
 
         Self {
-            // ON BY DEFAULT since v0.8.6 (#402 P0 survivability). The
-            // capacity controller detects context pressure and triggers
-            // TargetedContextRefresh (compaction) before the model hits its
-            // window limit. Long-running sessions accumulate unbounded
-            // message history that silently crosses the token budget — by
-            // the time the error surfaces the conversation is already
-            // degraded. Running the controller by default catches this
-            // early. Users who prefer the previous behaviour can opt out
-            // via `capacity.enabled = false` in `~/.deepseek/config.toml`.
-            enabled: true,
+            // OFF BY DEFAULT since v0.8.11. The capacity controller's
+            // interventions (TargetedContextRefresh, VerifyAndReplan)
+            // silently rewrite or clear the session message log, which
+            // surprises the user and destroys V4's prefix cache. v0.8.11
+            // committed to "trust the model with the full 1M-token
+            // context, only compact on explicit user `/compact`."
+            // Auto-managing the prefix on the user's behalf works against
+            // that posture. Power users who want the controller can opt
+            // in via `capacity.enabled = true` in
+            // `~/.deepseek/config.toml`.
+            enabled: false,
             // Thresholds retained for the opt-in path; tuning notes live
             // in git history (#63 follow-up).
             low_risk_max: 0.50,
@@ -618,10 +619,12 @@ mod tests {
         assert_eq!(decide_policy(&cfg, &snap), GuardrailAction::VerifyAndReplan);
     }
 
+    /// v0.8.11 flipped the default to `enabled = false`. The controller's
+    /// observe / decide methods early-return when disabled — opt-in only.
     #[test]
-    fn default_controller_is_enabled_and_observes() {
+    fn default_controller_is_disabled_and_skips_observations() {
         let cfg = CapacityControllerConfig::default();
-        assert!(cfg.enabled);
+        assert!(!cfg.enabled);
 
         let mut controller = CapacityController::new(cfg);
         let snapshot = controller.observe_pre_turn(CapacityObservationInput {
@@ -633,7 +636,29 @@ mod tests {
             context_used_ratio: 0.95,
         });
 
-        // With enabled=true, observe_pre_turn returns a snapshot.
+        // With enabled=false, observe_pre_turn returns None.
+        assert!(snapshot.is_none());
+    }
+
+    /// Opting in via `capacity.enabled = true` re-arms the controller —
+    /// observations produce snapshots, decisions can fire interventions.
+    #[test]
+    fn opt_in_controller_observes_and_decides() {
+        let cfg = CapacityControllerConfig {
+            enabled: true,
+            ..Default::default()
+        };
+
+        let mut controller = CapacityController::new(cfg);
+        let snapshot = controller.observe_pre_turn(CapacityObservationInput {
+            turn_index: 1,
+            model: "deepseek-v4-pro".to_string(),
+            action_count_this_turn: 10,
+            tool_calls_recent_window: 10,
+            unique_reference_ids_recent_window: 10,
+            context_used_ratio: 0.95,
+        });
+
         assert!(snapshot.is_some());
         let snap = snapshot.unwrap();
         assert_eq!(snap.turn_index, 1);
@@ -641,11 +666,11 @@ mod tests {
     }
 
     #[test]
-    fn app_config_without_capacity_uses_default_enabled() {
+    fn app_config_without_capacity_uses_default_disabled() {
         let cfg = CapacityControllerConfig::from_app_config(&crate::config::Config::default());
-        // Default is now enabled (#402 P0); no capacity section in config
-        // means the controller starts active with reasonable defaults.
-        assert!(cfg.enabled);
+        // v0.8.11: default is disabled. No capacity section in config
+        // means the controller stays inert; users opt in deliberately.
+        assert!(!cfg.enabled);
         assert_eq!(cfg.low_risk_max, 0.50);
         assert_eq!(cfg.refresh_cooldown_turns, 6);
         assert_eq!(cfg.min_turns_before_guardrail, 4);
