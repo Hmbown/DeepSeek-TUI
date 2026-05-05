@@ -524,6 +524,14 @@ pub fn analyze_command(command: &str) -> SafetyAnalysis {
         );
     }
 
+    if command.contains('\0') {
+        return SafetyAnalysis::dangerous(
+            command,
+            vec!["Command contains null byte (potential injection attempt)".to_string()],
+            vec!["Remove null bytes from the command".to_string()],
+        );
+    }
+
     if command.contains("&&") || command.contains("||") || command.contains(';') {
         // Chains of known-safe commands (cargo/git/zig/npm/etc.) are
         // routine for build+test workflows. Instead of hard-blocking,
@@ -553,6 +561,42 @@ pub fn analyze_command(command: &str) -> SafetyAnalysis {
         return SafetyAnalysis::requires_approval(
             command,
             vec!["Command substitution detected".to_string()],
+        );
+    }
+
+    let dangerous_io_patterns = [
+        (">>", "append redirection"),
+        ("<<", "here document"),
+        ("<&", "input duplication"),
+        (">&", "output duplication"),
+        ("<>", "read/write redirection"),
+    ];
+
+    for (pattern, _description) in dangerous_io_patterns {
+        if command.contains(pattern) {
+            let reason = format!("Command contains potentially dangerous I/O redirection pattern '{}'", pattern);
+            let suggestion = format!("Avoid using {} in commands", pattern);
+            return SafetyAnalysis::requires_approval(
+                command,
+                vec![reason],
+                vec![suggestion],
+            );
+        }
+    }
+
+    if command.contains("#!") && (command.contains("bash") || command.contains("sh") || command.contains("/bin/")) {
+        return SafetyAnalysis::dangerous(
+            command,
+            vec!["Command attempts to execute shell script".to_string()],
+            vec!["Use a script file instead of embedding script content".to_string()],
+        );
+    }
+
+    if command.contains("eval ") || command.starts_with("eval") || command.contains(" exec ") {
+        return SafetyAnalysis::dangerous(
+            command,
+            vec!["Command contains eval or exec (potential code injection)".to_string()],
+            vec!["Avoid using eval or exec in commands".to_string()],
         );
     }
 
