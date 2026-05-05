@@ -189,6 +189,209 @@ impl ProfileRegistry {
     pub fn is_empty(&self) -> bool {
         self.profiles.is_empty()
     }
+
+    /// Import agency-agent profiles from a directory of `.md` files.
+    ///
+    /// Scans the given directory (recursively one level into subdirectories)
+    /// for `.md` files in the [agency-agents](https://github.com/msitarzewski/agency-agents)
+    /// format. Each file must have YAML frontmatter with `name`, `description`,
+    /// and optional `color`/`vibe` fields, followed by a Markdown body.
+    ///
+    /// Division → SubAgentType mapping:
+    /// - engineering/testing → Implementer or Verifier
+    /// - design/product → Implementer
+    /// - project-management/strategy → Plan
+    /// - marketing/sales/support/finance → General
+    ///
+    /// Returns the number of profiles successfully imported.
+    pub fn import_agency_agents(&mut self, dir: &std::path::Path) -> std::io::Result<usize> {
+        if !dir.is_dir() {
+            return Ok(0);
+        }
+
+        let mut imported = 0usize;
+        let mut entries: Vec<std::path::PathBuf> = Vec::new();
+
+        // Collect .md files from dir + immediate subdirs
+        if let Ok(rd) = std::fs::read_dir(dir) {
+            for entry in rd.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    // Recurse one level into division directories
+                    if let Ok(sub) = std::fs::read_dir(&path) {
+                        for e in sub.flatten() {
+                            let p = e.path();
+                            if p.extension().map_or(false, |ext| ext == "md") {
+                                entries.push(p);
+                            }
+                        }
+                    }
+                } else if path.extension().map_or(false, |ext| ext == "md") {
+                    entries.push(path);
+                }
+            }
+        }
+
+        for path in &entries {
+            if let Ok(profile) = parse_agency_agent_file(path) {
+                let name = profile.name.clone();
+                // Skip if already registered
+                if self.find(&name).is_some() {
+                    tracing::debug!(name = %name, "agency-agent profile already registered, skipping");
+                    continue;
+                }
+                self.add(profile);
+                imported += 1;
+            }
+        }
+
+        tracing::info!(imported, dir = %dir.display(), "imported agency-agent profiles");
+        Ok(imported)
+    }
+}
+
+// ── Agency-agent YAML frontmatter parser ─────────────────────────────────────
+
+/// Parsed frontmatter from an agency-agent .md file.
+struct AgencyAgentFrontmatter {
+    name: String,
+    description: String,
+}
+
+/// Parse a single agency-agent .md file into an AgentProfile.
+fn parse_agency_agent_file(path: &std::path::Path) -> Result<AgentProfile, String> {
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
+
+    let (frontmatter, body) = parse_yaml_frontmatter(&raw)
+        .ok_or_else(|| format!("No YAML frontmatter found in {}", path.display()))?;
+
+    let name = frontmatter.name;
+    let description = frontmatter.description;
+
+    // Derive SubAgentType from directory or content keywords
+    let agent_type = infer_agent_type(path, &name, &body);
+
+    // Use the body as the posture prompt
+    let posture_prompt = format_agency_posture(&name, &body);
+
+    Ok(AgentProfile::new(
+        slugify(&name),
+        description,
+        agent_type,
+        "deepseek-v4-flash",
+        ThinkingMode::Medium,
+        posture_prompt,
+    ))
+}
+
+/// Parse YAML frontmatter delimited by `---`.
+/// Returns (frontmatter_fields, body_after_frontmatter).
+fn parse_yaml_frontmatter(content: &str) -> Option<(AgencyAgentFrontmatter, String)> {
+    let mut lines = content.lines();
+    let first = lines.next()?;
+    if first.trim() != "---" {
+        return None;
+    }
+
+    let mut name = String::new();
+    let mut description = String::new();
+
+    for line in &mut lines {
+        let trimmed = line.trim();
+        if trimmed == "---" {
+            break;
+        }
+        if let Some((key, value)) = trimmed.split_once(':') {
+            let value = value.trim().trim_matches('"').trim_matches('\'');
+            match key.trim() {
+                "name" => name = value.to_string(),
+                "description" => description = value.to_string(),
+                _ => {}
+            }
+        }
+    }
+
+    if name.is_empty() {
+        return None;
+    }
+    if description.is_empty() {
+        description = format!("Agency agent: {name}");
+    }
+
+    let body = lines.collect::<Vec<&str>>().join("\n");
+
+    Some((AgencyAgentFrontmatter { name, description }, body))
+}
+
+/// Infer SubAgentType from directory path, agent name, and body keywords.
+fn infer_agent_type(path: &std::path::Path, _name: &str, body: &str) -> SubAgentType {
+    let path_str = path.to_string_lossy().to_lowercase();
+    let body_lower = body.to_lowercase();
+
+    // Check path context
+    if path_str.contains("testing") || path_str.contains("qa") {
+        return SubAgentType::Verifier;
+    }
+    if path_str.contains("design") || path_str.contains("engineering") {
+        return SubAgentType::Implementer;
+    }
+    if path_str.contains("plan") || path_str.contains("strategy") || path_str.contains("product") {
+        return SubAgentType::Plan;
+    }
+    if path_str.contains("review") {
+        return SubAgentType::Review;
+    }
+
+    // Check content keywords
+    if body_lower.contains("review") || body_lower.contains("audit") {
+        return SubAgentType::Review;
+    }
+    if body_lower.contains("test") || body_lower.contains("verify") || body_lower.contains("qa") {
+        return SubAgentType::Verifier;
+    }
+    if body_lower.contains("plan") || body_lower.contains("architecture") || body_lower.contains("strategy") {
+        return SubAgentType::Plan;
+    }
+    if body_lower.contains("implement") || body_lower.contains("build") || body_lower.contains("develop") || body_lower.contains("code") {
+        return SubAgentType::Implementer;
+    }
+
+    SubAgentType::General
+}
+
+/// Convert agent name to a URL-safe slug for profile lookup.
+fn slugify(name: &str) -> String {
+    name.to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<&str>>()
+        .join("-")
+}
+
+/// Format the posture prompt from the agency-agent body content.
+fn format_agency_posture(name: &str, body: &str) -> String {
+    // Clean up the body — remove leading `#` heading and trim
+    let cleaned = body
+        .lines()
+        .skip_while(|l| l.starts_with('#'))
+        .collect::<Vec<&str>>()
+        .join("\n")
+        .trim()
+        .to_string();
+
+    format!(
+        "## Agent Profile: {name}\n\n\
+         You are **{name}**.\n\n\
+         {cleaned}\n\n\
+         ---\n\
+         Follow the core mission and critical rules above. \
+         Produce the technical deliverables expected of this role. \
+         Be specific, concrete, and deliverable-focused."
+    )
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -250,5 +453,91 @@ mod tests {
         ));
         assert_eq!(reg.len(), 1);
         assert!(reg.find("my-custom").is_some());
+    }
+
+    #[test]
+    fn test_parse_yaml_frontmatter() {
+        let content = "---\nname: Frontend Developer\ndescription: Expert frontend developer\ncolor: cyan\n---\n\n# Heading\nBody content here.";
+        let (fm, body) = parse_yaml_frontmatter(content).unwrap();
+        assert_eq!(fm.name, "Frontend Developer");
+        assert_eq!(fm.description, "Expert frontend developer");
+        assert!(body.contains("Body content"));
+    }
+
+    #[test]
+    fn test_parse_no_frontmatter() {
+        assert!(parse_yaml_frontmatter("Just text, no frontmatter").is_none());
+    }
+
+    #[test]
+    fn test_slugify() {
+        assert_eq!(slugify("Frontend Developer"), "frontend-developer");
+        assert_eq!(slugify("Backend Architect"), "backend-architect");
+        assert_eq!(slugify("AI Engineer"), "ai-engineer");
+    }
+
+    #[test]
+    fn test_infer_agent_type_from_path() {
+        use std::path::Path;
+        assert_eq!(
+            infer_agent_type(Path::new("engineering/agent.md"), "", ""),
+            SubAgentType::Implementer
+        );
+        assert_eq!(
+            infer_agent_type(Path::new("testing/agent.md"), "", ""),
+            SubAgentType::Verifier
+        );
+        assert_eq!(
+            infer_agent_type(Path::new("strategy/agent.md"), "", ""),
+            SubAgentType::Plan
+        );
+    }
+
+    #[test]
+    fn test_infer_agent_type_from_body() {
+        use std::path::Path;
+        assert_eq!(
+            infer_agent_type(Path::new("unknown/agent.md"), "", "review the code and audit security"),
+            SubAgentType::Review
+        );
+        assert_eq!(
+            infer_agent_type(Path::new("unknown/agent.md"), "", "test and verify functionality"),
+            SubAgentType::Verifier
+        );
+    }
+
+    #[test]
+    fn test_import_agency_agents() {
+        let tmp = tempfile::tempdir().unwrap();
+        let eng_dir = tmp.path().join("engineering");
+        std::fs::create_dir_all(&eng_dir).unwrap();
+
+        let agent_md = "---\nname: Test Engineer\ndescription: A test engineer for QA\n---\n\n## Identity\nYou are a test engineer.\n\n## Core Mission\nTest everything.\n\n## Critical Rules\nAlways verify.";
+        std::fs::write(eng_dir.join("engineering-test-engineer.md"), agent_md).unwrap();
+
+        let mut reg = ProfileRegistry::default();
+        let count = reg.import_agency_agents(tmp.path()).unwrap();
+        assert!(count >= 1);
+        assert!(reg.find("test-engineer").is_some());
+
+        let profile = reg.find("test-engineer").unwrap();
+        assert!(profile.posture_prompt.contains("Test Engineer"));
+        assert!(profile.posture_prompt.contains("Test everything"));
+    }
+
+    #[test]
+    fn test_import_empty_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut reg = ProfileRegistry::default();
+        let count = reg.import_agency_agents(tmp.path()).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_format_agency_posture_includes_name() {
+        let result = format_agency_posture("Code Reviewer", "# heading\n\nYou review code.\n\nCheck security.");
+        assert!(result.contains("Code Reviewer"));
+        assert!(result.contains("You review code."));
+        assert!(result.contains("Check security."));
     }
 }

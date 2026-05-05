@@ -150,6 +150,45 @@ obscura { action: "serve", port: 9222, stealth: true }
 
 **Complementary use**: obscura for fast/stealth data extraction; browser for interactive UI automation. Combine with web_pipeline for stealth deep crawling.
 
+## Agent Profiles (agency-agents)
+
+DeepSeek TUI can import agent personas from the [agency-agents](https://github.com/msitarzewski/agency-agents) library (92.9k stars, 144+ specialized AI agent personalities across 12 divisions). The `ProfileRegistry` supports bulk import of agency-agent `.md` files:
+
+```rust
+// In engine initialization:
+let mut registry = ProfileRegistry::with_builtins();
+registry.import_agency_agents(Path::new("/path/to/agency-agents")).ok();
+```
+
+### Installation
+
+```bash
+git clone https://github.com/msitarzewski/agency-agents.git ~/.deepseek/agency-agents
+```
+
+### Usage
+
+After import, agents are available as named profiles in `agent_spawn`:
+
+```
+agent_spawn { profile: "frontend-developer", prompt: "Build a React dashboard component" }
+agent_spawn { profile: "security-engineer", prompt: "Audit the auth module" }
+agent_spawn { profile: "incident-response-commander", prompt: "Handle this production outage" }
+```
+
+### Division → SubAgentType mapping
+
+| Agency Division | DeepSeek SubAgentType |
+|----------------|----------------------|
+| Engineering | Implementer |
+| Testing | Verifier |
+| Design | Implementer |
+| Review-heavy roles | Review |
+| Strategy / Product / PM | Plan |
+| Marketing / Sales / Support / Finance | General |
+
+Profiles are cached by name slug (e.g., "Frontend Developer" → "frontend-developer"). Duplicate imports are silently skipped.
+
 ## Session Longevity (Critical)
 
 Long sessions in DeepSeek TUI WILL degrade and crash if you work sequentially. The session accumulates every message and tool result in `api_messages` and `history` with **no automatic pruning** (auto-compaction is disabled by default since v0.6.6). Session saves serialize the entire bloated array to disk.
