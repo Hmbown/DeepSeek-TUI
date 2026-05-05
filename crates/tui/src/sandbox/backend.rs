@@ -41,8 +41,9 @@ impl SandboxKind {
         }
     }
 
-    /// Human-readable label.
+    /// Human-readable label for display and serialization.
     #[must_use]
+    #[allow(dead_code)]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::None => "none",

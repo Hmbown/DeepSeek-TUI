@@ -42,7 +42,6 @@ struct SandboxRunResponse {
 pub struct OpenSandboxBackend {
     base_url: String,
     api_key: Option<String>,
-    timeout_secs: u64,
     client: reqwest::Client,
 }
 
@@ -63,7 +62,6 @@ impl OpenSandboxBackend {
         Self {
             base_url,
             api_key,
-            timeout_secs,
             client,
         }
     }
