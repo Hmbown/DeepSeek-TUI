@@ -1,4 +1,4 @@
-# MCP Integration: context-mode + claude-mem + superpowers
+# MCP Integration: context-mode + claude-mem
 
 **Date:** 2026-05-06
 **Status:** draft
@@ -257,10 +257,15 @@ The MCP client sends `"protocolVersion": "2024-11-05"`. This should be bumped to
 4. **Upgrade resilience:** Bump a plugin version, verify `mcp-resolve.sh` resolves the new path
 5. **Protocol compat:** Verify handshake succeeds against context-mode and claude-mem MCP servers
 
+## Out of scope
+
+**superpowers:** Verified — superpowers is a Claude Code plugin (skills + hooks + agents) with no standalone MCP server. It has no `.mcp.json` and no stdio entry point. Connecting superpowers skills to DeepSeek TUI would require:
+- A separate MCP server wrapper that exposes skills as MCP tools, or
+- Loading skill markdown files directly into DeepSeek TUI's existing skill system (`crates/tui/src/skills/`)
+Either path is independent of this MCP transport work and should be designed separately.
+
 ## Open questions
 
-1. **superpowers MCP server:** Does superpowers have a standalone stdio MCP server? It may be a collection of skills (markdown files + Skill tool invocations) rather than an MCP server. If not, it may need a thin MCP wrapper or be loaded differently (e.g., as a skill directory).
+1. **Windows support:** `mcp-resolve.sh` is bash. On Windows, need a PowerShell equivalent or embed the resolution logic in Rust.
 
-2. **Windows support:** `mcp-resolve.sh` is bash. On Windows, need a PowerShell equivalent or embed the resolution logic in Rust.
-
-3. **Mixed transport:** context-mode and claude-mem only support stdio. If the user wants to connect to HTTP/SSE MCP servers, those are already supported by the SSE transport — just configure `"url"` instead of `"command"`.
+2. **Mixed transport:** context-mode and claude-mem only support stdio. If the user wants to connect to HTTP/SSE MCP servers, those are already supported by the SSE transport — just configure `"url"` instead of `"command"`.
