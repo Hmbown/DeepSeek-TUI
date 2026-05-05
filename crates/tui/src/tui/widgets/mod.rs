@@ -1381,7 +1381,7 @@ fn apply_detail_target_highlight(
     target_cell: usize,
     line_meta: &[TranscriptLineMeta],
 ) {
-    let highlight_bg = Color::Rgb(18, 29, 39);
+    let highlight_bg = Color::Reset;
     for (idx, line) in lines.iter_mut().enumerate() {
         let line_index = top + idx;
         if let Some(TranscriptLineMeta::CellLine { cell_index, .. }) = line_meta.get(line_index)

@@ -343,6 +343,9 @@ pub struct TuiConfig {
     /// label and ignore the escape. Defaults to `true`; set `false` for
     /// terminals that misrender the sequence.
     pub osc8_links: Option<bool>,
+    /// When true, TUI uses Color::Reset everywhere and defers all color decisions
+    /// to the terminal emulator. Useful for terminals with custom color schemes.
+    pub use_terminal_colors: Option<bool>,
 }
 
 /// Notification delivery method (mirrors `tui::notifications::Method`).

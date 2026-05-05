@@ -385,7 +385,7 @@ impl ModalView for PagerView {
                     Color::DarkGray
                 };
                 let fg = if is_current {
-                    Color::Black
+                    Color::Reset
                 } else {
                     Color::Yellow
                 };
