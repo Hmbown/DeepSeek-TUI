@@ -39,7 +39,10 @@ pub mod model_router;
 pub mod router;
 #[allow(unused_imports)]
 pub use mailbox::{Mailbox, MailboxEnvelope, MailboxMessage, MailboxReceiver};
-pub use middleware::{AgentMiddleware, CompactionGuard, MiddlewareChain, MiddlewareContext};
+pub use middleware::{
+    AgentMiddleware, CompactionGuard, HandoffProgress, HandoffPrompt, MiddlewareChain,
+    MiddlewareContext,
+};
 pub use model_router::ModelRouter;
 pub use router::AgentRouter;
 

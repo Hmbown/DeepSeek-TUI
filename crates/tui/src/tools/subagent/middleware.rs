@@ -393,6 +393,194 @@ impl AgentMiddleware for CompactionGuard {
     }
 }
 
+// ── Context handoff ─────────────────────────────────────────────────────────
+// #664: Context-limit handoff as a replacement for routine compaction.
+//
+// When the CompactionGuard signals that context is near the limit, the
+// engine can request a structured handoff prompt. The successor agent
+// receives this prompt as a clean cache prefix — preserving V4's ~90%
+// prefix-cache discount instead of paying the 10× cost of compaction.
+
+use serde::{Deserialize, Serialize};
+
+/// Structured handoff prompt for agent context transfer.
+///
+/// Captures everything a successor agent needs to continue the work
+/// without replaying the full conversation history.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HandoffPrompt {
+    /// High-level summary of what's been accomplished.
+    pub summary: String,
+    /// Current plan state: completed steps, in-progress steps.
+    pub progress: HandoffProgress,
+    /// Open questions or blockers that the successor must address.
+    pub blockers: Vec<String>,
+    /// Open loops — tasks that were started but not completed.
+    pub open_loops: Vec<String>,
+    /// Key files and their current state.
+    pub working_set: Vec<String>,
+    /// The model that was being used.
+    pub model: String,
+    /// Timestamp when the handoff was created.
+    pub timestamp: String,
+    /// Token count at handoff time.
+    pub tokens_used: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HandoffProgress {
+    /// Steps that have been completed.
+    pub completed: Vec<String>,
+    /// Steps currently in progress.
+    pub in_progress: Vec<String>,
+    /// Steps not yet started.
+    pub pending: Vec<String>,
+    /// Overall completion percentage.
+    pub pct_complete: u8,
+}
+
+impl HandoffPrompt {
+    /// Create a new handoff prompt with the given summary.
+    #[must_use]
+    pub fn new(summary: impl Into<String>, model: impl Into<String>, tokens_used: u64) -> Self {
+        Self {
+            summary: summary.into(),
+            progress: HandoffProgress {
+                completed: Vec::new(),
+                in_progress: Vec::new(),
+                pending: Vec::new(),
+                pct_complete: 0,
+            },
+            blockers: Vec::new(),
+            open_loops: Vec::new(),
+            working_set: Vec::new(),
+            model: model.into(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            tokens_used,
+        }
+    }
+
+    /// Render the handoff prompt as a system-prompt-ready string.
+    ///
+    /// This is what gets seeded into the successor agent's first message.
+    /// The format is designed to be a stable cache prefix — identical
+    /// handoffs produce identical prefixes for V4 prefix-cache reuse.
+    #[must_use]
+    pub fn render(&self) -> String {
+        let mut out = String::new();
+        out.push_str("<handoff>\n");
+        out.push_str(&format!(
+            "timestamp: {}\nmodel: {}\ntokens_used: {}\n",
+            self.timestamp, self.model, self.tokens_used
+        ));
+        out.push_str(&format!("\n## Summary\n{}\n", self.summary));
+
+        if !self.progress.completed.is_empty() || self.progress.pct_complete > 0 {
+            out.push_str(&format!(
+                "\n## Progress ({pct}%)\n",
+                pct = self.progress.pct_complete
+            ));
+            if !self.progress.completed.is_empty() {
+                out.push_str("### Completed\n");
+                for step in &self.progress.completed {
+                    out.push_str(&format!("- [x] {step}\n"));
+                }
+            }
+            if !self.progress.in_progress.is_empty() {
+                out.push_str("### In Progress\n");
+                for step in &self.progress.in_progress {
+                    out.push_str(&format!("- [~] {step}\n"));
+                }
+            }
+            if !self.progress.pending.is_empty() {
+                out.push_str("### Pending\n");
+                for step in &self.progress.pending {
+                    out.push_str(&format!("- [ ] {step}\n"));
+                }
+            }
+        }
+
+        if !self.blockers.is_empty() {
+            out.push_str("\n## Blockers\n");
+            for blocker in &self.blockers {
+                out.push_str(&format!("- {blocker}\n"));
+            }
+        }
+
+        if !self.open_loops.is_empty() {
+            out.push_str("\n## Open Loops\n");
+            for loop_item in &self.open_loops {
+                out.push_str(&format!("- {loop_item}\n"));
+            }
+        }
+
+        if !self.working_set.is_empty() {
+            out.push_str("\n## Working Set\n");
+            for file in &self.working_set {
+                out.push_str(&format!("- {file}\n"));
+            }
+        }
+
+        out.push_str("\n## Instructions\n");
+        out.push_str(
+            "You are a successor agent continuing work from a prior session.\n\
+             Review the summary, progress, and open loops above.\n\
+             Continue from where the prior agent left off.\n\
+             Do not re-do completed work.\n",
+        );
+        out.push_str("</handoff>");
+        out
+    }
+
+    /// Builder: set summary.
+    pub fn with_summary(mut self, summary: impl Into<String>) -> Self {
+        self.summary = summary.into();
+        self
+    }
+
+    /// Builder: add a completed step.
+    pub fn add_completed(mut self, step: impl Into<String>) -> Self {
+        self.progress.completed.push(step.into());
+        self
+    }
+
+    /// Builder: add an in-progress step.
+    pub fn add_in_progress(mut self, step: impl Into<String>) -> Self {
+        self.progress.in_progress.push(step.into());
+        self
+    }
+
+    /// Builder: add a pending step.
+    pub fn add_pending(mut self, step: impl Into<String>) -> Self {
+        self.progress.pending.push(step.into());
+        self
+    }
+
+    /// Builder: add a blocker.
+    pub fn add_blocker(mut self, blocker: impl Into<String>) -> Self {
+        self.blockers.push(blocker.into());
+        self
+    }
+
+    /// Builder: add an open loop.
+    pub fn add_open_loop(mut self, loop_item: impl Into<String>) -> Self {
+        self.open_loops.push(loop_item.into());
+        self
+    }
+
+    /// Builder: add a working-set file.
+    pub fn add_file(mut self, file: impl Into<String>) -> Self {
+        self.working_set.push(file.into());
+        self
+    }
+
+    /// Builder: set progress percentage.
+    pub fn with_pct_complete(mut self, pct: u8) -> Self {
+        self.progress.pct_complete = pct;
+        self
+    }
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -716,5 +904,70 @@ mod tests {
         chain.fire_on_step("a", 10, &mut ctx).await.unwrap();
 
         assert!(saw.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    // ── HandoffPrompt tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_handoff_prompt_renders_all_sections() {
+        let handoff = HandoffPrompt::new(
+            "Built auth module, tested endpoints",
+            "deepseek-v4-pro",
+            800_000,
+        )
+        .add_completed("Implement login endpoint")
+        .add_completed("Add JWT middleware")
+        .add_in_progress("Write integration tests")
+        .add_pending("Deploy to staging")
+        .add_blocker("AWS credentials expired")
+        .add_open_loop("Rate limiting not implemented")
+        .add_file("src/auth/mod.rs")
+        .add_file("tests/auth_integration.rs")
+        .with_pct_complete(60);
+
+        let rendered = handoff.render();
+
+        assert!(rendered.contains("<handoff>"));
+        assert!(rendered.contains("</handoff>"));
+        assert!(rendered.contains("Built auth module"));
+        assert!(rendered.contains("deepseek-v4-pro"));
+        assert!(rendered.contains("800000"));
+        assert!(rendered.contains("- [x] Implement login endpoint"));
+        assert!(rendered.contains("- [~] Write integration tests"));
+        assert!(rendered.contains("- [ ] Deploy to staging"));
+        assert!(rendered.contains("AWS credentials expired"));
+        assert!(rendered.contains("Rate limiting not implemented"));
+        assert!(rendered.contains("src/auth/mod.rs"));
+        assert!(rendered.contains("Progress (60%)"));
+        assert!(rendered.contains("successor agent"));
+    }
+
+    #[test]
+    fn test_handoff_prompt_minimal() {
+        let handoff = HandoffPrompt::new("Summary only", "deepseek-v4-flash", 100_000);
+        let rendered = handoff.render();
+
+        assert!(rendered.contains("Summary only"));
+        assert!(rendered.contains("deepseek-v4-flash"));
+        assert!(!rendered.contains("## Progress"));
+        assert!(!rendered.contains("## Blockers"));
+    }
+
+    #[test]
+    fn test_handoff_prompt_serialization_round_trip() {
+        let handoff = HandoffPrompt::new("Test summary", "deepseek-v4-pro", 500_000)
+            .add_completed("Step 1")
+            .add_blocker("Blocker 1")
+            .with_pct_complete(50);
+
+        let json = serde_json::to_string(&handoff).unwrap();
+        let restored: HandoffPrompt = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.summary, "Test summary");
+        assert_eq!(restored.model, "deepseek-v4-pro");
+        assert_eq!(restored.tokens_used, 500_000);
+        assert_eq!(restored.progress.completed, vec!["Step 1"]);
+        assert_eq!(restored.blockers, vec!["Blocker 1"]);
+        assert_eq!(restored.progress.pct_complete, 50);
     }
 }
