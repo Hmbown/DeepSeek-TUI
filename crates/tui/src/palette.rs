@@ -82,6 +82,9 @@ pub const SURFACE_TOOL_ACTIVE: Color = Color::Rgb(29, 48, 73); // #1D3049
 pub const SURFACE_SUCCESS: Color = Color::Rgb(22, 56, 63); // #16383F
 #[allow(dead_code)]
 pub const SURFACE_ERROR: Color = Color::Rgb(63, 27, 36); // #3F1B24
+pub const DIFF_ADDED_BG: Color = Color::Rgb(18, 52, 38); // #123426 dark green tint
+pub const DIFF_DELETED_BG: Color = Color::Rgb(52, 22, 28); // #34161C dark red tint
+pub const DIFF_ADDED: Color = Color::Rgb(87, 199, 133); // #57C785
 pub const ACCENT_REASONING_LIVE: Color = Color::Rgb(146, 198, 248); // #92C6F8
 pub const ACCENT_TOOL_LIVE: Color = Color::Rgb(133, 184, 234); // #85B8EA
 pub const ACCENT_TOOL_ISSUE: Color = Color::Rgb(192, 143, 153); // #C08F99
