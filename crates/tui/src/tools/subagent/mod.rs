@@ -1683,6 +1683,23 @@ impl ToolSpec for AgentSpawnTool {
             )
             .map_err(|e| ToolError::execution_failed(format!("Failed to spawn sub-agent: {e}")))?;
 
+        // Replace the "pending" lease placeholder with the real agent id now that
+        // the manager has assigned one. Without this, `release_resident_leases_for`
+        // (which matches by agent id at terminal-state transitions) can never find
+        // the entry — leases would stay stamped as "pending" forever, defeating the
+        // release machinery added in #660.
+        if let Some(ref file_path) = spawn_request.resident_file {
+            if let Some(lock) = RESIDENT_LEASES.get() {
+                if let Ok(mut guard) = lock.lock() {
+                    if let Some(owner) = guard.get_mut(file_path) {
+                        if owner == "pending" {
+                            *owner = result.agent_id.clone();
+                        }
+                    }
+                }
+            }
+        }
+
         let mut tool_result = if self.name == "spawn_agent" {
             let mut payload = json!({
                 "agent_id": result.agent_id.clone(),
