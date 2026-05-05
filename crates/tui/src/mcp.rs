@@ -658,7 +658,7 @@ impl McpConnection {
             "id": init_id,
             "method": "initialize",
             "params": {
-                "protocolVersion": "2024-11-05",
+                "protocolVersion": "2025-03-26",
                 "clientInfo": {
                     "name": "deepseek-tui",
                     "version": env!("CARGO_PKG_VERSION")
