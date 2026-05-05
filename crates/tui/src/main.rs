@@ -3725,6 +3725,11 @@ async fn run_exec_agent(
         memory_enabled: config.memory_enabled(),
         memory_path: config.memory_path(),
         goal_objective: None,
+        native_web_search: config
+            .tui
+            .as_ref()
+            .and_then(|t| t.native_web_search)
+            .unwrap_or(false),
     };
 
     let engine_handle = spawn_engine(engine_config, config);

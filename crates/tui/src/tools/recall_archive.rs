@@ -260,6 +260,7 @@ fn message_text(message: &Message) -> String {
             ContentBlock::CodeExecutionToolResult { content, .. } => {
                 push(&format!("[code_execution_result] {content}"));
             }
+                    ContentBlock::WebSearchToolResult { .. } => {}
         }
     }
     out

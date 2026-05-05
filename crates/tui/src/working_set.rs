@@ -665,6 +665,7 @@ fn extract_paths_from_message(message: &Message) -> Vec<String> {
             | ContentBlock::ServerToolUse { .. }
             | ContentBlock::ToolSearchToolResult { .. }
             | ContentBlock::CodeExecutionToolResult { .. } => {}
+                    ContentBlock::WebSearchToolResult { .. } => {}
         }
     }
     paths
@@ -830,6 +831,7 @@ fn message_mentions_any_path(message: &Message, needles: &[String], max_scan_cha
             | ContentBlock::ServerToolUse { .. }
             | ContentBlock::ToolSearchToolResult { .. }
             | ContentBlock::CodeExecutionToolResult { .. } => {}
+                    ContentBlock::WebSearchToolResult { .. } => {}
         }
     }
     false

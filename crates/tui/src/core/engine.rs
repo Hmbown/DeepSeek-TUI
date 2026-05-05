@@ -140,6 +140,8 @@ pub struct EngineConfig {
     /// consulted when `memory_enabled` is `true`.
     pub memory_path: PathBuf,
     pub goal_objective: Option<String>,
+    /// Whether to inject the native DeepSeek web_search_20260209 server tool.
+    pub native_web_search: bool,
 }
 
 impl Default for EngineConfig {
@@ -170,6 +172,7 @@ impl Default for EngineConfig {
             memory_enabled: false,
             memory_path: PathBuf::from("./memory.md"),
             goal_objective: None,
+            native_web_search: false,
         }
     }
 }
@@ -883,9 +886,34 @@ impl Engine {
         } else {
             Vec::new()
         };
-        let tools = tool_registry
+        let mut tools = tool_registry
             .as_ref()
             .map(|registry| build_model_tool_catalog(registry.to_api_tools(), mcp_tools, mode));
+
+        // Inject the native DeepSeek web search server tool when enabled.
+        // It is a server-side tool (type "web_search_20260209") — the model
+        // calls it autonomously; the client only needs to declare it.
+        if self.config.native_web_search {
+            let web_search_tool = crate::models::Tool {
+                tool_type: Some("web_search_20260209".to_string()),
+                name: "web_search".to_string(),
+                description: "Search the web for current information.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "The search query"}
+                    },
+                    "required": ["query"]
+                }),
+                allowed_callers: None,
+                defer_loading: None,
+                input_examples: None,
+                strict: None,
+                cache_control: None,
+            };
+            let entry = tools.get_or_insert_with(Vec::new);
+            entry.insert(0, web_search_tool);
+        }
 
         // Main turn loop
         let (status, error) = self

@@ -169,6 +169,7 @@ fn build_responses_input(messages: &[Message]) -> Vec<Value> {
                         "content": content,
                     }));
                 }
+                        ContentBlock::WebSearchToolResult { .. } => {}
             }
         }
     }

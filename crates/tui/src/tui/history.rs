@@ -563,6 +563,18 @@ pub fn history_cells_from_message(msg: &Message) -> Vec<HistoryCell> {
                     });
                 }
             }
+            ContentBlock::WebSearchToolResult { tool_use_id: _, content } => {
+                let summary = content
+                    .iter()
+                    .enumerate()
+                    .map(|(i, r)| format!("{}. [{}]({})", i + 1, r.title, r.url))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                cells.push(HistoryCell::Assistant {
+                    content: format!("🔍 **Web Search Results**\n{summary}"),
+                    streaming: false,
+                });
+            }
             _ => {}
         }
     }

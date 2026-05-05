@@ -250,6 +250,7 @@ fn message_text(msg: &Message) -> String {
             ContentBlock::ServerToolUse { .. }
             | ContentBlock::ToolSearchToolResult { .. }
             | ContentBlock::CodeExecutionToolResult { .. } => {}
+                    ContentBlock::WebSearchToolResult { .. } => {}
         }
     }
     text
@@ -265,7 +266,8 @@ fn extract_paths_from_message(message: &Message, workspace: Option<&Path>) -> Ve
             ContentBlock::Thinking { .. } => Vec::new(),
             ContentBlock::ServerToolUse { .. }
             | ContentBlock::ToolSearchToolResult { .. }
-            | ContentBlock::CodeExecutionToolResult { .. } => Vec::new(),
+            | ContentBlock::CodeExecutionToolResult { .. }
+            | ContentBlock::WebSearchToolResult { .. } => Vec::new()
         };
         paths.extend(candidates);
     }
@@ -524,6 +526,7 @@ fn estimate_tokens_for_message(message: &Message, include_thinking: bool) -> usi
             ContentBlock::ServerToolUse { .. }
             | ContentBlock::ToolSearchToolResult { .. }
             | ContentBlock::CodeExecutionToolResult { .. } => 0,
+            ContentBlock::WebSearchToolResult { .. } => 0
         })
         .sum::<usize>()
 }
@@ -933,6 +936,7 @@ fn build_formatted_summary_request(
                 ContentBlock::ServerToolUse { .. }
                 | ContentBlock::ToolSearchToolResult { .. }
                 | ContentBlock::CodeExecutionToolResult { .. } => {}
+                        ContentBlock::WebSearchToolResult { .. } => {}
             }
         }
     }

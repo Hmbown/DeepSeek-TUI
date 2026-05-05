@@ -343,6 +343,12 @@ pub struct TuiConfig {
     /// label and ignore the escape. Defaults to `true`; set `false` for
     /// terminals that misrender the sequence.
     pub osc8_links: Option<bool>,
+    /// Enable the native DeepSeek web search tool (`web_search_20260209`).
+    /// Only works with the DeepSeek Anthropic-compatible endpoint
+    /// (`https://api.deepseek.com/anthropic/v1/messages`). When `true` the
+    /// tool is injected into every API request; the model calls it server-side
+    /// and results arrive as `web_search_tool_result` content blocks.
+    pub native_web_search: Option<bool>,
 }
 
 /// Notification delivery method (mirrors `tui::notifications::Method`).

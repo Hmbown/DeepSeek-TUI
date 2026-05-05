@@ -935,6 +935,7 @@ pub(super) fn parse_usage(usage: Option<&Value>) -> Usage {
         ServerToolUsage {
             code_execution_requests,
             tool_search_requests,
+            web_search_requests: None,
         }
     });
 

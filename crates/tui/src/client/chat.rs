@@ -440,6 +440,7 @@ fn build_chat_messages_with_reasoning(
                 ContentBlock::ServerToolUse { .. }
                 | ContentBlock::ToolSearchToolResult { .. }
                 | ContentBlock::CodeExecutionToolResult { .. } => {}
+                        ContentBlock::WebSearchToolResult { .. } => {}
             }
         }
 
@@ -1037,6 +1038,7 @@ fn build_stream_events(response: &MessageResponse) -> Vec<StreamEvent> {
             }
             ContentBlock::ToolSearchToolResult { .. }
             | ContentBlock::CodeExecutionToolResult { .. } => {}
+                    ContentBlock::WebSearchToolResult { .. } => {}
         }
         index = index.saturating_add(1);
     }

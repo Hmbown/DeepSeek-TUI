@@ -542,6 +542,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         memory_enabled: config.memory_enabled(),
         memory_path: config.memory_path(),
         goal_objective: app.goal.goal_objective.clone(),
+        native_web_search: config.tui.as_ref().and_then(|t| t.native_web_search).unwrap_or(false),
     }
 }
 

@@ -1812,6 +1812,7 @@ impl RuntimeThreadManager {
             memory_enabled: self.config.memory_enabled(),
             memory_path: self.config.memory_path(),
             goal_objective: None,
+            native_web_search: self.config.tui.as_ref().and_then(|t| t.native_web_search).unwrap_or(false),
         };
 
         let engine = spawn_engine(engine_cfg, &self.config);

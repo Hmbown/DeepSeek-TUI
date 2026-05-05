@@ -68,6 +68,7 @@ pub struct Message {
 /// A single content block inside a message.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(tag = "type")]
+#[non_exhaustive]
 pub enum ContentBlock {
     #[serde(rename = "text")]
     Text {
@@ -110,6 +111,25 @@ pub enum ContentBlock {
         tool_use_id: String,
         content: serde_json::Value,
     },
+    /// Results from a native DeepSeek web_search server tool call.
+    #[serde(rename = "web_search_tool_result")]
+    WebSearchToolResult {
+        tool_use_id: String,
+        content: Vec<WebSearchResult>,
+    },
+}
+
+/// A single result entry from a web_search_tool_result block.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct WebSearchResult {
+    #[serde(rename = "type")]
+    pub result_type: String,
+    pub title: String,
+    pub url: String,
+    #[serde(default)]
+    pub encrypted_content: Option<String>,
+    #[serde(default)]
+    pub page_age: Option<String>,
 }
 
 /// Cache control metadata for tool definitions and blocks.
@@ -163,6 +183,8 @@ pub struct ServerToolUsage {
     pub code_execution_requests: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_search_requests: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub web_search_requests: Option<u32>,
 }
 
 /// Response payload for a message request.
