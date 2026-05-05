@@ -1473,6 +1473,28 @@ async fn dismissed_plan_prompt_leaves_non_numeric_input_for_normal_send_path() {
 }
 
 #[tokio::test]
+async fn dispatch_failure_before_turn_started_clears_loading_state() {
+    let mut app = create_test_app();
+    let engine = crate::core::engine::mock_engine_handle();
+    let handle = engine.handle.clone();
+    drop(engine.rx_op);
+
+    let result = dispatch_user_message(
+        &mut app,
+        &handle,
+        crate::tui::app::QueuedMessage::new("hello".to_string(), None),
+    )
+    .await;
+
+    assert!(result.is_err());
+    assert!(
+        !app.is_loading,
+        "failed dispatch must not leave future composer submits queued as if a turn were live"
+    );
+    assert!(app.last_send_at.is_none());
+}
+
+#[tokio::test]
 async fn numeric_plan_choice_still_queues_follow_up_when_busy() {
     let mut app = create_test_app();
     app.mode = AppMode::Plan;

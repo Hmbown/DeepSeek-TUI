@@ -3168,7 +3168,7 @@ async fn dispatch_user_message(
         app.model.clone()
     };
 
-    engine_handle
+    if let Err(err) = engine_handle
         .send(Op::SendMessage {
             content,
             mode: app.mode,
@@ -3179,7 +3179,12 @@ async fn dispatch_user_message(
             trust_mode: app.trust_mode,
             auto_approve: app.mode == AppMode::Yolo,
         })
-        .await?;
+        .await
+    {
+        app.is_loading = false;
+        app.last_send_at = None;
+        return Err(err);
+    }
 
     Ok(())
 }
