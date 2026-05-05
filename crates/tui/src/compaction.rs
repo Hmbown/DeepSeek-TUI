@@ -820,7 +820,8 @@ async fn create_summary(
     model: &str,
 ) -> Result<String> {
     let limits = summary_input_limits_for_model(model);
-    let request = if should_use_cache_aligned_summary(model, messages) {
+    let used_cache_aligned = should_use_cache_aligned_summary(model, messages);
+    let request = if used_cache_aligned {
         build_cache_aligned_summary_request(model, messages, limits)
     } else {
         build_formatted_summary_request(model, messages, limits)
@@ -831,6 +832,15 @@ async fn create_summary(
     // tokens through the side-channel so the dashboard total
     // matches the website (#526).
     crate::cost_status::report(&response.model, &response.usage);
+
+    // #584: emit one debug-level event per summary call so the
+    // V4 cache-aligned win is observable post-deploy without
+    // adding UI surface. The event is emitted with
+    // `target = "compaction"`, so the filter is
+    // `RUST_LOG=compaction=debug` (the module-path form
+    // `deepseek_tui::compaction=debug` does NOT match — `EnvFilter`
+    // matches the explicit target string when one is set).
+    log_summary_cache_telemetry(used_cache_aligned, &response.usage);
 
     // Extract text from response
     let summary = response
@@ -846,6 +856,87 @@ async fn create_summary(
     Ok(summary)
 }
 
+/// Cache-hit percentage for a compaction summary call.
+///
+/// Denominator is `input_tokens` (the total prompt size), not
+/// `cache_hit + cache_miss`. Some providers populate
+/// `prompt_cache_hit_tokens` but not `prompt_cache_miss_tokens` — using
+/// the sum as the denominator there reports an inflated 100% even when
+/// most of the prompt was uncached. Anchoring on `input_tokens` matches
+/// how the rest of the codebase (cost reporting, `/cache`) infers
+/// missing miss counts. (#584)
+fn summary_cache_hit_percent(cache_hit: u32, input_tokens: u32) -> f64 {
+    if input_tokens > 0 {
+        (f64::from(cache_hit) * 100.0) / f64::from(input_tokens)
+    } else {
+        0.0
+    }
+}
+
+/// Emit one `tracing::debug!` event per compaction summary call so the
+/// path choice (cache-aligned vs fallback) and the resulting cache-hit
+/// rate are observable. Both raw token counts and the percentage are
+/// included; on providers that don't return cache-token fields the
+/// counts are reported as `0` and the percentage as `0.0`. (#584)
+fn log_summary_cache_telemetry(used_cache_aligned: bool, usage: &crate::models::Usage) {
+    let path = if used_cache_aligned {
+        "cache_aligned"
+    } else {
+        "fallback"
+    };
+    let cache_hit = usage.prompt_cache_hit_tokens.unwrap_or(0);
+    let cache_miss = usage.prompt_cache_miss_tokens.unwrap_or(0);
+    let cache_hit_pct = summary_cache_hit_percent(cache_hit, usage.input_tokens);
+    tracing::debug!(
+        target: "compaction",
+        "compaction summary call: path={} prompt_tokens={} cache_hit_tokens={} cache_miss_tokens={} cache_hit_pct={:.1}",
+        path,
+        usage.input_tokens,
+        cache_hit,
+        cache_miss,
+        cache_hit_pct,
+    );
+}
+
+/// Decide whether to use the cache-aligned summary path
+/// ([`build_cache_aligned_summary_request`]) or the fallback
+/// ([`build_formatted_summary_request`]). Returns `true` when both
+/// gates hold:
+///
+/// 1. The model has a known large context window
+///    (≥ `LARGE_CONTEXT_WINDOW_TOKENS`, currently V4-scale).
+/// 2. Replaying the message prefix plus a ~512-token instruction
+///    still fits within `CACHE_ALIGNED_SUMMARY_CONTEXT_BUDGET_PERCENT`
+///    of that budget.
+///
+/// ## Why the two paths produce slightly different prompts (#584)
+///
+/// The two summary requests are *intentionally* framed differently:
+///
+/// - **Cache-aligned** replays the original `messages` verbatim
+///   with `system: None` and appends the summary instruction as
+///   the final `user` turn. The model sees the conversation as if
+///   it were its own history. This is what lets the V4 prefix cache
+///   hit on the bulk of the request (#572).
+/// - **Fallback** reformats the conversation into a flat
+///   `User:/Assistant:` transcript inside a single `user` message
+///   and adds a "You are a helpful assistant that creates concise
+///   conversation summaries." system prompt. The model sees a
+///   transcript of someone else's conversation.
+///
+/// The empirical bar is that V4 produces equivalent summaries
+/// either way; the post-#572 review noted this fork is worth
+/// documenting but not yet worth unifying. The fallback's
+/// external-transcript framing is also more conservative for the
+/// older / smaller models the cache-aligned path explicitly
+/// excludes, so dropping the system prompt would risk regressing
+/// those models without a corresponding gain. If we ever want to
+/// unify, land it in a separate PR backed by an A/B summary-quality
+/// evaluation rather than as a drive-by cleanup.
+///
+/// `create_summary` emits a `tracing::debug!` event under
+/// `target = "compaction"` after each call so the path choice and
+/// cache-hit rate are observable post-deploy without UI surface.
 fn should_use_cache_aligned_summary(model: &str, messages: &[Message]) -> bool {
     let Some(window) = context_window_for_model(model) else {
         return false;
@@ -1189,6 +1280,30 @@ mod tests {
             "deepseek-v3.2-128k",
             &messages
         ));
+    }
+
+    /// #584: the summary cache-hit percentage must be computed against
+    /// `input_tokens`, not `cache_hit + cache_miss`. Providers that
+    /// only populate `prompt_cache_hit_tokens` (and leave the miss
+    /// field at `None`) would otherwise be reported as a flat 100%
+    /// hit rate even when most of the prompt was uncached.
+    #[test]
+    fn summary_cache_hit_percent_uses_input_tokens_as_denominator() {
+        // Both fields populated and consistent.
+        assert!((summary_cache_hit_percent(800, 1000) - 80.0).abs() < f64::EPSILON);
+        // No cache hit at all.
+        assert!((summary_cache_hit_percent(0, 1000) - 0.0).abs() < f64::EPSILON);
+        // Full cache hit.
+        assert!((summary_cache_hit_percent(1000, 1000) - 100.0).abs() < f64::EPSILON);
+        // Partial-telemetry guard: provider reports `cache_hit` only,
+        // miss is unknown (treated as 0 by the caller). Naive
+        // `hit / (hit + miss)` would have reported 100%; against
+        // `input_tokens` the answer is the real share.
+        assert!((summary_cache_hit_percent(200, 1000) - 20.0).abs() < f64::EPSILON);
+        // Defensive: zero `input_tokens` short-circuits without a
+        // divide-by-zero.
+        assert!((summary_cache_hit_percent(0, 0) - 0.0).abs() < f64::EPSILON);
+        assert!((summary_cache_hit_percent(50, 0) - 0.0).abs() < f64::EPSILON);
     }
 
     #[test]
