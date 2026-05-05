@@ -589,6 +589,12 @@ pub fn should_compact(
     if !config.enabled {
         return false;
     }
+    // When prefer_handoff is set, skip automatic LLM compaction. The handoff
+    // threshold system in handoff.rs instead prompts the model to write
+    // `.deepseek/handoff.md` when context pressure builds.
+    if config.prefer_handoff == Some(true) {
+        return false;
+    }
 
     let plan = plan_compaction(
         messages,
