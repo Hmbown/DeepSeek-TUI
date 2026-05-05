@@ -821,7 +821,7 @@ fn parse_spawn_request_cwd_empty_string_yields_none() {
 #[test]
 fn build_subagent_system_prompt_appends_role_when_set() {
     let assignment = SubAgentAssignment::new("p".to_string(), Some("worker".to_string()));
-    let prompt = build_subagent_system_prompt(&SubAgentType::General, &assignment);
+    let prompt = build_subagent_system_prompt(&SubAgentType::General, &assignment, crate::localization::Locale::En);
     assert!(
         prompt.ends_with("You are operating in the role of `worker`."),
         "expected role line at end, got: {}",
@@ -832,14 +832,14 @@ fn build_subagent_system_prompt_appends_role_when_set() {
 #[test]
 fn build_subagent_system_prompt_skips_role_when_none() {
     let assignment = SubAgentAssignment::new("p".to_string(), None);
-    let prompt = build_subagent_system_prompt(&SubAgentType::General, &assignment);
+    let prompt = build_subagent_system_prompt(&SubAgentType::General, &assignment, crate::localization::Locale::En);
     assert!(!prompt.contains("You are operating in the role of"));
 }
 
 #[test]
 fn build_subagent_system_prompt_skips_role_when_blank() {
     let assignment = SubAgentAssignment::new("p".to_string(), Some("   ".to_string()));
-    let prompt = build_subagent_system_prompt(&SubAgentType::General, &assignment);
+    let prompt = build_subagent_system_prompt(&SubAgentType::General, &assignment, crate::localization::Locale::En);
     assert!(!prompt.contains("You are operating in the role of"));
 }
 
@@ -1106,6 +1106,7 @@ fn stub_runtime() -> SubAgentRuntime {
         context,
         allow_shell: true,
         event_tx: None,
+        locale: crate::localization::Locale::En,
         manager: new_shared_subagent_manager(workspace, 5),
         spawn_depth: 0,
         max_spawn_depth: DEFAULT_MAX_SPAWN_DEPTH,

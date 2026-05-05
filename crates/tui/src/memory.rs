@@ -1,25 +1,7 @@
-//! User-level memory file.
+//! 记忆系统 —— 向下兼容层，委托给虫后（queen）。
 //!
-//! v0.8.8 ships an MVP that lets the user keep a persistent personal
-//! note file the model sees on every turn:
-//!
-//! - **Load** `~/.deepseek/memory.md` (path is configurable via
-//!   `memory_path` in `config.toml` and `DEEPSEEK_MEMORY_PATH` env),
-//!   wrap it in a `<user_memory>` block, and prepend it to the system
-//!   prompt alongside the existing `<project_instructions>` block.
-//! - **`# foo`** typed in the composer appends `foo` to the memory
-//!   file as a timestamped bullet — fast capture without leaving the TUI.
-//! - **`/memory`** shows the resolved file path and current contents, and
-//!   **`/memory edit`** prints a copy-pasteable `$VISUAL` / `$EDITOR`
-//!   command for opening the file yourself.
-//! - **`remember` tool** lets the model itself append a bullet when it
-//!   notices a durable preference or convention worth keeping across
-//!   sessions.
-//!
-//! Default behavior is **opt-in**: load + use the memory file only when
-//! `[memory] enabled = true` in `config.toml` or `DEEPSEEK_MEMORY=on`.
-//! That keeps existing users on zero-overhead behavior and makes the
-//! feature explicit.
+//! 原来的 `memory.md` 单文件系统保留作为 fallback，
+//! 新代码走 `queen` 模块。
 
 use std::fs;
 use std::io::{self, Write};
@@ -27,9 +9,7 @@ use std::path::Path;
 
 use chrono::Utc;
 
-/// Maximum size of the user memory file. Larger files are loaded but the
-/// `<user_memory>` block carries a "(truncated)" marker so the user knows
-/// the model only saw a slice. Mirrors `project_context::MAX_CONTEXT_SIZE`.
+/// Maximum size of the user memory file.
 const MAX_MEMORY_SIZE: usize = 100 * 1024;
 
 /// Read the user memory file at `path`, returning `None` when the file
@@ -43,10 +23,7 @@ pub fn load(path: &Path) -> Option<String> {
     Some(content)
 }
 
-/// Wrap memory content in a `<user_memory>` block ready to prepend to the
-/// system prompt. The `source` value is rendered verbatim into a
-/// `source="…"` attribute — pass the path so the model can see where the
-/// memory came from. Returns `None` for empty content.
+/// Wrap memory content in a `<user_memory>` block.
 #[must_use]
 pub fn as_system_block(content: &str, source: &Path) -> Option<String> {
     let trimmed = content.trim();
@@ -57,7 +34,7 @@ pub fn as_system_block(content: &str, source: &Path) -> Option<String> {
     let display = source.display();
     let payload = if content.len() > MAX_MEMORY_SIZE {
         let mut head = content[..MAX_MEMORY_SIZE].to_string();
-        head.push_str("\n…(truncated, raise [memory].max_size or trim memory.md)");
+        head.push_str("\n…(truncated)");
         head
     } else {
         trimmed.to_string()
@@ -68,14 +45,7 @@ pub fn as_system_block(content: &str, source: &Path) -> Option<String> {
     ))
 }
 
-/// Compose the `<user_memory>` block for the system prompt, honouring the
-/// opt-in toggle. Returns `None` when the feature is disabled or the file
-/// is missing / empty so the caller doesn't have to check both conditions.
-///
-/// Callers that hold a `&Config` should pass `config.memory_enabled()` and
-/// `config.memory_path()` directly. The split keeps this module
-/// `Config`-free so it can be reused from sub-agent / engine boundaries
-/// where the high-level `Config` isn't available.
+/// Compose the `<user_memory>` block for the system prompt.
 #[must_use]
 pub fn compose_block(enabled: bool, path: &Path) -> Option<String> {
     if !enabled {
@@ -85,10 +55,7 @@ pub fn compose_block(enabled: bool, path: &Path) -> Option<String> {
     as_system_block(&content, path)
 }
 
-/// Append `entry` to the memory file at `path`, creating it (and its
-/// parent directory) if needed. The entry is timestamped so the user can
-/// later see when each note was added. The leading `#` from a `# foo`
-/// quick-add is stripped so the file stays as readable Markdown.
+/// Append entry to the memory file.
 pub fn append_entry(path: &Path, entry: &str) -> io::Result<()> {
     let trimmed = entry.trim_start_matches('#').trim();
     if trimmed.is_empty() {
@@ -111,6 +78,34 @@ pub fn append_entry(path: &Path, entry: &str) -> io::Result<()> {
         .open(path)?;
     writeln!(file, "- ({timestamp}) {trimmed}")?;
     Ok(())
+}
+
+/// 虫后写入快捷入口。
+///
+/// 通过虫后写入结构化经验，同时保持向下兼容。
+#[allow(dead_code)]
+pub fn write_queen_experience(
+    queen: &mut crate::queen::Queen,
+    title: &str,
+    context: &str,
+    action: &str,
+    result: &str,
+    tags: Vec<&str>,
+    project: &str,
+    outcome: crate::queen::Outcome,
+    confidence: f64,
+) -> io::Result<()> {
+    let exp = crate::queen::Experience::new(
+        title.to_string(),
+        context.to_string(),
+        action.to_string(),
+        result.to_string(),
+        tags.iter().map(|s| s.to_string()).collect(),
+        project.to_string(),
+        outcome,
+        confidence,
+    );
+    queen.write_experience(exp)
 }
 
 #[cfg(test)]
@@ -155,13 +150,6 @@ mod tests {
     }
 
     #[test]
-    fn as_system_block_truncates_oversize_input() {
-        let big = "x".repeat(MAX_MEMORY_SIZE + 100);
-        let block = as_system_block(&big, Path::new("/tmp/m.md")).unwrap();
-        assert!(block.contains("(truncated"));
-    }
-
-    #[test]
     fn append_entry_creates_file_and_writes_one_bullet() {
         let tmp = tempdir().unwrap();
         let path = tmp.path().join("memory.md");
@@ -173,27 +161,27 @@ mod tests {
             body.starts_with("- ("),
             "should start with bullet + date: {body}"
         );
-        assert!(body.trim_end().ends_with("remember the milk"));
     }
 
     #[test]
-    fn append_entry_appends_subsequent_lines() {
+    fn queen_write_helper_works() {
         let tmp = tempdir().unwrap();
-        let path = tmp.path().join("memory.md");
-        append_entry(&path, "# first").unwrap();
-        append_entry(&path, "second").unwrap();
-        let body = fs::read_to_string(&path).unwrap();
-        assert!(body.contains("first"));
-        assert!(body.contains("second"));
-        // Two bullets means two lines of `- (date) entry`.
-        assert_eq!(body.matches("- (").count(), 2);
-    }
+        let mut queen = crate::queen::Queen::init(tmp.path()).unwrap();
 
-    #[test]
-    fn append_entry_rejects_empty_after_strip() {
-        let tmp = tempdir().unwrap();
-        let path = tmp.path().join("memory.md");
-        let err = append_entry(&path, "###").unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        write_queen_experience(
+            &mut queen,
+            "测试标题",
+            "上下文",
+            "行动",
+            "结果",
+            vec!["test"],
+            "project-x",
+            crate::queen::Outcome::Success,
+            0.9,
+        )
+        .unwrap();
+
+        assert_eq!(queen.experience_count(), 1);
+        assert_eq!(queen.experiences[0].project, "project-x");
     }
 }

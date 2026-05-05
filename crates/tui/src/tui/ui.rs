@@ -500,6 +500,28 @@ fn handle_memory_quick_add(app: &mut App, input: &str, config: &Config) {
             ));
         }
     }
+
+    // 同时写入虫后记忆
+    if let Some(ref queen) = app.queen {
+        let entry = input.trim_start_matches('#').trim();
+        if !entry.is_empty()
+            && let Ok(mut guard) = queen.lock()
+        {
+            let exp = crate::queen::Experience::new(
+                format!("快速笔记: {}", entry.chars().take(40).collect::<String>()),
+                "用户在 composer 中通过 # 快速记录".to_string(),
+                entry.to_string(),
+                "已保存到虫后记忆".to_string(),
+                vec!["quick-note".to_string()],
+                app.workspace.to_string_lossy().to_string(),
+                crate::queen::Outcome::Success,
+                0.9,
+            );
+            if let Err(err) = guard.write_experience(exp) {
+                tracing::warn!(target: "queen", "写入虫后 # 笔记经验失败: {err}");
+            }
+        }
+    }
 }
 
 fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
@@ -543,6 +565,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         memory_enabled: config.memory_enabled(),
         memory_path: config.memory_path(),
         goal_objective: app.goal.goal_objective.clone(),
+        queen: app.queen.clone(),
     }
 }
 
@@ -751,6 +774,20 @@ async fn run_event_loop(
                             app.last_reasoning = Some(app.reasoning_buffer.clone());
                         }
                         app.reasoning_buffer.clear();
+                    }
+                    EngineEvent::ThinkingTranslated { text } => {
+                        // 更新最后显示的 thinking 内容为翻译后的版本
+                        app.last_reasoning = Some(text.clone());
+                        // 找到最后一个 Thinking 历史单元格并更新其内容
+                        for cell in app.history.iter_mut().rev() {
+                            if let HistoryCell::Thinking { content, .. } = cell
+                            {
+                                *content = text.clone();
+                                transcript_batch_updated = true;
+                                break;
+                            }
+                        }
+                        app.needs_redraw = true;
                     }
                     EngineEvent::ToolCallStarted { id, name, input } => {
                         app.pending_tool_uses
@@ -1564,10 +1601,12 @@ async fn run_event_loop(
 
             // Handle onboarding flow
             if app.onboarding != OnboardingState::None {
-                // After Welcome (and the new Language step) we route to either
-                // the API-key step, the trust prompt, or the tips screen
-                // depending on what the user still needs to set up.
-                let advance_after_language = |app: &mut App| {
+                // Flow: Language → Welcome (in chosen locale) → ApiKey/Trust/Tips
+                let advance_from_language = |app: &mut App| {
+                    app.status_message = None;
+                    app.onboarding = OnboardingState::Welcome;
+                };
+                let advance_from_welcome = |app: &mut App| {
                     app.status_message = None;
                     if app.onboarding_needs_api_key {
                         app.onboarding = OnboardingState::ApiKey;
@@ -1576,10 +1615,6 @@ async fn run_event_loop(
                     } else {
                         app.onboarding = OnboardingState::Tips;
                     }
-                };
-                let advance_onboarding = |app: &mut App| {
-                    app.status_message = None;
-                    app.onboarding = OnboardingState::Language;
                 };
 
                 match key.code {
@@ -1613,7 +1648,7 @@ async fn run_event_loop(
                                     StatusToastLevel::Info,
                                     Some(2_500),
                                 );
-                                advance_after_language(app);
+                                advance_from_language(app);
                             }
                             Err(err) => {
                                 app.status_message = Some(format!("Failed to save locale: {err}"));
@@ -1622,12 +1657,12 @@ async fn run_event_loop(
                     }
                     KeyCode::Enter => match app.onboarding {
                         OnboardingState::Welcome => {
-                            advance_onboarding(app);
+                            advance_from_welcome(app);
                         }
                         OnboardingState::Language => {
                             // Enter without a digit pick keeps the existing
                             // setting (which defaults to "auto").
-                            advance_after_language(app);
+                            advance_from_language(app);
                         }
                         OnboardingState::ApiKey => {
                             let key = app.api_key_input.trim().to_string();
@@ -1679,9 +1714,9 @@ async fn run_event_loop(
                                     }
 
                                     // After saving the key, advance to the next
-                                    // step (TrustDirectory or Tips) instead of
-                                    // going back to Language.
-                                    advance_after_language(app);
+                                    // step (TrustDirectory or Tips) — user
+                                    // already saw Welcome.
+                                    advance_from_welcome(app);
                                 }
                                 Err(e) => {
                                     app.status_message = Some(e.to_string());
@@ -3154,6 +3189,7 @@ async fn dispatch_user_message(
             None,
             prompts::PromptSessionContext {
                 user_memory_block: None,
+                chonghou_block: None,
                 goal_objective: app.goal.goal_objective.as_deref(),
             },
             app.ui_locale,
@@ -3250,6 +3286,14 @@ async fn drain_web_config_events(
                             )
                             .await;
                         }
+                        if outcome.locale_changed {
+                            let _ = engine_handle
+                                .send(Op::SetLocale {
+                                    locale: app.ui_locale,
+                                    mode: app.mode,
+                                })
+                                .await;
+                        }
                         app.status_message = Some(format!(
                             "Web config draft applied: {}",
                             outcome.final_message
@@ -3273,6 +3317,14 @@ async fn drain_web_config_events(
                                 app.compaction_config(),
                             )
                             .await;
+                        }
+                        if outcome.locale_changed {
+                            let _ = engine_handle
+                                .send(Op::SetLocale {
+                                    locale: app.ui_locale,
+                                    mode: app.mode,
+                                })
+                                .await;
                         }
                         app.add_message(HistoryCell::System {
                             content: outcome.final_message.clone(),
@@ -3852,6 +3904,14 @@ async fn apply_command_result(
                                     app.compaction_config(),
                                 )
                                 .await;
+                            }
+                            if outcome.locale_changed {
+                                let _ = engine_handle
+                                    .send(Op::SetLocale {
+                                        locale: app.ui_locale,
+                                        mode: app.mode,
+                                    })
+                                    .await;
                             }
                             app.add_message(HistoryCell::System {
                                 content: outcome.final_message.clone(),
@@ -4962,9 +5022,23 @@ async fn handle_view_events(
                 value,
                 persist,
             } => {
+                let previous_locale = app.ui_locale;
                 let result = commands::set_config_value(app, &key, &value, persist);
                 if let Some(msg) = result.message {
                     app.add_message(HistoryCell::System { content: msg });
+                }
+
+                // Propagate locale changes to the engine so the system
+                // prompt is rebuilt with the new language instruction.
+                if matches!(key.as_str(), "locale" | "language")
+                    && app.ui_locale != previous_locale
+                {
+                    let _ = engine_handle
+                        .send(Op::SetLocale {
+                            locale: app.ui_locale,
+                            mode: app.mode,
+                        })
+                        .await;
                 }
 
                 if let Some(action) = result.action {

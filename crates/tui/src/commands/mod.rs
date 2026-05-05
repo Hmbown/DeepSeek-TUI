@@ -16,6 +16,7 @@ mod mcp;
 mod memory;
 mod note;
 mod provider;
+mod queen;
 mod queue;
 mod restore;
 mod review;
@@ -402,6 +403,12 @@ pub const COMMANDS: &[CommandInfo] = &[
         description_id: MessageId::CmdLspDescription,
     },
     CommandInfo {
+        name: "queen",
+        aliases: &[],
+        usage: "/queen [on|off|status]",
+        description_id: MessageId::CmdQueenDescription,
+    },
+    CommandInfo {
         name: "share",
         aliases: &[],
         usage: "/share",
@@ -563,6 +570,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         // Project commands
         "init" => init::init(app),
         "lsp" => config::lsp_command(app, arg),
+        "queen" => queen::queen(app, arg),
         "share" => share::share(app, arg),
         "goal" => goal::goal(app, arg),
 

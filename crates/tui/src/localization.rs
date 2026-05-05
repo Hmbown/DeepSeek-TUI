@@ -97,6 +97,25 @@ impl Locale {
         }
     }
 
+    /// Returns `true` when the locale needs thinking-content translation.
+    /// Currently applies to Chinese variants (Simplified/Traditional).
+    /// Users with these locales see thinking content auto-translated
+    /// via a quick API call after the thinking block completes.
+    #[must_use]
+    pub fn needs_thinking_translation(self) -> bool {
+        matches!(self, Self::ZhHans | Self::ZhHant)
+    }
+
+    /// Target language tag for thinking translation.
+    #[must_use]
+    pub fn thinking_translation_target(self) -> &'static str {
+        match self {
+            Self::ZhHans => "简体中文",
+            Self::ZhHant => "繁體中文",
+            _ => "English",
+        }
+    }
+
     #[allow(dead_code)]
     pub fn shipped() -> &'static [Self] {
         &[Self::En, Self::Ja, Self::ZhHans, Self::ZhHant, Self::PtBr]
@@ -275,6 +294,7 @@ pub enum MessageId {
     CmdTokensDescription,
     CmdTrustDescription,
     CmdLspDescription,
+    CmdQueenDescription,
     CmdShareDescription,
     CmdUndoDescription,
     CmdYoloDescription,
@@ -463,6 +483,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CmdTokensDescription,
     MessageId::CmdTrustDescription,
     MessageId::CmdLspDescription,
+    MessageId::CmdQueenDescription,
     MessageId::CmdShareDescription,
     MessageId::CmdUndoDescription,
     MessageId::CmdYoloDescription,
@@ -747,6 +768,7 @@ fn english(id: MessageId) -> &'static str {
         MessageId::CmdGoalDescription => "Set a session goal with optional token budget",
         MessageId::CmdInitDescription => "Generate AGENTS.md for project",
         MessageId::CmdLspDescription => "Toggle LSP diagnostics on or off",
+        MessageId::CmdQueenDescription => "Toggle the queen memory system on or off",
         MessageId::CmdShareDescription => "Export current session as a shareable web URL",
         MessageId::CmdJobsDescription => "Inspect and control background shell jobs",
         MessageId::CmdLinksDescription => "Show DeepSeek dashboard and docs links",
@@ -1031,6 +1053,7 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::CmdGoalDescription => "トークンバジェット付きのセッション目標を設定",
         MessageId::CmdInitDescription => "プロジェクト用に AGENTS.md を生成",
         MessageId::CmdLspDescription => "LSP 診断のオン・オフを切り替え",
+        MessageId::CmdQueenDescription => "クイーン記憶システムのオン・オフを切り替え",
         MessageId::CmdShareDescription => "現在のセッションを共有可能な Web URL としてエクスポート",
         MessageId::CmdJobsDescription => "バックグラウンドのシェルジョブを確認・制御",
         MessageId::CmdLinksDescription => "DeepSeek ダッシュボードとドキュメントへのリンクを表示",
@@ -1294,6 +1317,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::CmdGoalDescription => "设置带有可选令牌预算的会话目标",
         MessageId::CmdInitDescription => "为项目生成 AGENTS.md",
         MessageId::CmdLspDescription => "切换 LSP 诊断的开启或关闭",
+        MessageId::CmdQueenDescription => "开启或关闭虫后记忆系统",
         MessageId::CmdShareDescription => "将当前会话导出为可共享的 Web URL",
         MessageId::CmdJobsDescription => "查看并管理后台 shell 作业",
         MessageId::CmdLinksDescription => "显示 DeepSeek 控制台与文档链接",
@@ -1531,6 +1555,7 @@ fn chinese_traditional(id: MessageId) -> Option<&'static str> {
         MessageId::CmdGoalDescription => "設定帶有可選令牌預算的會話目標",
         MessageId::CmdInitDescription => "為項目生成 AGENTS.md",
         MessageId::CmdLspDescription => "切換 LSP 診斷的開啟或關閉",
+        MessageId::CmdQueenDescription => "開啟或關閉蟲后記憶系統",
         MessageId::CmdShareDescription => "將當前會話匯出為可分享的 Web URL",
         MessageId::CmdJobsDescription => "檢視並管理後台 shell 作業",
         MessageId::CmdLinksDescription => "顯示 DeepSeek 控制台與文件連結",
@@ -1782,6 +1807,7 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         }
         MessageId::CmdInitDescription => "Gerar AGENTS.md para o projeto",
         MessageId::CmdLspDescription => "Alternar diagnóstico LSP ligado ou desligado",
+        MessageId::CmdQueenDescription => "Alternar o sistema de memória queen ligado ou desligado",
         MessageId::CmdShareDescription => "Exportar a sessão atual como uma URL web compartilhável",
         MessageId::CmdJobsDescription => "Inspecionar e controlar jobs de shell em segundo plano",
         MessageId::CmdLinksDescription => "Exibir links do painel e da documentação do DeepSeek",
@@ -2121,5 +2147,33 @@ mod tests {
             out.push('\n');
         }
         out
+    }
+
+    // ── 思考内容翻译（Thinking Translation） ─────────────
+
+    #[test]
+    fn needs_thinking_translation_is_true_for_chinese() {
+        assert!(Locale::ZhHans.needs_thinking_translation());
+        assert!(Locale::ZhHant.needs_thinking_translation());
+    }
+
+    #[test]
+    fn needs_thinking_translation_is_false_for_non_chinese() {
+        assert!(!Locale::En.needs_thinking_translation());
+        assert!(!Locale::Ja.needs_thinking_translation());
+        assert!(!Locale::PtBr.needs_thinking_translation());
+    }
+
+    #[test]
+    fn thinking_translation_target_for_chinese() {
+        assert_eq!(Locale::ZhHans.thinking_translation_target(), "简体中文");
+        assert_eq!(Locale::ZhHant.thinking_translation_target(), "繁體中文");
+    }
+
+    #[test]
+    fn thinking_translation_target_for_non_chinese() {
+        assert_eq!(Locale::En.thinking_translation_target(), "English");
+        assert_eq!(Locale::Ja.thinking_translation_target(), "English");
+        assert_eq!(Locale::PtBr.thinking_translation_target(), "English");
     }
 }

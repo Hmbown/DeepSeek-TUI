@@ -539,6 +539,8 @@ pub struct SubAgentRuntime {
     pub context: ToolContext,
     pub allow_shell: bool,
     pub event_tx: Option<mpsc::Sender<Event>>,
+    /// UI locale for the language instruction in the sub-agent system prompt.
+    pub locale: crate::localization::Locale,
     /// Manager handle so children can recurse via `agent_spawn`. All agents
     /// at every depth share the same manager.
     pub manager: SharedSubAgentManager,
@@ -579,6 +581,7 @@ impl SubAgentRuntime {
             context,
             allow_shell,
             event_tx,
+            locale: crate::localization::Locale::En,
             manager,
             spawn_depth: 0,
             max_spawn_depth: DEFAULT_MAX_SPAWN_DEPTH,
@@ -613,6 +616,13 @@ impl SubAgentRuntime {
     #[allow(dead_code)]
     pub fn with_max_spawn_depth(mut self, max: u32) -> Self {
         self.max_spawn_depth = max;
+        self
+    }
+
+    /// Set the UI locale for language instruction in the sub-agent system prompt.
+    #[must_use]
+    pub fn with_locale(mut self, locale: crate::localization::Locale) -> Self {
+        self.locale = locale;
         self
     }
 
@@ -657,6 +667,7 @@ impl SubAgentRuntime {
             context: child_context,
             allow_shell: self.allow_shell,
             event_tx: self.event_tx.clone(),
+            locale: self.locale,
             manager: self.manager.clone(),
             spawn_depth: self.spawn_depth + 1,
             max_spawn_depth: self.max_spawn_depth,
@@ -2435,16 +2446,19 @@ impl ToolSpec for DelegateToAgentTool {
 fn build_subagent_system_prompt(
     agent_type: &SubAgentType,
     assignment: &SubAgentAssignment,
+    locale: crate::localization::Locale,
 ) -> String {
     let base = agent_type.system_prompt();
+    let language_block = crate::prompts::build_language_instruction(locale);
+    let base_with_lang = format!("{base}\n\n{language_block}");
     match assignment.role.as_deref() {
         Some(role) if !role.trim().is_empty() => {
             format!(
-                "{base}\n\nYou are operating in the role of `{}`.",
+                "{base_with_lang}\n\nYou are operating in the role of `{}`.",
                 role.trim()
             )
         }
-        _ => base,
+        _ => base_with_lang,
     }
 }
 
@@ -2561,7 +2575,7 @@ async fn run_subagent(
     max_steps: u32,
     mut input_rx: mpsc::UnboundedReceiver<SubAgentInput>,
 ) -> Result<SubAgentResult> {
-    let system_prompt = build_subagent_system_prompt(&agent_type, &assignment);
+    let system_prompt = build_subagent_system_prompt(&agent_type, &assignment, runtime.locale);
     let tool_registry = SubAgentToolRegistry::new(
         runtime.clone(),
         allowed_tools.clone(),

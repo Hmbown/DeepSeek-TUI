@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ratatui::layout::Rect;
@@ -583,6 +584,8 @@ pub struct App {
     /// composer interception, the `/memory` slash command, and tool
     /// registration for `remember`.
     pub use_memory: bool,
+    /// 虫后记忆系统。初始化为 `Some` 时启用，`None` 表示禁用。
+    pub queen: Option<Arc<std::sync::Mutex<crate::queen::Queen>>>,
     pub use_alt_screen: bool,
     pub use_mouse_capture: bool,
     pub use_bracketed_paste: bool,
@@ -1041,6 +1044,9 @@ impl App {
         // Initialize plan state
         let plan_state = new_shared_plan_state();
 
+        // 虫后记忆系统初始化
+        let queen = Self::init_queen(&workspace, config);
+
         let agents_skills_dir = workspace.join(".agents").join("skills");
         let local_skills_dir = workspace.join("skills");
         let skills_dir = if agents_skills_dir.exists() {
@@ -1110,6 +1116,7 @@ impl App {
             skills_dir,
             memory_path,
             use_memory,
+            queen,
             use_alt_screen,
             use_mouse_capture,
             use_bracketed_paste,
@@ -1141,10 +1148,9 @@ impl App {
             agent_activity_started_at: None,
             ui_theme,
             onboarding: if needs_onboarding {
-                // Always start at Language so the user can pick their
-                // preferred locale before any other config steps.
-                // Welcome screen is skipped — Language is the natural
-                // first touchpoint (#566 follow-up).
+                // Start at Language so the user picks their locale first.
+                // After selection, the Welcome screen renders in their
+                // chosen language before advancing to ApiKey/Trust/Tips.
                 OnboardingState::Language
             } else {
                 OnboardingState::None
@@ -3185,6 +3191,26 @@ impl App {
     /// engine has its own copy to mutate per-session.
     pub fn cycle_config(&self) -> CycleConfig {
         self.cycle.clone()
+    }
+}
+
+impl App {
+    /// 初始化虫后记忆系统。
+    fn init_queen(workspace: &std::path::Path, _config: &crate::config::Config) -> Option<Arc<std::sync::Mutex<crate::queen::Queen>>> {
+        let base_dir = if workspace.join(".deepseek").exists() {
+            workspace.join(".deepseek")
+        } else {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            std::path::PathBuf::from(home).join(".deepseek")
+        };
+
+        match crate::queen::Queen::init(&base_dir) {
+            Ok(queen) => Some(Arc::new(std::sync::Mutex::new(queen))),
+            Err(err) => {
+                tracing::warn!(target: "queen", "虫后初始化失败: {err}");
+                None
+            }
+        }
     }
 }
 

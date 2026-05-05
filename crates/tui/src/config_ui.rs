@@ -84,6 +84,10 @@ pub struct ConfigUiApplyOutcome {
     pub changed: bool,
     pub final_message: String,
     pub requires_engine_sync: bool,
+    /// True when the locale changed during apply. The caller should send
+    /// `Op::SetLocale` to the engine so the system prompt is rebuilt with
+    /// the new language instruction.
+    pub locale_changed: bool,
 }
 
 #[cfg(feature = "web")]
@@ -399,6 +403,7 @@ pub fn apply_document(
     let mut notes = Vec::new();
     let previous_compaction = app.compaction_config();
     let previous_reasoning_effort = app.reasoning_effort;
+    let previous_locale = app.ui_locale;
 
     for (key, value) in [
         ("model", doc.runtime.model.as_str()),
@@ -485,6 +490,11 @@ pub fn apply_document(
         reload_runtime_config(app, config)?;
         notes.extend(config_reload_notes(app, config));
     }
+
+    // Detect locale changes after all updates (both set_config_value in the
+    // loop above and reload_runtime_config when persist=true).
+    let locale_changed = app.ui_locale != previous_locale;
+
     let changed = !notes.is_empty();
     let final_message = if notes.is_empty() {
         if persist {
@@ -499,6 +509,7 @@ pub fn apply_document(
         changed,
         final_message,
         requires_engine_sync,
+        locale_changed,
     })
 }
 

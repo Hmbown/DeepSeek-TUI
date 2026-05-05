@@ -64,6 +64,13 @@ pub enum Event {
         index: usize,
     },
 
+    /// Translated thinking text (post-hoc translation to UI locale).
+    /// Emitted asynchronously after ThinkingComplete — the UI replaces the
+    /// displayed thinking cell content with the translated version.
+    ThinkingTranslated {
+        text: String,
+    },
+
     // === Tool Events ===
     /// Tool call initiated
     ToolCallStarted {

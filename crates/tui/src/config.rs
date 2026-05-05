@@ -1007,9 +1007,9 @@ impl Config {
             Config::default()
         };
 
-        apply_env_overrides(&mut config);
-        apply_managed_overrides(&mut config)?;
         apply_project_overrides(&mut config)?;
+        apply_managed_overrides(&mut config)?;
+        apply_env_overrides(&mut config);
         apply_requirements(&mut config)?;
         normalize_model_config(&mut config);
         config.validate()?;
@@ -2097,10 +2097,19 @@ fn load_single_config_file(path: &Path) -> Result<Config> {
 }
 
 fn apply_managed_overrides(config: &mut Config) -> Result<()> {
-    let path = config
-        .managed_config_path
-        .as_deref()
-        .map(expand_path)
+    // Also check the env var directly since we now run before
+    // apply_env_overrides.
+    let env_path = std::env::var("DEEPSEEK_MANAGED_CONFIG_PATH")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .map(PathBuf::from);
+    let path = env_path
+        .or_else(|| {
+            config
+                .managed_config_path
+                .as_deref()
+                .map(expand_path)
+        })
         .or_else(default_managed_config_path);
     let Some(path) = path else {
         return Ok(());
@@ -2117,15 +2126,27 @@ fn apply_managed_overrides(config: &mut Config) -> Result<()> {
 /// workspace root (or `DEEPSEEK_PROJECT_CONFIG_PATH`).
 ///
 /// Project config has higher priority than the user's home config but
-/// lower than managed config and env vars. This mirrors the typical
-/// team-workflow: a repo ships `deepseek.toml` with shared settings
-/// (model, instructions, etc.) and individual developers override via
-/// `~/.deepseek/config.toml` or env vars.
+/// **lower** than managed config and env vars — it is applied first so
+/// the subsequent `apply_managed_overrides` and `apply_env_overrides`
+/// can override it. This mirrors the typical team workflow: a repo ships
+/// `deepseek.toml` with shared settings (model, instructions, etc.) and
+/// individual developers override via `~/.deepseek/config.toml`, managed
+/// (org) config, or env vars.
 fn apply_project_overrides(config: &mut Config) -> Result<()> {
-    let path = config
-        .project_config_path
-        .as_deref()
-        .map(expand_path)
+    // Also check the env var directly since we now run before
+    // apply_env_overrides. The env var is tried first as an override
+    // of any statically-configured path.
+    let env_path = std::env::var("DEEPSEEK_PROJECT_CONFIG_PATH")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .map(PathBuf::from);
+    let path = env_path
+        .or_else(|| {
+            config
+                .project_config_path
+                .as_deref()
+                .map(expand_path)
+        })
         .or_else(default_project_config_path);
     let Some(path) = path else {
         return Ok(());
@@ -2139,10 +2160,19 @@ fn apply_project_overrides(config: &mut Config) -> Result<()> {
 }
 
 fn apply_requirements(config: &mut Config) -> Result<()> {
-    let path = config
-        .requirements_path
-        .as_deref()
-        .map(expand_path)
+    // Also check the env var directly since we now run before
+    // apply_env_overrides.
+    let env_path = std::env::var("DEEPSEEK_REQUIREMENTS_PATH")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .map(PathBuf::from);
+    let path = env_path
+        .or_else(|| {
+            config
+                .requirements_path
+                .as_deref()
+                .map(expand_path)
+        })
         .or_else(default_requirements_path);
     let Some(path) = path else {
         return Ok(());

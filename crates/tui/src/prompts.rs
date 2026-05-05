@@ -16,6 +16,8 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PromptSessionContext<'a> {
     pub user_memory_block: Option<&'a str>,
+    /// 虫后记忆注入块（<chonghou_memory>）。
+    pub chonghou_block: Option<&'a str>,
     pub goal_objective: Option<&'a str>,
 }
 
@@ -124,11 +126,15 @@ pub const COMPACT_TEMPLATE: &str = include_str!("prompts/compact.md");
 /// final replies based on the user's configured UI locale.
 pub const LANG_EN: &str = include_str!("prompts/language/en.md");
 pub const LANG_ZH: &str = include_str!("prompts/language/zh.md");
+pub const LANG_ZH_HANT: &str = include_str!("prompts/language/zh-hant.md");
 
 // ── Legacy prompt constants (kept for backwards compatibility) ────────
 
 /// Legacy base prompt (agent.txt — now decomposed into base.md + overlays).
 /// Still available for callers that haven't migrated to the layered API.
+/// **Deprecated since v0.8.0.** Use `compose_prompt()` or
+/// `system_prompt_for_mode_with_context_skills_and_session()` instead,
+/// which load the localized Chinese prompts from `base.md` + mode overlays.
 pub const AGENT_PROMPT: &str = include_str!("prompts/agent.txt");
 pub const YOLO_PROMPT: &str = include_str!("prompts/yolo.txt");
 pub const PLAN_PROMPT: &str = include_str!("prompts/plan.txt");
@@ -285,6 +291,7 @@ pub fn system_prompt_for_mode_with_context_and_skills(
         instructions,
         PromptSessionContext {
             user_memory_block,
+            chonghou_block: None,
             goal_objective: None,
         },
         locale,
@@ -297,15 +304,9 @@ pub fn system_prompt_for_mode_with_context_and_skills(
 /// the model to detect and mirror the user's input language, this version
 /// ties the reasoning/response language to the configured UI locale so
 /// that Chinese-UI users get Chinese reasoning even when typing in English.
-fn build_language_instruction(locale: Locale) -> String {
+pub(crate) fn build_language_instruction(locale: Locale) -> String {
     match locale {
-        Locale::ZhHant => {
-            // Traditional Chinese: load the zh.md and substitute character variants.
-            let mut text = LANG_ZH.to_string();
-            text = text.replace("简体", "繁體");
-            text = text.replace("Simplified", "Traditional");
-            text
-        }
+        Locale::ZhHant => LANG_ZH_HANT.to_string(),
         Locale::ZhHans => LANG_ZH.to_string(),
         _ => LANG_EN.to_string(),
     }
@@ -358,6 +359,13 @@ pub fn system_prompt_for_mode_with_context_skills_and_session(
         && !memory_block.trim().is_empty()
     {
         full_prompt = format!("{full_prompt}\n\n{memory_block}");
+    }
+
+    // 虫后记忆注入（<chonghou_memory>）。默认注入在 user_memory 之后。
+    if let Some(chonghou) = session_context.chonghou_block
+        && !chonghou.trim().is_empty()
+    {
+        full_prompt = format!("{full_prompt}\n\n{chonghou}");
     }
 
     if let Some(goal_objective) = session_context.goal_objective
@@ -602,6 +610,7 @@ mod tests {
             None,
             PromptSessionContext {
                 user_memory_block: None,
+                chonghou_block: None,
                 goal_objective: Some("Fix transcript corruption"),
             },
             Locale::En,
@@ -630,6 +639,7 @@ mod tests {
             None,
             PromptSessionContext {
                 user_memory_block: None,
+                chonghou_block: None,
                 goal_objective: Some("   "),
             },
             Locale::En,
@@ -1013,6 +1023,100 @@ mod tests {
         assert!(
             prompt.contains(&extra.display().to_string()),
             "instructions block must annotate its source path"
+        );
+    }
+
+    #[test]
+    fn chonghou_block_injected_when_provided() {
+        let tmp = tempdir().expect("tempdir");
+        let workspace = tmp.path();
+        let chonghou_content = "<chonghou_memory>\n  <experience score=\"0.95\">\n    Title: Rust 测试\n  </experience>\n</chonghou_memory>";
+
+        let prompt = match super::system_prompt_for_mode_with_context_skills_and_session(
+            AppMode::Agent,
+            workspace,
+            None,
+            None,
+            None,
+            PromptSessionContext {
+                user_memory_block: None,
+                chonghou_block: Some(chonghou_content),
+                goal_objective: None,
+            },
+            Locale::En,
+        ) {
+            SystemPrompt::Text(text) => text,
+            SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
+        };
+
+        assert!(
+            prompt.contains("<chonghou_memory>"),
+            "chonghou block must appear in the prompt when provided"
+        );
+        assert!(
+            prompt.contains("Rust 测试"),
+            "chonghou experience content must appear in the prompt"
+        );
+    }
+
+    #[test]
+    fn chonghou_block_not_injected_when_empty() {
+        let tmp = tempdir().expect("tempdir");
+        let workspace = tmp.path();
+
+        let prompt = match super::system_prompt_for_mode_with_context_skills_and_session(
+            AppMode::Agent,
+            workspace,
+            None,
+            None,
+            None,
+            PromptSessionContext {
+                user_memory_block: None,
+                chonghou_block: Some(""),
+                goal_objective: None,
+            },
+            Locale::En,
+        ) {
+            SystemPrompt::Text(text) => text,
+            SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
+        };
+
+        assert!(
+            !prompt.contains("<chonghou_memory>"),
+            "empty chonghou block should not be injected"
+        );
+    }
+
+    #[test]
+    fn chonghou_block_injected_after_user_memory() {
+        let tmp = tempdir().expect("tempdir");
+        let workspace = tmp.path();
+        let user_memory = "<user_memory>\nsome memory\n</user_memory>";
+        let chonghou = "<chonghou_memory>\nsome experience\n</chonghou_memory>";
+
+        let prompt = match super::system_prompt_for_mode_with_context_skills_and_session(
+            AppMode::Agent,
+            workspace,
+            None,
+            None,
+            None,
+            PromptSessionContext {
+                user_memory_block: Some(user_memory),
+                chonghou_block: Some(chonghou),
+                goal_objective: None,
+            },
+            Locale::En,
+        ) {
+            SystemPrompt::Text(text) => text,
+            SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
+        };
+
+        // chonghou block should appear AFTER user_memory in the prompt
+        let user_pos = prompt.find("<user_memory>").expect("user memory must be present");
+        let chonghou_pos = prompt.find("<chonghou_memory>").expect("chonghou must be present");
+        assert!(
+            user_pos < chonghou_pos,
+            "chonghou block must appear after user_memory block"
         );
     }
 }

@@ -745,6 +745,7 @@ mod tests {
         //   2. cumulative crosses 60s (real work)      → label shows
         //   3. wall-clock since launch is irrelevant   → not consulted
         let mut app = make_app();
+        app.ui_locale = Locale::En;
         // The whole point: cumulative_turn_duration starts at zero,
         // so however long the TUI has been open the chip stays empty
         // until a turn actually completes and adds time.
@@ -944,7 +945,8 @@ mod tests {
         // Since `FooterProps::retry` is now a captured snapshot rather
         // than a global read at render time, we can pin the state on
         // the props directly without touching the global surface.
-        let app = make_app();
+        let mut app = make_app();
+        app.ui_locale = Locale::En;
         let mut props = idle_props_for(&app);
         props.retry = crate::retry_status::RetryState::Active(crate::retry_status::RetryBanner {
             attempt: 2,
@@ -968,7 +970,8 @@ mod tests {
 
     #[test]
     fn render_shows_failure_row_when_failed() {
-        let app = make_app();
+        let mut app = make_app();
+        app.ui_locale = Locale::En;
         let mut props = idle_props_for(&app);
         props.retry = crate::retry_status::RetryState::Failed {
             reason: "upstream 500".to_string(),

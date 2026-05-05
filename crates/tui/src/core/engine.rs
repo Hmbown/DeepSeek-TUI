@@ -142,6 +142,8 @@ pub struct EngineConfig {
     /// consulted when `memory_enabled` is `true`.
     pub memory_path: PathBuf,
     pub goal_objective: Option<String>,
+    /// 虫后（Queen）记忆系统引用。共享给引擎用于 prompt 注入和经验自动提取。
+    pub queen: Option<Arc<std::sync::Mutex<crate::queen::Queen>>>,
 }
 
 impl Default for EngineConfig {
@@ -173,6 +175,7 @@ impl Default for EngineConfig {
             memory_enabled: false,
             memory_path: PathBuf::from("./memory.md"),
             goal_objective: None,
+            queen: None,
         }
     }
 }
@@ -360,6 +363,14 @@ impl Engine {
         let working_set_summary = session.working_set.summary_block(&config.workspace);
         let user_memory_block =
             crate::memory::compose_block(config.memory_enabled, &config.memory_path);
+
+        // 虫后记忆注入（初始 prompt）
+        let chonghou_block = config.queen.as_ref().and_then(|queen| {
+            let mut guard = queen.lock().ok()?;
+            guard.query_for_prompt("", 3)
+        });
+        let chonghou_deref = chonghou_block.as_deref();
+
         let system_prompt = prompts::system_prompt_for_mode_with_context_skills_and_session(
             AppMode::Agent,
             &config.workspace,
@@ -368,6 +379,7 @@ impl Engine {
             Some(&config.instructions),
             prompts::PromptSessionContext {
                 user_memory_block: user_memory_block.as_deref(),
+                chonghou_block: chonghou_deref,
                 goal_objective: config.goal_objective.as_deref(),
             },
             config.locale,
@@ -530,6 +542,7 @@ impl Engine {
                         Some(self.tx_event.clone()),
                         Arc::clone(&self.subagent_manager),
                     )
+                    .with_locale(self.config.locale)
                     .with_role_models(self.config.subagent_model_overrides.clone())
                     .with_max_spawn_depth(self.config.max_spawn_depth)
                     .background_runtime();
@@ -598,6 +611,17 @@ impl Engine {
                         .send(Event::status(format!(
                             "Auto-compaction {}",
                             if enabled { "enabled" } else { "disabled" }
+                        )))
+                        .await;
+                }
+                Op::SetLocale { locale, mode } => {
+                    self.config.locale = locale;
+                    self.refresh_system_prompt(mode);
+                    let _ = self
+                        .tx_event
+                        .send(Event::status(format!(
+                            "Locale set to: {}",
+                            self.config.locale.tag()
                         )))
                         .await;
                 }
@@ -856,6 +880,7 @@ impl Engine {
                             Some(self.tx_event.clone()),
                             Arc::clone(&self.subagent_manager),
                         )
+                        .with_locale(self.config.locale)
                         .with_role_models(self.config.subagent_model_overrides.clone())
                         .with_max_spawn_depth(self.config.max_spawn_depth);
                         if let Some((mailbox, cancel_token)) = mailbox_for_runtime.as_ref() {
@@ -1655,6 +1680,29 @@ impl Engine {
             .summary_block(&self.config.workspace);
         let user_memory_block =
             crate::memory::compose_block(self.config.memory_enabled, &self.config.memory_path);
+
+        // 虫后记忆注入：用最后一条用户消息作为查询，获取相关经验
+        let chonghou_block = self.config.queen.as_ref().and_then(|queen| {
+            let mut guard = queen.lock().ok()?;
+            let query = self
+                .session
+                .messages
+                .iter()
+                .rev()
+                .find(|m| m.role == "user")
+                .and_then(|m| m.content.first())
+                .and_then(|b| {
+                    if let crate::models::ContentBlock::Text { text, .. } = b {
+                        Some(text.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or("");
+            guard.query_for_prompt(query, 5)
+        });
+        let chonghou_deref = chonghou_block.as_deref();
+
         let base = prompts::system_prompt_for_mode_with_context_skills_and_session(
             mode,
             &self.config.workspace,
@@ -1663,6 +1711,7 @@ impl Engine {
             Some(&self.config.instructions),
             prompts::PromptSessionContext {
                 user_memory_block: user_memory_block.as_deref(),
+                chonghou_block: chonghou_deref,
                 goal_objective: self.config.goal_objective.as_deref(),
             },
             self.config.locale,
@@ -1690,6 +1739,65 @@ impl Engine {
             .summary_block(&self.config.workspace);
         self.session.system_prompt =
             append_working_set_summary(merged, working_set_summary.as_deref());
+    }
+
+    /// Translate text using the DeepSeek API. Used for post-hoc translation
+    /// of thinking content to match the UI locale. Returns `None` on failure.
+    pub(super) async fn translate_text(
+        client: &crate::client::DeepSeekClient,
+        text: &str,
+        target_lang: &str,
+    ) -> Option<String> {
+        let prompt = format!(
+            "Translate the following text to {target_lang}. \
+             Preserve all code snippets, file paths, identifiers, tool names, \
+             and technical terms verbatim. Only translate natural language prose.\n\n\
+             Text:\n{text}"
+        );
+        let request = crate::models::MessageRequest {
+            model: crate::config::DEFAULT_TEXT_MODEL.to_string(),
+            messages: vec![crate::models::Message {
+                role: "user".to_string(),
+                content: vec![crate::models::ContentBlock::Text {
+                    text: prompt,
+                    cache_control: None,
+                }],
+            }],
+            max_tokens: 4096u32,
+            system: None,
+            tools: None,
+            tool_choice: None,
+            metadata: None,
+            thinking: None,
+            reasoning_effort: None,
+            stream: Some(false),
+            temperature: None,
+            top_p: None,
+        };
+        match client.create_message(request).await {
+            Ok(response) => {
+                let text: String = response
+                    .content
+                    .into_iter()
+                    .filter_map(|block| {
+                        if let crate::models::ContentBlock::Text { text, .. } = block {
+                            Some(text)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                if text.trim().is_empty() {
+                    None
+                } else {
+                    Some(text)
+                }
+            }
+            Err(err) => {
+                tracing::warn!(target: "thinking_translate", "翻译思考内容失败: {err}");
+                None
+            }
+        }
     }
 }
 

@@ -39,6 +39,7 @@ mod lsp;
 mod mcp;
 mod mcp_server;
 mod memory;
+mod queen;
 mod models;
 mod network_policy;
 mod palette;
@@ -3740,7 +3741,10 @@ async fn run_exec_agent(
         .map(crate::config::LspConfigToml::into_runtime);
 
     let engine_config = EngineConfig {
-        locale: crate::localization::Locale::En,
+        locale: crate::settings::Settings::load()
+            .ok()
+            .map(|s| crate::localization::resolve_locale(&s.locale))
+            .unwrap_or_else(|| crate::localization::resolve_locale("auto")),
         model: model.to_string(),
         workspace: workspace.clone(),
         allow_shell: auto_approve || config.allow_shell(),
@@ -3766,6 +3770,7 @@ async fn run_exec_agent(
         memory_enabled: config.memory_enabled(),
         memory_path: config.memory_path(),
         goal_objective: None,
+        queen: None,
     };
 
     let engine_handle = spawn_engine(engine_config, config);

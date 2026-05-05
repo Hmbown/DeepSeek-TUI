@@ -799,6 +799,24 @@ impl Engine {
                 .await;
             }
 
+            // 思考内容翻译：当 UI 语言需要翻译时，异步将 thinking 文本翻译到目标语言
+            if !current_thinking.is_empty()
+                && self.config.locale.needs_thinking_translation()
+                && let Some(client) = self.deepseek_client.clone()
+            {
+                let tx = self.tx_event.clone();
+                let text = current_thinking.clone();
+                let target_lang = self.config.locale.thinking_translation_target().to_string();
+                tokio::spawn(async move {
+                    let translated = Self::translate_text(&client, &text, &target_lang).await;
+                    if let Some(translated) = translated {
+                        let _ = tx
+                            .send(Event::ThinkingTranslated { text: translated })
+                            .await;
+                    }
+                });
+            }
+
             // If no tool uses, check for inline REPL blocks (paper §2) or
             // finish the turn.
             if tool_uses.is_empty() {
@@ -1436,6 +1454,10 @@ impl Engine {
                 let should_stop_this_turn =
                     should_stop_after_plan_tool(mode, &outcome.name, &outcome.result);
 
+                // 虫后经验提取：保存输出文本，匹配后用于自动提取
+                #[allow(unused_assignments)]
+                let mut queen_result_text: Option<String> = None;
+
                 match outcome.result {
                     Ok(output) => {
                         emit_tool_audit(json!({
@@ -1451,6 +1473,7 @@ impl Engine {
                         );
                         let output_content = output.content;
 
+                        queen_result_text = Some(output_content.clone());
                         tool_call.set_result(output_content.clone(), duration);
                         self.session.working_set.observe_tool_call(
                             &tool_name_for_ws,
@@ -1493,6 +1516,7 @@ impl Engine {
                         step_error_count += 1;
                         step_error_categories.push(envelope.category);
                         let error = format_tool_error(&e, &outcome.name);
+                        queen_result_text = Some(error.clone());
                         tool_call.set_error(error.clone(), duration);
                         self.session.working_set.observe_tool_call(
                             &tool_name_for_ws,
@@ -1515,6 +1539,22 @@ impl Engine {
 
                 turn.record_tool_call(tool_call);
                 stop_after_plan_tool |= should_stop_this_turn;
+
+                // 虫后自动提取经验
+                if let Some(ref queen) = self.config.queen
+                    && let Some(ref result_text) = queen_result_text
+                    && let Some(exp) = crate::queen::summary::try_extract(
+                        &outcome.name,
+                        &tool_input,
+                        result_text,
+                        &self.config.workspace.to_string_lossy(),
+                    )
+                    && let Ok(mut guard) = queen.lock()
+                {
+                    if let Err(err) = guard.write_experience(exp) {
+                        tracing::warn!(target: "queen", "写入虫后经验失败: {err}");
+                    }
+                }
             }
 
             if stop_after_plan_tool {

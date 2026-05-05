@@ -4,6 +4,7 @@
 //! allowing the UI to remain responsive while the engine processes requests.
 
 use crate::compaction::CompactionConfig;
+use crate::localization::Locale;
 use crate::models::{Message, SystemPrompt};
 use crate::tui::app::AppMode;
 use std::path::PathBuf;
@@ -51,6 +52,11 @@ pub enum Op {
     /// Update the model being used
     #[allow(dead_code)]
     SetModel { model: String },
+
+    /// Update the UI locale (language instruction for the system prompt).
+    /// Triggers a rebuild of the system prompt with the new language block.
+    #[allow(dead_code)]
+    SetLocale { locale: Locale, mode: AppMode },
 
     /// Update auto-compaction settings
     SetCompaction { config: CompactionConfig },

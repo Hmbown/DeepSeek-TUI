@@ -1777,7 +1777,10 @@ impl RuntimeThreadManager {
             .clone()
             .map(crate::config::LspConfigToml::into_runtime);
         let engine_cfg = EngineConfig {
-            locale: crate::localization::Locale::En,
+            locale: crate::settings::Settings::load()
+                .ok()
+                .map(|s| crate::localization::resolve_locale(&s.locale))
+                .unwrap_or(crate::localization::Locale::En),
             model: thread.model.clone(),
             workspace: thread.workspace.clone(),
             allow_shell: thread.allow_shell,
@@ -1813,6 +1816,7 @@ impl RuntimeThreadManager {
             memory_enabled: self.config.memory_enabled(),
             memory_path: self.config.memory_path(),
             goal_objective: None,
+            queen: None,
         };
 
         let engine = spawn_engine(engine_cfg, &self.config);
