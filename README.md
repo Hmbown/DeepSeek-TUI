@@ -270,7 +270,7 @@ UI locale is separate from model language — set `locale` in `settings.toml`, u
 
 Legacy aliases `deepseek-chat` / `deepseek-reasoner` map to `deepseek-v4-flash`. NVIDIA NIM variants use your NVIDIA account terms.
 
-*DeepSeek Pro rates currently reflect a limited-time 75% discount, which remains valid until 15:59 UTC on 5 May 2026. After that time, the TUI cost estimator will revert to the base Pro rates.*
+*DeepSeek Pro rates currently reflect a limited-time 75% discount, which remains valid until 15:59 UTC on 31 May 2026. After that time, the TUI cost estimator will revert to the base Pro rates.*
 
 ---
 
