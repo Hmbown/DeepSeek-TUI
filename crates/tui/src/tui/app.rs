@@ -1067,8 +1067,7 @@ impl App {
         let ui_locale = resolve_locale(&settings.locale);
         let composer_density = ComposerDensity::from_setting(&settings.composer_density);
         let composer_border = settings.composer_border;
-        let composer_vim_enabled =
-            settings.composer_vim_mode.trim().to_ascii_lowercase() == "vim";
+        let composer_vim_enabled = settings.composer_vim_mode.trim().to_ascii_lowercase() == "vim";
         let transcript_spacing = TranscriptSpacing::from_setting(&settings.transcript_spacing);
         let sidebar_width_percent = settings.sidebar_width_percent;
         let sidebar_focus = SidebarFocus::from_setting(&settings.sidebar_focus);
@@ -2783,9 +2782,7 @@ impl App {
         let text = self.input.clone();
         let cursor_byte = byte_index_at_char(&text, self.cursor_position);
         // Walk backward until we find a newline or the start of the string.
-        let line_start_byte = text[..cursor_byte]
-            .rfind('\n')
-            .map_or(0, |idx| idx + 1);
+        let line_start_byte = text[..cursor_byte].rfind('\n').map_or(0, |idx| idx + 1);
         self.cursor_position = char_count(&text[..line_start_byte]);
         self.needs_redraw = true;
     }
@@ -2795,11 +2792,10 @@ impl App {
         let text = self.input.clone();
         let cursor_byte = byte_index_at_char(&text, self.cursor_position);
         // Walk forward to the next newline or end-of-string.
-        let line_end_char = text[cursor_byte..]
-            .find('\n')
-            .map_or_else(|| char_count(&text), |rel| {
-                char_count(&text[..cursor_byte + rel])
-            });
+        let line_end_char = text[cursor_byte..].find('\n').map_or_else(
+            || char_count(&text),
+            |rel| char_count(&text[..cursor_byte + rel]),
+        );
         self.cursor_position = line_end_char;
         self.needs_redraw = true;
     }
@@ -2887,9 +2883,7 @@ impl App {
     pub fn vim_delete_line(&mut self) {
         let text = self.input.clone();
         let cursor_byte = byte_index_at_char(&text, self.cursor_position);
-        let line_start_byte = text[..cursor_byte]
-            .rfind('\n')
-            .map_or(0, |idx| idx + 1);
+        let line_start_byte = text[..cursor_byte].rfind('\n').map_or(0, |idx| idx + 1);
         let line_end_byte = text[cursor_byte..]
             .find('\n')
             .map_or(text.len(), |rel| cursor_byte + rel);
@@ -2974,18 +2968,15 @@ impl App {
         let rest = &text[cursor_byte..];
         if let Some(rel_nl) = rest.find('\n') {
             // Column offset on the current line.
-            let line_start_byte = text[..cursor_byte]
-                .rfind('\n')
-                .map_or(0, |i| i + 1);
+            let line_start_byte = text[..cursor_byte].rfind('\n').map_or(0, |i| i + 1);
             let col = char_count(&text[line_start_byte..cursor_byte]);
             let next_line_start = cursor_byte + rel_nl + 1;
             let next_line = &text[next_line_start..];
             let next_line_len = next_line.find('\n').unwrap_or(next_line.len());
-            let next_line_char_len = char_count(&text[next_line_start
-                ..next_line_start + next_line_len]);
+            let next_line_char_len =
+                char_count(&text[next_line_start..next_line_start + next_line_len]);
             let target_col = col.min(next_line_char_len);
-            self.cursor_position =
-                char_count(&text[..next_line_start]) + target_col;
+            self.cursor_position = char_count(&text[..next_line_start]) + target_col;
             self.needs_redraw = true;
         } else {
             self.history_down();
@@ -3003,13 +2994,10 @@ impl App {
             let col = char_count(&text[line_start_byte..cursor_byte]);
             // Find start of the previous line.
             let prev_line_end = prev_nl; // byte of the newline itself
-            let prev_start = text[..prev_line_end]
-                .rfind('\n')
-                .map_or(0, |i| i + 1);
+            let prev_start = text[..prev_line_end].rfind('\n').map_or(0, |i| i + 1);
             let prev_line_len = char_count(&text[prev_start..prev_line_end]);
             let target_col = col.min(prev_line_len);
-            self.cursor_position =
-                char_count(&text[..prev_start]) + target_col;
+            self.cursor_position = char_count(&text[..prev_start]) + target_col;
             self.needs_redraw = true;
         } else {
             self.history_up();

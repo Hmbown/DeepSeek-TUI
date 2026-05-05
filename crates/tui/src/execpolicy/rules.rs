@@ -30,7 +30,6 @@ pub struct RuleSet {
     pub deny: Vec<String>,
 }
 
-
 impl ExecPolicyConfig {
     pub fn from_str(contents: &str) -> Result<Self> {
         toml::from_str(contents).context("failed to parse execpolicy.toml")

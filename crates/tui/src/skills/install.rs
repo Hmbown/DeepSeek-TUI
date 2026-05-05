@@ -604,9 +604,7 @@ async fn sync_one_skill(
     if matches!(source, InstallSource::Registry(_)) {
         return SkillSyncOutcome::Failed {
             name: name.to_string(),
-            reason: format!(
-                "registry entry for '{name}' must not point to another registry entry"
-            ),
+            reason: format!("registry entry for '{name}' must not point to another registry entry"),
         };
     }
 
@@ -741,9 +739,8 @@ async fn sync_one_skill(
         // Determine whether this is a tarball or a plain SKILL.md.
         // Heuristic: the URL ends with `.tar.gz` or `.tgz`, or the content
         // starts with the gzip magic bytes (0x1f 0x8b).
-        let is_tarball = url.ends_with(".tar.gz")
-            || url.ends_with(".tgz")
-            || bytes.starts_with(&[0x1f, 0x8b]);
+        let is_tarball =
+            url.ends_with(".tar.gz") || url.ends_with(".tgz") || bytes.starts_with(&[0x1f, 0x8b]);
 
         let final_path: PathBuf;
 

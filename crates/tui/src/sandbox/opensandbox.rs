@@ -53,11 +53,7 @@ impl OpenSandboxBackend {
     /// `"http://localhost:8080"`). `api_key` is optional and sent as
     /// `Authorization: Bearer <key>` when set. `timeout_secs` controls the
     /// HTTP request timeout.
-    pub fn new(
-        base_url: String,
-        api_key: Option<String>,
-        timeout_secs: u64,
-    ) -> Result<Self> {
+    pub fn new(base_url: String, api_key: Option<String>, timeout_secs: u64) -> Result<Self> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(timeout_secs))
             .build()
@@ -79,20 +75,13 @@ impl OpenSandboxBackend {
 
 #[async_trait]
 impl SandboxBackend for OpenSandboxBackend {
-    async fn exec(
-        &self,
-        cmd: &str,
-        env: &HashMap<String, String>,
-    ) -> Result<SandboxOutput> {
+    async fn exec(&self, cmd: &str, env: &HashMap<String, String>) -> Result<SandboxOutput> {
         let request_body = SandboxRunRequest {
             cmd: cmd.to_string(),
             env: env.clone(),
         };
 
-        let mut req = self
-            .client
-            .post(self.run_url())
-            .json(&request_body);
+        let mut req = self.client.post(self.run_url()).json(&request_body);
 
         if let Some(ref api_key) = self.api_key {
             req = req.bearer_auth(api_key);
@@ -106,11 +95,7 @@ impl SandboxBackend for OpenSandboxBackend {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            anyhow::bail!(
-                "OpenSandbox returned HTTP {}: {}",
-                status.as_u16(),
-                body
-            );
+            anyhow::bail!("OpenSandbox returned HTTP {}: {}", status.as_u16(), body);
         }
 
         let parsed: SandboxRunResponse = response

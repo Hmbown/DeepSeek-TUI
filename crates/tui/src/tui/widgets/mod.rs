@@ -576,11 +576,8 @@ impl Renderable for ComposerWidget<'_> {
                 };
                 let label = self.app.composer.vim_mode.label();
                 block = block.title_top(
-                    Line::from(Span::styled(
-                        label,
-                        Style::default().fg(color).bold(),
-                    ))
-                    .right_aligned(),
+                    Line::from(Span::styled(label, Style::default().fg(color).bold()))
+                        .right_aligned(),
                 );
             }
             if let Some(hint_line) = hint_line {

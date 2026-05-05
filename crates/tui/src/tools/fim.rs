@@ -163,11 +163,7 @@ impl ToolSpec for FimEditTool {
         let generated_len = generated_text.len();
         let new_content = format!("{}{}{}", fim_prompt, generated_text, fim_suffix);
         fs::write(&resolved, &new_content).map_err(|e| {
-            ToolError::execution_failed(format!(
-                "Failed to write {}: {}",
-                resolved.display(),
-                e
-            ))
+            ToolError::execution_failed(format!("Failed to write {}: {}", resolved.display(), e))
         })?;
 
         let result = FimEditResult {
@@ -178,10 +174,7 @@ impl ToolSpec for FimEditTool {
             suffix_start,
             message: format!(
                 "FIM edit applied to `{}`. Generated {} chars between prefix_anchor end (byte {}) and suffix_anchor start (byte {}).",
-                path,
-                generated_len,
-                prefix_end,
-                suffix_start,
+                path, generated_len, prefix_end, suffix_start,
             ),
         };
 

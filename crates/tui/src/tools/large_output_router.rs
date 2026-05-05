@@ -311,8 +311,7 @@ mod tests {
 
     #[test]
     fn wrap_synthesis_includes_provenance_header() {
-        let wrapped =
-            LargeOutputRouter::wrap_synthesis("web_search", "key facts here", 5000, 4096);
+        let wrapped = LargeOutputRouter::wrap_synthesis("web_search", "key facts here", 5000, 4096);
         assert!(wrapped.contains("workshop-synthesis"));
         assert!(wrapped.contains("web_search"));
         assert!(wrapped.contains("5000"));

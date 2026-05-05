@@ -1728,9 +1728,7 @@ impl ToolSpec for ExecShellTool {
                     }
                 }
                 Err(e) => {
-                    return Ok(ToolResult::error(format!(
-                        "Sandbox backend error: {e}"
-                    )));
+                    return Ok(ToolResult::error(format!("Sandbox backend error: {e}")));
                 }
             };
 

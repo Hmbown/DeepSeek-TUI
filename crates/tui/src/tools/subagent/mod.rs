@@ -1641,9 +1641,8 @@ impl ToolSpec for AgentSpawnTool {
                 } else {
                     self.runtime.context.workspace.join(file_path)
                 };
-                let file_contents = std::fs::read_to_string(&abs_path).unwrap_or_else(|e| {
-                    format!("<!-- resident_file read error: {e} -->")
-                });
+                let file_contents = std::fs::read_to_string(&abs_path)
+                    .unwrap_or_else(|e| format!("<!-- resident_file read error: {e} -->"));
                 let prefixed = format!(
                     "<!-- resident_file: {file_path} -->\n```\n{file_contents}\n```\n\n{}",
                     spawn_request.prompt

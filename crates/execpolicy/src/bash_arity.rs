@@ -363,13 +363,15 @@ impl BashArityDict {
         // (preserves backward compatibility with exact-match allow rules).
         let command_lower = command.trim().to_ascii_lowercase();
         // Normalise whitespace in both sides before comparing.
-        let pattern_norm: String = pattern_lower.split_whitespace().collect::<Vec<_>>().join(" ");
+        let pattern_norm: String = pattern_lower
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
         let command_norm: String = command_lower
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ");
-        command_norm == pattern_norm
-            || command_norm.starts_with(&format!("{pattern_norm} "))
+        command_norm == pattern_norm || command_norm.starts_with(&format!("{pattern_norm} "))
     }
 
     /// Iterate over all entries in the dictionary.

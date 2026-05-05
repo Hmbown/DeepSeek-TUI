@@ -135,10 +135,7 @@ impl ToolRegistry {
 
         // Large-output routing (#548): if the result exceeds the threshold and
         // the caller did not request `raw=true`, synthesise via the workshop.
-        let raw_bypass = input
-            .get("raw")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        let raw_bypass = input.get("raw").and_then(|v| v.as_bool()).unwrap_or(false);
 
         if let Some(router) = ctx.large_output_router.as_ref() {
             use crate::tools::large_output_router::{LargeOutputRouter, RouteDecision};
@@ -161,11 +158,7 @@ impl ToolRegistry {
                     // the registry layer. A follow-up can wire in the Flash
                     // client when the async LLM call is safe here.
                     let preview_chars = 1_200usize;
-                    let preview: String = result
-                        .content
-                        .chars()
-                        .take(preview_chars)
-                        .collect();
+                    let preview: String = result.content.chars().take(preview_chars).collect();
                     let ellipsis = if result.content.chars().count() > preview_chars {
                         "\n… [output truncated — full text in workshop variable `last_tool_result`]"
                     } else {

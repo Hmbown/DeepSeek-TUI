@@ -317,9 +317,7 @@ fn sync_skills(app: &mut App) -> CommandResult {
     });
 
     match result {
-        Ok(SyncResult::RegistryDenied(host)) => {
-            CommandResult::error(network_denied_message(&host))
-        }
+        Ok(SyncResult::RegistryDenied(host)) => CommandResult::error(network_denied_message(&host)),
         Ok(SyncResult::RegistryNeedsApproval(host)) => {
             CommandResult::error(needs_approval_message(&host))
         }
@@ -334,11 +332,7 @@ fn sync_skills(app: &mut App) -> CommandResult {
                 match outcome {
                     SkillSyncOutcome::Downloaded { name, path } => {
                         downloaded += 1;
-                        let _ = writeln!(
-                            out,
-                            "  [+] {name} — downloaded to {}",
-                            path.display()
-                        );
+                        let _ = writeln!(out, "  [+] {name} — downloaded to {}", path.display());
                     }
                     SkillSyncOutcome::Fresh { name } => {
                         fresh += 1;

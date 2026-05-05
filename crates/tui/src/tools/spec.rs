@@ -132,7 +132,9 @@ pub struct ToolContext {
     /// Per-session workshop variable store (#548). Holds the raw content of
     /// the most recent large-tool routing event so the parent can call
     /// `promote_to_context` later. `None` when the router is disabled.
-    pub workshop_vars: Option<std::sync::Arc<tokio::sync::Mutex<crate::tools::large_output_router::WorkshopVariables>>>,
+    pub workshop_vars: Option<
+        std::sync::Arc<tokio::sync::Mutex<crate::tools::large_output_router::WorkshopVariables>>,
+    >,
 }
 
 impl ToolContext {
@@ -459,7 +461,9 @@ impl ToolContext {
     pub fn with_large_output_router(
         mut self,
         router: crate::tools::large_output_router::LargeOutputRouter,
-        vars: std::sync::Arc<tokio::sync::Mutex<crate::tools::large_output_router::WorkshopVariables>>,
+        vars: std::sync::Arc<
+            tokio::sync::Mutex<crate::tools::large_output_router::WorkshopVariables>,
+        >,
     ) -> Self {
         self.large_output_router = Some(router);
         self.workshop_vars = Some(vars);

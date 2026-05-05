@@ -318,7 +318,9 @@ pub struct Engine {
     /// Session-scoped workshop variable store (#548). Shared across all tool
     /// calls so `last_tool_result` persists within the session and can be
     /// promoted to the parent context via `promote_to_context`.
-    workshop_vars: Option<std::sync::Arc<tokio::sync::Mutex<crate::tools::large_output_router::WorkshopVariables>>>,
+    workshop_vars: Option<
+        std::sync::Arc<tokio::sync::Mutex<crate::tools::large_output_router::WorkshopVariables>>,
+    >,
     /// External sandbox backend (#516). When `Some`, exec_shell routes commands
     /// through this instead of spawning a local process.
     sandbox_backend: Option<std::sync::Arc<dyn crate::sandbox::backend::SandboxBackend>>,
@@ -441,14 +443,17 @@ impl Engine {
         // Workshop variable store (#548). Created unconditionally so the Arc
         // can be handed to every ToolContext; routing is gated on the router
         // field being Some rather than on the vars Arc being present.
-        let workshop_vars: Option<std::sync::Arc<tokio::sync::Mutex<crate::tools::large_output_router::WorkshopVariables>>> =
-            if config.workshop.is_some() {
-                Some(std::sync::Arc::new(tokio::sync::Mutex::new(
-                    crate::tools::large_output_router::WorkshopVariables::default(),
-                )))
-            } else {
-                None
-            };
+        let workshop_vars: Option<
+            std::sync::Arc<
+                tokio::sync::Mutex<crate::tools::large_output_router::WorkshopVariables>,
+            >,
+        > = if config.workshop.is_some() {
+            Some(std::sync::Arc::new(tokio::sync::Mutex::new(
+                crate::tools::large_output_router::WorkshopVariables::default(),
+            )))
+        } else {
+            None
+        };
 
         // External sandbox backend (#516). Logged but non-fatal: if the
         // backend fails to construct, the engine continues with local
@@ -1333,9 +1338,8 @@ impl Engine {
         // routing of the synthesis call itself.
         if let Some(workshop_cfg) = self.config.workshop.as_ref() {
             if let Some(vars_arc) = self.workshop_vars.as_ref() {
-                let router = crate::tools::large_output_router::LargeOutputRouter::new(
-                    workshop_cfg.clone(),
-                );
+                let router =
+                    crate::tools::large_output_router::LargeOutputRouter::new(workshop_cfg.clone());
                 ctx = ctx.with_large_output_router(router, vars_arc.clone());
             }
         }
