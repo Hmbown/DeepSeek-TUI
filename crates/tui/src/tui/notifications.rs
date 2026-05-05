@@ -6,7 +6,9 @@
 //! running inside a tmux session.
 
 #[cfg(target_os = "windows")]
-use windows::Win32::UI::WindowsAndMessaging::MessageBeep;
+use windows::Win32::System::Diagnostics::Debug::MessageBeep;
+#[cfg(target_os = "windows")]
+use windows::Win32::UI::WindowsAndMessaging::MESSAGEBOX_STYLE;
 
 use std::io::{self, Write};
 use std::time::Duration;
@@ -52,9 +54,11 @@ impl Method {
 /// API directly to produce the standard notification sound.
 #[cfg(target_os = "windows")]
 fn windows_bell() {
-    // MB_OK = 0x00000000 — plays the default system sound.
+    // MB_OK = 0x00000000 — plays the default system sound. Best-effort: a
+    // failed beep is not worth surfacing to the caller, so the Result is
+    // discarded.
     unsafe {
-        MessageBeep(0x00000000);
+        let _ = MessageBeep(MESSAGEBOX_STYLE(0));
     }
 }
 

@@ -25,7 +25,13 @@ jobs:
           components: clippy, rustfmt
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+        run: |
+          for i in 1 2 3 4 5; do
+            sudo apt-get update && break
+            echo "apt-get update failed (attempt $i); retrying in 15s"
+            sleep 15
+          done
+          sudo apt-get install -y libdbus-1-dev pkg-config
       - uses: Swatinem/rust-cache@v2
       - name: Format check
         run: cargo fmt --all -- --check
@@ -110,7 +116,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+        run: |
+          for i in 1 2 3 4 5; do
+            sudo apt-get update && break
+            echo "apt-get update failed (attempt $i); retrying in 15s"
+            sleep 15
+          done
+          sudo apt-get install -y libdbus-1-dev pkg-config
       - name: Install zig
         if: runner.os == 'Linux'
         uses: goto-bus-stop/setup-zig@v2
