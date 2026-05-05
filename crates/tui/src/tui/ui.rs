@@ -282,7 +282,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
                     content: format!(
                         "Resumed session: {} ({})",
                         saved.metadata.title,
-                        &saved.metadata.id[..8.min(saved.metadata.id.len())]
+                        crate::session_manager::truncate_id(&saved.metadata.id),
                     ),
                 });
 
@@ -292,7 +292,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
                 app.mark_history_updated();
                 app.status_message = Some(format!(
                     "Resumed session: {}",
-                    &saved.metadata.id[..8.min(saved.metadata.id.len())]
+                    crate::session_manager::truncate_id(&saved.metadata.id)
                 ));
             }
             Ok(None) => {

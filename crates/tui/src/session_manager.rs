@@ -711,6 +711,12 @@ fn system_prompt_to_string(system_prompt: Option<&SystemPrompt>) -> Option<Strin
     }
 }
 
+/// Truncate a session ID to 8 characters for compact display.
+/// Returns a `&str` borrowing from the input — no allocation.
+pub fn truncate_id(id: &str) -> &str {
+    id.get(..8).unwrap_or(id)
+}
+
 /// Truncate a string to create a title (character-safe for UTF-8)
 fn truncate_title(s: &str, max_len: usize) -> String {
     let s = s.trim();
@@ -732,7 +738,7 @@ pub fn format_session_line(meta: &SessionMetadata) -> String {
 
     format!(
         "{} | {} | {} msgs | {}",
-        &meta.id[..8],
+        truncate_id(&meta.id),
         truncated_title,
         meta.message_count,
         age
@@ -827,7 +833,7 @@ mod tests {
 
         let messages = vec![make_test_message("user", "Test session")];
         let session = create_saved_session(&messages, "test-model", tmp.path(), 100, None);
-        let prefix = session.metadata.id[..8].to_string();
+        let prefix = truncate_id(&session.metadata.id).to_string();
         manager.save_session(&session).expect("save");
 
         let loaded = manager.load_session_by_prefix(&prefix).expect("load");

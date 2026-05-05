@@ -195,7 +195,7 @@ impl SessionPickerView {
         self.refresh_preview();
         self.status = Some(format!(
             "Deleted session {}",
-            &session.id[..8.min(session.id.len())]
+            crate::session_manager::truncate_id(&session.id)
         ));
         Some(ViewEvent::SessionDeleted {
             session_id: session.id,
@@ -475,7 +475,7 @@ fn format_session_line(session: &SessionMetadata) -> String {
         .to_ascii_lowercase();
     format!(
         "{} | {} | {} msgs | {} | {}",
-        &session.id[..8.min(session.id.len())],
+        crate::session_manager::truncate_id(&session.id),
         title,
         session.message_count,
         mode,
