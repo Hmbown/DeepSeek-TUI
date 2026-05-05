@@ -51,10 +51,10 @@ impl WorkshopConfig {
     /// Resolve the effective threshold for the given tool name.
     #[must_use]
     pub fn threshold_for(&self, tool_name: &str) -> usize {
-        if let Some(per_tool) = self.per_tool_thresholds.as_ref() {
-            if let Some(&limit) = per_tool.get(tool_name) {
-                return limit;
-            }
+        if let Some(per_tool) = self.per_tool_thresholds.as_ref()
+            && let Some(&limit) = per_tool.get(tool_name)
+        {
+            return limit;
         }
         self.large_output_threshold_tokens
             .unwrap_or(DEFAULT_LARGE_OUTPUT_THRESHOLD_TOKENS)

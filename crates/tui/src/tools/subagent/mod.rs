@@ -49,10 +49,10 @@ static RESIDENT_LEASES: std::sync::OnceLock<
 /// Release all resident file leases held by `agent_id`. Called when an
 /// agent transitions to a terminal state (completed, failed, cancelled).
 fn release_resident_leases_for(agent_id: &str) {
-    if let Some(lock) = RESIDENT_LEASES.get() {
-        if let Ok(mut guard) = lock.lock() {
-            guard.retain(|_, owner| owner != agent_id);
-        }
+    if let Some(lock) = RESIDENT_LEASES.get()
+        && let Ok(mut guard) = lock.lock()
+    {
+        guard.retain(|_, owner| owner != agent_id);
     }
 }
 
@@ -1688,16 +1688,13 @@ impl ToolSpec for AgentSpawnTool {
         // (which matches by agent id at terminal-state transitions) can never find
         // the entry — leases would stay stamped as "pending" forever, defeating the
         // release machinery added in #660.
-        if let Some(ref file_path) = spawn_request.resident_file {
-            if let Some(lock) = RESIDENT_LEASES.get() {
-                if let Ok(mut guard) = lock.lock() {
-                    if let Some(owner) = guard.get_mut(file_path) {
-                        if owner == "pending" {
-                            *owner = result.agent_id.clone();
-                        }
-                    }
-                }
-            }
+        if let Some(ref file_path) = spawn_request.resident_file
+            && let Some(lock) = RESIDENT_LEASES.get()
+            && let Ok(mut guard) = lock.lock()
+            && let Some(owner) = guard.get_mut(file_path)
+            && owner == "pending"
+        {
+            *owner = result.agent_id.clone();
         }
 
         let mut tool_result = if self.name == "spawn_agent" {

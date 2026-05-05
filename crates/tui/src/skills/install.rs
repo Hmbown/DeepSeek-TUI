@@ -658,10 +658,10 @@ async fn sync_one_skill(
         // Build the request — add If-None-Match if we have a cached ETag.
         let client = reqwest::Client::new();
         let mut req = client.get(url);
-        if let Some(ref meta) = existing_meta {
-            if let Some(ref etag) = meta.etag {
-                req = req.header("If-None-Match", etag);
-            }
+        if let Some(ref meta) = existing_meta
+            && let Some(ref etag) = meta.etag
+        {
+            req = req.header("If-None-Match", etag);
         }
 
         let resp = match req.send().await {
@@ -728,12 +728,13 @@ async fn sync_one_skill(
 
         // Short-circuit: if the hash matches the cached one, we're fresh even
         // without a 304 (some CDNs strip ETags on redirects).
-        if let Some(ref meta) = existing_meta {
-            if meta.sha256 == sha256 && meta.url == *url {
-                return SkillSyncOutcome::Fresh {
-                    name: name.to_string(),
-                };
-            }
+        if let Some(ref meta) = existing_meta
+            && meta.sha256 == sha256
+            && meta.url == *url
+        {
+            return SkillSyncOutcome::Fresh {
+                name: name.to_string(),
+            };
         }
 
         // Determine whether this is a tarball or a plain SKILL.md.
@@ -742,9 +743,7 @@ async fn sync_one_skill(
         let is_tarball =
             url.ends_with(".tar.gz") || url.ends_with(".tgz") || bytes.starts_with(&[0x1f, 0x8b]);
 
-        let final_path: PathBuf;
-
-        if is_tarball {
+        let final_path: PathBuf = if is_tarball {
             // Extract into a temp staging dir, then rename atomically.
             let staged = match stage_tarball(&bytes, cache_dir, max_size) {
                 Ok(s) => s,
@@ -767,7 +766,7 @@ async fn sync_one_skill(
                     reason: format!("failed to move staged skill into cache: {err:#}"),
                 };
             }
-            final_path = dest;
+            dest
         } else {
             // Plain SKILL.md (or other companion text file). Write directly.
             if let Err(err) = fs::create_dir_all(&skill_cache_dir) {
@@ -783,8 +782,8 @@ async fn sync_one_skill(
                     reason: format!("failed to write SKILL.md to cache: {err:#}"),
                 };
             }
-            final_path = skill_cache_dir.clone();
-        }
+            skill_cache_dir.clone()
+        };
 
         // Write the updated freshness metadata.
         let meta = CacheMeta {
