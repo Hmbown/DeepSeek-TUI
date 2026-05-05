@@ -16,7 +16,7 @@
 //! assert!(plan.is_some()); // [write_code, compile]
 //! ```
 
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::{BinaryHeap, HashSet};
 
 // ── Action ───────────────────────────────────────────────────────────────────
 

@@ -8,6 +8,7 @@ pub mod diagnostics;
 pub mod diff_format;
 pub mod file;
 pub mod file_search;
+pub mod fim_edit;
 pub mod finance;
 pub mod goap;
 
