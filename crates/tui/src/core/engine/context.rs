@@ -40,7 +40,6 @@ const LARGE_CONTEXT_WINDOW_TOKENS: u32 = 500_000;
 const TOOL_RESULT_METADATA_SUMMARY_CHARS: usize = 320;
 
 pub(super) const COMPACTION_SUMMARY_MARKER: &str = "Conversation Summary (Auto-Generated)";
-pub(super) const WORKING_SET_SUMMARY_MARKER: &str = "## Repo Working Set";
 
 #[derive(Debug, Clone, Copy)]
 struct ToolResultContextLimits {

@@ -1,6 +1,5 @@
 use super::*;
 
-use super::context::WORKING_SET_SUMMARY_MARKER;
 use crate::models::SystemBlock;
 use serde_json::json;
 use std::collections::HashSet;
@@ -8,6 +7,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::Instant;
 use tempfile::tempdir;
+
+const WORKING_SET_SUMMARY_MARKER: &str = "## Repo Working Set";
 
 fn build_engine_with_capacity(capacity: CapacityControllerConfig) -> Engine {
     let engine_config = EngineConfig {
