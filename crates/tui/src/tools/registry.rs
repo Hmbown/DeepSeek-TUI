@@ -671,6 +671,19 @@ impl ToolRegistryBuilder {
         self.with_tool(Arc::new(GraphExecuteTool::new()))
     }
 
+    /// Include the obscura headless browser tool — wraps obscura CLI
+    /// for fast stealth page data extraction, parallel scraping, and
+    /// CDP server launch. Only registered when `obscura` is found on PATH.
+    #[must_use]
+    pub fn with_obscura_tool(self) -> Self {
+        if super::obscura::is_obscura_available() {
+            use super::obscura::ObscuraTool;
+            return self.with_tool(std::sync::Arc::new(ObscuraTool::new()));
+        }
+        tracing::info!("obscura not found on PATH; skipping obscura tool registration");
+        self
+    }
+
     /// Include the browser automation tool — wraps agent-browser CLI
     /// for real Chrome browser control. Only registered when `agent-browser`
     /// is found on PATH (checked via `which agent-browser`).

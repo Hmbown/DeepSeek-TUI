@@ -113,6 +113,43 @@ browser { action: "close" }
 
 For advanced operations (tabs, network interception, auth vault, session management, React DevTools), fall back to `exec_shell agent-browser ...`.
 
+## Headless Browser (obscura)
+
+DeepSeek TUI integrates with [obscura](https://github.com/h4ckf0r0day/obscura) — a pure-Rust headless browser engine (V8, CDP, 30 MB memory). The `obscura` tool wraps obscura's CLI for fast JS-rendered page extraction, stealth scraping, and CDP server launch. The tool is only registered when `obscura` is found on PATH.
+
+### Installation
+
+```bash
+# Download from releases
+curl -LO https://github.com/h4ckf0r0day/obscura/releases/latest/download/obscura-aarch64-macos.tar.gz
+tar xzf obscura-aarch64-macos.tar.gz
+mv obscura /usr/local/bin/
+```
+
+### Compared to agent-browser
+
+| Dimension | obscura | agent-browser (browser) |
+|-----------|---------|------------------------|
+| Memory | 30 MB | 200+ MB (Chrome) |
+| Startup | instant | ~2s |
+| JS rendering | yes (V8) | yes (Chrome V8) |
+| Stealth mode | built-in | none |
+| Tracker blocking | 3,520 domains | none |
+| Interactive clicks | no (headless only) | yes |
+| Form filling | eval only | yes |
+| Screenshots | no | yes |
+| Parallel scraping | yes (multi-worker) | no |
+
+### Core workflow
+
+```
+obscura { action: "fetch", url: "...", dump: "text", stealth: true }
+obscura { action: "scrape", urls: ["...", "..."], eval: "document.title" }
+obscura { action: "serve", port: 9222, stealth: true }
+```
+
+**Complementary use**: obscura for fast/stealth data extraction; browser for interactive UI automation. Combine with web_pipeline for stealth deep crawling.
+
 ## Session Longevity (Critical)
 
 Long sessions in DeepSeek TUI WILL degrade and crash if you work sequentially. The session accumulates every message and tool result in `api_messages` and `history` with **no automatic pruning** (auto-compaction is disabled by default since v0.6.6). Session saves serialize the entire bloated array to disk.

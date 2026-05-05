@@ -15,6 +15,7 @@ pub mod fim_edit;
 pub mod finance;
 pub mod goap;
 pub mod manager_agent;
+pub mod obscura;
 
 pub mod fetch_url;
 pub mod git;

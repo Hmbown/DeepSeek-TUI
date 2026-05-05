@@ -27,6 +27,7 @@ impl Engine {
                 .with_agent_memory_tools()
                 .with_graph_tool()
                 .with_web_pipeline_tool()
+                .with_obscura_tool()
                 .with_browser_tool()
                 .with_todo_tool(todo_list)
                 .with_plan_tool(plan_state)
@@ -46,6 +47,7 @@ impl Engine {
             .with_agent_memory_tools()
             .with_graph_tool()
             .with_web_pipeline_tool()
+            .with_obscura_tool()
             .with_browser_tool()
             .with_user_input_tool()
             .with_parallel_tool();
