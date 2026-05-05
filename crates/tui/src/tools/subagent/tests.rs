@@ -112,9 +112,9 @@ fn test_implementer_and_verifier_have_distinct_prompts() {
     // The whole point of adding the types is that they carry distinct
     // posture. Defensive guard: catch the easy bug where copy-paste
     // leaves two new variants with the same prompt as `General`.
-    let implementer = SubAgentType::Implementer.system_prompt();
-    let verifier = SubAgentType::Verifier.system_prompt();
-    let general = SubAgentType::General.system_prompt();
+    let implementer = SubAgentType::Implementer.system_prompt(crate::localization::Locale::En);
+    let verifier = SubAgentType::Verifier.system_prompt(crate::localization::Locale::En);
+    let general = SubAgentType::General.system_prompt(crate::localization::Locale::En);
     assert_ne!(
         implementer, general,
         "Implementer prompt must differ from General"

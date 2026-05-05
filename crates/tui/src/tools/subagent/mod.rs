@@ -253,15 +253,21 @@ impl SubAgentType {
 
     /// Get the system prompt for this agent type.
     #[must_use]
-    pub fn system_prompt(&self) -> String {
-        match self {
-            Self::General => GENERAL_AGENT_PROMPT.to_string(),
-            Self::Explore => EXPLORE_AGENT_PROMPT.to_string(),
-            Self::Plan => PLAN_AGENT_PROMPT.to_string(),
-            Self::Review => REVIEW_AGENT_PROMPT.to_string(),
-            Self::Implementer => IMPLEMENTER_AGENT_PROMPT.to_string(),
-            Self::Verifier => VERIFIER_AGENT_PROMPT.to_string(),
-            Self::Custom => CUSTOM_AGENT_PROMPT.to_string(),
+    pub fn system_prompt(&self, locale: crate::localization::Locale) -> String {
+        let intro = match self {
+            Self::General => GENERAL_AGENT_INTRO,
+            Self::Explore => EXPLORE_AGENT_INTRO,
+            Self::Plan => PLAN_AGENT_INTRO,
+            Self::Review => REVIEW_AGENT_INTRO,
+            Self::Implementer => IMPLEMENTER_AGENT_INTRO,
+            Self::Verifier => VERIFIER_AGENT_INTRO,
+            Self::Custom => CUSTOM_AGENT_INTRO,
+        };
+        let output_format = output_format_for_locale(locale);
+        if output_format.is_empty() {
+            intro.to_string()
+        } else {
+            format!("{intro}\n\n{output_format}")
         }
     }
 
@@ -2449,7 +2455,7 @@ fn build_subagent_system_prompt(
     assignment: &SubAgentAssignment,
     locale: crate::localization::Locale,
 ) -> String {
-    let base = agent_type.system_prompt();
+    let base = agent_type.system_prompt(locale);
     let language_block = crate::prompts::build_language_instruction(locale);
     let role_line = match assignment.role.as_deref() {
         Some(role) if !role.trim().is_empty() => {
@@ -2457,8 +2463,10 @@ fn build_subagent_system_prompt(
         }
         _ => String::new(),
     };
-    // Language instruction must be LAST — models treat the final
-    // instruction in the system prompt as most influential.
+    // system_prompt() already appended the localized output format block.
+    // Language instruction must be LAST — models treat the final instruction
+    // in the system prompt as most influential. Order:
+    //   intro → output_format → role_line → language_block
     format!("{base}{role_line}\n\n{language_block}")
 }
 
@@ -3497,21 +3505,23 @@ fn truncate_preview(text: &str) -> String {
 
 // === System prompts ===
 //
-// Each per-agent-type prompt is composed from two parts:
+// Each per-agent-type prompt is composed from two parts at compile time
+// (the role-specific intro) and assembled at runtime:
 //
 //   1. A short role-specific intro that names the agent's job, its scope,
 //      and any role-specific tactics or stop conditions.
-//   2. The shared `subagent_output_format.md` block, which is the single
-//      source of truth for the SUMMARY / EVIDENCE / CHANGES / RISKS /
-//      BLOCKERS contract, the stop condition, and the typed-tool-surface
-//      conventions. Tweaks to the contract live in that one file.
+//   2. The locale-appropriate output format block loaded by
+//      `output_format_for_locale()`, which selects the translated version
+//      of `subagent_output_format.md` at runtime. The English original is
+//      the single source of truth for the SUMMARY / EVIDENCE / CHANGES /
+//      RISKS / BLOCKERS contract, the stop condition, and the typed-tool-
+//      surface conventions.
 //
-// `concat!` resolves at compile time, so the per-type constants remain
-// `&'static str` and `system_prompt()` keeps its `String` return type.
-// The `include_str!` calls inside each `concat!` all point at the same
-// file, so the format is defined once even though it's inlined many times.
+// The intro constants are kept as `&'static str` via `concat!`; the
+// output format is selected per-locale in `system_prompt()` so the
+// sub-agent sees the correct language for its interface contract.
 
-const GENERAL_AGENT_PROMPT: &str = concat!(
+const GENERAL_AGENT_INTRO: &str = concat!(
     "You are a general-purpose sub-agent spawned to handle a specific task autonomously.\n",
     "\n",
     "Your scope is exactly what the parent assigned to you. Do not expand the\n",
@@ -3522,11 +3532,9 @@ const GENERAL_AGENT_PROMPT: &str = concat!(
     "Plan before you act. Use `checklist_write` for any multi-step task so your work\n",
     "is visible in the parent's sidebar. For complex initiatives, layer\n",
     "`update_plan` (strategy) above `checklist_write` (tactics).\n",
-    "\n",
-    include_str!("../../prompts/subagent_output_format.md"),
 );
 
-const EXPLORE_AGENT_PROMPT: &str = concat!(
+const EXPLORE_AGENT_INTRO: &str = concat!(
     "You are an exploration sub-agent. Your job is to map the relevant region\n",
     "of the codebase fast and report what is there. You are read-only by\n",
     "convention — do not write, patch, or run side-effectful commands. If the\n",
@@ -3545,11 +3553,9 @@ const EXPLORE_AGENT_PROMPT: &str = concat!(
     "EVIDENCE list as a working set for the next turn, so be precise.\n",
     "\n",
     "CHANGES will almost always be \"None.\" for an explorer.\n",
-    "\n",
-    include_str!("../../prompts/subagent_output_format.md"),
 );
 
-const PLAN_AGENT_PROMPT: &str = concat!(
+const PLAN_AGENT_INTRO: &str = concat!(
     "You are a planning sub-agent. Your job is to take an objective and\n",
     "produce a prioritized, executable plan — not to execute it. Keep writes\n",
     "to a minimum (notes and plan artifacts only); avoid patches and shell\n",
@@ -3572,11 +3578,9 @@ const PLAN_AGENT_PROMPT: &str = concat!(
     "\n",
     "CHANGES should list the plan artifacts you wrote (e.g. `update_plan` rows,\n",
     "`checklist_write` ids, any notes). Do not include speculative future edits.\n",
-    "\n",
-    include_str!("../../prompts/subagent_output_format.md"),
 );
 
-const REVIEW_AGENT_PROMPT: &str = concat!(
+const REVIEW_AGENT_INTRO: &str = concat!(
     "You are a code review sub-agent. Your job is to read the code under\n",
     "review and emit a severity-scored list of findings. You are read-only by\n",
     "convention — do not patch the code under review even if a fix is obvious;\n",
@@ -3599,11 +3603,9 @@ const REVIEW_AGENT_PROMPT: &str = concat!(
     "clean review is a valid result and the parent benefits from knowing it.\n",
     "\n",
     "CHANGES will almost always be \"None.\" for a reviewer.\n",
-    "\n",
-    include_str!("../../prompts/subagent_output_format.md"),
 );
 
-const CUSTOM_AGENT_PROMPT: &str = concat!(
+const CUSTOM_AGENT_INTRO: &str = concat!(
     "You are a custom sub-agent. The parent has given you a narrowed tool\n",
     "registry — only the tools you see at runtime are available. Do not try\n",
     "to reach for a tool that is not registered; if the task needs one, put\n",
@@ -3611,11 +3613,9 @@ const CUSTOM_AGENT_PROMPT: &str = concat!(
     "\n",
     "Stay tightly scoped to the assigned objective. The parent chose Custom\n",
     "specifically to constrain you — do not expand into adjacent work.\n",
-    "\n",
-    include_str!("../../prompts/subagent_output_format.md"),
 );
 
-const IMPLEMENTER_AGENT_PROMPT: &str = concat!(
+const IMPLEMENTER_AGENT_INTRO: &str = concat!(
     "You are an implementation sub-agent. Your job is to land the change\n",
     "the parent assigned to you — write the code, modify the files, satisfy\n",
     "the contract — with the *minimum* surrounding edit. You do not refactor\n",
@@ -3638,11 +3638,9 @@ const IMPLEMENTER_AGENT_PROMPT: &str = concat!(
     "CHANGES is the load-bearing section for implementers. List every file\n",
     "you modified with a one-line summary of what changed and why. The parent\n",
     "uses CHANGES to decide what to inspect next.\n",
-    "\n",
-    include_str!("../../prompts/subagent_output_format.md"),
 );
 
-const VERIFIER_AGENT_PROMPT: &str = concat!(
+const VERIFIER_AGENT_INTRO: &str = concat!(
     "You are a verification sub-agent. Your job is to *run* the project's\n",
     "test suite (or other validation gates) and report pass/fail with the\n",
     "evidence the parent needs to act. You are read-only by convention —\n",
@@ -3666,9 +3664,32 @@ const VERIFIER_AGENT_PROMPT: &str = concat!(
     "say which test and how many runs you tried.\n",
     "\n",
     "CHANGES will almost always be \"None.\" for a verifier.\n",
-    "\n",
-    include_str!("../../prompts/subagent_output_format.md"),
 );
+
+// === Output format locale selection ===
+//
+// Load the locale-appropriate version of the shared output format contract.
+// Each branch is a compile-time `include_str!` that the optimizer inlines,
+// so the runtime cost is a single match dispatch.
+fn output_format_for_locale(locale: crate::localization::Locale) -> &'static str {
+    match locale {
+        crate::localization::Locale::ZhHans => {
+            include_str!("../../prompts/subagent_output_format.zh.md")
+        }
+        crate::localization::Locale::ZhHant => {
+            include_str!("../../prompts/subagent_output_format.zh-hant.md")
+        }
+        crate::localization::Locale::Ja => {
+            include_str!("../../prompts/subagent_output_format.ja.md")
+        }
+        crate::localization::Locale::PtBr => {
+            include_str!("../../prompts/subagent_output_format.pt-BR.md")
+        }
+        crate::localization::Locale::En => {
+            include_str!("../../prompts/subagent_output_format.md")
+        }
+    }
+}
 
 // === Tests ===
 

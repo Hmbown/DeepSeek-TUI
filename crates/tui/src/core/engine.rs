@@ -1718,8 +1718,15 @@ impl Engine {
         );
         let stable_prompt =
             merge_system_prompts(Some(&base), self.session.compaction_summary_prompt.clone());
-        self.session.system_prompt =
+        let prompt_with_ws =
             append_working_set_summary(stable_prompt, working_set_summary.as_deref());
+        // 在系统提示词末尾追加语言约束（最高优先级），确保模型在每次请求前
+        // 看到最新的语言指令，避免语言飘逸。
+        let lang_instruction = prompts::build_language_instruction(self.config.locale);
+        self.session.system_prompt = merge_system_prompts(
+            prompt_with_ws.as_ref(),
+            Some(SystemPrompt::Text(lang_instruction)),
+        );
     }
 
     fn merge_compaction_summary(&mut self, summary_prompt: Option<SystemPrompt>) {
