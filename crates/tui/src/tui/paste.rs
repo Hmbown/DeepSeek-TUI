@@ -201,6 +201,57 @@ mod tests {
         assert_eq!(app.input, "?");
     }
 
+    /// Pin the IME-input contract: macOS/Windows input methods commit
+    /// each Chinese character as a single `KeyCode::Char(c)` event
+    /// after the candidate popup closes. Each codepoint fits in a
+    /// `char` (no surrogate pair concerns for BMP chars), so a
+    /// straightforward sequence of plain-char events must land in
+    /// `app.input` verbatim — no ASCII filter, no byte-vs-char index
+    /// drift, no paste-burst false-positive that buffers the chars
+    /// indefinitely.
+    #[test]
+    fn ime_chinese_chars_route_through_to_composer() {
+        let mut app = test_app();
+        let t0 = Instant::now();
+
+        // Type the four Chinese codepoints "你好世界" one event at a
+        // time, with realistic ~50ms gaps so the paste-burst heuristic
+        // doesn't classify them as a paste burst.
+        for (i, ch) in "你好世界".chars().enumerate() {
+            let now = t0 + Duration::from_millis(50 * i as u64);
+            let _ = handle_paste_burst_key(&mut app, &plain(ch), now);
+        }
+
+        // Past the active-flush delay so any buffered burst commits.
+        let after = t0
+            + Duration::from_millis(50 * 4)
+            + crate::tui::paste_burst::PasteBurst::recommended_active_flush_delay();
+        let _ = app.flush_paste_burst_if_due(after);
+
+        assert_eq!(
+            app.input, "你好世界",
+            "IME-typed Chinese characters must land in composer verbatim"
+        );
+        assert_eq!(
+            app.cursor_position, 4,
+            "cursor advances by one per codepoint, not per UTF-8 byte"
+        );
+    }
+
+    /// Pin the bracketed-paste contract for CJK content: pasted
+    /// Chinese text (e.g. when a user copies a question from a
+    /// Chinese website and pastes into the composer) must preserve
+    /// every codepoint and not double-count multi-byte chars in the
+    /// cursor position.
+    #[test]
+    fn bracketed_paste_preserves_chinese_and_mixed_text() {
+        let mut app = test_app();
+        app.insert_paste_text("你好世界 hello 世界 café");
+        assert_eq!(app.input, "你好世界 hello 世界 café");
+        // 4 + 1 + 5 + 1 + 2 + 1 + 4 = 18 codepoints (counting é as one).
+        assert_eq!(app.cursor_position, 18);
+    }
+
     #[test]
     fn paste_burst_detection_can_be_disabled_without_disabling_bracketed_paste() {
         let mut app = test_app();
