@@ -153,9 +153,13 @@ pub(super) fn parse_tool_input(buffer: &str) -> Option<serde_json::Value> {
     if trimmed.is_empty() {
         return None;
     }
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+    // Try the deterministic arg-repair ladder first (handles trailing commas,
+    // unclosed braces, embedded control chars, etc.)
+    if let Ok(value) = crate::tools::arg_repair::repair(trimmed) {
         return Some(value);
     }
+    // Fall back to existing strategies for code-fenced, double-encoded, and
+    // segment-extraction patterns that the repair ladder doesn't cover.
     if let Some(stripped) = strip_code_fences(trimmed)
         && let Ok(value) = serde_json::from_str::<serde_json::Value>(&stripped)
     {
