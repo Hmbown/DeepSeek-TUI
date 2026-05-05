@@ -23,6 +23,7 @@ use crate::client::DeepSeekClient;
 use crate::config::MAX_SUBAGENTS;
 use crate::core::events::Event;
 use crate::llm_client::LlmClient;
+use crate::localization::{MessageId, tr};
 use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt, Tool};
 use crate::tools::plan::{PlanState, SharedPlanState};
 use crate::tools::registry::{ToolRegistry, ToolRegistryBuilder};
@@ -2503,14 +2504,15 @@ async fn run_subagent_task(task: SubAgentTask) {
     // sentinel on the second. The sentinel uses an opaque tag
     // (`deepseek:subagent.done`) to avoid collision with normal user
     // text.
+    let locale = task.runtime.locale;
     let (summary, sentinel) = match &result {
         Ok(res) => (
-            summarize_subagent_result(res),
-            subagent_done_sentinel(&task.agent_id, res),
+            summarize_subagent_result(locale, res),
+            subagent_done_sentinel(&task.agent_id, res, locale),
         ),
         Err(err) => (
             format!("Failed: {err}"),
-            subagent_failed_sentinel(&task.agent_id, &err.to_string()),
+            subagent_failed_sentinel(&task.agent_id, &err.to_string(), locale),
         ),
     };
 
@@ -2541,20 +2543,20 @@ async fn run_subagent_task(task: SubAgentTask) {
 /// Intended to surface in the parent's transcript so the model recognizes
 /// child completion and can decide whether to read the full result via
 /// `agent_result`.
-fn subagent_done_sentinel(agent_id: &str, res: &SubAgentResult) -> String {
+fn subagent_done_sentinel(agent_id: &str, res: &SubAgentResult, locale: crate::localization::Locale) -> String {
     let payload = json!({
         "agent_id": agent_id,
         "agent_type": res.agent_type.as_str(),
         "status": subagent_status_name(&res.status),
         "duration_ms": res.duration_ms,
         "steps": res.steps_taken,
-        "summary": summarize_subagent_result(res),
+        "summary": summarize_subagent_result(locale, res),
     });
     format!("<deepseek:subagent.done>{payload}</deepseek:subagent.done>")
 }
 
 /// Build a `<deepseek:subagent.done>` sentinel for a failed child.
-fn subagent_failed_sentinel(agent_id: &str, err: &str) -> String {
+fn subagent_failed_sentinel(agent_id: &str, err: &str, _locale: crate::localization::Locale) -> String {
     let payload = json!({
         "agent_id": agent_id,
         "status": "failed",
@@ -3435,14 +3437,20 @@ fn build_allowed_tools(
     Ok(None)
 }
 
-fn summarize_subagent_result(result: &SubAgentResult) -> String {
+fn summarize_subagent_result(locale: crate::localization::Locale, result: &SubAgentResult) -> String {
     match (&result.status, result.result.as_ref()) {
         (SubAgentStatus::Completed, Some(text)) => truncate_preview(text),
-        (SubAgentStatus::Completed, None) => "Completed (no output)".to_string(),
-        (SubAgentStatus::Interrupted(error), _) => format!("Interrupted: {error}"),
-        (SubAgentStatus::Cancelled, _) => "Cancelled".to_string(),
-        (SubAgentStatus::Failed(error), _) => format!("Failed: {error}"),
-        (SubAgentStatus::Running, _) => "Running".to_string(),
+        (SubAgentStatus::Completed, None) => tr(locale, MessageId::SubAgentStatusCompletedNoOutput).to_string(),
+        (SubAgentStatus::Interrupted(error), _) => {
+            tr(locale, MessageId::SubAgentStatusInterrupted)
+                .replace("{reason}", error)
+        }
+        (SubAgentStatus::Cancelled, _) => tr(locale, MessageId::SubAgentStatusCancelled).to_string(),
+        (SubAgentStatus::Failed(error), _) => {
+            tr(locale, MessageId::SubAgentStatusFailed)
+                .replace("{reason}", error)
+        }
+        (SubAgentStatus::Running, _) => tr(locale, MessageId::SubAgentStatusRunning).to_string(),
     }
 }
 

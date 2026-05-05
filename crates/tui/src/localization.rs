@@ -402,6 +402,12 @@ pub enum MessageId {
     HomeYoloModeCaution,
     HomePlanModeTip,
     HomePlanModeChecklistTip,
+    SubAgentStatusRunning,
+    SubAgentStatusCompletedNoOutput,
+    SubAgentStatusCancelled,
+    SubAgentStatusFailed,
+    SubAgentStatusInterrupted,
+    SubAgentRestartReason,
 }
 
 #[allow(dead_code)]
@@ -591,6 +597,12 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::HomeYoloModeCaution,
     MessageId::HomePlanModeTip,
     MessageId::HomePlanModeChecklistTip,
+    MessageId::SubAgentStatusRunning,
+    MessageId::SubAgentStatusCompletedNoOutput,
+    MessageId::SubAgentStatusCancelled,
+    MessageId::SubAgentStatusFailed,
+    MessageId::SubAgentStatusInterrupted,
+    MessageId::SubAgentRestartReason,
 ];
 
 pub fn tr(locale: Locale, id: MessageId) -> &'static str {
@@ -975,6 +987,12 @@ fn english(id: MessageId) -> &'static str {
         MessageId::HomeYoloModeCaution => "  Be careful with destructive operations!",
         MessageId::HomePlanModeTip => "Plan mode - Design before implementing",
         MessageId::HomePlanModeChecklistTip => "  Use /plan to create structured checklists",
+        MessageId::SubAgentStatusRunning => "Running",
+        MessageId::SubAgentStatusCompletedNoOutput => "Completed (no output)",
+        MessageId::SubAgentStatusCancelled => "Cancelled",
+        MessageId::SubAgentStatusFailed => "Failed: {reason}",
+        MessageId::SubAgentStatusInterrupted => "Interrupted: {reason}",
+        MessageId::SubAgentRestartReason => "Interrupted by process restart",
     }
 }
 
@@ -1259,6 +1277,12 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::HomeYoloModeCaution => "  破壊的な操作には注意してください！",
         MessageId::HomePlanModeTip => "Plan モード - 実装前に設計",
         MessageId::HomePlanModeChecklistTip => "  /plan を使って構造化されたチェックリストを作成",
+        MessageId::SubAgentStatusRunning => "実行中",
+        MessageId::SubAgentStatusCompletedNoOutput => "完了（出力なし）",
+        MessageId::SubAgentStatusCancelled => "キャンセル済み",
+        MessageId::SubAgentStatusFailed => "失敗：{reason}",
+        MessageId::SubAgentStatusInterrupted => "中断：{reason}",
+        MessageId::SubAgentRestartReason => "プロセスの再起動により中断",
     })
 }
 
@@ -1497,6 +1521,12 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::HomeYoloModeCaution => "  请小心破坏性操作！",
         MessageId::HomePlanModeTip => "Plan 模式 - 先设计再实现",
         MessageId::HomePlanModeChecklistTip => "  使用 /plan 创建结构化检查清单",
+        MessageId::SubAgentStatusRunning => "运行中",
+        MessageId::SubAgentStatusCompletedNoOutput => "已完成（无输出）",
+        MessageId::SubAgentStatusCancelled => "已取消",
+        MessageId::SubAgentStatusFailed => "失败：{reason}",
+        MessageId::SubAgentStatusInterrupted => "中断：{reason}",
+        MessageId::SubAgentRestartReason => "被进程重启中断",
     })
 }
 
@@ -1735,6 +1765,12 @@ fn chinese_traditional(id: MessageId) -> Option<&'static str> {
         MessageId::HomeYoloModeCaution => "  請小心破壞性操作！",
         MessageId::HomePlanModeTip => "Plan 模式 - 先設計再實作",
         MessageId::HomePlanModeChecklistTip => "  使用 /plan 建立結構化檢查清單",
+        MessageId::SubAgentStatusRunning => "执行中",
+        MessageId::SubAgentStatusCompletedNoOutput => "已完成（无输出）",
+        MessageId::SubAgentStatusCancelled => "已取消",
+        MessageId::SubAgentStatusFailed => "失败：{reason}",
+        MessageId::SubAgentStatusInterrupted => "中断：{reason}",
+        MessageId::SubAgentRestartReason => "被进程重启中断",
     })
 }
 
@@ -2031,6 +2067,12 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         MessageId::HomeYoloModeCaution => "  Tenha cuidado com operações destrutivas!",
         MessageId::HomePlanModeTip => "Modo Plan - Planeje antes de implementar",
         MessageId::HomePlanModeChecklistTip => "  Use /plan para criar checklists estruturados",
+        MessageId::SubAgentStatusRunning => "Em execução",
+        MessageId::SubAgentStatusCompletedNoOutput => "Concluído (sem saída)",
+        MessageId::SubAgentStatusCancelled => "Cancelado",
+        MessageId::SubAgentStatusFailed => "Falhou: {reason}",
+        MessageId::SubAgentStatusInterrupted => "Interrompido: {reason}",
+        MessageId::SubAgentRestartReason => "Interrompido por reinicialização do processo",
     })
 }
 

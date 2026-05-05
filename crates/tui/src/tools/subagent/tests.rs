@@ -655,7 +655,7 @@ fn test_interrupted_status_name_and_summary() {
         SUBAGENT_RESTART_REASON.to_string(),
     ));
     assert_eq!(subagent_status_name(&snapshot.status), "interrupted");
-    assert!(summarize_subagent_result(&snapshot).contains(SUBAGENT_RESTART_REASON));
+    assert!(summarize_subagent_result(crate::localization::Locale::En, &snapshot).contains(SUBAGENT_RESTART_REASON));
 }
 
 // === Deprecation notice tests ===
@@ -846,7 +846,7 @@ fn build_subagent_system_prompt_skips_role_when_blank() {
 #[test]
 fn subagent_done_sentinel_format_is_well_formed() {
     let res = make_snapshot(SubAgentStatus::Completed);
-    let sentinel = subagent_done_sentinel("agent_xyz", &res);
+    let sentinel = subagent_done_sentinel("agent_xyz", &res, crate::localization::Locale::En);
     assert!(sentinel.starts_with("<deepseek:subagent.done>"));
     assert!(sentinel.ends_with("</deepseek:subagent.done>"));
 
@@ -862,7 +862,7 @@ fn subagent_done_sentinel_format_is_well_formed() {
 
 #[test]
 fn subagent_failed_sentinel_format_is_well_formed() {
-    let sentinel = subagent_failed_sentinel("agent_zzz", "boom");
+    let sentinel = subagent_failed_sentinel("agent_zzz", "boom", crate::localization::Locale::En);
     let inner = sentinel
         .trim_start_matches("<deepseek:subagent.done>")
         .trim_end_matches("</deepseek:subagent.done>");
