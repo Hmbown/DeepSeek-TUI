@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -18,6 +18,7 @@ use tokio::process::{Child, ChildStdin, ChildStdout};
 
 use crate::network_policy::{Decision, NetworkPolicyDecider, host_from_url};
 use crate::utils::write_atomic;
+use dirs;
 
 // === Error diagnostics helpers (#71) ===
 
@@ -971,6 +972,7 @@ pub struct McpPool {
     connections: HashMap<String, McpConnection>,
     config: McpConfig,
     network_policy: Option<NetworkPolicyDecider>,
+    workspace_dir: Option<PathBuf>,
 }
 
 impl McpPool {
@@ -980,6 +982,7 @@ impl McpPool {
             connections: HashMap::new(),
             config,
             network_policy: None,
+            workspace_dir: None,
         }
     }
 
@@ -996,10 +999,46 @@ impl McpPool {
         Ok(Self::new(config))
     }
 
+    /// Override or set an environment variable on a specific server's config.
+    /// The value is only set if the key does not already exist in the server's
+    /// env map, preserving any explicit user-configured values.
+    pub fn with_server_env(mut self, server_name: &str, key: &str, value: &str) -> Self {
+        if let Some(server) = self.config.servers.get_mut(server_name) {
+            server
+                .env
+                .entry(key.to_string())
+                .or_insert_with(|| value.to_string());
+        }
+        self
+    }
+
     /// Attach a per-domain network policy (#135). When set, HTTP/SSE
     /// transports are gated through it; STDIO transports are unaffected.
     pub fn with_network_policy(mut self, policy: NetworkPolicyDecider) -> Self {
         self.network_policy = Some(policy);
+        self
+    }
+
+    /// Merge global config (~/.deepseek/mcp.json) with workspace config.
+    /// Workspace entries override global entries with the same server name.
+    pub fn from_workspace_config(workspace_config_path: &std::path::Path) -> Result<Self> {
+        let global_path = dirs::home_dir()
+            .unwrap_or_default()
+            .join(".deepseek")
+            .join("mcp.json");
+        let mut merged = load_config(&global_path).unwrap_or_default();
+        let workspace_cfg = load_config(workspace_config_path)?;
+        // workspace overrides global for same-named servers
+        for (name, server) in workspace_cfg.servers {
+            merged.servers.insert(name, server);
+        }
+        Ok(Self::new(merged))
+    }
+
+    /// Set the workspace directory, used to inject CONTEXT_MODE_PROJECT_DIR
+    /// for context-mode MCP connections.
+    pub fn with_workspace(mut self, workspace: PathBuf) -> Self {
+        self.workspace_dir = Some(workspace);
         self
     }
 
@@ -1019,12 +1058,22 @@ impl McpPool {
 
         self.connections.remove(server_name);
 
-        let server_config = self
+        let mut server_config = self
             .config
             .servers
             .get(server_name)
             .ok_or_else(|| anyhow::anyhow!("Failed to find MCP server: {server_name}"))?
             .clone();
+
+        // Inject workspace directory for context-mode connections
+        if server_name == "context-mode" {
+            if let Some(ref workspace) = self.workspace_dir {
+                server_config
+                    .env
+                    .entry("CONTEXT_MODE_PROJECT_DIR".to_string())
+                    .or_insert_with(|| workspace.display().to_string());
+            }
+        }
 
         if !server_config.is_enabled() {
             anyhow::bail!("Failed to connect MCP server '{server_name}': server is disabled");
