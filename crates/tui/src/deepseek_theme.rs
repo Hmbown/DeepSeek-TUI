@@ -50,6 +50,8 @@ pub struct Theme {
     pub plan_explanation_color: Color,
     pub plan_pending_color: Color,
     pub plan_in_progress_color: Color,
+    pub plan_paused_color: Color,
+    pub plan_interrupted_color: Color,
     pub plan_completed_color: Color,
 }
 
@@ -81,6 +83,8 @@ impl Theme {
             plan_explanation_color: palette::TEXT_DIM,
             plan_pending_color: palette::TEXT_MUTED,
             plan_in_progress_color: palette::STATUS_WARNING,
+            plan_paused_color: palette::ACCENT_TOOL_LIVE,
+            plan_interrupted_color: palette::ACCENT_TOOL_ISSUE,
             plan_completed_color: palette::STATUS_SUCCESS,
         }
     }

@@ -780,6 +780,7 @@ fn make_subagent(
         nickname: None,
         status,
         result: None,
+        lifecycle: crate::tools::subagent::SubAgentLifecycle::Finished,
         steps_taken: 0,
         duration_ms: 0,
         from_prior_session: false,

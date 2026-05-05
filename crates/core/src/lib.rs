@@ -1405,10 +1405,7 @@ fn truncate_preview(value: &str) -> String {
 
 fn to_protocol_thread(thread: ThreadMetadata) -> Thread {
     let zone = thread.zone.as_deref().and_then(zone_from_str);
-    let activity = thread
-        .activity
-        .as_deref()
-        .and_then(activity_from_str);
+    let activity = thread.activity.as_deref().and_then(activity_from_str);
     Thread {
         id: thread.id,
         preview: thread.preview,

@@ -280,6 +280,8 @@ impl StructuredState {
                 let marker = match item.status {
                     crate::tools::plan::StepStatus::Pending => "[ ]",
                     crate::tools::plan::StepStatus::InProgress => "[~]",
+                    crate::tools::plan::StepStatus::Paused => "[⏸]",
+                    crate::tools::plan::StepStatus::Interrupted => "[⚠]",
                     crate::tools::plan::StepStatus::Completed => "[x]",
                 };
                 out.push_str(&format!("- {marker} {}\n", item.step));

@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -15,11 +16,20 @@ use crate::tools::spec::{
 // === Types ===
 
 /// Status of a plan step.
+///
+/// State transitions are guarded by `allowed_transitions`:
+///   Pending    → InProgress
+///   InProgress → Paused | Interrupted | Completed
+///   Paused     → InProgress (resume) | Interrupted
+///   Interrupted → Pending (restart) | InProgress (recover)
+///   Completed  → (terminal)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum StepStatus {
     Pending,
     InProgress,
+    Paused,
+    Interrupted,
     Completed,
 }
 
@@ -30,9 +40,27 @@ impl StepStatus {
         match value.trim().to_lowercase().as_str() {
             "pending" => Some(StepStatus::Pending),
             "in_progress" | "inprogress" => Some(StepStatus::InProgress),
+            "paused" => Some(StepStatus::Paused),
+            "interrupted" => Some(StepStatus::Interrupted),
             "completed" | "done" => Some(StepStatus::Completed),
             _ => None,
         }
+    }
+
+    /// Validate a state transition against the allowed graph.
+    #[must_use]
+    pub fn can_transition_to(&self, next: &StepStatus) -> bool {
+        matches!(
+            (self, next),
+            (StepStatus::Pending, StepStatus::InProgress)
+                | (StepStatus::InProgress, StepStatus::Paused)
+                | (StepStatus::InProgress, StepStatus::Interrupted)
+                | (StepStatus::InProgress, StepStatus::Completed)
+                | (StepStatus::Paused, StepStatus::InProgress)
+                | (StepStatus::Paused, StepStatus::Interrupted)
+                | (StepStatus::Interrupted, StepStatus::Pending)
+                | (StepStatus::Interrupted, StepStatus::InProgress)
+        )
     }
 
     #[allow(dead_code)]
@@ -41,6 +69,8 @@ impl StepStatus {
         match self {
             StepStatus::Pending => "○",
             StepStatus::InProgress => "◎",
+            StepStatus::Paused => "⏸",
+            StepStatus::Interrupted => "⚠",
             StepStatus::Completed => "●",
         }
     }
@@ -59,6 +89,24 @@ pub struct UpdatePlanArgs {
     #[serde(default)]
     pub explanation: Option<String>,
     pub plan: Vec<PlanItemArg>,
+}
+
+/// A point-in-time snapshot of the plan state, usable for checkpoint/restore
+/// across session boundaries.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanCheckpoint {
+    /// When the checkpoint was created.
+    pub timestamp: DateTime<Utc>,
+    /// Optional explanation from the plan.
+    pub explanation: Option<String>,
+    /// Snapshot of all plan steps at checkpoint time.
+    pub steps: Vec<PlanCheckpointStep>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanCheckpointStep {
+    pub text: String,
+    pub status: StepStatus,
 }
 
 // === Plan State ===
@@ -126,6 +174,8 @@ pub struct PlanSnapshot {
 pub struct PlanState {
     explanation: Option<String>,
     steps: Vec<PlanStep>,
+    /// Rolling checkpoint history — max 5 entries, FIFO eviction.
+    checkpoints: Vec<PlanCheckpoint>,
 }
 
 impl PlanState {
@@ -207,18 +257,22 @@ impl PlanState {
     }
 
     /// Get counts of steps by status
-    pub fn counts(&self) -> (usize, usize, usize) {
+    pub fn counts(&self) -> (usize, usize, usize, usize, usize) {
         let mut pending = 0;
         let mut in_progress = 0;
+        let mut paused = 0;
+        let mut interrupted = 0;
         let mut completed = 0;
         for s in &self.steps {
             match s.status {
                 StepStatus::Pending => pending += 1,
                 StepStatus::InProgress => in_progress += 1,
+                StepStatus::Paused => paused += 1,
+                StepStatus::Interrupted => interrupted += 1,
                 StepStatus::Completed => completed += 1,
             }
         }
-        (pending, in_progress, completed)
+        (pending, in_progress, paused, interrupted, completed)
     }
 
     /// Get progress as a percentage
@@ -233,6 +287,51 @@ impl PlanState {
             .count();
         let percent = completed.saturating_mul(100) / self.steps.len();
         u8::try_from(percent).unwrap_or(u8::MAX)
+    }
+
+    /// Take a point-in-time checkpoint of the current plan state.
+    /// Stores up to 5 checkpoints; oldest is evicted on overflow.
+    pub fn checkpoint(&mut self) -> PlanCheckpoint {
+        let cp = PlanCheckpoint {
+            timestamp: Utc::now(),
+            explanation: self.explanation.clone(),
+            steps: self
+                .steps
+                .iter()
+                .map(|s| PlanCheckpointStep {
+                    text: s.text.clone(),
+                    status: s.status.clone(),
+                })
+                .collect(),
+        };
+        self.checkpoints.push(cp.clone());
+        if self.checkpoints.len() > 5 {
+            self.checkpoints.remove(0);
+        }
+        cp
+    }
+
+    /// Restore plan state from a checkpoint. Clears current steps and
+    /// replaces them. Restored steps start with no timing information
+    /// (fresh start).
+    pub fn restore(&mut self, checkpoint: &PlanCheckpoint) {
+        self.explanation = checkpoint.explanation.clone();
+        self.steps = checkpoint
+            .steps
+            .iter()
+            .map(|s| PlanStep::new(s.text.clone(), s.status.clone()))
+            .collect();
+    }
+
+    /// List all stored checkpoints (newest last).
+    #[must_use]
+    pub fn checkpoints(&self) -> &[PlanCheckpoint] {
+        &self.checkpoints
+    }
+
+    /// Discard all stored checkpoints.
+    pub fn clear_checkpoints(&mut self) {
+        self.checkpoints.clear();
     }
 }
 
@@ -256,21 +355,12 @@ pub fn validate_plan_update(current: &PlanState, update: &UpdatePlanArgs) -> Pla
 
     for item in &update.plan {
         if let Some(old_status) = current_steps.get(&item.step) {
-            // Check for invalid transitions
-            match (old_status, &item.status) {
-                (StepStatus::Completed, StepStatus::Pending) => {
-                    return PlanValidation::Warning(format!(
-                        "Step '{}' was completed but is now pending",
-                        item.step
-                    ));
-                }
-                (StepStatus::Completed, StepStatus::InProgress) => {
-                    return PlanValidation::Warning(format!(
-                        "Step '{}' was completed but is now in progress",
-                        item.step
-                    ));
-                }
-                _ => {}
+            // Enforce state transition guards
+            if !old_status.can_transition_to(&item.status) {
+                return PlanValidation::Error(format!(
+                    "Invalid transition for step '{}': {:?} → {:?}",
+                    item.step, old_status, item.status
+                ));
             }
         }
     }
@@ -306,7 +396,7 @@ impl ToolSpec for UpdatePlanTool {
     }
 
     fn description(&self) -> &'static str {
-        "Update the implementation plan with steps and their status. Use this to track progress on implementation tasks. Each step has a description and status (pending, in_progress, completed). Optionally include an explanation of the overall approach."
+        "Update the implementation plan with steps and their status. Use this to track progress on implementation tasks. Each step has a description and status (pending, in_progress, paused, interrupted, completed). Optionally include an explanation of the overall approach."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -329,7 +419,7 @@ impl ToolSpec for UpdatePlanTool {
                             },
                             "status": {
                                 "type": "string",
-                                "enum": ["pending", "in_progress", "completed"],
+                                "enum": ["pending", "in_progress", "paused", "interrupted", "completed"],
                                 "description": "Step status"
                             }
                         },
@@ -394,13 +484,21 @@ impl ToolSpec for UpdatePlanTool {
         state.update(args);
 
         let snapshot = state.snapshot();
-        let (pending, in_progress, completed) = state.counts();
+        let (pending, in_progress, paused, interrupted, completed) = state.counts();
         let progress = state.progress_percent();
 
         let result = serde_json::to_string_pretty(&snapshot).unwrap_or_else(|_| "{}".to_string());
 
-        Ok(ToolResult::success(format!(
-            "Plan updated: {pending} pending, {in_progress} in progress, {completed} completed ({progress}% done)\n{result}"
-        )))
+        let mut summary = format!(
+            "Plan updated: {pending} pending, {in_progress} in progress, {completed} completed ({progress}% done)"
+        );
+        if paused > 0 {
+            summary.push_str(&format!(", {paused} paused"));
+        }
+        if interrupted > 0 {
+            summary.push_str(&format!(", {interrupted} interrupted"));
+        }
+
+        Ok(ToolResult::success(format!("{summary}\n{result}")))
     }
 }

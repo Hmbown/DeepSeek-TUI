@@ -220,8 +220,8 @@ fn render_sidebar_plan(f: &mut Frame, area: Rect, app: &App) {
                     )));
                 }
             } else {
-                let (pending, in_progress, completed) = plan.counts();
-                let total = pending + in_progress + completed;
+                let (pending, in_progress, paused, interrupted, completed) = plan.counts();
+                let total = pending + in_progress + paused + interrupted + completed;
                 lines.push(Line::from(vec![
                     Span::styled(
                         format!("{}%", plan.progress_percent()),
@@ -246,6 +246,8 @@ fn render_sidebar_plan(f: &mut Frame, area: Rect, app: &App) {
                     let (prefix, color) = match &step.status {
                         StepStatus::Pending => ("[ ]", theme.plan_pending_color),
                         StepStatus::InProgress => ("[~]", theme.plan_in_progress_color),
+                        StepStatus::Paused => ("[⏸]", theme.plan_paused_color),
+                        StepStatus::Interrupted => ("[⚠]", theme.plan_interrupted_color),
                         StepStatus::Completed => ("[x]", theme.plan_completed_color),
                     };
                     let mut text = format!("{prefix} {}", step.text);

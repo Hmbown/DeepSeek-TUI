@@ -14,6 +14,7 @@ fn make_snapshot(status: SubAgentStatus) -> SubAgentResult {
         nickname: None,
         status,
         result: None,
+        lifecycle: SubAgentLifecycle::Finished,
         steps_taken: 0,
         duration_ms: 0,
         from_prior_session: false,
@@ -1111,6 +1112,8 @@ fn stub_runtime() -> SubAgentRuntime {
         max_spawn_depth: DEFAULT_MAX_SPAWN_DEPTH,
         cancel_token: CancellationToken::new(),
         mailbox: None,
+        middleware_chain: MiddlewareChain::empty(),
+        agent_router: None,
     }
 }
 

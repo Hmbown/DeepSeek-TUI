@@ -280,7 +280,7 @@ async fn test_exec_shell_foreground_timeout_guides_background_rerun() {
         .await
         .expect("execute");
 
-    assert!(!result.success);
+    assert!(result.success);
     assert!(result.content.contains("task_shell_start"));
     assert!(result.content.contains("background: true"));
     assert!(result.content.contains("process killed"));

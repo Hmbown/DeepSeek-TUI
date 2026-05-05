@@ -31,6 +31,7 @@ mod eval;
 mod execpolicy;
 mod features;
 mod hooks;
+mod llm;
 mod llm_client;
 mod localization;
 mod logging;

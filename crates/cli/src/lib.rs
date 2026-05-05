@@ -561,18 +561,24 @@ fn provider_slot(provider: ProviderKind) -> &'static str {
         ProviderKind::Novita => "novita",
         ProviderKind::Fireworks => "fireworks",
         ProviderKind::Sglang => "sglang",
+        ProviderKind::Anthropic => "anthropic",
+        ProviderKind::Google => "google",
+        ProviderKind::Microsoft => "microsoft",
     }
 }
 
 /// Provider order used by the `auth list` and `auth status` outputs.
-const PROVIDER_LIST: [ProviderKind; 7] = [
+const PROVIDER_LIST: [ProviderKind; 10] = [
     ProviderKind::Deepseek,
     ProviderKind::NvidiaNim,
+    ProviderKind::Openai,
+    ProviderKind::Anthropic,
+    ProviderKind::Google,
+    ProviderKind::Microsoft,
     ProviderKind::Openrouter,
     ProviderKind::Novita,
     ProviderKind::Fireworks,
     ProviderKind::Sglang,
-    ProviderKind::Openai,
 ];
 
 fn no_keyring_secrets() -> Secrets {

@@ -10,8 +10,9 @@
 
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -1772,7 +1773,7 @@ impl ToolSpec for ExecShellTool {
                     )
                 } else if result.status == ShellStatus::TimedOut {
                     format!(
-                        "Command timed out after {timeout_ms}ms; process killed.\n\n{FOREGROUND_TIMEOUT_RECOVERY_HINT}\n\nSTDOUT:\n{}\n\nSTDERR:\n{}",
+                        "Command timed out after {timeout_ms}ms (partial output captured).\n\n{FOREGROUND_TIMEOUT_RECOVERY_HINT}\n\nSTDOUT:\n{}\n\nSTDERR:\n{}",
                         result.stdout, result.stderr
                     )
                 } else {
@@ -1835,7 +1836,8 @@ impl ToolSpec for ExecShellTool {
                 Ok(ToolResult {
                     content: output,
                     success: result.status == ShellStatus::Completed
-                        || result.status == ShellStatus::Running,
+                        || result.status == ShellStatus::Running
+                        || result.status == ShellStatus::TimedOut,
                     metadata: Some(metadata),
                 })
             }
@@ -1898,7 +1900,10 @@ fn build_shell_delta_tool_result(delta: ShellDeltaResult) -> ToolResult {
 
     ToolResult {
         content: output,
-        success: matches!(result.status, ShellStatus::Completed | ShellStatus::Running),
+        success: matches!(
+            result.status,
+            ShellStatus::Completed | ShellStatus::Running | ShellStatus::TimedOut
+        ),
         metadata: Some(json!({
             "exit_code": result.exit_code,
             "status": format!("{:?}", result.status),
@@ -2345,7 +2350,18 @@ impl ToolSpec for ShellInteractTool {
     }
 }
 
-/// Tool for appending notes to a notes file.
+/// Tool for storing structured, deduplicated notes as JSON records.
+///
+/// Each note is stored as a JSON object with:
+/// - `timestamp`: ISO 8601 timestamp of when the note was created
+/// - `content_hash`: SHA-256 hex digest of the content for deduplication
+/// - `content`: the note content
+/// - `tags`: optional array of string tags for categorization
+/// - `confidence`: optional float 0.0–1.0 confidence score
+///
+/// Notes are stored as JSON Lines (one JSON object per line) in the notes file.
+/// When a note with an identical content hash already exists, the write is
+/// skipped and "deduplicated" is reported.
 pub struct NoteTool;
 
 #[async_trait]
@@ -2365,6 +2381,17 @@ impl ToolSpec for NoteTool {
                 "content": {
                     "type": "string",
                     "description": "The note content to append"
+                },
+                "tags": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Optional tags for categorization"
+                },
+                "confidence": {
+                    "type": "number",
+                    "minimum": 0.0,
+                    "maximum": 1.0,
+                    "description": "Optional confidence score (0.0–1.0)"
                 }
             },
             "required": ["content"]
@@ -2386,6 +2413,29 @@ impl ToolSpec for NoteTool {
     ) -> Result<ToolResult, ToolError> {
         let note_content = required_str(&input, "content")?;
 
+        // Compute SHA-256 content hash for dedup
+        let content_hash = {
+            let mut hasher = Sha256::new();
+            hasher.update(note_content.as_bytes());
+            format!("{:x}", hasher.finalize())
+        };
+
+        // Extract optional fields
+        let tags: Vec<String> = input
+            .get("tags")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let confidence: Option<f64> = input
+            .get("confidence")
+            .and_then(|v| v.as_f64())
+            .map(|c| c.clamp(0.0, 1.0));
+
         // Ensure parent directory exists
         if let Some(parent) = context.notes_path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
@@ -2393,20 +2443,82 @@ impl ToolSpec for NoteTool {
             })?;
         }
 
-        // Append to notes file
+        // Read existing notes file to check for duplicate content hash
+        let notes_path = &context.notes_path;
+        if notes_path.exists() {
+            let file = std::fs::File::open(notes_path).map_err(|e| {
+                ToolError::execution_failed(format!(
+                    "Failed to open notes file for dedup check: {e}"
+                ))
+            })?;
+            let reader = BufReader::new(file);
+            for line in reader.lines() {
+                let line = line.map_err(|e| {
+                    ToolError::execution_failed(format!("Failed to read notes file: {e}"))
+                })?;
+                if let Ok(record) = serde_json::from_str::<serde_json::Value>(&line) {
+                    if let Some(existing_hash) = record.get("content_hash").and_then(|v| v.as_str())
+                    {
+                        if existing_hash == content_hash {
+                            return Ok(ToolResult {
+                                content: format!(
+                                    "deduplicated: note with content hash {content_hash} already exists in {}",
+                                    notes_path.display()
+                                ),
+                                success: true,
+                                metadata: Some(json!({
+                                    "deduplicated": true,
+                                    "content_hash": content_hash,
+                                    "tags": tags,
+                                    "confidence": confidence,
+                                })),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // Build JSON record
+        let timestamp = chrono::Utc::now().to_rfc3339();
+        let mut record = json!({
+            "timestamp": timestamp,
+            "content_hash": content_hash,
+            "content": note_content,
+        });
+        if !tags.is_empty() {
+            record["tags"] = json!(tags);
+        }
+        if let Some(c) = confidence {
+            record["confidence"] = json!(c);
+        }
+
+        // Append JSON line to notes file
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&context.notes_path)
+            .open(notes_path)
             .map_err(|e| ToolError::execution_failed(format!("Failed to open notes file: {e}")))?;
 
-        writeln!(file, "\n---\n{note_content}")
-            .map_err(|e| ToolError::execution_failed(format!("Failed to write note: {e}")))?;
+        serde_json::to_writer(&mut file, &record)
+            .map_err(|e| ToolError::execution_failed(format!("Failed to write note JSON: {e}")))?;
+        writeln!(file)
+            .map_err(|e| ToolError::execution_failed(format!("Failed to write newline: {e}")))?;
 
-        Ok(ToolResult::success(format!(
-            "Note appended to {}",
-            context.notes_path.display()
-        )))
+        Ok(ToolResult {
+            content: format!(
+                "Note appended to {} (hash: {content_hash})",
+                notes_path.display()
+            ),
+            success: true,
+            metadata: Some(json!({
+                "stored": true,
+                "content_hash": content_hash,
+                "tags": tags,
+                "confidence": confidence,
+                "timestamp": timestamp,
+            })),
+        })
     }
 }
 

@@ -34,8 +34,14 @@ use crate::tools::todo::{SharedTodoList, TodoList};
 use crate::utils::spawn_supervised;
 
 pub mod mailbox;
+pub mod middleware;
+pub mod model_router;
+pub mod router;
 #[allow(unused_imports)]
 pub use mailbox::{Mailbox, MailboxEnvelope, MailboxMessage, MailboxReceiver};
+pub use middleware::{AgentMiddleware, CompactionGuard, MiddlewareChain, MiddlewareContext};
+pub use model_router::ModelRouter;
+pub use router::AgentRouter;
 
 // === Constants ===
 
@@ -386,6 +392,49 @@ pub enum SubAgentStatus {
     Cancelled,
 }
 
+/// Start-up and execution lifecycle of a sub-agent, distinct from its
+/// terminal outcome (`SubAgentStatus`). The lifecycle tracks the agent
+/// from spawn through execution:
+///
+///   Spawning → TrustRequired → Ready → Running → Blocked(reason) → Finished
+///
+/// - `Spawning`: initial state, tool registry being built
+/// - `TrustRequired`: approval modal pending (non-YOLO modes)
+/// - `Ready`: registry built, waiting to enter agent loop
+/// - `Running`: active agent loop iteration
+/// - `Blocked(reason)`: paused or waiting (e.g. agent_pause, dependency)
+/// - `Finished`: terminal — agent has completed execution
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum SubAgentLifecycle {
+    Spawning,
+    TrustRequired,
+    Ready,
+    Running,
+    Blocked(String),
+    Finished,
+}
+
+impl Default for SubAgentLifecycle {
+    fn default() -> Self {
+        Self::Spawning
+    }
+}
+
+impl SubAgentLifecycle {
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Spawning => "spawning",
+            Self::TrustRequired => "trust_required",
+            Self::Ready => "ready",
+            Self::Running => "running",
+            Self::Blocked(_) => "blocked",
+            Self::Finished => "finished",
+        }
+    }
+}
+
 /// Snapshot of sub-agent state for tool results.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubAgentResult {
@@ -398,6 +447,8 @@ pub struct SubAgentResult {
     pub nickname: Option<String>,
     pub status: SubAgentStatus,
     pub result: Option<String>,
+    #[serde(default)]
+    pub lifecycle: SubAgentLifecycle,
     pub steps_taken: u32,
     pub duration_ms: u64,
     /// `true` when this agent was loaded from a prior-session persisted
@@ -556,6 +607,13 @@ pub struct SubAgentRuntime {
     /// whole spawn tree publishes into one ordered, fan-out-able mailbox.
     /// `None` only when no consumer is wired (legacy entry points / tests).
     pub mailbox: Option<Mailbox>,
+    /// Middleware chain that fires on agent lifecycle events (spawn, step,
+    /// finish). Cloned across children — each child inherits the parent's
+    /// chain.
+    pub middleware_chain: MiddlewareChain,
+    /// Optional capability router for auto-routing spawn requests that
+    /// don't specify an agent type. Children inherit this.
+    pub agent_router: Option<AgentRouter>,
 }
 
 impl SubAgentRuntime {
@@ -584,6 +642,8 @@ impl SubAgentRuntime {
             max_spawn_depth: DEFAULT_MAX_SPAWN_DEPTH,
             cancel_token: CancellationToken::new(),
             mailbox: None,
+            middleware_chain: MiddlewareChain::empty(),
+            agent_router: None,
         }
     }
 
@@ -662,6 +722,8 @@ impl SubAgentRuntime {
             max_spawn_depth: self.max_spawn_depth,
             cancel_token: self.cancel_token.child_token(),
             mailbox: self.mailbox.clone(),
+            middleware_chain: self.middleware_chain.clone(),
+            agent_router: self.agent_router.clone(),
         }
     }
 
@@ -682,6 +744,8 @@ pub struct SubAgent {
     pub nickname: Option<String>,
     pub status: SubAgentStatus,
     pub result: Option<String>,
+    /// Start-up and execution lifecycle state.
+    pub lifecycle: SubAgentLifecycle,
     pub steps_taken: u32,
     pub started_at: Instant,
     /// `None` = full registry inheritance (v0.6.6 default).
@@ -719,6 +783,7 @@ impl SubAgent {
             nickname,
             status: SubAgentStatus::Running,
             result: None,
+            lifecycle: SubAgentLifecycle::Spawning,
             steps_taken: 0,
             started_at: Instant::now(),
             allowed_tools,
@@ -739,6 +804,7 @@ impl SubAgent {
             nickname: self.nickname.clone(),
             status: self.status.clone(),
             result: self.result.clone(),
+            lifecycle: self.lifecycle.clone(),
             steps_taken: self.steps_taken,
             duration_ms: u64::try_from(self.started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
             // Snapshots from the agent itself don't know the manager's
@@ -890,6 +956,7 @@ impl SubAgentManager {
                 nickname: persisted.nickname,
                 status,
                 result: persisted.result,
+                lifecycle: SubAgentLifecycle::default(),
                 steps_taken: persisted.steps_taken,
                 started_at,
                 allowed_tools,
@@ -923,6 +990,41 @@ impl SubAgentManager {
                 !handle.is_finished()
             })
             .count()
+    }
+
+    /// Return the configured maximum number of concurrent agents.
+    pub fn max_agents(&self) -> usize {
+        self.max_agents
+    }
+
+    /// Pause a running agent: sets its status to Interrupted("paused")
+    /// and lifecycle to Blocked("paused"). No-op if the agent is not
+    /// in Running status.
+    pub fn pause_agent(&mut self, agent_id: &str) -> Result<()> {
+        let agent = self
+            .agents
+            .get_mut(agent_id)
+            .ok_or_else(|| anyhow!("agent '{agent_id}' not found"))?;
+        if agent.status == SubAgentStatus::Running {
+            agent.status = SubAgentStatus::Interrupted("paused".to_string());
+            agent.lifecycle = SubAgentLifecycle::Blocked("paused".to_string());
+            self.persist_state_best_effort();
+        }
+        Ok(())
+    }
+
+    /// Resume a paused agent: restores status to Running and lifecycle
+    /// to Running. No-op if not currently paused.
+    pub fn resume_agent(&mut self, agent_id: &str) -> Result<()> {
+        let agent = self
+            .agents
+            .get_mut(agent_id)
+            .ok_or_else(|| anyhow!("agent '{agent_id}' not found"))?;
+        if matches!(&agent.status, SubAgentStatus::Interrupted(s) if s == "paused") {
+            agent.status = SubAgentStatus::Running;
+            agent.lifecycle = SubAgentLifecycle::Running;
+        }
+        Ok(())
     }
 
     /// Spawn a new background sub-agent.
@@ -1525,6 +1627,18 @@ impl ToolSpec for AgentSpawnTool {
                 "cwd": {
                     "type": "string",
                     "description": "Optional working directory for the child. Must be inside the parent's workspace (use a relative path or an absolute path under the workspace root). Used for the parallel-worktree pattern: parent runs `git worktree add .worktrees/feature-x ...` then spawns the child with `cwd: \".worktrees/feature-x\"`."
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "When true, skip spawning and return a preflight readiness report (depth cap, concurrency, type validity, workspace accessibility). Default: false."
+                },
+                "max_concurrent": {
+                    "type": "integer",
+                    "description": "Maximum number of concurrent sub-agents allowed. Default: inherited from manager config (usually 10). Spawn is rejected with an error when at capacity."
+                },
+                "timeout_ms": {
+                    "type": "integer",
+                    "description": "Optional spawn timeout in milliseconds. When > 0, the spawn is wrapped in tokio::time::timeout; agent is auto-cancelled on expiry."
                 }
             }
         })
@@ -1544,6 +1658,51 @@ impl ToolSpec for AgentSpawnTool {
     async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
         let spawn_request = parse_spawn_request(&input)?;
 
+        // Dry-run: return a preflight readiness report without spawning.
+        if optional_bool(&input, "dry_run", false) {
+            let depth_ok = !self.runtime.would_exceed_depth();
+            let depth_current = self.runtime.spawn_depth;
+            let depth_max = self.runtime.max_spawn_depth;
+
+            let (concurrency_ok, running, max_agents) = {
+                let mgr = self.manager.read().await;
+                let running = mgr.running_count();
+                let max = mgr.max_agents();
+                (running < max, running, max)
+            };
+
+            let workspace_path = self.runtime.context.workspace.display().to_string();
+            let workspace_ok = self.runtime.context.workspace.exists();
+
+            let report = json!({
+                "dry_run": true,
+                "ready": depth_ok && concurrency_ok && workspace_ok,
+                "checks": {
+                    "depth": {
+                        "ok": depth_ok,
+                        "current": depth_current,
+                        "max": depth_max
+                    },
+                    "concurrency": {
+                        "ok": concurrency_ok,
+                        "running": running,
+                        "max": max_agents
+                    },
+                    "agent_type": {
+                        "ok": true,
+                        "resolved": spawn_request.agent_type.as_str()
+                    },
+                    "workspace": {
+                        "ok": workspace_ok,
+                        "path": workspace_path
+                    }
+                }
+            });
+
+            return Ok(ToolResult::json(&report)
+                .map_err(|e| ToolError::execution_failed(e.to_string()))?);
+        }
+
         // Depth cap: reject before locking the manager so we don't introduce
         // unnecessary contention. Mirrors codex's pattern (allow-equal at the
         // boundary; reject when `next > max`).
@@ -1553,6 +1712,28 @@ impl ToolSpec for AgentSpawnTool {
                  Increase via [runtime] max_spawn_depth in config.toml.",
                 self.runtime.spawn_depth, self.runtime.max_spawn_depth
             )));
+        }
+
+        // Concurrency check: reject if at or above the concurrent agent cap.
+        // The manager's max_agents is the authoritative limit; max_concurrent
+        // in the input schema allows the caller to request a stricter cap.
+        {
+            let mgr = self.manager.read().await;
+            let requested_max =
+                optional_u64(&input, "max_concurrent", mgr.max_agents() as u64) as usize;
+            let effective_max = requested_max.min(mgr.max_agents());
+            let running = mgr.running_count();
+            if running >= effective_max {
+                return Ok(ToolResult::error(format!(
+                    "At concurrent agent limit: {running} running, max {effective_max}. \
+                     Wait for existing agents to complete or cancel one before spawning."
+                ))
+                .with_metadata(json!({
+                    "at_concurrent_limit": true,
+                    "running": running,
+                    "max": effective_max,
+                })));
+            }
         }
 
         // Validate cwd if supplied: must canonicalize inside the parent
@@ -2598,11 +2779,32 @@ async fn run_subagent(
     let mut final_result: Option<String> = None;
     let mut pending_inputs: VecDeque<SubAgentInput> = VecDeque::new();
 
+    // Fire middleware: on_spawn (before first step)
+    if let Err(e) = runtime
+        .middleware_chain
+        .fire_on_spawn(
+            &agent_id,
+            agent_type.as_str(),
+            &mut MiddlewareContext::new(),
+        )
+        .await
+    {
+        tracing::warn!(agent_id=%agent_id, error=%e, "middleware on_spawn failed");
+    }
+
     for _step in 0..max_steps {
         // Cooperative cancellation: bail if the parent (or root) cancelled
         // us while we were between steps. Children derive their token from
         // the parent's via `child_token()` so this propagates the whole tree.
         if runtime.cancel_token.is_cancelled() {
+            let _ = runtime
+                .middleware_chain
+                .fire_on_finish(
+                    &agent_id,
+                    &SubAgentStatus::Cancelled,
+                    &mut MiddlewareContext::new(),
+                )
+                .await;
             emit_agent_progress(
                 runtime.event_tx.as_ref(),
                 runtime.mailbox.as_ref(),
@@ -2622,6 +2824,7 @@ async fn run_subagent(
                 nickname: None,
                 status: SubAgentStatus::Cancelled,
                 result: None,
+                lifecycle: SubAgentLifecycle::Finished,
                 steps_taken: steps,
                 duration_ms: u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
                 from_prior_session: false,
@@ -2676,6 +2879,7 @@ async fn run_subagent(
         let response = tokio::select! {
             biased;
             () = runtime.cancel_token.cancelled() => {
+                let _ = runtime.middleware_chain.fire_on_finish(&agent_id, &SubAgentStatus::Cancelled, &mut MiddlewareContext::new()).await;
                 emit_agent_progress(
                     runtime.event_tx.as_ref(),
                     runtime.mailbox.as_ref(),
@@ -2695,6 +2899,7 @@ async fn run_subagent(
                     nickname: None,
                     status: SubAgentStatus::Cancelled,
                     result: None,
+                    lifecycle: SubAgentLifecycle::Finished,
                     steps_taken: steps,
                     duration_ms: u64::try_from(started_at.elapsed().as_millis())
                         .unwrap_or(u64::MAX),
@@ -2820,7 +3025,26 @@ async fn run_subagent(
                 content: tool_results,
             });
         }
+
+        // Fire middleware: on_step (after tool results processed)
+        if let Err(e) = runtime
+            .middleware_chain
+            .fire_on_step(&agent_id, steps, &mut MiddlewareContext::new())
+            .await
+        {
+            tracing::warn!(agent_id=%agent_id, step=steps, error=%e, "middleware on_step failed");
+        }
     }
+
+    // Fire middleware: on_finish (completed)
+    let _ = runtime
+        .middleware_chain
+        .fire_on_finish(
+            &agent_id,
+            &SubAgentStatus::Completed,
+            &mut MiddlewareContext::new(),
+        )
+        .await;
 
     Ok(SubAgentResult {
         agent_id,
@@ -2830,6 +3054,7 @@ async fn run_subagent(
         nickname: None,
         status: SubAgentStatus::Completed,
         result: final_result,
+        lifecycle: SubAgentLifecycle::Finished,
         steps_taken: steps,
         duration_ms: u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
         from_prior_session: false,

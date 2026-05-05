@@ -15,6 +15,9 @@ const DEFAULT_OPENAI_MODEL: &str = "gpt-4.1";
 const DEFAULT_DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com";
 const DEFAULT_NVIDIA_NIM_BASE_URL: &str = "https://integrate.api.nvidia.com/v1";
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
+const DEFAULT_ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com/v1";
+const DEFAULT_GOOGLE_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
+const DEFAULT_MICROSOFT_BASE_URL: &str = "https://api.microsoft.com/v1";
 const DEFAULT_OPENROUTER_MODEL: &str = "deepseek/deepseek-v4-pro";
 const DEFAULT_OPENROUTER_FLASH_MODEL: &str = "deepseek/deepseek-v4-flash";
 const DEFAULT_NOVITA_MODEL: &str = "deepseek/deepseek-v4-pro";
@@ -22,6 +25,9 @@ const DEFAULT_NOVITA_FLASH_MODEL: &str = "deepseek/deepseek-v4-flash";
 const DEFAULT_FIREWORKS_MODEL: &str = "accounts/fireworks/models/deepseek-v4-pro";
 const DEFAULT_SGLANG_MODEL: &str = "deepseek-ai/DeepSeek-V4-Pro";
 const DEFAULT_SGLANG_FLASH_MODEL: &str = "deepseek-ai/DeepSeek-V4-Flash";
+const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-20250514";
+const DEFAULT_GOOGLE_MODEL: &str = "gemini-2.5-pro";
+const DEFAULT_MICROSOFT_MODEL: &str = "gpt-4.1";
 const DEFAULT_OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 const DEFAULT_NOVITA_BASE_URL: &str = "https://api.novita.ai/v1";
 const DEFAULT_FIREWORKS_BASE_URL: &str = "https://api.fireworks.ai/inference/v1";
@@ -38,6 +44,9 @@ pub enum ProviderKind {
     Novita,
     Fireworks,
     Sglang,
+    Anthropic,
+    Google,
+    Microsoft,
 }
 
 impl ProviderKind {
@@ -51,6 +60,9 @@ impl ProviderKind {
             Self::Novita => "novita",
             Self::Fireworks => "fireworks",
             Self::Sglang => "sglang",
+            Self::Anthropic => "anthropic",
+            Self::Google => "google",
+            Self::Microsoft => "microsoft",
         }
     }
 
@@ -64,6 +76,9 @@ impl ProviderKind {
             "novita" => Some(Self::Novita),
             "fireworks" | "fireworks-ai" => Some(Self::Fireworks),
             "sglang" | "sg-lang" => Some(Self::Sglang),
+            "anthropic" | "claude" => Some(Self::Anthropic),
+            "google" | "gemini" => Some(Self::Google),
+            "microsoft" | "azure" => Some(Self::Microsoft),
             _ => None,
         }
     }
@@ -92,6 +107,12 @@ pub struct ProvidersToml {
     pub fireworks: ProviderConfigToml,
     #[serde(default)]
     pub sglang: ProviderConfigToml,
+    #[serde(default)]
+    pub anthropic: ProviderConfigToml,
+    #[serde(default)]
+    pub google: ProviderConfigToml,
+    #[serde(default)]
+    pub microsoft: ProviderConfigToml,
 }
 
 impl ProvidersToml {
@@ -105,6 +126,9 @@ impl ProvidersToml {
             ProviderKind::Novita => &self.novita,
             ProviderKind::Fireworks => &self.fireworks,
             ProviderKind::Sglang => &self.sglang,
+            ProviderKind::Anthropic => &self.anthropic,
+            ProviderKind::Google => &self.google,
+            ProviderKind::Microsoft => &self.microsoft,
         }
     }
 
@@ -117,6 +141,9 @@ impl ProvidersToml {
             ProviderKind::Novita => &mut self.novita,
             ProviderKind::Fireworks => &mut self.fireworks,
             ProviderKind::Sglang => &mut self.sglang,
+            ProviderKind::Anthropic => &mut self.anthropic,
+            ProviderKind::Google => &mut self.google,
+            ProviderKind::Microsoft => &mut self.microsoft,
         }
     }
 }
@@ -695,6 +722,9 @@ impl ConfigToml {
                 ProviderKind::Novita => DEFAULT_NOVITA_BASE_URL.to_string(),
                 ProviderKind::Fireworks => DEFAULT_FIREWORKS_BASE_URL.to_string(),
                 ProviderKind::Sglang => DEFAULT_SGLANG_BASE_URL.to_string(),
+                ProviderKind::Anthropic => DEFAULT_ANTHROPIC_BASE_URL.to_string(),
+                ProviderKind::Google => DEFAULT_GOOGLE_BASE_URL.to_string(),
+                ProviderKind::Microsoft => DEFAULT_MICROSOFT_BASE_URL.to_string(),
             });
 
         let model = cli
@@ -712,6 +742,9 @@ impl ConfigToml {
                 ProviderKind::Novita => DEFAULT_NOVITA_MODEL.to_string(),
                 ProviderKind::Fireworks => DEFAULT_FIREWORKS_MODEL.to_string(),
                 ProviderKind::Sglang => DEFAULT_SGLANG_MODEL.to_string(),
+                ProviderKind::Anthropic => DEFAULT_ANTHROPIC_MODEL.to_string(),
+                ProviderKind::Google => DEFAULT_GOOGLE_MODEL.to_string(),
+                ProviderKind::Microsoft => DEFAULT_MICROSOFT_MODEL.to_string(),
             });
         let model = normalize_model_for_provider(provider, &model);
 
@@ -1027,6 +1060,9 @@ impl EnvRuntimeOverrides {
             ProviderKind::Novita => self.novita_base_url.clone(),
             ProviderKind::Fireworks => self.fireworks_base_url.clone(),
             ProviderKind::Sglang => self.sglang_base_url.clone(),
+            ProviderKind::Anthropic => None,
+            ProviderKind::Google => None,
+            ProviderKind::Microsoft => None,
         }
     }
 }
