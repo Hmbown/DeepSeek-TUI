@@ -127,6 +127,8 @@ pub const COMPACT_TEMPLATE: &str = include_str!("prompts/compact.md");
 pub const LANG_EN: &str = include_str!("prompts/language/en.md");
 pub const LANG_ZH: &str = include_str!("prompts/language/zh.md");
 pub const LANG_ZH_HANT: &str = include_str!("prompts/language/zh-hant.md");
+pub const LANG_JA: &str = include_str!("prompts/language/ja.md");
+pub const LANG_PT_BR: &str = include_str!("prompts/language/pt-BR.md");
 
 // ── Legacy prompt constants (kept for backwards compatibility) ────────
 
@@ -308,7 +310,9 @@ pub(crate) fn build_language_instruction(locale: Locale) -> String {
     match locale {
         Locale::ZhHant => LANG_ZH_HANT.to_string(),
         Locale::ZhHans => LANG_ZH.to_string(),
-        _ => LANG_EN.to_string(),
+        Locale::Ja => LANG_JA.to_string(),
+        Locale::PtBr => LANG_PT_BR.to_string(),
+        Locale::En => LANG_EN.to_string(),
     }
 }
 

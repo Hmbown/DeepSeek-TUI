@@ -392,6 +392,7 @@ fn test_build_assignment_prompt_includes_metadata() {
         "Inspect parser behavior",
         &assignment,
         &SubAgentType::Explore,
+        crate::localization::Locale::En,
     );
     assert!(prompt.contains("Assignment metadata"));
     assert!(prompt.contains("resolved_type: explore"));
@@ -823,9 +824,13 @@ fn build_subagent_system_prompt_appends_role_when_set() {
     let assignment = SubAgentAssignment::new("p".to_string(), Some("worker".to_string()));
     let prompt = build_subagent_system_prompt(&SubAgentType::General, &assignment, crate::localization::Locale::En);
     assert!(
-        prompt.ends_with("You are operating in the role of `worker`."),
-        "expected role line at end, got: {}",
-        &prompt[prompt.len().saturating_sub(80)..]
+        prompt.contains("You are operating in the role of `worker`."),
+        "expected role line in prompt"
+    );
+    assert!(
+        prompt.trim_end().ends_with("Only natural language prose mirrors the user."),
+        "expected language instruction at end, got: ...{}",
+        &prompt[prompt.len().saturating_sub(60)..]
     );
 }
 

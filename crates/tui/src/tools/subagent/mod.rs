@@ -2451,16 +2451,15 @@ fn build_subagent_system_prompt(
 ) -> String {
     let base = agent_type.system_prompt();
     let language_block = crate::prompts::build_language_instruction(locale);
-    let base_with_lang = format!("{base}\n\n{language_block}");
-    match assignment.role.as_deref() {
+    let role_line = match assignment.role.as_deref() {
         Some(role) if !role.trim().is_empty() => {
-            format!(
-                "{base_with_lang}\n\nYou are operating in the role of `{}`.",
-                role.trim()
-            )
+            format!("\n\nYou are operating in the role of `{}`.", role.trim())
         }
-        _ => base_with_lang,
-    }
+        _ => String::new(),
+    };
+    // Language instruction must be LAST — models treat the final
+    // instruction in the system prompt as most influential.
+    format!("{base}{role_line}\n\n{language_block}")
 }
 
 struct SubAgentTask {
@@ -2605,7 +2604,7 @@ async fn run_subagent(
     let mut messages = vec![Message {
         role: "user".to_string(),
         content: vec![ContentBlock::Text {
-            text: build_assignment_prompt(&prompt, &assignment, &agent_type),
+            text: build_assignment_prompt(&prompt, &assignment, &agent_type, runtime.locale),
             cache_control: None,
         }],
     }];
@@ -3273,10 +3272,33 @@ fn build_assignment_prompt(
     prompt: &str,
     assignment: &SubAgentAssignment,
     agent_type: &SubAgentType,
+    locale: crate::localization::Locale,
 ) -> String {
     let role = assignment.role.as_deref().unwrap_or("default");
+    // User-facing labels localized to match the configured UI language.
+    // The model receives the language instruction in its system prompt
+    // and uses it for output; the task metadata labels here follow the
+    // same convention so the message context doesn't pull the model
+    // back to English.
+    let (assignment_label, objective_label, role_label, type_label, task_label) = match locale {
+        crate::localization::Locale::ZhHans => {
+            ("任务元数据：", "- 目标：", "- 角色：", "- 解析类型：", "\n\n任务：\n")
+        }
+        crate::localization::Locale::ZhHant => {
+            ("任務元數據：", "- 目標：", "- 角色：", "- 解析類型：", "\n\n任務：\n")
+        }
+        crate::localization::Locale::Ja => {
+            ("割り当てメタデータ：", "- 目的：", "- 役割：", "- 解決タイプ：", "\n\nタスク：\n")
+        }
+        crate::localization::Locale::PtBr => {
+            ("Metadados da tarefa：", "- Objetivo：", "- Papel：", "- Tipo resolvido：", "\n\nTarefa：\n")
+        }
+        crate::localization::Locale::En => {
+            ("Assignment metadata:", "- objective:", "- role:", "- resolved_type:", "\n\nTask:\n")
+        }
+    };
     format!(
-        "Assignment metadata:\n- objective: {}\n- role: {}\n- resolved_type: {}\n\nTask:\n{}",
+        "{assignment_label}\n{objective_label} {}\n{role_label} {}\n{type_label} {}{task_label}{}",
         assignment.objective,
         role,
         agent_type.as_str(),
