@@ -21,7 +21,7 @@ use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
     prelude::Widget,
-    style::Style,
+    style::{Color, Style},
     text::Span,
     widgets::Block,
 };
@@ -282,7 +282,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
                     content: format!(
                         "Resumed session: {} ({})",
                         saved.metadata.title,
-                        &saved.metadata.id[..8.min(saved.metadata.id.len())]
+                        crate::session_manager::truncate_id(&saved.metadata.id),
                     ),
                 });
 
@@ -292,7 +292,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
                 app.mark_history_updated();
                 app.status_message = Some(format!(
                     "Resumed session: {}",
-                    &saved.metadata.id[..8.min(saved.metadata.id.len())]
+                    crate::session_manager::truncate_id(&saved.metadata.id)
                 ));
             }
             Ok(None) => {
@@ -541,7 +541,9 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         subagent_model_overrides: config.subagent_model_overrides(),
         memory_enabled: config.memory_enabled(),
         memory_path: config.memory_path(),
+        strict_tool_mode: config.strict_tool_mode.unwrap_or(false),
         goal_objective: app.goal.goal_objective.clone(),
+        workshop: config.workshop.clone(),
     }
 }
 
@@ -1597,25 +1599,31 @@ async fn run_event_loop(
                         app.status_message = None;
                     }
                     // Language picker hotkeys: 1-5 select + persist (#566).
+                    //
+                    // Note: this used to be a single match-guard with `&& let`,
+                    // but `if_let_guard` is a nightly-only feature on Rust
+                    // before 1.94. Rewriting as a plain guard + nested `if let`
+                    // keeps `cargo install` working on stable.
                     KeyCode::Char(c)
-                        if app.onboarding == OnboardingState::Language
-                            && c.is_ascii_digit()
-                            && let Some((_, tag, _, _)) =
-                                onboarding::language::LANGUAGE_OPTIONS
-                                    .iter()
-                                    .find(|(hotkey, _, _, _)| *hotkey == c) =>
+                        if app.onboarding == OnboardingState::Language && c.is_ascii_digit() =>
                     {
-                        match app.set_locale_from_onboarding(tag) {
-                            Ok(()) => {
-                                app.push_status_toast(
-                                    format!("Language set to {tag}"),
-                                    StatusToastLevel::Info,
-                                    Some(2_500),
-                                );
-                                advance_after_language(app);
-                            }
-                            Err(err) => {
-                                app.status_message = Some(format!("Failed to save locale: {err}"));
+                        if let Some((_, tag, _, _)) = onboarding::language::LANGUAGE_OPTIONS
+                            .iter()
+                            .find(|(hotkey, _, _, _)| *hotkey == c)
+                        {
+                            match app.set_locale_from_onboarding(tag) {
+                                Ok(()) => {
+                                    app.push_status_toast(
+                                        format!("Language set to {tag}"),
+                                        StatusToastLevel::Info,
+                                        Some(2_500),
+                                    );
+                                    advance_after_language(app);
+                                }
+                                Err(err) => {
+                                    app.status_message =
+                                        Some(format!("Failed to save locale: {err}"));
+                                }
                             }
                         }
                     }
@@ -2093,6 +2101,16 @@ async fn run_event_loop(
                 {
                     let _ = engine_handle.send(Op::Shutdown).await;
                     return Ok(());
+                }
+                // Vim composer mode: Esc from Insert/Visual → Normal.
+                // This arm runs before the generic Esc handler so Insert mode
+                // Esc doesn't accidentally cancel an in-flight request.
+                KeyCode::Esc
+                    if app.composer.vim_enabled
+                        && app.composer.vim_mode != crate::tui::app::VimMode::Normal =>
+                {
+                    app.vim_enter_normal();
+                    continue;
                 }
                 KeyCode::Esc if app.clear_composer_attachment_selection() => {
                     continue;
@@ -2669,6 +2687,28 @@ async fn run_event_loop(
                     open_tool_details_pager(app);
                     continue;
                 }
+                // Vim composer: Normal-mode motion / operator keys.
+                // Only fires when vim is enabled, the input is focused (no modal
+                // open on top), and the key has no modifier (pure char).
+                KeyCode::Char(c)
+                    if app.vim_is_normal_mode()
+                        && key.modifiers.is_empty()
+                        && !slash_menu_open
+                        && !mention_menu_open
+                        && app.view_stack.is_empty() =>
+                {
+                    handle_vim_normal_key(app, c);
+                    continue;
+                }
+                // Vim composer: in Visual mode plain chars are ignored
+                // (no text insertion until `i` / `a` enters Insert).
+                KeyCode::Char(_)
+                    if app.vim_is_visual_mode()
+                        && key.modifiers.is_empty()
+                        && app.view_stack.is_empty() =>
+                {
+                    // absorb — Visual mode not yet fully implemented
+                }
                 KeyCode::Char(c) => {
                     app.insert_char(c);
                 }
@@ -2678,6 +2718,87 @@ async fn run_event_loop(
             if !is_plain_char && !is_enter {
                 app.paste_burst.clear_window_after_non_char();
             }
+        }
+    }
+}
+
+/// Handle a plain character key press when the composer is in vim Normal mode.
+///
+/// Implements the core set of normal-mode bindings:
+/// - `h` / `l`  — left / right by character
+/// - `j` / `k`  — down / up by logical line (falls back to prev/next history)
+/// - `w` / `b`  — word forward / backward
+/// - `0` / `$`  — line start / end
+/// - `x`        — delete character under cursor
+/// - `d` (×2)   — delete current line (`dd`)
+/// - `i`        — enter Insert before cursor
+/// - `a`        — enter Insert after cursor
+/// - `o`        — open new line below and enter Insert
+/// - `v`        — enter Visual mode
+/// - `G`        — move to end of buffer
+fn handle_vim_normal_key(app: &mut App, c: char) {
+    use crate::tui::app::VimMode;
+
+    // Handle pending `d` (waiting for second `d` to complete `dd`).
+    if app.composer.vim_pending_d {
+        app.composer.vim_pending_d = false;
+        if c == 'd' {
+            app.vim_delete_line();
+        }
+        // Any other key cancels the pending operator.
+        return;
+    }
+
+    match c {
+        'h' => {
+            app.move_cursor_left();
+        }
+        'l' => {
+            app.move_cursor_right();
+        }
+        'j' => {
+            app.vim_move_down();
+        }
+        'k' => {
+            app.vim_move_up();
+        }
+        'w' => {
+            app.vim_move_word_forward();
+        }
+        'b' => {
+            app.vim_move_word_backward();
+        }
+        '0' => {
+            app.vim_move_line_start();
+        }
+        '$' => {
+            app.vim_move_line_end();
+        }
+        'x' => {
+            app.vim_delete_char_under_cursor();
+        }
+        'd' => {
+            // Start the `dd` operator sequence.
+            app.composer.vim_pending_d = true;
+        }
+        'i' => {
+            app.vim_enter_insert();
+        }
+        'a' => {
+            app.vim_enter_append();
+        }
+        'o' => {
+            app.vim_open_line_below();
+        }
+        'v' => {
+            app.composer.vim_mode = VimMode::Visual;
+            app.needs_redraw = true;
+        }
+        'G' => {
+            app.move_cursor_end();
+        }
+        _ => {
+            // Unknown normal-mode key — silently ignored in Normal mode.
         }
     }
 }
@@ -4502,8 +4623,8 @@ fn build_pending_input_preview(app: &App) -> PendingInputPreview {
 fn render(f: &mut Frame, app: &mut App) {
     let size = f.area();
 
-    // Clear entire area with background color
-    let background = Block::default().style(Style::default().bg(app.ui_theme.header_bg));
+    // Clear entire area with terminal default background
+    let background = Block::default().style(Style::default().bg(Color::Reset));
     f.render_widget(background, size);
 
     // Show onboarding screen if needed
@@ -4604,9 +4725,7 @@ fn render(f: &mut Frame, app: &mut App) {
         // background before any sub-widgets render, so cells that end up
         // uncovered by layout splits (e.g. after file-tree toggle or
         // resize) don't retain stale content from a previous frame.
-        Block::default()
-            .style(Style::default().bg(palette::DEEPSEEK_INK))
-            .render(chunks[1], f.buffer_mut());
+        Block::default().render(chunks[1], f.buffer_mut());
 
         let mut sidebar_area = None;
 

@@ -62,7 +62,7 @@ impl Theme {
             section_borders: Borders::ALL,
             section_border_type: BorderType::Plain,
             section_border_color: palette::BORDER_COLOR,
-            section_bg: palette::DEEPSEEK_INK,
+            section_bg: Color::Reset,
             section_title_color: palette::DEEPSEEK_BLUE,
             // Horizontal padding only. `Padding::uniform(1)` ate two rows of
             // each sidebar panel — for compact terminals where Plan/Todos/Tasks
@@ -147,7 +147,7 @@ mod tests {
         let theme = Theme::dark();
         assert_eq!(theme.variant, Variant::Dark);
         assert_eq!(theme.section_border_color, palette::BORDER_COLOR);
-        assert_eq!(theme.section_bg, palette::DEEPSEEK_INK);
+        assert_eq!(theme.section_bg, ratatui::style::Color::Reset);
         assert_eq!(theme.section_title_color, palette::DEEPSEEK_BLUE);
         assert_eq!(theme.tool_title_color, palette::TEXT_SOFT);
         assert_eq!(theme.tool_value_color, palette::TEXT_MUTED);

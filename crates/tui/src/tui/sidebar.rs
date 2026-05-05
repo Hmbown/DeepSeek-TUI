@@ -30,9 +30,7 @@ pub fn render_sidebar(f: &mut Frame, area: Rect, app: &App) {
     if area.width < 24 || area.height < 8 {
         // Paint a styled block over the area so stale cells from a previous
         // (wider) frame don't persist as bleed-through artifacts (#400).
-        Block::default()
-            .style(Style::default().bg(palette::DEEPSEEK_INK))
-            .render(area, f.buffer_mut());
+        Block::default().render(area, f.buffer_mut());
         return;
     }
 
@@ -741,9 +739,7 @@ fn render_context_panel(f: &mut Frame, area: Rect, app: &App) {
 fn render_sidebar_section(f: &mut Frame, area: Rect, title: &str, lines: Vec<Line<'static>>) {
     if area.width < 4 || area.height < 3 {
         // Clear stale cells before bailing out (#400).
-        Block::default()
-            .style(Style::default().bg(palette::DEEPSEEK_INK))
-            .render(area, f.buffer_mut());
+        Block::default().render(area, f.buffer_mut());
         return;
     }
 

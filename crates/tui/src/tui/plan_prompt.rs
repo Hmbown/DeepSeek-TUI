@@ -32,7 +32,6 @@ fn modal_block() -> Block<'static> {
         )]))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(palette::BORDER_COLOR))
-        .style(Style::default().bg(palette::DEEPSEEK_INK))
         .padding(Padding::uniform(1))
 }
 
@@ -47,17 +46,15 @@ fn render_modal_chrome(area: Rect, popup_area: Rect, buf: &mut Buffer) {
         .min(shadow_bottom.saturating_sub(shadow_y));
 
     if shadow_width > 0 && shadow_height > 0 {
-        Block::default()
-            .style(Style::default().bg(palette::DEEPSEEK_NAVY))
-            .render(
-                Rect {
-                    x: shadow_x,
-                    y: shadow_y,
-                    width: shadow_width,
-                    height: shadow_height,
-                },
-                buf,
-            );
+        Block::default().render(
+            Rect {
+                x: shadow_x,
+                y: shadow_y,
+                width: shadow_width,
+                height: shadow_height,
+            },
+            buf,
+        );
     }
 
     Clear.render(popup_area, buf);

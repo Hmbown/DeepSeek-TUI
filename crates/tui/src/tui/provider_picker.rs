@@ -113,7 +113,7 @@ impl ProviderPickerView {
             ]))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(palette::BORDER_COLOR))
-            .style(Style::default().bg(palette::DEEPSEEK_INK));
+            .style(Style::default());
         let inner = outer.inner(area);
         outer.render(area, buf);
 
@@ -175,7 +175,7 @@ impl ProviderPickerView {
             ]))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(palette::BORDER_COLOR))
-            .style(Style::default().bg(palette::DEEPSEEK_INK));
+            .style(Style::default());
         let inner = outer.inner(area);
         outer.render(area, buf);
 

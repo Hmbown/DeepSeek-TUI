@@ -21,8 +21,8 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1.0.100"
 arboard = "3.4"
-deepseek-secrets = { path = "../secrets", version = "0.8.11" }
-deepseek-tools = { path = "../tools", version = "0.8.11" }
+deepseek-secrets = { path = "../secrets", version = "0.8.12" }
+deepseek-tools = { path = "../tools", version = "0.8.12" }
 schemaui = { version = "0.12.0", default-features = false, optional = true }
 async-stream = "0.3.6"
 async-trait = "0.1"
@@ -80,4 +80,4 @@ libc = "0.2"
 libc = "0.2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.60", features = ["Win32_Foundation"] }
+windows = { version = "0.60", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }

@@ -14,7 +14,39 @@ This file provides context for AI assistants working on this project.
 - Local dev shorthand: after `cargo build --release`, run `./target/release/deepseek`.
 
 ### Build Dependencies
-- **Rust** 1.85+ (for the workspace)
+- **Rust** 1.88+ (the workspace declares `rust-version = "1.88"` because we
+  use `let_chains` in `if`/`while` conditions, which stabilized in 1.88).
+
+### Stable Rust only — no nightly features
+
+This crate must compile on stable Rust. **Never** introduce code that
+requires `#![feature(...)]`, `cargo +nightly`, or any unstable language /
+library feature. Common pitfalls to avoid:
+
+- **`if let` guards in match arms** (`if_let_guard`, tracking issue #51114)
+  — was nightly-only on Rust < 1.94. Rewrite as a plain match guard with a
+  nested `if let` inside the arm body. Example of what NOT to do:
+  ```rust
+  // BAD — fails on stable rustc < 1.94 with E0658
+  match key {
+      KeyCode::Char(c) if cond && let Some(x) = find(c) => { … }
+  }
+  ```
+  Rewrite as:
+  ```rust
+  // GOOD — works on every supported rustc
+  match key {
+      KeyCode::Char(c) if cond => {
+          if let Some(x) = find(c) { … }
+      }
+  }
+  ```
+- `let_chains` in `if`/`while` (`&& let Some(_) = …`) **is** stable as of
+  Rust 1.88 and is fine to use.
+- Custom `#![feature(...)]` attributes — never.
+
+Before opening a PR, run `cargo build` (not `cargo +nightly build`) and
+make sure the workspace's declared `rust-version` is enough to compile.
 
 ### Documentation
 See README.md for project overview, docs/ARCHITECTURE.md for internals.

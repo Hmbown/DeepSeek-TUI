@@ -90,6 +90,34 @@ allow_shell = true
 approval_policy = "on-request" # on-request | untrusted | never
 sandbox_mode = "workspace-write" # read-only | workspace-write | danger-full-access | external-sandbox
 
+# ─────────────────────────────────────────────────────────────────────────────────
+# External Sandbox Backend (pluggable remote execution)
+# ─────────────────────────────────────────────────────────────────────────────────
+# When sandbox_backend is set to "opensandbox", all exec_shell calls are
+# routed through an external OpenSandbox-compatible HTTP API instead of
+# spawning a local process. The backend sends `POST {sandbox_url}/v1/sandbox/run`
+# with `{"cmd": "...", "env": {...}}` and expects
+# `{"stdout": "...", "stderr": "...", "exit_code": 0}`.
+#
+# sandbox_backend = "none"          # "none" (default) or "opensandbox"
+# sandbox_url = "http://localhost:8080"  # OpenSandbox-compatible API base URL
+# sandbox_api_key = "YOUR_API_KEY"  # Optional Bearer token sent with requests
+#
+# Env-var overrides:
+#   DEEPSEEK_SANDBOX_BACKEND   → sandbox_backend
+#   DEEPSEEK_SANDBOX_URL       → sandbox_url
+#   DEEPSEEK_SANDBOX_API_KEY   → sandbox_api_key
+#
+# Example OpenSandbox setup:
+#
+#   sandbox_backend = "opensandbox"
+#   sandbox_url = "http://localhost:8080"
+#   sandbox_api_key = "sk-opensandbox-secret"
+#
+# The backend uses a 30-second HTTP timeout. Background, interactive, and
+# TTY modes are not supported with external backends — all commands run
+# synchronously via HTTP.
+
 # auto_allow entries match by command prefix, not raw string.
 # See command_safety.rs for the prefix dictionary.
 #
@@ -196,6 +224,11 @@ alternate_screen = "auto"   # auto | always | never
 mouse_capture = true        # true copies only transcript user/assistant text; false uses raw terminal selection/copy
 terminal_probe_timeout_ms = 500 # optional startup terminal-mode timeout (100-5000ms)
 osc8_links = true            # emit OSC 8 escapes around URLs (Cmd+click in iTerm2/Ghostty/Kitty/WezTerm/Terminal.app 13+); set false for terminals that misrender
+# locale = "auto"           # UI chrome language: auto | en | ja | zh-Hans | pt-BR
+#                           # "auto" reads LC_ALL → LC_MESSAGES → LANG; falls back to English.
+#                           # Override: `locale = "zh-Hans"` for Simplified Chinese regardless of OS locale.
+#                           # Also settable at runtime: /config locale zh-Hans
+#                           # Note: this only affects TUI labels/chrome — it does NOT change model output language.
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Feature Flags
@@ -239,6 +272,26 @@ l3_threshold = 576000
 # safety tokens against the model window.
 cycle_threshold = 768000
 seam_model = "deepseek-v4-flash"
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Workshop / Large-Output Routing (#548)
+# ─────────────────────────────────────────────────────────────────────────────────
+# Tool outputs exceeding `large_output_threshold_tokens` are routed through a
+# V4-Flash synthesis sub-agent.  Only the synthesis reaches the parent context;
+# the raw text is stored in the workshop variable `last_tool_result` so the
+# parent can call `promote_to_context` later if it needs the full content.
+#
+# Per-tool overrides let high-volume tools (e.g. exec_shell) use tighter
+# thresholds without changing the global default.
+#
+# Add `raw = true` to any tool call to bypass routing for that invocation.
+#
+# [workshop]
+# large_output_threshold_tokens = 4096
+# [workshop.per_tool_thresholds]
+# exec_shell  = 2048   # shell output synthesised aggressively
+# grep_files  = 2048
+# web_search  = 8192   # web results can be large; give them more room
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Capacity Controller (runtime pressure guardrails)

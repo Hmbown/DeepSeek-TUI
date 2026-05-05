@@ -46,7 +46,7 @@ pub fn save(app: &mut App, path: Option<&str>) -> CommandResult {
                     CommandResult::message(format!(
                         "Session saved to {} (ID: {})",
                         save_path.display(),
-                        &session.metadata.id[..8]
+                        crate::session_manager::truncate_id(&session.metadata.id)
                     ))
                 }
                 Err(e) => CommandResult::error(format!("Failed to save session: {e}")),
@@ -109,7 +109,7 @@ pub fn load(app: &mut App, path: Option<&str>) -> CommandResult {
         format!(
             "Session loaded from {} (ID: {}, {} messages)",
             load_path.display(),
-            &session.metadata.id[..8],
+            crate::session_manager::truncate_id(&session.metadata.id),
             session.metadata.message_count
         ),
         crate::tui::app::AppAction::SyncSession {

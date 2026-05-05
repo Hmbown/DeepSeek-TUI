@@ -13,6 +13,7 @@ use tempfile::NamedTempFile;
 use wait_timeout::ChildExt;
 
 mod audit;
+mod auto_reasoning;
 mod automation_manager;
 mod client;
 mod command_safety;
@@ -30,6 +31,7 @@ mod error_taxonomy;
 mod eval;
 mod execpolicy;
 mod features;
+mod handoff;
 mod hooks;
 mod llm_client;
 mod localization;
@@ -3807,7 +3809,9 @@ async fn run_exec_agent(
         subagent_model_overrides: config.subagent_model_overrides(),
         memory_enabled: config.memory_enabled(),
         memory_path: config.memory_path(),
+        strict_tool_mode: config.strict_tool_mode.unwrap_or(false),
         goal_objective: None,
+        workshop: config.workshop.clone(),
     };
 
     let engine_handle = spawn_engine(engine_config, config);

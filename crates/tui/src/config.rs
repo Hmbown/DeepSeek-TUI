@@ -708,6 +708,9 @@ pub struct Config {
     pub mcp_config_path: Option<String>,
     pub notes_path: Option<String>,
     pub memory_path: Option<String>,
+    /// When true, set `tool_choice: "required"` in all API requests so the
+    /// model MUST call a tool on every step (V4 strict tool-following mode).
+    pub strict_tool_mode: Option<bool>,
     /// Additional system-prompt sources concatenated in declared order
     /// (#454). Paths are expanded via `expand_path` so `~` and env
     /// vars work. Project config overrides user config (replace, not
@@ -720,6 +723,14 @@ pub struct Config {
     pub allow_shell: Option<bool>,
     pub approval_policy: Option<String>,
     pub sandbox_mode: Option<String>,
+    /// External sandbox backend: `"none"` or `"opensandbox"`.
+    /// When set, exec_shell routes commands through the backend's HTTP API
+    /// instead of spawning a local process.
+    pub sandbox_backend: Option<String>,
+    /// Base URL for the external sandbox backend (default: `"http://localhost:8080"`).
+    pub sandbox_url: Option<String>,
+    /// Optional API key for the external sandbox backend (sent as Bearer token).
+    pub sandbox_api_key: Option<String>,
     pub managed_config_path: Option<String>,
     pub requirements_path: Option<String>,
     pub max_subagents: Option<usize>,
@@ -784,6 +795,11 @@ pub struct Config {
     /// / tauri://localhost as the only allowed dev origins.
     #[serde(default)]
     pub runtime_api: Option<RuntimeApiConfig>,
+
+    /// Workshop / large-tool-output routing (#548). When absent, the global
+    /// default threshold of 4 096 tokens applies and routing is active.
+    #[serde(default)]
+    pub workshop: Option<crate::tools::large_output_router::WorkshopConfig>,
 }
 
 /// `[runtime_api]` table — knobs for the local HTTP/SSE daemon.
@@ -1731,6 +1747,15 @@ fn apply_env_overrides(config: &mut Config) {
     if let Ok(value) = std::env::var("DEEPSEEK_SANDBOX_MODE") {
         config.sandbox_mode = Some(value);
     }
+    if let Ok(value) = std::env::var("DEEPSEEK_SANDBOX_BACKEND") {
+        config.sandbox_backend = Some(value);
+    }
+    if let Ok(value) = std::env::var("DEEPSEEK_SANDBOX_URL") {
+        config.sandbox_url = Some(value);
+    }
+    if let Ok(value) = std::env::var("DEEPSEEK_SANDBOX_API_KEY") {
+        config.sandbox_api_key = Some(value);
+    }
     if let Ok(value) = std::env::var("DEEPSEEK_MANAGED_CONFIG_PATH") {
         config.managed_config_path = Some(value);
     }
@@ -1988,6 +2013,9 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         allow_shell: override_cfg.allow_shell.or(base.allow_shell),
         approval_policy: override_cfg.approval_policy.or(base.approval_policy),
         sandbox_mode: override_cfg.sandbox_mode.or(base.sandbox_mode),
+        sandbox_backend: override_cfg.sandbox_backend.or(base.sandbox_backend),
+        sandbox_url: override_cfg.sandbox_url.or(base.sandbox_url),
+        sandbox_api_key: override_cfg.sandbox_api_key.or(base.sandbox_api_key),
         managed_config_path: override_cfg
             .managed_config_path
             .or(base.managed_config_path),
@@ -2031,7 +2059,9 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
             per_model: override_cfg.context.per_model.or(base.context.per_model),
         },
         subagents: override_cfg.subagents.or(base.subagents),
+        strict_tool_mode: override_cfg.strict_tool_mode.or(base.strict_tool_mode),
         runtime_api: override_cfg.runtime_api.or(base.runtime_api),
+        workshop: override_cfg.workshop.or(base.workshop),
     }
 }
 

@@ -6,7 +6,7 @@
 use super::diff_format::make_unified_diff;
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
-    optional_str, required_str,
+    lsp_diagnostics_for_paths, optional_str, required_str,
 };
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -266,7 +266,15 @@ impl ToolSpec for WriteFileTool {
             format!("{diff}\n{summary}")
         };
 
-        Ok(ToolResult::success(body))
+        // Append LSP diagnostics for the written file when enabled (#428).
+        let diag_block = lsp_diagnostics_for_paths(context, &[file_path]).await;
+        let full_body = if diag_block.is_empty() {
+            body
+        } else {
+            format!("{body}\n{diag_block}")
+        };
+
+        Ok(ToolResult::success(full_body))
     }
 }
 
@@ -352,7 +360,15 @@ impl ToolSpec for EditFileTool {
             format!("{diff}\n{summary}")
         };
 
-        Ok(ToolResult::success(body))
+        // Append LSP diagnostics for the edited file when enabled (#428).
+        let diag_block = lsp_diagnostics_for_paths(context, &[file_path]).await;
+        let full_body = if diag_block.is_empty() {
+            body
+        } else {
+            format!("{body}\n{diag_block}")
+        };
+
+        Ok(ToolResult::success(full_body))
     }
 }
 

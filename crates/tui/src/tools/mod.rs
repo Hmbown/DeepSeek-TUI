@@ -10,9 +10,11 @@ pub mod file_search;
 pub mod finance;
 
 pub mod fetch_url;
+pub mod fim;
 pub mod git;
 pub mod git_history;
 pub mod github;
+pub mod large_output_router;
 pub mod parallel;
 pub mod plan;
 pub mod project;

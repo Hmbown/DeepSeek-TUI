@@ -62,18 +62,28 @@ pub fn load_user_commands() -> Vec<(String, String)> {
 /// The `input` should be the full command string including the `/`
 /// prefix (e.g. `/mycmd` or `/mycmd with args`). Only exact matches
 /// on the command name are considered (no partial/alias matching).
+/// Substitute $1, $2, $ARGUMENTS placeholders in a command template.
+fn apply_template(template: &str, args: &str) -> String {
+    let positional: Vec<&str> = args.split_whitespace().collect();
+    let mut result = template.replace("$ARGUMENTS", args);
+    for (i, arg) in positional.iter().enumerate() {
+        result = result.replace(&format!("${}", i + 1), arg);
+    }
+    result
+}
+
 pub fn try_dispatch_user_command(_app: &mut App, input: &str) -> Option<CommandResult> {
     let parts: Vec<&str> = input.trim().splitn(2, ' ').collect();
     let command = parts[0].to_lowercase();
     let command = command.strip_prefix('/').unwrap_or(&command);
+    let args = parts.get(1).copied().unwrap_or("").trim();
 
     let user_commands = load_user_commands();
 
     for (name, content) in &user_commands {
         if name == command {
-            return Some(CommandResult::action(AppAction::SendMessage(
-                content.clone(),
-            )));
+            let message = apply_template(content, args);
+            return Some(CommandResult::action(AppAction::SendMessage(message)));
         }
     }
 

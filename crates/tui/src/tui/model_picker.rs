@@ -188,7 +188,7 @@ impl ModelPickerView {
             )))
             .borders(Borders::ALL)
             .border_style(border_style)
-            .style(Style::default().bg(palette::DEEPSEEK_INK));
+            .style(Style::default());
         let inner = block.inner(area);
         block.render(area, buf);
 
@@ -288,7 +288,7 @@ impl ModalView for ModelPickerView {
             ]))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(palette::BORDER_COLOR))
-            .style(Style::default().bg(palette::DEEPSEEK_INK));
+            .style(Style::default());
         let inner = outer.inner(popup_area);
         outer.render(popup_area, buf);
 

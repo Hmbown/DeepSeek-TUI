@@ -385,7 +385,7 @@ impl ModalView for PagerView {
                     Color::DarkGray
                 };
                 let fg = if is_current {
-                    Color::Black
+                    Color::Reset
                 } else {
                     Color::Yellow
                 };
@@ -425,7 +425,6 @@ impl ModalView for PagerView {
             .title_bottom(footer)
             .borders(Borders::ALL)
             .border_style(Style::default().fg(palette::BORDER_COLOR))
-            .style(Style::default().bg(palette::DEEPSEEK_INK))
             .padding(Padding::uniform(1));
 
         let paragraph = Paragraph::new(visible_lines)
