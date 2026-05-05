@@ -4,9 +4,28 @@
 
 [English README](README.md)
 
+## 安装
+
+`deepseek` 是单一 Rust 二进制——**运行时不依赖 Node.js 或 Python**。
+下面三种方式装出来的是同一个二进制，按你已有的工具链选一个即可：
+
 ```bash
-npm i -g deepseek-tui
+# 1. npm —— 已装 Node 的最方便方式。npm 包只是一个下载器，
+#    会从 GitHub Releases 拉取对应平台的预编译二进制，
+#    并不会让 deepseek 本身依赖 Node 运行时。
+npm install -g deepseek-tui
+
+# 2. Cargo —— 无需 Node。
+cargo install deepseek-tui-cli --locked   # `deepseek` 入口
+cargo install deepseek-tui     --locked   # `deepseek-tui` TUI 二进制
+
+# 3. 直接下载 —— 无需任何工具链。
+#    https://github.com/Hmbown/DeepSeek-TUI/releases
+#    覆盖 Linux x64/ARM64、macOS x64/ARM64、Windows x64
 ```
+
+> 中国大陆访问较慢时，npm 可加 `--registry=https://registry.npmmirror.com`，
+> 或使用下方的 [Cargo 镜像](#中国大陆--镜像友好安装)。
 
 [![CI](https://github.com/Hmbown/DeepSeek-TUI/actions/workflows/ci.yml/badge.svg)](https://github.com/Hmbown/DeepSeek-TUI/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/deepseek-tui)](https://www.npmjs.com/package/deepseek-tui)
