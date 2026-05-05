@@ -41,6 +41,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whose install through a CN npm mirror took 18 minutes — the bottleneck
   was the GitHub fetch, which CN npm mirrors do not proxy.
 
+### Docs
+- **README clarity pass** (#685) — title-cased section headings, an explicit
+  Node + npm prerequisites block before the `npm install -g` snippet, a
+  China-friendly `--registry=https://registry.npmmirror.com` install
+  variant, a DeepWiki badge for AI-assisted repo browsing, and a 🐳 mark
+  on the title. *Thanks to [@Agent-Skill-007](https://github.com/Agent-Skill-007)
+  for this PR.*
+
 ## [0.8.10] - 2026-05-04
 
 A patch release: hotfixes, small UX polish, and four whalescale-unblocking
