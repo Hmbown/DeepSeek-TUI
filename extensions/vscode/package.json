@@ -1,0 +1,33 @@
+{
+  "name": "deepseek-tui",
+  "displayName": "DeepSeek TUI",
+  "description": "DeepSeek TUI integration for VS Code — spawns a local HTTP server for inline edits, chat, and more",
+  "version": "0.1.0",
+  "publisher": "Hmbown",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Hmbown/DeepSeek-TUI.git"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {},
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./tsconfig.json",
+    "watch": "tsc -watch -p ./tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.0"
+  }
+}
