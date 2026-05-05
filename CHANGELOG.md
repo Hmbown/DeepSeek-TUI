@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.11] - Unreleased
+
+### Changed
+- **Cache-maxing prompt path for DeepSeek V4** — the engine now skips
+  system-prompt reassignment when the assembled stable prompt is unchanged,
+  keeps the volatile repo working-set summary out of the system prompt, and
+  injects it as per-turn metadata on the latest user message instead.
+- **Tool catalog cache anchor** — the model-visible tool array now marks
+  the final native tool with `cache_control: ephemeral` so DeepSeek can
+  anchor the stable tool prefix explicitly.
+- **V4-scale automatic compaction defaults** — automatic compaction keeps a
+  500K-token hard floor and the fallback compaction threshold now reflects
+  the V4-scale late-trigger policy instead of the old 50K-era default.
+
+### Fixed
+- **Legacy 128K context naming** — the 128K fallback is now named and
+  documented as legacy DeepSeek-only behavior, reducing ambiguity with the
+  1M-token DeepSeek V4 defaults.
+
 ## [0.8.10] - 2026-05-04
 
 A patch release: hotfixes, small UX polish, and four whalescale-unblocking
