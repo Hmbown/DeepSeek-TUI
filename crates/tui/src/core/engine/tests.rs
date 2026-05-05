@@ -501,7 +501,7 @@ fn subagent_results_are_summarized_before_parent_context_insertion() {
 }
 
 #[test]
-fn refresh_system_prompt_places_working_set_after_stable_prefix() {
+fn refresh_system_prompt_leaves_working_set_out_of_system_prompt() {
     let tmp = tempdir().expect("tempdir");
     fs::create_dir_all(tmp.path().join("src")).expect("mkdir");
     fs::write(tmp.path().join("src/lib.rs"), "pub fn sample() {}").expect("write");
@@ -518,20 +518,74 @@ fn refresh_system_prompt_places_working_set_after_stable_prefix() {
 
     engine.refresh_system_prompt(AppMode::Agent);
 
-    let Some(SystemPrompt::Blocks(blocks)) = &engine.session.system_prompt else {
-        panic!("expected structured prompt blocks");
-    };
-    let last = blocks.last().expect("working-set block");
-    assert!(last.text.contains(WORKING_SET_SUMMARY_MARKER));
-    assert!(
-        blocks[..blocks.len() - 1]
+    let prompt = match &engine.session.system_prompt {
+        Some(SystemPrompt::Text(text)) => text.clone(),
+        Some(SystemPrompt::Blocks(blocks)) => blocks
             .iter()
-            .all(|block| !block.text.contains(WORKING_SET_SUMMARY_MARKER))
-    );
+            .map(|block| block.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        None => panic!("expected system prompt"),
+    };
+    assert!(!prompt.contains(WORKING_SET_SUMMARY_MARKER));
 }
 
 #[test]
-fn compaction_summary_stays_before_volatile_working_set() {
+fn working_set_reaches_model_as_turn_metadata() {
+    let tmp = tempdir().expect("tempdir");
+    fs::create_dir_all(tmp.path().join("src")).expect("mkdir");
+    fs::write(tmp.path().join("src/lib.rs"), "pub fn sample() {}").expect("write");
+
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(config, &Config::default());
+    engine
+        .session
+        .working_set
+        .observe_user_message("please inspect src/lib.rs", tmp.path());
+    engine.session.add_message(Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "please inspect src/lib.rs".to_string(),
+            cache_control: None,
+        }],
+    });
+
+    let messages = engine.messages_with_turn_metadata();
+    let first_block = messages
+        .last()
+        .and_then(|message| message.content.first())
+        .expect("turn metadata block");
+    let ContentBlock::Text { text, .. } = first_block else {
+        panic!("expected text metadata block");
+    };
+    assert!(text.starts_with("<turn_meta>\n"));
+    assert!(text.contains(WORKING_SET_SUMMARY_MARKER));
+    assert!(text.contains("src/lib.rs"));
+}
+
+#[test]
+fn refresh_system_prompt_is_noop_when_unchanged() {
+    let tmp = tempdir().expect("tempdir");
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(config, &Config::default());
+
+    engine.refresh_system_prompt(AppMode::Agent);
+    let first_hash = engine.session.last_system_prompt_hash;
+    let first_prompt = engine.session.system_prompt.clone();
+    engine.refresh_system_prompt(AppMode::Agent);
+
+    assert_eq!(engine.session.last_system_prompt_hash, first_hash);
+    assert_eq!(engine.session.system_prompt, first_prompt);
+}
+
+#[test]
+fn compaction_summary_stays_in_stable_system_prompt() {
     let tmp = tempdir().expect("tempdir");
     fs::create_dir_all(tmp.path().join("src")).expect("mkdir");
     fs::write(tmp.path().join("src/main.rs"), "fn main() {}").expect("write");
@@ -552,20 +606,18 @@ fn compaction_summary_stays_before_volatile_working_set() {
         cache_control: None,
     }])));
 
-    let Some(SystemPrompt::Blocks(blocks)) = &engine.session.system_prompt else {
-        panic!("expected structured prompt blocks");
+    let prompt = match &engine.session.system_prompt {
+        Some(SystemPrompt::Text(text)) => text.clone(),
+        Some(SystemPrompt::Blocks(blocks)) => blocks
+            .iter()
+            .map(|block| block.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        None => panic!("expected system prompt"),
     };
-    let summary_index = blocks
-        .iter()
-        .position(|block| block.text.contains(COMPACTION_SUMMARY_MARKER))
-        .expect("summary block");
-    let working_set_index = blocks
-        .iter()
-        .position(|block| block.text.contains(WORKING_SET_SUMMARY_MARKER))
-        .expect("working-set block");
 
-    assert!(summary_index < working_set_index);
-    assert_eq!(working_set_index, blocks.len() - 1);
+    assert!(prompt.contains(COMPACTION_SUMMARY_MARKER));
+    assert!(!prompt.contains(WORKING_SET_SUMMARY_MARKER));
 }
 
 #[tokio::test]
@@ -635,7 +687,7 @@ async fn pre_request_refresh_invoked_when_medium_risk() {
     engine.config.model = "deepseek-v3.2-128k".to_string();
 
     let long = "x".repeat(5_000);
-    for _ in 0..200 {
+    for _ in 0..900 {
         engine.session.messages.push(Message {
             role: "user".to_string(),
             content: vec![ContentBlock::Text {

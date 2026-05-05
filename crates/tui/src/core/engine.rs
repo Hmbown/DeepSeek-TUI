@@ -8,6 +8,8 @@
 //! - Tool execution orchestration
 
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
@@ -35,8 +37,8 @@ use crate::mcp::McpPool;
 #[cfg(test)]
 use crate::models::ToolCaller;
 use crate::models::{
-    ContentBlock, ContentBlockStart, DEFAULT_CONTEXT_WINDOW_TOKENS, Delta, Message, MessageRequest,
-    StreamEvent, SystemPrompt, Tool, Usage,
+    ContentBlock, ContentBlockStart, Delta, LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS, Message,
+    MessageRequest, StreamEvent, SystemPrompt, Tool, Usage,
 };
 use crate::prompts;
 use crate::seam_manager::{SeamConfig, SeamManager};
@@ -353,8 +355,9 @@ impl Engine {
             config.mcp_config_path.clone(),
         );
 
-        // Set up system prompt with project context (default to agent mode)
-        let working_set_summary = session.working_set.summary_block(&config.workspace);
+        // Set up stable system prompt with project context (default to agent mode).
+        // Per-turn working-set metadata is injected into the latest user
+        // message at request time so file churn does not rewrite this prefix.
         let user_memory_block =
             crate::memory::compose_block(config.memory_enabled, &config.memory_path);
         let system_prompt = prompts::system_prompt_for_mode_with_context_skills_and_session(
@@ -368,8 +371,9 @@ impl Engine {
                 goal_objective: config.goal_objective.as_deref(),
             },
         );
-        session.system_prompt =
-            append_working_set_summary(Some(system_prompt), working_set_summary.as_deref());
+        let stable_prompt = Some(system_prompt);
+        session.last_system_prompt_hash = Some(system_prompt_hash(stable_prompt.as_ref()));
+        session.system_prompt = stable_prompt;
 
         let subagent_manager =
             new_shared_subagent_manager(config.workspace.clone(), config.max_subagents);
@@ -1645,10 +1649,6 @@ impl Engine {
 
     /// Refresh the system prompt based on current mode and context.
     fn refresh_system_prompt(&mut self, mode: AppMode) {
-        let working_set_summary = self
-            .session
-            .working_set
-            .summary_block(&self.config.workspace);
         let user_memory_block =
             crate::memory::compose_block(self.config.memory_enabled, &self.config.memory_path);
         let base = prompts::system_prompt_for_mode_with_context_skills_and_session(
@@ -1664,8 +1664,11 @@ impl Engine {
         );
         let stable_prompt =
             merge_system_prompts(Some(&base), self.session.compaction_summary_prompt.clone());
-        self.session.system_prompt =
-            append_working_set_summary(stable_prompt, working_set_summary.as_deref());
+        let stable_hash = system_prompt_hash(stable_prompt.as_ref());
+        if self.session.last_system_prompt_hash != Some(stable_hash) {
+            self.session.system_prompt = stable_prompt;
+            self.session.last_system_prompt_hash = Some(stable_hash);
+        }
     }
 
     fn merge_compaction_summary(&mut self, summary_prompt: Option<SystemPrompt>) {
@@ -1676,16 +1679,34 @@ impl Engine {
             self.session.compaction_summary_prompt.as_ref(),
             summary_prompt.clone(),
         );
-        let current_without_working_set =
-            remove_working_set_summary(self.session.system_prompt.as_ref());
-        let merged = merge_system_prompts(current_without_working_set.as_ref(), summary_prompt);
-        let working_set_summary = self
-            .session
-            .working_set
-            .summary_block(&self.config.workspace);
-        self.session.system_prompt =
-            append_working_set_summary(merged, working_set_summary.as_deref());
+        let merged = merge_system_prompts(self.session.system_prompt.as_ref(), summary_prompt);
+        self.session.last_system_prompt_hash = Some(system_prompt_hash(merged.as_ref()));
+        self.session.system_prompt = merged;
     }
+}
+
+fn system_prompt_hash(prompt: Option<&SystemPrompt>) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    match prompt {
+        Some(SystemPrompt::Text(text)) => {
+            0u8.hash(&mut hasher);
+            text.hash(&mut hasher);
+        }
+        Some(SystemPrompt::Blocks(blocks)) => {
+            1u8.hash(&mut hasher);
+            for block in blocks {
+                block.block_type.hash(&mut hasher);
+                block.text.hash(&mut hasher);
+                if let Some(cache_control) = &block.cache_control {
+                    cache_control.cache_type.hash(&mut hasher);
+                }
+            }
+        }
+        None => {
+            2u8.hash(&mut hasher);
+        }
+    }
+    hasher.finish()
 }
 
 /// Spawn the engine in a background task
@@ -1775,9 +1796,8 @@ mod context;
 pub(crate) use context::compact_tool_result_for_context;
 use context::{
     COMPACTION_SUMMARY_MARKER, MAX_CONTEXT_RECOVERY_ATTEMPTS, MIN_RECENT_MESSAGES_TO_KEEP,
-    TURN_MAX_OUTPUT_TOKENS, append_working_set_summary, context_input_budget,
-    estimate_input_tokens_conservative, extract_compaction_summary_prompt,
-    is_context_length_error_message, remove_working_set_summary, summarize_text,
+    TURN_MAX_OUTPUT_TOKENS, context_input_budget, estimate_input_tokens_conservative,
+    extract_compaction_summary_prompt, is_context_length_error_message, summarize_text,
     turn_response_headroom_tokens,
 };
 mod dispatch;

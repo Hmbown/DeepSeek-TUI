@@ -6,7 +6,7 @@
 
 use crate::compaction::estimate_tokens;
 use crate::error_taxonomy::ErrorCategory;
-use crate::models::{Message, SystemBlock, SystemPrompt, context_window_for_model};
+use crate::models::{Message, SystemPrompt, context_window_for_model};
 use crate::tools::spec::ToolResult;
 
 /// Max output tokens requested for normal agent turns. Generous on purpose:
@@ -285,56 +285,6 @@ pub(super) fn extract_compaction_summary_prompt(
             }
         }
         None => None,
-    }
-}
-
-pub(super) fn remove_working_set_summary(prompt: Option<&SystemPrompt>) -> Option<SystemPrompt> {
-    match prompt {
-        Some(SystemPrompt::Blocks(blocks)) => {
-            let filtered: Vec<SystemBlock> = blocks
-                .iter()
-                .filter(|block| !block.text.contains(WORKING_SET_SUMMARY_MARKER))
-                .cloned()
-                .collect();
-            if filtered.is_empty() {
-                None
-            } else {
-                Some(SystemPrompt::Blocks(filtered))
-            }
-        }
-        Some(SystemPrompt::Text(text)) => Some(SystemPrompt::Text(text.clone())),
-        None => None,
-    }
-}
-
-pub(super) fn append_working_set_summary(
-    prompt: Option<SystemPrompt>,
-    working_set_summary: Option<&str>,
-) -> Option<SystemPrompt> {
-    let Some(summary) = working_set_summary.map(str::trim).filter(|s| !s.is_empty()) else {
-        return prompt;
-    };
-    let working_set_block = SystemBlock {
-        block_type: "text".to_string(),
-        text: summary.to_string(),
-        cache_control: None,
-    };
-
-    match prompt {
-        Some(SystemPrompt::Text(text)) => Some(SystemPrompt::Blocks(vec![
-            SystemBlock {
-                block_type: "text".to_string(),
-                text,
-                cache_control: None,
-            },
-            working_set_block,
-        ])),
-        Some(SystemPrompt::Blocks(mut blocks)) => {
-            blocks.retain(|block| !block.text.contains(WORKING_SET_SUMMARY_MARKER));
-            blocks.push(working_set_block);
-            Some(SystemPrompt::Blocks(blocks))
-        }
-        None => Some(SystemPrompt::Blocks(vec![working_set_block])),
     }
 }
 

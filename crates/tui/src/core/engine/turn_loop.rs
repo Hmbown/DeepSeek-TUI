@@ -230,7 +230,7 @@ impl Engine {
             };
             let request = MessageRequest {
                 model: self.session.model.clone(),
-                messages: self.session.messages.clone(),
+                messages: self.messages_with_turn_metadata(),
                 max_tokens: TURN_MAX_OUTPUT_TOKENS,
                 system: self.session.system_prompt.clone(),
                 tools: active_tools.clone(),
@@ -1593,5 +1593,36 @@ impl Engine {
             return (TurnOutcomeStatus::Failed, Some(err));
         }
         (TurnOutcomeStatus::Completed, None)
+    }
+
+    pub(super) fn messages_with_turn_metadata(&self) -> Vec<Message> {
+        let Some(summary) = self
+            .session
+            .working_set
+            .summary_block(&self.config.workspace)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+        else {
+            return self.session.messages.clone();
+        };
+
+        let mut messages = self.session.messages.clone();
+        let Some(last_user) = messages
+            .iter_mut()
+            .rev()
+            .find(|message| message.role == "user")
+        else {
+            return messages;
+        };
+
+        let turn_meta = format!("<turn_meta>\n{summary}\n</turn_meta>");
+        last_user.content.insert(
+            0,
+            ContentBlock::Text {
+                text: turn_meta,
+                cache_control: None,
+            },
+        );
+        messages
     }
 }
