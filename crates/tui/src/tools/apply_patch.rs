@@ -14,7 +14,7 @@ use thiserror::Error;
 
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
-    optional_bool, optional_str, optional_u64, required_str,
+    lsp_diagnostics_for_paths, optional_bool, optional_str, optional_u64, required_str,
 };
 
 /// Maximum lines of context for fuzzy matching (increased for better tolerance)
@@ -216,6 +216,9 @@ impl ToolSpec for ApplyPatchTool {
         if let Some(changes_value) = input.get("changes") {
             let (pending, stats) = build_pending_writes_from_changes(changes_value, context)?;
             apply_pending_writes(&pending)?;
+            // Resolve absolute paths for LSP diagnostics query.
+            let abs_paths: Vec<PathBuf> = pending.iter().map(|p| p.path.clone()).collect();
+            let diag_block = lsp_diagnostics_for_paths(context, &abs_paths).await;
             let result = PatchResult {
                 success: true,
                 files_applied: stats.stats.files_applied,
@@ -228,8 +231,13 @@ impl ToolSpec for ApplyPatchTool {
                 file_summaries: stats.file_summaries.clone(),
                 message: build_summary_message(&stats),
             };
-            return ToolResult::json(&result)
-                .map_err(|e| ToolError::execution_failed(e.to_string()));
+            let mut tool_result = ToolResult::json(&result)
+                .map_err(|e| ToolError::execution_failed(e.to_string()))?;
+            if !diag_block.is_empty() {
+                tool_result.content.push('\n');
+                tool_result.content.push_str(&diag_block);
+            }
+            return Ok(tool_result);
         }
 
         let patch_text = required_str(&input, "patch")?;
@@ -265,6 +273,13 @@ impl ToolSpec for ApplyPatchTool {
             stats.header_path_mismatch = mismatch_note;
         }
         apply_pending_writes(&pending)?;
+        // Resolve absolute paths for LSP diagnostics query.
+        let abs_paths: Vec<PathBuf> = pending
+            .iter()
+            .filter(|p| p.content.is_some()) // skip deleted files
+            .map(|p| p.path.clone())
+            .collect();
+        let diag_block = lsp_diagnostics_for_paths(context, &abs_paths).await;
         let result = PatchResult {
             success: true,
             files_applied: stats.stats.files_applied,
@@ -277,8 +292,13 @@ impl ToolSpec for ApplyPatchTool {
             file_summaries: stats.file_summaries.clone(),
             message: build_summary_message(&stats),
         };
-
-        ToolResult::json(&result).map_err(|e| ToolError::execution_failed(e.to_string()))
+        let mut tool_result =
+            ToolResult::json(&result).map_err(|e| ToolError::execution_failed(e.to_string()))?;
+        if !diag_block.is_empty() {
+            tool_result.content.push('\n');
+            tool_result.content.push_str(&diag_block);
+        }
+        Ok(tool_result)
     }
 }
 
