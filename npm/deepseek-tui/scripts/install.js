@@ -778,12 +778,26 @@ async function downloadText(url) {
       stallMs: downloadStallMs(),
     });
     const response = result.response;
-    const chunks = [];
     response.setEncoding("utf8");
-    for await (const chunk of response) {
-      chunks.push(chunk);
-    }
-    return chunks.join("");
+    // NOTE: do NOT use `for await (const chunk of response)` here.
+    // `httpRequest` attaches a `data` listener on the response to re-arm
+    // the stall timer, which puts the stream in flowing mode. The async
+    // iterator expects paused mode and will silently miss every chunk —
+    // this manifested as an empty checksum manifest in the npm wrapper
+    // smoke test ("Checksum manifest is missing <asset>"). Subscribing
+    // to `data` events directly stacks alongside the stall listener and
+    // both fire per chunk, so we collect the body correctly without
+    // disturbing the stall detection.
+    return new Promise((resolve, reject) => {
+      const chunks = [];
+      response.on("data", (chunk) => {
+        chunks.push(chunk);
+      });
+      response.on("end", () => {
+        resolve(chunks.join(""));
+      });
+      response.on("error", reject);
+    });
   });
 }
 

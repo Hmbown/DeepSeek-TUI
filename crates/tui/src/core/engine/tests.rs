@@ -635,10 +635,7 @@ fn turn_metadata_skips_tool_result_messages() {
     // The earlier real user message receives the turn_meta prefix.
     let real_user = messages.first().expect("first user message");
     assert_eq!(real_user.role, "user");
-    let ContentBlock::Text { text, .. } = real_user
-        .content
-        .first()
-        .expect("user text content")
+    let ContentBlock::Text { text, .. } = real_user.content.first().expect("user text content")
     else {
         panic!("expected Text block on real user message");
     };
