@@ -1067,7 +1067,10 @@ impl App {
         let ui_locale = resolve_locale(&settings.locale);
         let composer_density = ComposerDensity::from_setting(&settings.composer_density);
         let composer_border = settings.composer_border;
-        let composer_vim_enabled = settings.composer_vim_mode.trim().to_ascii_lowercase() == "vim";
+        let composer_vim_enabled = settings
+            .composer_vim_mode
+            .trim()
+            .eq_ignore_ascii_case("vim");
         let transcript_spacing = TranscriptSpacing::from_setting(&settings.transcript_spacing);
         let sidebar_width_percent = settings.sidebar_width_percent;
         let sidebar_focus = SidebarFocus::from_setting(&settings.sidebar_focus);

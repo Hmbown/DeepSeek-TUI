@@ -126,7 +126,7 @@ pub struct ExecPolicyContext<'a> {
     pub sandbox_mode: Option<&'a str>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ExecPolicyEngine {
     /// Layered rulesets (builtin → agent → user). When non-empty, takes precedence
     /// over the legacy flat lists below.
@@ -137,18 +137,6 @@ pub struct ExecPolicyEngine {
     approved_for_session: HashSet<String>,
     /// Arity dictionary for command-prefix allow-rule matching.
     arity_dict: BashArityDict,
-}
-
-impl Default for ExecPolicyEngine {
-    fn default() -> Self {
-        Self {
-            rulesets: vec![],
-            trusted_prefixes: Vec::new(),
-            denied_prefixes: Vec::new(),
-            approved_for_session: HashSet::new(),
-            arity_dict: BashArityDict::new(),
-        }
-    }
 }
 
 impl ExecPolicyEngine {

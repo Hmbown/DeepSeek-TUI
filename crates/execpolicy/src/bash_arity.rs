@@ -287,7 +287,7 @@ impl BashArityDict {
     pub fn new() -> Self {
         let mut entries: Vec<(&'static str, u8)> = BASH_ARITY_TABLE.to_vec();
         // Longest prefix first so greedy matching works correctly.
-        entries.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+        entries.sort_by_key(|entry| std::cmp::Reverse(entry.0.len()));
         Self { entries }
     }
 

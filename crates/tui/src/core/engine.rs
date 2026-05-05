@@ -1336,12 +1336,12 @@ impl Engine {
         // [workshop] config table is present; sub-agents don't inherit the
         // router (their ToolContext is built separately) to prevent recursive
         // routing of the synthesis call itself.
-        if let Some(workshop_cfg) = self.config.workshop.as_ref() {
-            if let Some(vars_arc) = self.workshop_vars.as_ref() {
-                let router =
-                    crate::tools::large_output_router::LargeOutputRouter::new(workshop_cfg.clone());
-                ctx = ctx.with_large_output_router(router, vars_arc.clone());
-            }
+        if let Some(workshop_cfg) = self.config.workshop.as_ref()
+            && let Some(vars_arc) = self.workshop_vars.as_ref()
+        {
+            let router =
+                crate::tools::large_output_router::LargeOutputRouter::new(workshop_cfg.clone());
+            ctx = ctx.with_large_output_router(router, vars_arc.clone());
         }
 
         // Wire the external sandbox backend (#516). exec_shell checks this
