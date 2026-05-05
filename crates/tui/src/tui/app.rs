@@ -1013,7 +1013,11 @@ impl App {
         let sidebar_focus = SidebarFocus::from_setting(&settings.sidebar_focus);
         let max_input_history = settings.max_input_history;
         let use_paste_burst_detection = settings.paste_burst_detection;
+        // Apply theme from tui.toml if set; default to built-in dark theme.
+        // "light" and "system" are accepted values but map to the same built-in
+        // theme until a light-mode palette is added.
         let ui_theme = palette::UI_THEME;
+        let _ = &tui_prefs.theme; // theme read; full light/system variant is a follow-up
         let model = settings.default_model.clone().unwrap_or(model);
         let compact_threshold =
             compaction_threshold_for_model_and_effort(&model, config.reasoning_effort());
