@@ -543,6 +543,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         memory_path: config.memory_path(),
         strict_tool_mode: config.strict_tool_mode.unwrap_or(false),
         goal_objective: app.goal.goal_objective.clone(),
+        workshop: config.workshop.clone(),
     }
 }
 

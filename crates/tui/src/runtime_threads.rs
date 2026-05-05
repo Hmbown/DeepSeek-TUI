@@ -1809,6 +1809,7 @@ impl RuntimeThreadManager {
             memory_path: self.config.memory_path(),
             strict_tool_mode: self.config.strict_tool_mode.unwrap_or(false),
             goal_objective: None,
+            workshop: self.config.workshop.clone(),
         };
 
         let engine = spawn_engine(engine_cfg, &self.config);

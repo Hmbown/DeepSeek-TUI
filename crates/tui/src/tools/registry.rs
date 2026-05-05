@@ -119,6 +119,7 @@ impl ToolRegistry {
     /// Execute a tool with an optional context override.
     ///
     /// This is used for retrying tools with elevated sandbox policies.
+    /// After execution, large results are routed through the workshop (#548).
     pub async fn execute_full_with_context(
         &self,
         name: &str,
@@ -130,7 +131,65 @@ impl ToolRegistry {
             .ok_or_else(|| ToolError::not_available(format!("tool '{name}' is not registered")))?;
 
         let ctx = context_override.unwrap_or(&self.context);
-        tool.execute(input, ctx).await
+        let result = tool.execute(input.clone(), ctx).await?;
+
+        // Large-output routing (#548): if the result exceeds the threshold and
+        // the caller did not request `raw=true`, synthesise via the workshop.
+        let raw_bypass = input
+            .get("raw")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        if let Some(router) = ctx.large_output_router.as_ref() {
+            use crate::tools::large_output_router::{LargeOutputRouter, RouteDecision};
+            match router.route(name, &result, raw_bypass) {
+                RouteDecision::PassThrough => {}
+                RouteDecision::Synthesise {
+                    estimated_tokens,
+                    threshold,
+                } => {
+                    // Store the raw output in the workshop variable store.
+                    if let Some(vars_arc) = ctx.workshop_vars.as_ref() {
+                        let mut vars = vars_arc.lock().await;
+                        vars.store_raw(name, &result.content);
+                    }
+
+                    // Build a terse synthesis using the same model the registry
+                    // was constructed for (workshop Flash model). For now we
+                    // produce a structured header + truncated preview without
+                    // a live API call so the engine stays dependency-free at
+                    // the registry layer. A follow-up can wire in the Flash
+                    // client when the async LLM call is safe here.
+                    let preview_chars = 1_200usize;
+                    let preview: String = result
+                        .content
+                        .chars()
+                        .take(preview_chars)
+                        .collect();
+                    let ellipsis = if result.content.chars().count() > preview_chars {
+                        "\n… [output truncated — full text in workshop variable `last_tool_result`]"
+                    } else {
+                        ""
+                    };
+                    let synthesis = format!("{preview}{ellipsis}");
+                    let wrapped = LargeOutputRouter::wrap_synthesis(
+                        name,
+                        &synthesis,
+                        estimated_tokens,
+                        threshold,
+                    );
+                    tracing::debug!(
+                        tool = name,
+                        estimated_tokens,
+                        threshold,
+                        "large-output routed through workshop"
+                    );
+                    return Ok(ToolResult::success(wrapped));
+                }
+            }
+        }
+
+        Ok(result)
     }
 
     /// Get the current tool context.

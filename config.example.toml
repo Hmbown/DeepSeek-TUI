@@ -247,6 +247,26 @@ cycle_threshold = 768000
 seam_model = "deepseek-v4-flash"
 
 # ─────────────────────────────────────────────────────────────────────────────────
+# Workshop / Large-Output Routing (#548)
+# ─────────────────────────────────────────────────────────────────────────────────
+# Tool outputs exceeding `large_output_threshold_tokens` are routed through a
+# V4-Flash synthesis sub-agent.  Only the synthesis reaches the parent context;
+# the raw text is stored in the workshop variable `last_tool_result` so the
+# parent can call `promote_to_context` later if it needs the full content.
+#
+# Per-tool overrides let high-volume tools (e.g. exec_shell) use tighter
+# thresholds without changing the global default.
+#
+# Add `raw = true` to any tool call to bypass routing for that invocation.
+#
+# [workshop]
+# large_output_threshold_tokens = 4096
+# [workshop.per_tool_thresholds]
+# exec_shell  = 2048   # shell output synthesised aggressively
+# grep_files  = 2048
+# web_search  = 8192   # web results can be large; give them more room
+
+# ─────────────────────────────────────────────────────────────────────────────────
 # Capacity Controller (runtime pressure guardrails)
 # ─────────────────────────────────────────────────────────────────────────────────
 [capacity]
