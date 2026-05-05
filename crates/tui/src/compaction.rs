@@ -25,10 +25,6 @@ pub struct CompactionConfig {
     pub message_threshold: usize,
     pub model: String,
     pub cache_summary: bool,
-    /// When `Some(true)`, the engine prefers writing a handoff file over
-    /// running LLM-based compaction when context pressure triggers.
-    /// `None` / `Some(false)` means default compaction behaviour.
-    pub prefer_handoff: Option<bool>,
 }
 
 impl Default for CompactionConfig {
@@ -44,7 +40,6 @@ impl Default for CompactionConfig {
             message_threshold: 50,
             model: DEFAULT_TEXT_MODEL.to_string(),
             cache_summary: true,
-            prefer_handoff: None,
         }
     }
 }
@@ -587,12 +582,6 @@ pub fn should_compact(
     external_working_set_paths: Option<&[String]>,
 ) -> bool {
     if !config.enabled {
-        return false;
-    }
-    // When prefer_handoff is set, skip automatic LLM compaction. The handoff
-    // threshold system in handoff.rs instead prompts the model to write
-    // `.deepseek/handoff.md` when context pressure builds.
-    if config.prefer_handoff == Some(true) {
         return false;
     }
 
