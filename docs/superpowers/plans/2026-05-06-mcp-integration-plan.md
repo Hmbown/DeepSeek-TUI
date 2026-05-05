@@ -10,6 +10,23 @@
 
 ---
 
+## Pre-flight
+
+- [ ] **Step 1: Create feature branch**
+
+```bash
+git checkout -b feat/mcp-integration
+```
+
+- [ ] **Step 2: Verify prerequisites**
+
+```bash
+rustc --version  # must be >= 1.88
+cargo build      # clean baseline
+```
+
+---
+
 ### Task 1: Add `McpPool::from_workspace_config` and workspace injection
 
 **Files:**
@@ -94,9 +111,10 @@ if server_name == "context-mode" {
 }
 ```
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Format and commit**
 
 ```bash
+cargo fmt
 git add crates/tui/src/mcp.rs
 git commit -m "feat(mcp): add from_workspace_config and workspace injection for context-mode"
 ```
@@ -118,9 +136,10 @@ git commit -m "feat(mcp): add from_workspace_config and workspace injection for 
 "protocolVersion": "2025-03-26",
 ```
 
-- [ ] **Step 2: Commit**
+- [ ] **Step 2: Format and commit**
 
 ```bash
+cargo fmt
 git add crates/tui/src/mcp.rs
 git commit -m "fix(mcp): bump protocol version to 2025-03-26"
 ```
@@ -145,9 +164,10 @@ let mut pool = McpPool::from_workspace_config(&self.session.mcp_config_path)
 pool = pool.with_workspace(self.session.workspace.clone());
 ```
 
-- [ ] **Step 2: Commit**
+- [ ] **Step 2: Format and commit**
 
 ```bash
+cargo fmt
 git add crates/tui/src/core/engine.rs
 git commit -m "feat(engine): use from_workspace_config for MCP pool init"
 ```
@@ -352,23 +372,32 @@ Add `use std::collections::HashMap;` at the top of the test module if not alread
 - [ ] **Step 2: Run the tests**
 
 ```bash
-cargo test -p deepseek-tui -- mcp
+cargo test --workspace --all-features
 ```
 
-Expected: all existing MCP tests pass, plus the two new ones.
+Expected: all existing tests pass, plus the two new MCP merge tests.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 3: Format and commit**
 
 ```bash
+cargo fmt
 git add crates/tui/src/mcp.rs
-git commit -m "test(mcp): add from_workspace_config merge behavior test"
+git commit -m "test(mcp): add workspace-override merge behavior test"
 ```
 
 ---
 
 ### Task 7: Build and verify
 
-- [ ] **Step 1: Build the project**
+- [ ] **Step 1: Format check**
+
+```bash
+cargo fmt --check
+```
+
+Expected: no formatting changes needed.
+
+- [ ] **Step 2: Build**
 
 ```bash
 cargo build
@@ -376,22 +405,22 @@ cargo build
 
 Expected: compile cleanly, no warnings.
 
-- [ ] **Step 2: Run the full MCP test suite**
+- [ ] **Step 3: Run full test suite**
 
 ```bash
-cargo test -p deepseek-tui -- mcp
+cargo test --workspace --all-features
 ```
 
 Expected: all tests pass.
 
-- [ ] **Step 3: Run clippy**
+- [ ] **Step 4: Run clippy**
 
 ```bash
-cargo clippy -p deepseek-tui -- -D warnings
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 
 Expected: no warnings.
 
-- [ ] **Step 4: Commit any remaining changes**
+- [ ] **Step 5: Commit any remaining changes**
 
 Only if needed for clippy fixes or build tweaks.
