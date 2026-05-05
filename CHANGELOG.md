@@ -72,6 +72,101 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on the title. *Thanks to [@Agent-Skill-007](https://github.com/Agent-Skill-007)
   for this PR.*
 
+## [0.8.12] - 2026-05-05
+
+A feature release built on the v0.8.11 cache-maxing foundation: 20 community
+PRs merged, covering reasoning-effort automation, V4 FIM edits, bash-arity
+execpolicy, skill-registry sync, vim composer mode, large-tool-output routing,
+pluggable sandbox backends, layered permission rulesets, and cache-aware
+resident sub-agents. No breaking changes.
+
+### Added
+- **Reasoning-effort auto mode** (#669) — `reasoning_effort = "auto"` inspects
+  the last user message for keywords (debug/error → Max, search/lookup → Low,
+  default → High) and resolves the tier before each API request. Sub-agents
+  always get Low.
+- **FIM edit tool for V4 /beta** (#668) — `fim_edit` tool sends
+  fill-in-the-middle requests to DeepSeek's `/beta` endpoint for surgical code
+  edits.
+- **Bash arity dictionary** (#655) — `auto_allow = ["git status"]` now matches
+  `git status -s` but NOT `git push`. The arity dictionary knows command
+  structure for git, cargo, npm, yarn, pnpm, docker, kubectl, aws, make, and
+  others. Legacy flat prefix matching still works for unlisted commands.
+- **Unified slash-command namespace** (#661) — user-defined commands in
+  `~/.deepseek/commands/` support `$1`, `$2`, `$ARGUMENTS` template
+  substitution. User commands override built-in commands.
+- **Skill registry sync** (#654) — `/skills sync` fetches the community skill
+  registry and installs/updates all listed skills. Network-gated by the
+  existing `[network]` policy.
+- **Vim modal editing in composer** (#659) — `vim.insert_mode` / `vim.normal_mode`
+  settings enable modal editing in the message composer with standard Vim
+  keybindings.
+- **Separate tui.toml** (#657) — theme colors and keybind overrides can live in
+  `~/.deepseek/tui.toml` alongside the main `config.toml`. *Note: file format
+  is defined but not yet loaded at startup — wiring deferred to v0.8.13.*
+- **Large-tool-output routing** (#658) — tool results exceeding a configurable
+  token threshold are routed through a workshop with truncated previews,
+  protecting the parent context window. Synthesis is currently truncation-only;
+  V4-Flash sub-agent synthesis deferred to follow-up.
+- **Pluggable sandbox backends** (#645) — a `SandboxBackend` trait and
+  Alibaba OpenSandbox HTTP adapter let `exec_shell` route commands to a remote
+  sandbox instead of spawning locally. Config keys: `sandbox_backend`,
+  `sandbox_url`, `sandbox_api_key`.
+- **Layered permission rulesets** (#653) — `ExecPolicyEngine` supports
+  builtin, agent, and user-priority layers for allow/deny prefix rules.
+  Deny-always-wins semantics.
+- **Cache-aware resident sub-agents** (#660) — sub-agents spawned with
+  `resident_file` prepend the file contents to their system prefix for V4
+  prefix-cache locality. A global lease table prevents two agents from holding
+  a resident lease on the same file simultaneously. Leases are released on
+  agent completion.
+- **Context-limit handoff** (#667) — engine-level support for replacing
+  routine compaction with a `.deepseek/handoff.md` file write when context
+  pressure triggers. *Note: config knob removed pending implementation.*
+- **LSP auto-attach diagnostics** (#656) — edit results now include post-edit
+  diagnostics via the engine-level LSP hooks path.
+
+### Docs
+- **SECURITY.md** (#648) — vulnerability reporting policy and supported
+  versions.
+- **CODE_OF_CONDUCT.md** (#686) — Contributor Covenant v2.1. *Thanks to
+  [@zichen0116](https://github.com/zichen0116) for this PR.*
+- **zh-Hans locale activation docs** (#652) — README.zh-CN.md and
+  config.example.toml now document `locale = "zh-Hans"`.
+
+### Fixed
+- **Color::Reset across all UI widgets** (#651, #671) — replaced hardcoded
+  `Color::Black` and `Color::Rgb(18, 29, 39)` backgrounds with `Color::Reset`
+  so the TUI respects the terminal's actual background color on light-themed
+  and non-standard terminals.
+- **Windows MessageBeep** (#646) — `notify_done_to` now calls `MessageBeep` on
+  Windows when BEL method is selected.
+- **truncate_id optimization** (#649) — replaced manual string slicing with a
+  shared `truncate_id` helper across session, picker, and UI call sites.
+
+### Maintenance
+- Removed dead `prefer_handoff` field from `CompactionConfig` — config knob
+  existed but zero code paths consulted it (#667).
+- Removed dead `use_terminal_colors` field from `TuiConfig` — no rendering
+  code read the value (#671).
+- Fixed `expect()` panic risk in `OpenSandboxBackend::new()` — now returns
+  `Result` (#645).
+- Fixed broken `section_bg` test assertion after Color::Reset migration (#651).
+- Fixed `resolve_prefixes` docstring to accurately describe deny-always-wins
+  behavior (#653).
+- Wired `create_backend()` into `Engine::build_tool_context` — sandbox backend
+  was defined but never activated (#645).
+- Wired resident lease release on agent completion/cancellation/failure (#660).
+
+### Contributors
+
+First-time contributor to this release: **@zichen0116** (#686). Welcome — and
+thank you.
+
+Bulk community contributions by [@merchloubna70-dot](https://github.com/merchloubna70-dot)
+(#645–#681, 28 PRs spanning features, fixes, and VS Code extension scaffolding).
+*Thank you for the remarkable volume and quality of work.*
+
 ## [0.8.10] - 2026-05-04
 
 A patch release: hotfixes, small UX polish, and four whalescale-unblocking

@@ -163,17 +163,24 @@ SGLANG_BASE_URL="http://localhost:30000/v1" deepseek --provider sglang --model d
 
 ---
 
-## What's New In v0.8.11
+## What's New In v0.8.12
 
-A targeted patch for the V4 cache-maxing overhaul plus three runtime fixes discovered in YOLO long-session dogfooding. [Full changelog](CHANGELOG.md).
+A feature release with 20 community PRs on top of the v0.8.11 cache-maxing foundation. [Full changelog](CHANGELOG.md).
 
-- **Cache-maxing prompt path for DeepSeek V4** — the engine skips system-prompt reassembly when the stable prefix is unchanged, moves the working-set summary out of the system prompt into per-turn metadata, and anchors the tool array with `cache_control: ephemeral`. Net effect: fewer prefix rewrites, higher cache-hit rates, lower cost per turn.
-- **500K token compaction floor** — automatic compaction refuses below 500K tokens; manual `/compact` still bypasses. The message-count trigger (a 128K-era heuristic) is removed — token budget is the sole auto-trigger.
-- **`npm install` resilience** — retry with exponential backoff, per-attempt timeout + stall detector, `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` support (pure Node, no new deps), and download progress to stderr. Driven by a community report from China where `npm install` took 18 minutes through a CN mirror.
-- **YOLO sandbox dropped** — YOLO now uses DangerFullAccess (no sandbox), consistent with its auto-approval + trust mode posture. Previously, the WorkspaceWrite sandbox was intercepting legitimate outside-workspace writes.
-- **Scroll lock preserved during live streaming** — scrolling up mid-stream no longer gets yanked back to the tail on the next chunk. The `user_scrolled_during_stream` lock now survives render-time clamping.
-- **Capacity controller off by default** — the controller was silently clearing transcripts independent of token usage or `auto_compact` settings. Now defaults to disabled; opt-in via `capacity.enabled = true`.
-- **README clarity pass** (#685) — title-cased headings, explicit prerequisites, China-friendly install variant. *Thanks to [@Agent-Skill-007](https://github.com/Agent-Skill-007) for this PR.*
+- **Reasoning-effort auto mode** — `reasoning_effort = "auto"` picks the right tier from the prompt: debug/error → Max, search/lookup → Low, default → High
+- **Bash arity dictionary** — `auto_allow = ["git status"]` matches `git status -s` but not `git push`. Knows git, cargo, npm, docker, kubectl, and more
+- **Vim modal editing** — normal/insert mode in the composer with standard Vim keybindings
+- **Skill registry sync** — `/skills sync` fetches and installs/updates the community registry
+- **FIM edit tool** — surgical code edits via DeepSeek's `/beta` fill-in-the-middle endpoint
+- **Large-tool-output routing** — outsized tool results get truncated previews with spillover, protecting parent context
+- **Pluggable sandbox backends** — `exec_shell` can route to Alibaba OpenSandbox or other remote backends
+- **Layered permission rulesets** — builtin/agent/user priority layers for execpolicy deny/allow rules
+- **Cache-aware resident sub-agents** — file content prepended for V4 prefix-cache locality; global lease table
+- **Unified slash-command namespace** — user commands with `$1`/`$2`/`$ARGUMENTS` templates
+- **Color::Reset migration** — all hardcoded backgrounds replaced with `Color::Reset` for light-terminal support
+- **New docs**: SECURITY.md (#648), CODE_OF_CONDUCT.md (#686), zh-Hans locale activation (#652)
+
+*28 community PRs by [@merchloubna70-dot](https://github.com/merchloubna70-dot). First-time contributor [@zichen0116](https://github.com/zichen0116) (#686).*
 
 ---
 
