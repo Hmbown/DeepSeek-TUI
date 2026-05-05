@@ -326,6 +326,62 @@ impl ToolRegistry {
         removed
     }
 
+    /// Resolve a non-canonical tool name to a registered canonical name.
+    ///
+    /// Runs a deterministic ladder against the registered tool names:
+    /// 1. Lowercase exact match.
+    /// 2. Hyphens/spaces → underscores (read-file → read_file).
+    /// 3. CamelCase → snake_case (ReadFile → read_file).
+    /// 4. Strip trailing `_tool` / `-tool` suffix (twice).
+    /// 5. Fuzzy match via simple prefix/suffix similarity.
+    ///
+    /// Returns `None` when no resolution is found (let the caller surface
+    /// "Unknown tool").
+    #[must_use]
+    pub fn resolve(&self, requested: &str) -> Option<&str> {
+        let names: Vec<&str> = self.tools.keys().map(String::as_str).collect();
+        let lower = requested.to_lowercase();
+
+        // 1. lowercase exact
+        if let Some(n) = names.iter().find(|n| n.to_lowercase() == lower) {
+            return Some(n);
+        }
+        // 2. hyphen/space → underscore
+        let snaked = lower.replace(['-', ' '], "_");
+        if let Some(n) = names.iter().find(|n| **n == snaked) {
+            return Some(n);
+        }
+        // 3. CamelCase → snake_case
+        let cc = to_snake_case(requested);
+        if let Some(n) = names.iter().find(|n| **n == cc) {
+            return Some(n);
+        }
+        // 4. strip _tool/-tool/tool suffix, twice
+        let mut stripped = cc.clone();
+        for _ in 0..2 {
+            for suf in ["_tool", "-tool", "tool"] {
+                if let Some(s) = stripped.strip_suffix(suf) {
+                    stripped = s.to_string();
+                    break;
+                }
+            }
+        }
+        if !stripped.is_empty()
+            && let Some(n) = names.iter().find(|n| **n == stripped)
+        {
+            return Some(n);
+        }
+        // 5. fuzzy: simple prefix match (at least 3 chars)
+        if lower.len() >= 3 {
+            for n in &names {
+                if n.len() >= 3 && (n.starts_with(&lower) || lower.starts_with(n)) {
+                    return Some(n);
+                }
+            }
+        }
+        None
+    }
+
     /// Clear all tools from the registry.
     #[allow(dead_code)]
     pub fn clear(&mut self) {
@@ -762,6 +818,22 @@ impl Default for ToolRegistryBuilder {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Convert CamelCase to snake_case.
+fn to_snake_case(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 4);
+    for (i, ch) in s.chars().enumerate() {
+        if ch.is_uppercase() {
+            if i > 0 {
+                out.push('_');
+            }
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 /// Adapter that wraps an MCP tool definition so it can live in the

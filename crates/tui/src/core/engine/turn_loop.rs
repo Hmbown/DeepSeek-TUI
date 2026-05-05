@@ -952,9 +952,9 @@ impl Engine {
             };
 
             let mut plans: Vec<ToolExecutionPlan> = Vec::with_capacity(tool_uses.len());
-            for (index, tool) in tool_uses.iter().enumerate() {
+            for (index, tool) in tool_uses.iter_mut().enumerate() {
                 let tool_id = tool.id.clone();
-                let tool_name = tool.name.clone();
+                let mut tool_name = tool.name.clone();
                 let tool_input = tool.input.clone();
                 let tool_caller = tool.caller.clone();
                 crate::logging::info(format!(
@@ -986,7 +986,42 @@ impl Engine {
                         )))
                         .await;
                 }
-                let tool_def = tool_catalog.iter().find(|def| def.name == tool_name);
+                let mut tool_def = tool_catalog.iter().find(|def| def.name == tool_name);
+
+                // Resolve hallucinated tool names when the model emits a
+                // non-canonical variant (Read_file, readFile, read-file, etc.).
+                if tool_def.is_none()
+                    && let Some(registry) = tool_registry
+                    && let Some(canonical) = registry.resolve(&tool_name)
+                {
+                    crate::logging::info(format!(
+                        "Resolved hallucinated tool name '{}' -> '{}'",
+                        tool_name,
+                        canonical
+                    ));
+                    tool_def = tool_catalog.iter().find(|d| d.name == canonical);
+                    if tool_def.is_some() {
+                        tool_name = canonical.to_string();
+                        // Update the tool_uses entry so the result is
+                        // attributed to the canonical name.
+                        tool.name = tool_name.clone();
+                        // Re-run the deferred-activation check with the
+                        // canonical name.
+                        if maybe_activate_requested_deferred_tool(
+                            &tool_name,
+                            &tool_catalog,
+                            &mut active_tool_names,
+                        ) {
+                            let _ = self
+                                .tx_event
+                                .send(Event::status(format!(
+                                    "Auto-loaded deferred tool '{}' after resolving '{}'.",
+                                    tool_name, tool_name
+                                )))
+                                .await;
+                        }
+                    }
+                }
 
                 if !caller_allowed_for_tool(tool_caller.as_ref(), tool_def) {
                     blocked_error = Some(ToolError::permission_denied(format!(
