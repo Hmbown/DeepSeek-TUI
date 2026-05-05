@@ -26,6 +26,9 @@ const DEFAULT_OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 const DEFAULT_NOVITA_BASE_URL: &str = "https://api.novita.ai/v1";
 const DEFAULT_FIREWORKS_BASE_URL: &str = "https://api.fireworks.ai/inference/v1";
 const DEFAULT_SGLANG_BASE_URL: &str = "http://localhost:30000/v1";
+const DEFAULT_VLLM_MODEL: &str = "deepseek-ai/DeepSeek-V4-Pro";
+const DEFAULT_VLLM_FLASH_MODEL: &str = "deepseek-ai/DeepSeek-V4-Flash";
+const DEFAULT_VLLM_BASE_URL: &str = "http://localhost:8000/v1";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
@@ -38,6 +41,7 @@ pub enum ProviderKind {
     Novita,
     Fireworks,
     Sglang,
+    Vllm,
 }
 
 impl ProviderKind {
@@ -51,6 +55,7 @@ impl ProviderKind {
             Self::Novita => "novita",
             Self::Fireworks => "fireworks",
             Self::Sglang => "sglang",
+            Self::Vllm => "vllm",
         }
     }
 
@@ -64,6 +69,7 @@ impl ProviderKind {
             "novita" => Some(Self::Novita),
             "fireworks" | "fireworks-ai" => Some(Self::Fireworks),
             "sglang" | "sg-lang" => Some(Self::Sglang),
+            "vllm" | "v-llm" => Some(Self::Vllm),
             _ => None,
         }
     }
@@ -92,6 +98,8 @@ pub struct ProvidersToml {
     pub fireworks: ProviderConfigToml,
     #[serde(default)]
     pub sglang: ProviderConfigToml,
+    #[serde(default)]
+    pub vllm: ProviderConfigToml,
 }
 
 impl ProvidersToml {
@@ -105,6 +113,7 @@ impl ProvidersToml {
             ProviderKind::Novita => &self.novita,
             ProviderKind::Fireworks => &self.fireworks,
             ProviderKind::Sglang => &self.sglang,
+            ProviderKind::Vllm => &self.vllm,
         }
     }
 
@@ -117,6 +126,7 @@ impl ProvidersToml {
             ProviderKind::Novita => &mut self.novita,
             ProviderKind::Fireworks => &mut self.fireworks,
             ProviderKind::Sglang => &mut self.sglang,
+            ProviderKind::Vllm => &mut self.vllm,
         }
     }
 }
@@ -318,6 +328,7 @@ impl ConfigToml {
         merge_provider_config(&mut self.providers.novita, &project.providers.novita);
         merge_provider_config(&mut self.providers.fireworks, &project.providers.fireworks);
         merge_provider_config(&mut self.providers.sglang, &project.providers.sglang);
+        merge_provider_config(&mut self.providers.vllm, &project.providers.vllm);
 
         if project.network.is_some() {
             self.network = project.network;
@@ -373,6 +384,9 @@ impl ConfigToml {
             "providers.sglang.api_key" => self.providers.sglang.api_key.clone(),
             "providers.sglang.base_url" => self.providers.sglang.base_url.clone(),
             "providers.sglang.model" => self.providers.sglang.model.clone(),
+            "providers.vllm.api_key" => self.providers.vllm.api_key.clone(),
+            "providers.vllm.base_url" => self.providers.vllm.base_url.clone(),
+            "providers.vllm.model" => self.providers.vllm.model.clone(),
             _ => self.extras.get(key).map(toml::Value::to_string),
         }
     }
@@ -460,6 +474,15 @@ impl ConfigToml {
             "providers.sglang.model" => {
                 self.providers.sglang.model = Some(value.to_string());
             }
+            "providers.vllm.api_key" => {
+                self.providers.vllm.api_key = Some(value.to_string());
+            }
+            "providers.vllm.base_url" => {
+                self.providers.vllm.base_url = Some(value.to_string());
+            }
+            "providers.vllm.model" => {
+                self.providers.vllm.model = Some(value.to_string());
+            }
             _ => {
                 self.extras
                     .insert(key.to_string(), toml::Value::String(value.to_string()));
@@ -513,6 +536,9 @@ impl ConfigToml {
             "providers.sglang.api_key" => self.providers.sglang.api_key = None,
             "providers.sglang.base_url" => self.providers.sglang.base_url = None,
             "providers.sglang.model" => self.providers.sglang.model = None,
+            "providers.vllm.api_key" => self.providers.vllm.api_key = None,
+            "providers.vllm.base_url" => self.providers.vllm.base_url = None,
+            "providers.vllm.model" => self.providers.vllm.model = None,
             _ => {
                 self.extras.remove(key);
             }
@@ -624,6 +650,15 @@ impl ConfigToml {
         if let Some(v) = self.providers.sglang.model.as_ref() {
             out.insert("providers.sglang.model".to_string(), v.clone());
         }
+        if let Some(v) = self.providers.vllm.api_key.as_ref() {
+            out.insert("providers.vllm.api_key".to_string(), redact_secret(v));
+        }
+        if let Some(v) = self.providers.vllm.base_url.as_ref() {
+            out.insert("providers.vllm.base_url".to_string(), v.clone());
+        }
+        if let Some(v) = self.providers.vllm.model.as_ref() {
+            out.insert("providers.vllm.model".to_string(), v.clone());
+        }
 
         for (k, v) in &self.extras {
             out.insert(k.clone(), v.to_string());
@@ -695,6 +730,7 @@ impl ConfigToml {
                 ProviderKind::Novita => DEFAULT_NOVITA_BASE_URL.to_string(),
                 ProviderKind::Fireworks => DEFAULT_FIREWORKS_BASE_URL.to_string(),
                 ProviderKind::Sglang => DEFAULT_SGLANG_BASE_URL.to_string(),
+                ProviderKind::Vllm => DEFAULT_VLLM_BASE_URL.to_string(),
             });
 
         let model = cli
@@ -712,6 +748,7 @@ impl ConfigToml {
                 ProviderKind::Novita => DEFAULT_NOVITA_MODEL.to_string(),
                 ProviderKind::Fireworks => DEFAULT_FIREWORKS_MODEL.to_string(),
                 ProviderKind::Sglang => DEFAULT_SGLANG_MODEL.to_string(),
+                ProviderKind::Vllm => DEFAULT_VLLM_MODEL.to_string(),
             });
         let model = normalize_model_for_provider(provider, &model);
 
@@ -822,6 +859,14 @@ fn normalize_model_for_provider(provider: ProviderKind, model: &str) -> String {
             "deepseek-v4-flash" | "deepseek-v4flash" | "deepseek-chat" | "deepseek-reasoner"
             | "deepseek-r1" | "deepseek-v3" | "deepseek-v3.2",
         ) => DEFAULT_SGLANG_FLASH_MODEL.to_string(),
+        (ProviderKind::Vllm, "deepseek-v4-pro" | "deepseek-v4pro") => {
+            DEFAULT_VLLM_MODEL.to_string()
+        }
+        (
+            ProviderKind::Vllm,
+            "deepseek-v4-flash" | "deepseek-v4flash" | "deepseek-chat" | "deepseek-reasoner"
+            | "deepseek-r1" | "deepseek-v3" | "deepseek-v3.2",
+        ) => DEFAULT_VLLM_FLASH_MODEL.to_string(),
         _ => model.to_string(),
     }
 }
@@ -973,6 +1018,7 @@ struct EnvRuntimeOverrides {
     novita_base_url: Option<String>,
     fireworks_base_url: Option<String>,
     sglang_base_url: Option<String>,
+    vllm_base_url: Option<String>,
 }
 
 impl EnvRuntimeOverrides {
@@ -1013,6 +1059,9 @@ impl EnvRuntimeOverrides {
             sglang_base_url: std::env::var("SGLANG_BASE_URL")
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
+            vllm_base_url: std::env::var("VLLM_BASE_URL")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
         }
     }
 
@@ -1027,6 +1076,7 @@ impl EnvRuntimeOverrides {
             ProviderKind::Novita => self.novita_base_url.clone(),
             ProviderKind::Fireworks => self.fireworks_base_url.clone(),
             ProviderKind::Sglang => self.sglang_base_url.clone(),
+            ProviderKind::Vllm => self.vllm_base_url.clone(),
         }
     }
 }
@@ -1061,6 +1111,8 @@ mod tests {
         fireworks_base_url: Option<OsString>,
         sglang_api_key: Option<OsString>,
         sglang_base_url: Option<OsString>,
+        vllm_api_key: Option<OsString>,
+        vllm_base_url: Option<OsString>,
     }
 
     impl EnvGuard {
@@ -1083,6 +1135,8 @@ mod tests {
                 fireworks_base_url: env::var_os("FIREWORKS_BASE_URL"),
                 sglang_api_key: env::var_os("SGLANG_API_KEY"),
                 sglang_base_url: env::var_os("SGLANG_BASE_URL"),
+                vllm_api_key: env::var_os("VLLM_API_KEY"),
+                vllm_base_url: env::var_os("VLLM_BASE_URL"),
             };
             // Safety: test-only environment mutation guarded by a module mutex.
             unsafe {
@@ -1103,6 +1157,8 @@ mod tests {
                 env::remove_var("FIREWORKS_BASE_URL");
                 env::remove_var("SGLANG_API_KEY");
                 env::remove_var("SGLANG_BASE_URL");
+                env::remove_var("VLLM_API_KEY");
+                env::remove_var("VLLM_BASE_URL");
             }
             guard
         }
@@ -1137,6 +1193,8 @@ mod tests {
                 Self::restore_var("FIREWORKS_BASE_URL", self.fireworks_base_url.take());
                 Self::restore_var("SGLANG_API_KEY", self.sglang_api_key.take());
                 Self::restore_var("SGLANG_BASE_URL", self.sglang_base_url.take());
+                Self::restore_var("VLLM_API_KEY", self.vllm_api_key.take());
+                Self::restore_var("VLLM_BASE_URL", self.vllm_base_url.take());
             }
         }
     }
@@ -1320,6 +1378,8 @@ mod tests {
             Some(ProviderKind::Fireworks)
         );
         assert_eq!(ProviderKind::parse("sg-lang"), Some(ProviderKind::Sglang));
+        assert_eq!(ProviderKind::parse("v-llm"), Some(ProviderKind::Vllm));
+        assert_eq!(ProviderKind::parse("vllm"), Some(ProviderKind::Vllm));
     }
 
     #[test]
@@ -1384,6 +1444,22 @@ mod tests {
         assert_eq!(resolved.provider, ProviderKind::Sglang);
         assert_eq!(resolved.base_url, DEFAULT_SGLANG_BASE_URL);
         assert_eq!(resolved.model, DEFAULT_SGLANG_MODEL);
+    }
+
+    #[test]
+    fn vllm_provider_defaults_to_local_endpoint_and_model() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let config = ConfigToml {
+            provider: ProviderKind::Vllm,
+            ..ConfigToml::default()
+        };
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Vllm);
+        assert_eq!(resolved.base_url, DEFAULT_VLLM_BASE_URL);
+        assert_eq!(resolved.model, DEFAULT_VLLM_MODEL);
     }
 
     #[test]
@@ -1486,6 +1562,22 @@ mod tests {
 
         assert_eq!(resolved.provider, ProviderKind::Sglang);
         assert_eq!(resolved.model, DEFAULT_SGLANG_FLASH_MODEL);
+    }
+
+    #[test]
+    fn vllm_provider_normalizes_flash_aliases() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let cli = CliRuntimeOverrides {
+            provider: Some(ProviderKind::Vllm),
+            model: Some("deepseek-v4-flash".to_string()),
+            ..CliRuntimeOverrides::default()
+        };
+
+        let resolved = ConfigToml::default().resolve_runtime_options(&cli);
+
+        assert_eq!(resolved.provider, ProviderKind::Vllm);
+        assert_eq!(resolved.model, DEFAULT_VLLM_FLASH_MODEL);
     }
 
     #[test]

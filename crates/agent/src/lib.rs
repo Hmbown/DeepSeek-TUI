@@ -163,6 +163,28 @@ impl Default for ModelRegistry {
                 supports_tools: true,
                 supports_reasoning: true,
             },
+            ModelInfo {
+                id: "deepseek-ai/DeepSeek-V4-Pro".to_string(),
+                provider: ProviderKind::Vllm,
+                aliases: vec![
+                    "deepseek-v4-pro".to_string(),
+                    "vllm-deepseek-v4-pro".to_string(),
+                ],
+                supports_tools: true,
+                supports_reasoning: true,
+            },
+            ModelInfo {
+                id: "deepseek-ai/DeepSeek-V4-Flash".to_string(),
+                provider: ProviderKind::Vllm,
+                aliases: vec![
+                    "deepseek-v4-flash".to_string(),
+                    "deepseek-chat".to_string(),
+                    "deepseek-reasoner".to_string(),
+                    "vllm-deepseek-v4-flash".to_string(),
+                ],
+                supports_tools: true,
+                supports_reasoning: true,
+            },
         ];
         Self::new(models)
     }
@@ -364,6 +386,24 @@ mod tests {
         let resolved = registry.resolve(Some("deepseek-v4-flash"), Some(ProviderKind::Sglang));
 
         assert_eq!(resolved.resolved.provider, ProviderKind::Sglang);
+        assert_eq!(resolved.resolved.id, "deepseek-ai/DeepSeek-V4-Flash");
+    }
+
+    #[test]
+    fn vllm_default_uses_canonical_model_id() {
+        let registry = ModelRegistry::default();
+        let resolved = registry.resolve(None, Some(ProviderKind::Vllm));
+
+        assert_eq!(resolved.resolved.provider, ProviderKind::Vllm);
+        assert_eq!(resolved.resolved.id, "deepseek-ai/DeepSeek-V4-Pro");
+    }
+
+    #[test]
+    fn deepseek_v4_flash_alias_resolves_to_vllm_when_provider_hinted() {
+        let registry = ModelRegistry::default();
+        let resolved = registry.resolve(Some("deepseek-v4-flash"), Some(ProviderKind::Vllm));
+
+        assert_eq!(resolved.resolved.provider, ProviderKind::Vllm);
         assert_eq!(resolved.resolved.id, "deepseek-ai/DeepSeek-V4-Flash");
     }
 }

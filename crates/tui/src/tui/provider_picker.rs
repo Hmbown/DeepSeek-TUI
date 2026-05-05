@@ -92,6 +92,7 @@ impl ProviderPickerView {
             ApiProvider::Novita => "NOVITA_API_KEY",
             ApiProvider::Fireworks => "FIREWORKS_API_KEY",
             ApiProvider::Sglang => "SGLANG_API_KEY",
+            ApiProvider::Vllm => "VLLM_API_KEY",
         }
     }
 
@@ -374,7 +375,8 @@ mod tests {
                 "OpenRouter",
                 "Novita AI",
                 "Fireworks AI",
-                "SGLang"
+                "SGLang",
+                "vLLM"
             ]
         );
     }
