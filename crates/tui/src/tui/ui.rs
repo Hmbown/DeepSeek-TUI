@@ -2642,8 +2642,10 @@ async fn run_event_loop(
                     // confirmation (no-op feels broken otherwise).
                     crate::composer_stash::push_stash(&app.input);
                     app.clear_input_recoverable();
+                    let draft_msg = crate::json_locale::tr_ui_label(app.ui_locale, "draft_stashed_message")
+                        .unwrap_or("Draft stashed — `/stash pop` to restore");
                     app.push_status_toast(
-                        "Draft stashed — `/stash pop` to restore",
+                        draft_msg,
                         StatusToastLevel::Info,
                         Some(3_000),
                     );

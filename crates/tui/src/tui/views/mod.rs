@@ -1658,12 +1658,12 @@ impl ModalView for SubAgentsView {
             .block(
                 Block::default()
                     .title(Line::from(vec![Span::styled(
-                        " Sub-agents ",
+                        tr("sub_agents_title", " Sub-agents "),
                         Style::default().fg(palette::DEEPSEEK_BLUE).bold(),
                     )]))
                     .title_bottom(Line::from(vec![
-                        Span::styled(" Esc to close ", Style::default().fg(palette::TEXT_MUTED)),
-                        Span::styled(" R to refresh ", Style::default().fg(palette::TEXT_MUTED)),
+                        Span::styled(tr("sub_agents_esc_to_close", " Esc to close "), Style::default().fg(palette::TEXT_MUTED)),
+                        Span::styled(tr("sub_agents_r_to_refresh", " R to refresh "), Style::default().fg(palette::TEXT_MUTED)),
                         Span::styled(scroll_indicator, Style::default().fg(palette::DEEPSEEK_SKY)),
                     ]))
                     .borders(Borders::ALL)

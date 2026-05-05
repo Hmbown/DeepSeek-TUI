@@ -380,6 +380,23 @@ fn build_chat_messages_with_reasoning(
     if let Some(instructions) = system_to_instructions(system.cloned())
         && !instructions.trim().is_empty()
     {
+        // Log the first 500 characters of system prompt for debugging
+        // Use char_indices to avoid cutting in the middle of multi-byte UTF-8 characters
+        let preview = instructions
+            .char_indices()
+            .take(500)
+            .last()
+            .map(|(idx, c)| &instructions[..idx + c.len_utf8()])
+            .unwrap_or(&instructions);
+        
+        let preview_with_ellipsis = if preview.len() < instructions.len() {
+            format!("{}...", preview)
+        } else {
+            preview.to_string()
+        };
+        
+        logging::info(&format!("System prompt preview (first 500 chars):\n{}", preview_with_ellipsis));
+        
         out.push(json!({
             "role": "system",
             "content": instructions,

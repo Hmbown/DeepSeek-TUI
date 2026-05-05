@@ -14,7 +14,7 @@ pub enum TextDirection {
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LocaleCoverage {
+pub enum LanguageCoverage {
     English,
     V076Core,
     PlannedQa,
@@ -22,17 +22,17 @@ pub enum LocaleCoverage {
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LocaleSpec {
+pub struct LanguageSpec {
     pub tag: &'static str,
     pub display_name: &'static str,
     pub script: &'static str,
     pub direction: TextDirection,
     pub fallback: &'static str,
-    pub coverage: LocaleCoverage,
+    pub coverage: LanguageCoverage,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Locale {
+pub enum Language {
     En,
     Ja,
     ZhHans,
@@ -40,7 +40,7 @@ pub enum Locale {
     PtBr,
 }
 
-impl Locale {
+impl Language {
     pub fn tag(self) -> &'static str {
         match self {
             Self::En => "en",
@@ -52,52 +52,52 @@ impl Locale {
     }
 
     #[allow(dead_code)]
-    pub fn spec(self) -> LocaleSpec {
+    pub fn spec(self) -> LanguageSpec {
         match self {
-            Self::En => LocaleSpec {
+            Self::En => LanguageSpec {
                 tag: "en",
                 display_name: "English",
                 script: "Latin",
                 direction: TextDirection::Ltr,
                 fallback: "en",
-                coverage: LocaleCoverage::English,
+                coverage: LanguageCoverage::English,
             },
-            Self::Ja => LocaleSpec {
+            Self::Ja => LanguageSpec {
                 tag: "ja",
                 display_name: "Japanese",
                 script: "Jpan",
                 direction: TextDirection::Ltr,
                 fallback: "en",
-                coverage: LocaleCoverage::V076Core,
+                coverage: LanguageCoverage::V076Core,
             },
-            Self::ZhHans => LocaleSpec {
+            Self::ZhHans => LanguageSpec {
                 tag: "zh-Hans",
                 display_name: "Chinese Simplified",
                 script: "Hans",
                 direction: TextDirection::Ltr,
                 fallback: "en",
-                coverage: LocaleCoverage::V076Core,
+                coverage: LanguageCoverage::V076Core,
             },
-            Self::ZhHant => LocaleSpec {
+            Self::ZhHant => LanguageSpec {
                 tag: "zh-Hant",
                 display_name: "Chinese Traditional",
                 script: "Hant",
                 direction: TextDirection::Ltr,
                 fallback: "en",
-                coverage: LocaleCoverage::V076Core,
+                coverage: LanguageCoverage::V076Core,
             },
-            Self::PtBr => LocaleSpec {
+            Self::PtBr => LanguageSpec {
                 tag: "pt-BR",
                 display_name: "Portuguese (Brazil)",
                 script: "Latin",
                 direction: TextDirection::Ltr,
                 fallback: "en",
-                coverage: LocaleCoverage::V076Core,
+                coverage: LanguageCoverage::V076Core,
             },
         }
     }
 
-    /// Returns `true` when the locale needs thinking-content translation.
+    /// Returns `true` when the language needs thinking-content translation.
     /// Currently applies to Chinese variants (Simplified/Traditional).
     /// Users with these locales see thinking content auto-translated
     /// via a quick API call after the thinking block completes.
@@ -122,95 +122,101 @@ impl Locale {
     }
 }
 
+/// Type alias for migration from `Language` to `Locale` naming.
+///
+/// External consumers use `Locale`; internal code gradually moves to
+/// the new name. This alias makes both spellings work.
+pub type Locale = Language;
+
 #[allow(dead_code)]
-pub const PLANNED_QA_LOCALES: &[LocaleSpec] = &[
-    LocaleSpec {
+pub const PLANNED_QA_LANGUAGES: &[LanguageSpec] = &[
+    LanguageSpec {
         tag: "ar",
         display_name: "Arabic",
         script: "Arab",
         direction: TextDirection::Rtl,
         fallback: "en",
-        coverage: LocaleCoverage::PlannedQa,
+        coverage: LanguageCoverage::PlannedQa,
     },
-    LocaleSpec {
+    LanguageSpec {
         tag: "hi",
         display_name: "Hindi",
         script: "Deva",
         direction: TextDirection::Ltr,
         fallback: "en",
-        coverage: LocaleCoverage::PlannedQa,
+        coverage: LanguageCoverage::PlannedQa,
     },
-    LocaleSpec {
+    LanguageSpec {
         tag: "bn",
         display_name: "Bengali",
         script: "Beng",
         direction: TextDirection::Ltr,
         fallback: "en",
-        coverage: LocaleCoverage::PlannedQa,
+        coverage: LanguageCoverage::PlannedQa,
     },
-    LocaleSpec {
+    LanguageSpec {
         tag: "id",
         display_name: "Indonesian",
         script: "Latin",
         direction: TextDirection::Ltr,
         fallback: "en",
-        coverage: LocaleCoverage::PlannedQa,
+        coverage: LanguageCoverage::PlannedQa,
     },
-    LocaleSpec {
+    LanguageSpec {
         tag: "vi",
         display_name: "Vietnamese",
         script: "Latin",
         direction: TextDirection::Ltr,
         fallback: "en",
-        coverage: LocaleCoverage::PlannedQa,
+        coverage: LanguageCoverage::PlannedQa,
     },
-    LocaleSpec {
+    LanguageSpec {
         tag: "sw",
         display_name: "Swahili",
         script: "Latin",
         direction: TextDirection::Ltr,
         fallback: "en",
-        coverage: LocaleCoverage::PlannedQa,
+        coverage: LanguageCoverage::PlannedQa,
     },
-    LocaleSpec {
+    LanguageSpec {
         tag: "ha",
         display_name: "Hausa",
         script: "Latin",
         direction: TextDirection::Ltr,
         fallback: "en",
-        coverage: LocaleCoverage::PlannedQa,
+        coverage: LanguageCoverage::PlannedQa,
     },
-    LocaleSpec {
+    LanguageSpec {
         tag: "yo",
         display_name: "Yoruba",
         script: "Latin",
         direction: TextDirection::Ltr,
         fallback: "en",
-        coverage: LocaleCoverage::PlannedQa,
+        coverage: LanguageCoverage::PlannedQa,
     },
-    LocaleSpec {
+    LanguageSpec {
         tag: "es-419",
         display_name: "Spanish (Latin America)",
         script: "Latin",
         direction: TextDirection::Ltr,
         fallback: "en",
-        coverage: LocaleCoverage::PlannedQa,
+        coverage: LanguageCoverage::PlannedQa,
     },
-    LocaleSpec {
+    LanguageSpec {
         tag: "fr",
         display_name: "French",
         script: "Latin",
         direction: TextDirection::Ltr,
         fallback: "en",
-        coverage: LocaleCoverage::PlannedQa,
+        coverage: LanguageCoverage::PlannedQa,
     },
-    LocaleSpec {
+    LanguageSpec {
         tag: "fil",
         display_name: "Filipino/Tagalog",
         script: "Latin",
         direction: TextDirection::Ltr,
         fallback: "en",
-        coverage: LocaleCoverage::PlannedQa,
+        coverage: LanguageCoverage::PlannedQa,
     },
 ];
 
@@ -408,6 +414,16 @@ pub enum MessageId {
     SubAgentStatusFailed,
     SubAgentStatusInterrupted,
     SubAgentRestartReason,
+    ShellCommandTitle,
+    ShellCommandFooter,
+    SubAgentsTitle,
+    SubAgentsEscToClose,
+    SubAgentsRToRefresh,
+    ComposerPanelDraft,
+    ComposerPanelTitle,
+    ScopeSession,
+    ScopeSaved,
+    DraftStashedMessage,
 }
 
 #[allow(dead_code)]
@@ -603,51 +619,65 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::SubAgentStatusFailed,
     MessageId::SubAgentStatusInterrupted,
     MessageId::SubAgentRestartReason,
+    MessageId::ShellCommandTitle,
+    MessageId::ShellCommandFooter,
+    MessageId::SubAgentsTitle,
+    MessageId::SubAgentsEscToClose,
+    MessageId::SubAgentsRToRefresh,
+    MessageId::ComposerPanelDraft,
+    MessageId::ComposerPanelTitle,
+    MessageId::ScopeSession,
+    MessageId::ScopeSaved,
+    MessageId::DraftStashedMessage,
 ];
 
-pub fn tr(locale: Locale, id: MessageId) -> &'static str {
-    fallback_translation(translation(locale, id), id)
+pub fn tr(language: Language, id: MessageId) -> &'static str {
+    fallback_translation(translation(language, id), id)
 }
 
 #[allow(dead_code)]
-pub fn missing_message_ids(locale: Locale) -> Vec<MessageId> {
+pub fn missing_message_ids(language: Language) -> Vec<MessageId> {
     ALL_MESSAGE_IDS
         .iter()
         .copied()
-        .filter(|id| translation(locale, *id).is_none())
+        .filter(|id| translation(language, *id).is_none())
         .collect()
 }
 
 pub fn normalize_configured_locale(input: &str) -> Option<&'static str> {
-    let normalized = normalize_locale_input(input);
+    let normalized = normalize_language_input(input);
     if matches!(normalized.as_str(), "" | "auto" | "system") {
         return Some("auto");
     }
-    parse_locale(&normalized).map(Locale::tag)
+    parse_language(&normalized).map(Language::tag)
+}
+
+pub fn resolve_language(setting: &str) -> Language {
+    resolve_language_with_env(setting, |key| std::env::var(key).ok())
 }
 
 pub fn resolve_locale(setting: &str) -> Locale {
-    resolve_locale_with_env(setting, |key| std::env::var(key).ok())
+    resolve_language(setting)
 }
 
-pub fn resolve_locale_with_env<F>(setting: &str, env: F) -> Locale
+pub fn resolve_language_with_env<F>(setting: &str, env: F) -> Language
 where
     F: Fn(&str) -> Option<String>,
 {
-    let normalized = normalize_locale_input(setting);
+    let normalized = normalize_language_input(setting);
     if !matches!(normalized.as_str(), "" | "auto" | "system") {
-        return parse_locale(&normalized).unwrap_or(Locale::En);
+        return parse_language(&normalized).unwrap_or(Language::En);
     }
 
     for key in ["LC_ALL", "LC_MESSAGES", "LANG"] {
         if let Some(value) = env(key)
-            && let Some(locale) = parse_locale(&normalize_locale_input(&value))
+            && let Some(language) = parse_language(&normalize_language_input(&value))
         {
-            return locale;
+            return language;
         }
     }
 
-    Locale::En
+    Language::En
 }
 
 #[allow(dead_code)]
@@ -679,7 +709,7 @@ pub fn truncate_to_width(text: &str, max_width: usize) -> String {
     out
 }
 
-fn normalize_locale_input(input: &str) -> String {
+fn normalize_language_input(input: &str) -> String {
     input
         .split('.')
         .next()
@@ -692,12 +722,12 @@ fn normalize_locale_input(input: &str) -> String {
         .to_lowercase()
 }
 
-fn parse_locale(value: &str) -> Option<Locale> {
+fn parse_language(value: &str) -> Option<Language> {
     if value == "c" || value == "posix" || value.starts_with("en") {
-        return Some(Locale::En);
+        return Some(Language::En);
     }
     if value.starts_with("ja") {
-        return Some(Locale::Ja);
+        return Some(Language::Ja);
     }
     if value.starts_with("zh") {
         if value.contains("hant")
@@ -705,12 +735,12 @@ fn parse_locale(value: &str) -> Option<Locale> {
             || value.contains("-hk")
             || value.contains("-mo")
         {
-            return Some(Locale::ZhHant);
+            return Some(Language::ZhHant);
         }
-        return Some(Locale::ZhHans);
+        return Some(Language::ZhHans);
     }
     if value.starts_with("pt") || value == "br" {
-        return Some(Locale::PtBr);
+        return Some(Language::PtBr);
     }
     None
 }
@@ -993,16 +1023,26 @@ fn english(id: MessageId) -> &'static str {
         MessageId::SubAgentStatusFailed => "Failed: {reason}",
         MessageId::SubAgentStatusInterrupted => "Interrupted: {reason}",
         MessageId::SubAgentRestartReason => "Interrupted by process restart",
+        MessageId::ShellCommandTitle => " Shell command ",
+        MessageId::ShellCommandFooter => " Enter select | Esc close ",
+        MessageId::SubAgentsTitle => " Sub-agents ",
+        MessageId::SubAgentsEscToClose => " Esc to close ",
+        MessageId::SubAgentsRToRefresh => " R to refresh ",
+        MessageId::ComposerPanelDraft => "Draft",
+        MessageId::ComposerPanelTitle => "Composer",
+        MessageId::ScopeSession => "SESSION",
+        MessageId::ScopeSaved => "SAVED",
+        MessageId::DraftStashedMessage => "Draft stashed — `/stash pop` to restore",
     }
 }
 
-fn translation(locale: Locale, id: MessageId) -> Option<&'static str> {
-    match locale {
-        Locale::En => Some(english(id)),
-        Locale::Ja => japanese(id),
-        Locale::ZhHans => chinese_simplified(id),
-        Locale::ZhHant => chinese_traditional(id),
-        Locale::PtBr => portuguese_brazil(id),
+fn translation(language: Language, id: MessageId) -> Option<&'static str> {
+    match language {
+        Language::En => Some(english(id)),
+        Language::Ja => japanese(id),
+        Language::ZhHans => chinese_simplified(id),
+        Language::ZhHant => chinese_traditional(id),
+        Language::PtBr => portuguese_brazil(id),
     }
 }
 
@@ -1283,6 +1323,16 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::SubAgentStatusFailed => "失敗：{reason}",
         MessageId::SubAgentStatusInterrupted => "中断：{reason}",
         MessageId::SubAgentRestartReason => "プロセスの再起動により中断",
+        MessageId::ShellCommandTitle => " Shell コマンド ",
+        MessageId::ShellCommandFooter => " Enter 選択 | Esc 閉じる ",
+        MessageId::SubAgentsTitle => " サブエージェント ",
+        MessageId::SubAgentsEscToClose => " Esc で閉じる ",
+        MessageId::SubAgentsRToRefresh => " R で更新 ",
+        MessageId::ComposerPanelDraft => "ドラフト",
+        MessageId::ComposerPanelTitle => "コンポーザー",
+        MessageId::ScopeSession => "セッション",
+        MessageId::ScopeSaved => "保存済み",
+        MessageId::DraftStashedMessage => "ドラフトを一時保存 — `/stash pop` で復元",
     })
 }
 
@@ -1527,6 +1577,16 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::SubAgentStatusFailed => "失败：{reason}",
         MessageId::SubAgentStatusInterrupted => "中断：{reason}",
         MessageId::SubAgentRestartReason => "被进程重启中断",
+        MessageId::ShellCommandTitle => " Shell 命令 ",
+        MessageId::ShellCommandFooter => " Enter 选择 | Esc 关闭 ",
+        MessageId::SubAgentsTitle => " 子代理 ",
+        MessageId::SubAgentsEscToClose => " Esc 关闭 ",
+        MessageId::SubAgentsRToRefresh => " R 刷新 ",
+        MessageId::ComposerPanelDraft => "草稿",
+        MessageId::ComposerPanelTitle => "输入区域",
+        MessageId::ScopeSession => "会话",
+        MessageId::ScopeSaved => "已保存",
+        MessageId::DraftStashedMessage => "草稿已暂存 — 使用 `/stash pop` 恢复",
     })
 }
 
@@ -1771,6 +1831,16 @@ fn chinese_traditional(id: MessageId) -> Option<&'static str> {
         MessageId::SubAgentStatusFailed => "失败：{reason}",
         MessageId::SubAgentStatusInterrupted => "中断：{reason}",
         MessageId::SubAgentRestartReason => "被进程重启中断",
+        MessageId::ShellCommandTitle => " Shell 命令 ",
+        MessageId::ShellCommandFooter => " Enter 選擇 | Esc 關閉 ",
+        MessageId::SubAgentsTitle => " 子代理 ",
+        MessageId::SubAgentsEscToClose => " Esc 關閉 ",
+        MessageId::SubAgentsRToRefresh => " R 重新整理 ",
+        MessageId::ComposerPanelDraft => "草稿",
+        MessageId::ComposerPanelTitle => "輸入區域",
+        MessageId::ScopeSession => "會話",
+        MessageId::ScopeSaved => "已儲存",
+        MessageId::DraftStashedMessage => "草稿已暫存 — 使用 `/stash pop` 還原",
     })
 }
 
@@ -2073,6 +2143,16 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         MessageId::SubAgentStatusFailed => "Falhou: {reason}",
         MessageId::SubAgentStatusInterrupted => "Interrompido: {reason}",
         MessageId::SubAgentRestartReason => "Interrompido por reinicialização do processo",
+        MessageId::ShellCommandTitle => " Comando Shell ",
+        MessageId::ShellCommandFooter => " Enter selecionar | Esc fechar ",
+        MessageId::SubAgentsTitle => " Sub-agentes ",
+        MessageId::SubAgentsEscToClose => " Esc para fechar ",
+        MessageId::SubAgentsRToRefresh => " R para atualizar ",
+        MessageId::ComposerPanelDraft => "Rascunho",
+        MessageId::ComposerPanelTitle => "Compositor",
+        MessageId::ScopeSession => "SESSÃO",
+        MessageId::ScopeSaved => "SALVO",
+        MessageId::DraftStashedMessage => "Rascunho estacionado — `/stash pop` para restaurar",
     })
 }
 
@@ -2098,25 +2178,25 @@ mod tests {
     #[test]
     fn locale_resolution_uses_config_then_environment_then_english() {
         assert_eq!(
-            resolve_locale_with_env("ja", |_| Some("pt_BR.UTF-8".to_string())),
-            Locale::Ja
+            resolve_language_with_env("ja", |_| Some("pt_BR.UTF-8".to_string())),
+            Language::Ja
         );
         assert_eq!(
-            resolve_locale_with_env("auto", |key| {
+            resolve_language_with_env("auto", |key| {
                 (key == "LANG").then(|| "zh_CN.UTF-8".to_string())
             }),
-            Locale::ZhHans
+            Language::ZhHans
         );
-        assert_eq!(resolve_locale_with_env("auto", |_| None), Locale::En);
+        assert_eq!(resolve_language_with_env("auto", |_| None), Language::En);
     }
 
     #[test]
     fn shipped_first_pack_has_no_missing_core_messages() {
-        for locale in Locale::shipped() {
+        for language in Language::shipped() {
             assert!(
-                missing_message_ids(*locale).is_empty(),
+                missing_message_ids(*language).is_empty(),
                 "{} is missing messages",
-                locale.tag()
+                language.tag()
             );
         }
     }
@@ -2124,8 +2204,8 @@ mod tests {
     #[test]
     fn unsupported_locale_falls_back_to_english() {
         assert_eq!(
-            resolve_locale_with_env("ar", |_| None),
-            Locale::En,
+            resolve_language_with_env("ar", |_| None),
+            Language::En,
             "Arabic is planned for QA but not shipped in the v0.7.6 core pack"
         );
     }
@@ -2195,27 +2275,27 @@ mod tests {
 
     #[test]
     fn needs_thinking_translation_is_true_for_chinese() {
-        assert!(Locale::ZhHans.needs_thinking_translation());
-        assert!(Locale::ZhHant.needs_thinking_translation());
+        assert!(Language::ZhHans.needs_thinking_translation());
+        assert!(Language::ZhHant.needs_thinking_translation());
     }
 
     #[test]
     fn needs_thinking_translation_is_false_for_non_chinese() {
-        assert!(!Locale::En.needs_thinking_translation());
-        assert!(!Locale::Ja.needs_thinking_translation());
-        assert!(!Locale::PtBr.needs_thinking_translation());
+        assert!(!Language::En.needs_thinking_translation());
+        assert!(!Language::Ja.needs_thinking_translation());
+        assert!(!Language::PtBr.needs_thinking_translation());
     }
 
     #[test]
     fn thinking_translation_target_for_chinese() {
-        assert_eq!(Locale::ZhHans.thinking_translation_target(), "简体中文");
-        assert_eq!(Locale::ZhHant.thinking_translation_target(), "繁體中文");
+        assert_eq!(Language::ZhHans.thinking_translation_target(), "简体中文");
+        assert_eq!(Language::ZhHant.thinking_translation_target(), "繁體中文");
     }
 
     #[test]
     fn thinking_translation_target_for_non_chinese() {
-        assert_eq!(Locale::En.thinking_translation_target(), "English");
-        assert_eq!(Locale::Ja.thinking_translation_target(), "English");
-        assert_eq!(Locale::PtBr.thinking_translation_target(), "English");
+        assert_eq!(Language::En.thinking_translation_target(), "English");
+        assert_eq!(Language::Ja.thinking_translation_target(), "English");
+        assert_eq!(Language::PtBr.thinking_translation_target(), "English");
     }
 }

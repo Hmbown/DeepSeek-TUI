@@ -367,6 +367,14 @@
     "approval_confirm_start": "确认破坏性操作 — 按 ",
     "approval_confirm_tail": " 再次确认，其他键取消。",
     "approval_destructive_hint": "双键确认批准: ",
-    "approval_block_suffix": "审批"
+    "approval_block_suffix": "审批",
+    "sub_agents_title": " 子代理 ",
+    "sub_agents_esc_to_close": " Esc 关闭 ",
+    "sub_agents_r_to_refresh": " R 刷新 ",
+    "composer_panel_draft": "草稿",
+    "composer_panel_title": "输入区域",
+    "scope_session": "会话",
+    "scope_saved": "已保存",
+    "draft_stashed_message": "草稿已暂存 — 使用 `/stash pop` 恢复"
   }
 }

@@ -102,14 +102,27 @@ fn load_handoff_block(workspace: &Path) -> Option<String> {
 /// "When NOT to use" guidance, sub-agent sentinel protocol.
 pub const BASE_PROMPT: &str = include_str!("prompts/base.md");
 
+/// Localized base prompts for different languages.
+/// These are optional — if not present, falls back to BASE_PROMPT (English).
+pub const BASE_PROMPT_ZH: &str = include_str!("prompts/base.zh.md");
+
 /// Personality overlays — voice and tone.
 pub const CALM_PERSONALITY: &str = include_str!("prompts/personalities/calm.md");
 pub const PLAYFUL_PERSONALITY: &str = include_str!("prompts/personalities/playful.md");
+
+/// Localized personality overlays for Chinese.
+pub const CALM_PERSONALITY_ZH: &str = include_str!("prompts/personalities/calm.zh.md");
+pub const PLAYFUL_PERSONALITY_ZH: &str = include_str!("prompts/personalities/playful.zh.md");
 
 /// Mode deltas — permissions, workflow expectations, mode-specific rules.
 pub const AGENT_MODE: &str = include_str!("prompts/modes/agent.md");
 pub const PLAN_MODE: &str = include_str!("prompts/modes/plan.md");
 pub const YOLO_MODE: &str = include_str!("prompts/modes/yolo.md");
+
+/// Localized mode prompts for Chinese.
+pub const AGENT_MODE_ZH: &str = include_str!("prompts/modes/agent.zh.md");
+pub const PLAN_MODE_ZH: &str = include_str!("prompts/modes/plan.zh.md");
+pub const YOLO_MODE_ZH: &str = include_str!("prompts/modes/yolo.zh.md");
 
 /// Approval-policy overlays — whether tool calls are auto-approved,
 /// require confirmation, or are blocked.
@@ -117,9 +130,17 @@ pub const AUTO_APPROVAL: &str = include_str!("prompts/approvals/auto.md");
 pub const SUGGEST_APPROVAL: &str = include_str!("prompts/approvals/suggest.md");
 pub const NEVER_APPROVAL: &str = include_str!("prompts/approvals/never.md");
 
+/// Localized approval prompts for Chinese.
+pub const AUTO_APPROVAL_ZH: &str = include_str!("prompts/approvals/auto.zh.md");
+pub const SUGGEST_APPROVAL_ZH: &str = include_str!("prompts/approvals/suggest.zh.md");
+pub const NEVER_APPROVAL_ZH: &str = include_str!("prompts/approvals/never.zh.md");
+
 /// Compaction handoff template — written into the system prompt so the
 /// model knows the format to use when writing `.deepseek/handoff.md`.
 pub const COMPACT_TEMPLATE: &str = include_str!("prompts/compact.md");
+
+/// Localized compaction template for Chinese.
+pub const COMPACT_TEMPLATE_ZH: &str = include_str!("prompts/compact.zh.md");
 
 /// Language mirroring instructions shipped with every mode prompt (#588).
 /// These tell the model what language to use for `reasoning_content` and
@@ -221,9 +242,40 @@ pub fn compose_prompt(mode: AppMode, personality: Personality) -> String {
     out
 }
 
+/// Compose the full system prompt with localized components.
+pub fn compose_prompt_localized(mode: AppMode, personality: Personality, locale: Locale) -> String {
+    let base = get_localized_base_prompt(locale);
+    let personality_prompt = get_localized_personality_prompt(personality, locale);
+    let mode_prompt_str = get_localized_mode_prompt(mode, locale);
+    let approval_prompt_str = get_localized_approval_prompt(mode, locale);
+    
+    let parts: [&str; 4] = [
+        base.trim(),
+        personality_prompt.trim(),
+        mode_prompt_str.trim(),
+        approval_prompt_str.trim(),
+    ];
+
+    let mut out =
+        String::with_capacity(parts.iter().map(|p| p.len()).sum::<usize>() + (parts.len() - 1) * 2);
+    for (i, part) in parts.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+            out.push('\n');
+        }
+        out.push_str(part);
+    }
+    out
+}
+
 /// Compose for the default personality (Calm).
 fn compose_mode_prompt(mode: AppMode) -> String {
     compose_prompt(mode, Personality::Calm)
+}
+
+/// Compose for the default personality (Calm) with localized base prompt.
+fn compose_mode_prompt_localized(mode: AppMode, locale: Locale) -> String {
+    compose_prompt_localized(mode, Personality::Calm, locale)
 }
 
 // ── Public API ────────────────────────────────────────────────────────
@@ -316,6 +368,85 @@ pub(crate) fn build_language_instruction(locale: Locale) -> String {
     }
 }
 
+/// Get the localized base prompt for a given locale.
+/// 
+/// Strategy: Chinese is the default for this project. Use Chinese prompts
+/// unless explicitly configured to use English or other languages.
+pub(crate) fn get_localized_base_prompt(locale: Locale) -> &'static str {
+    // Default to Chinese for all locales except explicit English
+    let should_use_chinese = match locale {
+        // Explicitly English - use English prompts
+        Locale::En => false,
+        // All other locales (including auto, ja, pt-BR) default to Chinese
+        // because this is a Chinese-focused project
+        _ => true,
+    };
+    
+    let result = if should_use_chinese {
+        BASE_PROMPT_ZH
+    } else {
+        BASE_PROMPT
+    };
+    
+    // Debug log: print which base prompt is being used
+    let prompt_name = if should_use_chinese {
+        "Chinese (base.zh.md)"
+    } else {
+        "English (base.md)"
+    };
+    eprintln!("[DEBUG] Using {} base prompt for locale {:?}", prompt_name, locale);
+    
+    result
+}
+
+/// Get the localized personality prompt for a given locale.
+fn get_localized_personality_prompt(personality: Personality, locale: Locale) -> &'static str {
+    let is_chinese = !matches!(locale, Locale::En);
+    
+    match personality {
+        Personality::Calm => {
+            if is_chinese { CALM_PERSONALITY_ZH } else { CALM_PERSONALITY }
+        }
+        Personality::Playful => {
+            if is_chinese { PLAYFUL_PERSONALITY_ZH } else { PLAYFUL_PERSONALITY }
+        }
+    }
+}
+
+/// Get the localized mode prompt for a given locale.
+fn get_localized_mode_prompt(mode: AppMode, locale: Locale) -> &'static str {
+    let is_chinese = !matches!(locale, Locale::En);
+    
+    match mode {
+        AppMode::Agent => {
+            if is_chinese { AGENT_MODE_ZH } else { AGENT_MODE }
+        }
+        AppMode::Plan => {
+            if is_chinese { PLAN_MODE_ZH } else { PLAN_MODE }
+        }
+        AppMode::Yolo => {
+            if is_chinese { YOLO_MODE_ZH } else { YOLO_MODE }
+        }
+    }
+}
+
+/// Get the localized approval prompt for a given locale.
+fn get_localized_approval_prompt(mode: AppMode, locale: Locale) -> &'static str {
+    let is_chinese = !matches!(locale, Locale::En);
+    
+    match mode {
+        AppMode::Agent => {
+            if is_chinese { SUGGEST_APPROVAL_ZH } else { SUGGEST_APPROVAL }
+        }
+        AppMode::Yolo => {
+            if is_chinese { AUTO_APPROVAL_ZH } else { AUTO_APPROVAL }
+        }
+        AppMode::Plan => {
+            if is_chinese { NEVER_APPROVAL_ZH } else { NEVER_APPROVAL }
+        }
+    }
+}
+
 pub fn system_prompt_for_mode_with_context_skills_and_session(
     mode: AppMode,
     workspace: &Path,
@@ -325,7 +456,7 @@ pub fn system_prompt_for_mode_with_context_skills_and_session(
     session_context: PromptSessionContext<'_>,
     locale: Locale,
 ) -> SystemPrompt {
-    let mode_prompt = compose_mode_prompt(mode);
+    let mode_prompt = compose_mode_prompt_localized(mode, locale);
     let language_block = build_language_instruction(locale);
     let combined = format!("{mode_prompt}\n\n{language_block}");
 
