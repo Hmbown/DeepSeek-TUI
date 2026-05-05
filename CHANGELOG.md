@@ -149,6 +149,20 @@ resident sub-agents. No breaking changes.
   config.example.toml now document `locale = "zh-Hans"`.
 
 ### Fixed
+- **Cross-workspace session bleed (security)** — launching `deepseek` from
+  any directory silently auto-recovered the most recent interrupted session,
+  even if that session originated in a completely different workspace. Tools
+  then operated on the prior workspace's file paths while the status bar
+  displayed the *current* workspace name — a confusing trust-boundary
+  violation that could leak `api_messages`, `working_set` entries, and any
+  secrets the prior session had accumulated into a new terminal that was
+  never meant to see them. `try_recover_checkpoint()` now compares the saved
+  session's workspace to `std::env::current_dir()` (canonicalised, with a
+  strict-equality fallback when canonicalisation fails) and only auto-recovers
+  on a match. On a mismatch the checkpoint is persisted as a regular session
+  (so the user can find it via `deepseek sessions` / `deepseek resume <id>`)
+  and cleared, and the new launch starts fresh — no data is lost. Hotfixed
+  to `main` ahead of the v0.8.12 tag.
 - **`cargo install` on stable Rust** — the language-picker match guard at
   `crates/tui/src/tui/ui.rs:1603` used `&& let Some(...) = ...` inside an
   `if`-guard, which requires the nightly-only `if_let_guard` feature on Rust
