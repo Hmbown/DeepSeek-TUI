@@ -39,6 +39,23 @@ pub use mailbox::{Mailbox, MailboxEnvelope, MailboxMessage, MailboxReceiver};
 
 // === Constants ===
 
+/// Global ownership table for cache-aware resident file sub-agents (#529).
+/// Maps file path → agent id. Agents hold a lease on a file while running;
+/// the lease is released when the agent reaches a terminal state.
+static RESIDENT_LEASES: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, String>>,
+> = std::sync::OnceLock::new();
+
+/// Release all resident file leases held by `agent_id`. Called when an
+/// agent transitions to a terminal state (completed, failed, cancelled).
+fn release_resident_leases_for(agent_id: &str) {
+    if let Some(lock) = RESIDENT_LEASES.get() {
+        if let Ok(mut guard) = lock.lock() {
+            guard.retain(|_, owner| owner != agent_id);
+        }
+    }
+}
+
 const DEFAULT_MAX_STEPS: u32 = 100;
 const TOOL_TIMEOUT: Duration = Duration::from_secs(30);
 /// Per-step LLM API call timeout. Each `create_message` request must complete
@@ -1071,6 +1088,7 @@ impl SubAgentManager {
             let mut changed = false;
             if agent.status == SubAgentStatus::Running {
                 agent.status = SubAgentStatus::Cancelled;
+                release_resident_leases_for(&agent.id);
                 if let Some(handle) = agent.task_handle.take() {
                     handle.abort();
                 }
@@ -1375,6 +1393,7 @@ impl SubAgentManager {
         let mut changed = false;
         if let Some(agent) = self.agents.get_mut(agent_id) {
             agent.status = SubAgentStatus::Failed(error);
+            release_resident_leases_for(agent_id);
             agent.task_handle = None;
             changed = true;
         }
@@ -1631,9 +1650,6 @@ impl ToolSpec for AgentSpawnTool {
                 );
                 // Check ownership (best-effort, non-blocking).
                 let conflict = {
-                    static RESIDENT_LEASES: std::sync::OnceLock<
-                        std::sync::Mutex<std::collections::HashMap<String, String>>,
-                    > = std::sync::OnceLock::new();
                     let leases = RESIDENT_LEASES
                         .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
                     let mut guard = leases.lock().unwrap_or_else(|p| p.into_inner());
@@ -2871,6 +2887,8 @@ async fn run_subagent(
             });
         }
     }
+
+    release_resident_leases_for(&agent_id);
 
     Ok(SubAgentResult {
         agent_id,
