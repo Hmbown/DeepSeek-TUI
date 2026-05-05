@@ -235,18 +235,26 @@ impl ViewStack {
     }
 
     pub fn push<V: ModalView + 'static>(&mut self, view: V) {
+        let kind = view.kind();
         self.views.push(Box::new(view));
+        tracing::debug!(target: "deepseek_tui::view_stack", action = "push", kind = ?kind, depth = self.views.len(), "view pushed");
     }
 
     /// Push an already-boxed view back onto the stack. Used by call sites
     /// that pop a view, mutate it externally, and need to restore it without
     /// the generic `push` re-boxing dance.
     pub fn push_boxed(&mut self, view: Box<dyn ModalView>) {
+        let kind = view.kind();
         self.views.push(view);
+        tracing::debug!(target: "deepseek_tui::view_stack", action = "push_boxed", kind = ?kind, depth = self.views.len(), "view pushed");
     }
 
     pub fn pop(&mut self) -> Option<Box<dyn ModalView>> {
-        self.views.pop()
+        let popped = self.views.pop();
+        if let Some(view) = popped.as_ref() {
+            tracing::debug!(target: "deepseek_tui::view_stack", action = "pop", kind = ?view.kind(), depth = self.views.len(), "view popped");
+        }
+        popped
     }
 
     pub fn render(&self, area: Rect, buf: &mut Buffer) {
@@ -301,14 +309,18 @@ impl ViewStack {
         match action {
             ViewAction::None => {}
             ViewAction::Close => {
-                self.views.pop();
+                if let Some(view) = self.views.pop() {
+                    tracing::debug!(target: "deepseek_tui::view_stack", action = "close", kind = ?view.kind(), depth = self.views.len(), "view closed via action");
+                }
             }
             ViewAction::Emit(event) => {
                 events.push(event);
             }
             ViewAction::EmitAndClose(event) => {
                 events.push(event);
-                self.views.pop();
+                if let Some(view) = self.views.pop() {
+                    tracing::debug!(target: "deepseek_tui::view_stack", action = "emit_and_close", kind = ?view.kind(), depth = self.views.len(), "view closed via action");
+                }
             }
         }
         events
