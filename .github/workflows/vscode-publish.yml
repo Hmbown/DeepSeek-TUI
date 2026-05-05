@@ -1,0 +1,30 @@
+name: VS Code Extension Publish
+on:
+  push:
+    tags: ['vscode-v*.*.*']
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - name: Install dependencies
+        run: cd extensions/vscode && npm ci
+      - name: Compile
+        run: cd extensions/vscode && npm run compile
+      - name: Package VSIX
+        run: cd extensions/vscode && npx vsce package
+      - name: Publish to VS Code Marketplace
+        run: cd extensions/vscode && npx vsce publish
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+      - name: Publish to OpenVSX
+        run: cd extensions/vscode && npx ovsx publish *.vsix
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deepseek-tui-vsix
+          path: extensions/vscode/*.vsix
