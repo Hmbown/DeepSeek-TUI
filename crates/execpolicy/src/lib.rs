@@ -172,6 +172,7 @@ impl ExecPolicyEngine {
             trusted_prefixes: vec![],
             denied_prefixes: vec![],
             approved_for_session: HashSet::new(),
+            arity_dict: BashArityDict::new(),
         }
     }
 
