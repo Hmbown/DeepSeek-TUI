@@ -6,7 +6,7 @@ use crate::network_policy::NetworkPolicy;
 use crate::skills::SkillRegistry;
 use crate::skills::install::{
     self, DEFAULT_MAX_SIZE_BYTES, DEFAULT_REGISTRY_URL, InstallOutcome, InstallSource,
-    RegistryFetchResult, UpdateResult,
+    RegistryFetchResult, SkillSyncOutcome, SyncResult, UpdateResult,
 };
 use crate::tui::app::App;
 use crate::tui::history::HistoryCell;
@@ -28,14 +28,19 @@ fn render_skill_warnings(registry: &SkillRegistry) -> String {
 
 /// List all available skills. Pass `--remote` (or `remote`) to fetch the
 /// curated registry instead of scanning the local skills directory.
+/// Pass `sync` to pull the registry index and download all skills to the
+/// local cache (`~/.deepseek/cache/skills/`).
 pub fn list_skills(app: &mut App, arg: Option<&str>) -> CommandResult {
     if let Some(arg) = arg {
         let trimmed = arg.trim();
         if trimmed == "--remote" || trimmed == "remote" {
             return list_remote_skills(app);
         }
+        if trimmed == "sync" || trimmed == "--sync" {
+            return sync_skills(app);
+        }
         if !trimmed.is_empty() {
-            return CommandResult::error("Usage: /skills [--remote]");
+            return CommandResult::error("Usage: /skills [--remote|sync]");
         }
     }
     let skills_dir = app.skills_dir.clone();
@@ -293,6 +298,78 @@ pub fn list_remote_skills(app: &mut App) -> CommandResult {
             CommandResult::error(network_denied_message(&host))
         }
         Err(err) => CommandResult::error(format!("Failed to fetch registry: {err:#}")),
+    }
+}
+
+// ─── /skills sync ──────────────────────────────────────────────────────────
+
+/// Fetch the remote registry index and download every listed skill into the
+/// local cache (`~/.deepseek/cache/skills/<name>/`).
+///
+/// For each skill the sync checks the cached ETag / SHA-256 before
+/// downloading so unchanged skills are skipped in O(1) network round-trips.
+fn sync_skills(app: &mut App) -> CommandResult {
+    let (network, max_size, registry_url) = installer_settings(app);
+    let cache_dir = install::default_cache_skills_dir();
+
+    let result = run_async(async move {
+        install::sync_registry(&network, &registry_url, &cache_dir, max_size).await
+    });
+
+    match result {
+        Ok(SyncResult::RegistryDenied(host)) => {
+            CommandResult::error(network_denied_message(&host))
+        }
+        Ok(SyncResult::RegistryNeedsApproval(host)) => {
+            CommandResult::error(needs_approval_message(&host))
+        }
+        Ok(SyncResult::Done { outcomes }) => {
+            let total = outcomes.len();
+            let mut downloaded = 0usize;
+            let mut fresh = 0usize;
+            let mut failed = 0usize;
+            let mut out = String::from("Registry sync complete.\n\n");
+
+            for outcome in &outcomes {
+                match outcome {
+                    SkillSyncOutcome::Downloaded { name, path } => {
+                        downloaded += 1;
+                        let _ = writeln!(
+                            out,
+                            "  [+] {name} — downloaded to {}",
+                            path.display()
+                        );
+                    }
+                    SkillSyncOutcome::Fresh { name } => {
+                        fresh += 1;
+                        let _ = writeln!(out, "  [=] {name} — already up to date");
+                    }
+                    SkillSyncOutcome::Failed { name, reason } => {
+                        failed += 1;
+                        let _ = writeln!(out, "  [!] {name} — failed: {reason}");
+                    }
+                    SkillSyncOutcome::Denied { name, host } => {
+                        failed += 1;
+                        let _ = writeln!(out, "  [x] {name} — network denied ({host})");
+                    }
+                    SkillSyncOutcome::NeedsApproval { name, host } => {
+                        failed += 1;
+                        let _ = writeln!(
+                            out,
+                            "  [?] {name} — needs approval for {host} (run `/network allow {host}` then retry)"
+                        );
+                    }
+                }
+            }
+
+            let _ = write!(
+                out,
+                "\n{total} skill(s) processed: {downloaded} downloaded, {fresh} up-to-date, {failed} failed."
+            );
+
+            CommandResult::message(out)
+        }
+        Err(err) => CommandResult::error(format!("Sync failed: {err:#}")),
     }
 }
 
