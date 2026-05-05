@@ -2028,6 +2028,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
             per_model: override_cfg.context.per_model.or(base.context.per_model),
         },
         subagents: override_cfg.subagents.or(base.subagents),
+        strict_tool_mode: override_cfg.strict_tool_mode.or(base.strict_tool_mode),
         runtime_api: override_cfg.runtime_api.or(base.runtime_api),
     }
 }

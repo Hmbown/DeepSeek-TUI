@@ -33,6 +33,7 @@ impl Engine {
         builder = builder
             .with_review_tool(self.deepseek_client.clone(), self.session.model.clone())
             .with_rlm_tool(self.deepseek_client.clone(), self.session.model.clone())
+            .with_fim_tool(self.deepseek_client.clone(), self.session.model.clone())
             .with_user_input_tool()
             .with_parallel_tool();
 

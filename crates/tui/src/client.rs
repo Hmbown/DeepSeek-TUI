@@ -949,10 +949,11 @@ pub(super) fn parse_usage(usage: Option<&Value>) -> Usage {
     }
 }
 
-/// Call the DeepSeek `/beta/completions` FIM endpoint.
-///
-/// Returns the generated text (the "middle" between `prompt` and `suffix`).
-pub async fn fim_completion(
+impl DeepSeekClient {
+    /// Call the DeepSeek `/beta/completions` FIM endpoint.
+    ///
+    /// Returns the generated text (the "middle" between `prompt` and `suffix`).
+    pub async fn fim_completion(
     &self,
     model: &str,
     prompt: &str,
@@ -982,6 +983,7 @@ pub async fn fim_completion(
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| anyhow::anyhow!("FIM response missing choices[0].text"))?;
     Ok(text.to_string())
+    }
 }
 
 mod chat;
