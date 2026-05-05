@@ -37,8 +37,9 @@ pub enum ThinkingMode {
     Medium,
     /// Deep thinking — extended reasoning for complex tasks.
     Deep,
-    /// Adaptive — the model can switch between thinking modes.
-    Adaptive,
+    /// Auto — engine selects the optimal thinking depth based on task
+    /// complexity, cache pressure, and cost budget.
+    Auto,
 }
 
 impl ThinkingMode {
@@ -49,7 +50,7 @@ impl ThinkingMode {
             Self::Light => "light",
             Self::Medium => "medium",
             Self::Deep => "deep",
-            Self::Adaptive => "adaptive",
+            Self::Auto => "auto",
         }
     }
 
@@ -60,7 +61,7 @@ impl ThinkingMode {
             "light" | "low" => Some(Self::Light),
             "medium" | "normal" | "balanced" => Some(Self::Medium),
             "deep" | "high" | "extended" => Some(Self::Deep),
-            "adaptive" | "auto" => Some(Self::Adaptive),
+            "auto" | "adaptive" => Some(Self::Auto),
             _ => None,
         }
     }
@@ -266,7 +267,7 @@ mod tests {
             ThinkingMode::Light,
             ThinkingMode::Medium,
             ThinkingMode::Deep,
-            ThinkingMode::Adaptive,
+            ThinkingMode::Auto,
         ] {
             let s = mode.as_str();
             let back = ThinkingMode::from_str(s).unwrap();
@@ -279,7 +280,7 @@ mod tests {
         assert_eq!(ThinkingMode::from_str("off"), Some(ThinkingMode::None));
         assert_eq!(ThinkingMode::from_str("low"), Some(ThinkingMode::Light));
         assert_eq!(ThinkingMode::from_str("high"), Some(ThinkingMode::Deep));
-        assert_eq!(ThinkingMode::from_str("auto"), Some(ThinkingMode::Adaptive));
+        assert_eq!(ThinkingMode::from_str("auto"), Some(ThinkingMode::Auto));
     }
 
     // ── ModelMetadata ──────────────────────────────────────────────────
