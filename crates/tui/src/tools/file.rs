@@ -4,14 +4,16 @@
 //! with path validation to prevent escaping the workspace boundary.
 
 use super::diff_format::make_unified_diff;
+use super::module_resolve::{import_error_message, resolver_for_context};
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     optional_str, required_str,
 };
+use crate::module_resolver::ResolveImportRequest;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 // === ReadFileTool ===
@@ -40,6 +42,10 @@ impl ToolSpec for ReadFileTool {
                 "pages": {
                     "type": "string",
                     "description": "PDF only: page range to extract, e.g. \"1-5\" or \"10\". Ignored for non-PDF files."
+                },
+                "from": {
+                    "type": "string",
+                    "description": "Optional importer file path used to resolve frontend import aliases such as '@/components/Button'."
                 }
             },
             "required": ["path"]
@@ -56,19 +62,77 @@ impl ToolSpec for ReadFileTool {
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let path_str = required_str(&input, "path")?;
-        let file_path = context.resolve_path(path_str)?;
         let pages = optional_str(&input, "pages");
+        let from = optional_str(&input, "from");
+        let direct_path = context.resolve_path(path_str);
 
-        if is_pdf(&file_path)? {
-            return read_pdf(&file_path, pages);
+        if let Ok(file_path) = direct_path.as_ref()
+            && file_path.exists()
+        {
+            return read_file_contents(file_path, pages);
         }
 
-        let contents = fs::read_to_string(&file_path).map_err(|e| {
-            ToolError::execution_failed(format!("Failed to read {}: {}", file_path.display(), e))
-        })?;
+        if should_try_import_fallback(path_str, from, direct_path.as_ref().ok()) {
+            let resolved = resolve_import_for_read(path_str, from, context)?;
+            return read_file_contents(&resolved, pages);
+        }
 
-        Ok(ToolResult::success(contents))
+        let file_path = direct_path?;
+        read_file_contents(&file_path, pages)
     }
+}
+
+fn read_file_contents(file_path: &Path, pages: Option<&str>) -> Result<ToolResult, ToolError> {
+    if is_pdf(file_path)? {
+        return read_pdf(file_path, pages);
+    }
+
+    let contents = fs::read_to_string(file_path).map_err(|e| {
+        ToolError::execution_failed(format!("Failed to read {}: {}", file_path.display(), e))
+    })?;
+
+    Ok(ToolResult::success(contents))
+}
+
+fn resolve_import_for_read(
+    path_str: &str,
+    from: Option<&str>,
+    context: &ToolContext,
+) -> Result<PathBuf, ToolError> {
+    let resolver = resolver_for_context(context);
+    let from_path = from.map(PathBuf::from);
+    let request = ResolveImportRequest {
+        specifier: path_str.to_string(),
+        from: from_path.clone(),
+        cwd_hint: context.cwd_hint.clone(),
+        active_paths: context.active_paths.clone(),
+    };
+
+    match resolver.resolve_import(request) {
+        Ok(outcome) => context.resolve_path(&outcome.resolved_path.to_string_lossy()),
+        Err(err) => Err(ToolError::execution_failed(format!(
+            "Failed to resolve import specifier `{}`: {}",
+            path_str,
+            import_error_message(&resolver, path_str, from_path.as_deref(), &err)
+        ))),
+    }
+}
+
+fn should_try_import_fallback(
+    path_str: &str,
+    from: Option<&str>,
+    direct_path: Option<&PathBuf>,
+) -> bool {
+    if direct_path.is_some_and(|path| path.exists()) || Path::new(path_str).is_absolute() {
+        return false;
+    }
+    if path_str.starts_with("@") || path_str.starts_with("~/") || path_str.starts_with("#/") {
+        return true;
+    }
+    from.is_some()
+        && (path_str.starts_with("./")
+            || path_str.starts_with("../")
+            || (path_str.contains('/') && !path_str.starts_with('/')))
 }
 
 /// Detect a PDF by extension OR by sniffing the `%PDF-` magic bytes.
@@ -455,6 +519,67 @@ mod tests {
         let result = tool.execute(json!({"path": "nonexistent.txt"}), &ctx).await;
 
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn read_file_resolves_frontend_alias_with_from() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        fs::create_dir_all(tmp.path().join("apps/web/src/components")).expect("mkdir");
+        fs::write(
+            tmp.path().join("apps/web/tsconfig.json"),
+            r#"{"compilerOptions":{"baseUrl":".","paths":{"@/*":["src/*"]}}}"#,
+        )
+        .expect("write config");
+        fs::write(
+            tmp.path().join("apps/web/src/components/Button.tsx"),
+            "export const Button = () => null;",
+        )
+        .expect("write component");
+
+        let result = ReadFileTool
+            .execute(
+                json!({
+                    "path": "@/components/Button",
+                    "from": "apps/web/src/pages/Home.tsx"
+                }),
+                &ctx,
+            )
+            .await
+            .expect("execute");
+
+        assert!(result.success);
+        assert!(result.content.contains("Button"));
+    }
+
+    #[tokio::test]
+    async fn read_file_reports_ambiguous_alias_without_from() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        for app in ["web", "admin"] {
+            fs::create_dir_all(tmp.path().join(format!("apps/{app}/src/components")))
+                .expect("mkdir");
+            fs::write(
+                tmp.path().join(format!("apps/{app}/tsconfig.json")),
+                r#"{"compilerOptions":{"baseUrl":".","paths":{"@/*":["src/*"]}}}"#,
+            )
+            .expect("write config");
+            fs::write(
+                tmp.path()
+                    .join(format!("apps/{app}/src/components/Button.tsx")),
+                "button",
+            )
+            .expect("write component");
+        }
+
+        let err = ReadFileTool
+            .execute(json!({"path": "@/components/Button"}), &ctx)
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("ambiguous_project"), "{err}");
+        assert!(err.contains("Pass `from`"), "{err}");
     }
 
     #[tokio::test]

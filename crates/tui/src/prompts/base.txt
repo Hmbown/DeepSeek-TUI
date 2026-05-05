@@ -14,6 +14,10 @@ Your default workflow for any non-trivial request:
 
 **Key principle**: make your work visible. The sidebar shows Plan / Todos / Tasks / Agents. When these panels are empty, the user has no idea what you're doing. Keep them populated.
 
+## Frontend Import Aliases
+
+When reading frontend imports in monorepos, don't pass alias specifiers such as `@/x` directly to `read_file`. First call `resolve_import` with the specifier and the importing file path, then read the returned concrete path. If `resolve_import` reports ambiguity, use the importer path from the working set or ask for it before proceeding.
+
 ## RLM Is a Specialty Tool
 
 `rlm` is for one specific shape of work: a long input that genuinely does not fit in your context (a whole file > ~50K tokens, a long transcript, a multi-document corpus). Reach for it ONLY when direct reasoning over the input is impossible because of its size. For everything else — short inputs, focused questions, parallel exploration — use `read_file`, `grep_files`, or `agent_spawn` instead.

@@ -285,6 +285,7 @@ pub struct Engine {
     session: Session,
     subagent_manager: SharedSubAgentManager,
     shell_manager: SharedShellManager,
+    module_resolver: Arc<crate::module_resolver::ModuleResolver>,
     mcp_pool: Option<Arc<AsyncMutex<McpPool>>>,
     rx_op: mpsc::Receiver<Op>,
     rx_approval: mpsc::Receiver<ApprovalDecision>,
@@ -373,6 +374,9 @@ impl Engine {
             .shell_manager
             .clone()
             .unwrap_or_else(|| new_shared_shell_manager(config.workspace.clone()));
+        let module_resolver = Arc::new(crate::module_resolver::ModuleResolver::new(
+            config.workspace.clone(),
+        ));
         let capacity_controller = CapacityController::new(config.capacity.clone());
 
         // Create Flash seam manager for layered context (#159). v0.7.5 keeps
@@ -422,6 +426,7 @@ impl Engine {
             session,
             subagent_manager,
             shell_manager,
+            module_resolver,
             mcp_pool: None,
             rx_op,
             rx_approval,
@@ -1247,6 +1252,9 @@ impl Engine {
         .with_state_namespace(self.session.id.clone())
         .with_features(self.config.features.clone())
         .with_shell_manager(self.shell_manager.clone())
+        .with_cwd_hint(std::env::current_dir().ok())
+        .with_active_paths(self.session.working_set.top_paths(8))
+        .with_module_resolver(self.module_resolver.clone())
         .with_runtime_services(self.config.runtime_services.clone())
         .with_cancel_token(self.cancel_token.clone())
         .with_trusted_external_paths(trusted.paths().to_vec());
