@@ -564,35 +564,7 @@ pub fn analyze_command(command: &str) -> SafetyAnalysis {
         );
     }
 
-    let dangerous_io_patterns = [
-        (">>", "append redirection"),
-        ("<<", "here document"),
-        ("<&", "input duplication"),
-        (">&", "output duplication"),
-        ("<>", "read/write redirection"),
-    ];
-
-    for (pattern, _description) in dangerous_io_patterns {
-        if command.contains(pattern) {
-            let reason = format!("Command contains potentially dangerous I/O redirection pattern '{}'", pattern);
-            let suggestion = format!("Avoid using {} in commands", pattern);
-            return SafetyAnalysis::requires_approval(
-                command,
-                vec![reason],
-                vec![suggestion],
-            );
-        }
-    }
-
-    if command.contains("#!") && (command.contains("bash") || command.contains("sh") || command.contains("/bin/")) {
-        return SafetyAnalysis::dangerous(
-            command,
-            vec!["Command attempts to execute shell script".to_string()],
-            vec!["Use a script file instead of embedding script content".to_string()],
-        );
-    }
-
-    if command.contains("eval ") || command.starts_with("eval") || command.contains(" exec ") {
+    if command.contains("eval") || command.contains("exec ") {
         return SafetyAnalysis::dangerous(
             command,
             vec!["Command contains eval or exec (potential code injection)".to_string()],

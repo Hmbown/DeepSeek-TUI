@@ -255,47 +255,6 @@ impl ToolContext {
             return Ok(candidate.canonicalize().unwrap_or(candidate));
         }
 
-        let raw_path_str = raw.replace('\\', "/");
-        if raw_path_str.contains("..") {
-            let dotdot_count = raw_path_str.matches("..").count();
-            let workspace_parts = self.workspace.to_string_lossy().replace('\\', "/");
-            let workspace_depth = workspace_parts.matches('/').count();
-
-            if dotdot_count > workspace_depth {
-                return Err(ToolError::PathEscape {
-                    path: candidate.clone(),
-                });
-            }
-
-            let mut test_components: Vec<&str> = Vec::new();
-            let mut can_escape = false;
-            let mut current_depth = workspace_depth;
-
-            for component in raw.split('/') {
-                match component {
-                    "." | "" => {}
-                    ".." => {
-                        if current_depth == 0 {
-                            can_escape = true;
-                            break;
-                        }
-                        current_depth = current_depth.saturating_sub(1);
-                        test_components.pop();
-                    }
-                    _ => {
-                        current_depth += 1;
-                        test_components.push(component);
-                    }
-                }
-            }
-
-            if can_escape {
-                return Err(ToolError::PathEscape {
-                    path: candidate.clone(),
-                });
-            }
-        }
-
         // Try to canonicalize the workspace
         let workspace_canonical = self
             .workspace
