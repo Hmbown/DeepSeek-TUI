@@ -100,6 +100,7 @@ pub enum ReasoningEffort {
     Low,
     Medium,
     High,
+    Auto,
     #[default]
     Max,
 }
@@ -114,6 +115,7 @@ impl ReasoningEffort {
             "low" | "minimal" => Self::Low,
             "medium" | "mid" => Self::Medium,
             "high" => Self::High,
+            "auto" | "automatic" => Self::Auto,
             "max" | "maximum" | "xhigh" => Self::Max,
             _ => Self::default(),
         }
@@ -127,6 +129,7 @@ impl ReasoningEffort {
             Self::Low => "low",
             Self::Medium => "medium",
             Self::High => "high",
+            Self::Auto => "auto",
             Self::Max => "max",
         }
     }
@@ -139,6 +142,7 @@ impl ReasoningEffort {
             Self::Low => "low",
             Self::Medium => "med",
             Self::High => "high",
+            Self::Auto => "auto",
             Self::Max => "max",
         }
     }
@@ -156,6 +160,7 @@ impl ReasoningEffort {
     pub fn cycle_next(self) -> Self {
         match self {
             Self::Off => Self::High,
+            Self::Auto => Self::Off,
             Self::Low | Self::Medium | Self::High => Self::Max,
             Self::Max => Self::Off,
         }
