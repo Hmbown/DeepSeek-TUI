@@ -38,6 +38,10 @@ pub struct CompactionConfig {
     /// logic at small fixture sizes can set this to `0` to disable the
     /// floor.
     pub auto_floor_tokens: usize,
+    /// When `Some(true)`, the engine prefers writing a handoff file over
+    /// running LLM-based compaction when context pressure triggers.
+    /// `None` / `Some(false)` means default compaction behaviour.
+    pub prefer_handoff: Option<bool>,
 }
 
 impl Default for CompactionConfig {
@@ -59,6 +63,7 @@ impl Default for CompactionConfig {
             model: DEFAULT_TEXT_MODEL.to_string(),
             cache_summary: true,
             auto_floor_tokens: MINIMUM_AUTO_COMPACTION_TOKENS,
+            prefer_handoff: None,
         }
     }
 }
