@@ -135,6 +135,20 @@ Prebuilt binaries can also be downloaded from [GitHub Releases](https://github.c
 scoop install deepseek-tui
 ```
 
+### macOS / Linux (Homebrew)
+
+[Homebrew](https://brew.sh) users can install both binaries from the in-repo
+formula:
+
+```bash
+brew install --formula https://raw.githubusercontent.com/Hmbown/DeepSeek-TUI/main/Formula/deepseek-tui.rb
+deepseek --version
+```
+
+The formula installs the matching prebuilt release binary for your platform
+(macOS arm64/x64, Linux arm64/x64) and exposes both `deepseek` and
+`deepseek-tui` on `PATH`.
+
 
 <details id="install-from-source">
 <summary>Install from source</summary>
