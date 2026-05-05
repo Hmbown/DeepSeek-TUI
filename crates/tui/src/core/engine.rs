@@ -319,6 +319,9 @@ pub struct Engine {
     /// calls so `last_tool_result` persists within the session and can be
     /// promoted to the parent context via `promote_to_context`.
     workshop_vars: Option<std::sync::Arc<tokio::sync::Mutex<crate::tools::large_output_router::WorkshopVariables>>>,
+    /// External sandbox backend (#516). When `Some`, exec_shell routes commands
+    /// through this instead of spawning a local process.
+    sandbox_backend: Option<std::sync::Arc<dyn crate::sandbox::backend::SandboxBackend>>,
     /// Diagnostics collected during the current step's tool calls. Drained
     /// and forwarded as a synthetic user message before the next API call.
     pending_lsp_blocks: Vec<crate::lsp::DiagnosticBlock>,
@@ -447,6 +450,16 @@ impl Engine {
                 None
             };
 
+        // External sandbox backend (#516). Logged but non-fatal: if the
+        // backend fails to construct, the engine continues with local
+        // execution as the fallback.
+        let sandbox_backend = crate::sandbox::backend::create_backend(api_config)
+            .unwrap_or_else(|e| {
+                tracing::warn!("Failed to create sandbox backend: {e}");
+                None
+            })
+            .map(std::sync::Arc::from);
+
         let mut engine = Engine {
             config,
             deepseek_client,
@@ -470,6 +483,7 @@ impl Engine {
             lsp_manager,
             pending_lsp_blocks: Vec::new(),
             workshop_vars,
+            sandbox_backend,
         };
         engine.rehydrate_latest_canonical_state();
 
@@ -1324,6 +1338,13 @@ impl Engine {
                 );
                 ctx = ctx.with_large_output_router(router, vars_arc.clone());
             }
+        }
+
+        // Wire the external sandbox backend (#516). exec_shell checks this
+        // field and routes commands through the backend instead of spawning
+        // a local process when it's set.
+        if let Some(backend) = self.sandbox_backend.as_ref() {
+            ctx = ctx.with_sandbox_backend(std::sync::Arc::clone(backend));
         }
 
         match mode {
