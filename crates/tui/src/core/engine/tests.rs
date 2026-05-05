@@ -390,12 +390,20 @@ fn agent_and_yolo_modes_elevate_shell_sandbox_to_allow_network() {
     );
 
     let yolo_ctx = engine.build_tool_context(AppMode::Yolo, false);
+    let yolo_policy = yolo_ctx
+        .elevated_sandbox_policy
+        .as_ref()
+        .expect("Yolo mode should elevate the sandbox policy");
+    assert!(yolo_policy.has_network_access());
+    // v0.8.11: YOLO drops to DangerFullAccess (no sandbox) so the user
+    // is not bounced through approval round-trips for legitimate
+    // outside-workspace writes (package installs, sub-agent
+    // workspaces, ~/.cache mutations, etc.). YOLO is opt-in and
+    // already enables trust mode + auto-approve; the sandbox was the
+    // last guardrail and contradicts the contract.
     assert!(
-        yolo_ctx
-            .elevated_sandbox_policy
-            .as_ref()
-            .expect("Yolo mode should elevate the sandbox policy")
-            .has_network_access(),
+        matches!(yolo_policy, crate::sandbox::SandboxPolicy::DangerFullAccess),
+        "Yolo mode must use DangerFullAccess (no sandbox); got {yolo_policy:?}",
     );
 
     // Plan mode is read-only investigation and does not register the shell

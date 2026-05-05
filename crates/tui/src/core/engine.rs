@@ -1294,19 +1294,31 @@ impl Engine {
             // registered, so leaving the sandbox policy at the seatbelt-strict
             // default is fine.
             AppMode::Plan => ctx,
-            // Agent and Yolo both register the shell tool. The sandbox-default
-            // policy denies all outbound network — including DNS — which
-            // breaks ordinary developer commands (cargo fetch, npm install,
-            // curl, yt-dlp, …) without buying the user any safety the
-            // application-level NetworkPolicy / approval flow doesn't already
-            // provide. Elevate to workspace-write + network. (#273)
-            AppMode::Agent | AppMode::Yolo => {
+            // Agent registers the shell tool and runs each command through
+            // the per-mode sandbox + per-tool approval flow. The sandbox
+            // default would deny all outbound network — including DNS —
+            // which breaks ordinary developer commands (cargo fetch, npm
+            // install, curl, yt-dlp, …) without buying the user any safety
+            // the approval flow doesn't already provide. Elevate to
+            // workspace-write + network. (#273)
+            AppMode::Agent => {
                 ctx.with_elevated_sandbox_policy(crate::sandbox::SandboxPolicy::WorkspaceWrite {
                     writable_roots: vec![self.session.workspace.clone()],
                     network_access: true,
                     exclude_tmpdir: false,
                     exclude_slash_tmp: false,
                 })
+            }
+            // YOLO is the explicit "no guardrails" mode — auto-approve all
+            // tools, trust mode on, no sandbox. Workspace-write was still
+            // intercepting commands that wanted to write outside the
+            // workspace (rare but legitimate: pipx install, npm install
+            // -g, brew, package-manager state under ~/.cache, sub-agent
+            // workspaces, …) which forced approval round-trips and
+            // contradicts the YOLO contract. The user opted into YOLO
+            // deliberately; trust them.
+            AppMode::Yolo => {
+                ctx.with_elevated_sandbox_policy(crate::sandbox::SandboxPolicy::DangerFullAccess)
             }
         }
     }
