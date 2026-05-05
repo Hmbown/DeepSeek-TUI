@@ -152,6 +152,23 @@ enum Commands {
     /// Run the app-server transport.
     AppServer(AppServerArgs),
     /// Generate shell completions.
+    #[command(after_help = r#"Examples:
+  Bash (current shell only):
+    source <(deepseek completion bash)
+
+  Bash (persistent, Ubuntu/bash-completion):
+    mkdir -p ~/.local/share/bash-completion/completions
+    deepseek completion bash > ~/.local/share/bash-completion/completions/deepseek
+
+  Zsh:
+    mkdir -p ~/.zfunc
+    deepseek completion zsh > ~/.zfunc/_deepseek
+    # Ensure ~/.zfunc is in fpath from ~/.zshrc.
+
+  Fish:
+    deepseek completion fish > ~/.config/fish/completions/deepseek.fish
+
+The command prints the completion script to stdout; redirect it to a path your shell loads automatically."#)]
     Completion {
         #[arg(value_enum)]
         shell: Shell,
@@ -1873,7 +1890,16 @@ mod tests {
                 "app-server",
                 vec!["--host", "--port", "--config", "--stdio"],
             ),
-            ("completion", vec!["<SHELL>", "bash"]),
+            (
+                "completion",
+                vec![
+                    "<SHELL>",
+                    "bash",
+                    "source <(deepseek completion bash)",
+                    "~/.local/share/bash-completion/completions/deepseek",
+                    "deepseek completion fish > ~/.config/fish/completions/deepseek.fish",
+                ],
+            ),
             ("metrics", vec!["--json", "--since"]),
         ];
 
