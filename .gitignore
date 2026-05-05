@@ -78,3 +78,6 @@ apps/
 # Local-only Claude / ralph notes
 .claude/*.local.md
 .claude/*.local.json
+
+# Maintainer-internal design notes (trade-secret material, never published)
+.private/

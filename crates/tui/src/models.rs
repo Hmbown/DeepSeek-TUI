@@ -4,7 +4,14 @@ use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_CONTEXT_WINDOW_TOKENS: u32 = 128_000;
 pub const DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS: u32 = 1_000_000;
-pub const DEFAULT_COMPACTION_TOKEN_THRESHOLD: usize = 50_000;
+/// Last-resort compaction trigger when [`context_window_for_model`] returns
+/// `None` (an unrecognised model id). v0.8.11 raised this from `50_000` to
+/// `102_400` (80% of [`DEFAULT_CONTEXT_WINDOW_TOKENS`]) so unknown models
+/// inherit the same late-trigger discipline as V4 instead of paying the
+/// prefix-cache hit at 5% of the V4 window. Known DeepSeek / Claude models
+/// resolve to their own scaled value via [`compaction_threshold_for_model`]
+/// (#664).
+pub const DEFAULT_COMPACTION_TOKEN_THRESHOLD: usize = 102_400;
 pub const DEFAULT_COMPACTION_MESSAGE_THRESHOLD: usize = 50;
 const COMPACTION_THRESHOLD_PERCENT: u32 = 80;
 const COMPACTION_MESSAGE_DIVISOR: u32 = 500;
@@ -450,7 +457,13 @@ mod tests {
             compaction_threshold_for_model("deepseek-v3.2-128k"),
             102_400
         );
-        assert_eq!(compaction_threshold_for_model("unknown-model"), 50_000);
+        // v0.8.11 (#664): unknown-model fallback also resolves to 80% of
+        // `DEFAULT_CONTEXT_WINDOW_TOKENS` (128k) — same late-trigger
+        // discipline as the V4 path. Was `50_000` pre-v0.8.11; that
+        // hardcoded value compacted at ~5% of a 1M window when the model
+        // detection silently fell through, which is exactly the
+        // prefix-cache-burning behaviour we're getting away from.
+        assert_eq!(compaction_threshold_for_model("unknown-model"), 102_400);
     }
 
     #[test]
@@ -495,9 +508,13 @@ mod tests {
             compaction_threshold_for_model_and_effort("deepseek-v3.2-128k", Some("max")),
             102_400
         );
+        // v0.8.11 (#664): unknown-model fallback also lands on the
+        // 80%-of-128K floor instead of the legacy hardcoded 50K, so
+        // model-detection-fall-through doesn't quietly burn V4 prefix
+        // cache at 5%-of-window.
         assert_eq!(
             compaction_threshold_for_model_and_effort("unknown-model", Some("max")),
-            50_000
+            102_400
         );
     }
 

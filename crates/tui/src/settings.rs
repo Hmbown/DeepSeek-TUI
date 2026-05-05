@@ -59,7 +59,16 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            auto_compact: true,
+            // v0.8.11: default flipped to `false` to stop the engine from
+            // routinely rewriting the prompt prefix, which breaks DeepSeek
+            // V4's prefix cache (~90% discount on cached prefix tokens) and
+            // ends up costing more than the compaction itself saves. With
+            // V4's 1M-token window the user has plenty of headroom to run
+            // long sessions without auto-trimming, and the explicit
+            // `/compact` slash command + `auto_compact = on` opt-in remain
+            // available for users / agents that decide compaction is
+            // worth the cache hit on their workload (#664).
+            auto_compact: false,
             calm_mode: false,
             low_motion: false,
             fancy_animations: false,
@@ -451,11 +460,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_settings_enable_auto_compact_for_session_survivability() {
+    fn default_settings_disable_auto_compact_to_protect_v4_prefix_cache() {
         let settings = Settings::default();
-        // #402 P0: auto-compaction is on by default so long-running
-        // sessions stay within the model's context budget.
-        assert!(settings.auto_compact);
+        // v0.8.11: default is `false` to stop the engine from routinely
+        // rewriting the prompt prefix, which breaks V4's prefix-cache
+        // discount. The explicit `/compact` command and the
+        // `auto_compact = on` opt-in stay available; the default is
+        // flipped so the cache-friendly path is the one users get
+        // without configuring anything (#664).
+        assert!(!settings.auto_compact);
     }
 
     #[test]
