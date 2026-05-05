@@ -209,7 +209,9 @@ deepseek setup --status                          # read-only setup status
 deepseek setup --tools --plugins                 # scaffold tool/plugin dirs
 deepseek models                                  # list live API models
 deepseek sessions                                # list saved sessions
-deepseek resume --last                           # resume latest session
+deepseek resume --last                           # resume the most recent session
+deepseek resume <SESSION_ID>                     # resume a specific session by UUID
+deepseek fork <SESSION_ID>                       # fork a session at a chosen turn
 deepseek serve --http                            # HTTP/SSE API server
 deepseek pr <N>                                  # fetch PR and pre-seed review prompt
 deepseek mcp list                                # list configured MCP servers

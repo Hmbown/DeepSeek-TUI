@@ -127,6 +127,20 @@ resident sub-agents. No breaking changes.
   diagnostics via the engine-level LSP hooks path.
 
 ### Docs
+- **README install section rewritten** (#672) — the previous lede claimed
+  "no Node.js or Python runtime" but the very next paragraph told readers to
+  install Node before continuing. Replaced with a three-path Install block
+  (npm / cargo / direct download) that makes the npm wrapper's role explicit:
+  it downloads the prebuilt binary, but `deepseek` itself does not depend on
+  Node at runtime. zh-CN README mirrored.
+- **Windows Scoop install instructions** (#696) — README and zh-CN README now
+  document `scoop install deepseek-tui` for Windows users. *Thanks to
+  [@woyxiang](https://github.com/woyxiang) for this PR.*
+- **DeepSeek Pro discount window extended** (#692) — pricing footnote updated
+  from 5 May 2026 to 31 May 2026 to match the platform-side promotion. *Thanks
+  to [@wangfeng](mailto:wangfengcsu@qq.com) for this PR.*
+- **`deepseek resume <SESSION_ID>` surfaced in Usage** — the command exists
+  since v0.7 but was undocumented. Reported via #682.
 - **SECURITY.md** (#648) — vulnerability reporting policy and supported
   versions.
 - **CODE_OF_CONDUCT.md** (#686) — Contributor Covenant v2.1. *Thanks to
@@ -135,6 +149,23 @@ resident sub-agents. No breaking changes.
   config.example.toml now document `locale = "zh-Hans"`.
 
 ### Fixed
+- **`cargo install` on stable Rust** — the language-picker match guard at
+  `crates/tui/src/tui/ui.rs:1603` used `&& let Some(...) = ...` inside an
+  `if`-guard, which requires the nightly-only `if_let_guard` feature on Rust
+  before 1.94. Reported by an external user whose `cargo install
+  deepseek-tui` failed with E0658. Rewrote as a plain match guard with a
+  nested `if let` inside the arm body. The workspace also now declares
+  `rust-version = "1.88"` (the actual minimum for `let_chains` in
+  `if`/`while`) so users on too-old toolchains see a clear cargo error
+  instead of a confusing rustc one. AGENTS.md gains a "stable Rust only"
+  section so this doesn't regress.
+- **Resident-file lease never released after spawn** (#660) — the lease was
+  stamped as `"pending"` at spawn time because the agent id is only assigned
+  by the manager after the spawn call returns. The release-on-terminal-state
+  path (added in the original #660 commit) matched leases by agent id, so
+  it could never find these placeholder entries. Now the placeholder is
+  replaced with the real agent id immediately after spawn so existing
+  release wiring fires. Resolves the v0.8.12 caveat documented at RC time.
 - **Color::Reset across all UI widgets** (#651, #671) — replaced hardcoded
   `Color::Black` and `Color::Rgb(18, 29, 39)` backgrounds with `Color::Reset`
   so the TUI respects the terminal's actual background color on light-themed
@@ -145,6 +176,14 @@ resident sub-agents. No breaking changes.
   shared `truncate_id` helper across session, picker, and UI call sites.
 
 ### Maintenance
+- Workspace `cargo fmt` sweep across community PRs that landed unformatted.
+- Issue-triage GitHub Actions added (#688): keyword-driven auto-labeller,
+  stale-bot for `needs-info` issues (14 d → stale → 7 d → close), and a
+  spam lockdown that auto-closes promotional issues from accounts <30 d
+  old. All pure GitHub Actions — no third-party services.
+- Annotated `TuiPrefs` (#657) and `handoff::THRESHOLDS` (#667) with
+  `#[allow(dead_code)]` so the deferred APIs don't trip CI's `-D warnings`
+  flag while their call sites are staged for v0.8.13.
 - Removed dead `prefer_handoff` field from `CompactionConfig` — config knob
   existed but zero code paths consulted it (#667).
 - Removed dead `use_terminal_colors` field from `TuiConfig` — no rendering
