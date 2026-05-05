@@ -144,8 +144,6 @@ pub struct ProviderCapability {
 pub enum RequestPayloadMode {
     /// Standard OpenAI-compatible `/v1/chat/completions` payload.
     ChatCompletions,
-    /// Anthropic-style Responses API (DeepSeek experimental).
-    ResponsesApi,
 }
 
 

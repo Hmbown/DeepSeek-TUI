@@ -48,7 +48,6 @@ mod project_context;
 mod project_doc;
 mod prompts;
 pub mod repl;
-mod responses_api_proxy;
 mod retry_status;
 pub mod rlm;
 mod runtime_api;
@@ -243,9 +242,6 @@ enum Commands {
         #[arg(long = "last", default_value_t = false, conflicts_with = "session_id")]
         last: bool,
     },
-    /// Internal: run the responses API proxy.
-    #[command(hide = true)]
-    ResponsesApiProxy(responses_api_proxy::Args),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -725,10 +721,6 @@ async fn main() -> Result<()> {
                 let config = load_config_from_cli(&cli)?;
                 let new_session_id = fork_session(session_id, last)?;
                 run_interactive(&cli, &config, Some(new_session_id), None).await
-            }
-            Commands::ResponsesApiProxy(args) => {
-                responses_api_proxy::run_main(args)?;
-                Ok(())
             }
         };
     }
