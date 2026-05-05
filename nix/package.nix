@@ -22,11 +22,14 @@ rustPlatform.buildRustPackage (finalAttrs: {
     lockFile = ../Cargo.lock;
   };
 
-  nativeBuildInputs = [ pkg-config ];
+  nativeBuildInputs = [
+    pkg-config
+    dbus
+  ];
 
   buildInputs = [
     openssl
-    dbus
+    dbus.lib
   ];
 
   nativeCheckInputs = [
