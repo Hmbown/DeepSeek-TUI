@@ -195,6 +195,17 @@ impl ChatWidget {
         }
 
         let max_start = total_lines.saturating_sub(visible_lines);
+        // v0.8.11 hotfix: snapshot whether the user's prior scroll state
+        // was *deliberately* tail BEFORE we resolve. `resolve_top` clamps
+        // out-of-range `at_line(N)` to `to_bottom()` (e.g. when content
+        // shrunk so `max_start < N`), and `scrolled_by` returns
+        // `to_bottom()` when the whole transcript fits in one screen
+        // even if the user just scrolled up. Either case would fool a
+        // post-resolve `is_at_tail()` check into thinking the user is
+        // tracking the tail and silently revoke `user_scrolled_during_
+        // stream` — the next stream chunk would then yank them back to
+        // bottom mid-read.
+        let was_explicit_tail = app.viewport.transcript_scroll.is_at_tail();
         let (scroll_state, top) = app
             .viewport
             .transcript_scroll
@@ -205,7 +216,14 @@ impl ChatWidget {
         // again until they explicitly scroll up. Without this clear, content
         // piles up off-screen below the visible area and the view appears
         // frozen at the moment they returned to bottom.
-        if app.viewport.transcript_scroll.is_at_tail() {
+        //
+        // Only clear the lock when the user's INTENT was tail (their
+        // stored state was already `to_bottom()` before resolve), AND
+        // when the transcript actually has scrolling room to talk about
+        // — if everything fits in one screen, "tail" is trivially true
+        // and clearing here would yank the user back to bottom on the
+        // next chunk even though they explicitly scrolled up.
+        if was_explicit_tail && total_lines > visible_lines {
             app.user_scrolled_during_stream = false;
         }
 
