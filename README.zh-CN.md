@@ -102,6 +102,15 @@ deepseek --version
 
 也可以直接从 [GitHub Releases](https://github.com/Hmbown/DeepSeek-TUI/releases) 下载预编译二进制。`DEEPSEEK_TUI_RELEASE_BASE_URL` 可用于镜像后的 release 资产。
 
+### Windows (Scoop)
+
+[Scoop](https://scoop.sh) 是一个 Windows 软件包管理器。安装好 Scoop 后，运行：
+
+```bash
+scoop install deepseek-tui
+```
+
+
 <details id="install-from-source">
 <summary>从源码安装</summary>
 
