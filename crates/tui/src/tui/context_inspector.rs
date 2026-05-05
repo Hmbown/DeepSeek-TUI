@@ -4,16 +4,17 @@ use std::collections::HashSet;
 use std::fmt::Write;
 
 use crate::compaction::estimate_input_tokens_conservative;
-use crate::models::{DEFAULT_CONTEXT_WINDOW_TOKENS, SystemPrompt, context_window_for_model};
+use crate::models::{
+    LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS, SystemPrompt, context_window_for_model,
+};
 use crate::session_manager::SessionContextReference;
 use crate::tui::app::{App, ToolDetailRecord};
 use crate::tui::file_mention::ContextReferenceSource;
 use crate::utils::estimate_message_chars;
 
-/// Marker used by the engine's `append_working_set_summary` to tag the
-/// volatile tail block in the system prompt. Replicated here so the
-/// context inspector can distinguish stable prefix blocks from the
-/// ephemeral working-set block without importing engine internals.
+/// Marker used by per-turn working-set metadata. Replicated here so the
+/// context inspector can distinguish stable prompt blocks from volatile
+/// working-set context without importing engine internals.
 const WORKING_SET_MARKER: &str = "## Repo Working Set";
 
 const CONTEXT_WARNING_THRESHOLD_PERCENT: f64 = 85.0;
@@ -68,7 +69,7 @@ pub fn build_context_inspector_text(app: &App) -> String {
 }
 
 fn context_usage(app: &App) -> (usize, u32, f64) {
-    let max = context_window_for_model(&app.model).unwrap_or(DEFAULT_CONTEXT_WINDOW_TOKENS);
+    let max = context_window_for_model(&app.model).unwrap_or(LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS);
     let estimated =
         estimate_input_tokens_conservative(&app.api_messages, app.system_prompt.as_ref());
     let total_chars = estimate_message_chars(&app.api_messages);

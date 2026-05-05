@@ -225,7 +225,7 @@ pub fn provider_capability(provider: ApiProvider, resolved_model: &str) -> Provi
         crate::models::DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS
     } else {
         crate::models::context_window_for_model(resolved_model)
-            .unwrap_or(crate::models::DEFAULT_CONTEXT_WINDOW_TOKENS)
+            .unwrap_or(crate::models::LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS)
     };
 
     // Max output tokens: DeepSeek V4 models allow 262K; others get 4096.
@@ -4070,7 +4070,7 @@ model = "deepseek-v4-pro"
         let cap = provider_capability(ApiProvider::Deepseek, "deepseek-coder");
         assert_eq!(
             cap.context_window,
-            crate::models::DEFAULT_CONTEXT_WINDOW_TOKENS
+            crate::models::LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS
         );
         assert_eq!(cap.max_output, 4096);
         assert!(!cap.thinking_supported);

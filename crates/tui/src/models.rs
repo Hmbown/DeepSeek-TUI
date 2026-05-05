@@ -2,15 +2,17 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const DEFAULT_CONTEXT_WINDOW_TOKENS: u32 = 128_000;
+/// Context window used only for legacy DeepSeek model IDs that do not name a
+/// newer V4 alias and do not carry an explicit `*k` suffix.
+pub const LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS: u32 = 128_000;
 pub const DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS: u32 = 1_000_000;
 /// Last-resort compaction trigger when [`context_window_for_model`] returns
 /// `None` (an unrecognised model id). v0.8.11 raised this from `50_000` to
-/// `102_400` (80% of [`DEFAULT_CONTEXT_WINDOW_TOKENS`]) so unknown models
-/// inherit the same late-trigger discipline as V4 instead of paying the
-/// prefix-cache hit at 5% of the V4 window. Known DeepSeek / Claude models
-/// resolve to their own scaled value via [`compaction_threshold_for_model`]
-/// (#664).
+/// `102_400` (80% of [`LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS`]) so unknown
+/// models inherit the same late-trigger discipline as V4 instead of paying
+/// the prefix-cache hit at 5% of the V4 window. Known DeepSeek / Claude
+/// models resolve to their own scaled value via
+/// [`compaction_threshold_for_model`] (#664).
 pub const DEFAULT_COMPACTION_TOKEN_THRESHOLD: usize = 102_400;
 pub const DEFAULT_COMPACTION_MESSAGE_THRESHOLD: usize = 50;
 const COMPACTION_THRESHOLD_PERCENT: u32 = 80;
@@ -212,8 +214,9 @@ pub struct Usage {
 #[must_use]
 pub fn context_window_for_model(model: &str) -> Option<u32> {
     let lower = model.to_lowercase();
-    // Unknown DeepSeek model IDs default to 128k unless an explicit *k suffix is present.
-    // DeepSeek-V4 family and current legacy aliases ship with a 1M context window.
+    // Unknown legacy DeepSeek model IDs default to 128K unless an explicit
+    // *k suffix is present. DeepSeek-V4 family and current compatibility
+    // aliases ship with a 1M context window.
     if lower.contains("deepseek") {
         if let Some(explicit_window) = deepseek_context_window_hint(&lower) {
             return Some(explicit_window);
@@ -221,7 +224,7 @@ pub fn context_window_for_model(model: &str) -> Option<u32> {
         if lower.contains("v4") || is_current_deepseek_v4_alias(&lower) {
             return Some(DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS);
         }
-        return Some(DEFAULT_CONTEXT_WINDOW_TOKENS);
+        return Some(LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS);
     }
     if lower.contains("claude") {
         return Some(200_000);
@@ -411,14 +414,14 @@ mod tests {
     }
 
     #[test]
-    fn unknown_deepseek_models_map_to_128k_context_window() {
+    fn unknown_legacy_deepseek_models_map_to_128k_context_window() {
         assert_eq!(
             context_window_for_model("deepseek-coder"),
-            Some(DEFAULT_CONTEXT_WINDOW_TOKENS)
+            Some(LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS)
         );
         assert_eq!(
             context_window_for_model("deepseek-v3.2-0324"),
-            Some(DEFAULT_CONTEXT_WINDOW_TOKENS)
+            Some(LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS)
         );
     }
 
@@ -447,7 +450,7 @@ mod tests {
         );
         assert_eq!(
             context_window_for_model("deepseek-v3.2-2k-preview"),
-            Some(DEFAULT_CONTEXT_WINDOW_TOKENS)
+            Some(LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS)
         );
     }
 
@@ -458,11 +461,11 @@ mod tests {
             102_400
         );
         // v0.8.11 (#664): unknown-model fallback also resolves to 80% of
-        // `DEFAULT_CONTEXT_WINDOW_TOKENS` (128k) — same late-trigger
-        // discipline as the V4 path. Was `50_000` pre-v0.8.11; that
-        // hardcoded value compacted at ~5% of a 1M window when the model
-        // detection silently fell through, which is exactly the
-        // prefix-cache-burning behaviour we're getting away from.
+        // `LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS` (128K legacy DeepSeek
+        // fallback) — same late-trigger discipline as the V4 path. Was
+        // `50_000` pre-v0.8.11; that hardcoded value compacted at ~5% of a
+        // 1M window when model detection silently fell through, which is
+        // exactly the prefix-cache-burning behaviour we're getting away from.
         assert_eq!(compaction_threshold_for_model("unknown-model"), 102_400);
     }
 
@@ -509,9 +512,9 @@ mod tests {
             102_400
         );
         // v0.8.11 (#664): unknown-model fallback also lands on the
-        // 80%-of-128K floor instead of the legacy hardcoded 50K, so
-        // model-detection-fall-through doesn't quietly burn V4 prefix
-        // cache at 5%-of-window.
+        // 80%-of-128K legacy DeepSeek fallback instead of the legacy
+        // hardcoded 50K, so model-detection-fall-through doesn't quietly
+        // burn V4 prefix cache at 5%-of-window.
         assert_eq!(
             compaction_threshold_for_model_and_effort("unknown-model", Some("max")),
             102_400
