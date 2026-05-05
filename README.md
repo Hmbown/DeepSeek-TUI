@@ -127,6 +127,15 @@ deepseek --version
 
 Prebuilt binaries can also be downloaded from [GitHub Releases](https://github.com/Hmbown/DeepSeek-TUI/releases). Use `DEEPSEEK_TUI_RELEASE_BASE_URL` for mirrored release assets.
 
+### Windows (Scoop)
+
+[Scoop](https://scoop.sh) is a Windows package manager. Once installed, run:
+
+```bash
+scoop install deepseek-tui
+```
+
+
 <details id="install-from-source">
 <summary>Install from source</summary>
 
