@@ -24,6 +24,36 @@ pub struct PromptSessionContext<'a> {
 /// doesn't have to re-discover open blockers from scratch.
 pub const HANDOFF_RELATIVE_PATH: &str = ".deepseek/handoff.md";
 
+// ── 128-token cache alignment (#662 Gap 1) ────────────────────────────
+//
+// V4 caches shared prefixes at 128-token granularity. Sections in the
+// system prompt are padded to the nearest 128-token boundary so a
+// single-line edit in section K doesn't silently shift section K+1
+// out of the cached prefix. We use a conservative 4-char/token
+// heuristic (roughly matches English prose).
+
+/// Approximate token count using 4 chars per token.
+#[must_use]
+pub fn estimate_tokens(text: &str) -> u64 {
+    (text.len() as u64).div_ceil(4)
+}
+
+/// Pad text to the nearest 128-token boundary.
+/// Appends newline-padding so the next section starts at a clean boundary.
+#[must_use]
+pub fn pad_to_128_token_boundary(text: &str) -> String {
+    let est = estimate_tokens(text);
+    let remainder = est % 128;
+    if remainder == 0 {
+        return text.to_string();
+    }
+    let pad_tokens = 128 - remainder;
+    let pad_chars = pad_tokens * 4;
+    // Use `\n` for padding — invisible to the model, doesn't affect content.
+    let padding = "\n".repeat(pad_chars as usize);
+    format!("{text}{padding}")
+}
+
 /// Per-file size cap for `instructions = [...]` entries (#454). Mirrors
 /// the existing project-context cap in `project_context::load_context_file`
 /// so a malicious / oversized include can't blow the prompt budget on
@@ -909,5 +939,40 @@ mod tests {
             prompt.contains(&extra.display().to_string()),
             "instructions block must annotate its source path"
         );
+    }
+
+    // ── 128-token alignment tests (#662 Gap 1) ─────────────────────────
+
+    #[test]
+    fn test_estimate_tokens_uses_div_ceil() {
+        assert_eq!(estimate_tokens(""), 0);
+        assert_eq!(estimate_tokens("1234"), 1); // exactly 4 chars
+        assert_eq!(estimate_tokens("12345"), 2); // 5 chars → ceil(5/4) = 2
+    }
+
+    #[test]
+    fn test_pad_to_boundary_already_aligned_is_noop() {
+        // 512 chars = 128 tokens → already aligned
+        let aligned = "X".repeat(512);
+        let padded = pad_to_128_token_boundary(&aligned);
+        assert_eq!(padded, aligned);
+    }
+
+    #[test]
+    fn test_pad_to_boundary_adds_padding_when_misaligned() {
+        let text = "hello"; // 5 chars → 2 tokens → misaligned
+        let padded = pad_to_128_token_boundary(text);
+        assert!(padded.starts_with("hello"));
+        assert!(padded.len() > text.len());
+        // After padding, total estimated tokens should be multiple of 128
+        assert_eq!(estimate_tokens(&padded) % 128, 0);
+    }
+
+    #[test]
+    fn test_pad_to_boundary_is_deterministic() {
+        let text = "some section content here";
+        let a = pad_to_128_token_boundary(text);
+        let b = pad_to_128_token_boundary(text);
+        assert_eq!(a, b, "padding must be deterministic for cache stability");
     }
 }

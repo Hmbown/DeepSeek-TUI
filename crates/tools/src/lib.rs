@@ -25,6 +25,10 @@ pub enum ToolCapability {
     Sandboxable,
     /// Tool requires user approval before execution.
     RequiresApproval,
+    /// Tool should use strict mode when available — model's tool-call
+    /// JSON is validated against the declared schema before delivery.
+    /// Recommended for mutating tools (apply_patch, exec_shell, write_file).
+    StrictToolMode,
 }
 
 /// Approval requirement for a tool.
