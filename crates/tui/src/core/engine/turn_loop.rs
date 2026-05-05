@@ -1607,11 +1607,27 @@ impl Engine {
         };
 
         let mut messages = self.session.messages.clone();
-        let Some(last_user) = messages
-            .iter_mut()
-            .rev()
-            .find(|message| message.role == "user")
-        else {
+        // v0.8.11 hotfix: tool-result messages are stored as role="user" in
+        // our internal representation but serialize to role="tool" on the
+        // wire. Prepending a Text block onto a tool-result message breaks
+        // the assistant→tool_result invariant — the API rejects the request
+        // with `"insufficient tool messages following tool_calls"`. Inject
+        // only into actual user-typed messages, recognizable by having at
+        // least one Text content block (and no ToolResult blocks).
+        let Some(last_user) = messages.iter_mut().rev().find(|message| {
+            message.role == "user"
+                && message
+                    .content
+                    .iter()
+                    .all(|block| !matches!(block, ContentBlock::ToolResult { .. }))
+                && message
+                    .content
+                    .iter()
+                    .any(|block| matches!(block, ContentBlock::Text { .. }))
+        }) else {
+            // No real user message in the trailing slice (e.g. mid-turn
+            // after a tool call). Skip injection — the working_set will
+            // surface again on the next genuine user prompt.
             return messages;
         };
 

@@ -567,6 +567,132 @@ fn working_set_reaches_model_as_turn_metadata() {
     assert!(text.contains("src/lib.rs"));
 }
 
+/// v0.8.11 regression: tool-result messages serialize to role="tool" on
+/// the wire but are stored as role="user" internally. Prepending
+/// `<turn_meta>` text onto a tool-result message broke the
+/// assistant→tool_result invariant and caused HTTP 400 from DeepSeek's
+/// API ("insufficient tool messages following tool_calls"). The fix:
+/// inject only into messages that have a Text content block and no
+/// ToolResult blocks; mid-turn (tool-result is the trailing user
+/// message) the injection skips.
+#[test]
+fn turn_metadata_skips_tool_result_messages() {
+    let tmp = tempdir().expect("tempdir");
+    fs::create_dir_all(tmp.path().join("src")).expect("mkdir");
+    fs::write(tmp.path().join("src/lib.rs"), "pub fn sample() {}").expect("write");
+
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(config, &Config::default());
+    engine
+        .session
+        .working_set
+        .observe_user_message("inspect src/lib.rs", tmp.path());
+
+    // Real user message — should be eligible for injection.
+    engine.session.add_message(Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "inspect src/lib.rs".to_string(),
+            cache_control: None,
+        }],
+    });
+    // Assistant tool-call.
+    engine.session.add_message(Message {
+        role: "assistant".to_string(),
+        content: vec![ContentBlock::ToolUse {
+            id: "call_42".to_string(),
+            name: "read_file".to_string(),
+            input: serde_json::json!({"path": "src/lib.rs"}),
+            caller: None,
+        }],
+    });
+    // Tool result, stored as role="user" internally.
+    engine.session.add_message(Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::ToolResult {
+            tool_use_id: "call_42".to_string(),
+            content: "pub fn sample() {}".to_string(),
+            is_error: None,
+            content_blocks: None,
+        }],
+    });
+
+    let messages = engine.messages_with_turn_metadata();
+
+    // The trailing message is the tool result and MUST be untouched —
+    // no Text block sneaking in front of the ToolResult block.
+    let trailing = messages.last().expect("trailing message");
+    assert_eq!(trailing.role, "user");
+    assert_eq!(trailing.content.len(), 1);
+    assert!(matches!(
+        trailing.content.first(),
+        Some(ContentBlock::ToolResult { .. })
+    ));
+
+    // The earlier real user message receives the turn_meta prefix.
+    let real_user = messages.first().expect("first user message");
+    assert_eq!(real_user.role, "user");
+    let ContentBlock::Text { text, .. } = real_user
+        .content
+        .first()
+        .expect("user text content")
+    else {
+        panic!("expected Text block on real user message");
+    };
+    assert!(text.starts_with("<turn_meta>\n"));
+    assert!(text.contains("src/lib.rs"));
+}
+
+/// When the turn is mid-execution and the trailing user message is a
+/// tool result, no turn_meta is injected at all (rather than landing on
+/// some earlier user message and confusing the API's tool-call
+/// continuity check). The working_set surfaces again on the next
+/// genuine user prompt.
+#[test]
+fn turn_metadata_skips_when_only_tool_results_trail() {
+    let tmp = tempdir().expect("tempdir");
+    fs::create_dir_all(tmp.path().join("src")).expect("mkdir");
+    fs::write(tmp.path().join("src/lib.rs"), "pub fn sample() {}").expect("write");
+
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(config, &Config::default());
+    engine
+        .session
+        .working_set
+        .observe_user_message("inspect src/lib.rs", tmp.path());
+
+    // Only a tool-result message in history — simulates the corner case
+    // where the prior real user message has already been compacted away
+    // but a tool-result is still pending. We must not retroactively
+    // inject.
+    engine.session.add_message(Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::ToolResult {
+            tool_use_id: "call_42".to_string(),
+            content: "pub fn sample() {}".to_string(),
+            is_error: None,
+            content_blocks: None,
+        }],
+    });
+
+    let messages = engine.messages_with_turn_metadata();
+
+    // Returned unchanged: the single tool-result message, no Text
+    // prefix, content length == 1.
+    let only = messages.last().expect("trailing message");
+    assert_eq!(only.content.len(), 1);
+    assert!(matches!(
+        only.content.first(),
+        Some(ContentBlock::ToolResult { .. })
+    ));
+}
+
 #[test]
 fn refresh_system_prompt_is_noop_when_unchanged() {
     let tmp = tempdir().expect("tempdir");
