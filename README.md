@@ -332,8 +332,23 @@ Full Changelog: [CHANGELOG.md](CHANGELOG.md).
 
 ## Thanks
 
-Earlier releases shipped with help from these contributors:
+This project ships with help from a growing community of contributors:
 
+- **[merchloubna70-dot](https://github.com/merchloubna70-dot)** — 28 PRs spanning features, fixes, and VS Code extension scaffolding (#645–#681)
+- **[WyxBUPT-22](https://github.com/WyxBUPT-22)** — Markdown rendering for tables, bold/italic, and horizontal rules (#579)
+- **[loongmiaow-pixel](https://github.com/loongmiaow-pixel)** — Windows + China install documentation (#578)
+- **[20bytes](https://github.com/20bytes)** — User memory docs and help polish (#569)
+- **[staryxchen](https://github.com/staryxchen)** — glibc compatibility preflight (#556)
+- **[Vishnu1837](https://github.com/Vishnu1837)** — glibc compatibility improvements (#565)
+- **[shentoumengxin](https://github.com/shentoumengxin)** — Shell `cwd` boundary validation (#524)
+- **[toi500](https://github.com/toi500)** — Windows paste fix report
+- **[xsstomy](https://github.com/xsstomy)** — Terminal startup repaint report
+- **[melody0709](https://github.com/melody0709)** — Slash-prefix Enter activation report
+- **[lloydzhou](https://github.com/lloydzhou)** and **[jeoor](https://github.com/jeoor)** — Compaction cost reports
+- **[Agent-Skill-007](https://github.com/Agent-Skill-007)** — README clarity pass (#685)
+- **[woyxiang](https://github.com/woyxiang)** — Windows Scoop install docs (#696)
+- **[wangfeng](mailto:wangfengcsu@qq.com)** — Pricing/discount info update (#692)
+- **[zichen0116](https://github.com/zichen0116)** — CODE_OF_CONDUCT.md (#686)
 - **Hafeez Pizofreude** — SSRF protection in `fetch_url` and Star History chart
 - **Unic (YuniqueUnic)** — Schema-driven config UI (TUI + web)
 - **Jason** — SSRF security hardening

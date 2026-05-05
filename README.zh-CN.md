@@ -168,27 +168,24 @@ SGLANG_BASE_URL="http://localhost:30000/v1" deepseek --provider sglang --model d
 
 ---
 
-## v0.8.10 新功能
+## v0.8.12 新功能
 
-补丁发布：热修复、UX 打磨和 whalescale 桌面集成的运行时 API 扩展。无破坏性变更。[完整更新日志](CHANGELOG.md)。
+功能发布：在 v0.8.11 缓存优化基础上合并了 20 个社区 PR。[完整更新日志](CHANGELOG.md)。
 
-- **堆叠式 Toast 通知** —— 状态提示可以排队并叠放显示，不再互相覆盖
-- **文件 @-提及频率排序** —— 文件提及建议学习近期选择（`~/.deepseek/file-frecency.jsonl`）
-- **运行时 API 扩展** —— CORS 来源配置、完整线程编辑（`PATCH /v1/threads/{id}`）、`archived_only` 查询过滤、用量聚合端点（`GET /v1/usage?group_by=day|model|provider|thread`）
-- **首次运行语言选择器** —— 新的引导步骤在输入 API 密钥前选择界面语言
-- **OPENCODE shell.env 钩子** —— 生命周期钩子可以向启动的命令注入 shell 环境
-- **缓存感知压缩** —— 压缩调用复用缓存提示前缀，大幅降低 `/compact` 成本
-- **glibc 2.28 基础线** —— 预编译包现在针对 glibc 2.28（通过 `cargo zigbuild`），覆盖更老的发行版；npm postinstall 在不兼容时给出明确的源码构建提示
-- **改进的 Markdown 渲染** —— 对话记录现在支持表格、粗体/斜体和水平线；不再有无穷循环问题
-- **MCP 关闭时发送 SIGTERM** —— stdio 服务器收到 SIGTERM 并有 2 秒优雅退出时间，而非 SIGKILL
-- **Linux shell 子进程 PDEATHSIG** —— 父进程退出时子进程自动收到 SIGTERM，消除泄漏窗口
-- **Windows Terminal 粘贴修复** —— 引导过程中 Ctrl/Cmd+V 现在正常工作
-- **终端启动重绘** —— 首帧上方不再残留过时的默认背景行
-- **斜杠前缀回车激活** —— 输入 `/mo` 后按回车自动激活第一个匹配项
-- **Shell `cwd` 边界验证** —— 超出工作区的 `cwd` 路径返回 `PathEscape`，与文件工具一致
+- **推理强度自动模式** —— `reasoning_effort = "auto"` 根据提示词自动选择档位：debug/error → Max，search/lookup → Low，默认 → High
+- **Bash 参数匹配字典** —— `auto_allow = ["git status"]` 匹配 `git status -s` 但不匹配 `git push`。支持 git、cargo、npm、docker、kubectl 等
+- **Vim 模态编辑** —— 在输入框中支持 Vim 普通/插入模式切换
+- **技能注册表同步** —— `/skills sync` 拉取并安装/更新社区技能注册表
+- **FIM 编辑工具** —— 通过 DeepSeek `/beta` 的 fill-in-the-middle 端点进行精确代码编辑
+- **大工具输出路由** —— 超大工具结果被截断预览，保护父上下文窗口
+- **可插拔沙箱后端** —— `exec_shell` 可路由到 Alibaba OpenSandbox 或其他远程后端
+- **分层权限规则** —— builtin/agent/user 三层优先级，deny 永远优先
+- **缓存感知常驻子智能体** —— 文件内容预置于系统提示中以利用 V4 前缀缓存；全局租约表
+- **统一斜杠命令命名空间** —— 用户命令支持 `$1`/`$2`/`$ARGUMENTS` 模板
+- **Color::Reset 迁移** —— 所有硬编码背景替换为 `Color::Reset`，适配浅色终端
+- **新文档**：SECURITY.md (#648)、CODE_OF_CONDUCT.md (#686)、zh-Hans 语言激活 (#652)
 
-**6 位首次贡献者：** [@staryxchen](https://github.com/staryxchen) (#556)、[@shentoumengxin](https://github.com/shentoumengxin) (#524)、[@Vishnu1837](https://github.com/Vishnu1837) (#565)、[@20bytes](https://github.com/20bytes) (#569)、[@loongmiaow-pixel](https://github.com/loongmiaow-pixel) (#578)、[@WyxBUPT-22](https://github.com/WyxBUPT-22) (#579)。
-同时感谢 [@lloydzhou](https://github.com/lloydzhou)、[@jeoor](https://github.com/jeoor)、[@toi500](https://github.com/toi500)、[@xsstomy](https://github.com/xsstomy) 和 [@melody0709](https://github.com/melody0709) 的错误报告。
+**28 个社区 PR 由 [@merchloubna70-dot](https://github.com/merchloubna70-dot) 贡献。首次贡献者 [@zichen0116](https://github.com/zichen0116) (#686)。**
 
 ---
 
@@ -299,7 +296,7 @@ LANG=zh_CN.UTF-8 deepseek run
 
 旧别名 `deepseek-chat` / `deepseek-reasoner` 映射到 `deepseek-v4-flash`。NVIDIA NIM 变体使用你的 NVIDIA 账号条款。
 
-*DeepSeek Pro 价格是限时 75% 折扣，有效期到 2026-05-05 15:59 UTC；该时间之后 TUI 成本估算会回退到 Pro 基础价格。*
+*DeepSeek Pro 价格是限时 75% 折扣，有效期到 2026-05-31 15:59 UTC；该时间之后 TUI 成本估算会回退到 Pro 基础价格。*
 
 ---
 
@@ -350,8 +347,23 @@ description: 当 DeepSeek 需要遵循我的自定义工作流时使用这个技
 
 ## 致谢
 
-此前版本得到以下贡献者的帮助：
+本项目由不断壮大的贡献者社区共同打造：
 
+- **[merchloubna70-dot](https://github.com/merchloubna70-dot)** — 28 个 PR，涵盖功能、修复和 VS Code 扩展基础架构 (#645–#681)
+- **[WyxBUPT-22](https://github.com/WyxBUPT-22)** — Markdown 表格、粗体/斜体和水平线渲染 (#579)
+- **[loongmiaow-pixel](https://github.com/loongmiaow-pixel)** — Windows + 中国安装文档 (#578)
+- **[20bytes](https://github.com/20bytes)** — 用户记忆文档和帮助优化 (#569)
+- **[staryxchen](https://github.com/staryxchen)** — glibc 兼容性预检 (#556)
+- **[Vishnu1837](https://github.com/Vishnu1837)** — glibc 兼容性改进 (#565)
+- **[shentoumengxin](https://github.com/shentoumengxin)** — Shell `cwd` 边界验证 (#524)
+- **[toi500](https://github.com/toi500)** — Windows 粘贴修复报告
+- **[xsstomy](https://github.com/xsstomy)** — 终端启动重绘报告
+- **[melody0709](https://github.com/melody0709)** — 斜杠前缀回车激活报告
+- **[lloydzhou](https://github.com/lloydzhou)** 和 **[jeoor](https://github.com/jeoor)** — 压缩成本报告
+- **[Agent-Skill-007](https://github.com/Agent-Skill-007)** — README 清晰化改进 (#685)
+- **[woyxiang](https://github.com/woyxiang)** — Windows Scoop 安装文档 (#696)
+- **[wangfeng](mailto:wangfengcsu@qq.com)** — 价格/折扣信息更新 (#692)
+- **[zichen0116](https://github.com/zichen0116)** — CODE_OF_CONDUCT.md (#686)
 - **Hafeez Pizofreude** — `fetch_url` 的 SSRF 保护和 Star History 图表
 - **Unic (YuniqueUnic)** — 基于 schema 的配置 UI（TUI + web）
 - **Jason** — SSRF 安全加固
