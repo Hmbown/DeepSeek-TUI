@@ -3367,12 +3367,21 @@ fn is_zellij() -> bool {
 }
 
 /// Check for a crash-recovery checkpoint and return the session ID if
-/// recovery is possible.
+/// recovery is possible *and* the checkpoint belongs to the current
+/// workspace.
 ///
 /// The checkpoint must exist and its file mtime must be within 24 hours.
-/// On success the checkpoint is persisted as a regular session, cleared,
-/// and a notice is printed to stderr. Returns `None` if there is nothing
-/// to recover.
+/// **The checkpoint's workspace must also match `std::env::current_dir()`
+/// after canonicalisation.** If the workspace doesn't match, the
+/// checkpoint is persisted as a regular session (so the user can find it
+/// via `deepseek sessions` / `deepseek resume <id>`) and cleared, and the
+/// new launch starts fresh — silently importing a session from another
+/// project would leak api_messages, working_set entries, and possibly
+/// secrets across directories (see v0.8.12 cross-workspace bleed report).
+///
+/// On a successful match the checkpoint is persisted as a regular session,
+/// cleared, and a notice is printed to stderr. Returns `None` if there is
+/// nothing to recover or the workspace doesn't match.
 fn try_recover_checkpoint() -> Option<String> {
     let manager = session_manager::SessionManager::default_location().ok()?;
     let session = manager.load_checkpoint().ok().flatten()?;
@@ -3390,6 +3399,42 @@ fn try_recover_checkpoint() -> Option<String> {
     if age > std::time::Duration::from_secs(24 * 3600) {
         // Stale checkpoint — clean it up.
         let _ = manager.clear_checkpoint();
+        return None;
+    }
+
+    // Refuse to silently restore a session from another workspace. We compare
+    // canonicalised paths so that `~/foo` vs `/Users/x/foo` and symlink
+    // variants resolve consistently. If either side fails to canonicalise
+    // (e.g. the saved workspace was deleted), fall back to a strict equality
+    // check on the raw paths.
+    let session_workspace = session.metadata.workspace.clone();
+    let current_workspace = std::env::current_dir().ok()?;
+    let workspace_matches = {
+        let lhs = std::fs::canonicalize(&session_workspace).ok();
+        let rhs = std::fs::canonicalize(&current_workspace).ok();
+        match (lhs, rhs) {
+            (Some(a), Some(b)) => a == b,
+            _ => session_workspace == current_workspace,
+        }
+    };
+
+    if !workspace_matches {
+        // Persist the checkpoint so the user can find it via `deepseek
+        // sessions`, then clear it so the next launch in this folder doesn't
+        // re-trip the nag. Print a one-line notice pointing at the explicit
+        // resume command — but DO NOT auto-load the session here.
+        let session_id_for_notice = session.metadata.id.clone();
+        let _ = manager.save_session(&session);
+        let _ = manager.clear_checkpoint();
+        eprintln!(
+            "Note: an interrupted session ({}…) from another workspace ({}) is \
+             available. Run `deepseek resume {}` from there to recover it, or \
+             use `deepseek sessions` to list all saved sessions. Starting fresh \
+             here.",
+            &session_id_for_notice.chars().take(8).collect::<String>(),
+            session_workspace.display(),
+            session_id_for_notice,
+        );
         return None;
     }
 
