@@ -104,6 +104,26 @@ deepseek --version
 
 Prebuilt binaries can also be downloaded from [GitHub Releases](https://github.com/Hmbown/DeepSeek-TUI/releases). Use `DEEPSEEK_TUI_RELEASE_BASE_URL` for mirrored release assets.
 
+### NixOS / Nix
+
+```bash
+# Run without installing (nix flakes required)
+nix run github:Hmbown/DeepSeek-TUI
+
+# Install into your profile
+nix profile install github:Hmbown/DeepSeek-TUI
+
+# Enter a dev shell with the full toolchain
+nix develop github:Hmbown/DeepSeek-TUI
+```
+
+Or add to your NixOS / home-manager configuration:
+
+```nix
+inputs.deepseek-tui.url = "github:Hmbown/DeepSeek-TUI";
+# then: environment.systemPackages = [ inputs.deepseek-tui.packages.${system}.default ];
+```
+
 <details id="install-from-source">
 <summary>Install from source</summary>
 
