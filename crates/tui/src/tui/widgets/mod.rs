@@ -23,7 +23,7 @@ pub use renderable::Renderable;
 use std::time::Duration;
 
 use crate::palette;
-use crate::tui::app::{App, AppMode, ComposerDensity};
+use crate::tui::app::{App, AppMode, ComposerDensity, VimMode};
 use crate::tui::approval::{
     ApprovalRequest, ApprovalView, ElevationOption, ElevationRequest, RiskLevel, ToolCategory,
 };
@@ -566,6 +566,23 @@ impl Renderable for ComposerWidget<'_> {
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(border_color))
                 .style(background);
+            // Vim mode indicator — shown in the top-right corner of the
+            // composer border when vim editing is active.
+            if self.app.composer.vim_enabled {
+                let color = match self.app.composer.vim_mode {
+                    VimMode::Normal => palette::TEXT_MUTED,
+                    VimMode::Insert => palette::DEEPSEEK_SKY,
+                    VimMode::Visual => palette::MODE_PLAN,
+                };
+                let label = self.app.composer.vim_mode.label();
+                block = block.title_top(
+                    Line::from(Span::styled(
+                        label,
+                        Style::default().fg(color).bold(),
+                    ))
+                    .right_aligned(),
+                );
+            }
             if let Some(hint_line) = hint_line {
                 block = block.title_bottom(hint_line);
             }
