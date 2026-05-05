@@ -419,6 +419,9 @@ pub struct TuiOptions {
     /// session with the PR context already typed — the user can edit
     /// before sending or hit Enter to fire as-is.
     pub initial_input: Option<String>,
+    /// TUI preferences loaded from `~/.deepseek/tui.toml` (theme, font
+    /// size, keybind overrides). Defaults are used when the file is absent.
+    pub tui_prefs: crate::settings::TuiPrefs,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -613,6 +616,8 @@ pub struct App {
     pub max_input_history: usize,
     pub allow_shell: bool,
     pub max_subagents: usize,
+    /// Loaded from `~/.deepseek/tui.toml`; propagated from [`TuiOptions`].
+    pub tui_prefs: crate::settings::TuiPrefs,
     /// Cached sub-agent snapshots for UI views.
     pub subagent_cache: Vec<SubAgentResult>,
     /// Last known per-agent progress text for running sub-agents.
@@ -972,6 +977,7 @@ impl App {
             yolo,
             resume_session_id: _,
             initial_input,
+            tui_prefs,
         } = options;
 
         // If no provider is explicitly configured AND the system locale
@@ -1133,6 +1139,7 @@ impl App {
             max_input_history,
             allow_shell,
             max_subagents,
+            tui_prefs,
             subagent_cache: Vec::new(),
             agent_progress: HashMap::new(),
             subagent_card_index: HashMap::new(),
@@ -3349,6 +3356,8 @@ mod tests {
             yolo,
             resume_session_id: None,
             initial_input: None,
+
+            tui_prefs: Default::default(),
         }
     }
 

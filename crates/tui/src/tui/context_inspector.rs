@@ -326,6 +326,8 @@ mod tests {
                 yolo: false,
                 resume_session_id: None,
                 initial_input: None,
+
+                tui_prefs: Default::default(),
             },
             &Config::default(),
         )

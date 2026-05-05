@@ -3511,6 +3511,10 @@ async fn run_interactive(
     let use_bracketed_paste = crate::settings::Settings::load()
         .map(|s| s.bracketed_paste)
         .unwrap_or(true);
+    let tui_prefs = crate::settings::TuiPrefs::load().unwrap_or_else(|e| {
+        logging::warn(format!("Failed to load tui.toml: {e}"));
+        crate::settings::TuiPrefs::default()
+    });
 
     // Auto-install bundled system skills (e.g. skill-creator) on first launch.
     // Errors are non-fatal: log a warning and continue.
@@ -3567,6 +3571,7 @@ async fn run_interactive(
             resume_session_id,
             initial_input,
             max_subagents,
+            tui_prefs,
         },
     )
     .await

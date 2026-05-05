@@ -666,6 +666,8 @@ mod tests {
             yolo: false,
             resume_session_id: None,
             initial_input: None,
+
+            tui_prefs: Default::default(),
         };
         let mut app = App::new(options, &Config::default());
         // App::new may pick up `default_model` from a local user Settings

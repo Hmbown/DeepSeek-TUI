@@ -149,6 +149,8 @@ mod tests {
             yolo: false,
             resume_session_id: None,
             initial_input: None,
+
+            tui_prefs: Default::default(),
         };
         let mut app = App::new(options, &Config::default());
         let result = try_dispatch_user_command(&mut app, "/nonexistent-thing-12345");
