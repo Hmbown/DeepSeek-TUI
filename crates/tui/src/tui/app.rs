@@ -105,6 +105,9 @@ pub enum ReasoningEffort {
     High,
     #[default]
     Max,
+    /// Auto — engine selects optimal effort based on task complexity,
+    /// cache pressure, and cost budget (#663).
+    Auto,
 }
 
 impl ReasoningEffort {
@@ -118,6 +121,7 @@ impl ReasoningEffort {
             "medium" | "mid" => Self::Medium,
             "high" => Self::High,
             "max" | "maximum" | "xhigh" => Self::Max,
+            "auto" => Self::Auto,
             _ => Self::default(),
         }
     }
@@ -131,6 +135,7 @@ impl ReasoningEffort {
             Self::Medium => "medium",
             Self::High => "high",
             Self::Max => "max",
+            Self::Auto => "auto",
         }
     }
 
@@ -143,24 +148,28 @@ impl ReasoningEffort {
             Self::Medium => "med",
             Self::High => "high",
             Self::Max => "max",
+            Self::Auto => "auto",
         }
     }
 
-    /// Value forwarded to the engine/client. `None` means "provider default"
-    /// (for `Off` we still emit `"off"` so the client can inject
-    /// `thinking = {"type": "disabled"}`).
+    /// Value forwarded to the engine/client. For `Auto`, returns `None` so
+    /// the engine fills it in via the auto reasoning-effort selector (#663).
     #[must_use]
     pub fn api_value(self) -> Option<&'static str> {
-        Some(self.as_setting())
+        match self {
+            Self::Auto => None,
+            other => Some(other.as_setting()),
+        }
     }
 
-    /// Cycle through the three behaviorally distinct tiers.
+    /// Cycle through the behaviorally distinct tiers: Off → High → Max → Auto → Off.
     #[must_use]
     pub fn cycle_next(self) -> Self {
         match self {
             Self::Off => Self::High,
             Self::Low | Self::Medium | Self::High => Self::Max,
-            Self::Max => Self::Off,
+            Self::Max => Self::Auto,
+            Self::Auto => Self::Off,
         }
     }
 }

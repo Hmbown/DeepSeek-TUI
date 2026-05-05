@@ -200,6 +200,7 @@ pub enum ReasoningEffortValue {
     Medium,
     High,
     Max,
+    Auto,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -690,6 +691,7 @@ impl From<ReasoningEffort> for ReasoningEffortValue {
             ReasoningEffort::Medium => Self::Medium,
             ReasoningEffort::High => Self::High,
             ReasoningEffort::Max => Self::Max,
+            ReasoningEffort::Auto => Self::Auto,
         }
     }
 }
@@ -702,6 +704,7 @@ impl ReasoningEffortValue {
             ReasoningEffort::Medium => Self::Medium,
             ReasoningEffort::High => Self::High,
             ReasoningEffort::Max => Self::Max,
+            ReasoningEffort::Auto => Self::Auto,
         }
     }
 }
@@ -714,6 +717,7 @@ impl From<ReasoningEffortValue> for ReasoningEffort {
             ReasoningEffortValue::Medium => Self::Medium,
             ReasoningEffortValue::High => Self::High,
             ReasoningEffortValue::Max => Self::Max,
+            ReasoningEffortValue::Auto => Self::Auto,
         }
     }
 }
