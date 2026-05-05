@@ -702,6 +702,9 @@ pub struct Config {
     pub mcp_config_path: Option<String>,
     pub notes_path: Option<String>,
     pub memory_path: Option<String>,
+    /// When true, set `tool_choice: "required"` in all API requests so the
+    /// model MUST call a tool on every step (V4 strict tool-following mode).
+    pub strict_tool_mode: Option<bool>,
     /// Additional system-prompt sources concatenated in declared order
     /// (#454). Paths are expanded via `expand_path` so `~` and env
     /// vars work. Project config overrides user config (replace, not

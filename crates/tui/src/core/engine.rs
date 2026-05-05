@@ -140,6 +140,9 @@ pub struct EngineConfig {
     /// consulted when `memory_enabled` is `true`.
     pub memory_path: PathBuf,
     pub goal_objective: Option<String>,
+    /// When true, force `tool_choice: "required"` so the model always calls
+    /// a tool on every turn step (V4 strict tool-following mode).
+    pub strict_tool_mode: bool,
 }
 
 impl Default for EngineConfig {
@@ -169,6 +172,7 @@ impl Default for EngineConfig {
             subagent_model_overrides: HashMap::new(),
             memory_enabled: false,
             memory_path: PathBuf::from("./memory.md"),
+            strict_tool_mode: false,
             goal_objective: None,
         }
     }
