@@ -199,6 +199,7 @@ pub enum ReasoningEffortValue {
     Low,
     Medium,
     High,
+    Auto,
     Max,
 }
 
@@ -689,6 +690,7 @@ impl From<ReasoningEffort> for ReasoningEffortValue {
             ReasoningEffort::Low => Self::Low,
             ReasoningEffort::Medium => Self::Medium,
             ReasoningEffort::High => Self::High,
+            ReasoningEffort::Auto => Self::Auto,
             ReasoningEffort::Max => Self::Max,
         }
     }
@@ -701,6 +703,7 @@ impl ReasoningEffortValue {
             ReasoningEffort::Low => Self::Low,
             ReasoningEffort::Medium => Self::Medium,
             ReasoningEffort::High => Self::High,
+            ReasoningEffort::Auto => Self::Auto,
             ReasoningEffort::Max => Self::Max,
         }
     }
@@ -713,6 +716,7 @@ impl From<ReasoningEffortValue> for ReasoningEffort {
             ReasoningEffortValue::Low => Self::Low,
             ReasoningEffortValue::Medium => Self::Medium,
             ReasoningEffortValue::High => Self::High,
+            ReasoningEffortValue::Auto => Self::Auto,
             ReasoningEffortValue::Max => Self::Max,
         }
     }

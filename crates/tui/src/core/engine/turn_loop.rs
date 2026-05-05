@@ -228,6 +228,13 @@ impl Engine {
                     force_update_plan_this_step,
                 ))
             };
+
+            // Resolve `auto` reasoning_effort to a concrete tier (#663).
+            let effective_reasoning_effort = resolve_auto_effort(
+                self.session.reasoning_effort.as_deref(),
+                &self.session.messages,
+            );
+
             let request = MessageRequest {
                 model: self.session.model.clone(),
                 messages: self.session.messages.clone(),
@@ -241,7 +248,7 @@ impl Engine {
                 },
                 metadata: None,
                 thinking: None,
-                reasoning_effort: self.session.reasoning_effort.clone(),
+                reasoning_effort: effective_reasoning_effort,
                 stream: Some(true),
                 temperature: None,
                 top_p: None,
@@ -1593,5 +1600,51 @@ impl Engine {
             return (TurnOutcomeStatus::Failed, Some(err));
         }
         (TurnOutcomeStatus::Completed, None)
+    }
+}
+
+/// Resolve an `"auto"` reasoning-effort tier to a concrete value.
+///
+/// When the configured effort is `"auto"`, inspects the last user message
+/// and calls [`crate::auto_reasoning::select`] to pick the actual tier.
+/// Non-`"auto"` values pass through unchanged.
+fn resolve_auto_effort(reasoning_effort: Option<&str>, messages: &[Message]) -> Option<String> {
+    match reasoning_effort {
+        Some("auto") => {
+            // Find the last user message in the conversation.
+            let last_msg = messages
+                .iter()
+                .rev()
+                .find(|m| m.role == "user")
+                .map(|m| {
+                    m.content
+                        .iter()
+                        .filter_map(|block| {
+                            if let ContentBlock::Text { text, .. } = block {
+                                Some(text.as_str())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<&str>>()
+                        .join(" ")
+                })
+                .unwrap_or_default();
+
+            // is_subagent is false here — handle_deepseek_turn runs in the
+            // main engine (not a sub-agent's inner loop). Sub-agents have
+            // their own turn pass and can pass is_subagent=true when they
+            // call this function directly.
+            let tier = crate::auto_reasoning::select(false, &last_msg);
+            let resolved = tier.as_setting().to_string();
+            tracing::debug!(
+                reasoning_effort = %resolved,
+                is_subagent = false,
+                "auto_reasoning: resolved auto tier from user message"
+            );
+            Some(resolved)
+        }
+        Some(other) => Some(other.to_string()),
+        None => None,
     }
 }
