@@ -513,6 +513,13 @@ impl ToolRegistryBuilder {
         self.with_tool(Arc::new(NoteTool))
     }
 
+    /// Include the FIM (Fill-in-the-Middle) edit tool.
+    #[must_use]
+    pub fn with_fim_tool(self, client: Option<DeepSeekClient>, model: String) -> Self {
+        use super::fim::FimEditTool;
+        self.with_tool(Arc::new(FimEditTool::new(client, model)))
+    }
+
     /// Include the `remember` tool — model-callable bullet-add into the
     /// user memory file (#489). Only register when the user has opted
     /// in to the memory feature; without that, the tool would surface

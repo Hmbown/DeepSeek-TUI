@@ -711,6 +711,9 @@ pub struct Config {
     pub mcp_config_path: Option<String>,
     pub notes_path: Option<String>,
     pub memory_path: Option<String>,
+    /// When true, set `tool_choice: "required"` in all API requests so the
+    /// model MUST call a tool on every step (V4 strict tool-following mode).
+    pub strict_tool_mode: Option<bool>,
     /// Additional system-prompt sources concatenated in declared order
     /// (#454). Paths are expanded via `expand_path` so `~` and env
     /// vars work. Project config overrides user config (replace, not
@@ -2034,6 +2037,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
             per_model: override_cfg.context.per_model.or(base.context.per_model),
         },
         subagents: override_cfg.subagents.or(base.subagents),
+        strict_tool_mode: override_cfg.strict_tool_mode.or(base.strict_tool_mode),
         runtime_api: override_cfg.runtime_api.or(base.runtime_api),
     }
 }

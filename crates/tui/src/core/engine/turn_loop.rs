@@ -242,7 +242,11 @@ impl Engine {
                 system: self.session.system_prompt.clone(),
                 tools: active_tools.clone(),
                 tool_choice: if active_tools.is_some() {
-                    Some(json!({ "type": "auto" }))
+                    if self.config.strict_tool_mode {
+                        Some(json!("required"))
+                    } else {
+                        Some(json!({ "type": "auto" }))
+                    }
                 } else {
                     None
                 },
