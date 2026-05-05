@@ -352,7 +352,6 @@ fn modal_block() -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(palette::BORDER_COLOR))
-        .style(Style::default().bg(palette::DEEPSEEK_INK))
         .padding(Padding::uniform(1))
 }
 

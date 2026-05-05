@@ -62,7 +62,7 @@ impl Theme {
             section_borders: Borders::ALL,
             section_border_type: BorderType::Plain,
             section_border_color: palette::BORDER_COLOR,
-            section_bg: palette::DEEPSEEK_INK,
+            section_bg: Color::Reset,
             section_title_color: palette::DEEPSEEK_BLUE,
             // Horizontal padding only. `Padding::uniform(1)` ate two rows of
             // each sidebar panel — for compact terminals where Plan/Todos/Tasks
