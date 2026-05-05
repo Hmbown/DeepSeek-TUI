@@ -8,6 +8,67 @@ use std::{fs::OpenOptions, io::Write};
 
 use super::*;
 
+/// RAII guard that pauses the TUI's terminal-state ownership for the duration
+/// of an interactive tool, then restores it on drop.
+///
+/// Background: interactive tools (anything that needs the raw TTY — external
+/// editor, `exec_shell` with stdin, etc.) need the TUI to leave alt-screen,
+/// disable raw mode, and release mouse capture so the child sees a normal
+/// terminal. The TUI listens for `Event::PauseEvents` / `Event::ResumeEvents`
+/// and runs `pause_terminal` / `resume_terminal` in response.
+///
+/// Earlier code sent `PauseEvents` before tool execution and `ResumeEvents`
+/// after. That worked on the happy path, but if the tool's future was dropped
+/// — Ctrl+C cancellation, sub-agent abort, parent task cancelled while the
+/// tool was awaiting — the second `await` never reached and `ResumeEvents`
+/// was never sent. The terminal stayed paused: parent shell scrollbar took
+/// over, mouse wheel scrolled the host terminal instead of the transcript,
+/// and the TUI rendered as if into a regular cooked-mode buffer.
+///
+/// `Drop` runs synchronously and can't await, so we use `try_send` on a
+/// **clone of the event channel** to push `ResumeEvents` non-blockingly. The
+/// engine event channel is the same one we sent `PauseEvents` on, so by the
+/// time we drop there is by construction at least one consumed slot, which
+/// keeps `try_send` reliable in practice.
+pub(super) struct InteractiveTerminalGuard {
+    tx: Option<mpsc::Sender<Event>>,
+}
+
+impl InteractiveTerminalGuard {
+    /// Send `PauseEvents` and arm the guard. If `interactive` is false the
+    /// guard is a no-op — `Drop` will skip the resume.
+    pub(super) async fn engage(tx: mpsc::Sender<Event>, interactive: bool) -> Self {
+        if !interactive {
+            return Self { tx: None };
+        }
+        // Best-effort: if the receiver is gone the TUI has already shut down
+        // and there's nothing to restore. Either way we still arm the guard
+        // so `Drop` symmetrically tries the resume.
+        let _ = tx.send(Event::PauseEvents).await;
+        Self { tx: Some(tx) }
+    }
+}
+
+impl Drop for InteractiveTerminalGuard {
+    fn drop(&mut self) {
+        if let Some(tx) = self.tx.take() {
+            // Synchronous, non-blocking. If the channel is full we still want
+            // the resume to land — log so a cancellation that loses the
+            // resume is visible in traces, but don't panic. The TUI also
+            // re-sends a resume on its own teardown path as a backstop.
+            if let Err(err) = tx.try_send(Event::ResumeEvents) {
+                tracing::warn!(
+                    target: "engine.tool_execution",
+                    ?err,
+                    "InteractiveTerminalGuard: try_send(ResumeEvents) failed; \
+                     terminal may stay in paused state until the next \
+                     pause/resume cycle"
+                );
+            }
+        }
+    }
+}
+
 pub(super) fn emit_tool_audit(event: serde_json::Value) {
     let Some(path) = std::env::var_os("DEEPSEEK_TOOL_AUDIT_LOG") else {
         return;
@@ -166,11 +227,14 @@ impl Engine {
             ToolExecGuard::Write(lock.write().await)
         };
 
-        if interactive {
-            let _ = tx_event.send(Event::PauseEvents).await;
-        }
+        // RAII pause/resume: ensures `Event::ResumeEvents` always fires on
+        // drop, even if the tool future is cancelled mid-await. See
+        // `InteractiveTerminalGuard` doc-comment for the regression this
+        // closes (parent terminal scrollback hijacking the TUI after a
+        // cancelled interactive tool).
+        let _terminal = InteractiveTerminalGuard::engage(tx_event, interactive).await;
 
-        let result = if McpPool::is_mcp_tool(&tool_name) {
+        if McpPool::is_mcp_tool(&tool_name) {
             if let Some(pool) = mcp_pool {
                 Engine::execute_mcp_tool_with_pool(pool, &tool_name, tool_input).await
             } else {
@@ -186,13 +250,7 @@ impl Engine {
             Err(ToolError::not_available(format!(
                 "tool '{tool_name}' is not registered"
             )))
-        };
-
-        if interactive {
-            let _ = tx_event.send(Event::ResumeEvents).await;
         }
-
-        result
     }
 }
 
