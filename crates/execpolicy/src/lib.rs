@@ -7,6 +7,50 @@ use bash_arity::BashArityDict;
 use deepseek_protocol::{NetworkPolicyAmendment, NetworkPolicyRuleAction};
 use serde::{Deserialize, Serialize};
 
+/// Priority layer for a permission ruleset. Higher ordinal = higher priority.
+/// On conflict, the highest-priority layer's longest matching prefix wins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RulesetLayer {
+    BuiltinDefault = 0,
+    Agent = 1,
+    User = 2,
+}
+
+/// A named set of allow/deny prefix rules at a given priority layer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Ruleset {
+    pub layer: RulesetLayer,
+    pub trusted_prefixes: Vec<String>,
+    pub denied_prefixes: Vec<String>,
+}
+
+impl Ruleset {
+    pub fn builtin_default() -> Self {
+        Self {
+            layer: RulesetLayer::BuiltinDefault,
+            trusted_prefixes: vec![],
+            denied_prefixes: vec![],
+        }
+    }
+
+    pub fn agent(trusted: Vec<String>, denied: Vec<String>) -> Self {
+        Self {
+            layer: RulesetLayer::Agent,
+            trusted_prefixes: trusted,
+            denied_prefixes: denied,
+        }
+    }
+
+    pub fn user(trusted: Vec<String>, denied: Vec<String>) -> Self {
+        Self {
+            layer: RulesetLayer::User,
+            trusted_prefixes: trusted,
+            denied_prefixes: denied,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AskForApproval {
@@ -84,6 +128,10 @@ pub struct ExecPolicyContext<'a> {
 
 #[derive(Debug, Clone)]
 pub struct ExecPolicyEngine {
+    /// Layered rulesets (builtin → agent → user). When non-empty, takes precedence
+    /// over the legacy flat lists below.
+    rulesets: Vec<Ruleset>,
+    /// Legacy flat lists kept for backward compatibility with `new()`.
     trusted_prefixes: Vec<String>,
     denied_prefixes: Vec<String>,
     approved_for_session: HashSet<String>,
@@ -94,6 +142,7 @@ pub struct ExecPolicyEngine {
 impl Default for ExecPolicyEngine {
     fn default() -> Self {
         Self {
+            rulesets: vec![],
             trusted_prefixes: Vec::new(),
             denied_prefixes: Vec::new(),
             approved_for_session: HashSet::new(),
@@ -103,13 +152,53 @@ impl Default for ExecPolicyEngine {
 }
 
 impl ExecPolicyEngine {
+    /// Legacy constructor: wraps the two vecs into a User-layer ruleset.
     pub fn new(trusted_prefixes: Vec<String>, denied_prefixes: Vec<String>) -> Self {
         Self {
+            rulesets: vec![],
             trusted_prefixes,
             denied_prefixes,
             approved_for_session: HashSet::new(),
             arity_dict: BashArityDict::new(),
         }
+    }
+
+    /// Build an engine from explicit layered rulesets.
+    /// Rulesets are sorted by layer priority on construction.
+    pub fn with_rulesets(mut rulesets: Vec<Ruleset>) -> Self {
+        rulesets.sort_by_key(|r| r.layer);
+        Self {
+            rulesets,
+            trusted_prefixes: vec![],
+            denied_prefixes: vec![],
+            approved_for_session: HashSet::new(),
+        }
+    }
+
+    /// Add a ruleset layer (re-sorts internally).
+    pub fn add_ruleset(&mut self, ruleset: Ruleset) {
+        self.rulesets.push(ruleset);
+        self.rulesets.sort_by_key(|r| r.layer);
+    }
+
+    /// Resolve the effective trusted/denied prefix sets by merging all rulesets.
+    /// Higher-priority layers override lower ones; within a layer, longest prefix wins.
+    fn resolve_prefixes(&self) -> (Vec<String>, Vec<String>) {
+        if self.rulesets.is_empty() {
+            return (self.trusted_prefixes.clone(), self.denied_prefixes.clone());
+        }
+        // Collect all trusted/denied across all layers, highest-priority last so they
+        // shadow lower-priority entries with the same prefix.
+        let mut trusted: Vec<String> = vec![];
+        let mut denied: Vec<String> = vec![];
+        for rs in &self.rulesets {
+            trusted.extend(rs.trusted_prefixes.iter().cloned());
+            denied.extend(rs.denied_prefixes.iter().cloned());
+        }
+        // Also merge legacy flat lists as user-layer.
+        trusted.extend(self.trusted_prefixes.iter().cloned());
+        denied.extend(self.denied_prefixes.iter().cloned());
+        (trusted, denied)
     }
 
     pub fn remember_session_approval(&mut self, approval_key: String) {
@@ -122,9 +211,9 @@ impl ExecPolicyEngine {
 
     pub fn check(&self, ctx: ExecPolicyContext<'_>) -> Result<ExecPolicyDecision> {
         let normalized = normalize_command(ctx.command);
+        let (trusted_prefixes, denied_prefixes) = self.resolve_prefixes();
         // Deny rules use simple prefix matching (no arity semantics needed).
-        if let Some(rule) = self
-            .denied_prefixes
+        if let Some(rule) = denied_prefixes
             .iter()
             .find(|rule| normalized.starts_with(&normalize_command(rule)))
         {
@@ -141,8 +230,7 @@ impl ExecPolicyEngine {
         // Allow (trusted) rules use arity-aware prefix matching so that
         // `auto_allow = ["git status"]` matches `git status -s` but NOT
         // `git push origin main`.
-        let trusted_rule = self
-            .trusted_prefixes
+        let trusted_rule = trusted_prefixes
             .iter()
             .find(|rule| self.arity_dict.allow_rule_matches(rule, ctx.command))
             .cloned();
