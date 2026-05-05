@@ -2,7 +2,7 @@
 //! Web Content Pipeline — deep crawling, content filtering, and smart chunking.
 //!
 //! Inspired by Crawl4AI's web content extraction pipeline:
-//! - **Deep Crawl**: BFS/DFS traversal of linked pages with depth/page limits
+//! - **Deep Crawl**: Bfs/Dfs traversal of linked pages with depth/page limits
 //! - **Content Filter**: BM25-style relevance filtering to remove noise
 //! - **Smart Chunking**: Split large responses into coherent, processable segments
 //!
@@ -11,7 +11,7 @@
 //! ```text
 //! URL → Deep Crawl → Filter → Chunk → LLM-ready output
 //!  │        │          │        │
-//!  │        └─ BFS/DFS └─ BM25  └─ Token/sentence aware
+//!  │        └─ Bfs/Dfs └─ BM25  └─ Token/sentence aware
 //!  └─ Checkpoint/resume
 //! ```
 
@@ -25,9 +25,9 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum CrawlStrategy {
     /// Breadth-first: explore all links at current depth before going deeper.
-    BFS,
+    Bfs,
     /// Depth-first: follow one path deeply before backtracking.
-    DFS,
+    Dfs,
     /// Best-first: prioritize pages with highest relevance scores.
     BestFirst,
 }
@@ -36,8 +36,8 @@ impl CrawlStrategy {
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::BFS => "bfs",
-            Self::DFS => "dfs",
+            Self::Bfs => "bfs",
+            Self::Dfs => "dfs",
             Self::BestFirst => "best_first",
         }
     }
@@ -45,8 +45,8 @@ impl CrawlStrategy {
     #[must_use]
     pub fn from_str(s: &str) -> Option<Self> {
         match s.trim().to_lowercase().as_str() {
-            "bfs" | "breadth" | "breadth_first" => Some(Self::BFS),
-            "dfs" | "depth" | "depth_first" => Some(Self::DFS),
+            "bfs" | "breadth" | "breadth_first" => Some(Self::Bfs),
+            "dfs" | "depth" | "depth_first" => Some(Self::Dfs),
             "best_first" | "best" | "priority" => Some(Self::BestFirst),
             _ => None,
         }
@@ -74,7 +74,7 @@ impl Default for DeepCrawlConfig {
     fn default() -> Self {
         Self {
             start_url: String::new(),
-            strategy: CrawlStrategy::BFS,
+            strategy: CrawlStrategy::Bfs,
             max_depth: 3,
             max_pages: 10,
             url_pattern: None,
@@ -153,8 +153,8 @@ impl DeepCrawlState {
         }
 
         match self.config.strategy {
-            CrawlStrategy::BFS => self.queue.pop_front(),
-            CrawlStrategy::DFS => self.queue.pop_back(),
+            CrawlStrategy::Bfs => self.queue.pop_front(),
+            CrawlStrategy::Dfs => self.queue.pop_back(),
             CrawlStrategy::BestFirst => {
                 // Find highest-scored URL
                 let mut best_idx: Option<usize> = None;
@@ -489,7 +489,7 @@ impl ToolSpec for WebPipelineTool {
     }
 
     fn description(&self) -> &'static str {
-        "Deep crawl websites using BFS/DFS/best-first strategies, filter content with BM25-style relevance scoring, and chunk large responses for LLM processing. Actions: crawl_start, crawl_next, crawl_record, crawl_status, filter_content, chunk_text."
+        "Deep crawl websites using Bfs/Dfs/best-first strategies, filter content with BM25-style relevance scoring, and chunk large responses for LLM processing. Actions: crawl_start, crawl_next, crawl_record, crawl_status, filter_content, chunk_text."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -547,7 +547,7 @@ impl ToolSpec for WebPipelineTool {
                     .get("strategy")
                     .and_then(|v| v.as_str())
                     .and_then(CrawlStrategy::from_str)
-                    .unwrap_or(CrawlStrategy::BFS);
+                    .unwrap_or(CrawlStrategy::Bfs);
                 let max_depth = input.get("max_depth").and_then(|v| v.as_u64()).unwrap_or(3) as u32;
                 let max_pages = input.get("max_pages").and_then(|v| v.as_u64()).unwrap_or(10) as u32;
 
@@ -746,7 +746,7 @@ mod tests {
     fn test_deep_crawl_bfs() {
         let config = DeepCrawlConfig {
             start_url: "https://example.com".into(),
-            strategy: CrawlStrategy::BFS,
+            strategy: CrawlStrategy::Bfs,
             max_depth: 2,
             max_pages: 5,
             url_pattern: None,
@@ -806,7 +806,7 @@ mod tests {
     fn test_same_domain_filter() {
         let config = DeepCrawlConfig {
             start_url: "https://docs.example.com/guide".into(),
-            strategy: CrawlStrategy::BFS,
+            strategy: CrawlStrategy::Bfs,
             max_depth: 1,
             max_pages: 3,
             url_pattern: None,
