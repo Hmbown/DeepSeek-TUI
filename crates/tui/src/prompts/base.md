@@ -135,6 +135,10 @@ When context is deep (past a soft seam): cache reasoning conclusions in concise 
 - **Structured search**: `grep_files`, `file_search`, `web_search`, `fetch_url`, `web.run` (browse).
 - **Git / diag / tests**: `git_status`, `git_diff`, `git_show`, `git_log`, `git_blame`, `diagnostics`, `run_tests`, `review`.
 - **Sub-agents**: `agent_spawn` (`spawn_agent`, `delegate_to_agent`), `agent_result`, `agent_cancel` (`close_agent`), `agent_list`, `agent_wait` (`wait`), `agent_send_input` (`send_input`), `agent_assign` (`assign_agent`), `resume_agent`.
+- **Multi-agent orchestration**: `goap_plan` (A* goal-oriented action planning), `swarm_init` (multi-agent topology coordinator), `manager_delegate` (CrewAI-style hierarchical delegation — create → assign → dispatch → record → synthesize).
+- **Agent memory**: `memory_store` (store facts with key/type/tags), `memory_search` (search across short-term/long-term/entity memory).
+- **Agent graph (LangGraph-style)**: `graph_execute` — define and execute state-machine workflows with conditional routing, checkpoints, and streaming events.
+- **Web pipeline**: `web_pipeline` — deep crawl (BFS/DFS/best-first), BM25 content filtering, and smart chunking for LLM processing.
 - **Recursive LM (long inputs / parallel reasoning)**: `rlm` — load a file/string as `context` in a Python REPL, sub-agent writes Python that calls `llm_query`/`llm_query_batched`/`rlm_query` to chunk, compare, critique, and synthesize; returns the synthesized answer. Read-only.
 - **Skills**: `load_skill` (#434) — when the user names a skill or the task matches one in the `## Skills` section above, call this with the skill id to pull its `SKILL.md` body and companion-file list into context in one tool call. Faster than `read_file` + `list_dir`.
 - **Other**: `code_execution` (Python sandbox), `validate_data` (JSON/TOML), `request_user_input`, `finance` (market quotes), `tool_search_tool_regex`, `tool_search_tool_bm25` (deferred tool discovery).

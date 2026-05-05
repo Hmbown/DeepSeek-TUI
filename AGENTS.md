@@ -62,6 +62,33 @@ When in doubt, write the patch as a draft, list the items you'd add, and ask the
 - **Sub-agents**: Single model-callable surface is `agent_spawn` (returns an `agent_id` immediately; parent keeps working) plus `agent_wait` / `agent_result` / `agent_cancel` / `agent_list` / `agent_send_input` / `agent_resume` / `agent_assign`. The old `agent_swarm` / `spawn_agents_on_csv` / `/swarm` surface was removed in v0.8.5 (#336).
 - **`rlm` tool** (`crates/tui/src/tools/rlm.rs`): a sandboxed Python REPL where a sub-LLM can call in-REPL helpers (`llm_query()`, `llm_query_batched()`, `rlm_query()`, `rlm_query_batched()`) — those `*_query` names are **Python helpers inside the REPL**, not separately-registered model-visible tools. Always loaded across all modes.
 
+## Multi-Agent Orchestration (v0.8.10+)
+
+DeepSeek TUI supports five orchestration layers that compose hierarchically:
+
+| Layer | Tool | Role | Inspired By |
+|-------|------|------|-------------|
+| **GOAP Planner** | `goap_plan` | A* search over world-state facts → lowest-cost action plan | F.E.A.R. AI |
+| **Agent Graph** | `graph_execute` | State-machine workflows with conditional routing, checkpoints, streaming | LangGraph |
+| **Swarm Coordinator** | `swarm_init` | Multi-agent topologies (hierarchical, mesh, ring, star, adaptive) with consensus | CrewAI Flows / Ruflo |
+| **Manager Agent** | `manager_delegate` | Hierarchical process: decompose goal → delegate to specialists → validate → synthesize | CrewAI |
+| **Agent Memory** | `memory_store` / `memory_search` | Short-term (FIFO), long-term (persistent), entity (key-value) memory across sessions | CrewAI Memory |
+
+### Composition Pattern
+
+The layers are designed to compose: `goap_plan` produces a step plan → `manager_delegate` dispatches each step → `graph_execute` orchestrates the execution flow → `agent_spawn` runs individual agents. Agent memory persists across the pipeline so context survives between sessions.
+
+### Key Files
+
+- `crates/tui/src/tools/goap.rs` — GOAP planner + `GoapPlanTool` (ToolSpec)
+- `crates/tui/src/tools/agent_graph.rs` — LangGraph-style agent graph
+- `crates/tui/src/tools/swarm.rs` — Swarm topologies + `SwarmInitTool`
+- `crates/tui/src/tools/manager_agent.rs` — Manager hierarchical delegation
+- `crates/tui/src/tools/agent_memory.rs` — Short/long/entity memory store
+- `crates/tui/src/tools/web_pipeline.rs` — Deep crawl, BM25 filter, smart chunking
+- `crates/tui/src/tools/subagent/middleware.rs` — CompactionGuard, AgentRouter, ModelRouter
+- `crates/tui/src/tools/profiles.rs` — Named agent profiles (code-reviewer, architect, etc.)
+
 ## Session Longevity (Critical)
 
 Long sessions in DeepSeek TUI WILL degrade and crash if you work sequentially. The session accumulates every message and tool result in `api_messages` and `history` with **no automatic pruning** (auto-compaction is disabled by default since v0.6.6). Session saves serialize the entire bloated array to disk.
