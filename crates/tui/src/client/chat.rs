@@ -825,8 +825,7 @@ fn log_thinking_mode_violations(body: &Value) {
 
 fn requires_reasoning_content(model: &str) -> bool {
     let lower = model.to_lowercase();
-    lower.contains("deepseek-v3.2")
-        || lower.contains("deepseek-v4")
+    lower.contains("deepseek-v4")
         || lower.contains("reasoner")
         || lower.contains("-reasoning")
         || lower.contains("-thinking")

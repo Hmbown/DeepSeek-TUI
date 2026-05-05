@@ -719,22 +719,14 @@ mod tests {
     }
 
     #[test]
-    fn normalize_v3_and_reasoner_unchanged() {
+    fn normalize_v4_and_fallback_prior_keys() {
         assert_eq!(
-            normalize_model_prior_key("deepseek-chat"),
-            "deepseek_v3_2_chat"
+            normalize_model_prior_key("deepseek-v4-pro"),
+            "deepseek_v4_pro"
         );
         assert_eq!(
-            normalize_model_prior_key("deepseek-v3-chat"),
-            "deepseek_v3_2_chat"
-        );
-        assert_eq!(
-            normalize_model_prior_key("deepseek-reasoner"),
-            "deepseek_v3_2_reasoner"
-        );
-        assert_eq!(
-            normalize_model_prior_key("deepseek-r1"),
-            "deepseek_v3_2_reasoner"
+            normalize_model_prior_key("deepseek-v4-flash"),
+            "deepseek_v4_flash"
         );
         assert_eq!(
             normalize_model_prior_key("unknown-model"),

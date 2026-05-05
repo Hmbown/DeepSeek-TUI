@@ -50,8 +50,7 @@ fn pricing_for_model_at(model: &str, now: DateTime<Utc>) -> Option<ModelPricing>
             output_per_million: 3.48,
         })
     } else {
-        // deepseek-v4-flash and legacy aliases (deepseek-chat, deepseek-reasoner,
-        // deepseek-v3*) all price as v4-flash.
+        // deepseek-v4-flash pricing.
         Some(ModelPricing {
             input_cache_hit_per_million: 0.0028,
             input_cache_miss_per_million: 0.14,

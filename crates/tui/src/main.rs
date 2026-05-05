@@ -2185,30 +2185,15 @@ fn run_doctor_json(
 /// Build the `capability` section for the machine-readable doctor report.
 ///
 /// Returns a JSON value with the resolved provider, resolved model, context
-/// window, max output, thinking support, cache telemetry support, request
-/// payload mode, and any deprecation notice for legacy aliases.
+/// window, max output, thinking support, cache telemetry support, and request
+/// payload mode.
 fn provider_capability_report(config: &Config) -> serde_json::Value {
     use serde_json::json;
 
     let provider = config.api_provider();
     let model = config.default_model();
 
-    // Detect deprecation for the raw model name (before provider-specific mapping).
-    let raw_model = config
-        .default_text_model
-        .as_deref()
-        .unwrap_or(DEFAULT_TEXT_MODEL);
-    let raw_deprecation = crate::config::deprecation_for_model(raw_model);
-
     let cap = crate::config::provider_capability(provider, &model);
-
-    let deprecation = raw_deprecation.map(|d| {
-        json!({
-            "alias": d.alias,
-            "replacement": d.replacement,
-            "notice": d.notice,
-        })
-    });
 
     json!({
         "resolved_provider": provider.as_str(),
@@ -2218,7 +2203,6 @@ fn provider_capability_report(config: &Config) -> serde_json::Value {
         "thinking_supported": cap.thinking_supported,
         "cache_telemetry_supported": cap.cache_telemetry_supported,
         "request_payload_mode": serde_json::to_value(cap.request_payload_mode).unwrap_or_default(),
-        "deprecation": deprecation,
     })
 }
 

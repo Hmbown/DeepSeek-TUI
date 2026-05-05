@@ -137,8 +137,6 @@ pub struct ProviderCapability {
     pub cache_telemetry_supported: bool,
     /// Which request-payload dialect the provider uses.
     pub request_payload_mode: RequestPayloadMode,
-    /// Deprecation notice for legacy model aliases (empty when not deprecated).
-    pub deprecation: Option<ModelDeprecation>,
 }
 
 /// Which request-payload dialect the provider speaks.
@@ -150,61 +148,7 @@ pub enum RequestPayloadMode {
     ResponsesApi,
 }
 
-/// Deprecation metadata for a legacy model alias.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
-pub struct ModelDeprecation {
-    /// Legacy alias that is deprecated (e.g. "deepseek-chat").
-    pub alias: String,
-    /// Canonical replacement model.
-    pub replacement: String,
-    /// Human-readable deprecation date / notice.
-    pub notice: String,
-}
 
-/// Known deprecations for legacy DeepSeek model aliases.
-fn deepseek_legacy_aliases() -> &'static [ModelDeprecation] {
-    use std::sync::OnceLock;
-    static ALIASES: OnceLock<Vec<ModelDeprecation>> = OnceLock::new();
-    ALIASES.get_or_init(|| {
-        vec![
-            ModelDeprecation {
-                alias: String::from("deepseek-chat"),
-                replacement: String::from("deepseek-v4-flash"),
-                notice: String::from("Deprecated; will be removed in a future release. Use 'deepseek-v4-flash' instead."),
-            },
-            ModelDeprecation {
-                alias: String::from("deepseek-reasoner"),
-                replacement: String::from("deepseek-v4-flash"),
-                notice: String::from("Deprecated; will be removed in a future release. Use 'deepseek-v4-flash' instead."),
-            },
-            ModelDeprecation {
-                alias: String::from("deepseek-r1"),
-                replacement: String::from("deepseek-v4-flash"),
-                notice: String::from("Deprecated; will be removed in a future release. Use 'deepseek-v4-flash' instead."),
-            },
-            ModelDeprecation {
-                alias: String::from("deepseek-v3"),
-                replacement: String::from("deepseek-v4-flash"),
-                notice: String::from("Deprecated; will be removed in a future release. Use 'deepseek-v4-flash' instead."),
-            },
-            ModelDeprecation {
-                alias: String::from("deepseek-v3.2"),
-                replacement: String::from("deepseek-v4-flash"),
-                notice: String::from("Deprecated; will be removed in a future release. Use 'deepseek-v4-flash' instead."),
-            },
-        ]
-    })
-}
-
-/// Check if a model name is a known legacy alias and return its deprecation info.
-///
-/// This matches the same list as [`canonical_model_name`] and
-/// [`normalize_model_name`], returning deprecation metadata for each alias.
-#[must_use]
-pub fn deprecation_for_model(model: &str) -> Option<&'static ModelDeprecation> {
-    let lower = model.trim().to_ascii_lowercase();
-    deepseek_legacy_aliases().iter().find(|d| d.alias == lower)
-}
 
 /// Resolve the provider capability for a given [`ApiProvider`] and resolved
 /// model string.
@@ -248,11 +192,6 @@ pub fn provider_capability(provider: ApiProvider, resolved_model: &str) -> Provi
     // Request payload mode: all current providers use chat completions.
     let request_payload_mode = RequestPayloadMode::ChatCompletions;
 
-    // Deprecation: check if the original model name (before normalization)
-    // is a known legacy alias. We check the resolved model since that's what
-    // we have here; the caller should also check the user-facing model.
-    let deprecation = deprecation_for_model(resolved_model);
-
     ProviderCapability {
         provider,
         resolved_model: resolved_model.to_string(),
@@ -261,30 +200,29 @@ pub fn provider_capability(provider: ApiProvider, resolved_model: &str) -> Provi
         thinking_supported,
         cache_telemetry_supported,
         request_payload_mode,
-        deprecation: deprecation.cloned(),
     }
 }
 
 /// Canonicalize common model aliases to stable DeepSeek IDs.
 ///
-/// Legacy `deepseek-chat` / `deepseek-reasoner` remain silent aliases for the
-/// current fast V4 model.
+/// v4-pro/v4-flash provide canonical forms; v-series snapshots pass through
+/// unchanged. Legacy aliases (deepseek-chat, etc.) are no longer folded —
+/// DeepSeek's own `/v1/models` endpoint is the source of truth.
 #[must_use]
 pub fn canonical_model_name(model: &str) -> Option<&'static str> {
     match model.trim().to_ascii_lowercase().as_str() {
         "deepseek-v4-pro" | "deepseek-v4pro" => Some("deepseek-v4-pro"),
         "deepseek-v4-flash" | "deepseek-v4flash" => Some("deepseek-v4-flash"),
-        "deepseek-chat" | "deepseek-reasoner" | "deepseek-r1" | "deepseek-v3" | "deepseek-v3.2" => {
-            Some("deepseek-v4-flash")
-        }
         _ => None,
     }
 }
 
 /// Normalize a configured/runtime model name.
 ///
-/// Accepts known aliases plus any valid `deepseek*` model ID so future
-/// DeepSeek releases work without code changes.
+/// Trims whitespace and lowercases. v-series snapshots (deepseek-v4-flash-20260423)
+/// pass through unchanged so users can pin dated variants. Non-DeepSeek or
+/// malformed names return `None`; DeepSeek's `/v1/models` endpoint is the
+/// authority on valid model IDs.
 #[must_use]
 pub fn normalize_model_name(model: &str) -> Option<String> {
     let trimmed = model.trim();
@@ -3246,26 +3184,35 @@ api_key = "old-openrouter-key"
     }
 
     #[test]
-    fn normalize_model_name_handles_aliases_and_future_ids() {
+    fn normalize_model_name_preserves_v_series_snapshots() {
+        // v4 canonical forms still resolve
         assert_eq!(
-            normalize_model_name("deepseek-v3.2").as_deref(),
-            Some("deepseek-v4-flash")
+            normalize_model_name("deepseek-v4-pro").as_deref(),
+            Some("deepseek-v4-pro")
         );
         assert_eq!(
-            normalize_model_name("deepseek-r1").as_deref(),
-            Some("deepseek-v4-flash")
+            normalize_model_name("deepseek-v4pro").as_deref(),
+            Some("deepseek-v4-pro")
         );
+        // v-series dated snapshots pass through unchanged
         assert_eq!(
-            normalize_model_name("DeepSeek-V4").as_deref(),
-            Some("deepseek-v4")
+            normalize_model_name("deepseek-v4-flash-20260423").as_deref(),
+            Some("deepseek-v4-flash-20260423")
         );
+        // future v-series identities pass through
+        assert_eq!(
+            normalize_model_name("deepseek-v5-pro-20270101").as_deref(),
+            Some("deepseek-v5-pro-20270101")
+        );
+        // legacy names pass through unchanged — server decides
+        assert_eq!(
+            normalize_model_name("deepseek-chat").as_deref(),
+            Some("deepseek-chat")
+        );
+        // cross-provider names still normalize
         assert_eq!(
             normalize_model_name("deepseek-ai/deepseek-v4-pro").as_deref(),
             Some("deepseek-ai/deepseek-v4-pro")
-        );
-        assert_eq!(
-            normalize_model_name("deepseek-ai/deepseek-v4-flash").as_deref(),
-            Some("deepseek-ai/deepseek-v4-flash")
         );
     }
 
@@ -3338,13 +3285,14 @@ api_key = "old-openrouter-key"
 
         // Safety: test-only environment mutation guarded by a global mutex.
         unsafe {
-            env::set_var("DEEPSEEK_MODEL", "deepseek-chat");
+            env::set_var("DEEPSEEK_MODEL", "deepseek-v4-flash-20260423");
         }
 
         let config = Config::load(None, None)?;
+        // v-series snapshots pass through unchanged — no alias folding
         assert_eq!(
             config.default_text_model.as_deref(),
-            Some("deepseek-v4-flash")
+            Some("deepseek-v4-flash-20260423")
         );
         Ok(())
     }
@@ -3951,41 +3899,6 @@ model = "deepseek-v4-pro"
     // ========================================================================
 
     #[test]
-    fn deprecation_for_model_returns_notice_for_legacy_aliases() {
-        let cases = &[
-            "deepseek-chat",
-            "deepseek-reasoner",
-            "deepseek-r1",
-            "deepseek-v3",
-            "deepseek-v3.2",
-        ];
-        for alias in cases {
-            let dep = deprecation_for_model(alias);
-            assert!(dep.is_some(), "expected deprecation for '{alias}'");
-            let dep = dep.unwrap();
-            assert_eq!(dep.alias, *alias);
-            assert_eq!(dep.replacement, "deepseek-v4-flash");
-            assert!(dep.notice.contains("Deprecated"));
-            assert!(dep.notice.contains("deepseek-v4-flash"));
-        }
-    }
-
-    #[test]
-    fn deprecation_for_model_returns_none_for_current_models() {
-        assert!(deprecation_for_model("deepseek-v4-pro").is_none());
-        assert!(deprecation_for_model("deepseek-v4-flash").is_none());
-        assert!(deprecation_for_model("deepseek-ai/deepseek-v4-pro").is_none());
-    }
-
-    #[test]
-    fn deprecation_for_model_is_case_insensitive() {
-        let dep = deprecation_for_model("DeepSeek-Chat").unwrap();
-        assert_eq!(dep.alias, "deepseek-chat");
-        let dep = deprecation_for_model("DEEPSEEK-REASONER").unwrap();
-        assert_eq!(dep.alias, "deepseek-reasoner");
-    }
-
-    #[test]
     fn provider_capability_deepseek_v4_pro_has_1m_window_and_thinking() {
         let cap = provider_capability(ApiProvider::Deepseek, "deepseek-v4-pro");
         assert_eq!(
@@ -3999,7 +3912,6 @@ model = "deepseek-v4-pro"
             cap.request_payload_mode,
             RequestPayloadMode::ChatCompletions
         );
-        assert!(cap.deprecation.is_none());
     }
 
     #[test]
@@ -4107,21 +4019,6 @@ model = "deepseek-v4-pro"
     }
 
     #[test]
-    fn provider_capability_legacy_alias_shows_deprecation() {
-        let cap = provider_capability(ApiProvider::Deepseek, "deepseek-chat");
-        assert!(cap.deprecation.is_some());
-        let dep = cap.deprecation.unwrap();
-        assert_eq!(dep.alias, "deepseek-chat");
-        assert_eq!(dep.replacement, "deepseek-v4-flash");
-        assert!(dep.notice.contains("Deprecated"));
-        // Even though deprecated, it still resolves as a V4 model with 1M window.
-        assert_eq!(
-            cap.context_window,
-            crate::models::DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS
-        );
-    }
-
-    #[test]
     fn provider_capability_roundtrip_serialization() {
         let cap = provider_capability(ApiProvider::Deepseek, "deepseek-v4-pro");
         let json = serde_json::to_value(&cap).unwrap();
@@ -4129,15 +4026,4 @@ model = "deepseek-v4-pro"
         assert_eq!(cap, deserialized);
     }
 
-    #[test]
-    fn deprecation_serialization_roundtrip() {
-        let dep = ModelDeprecation {
-            alias: "deepseek-chat".to_string(),
-            replacement: "deepseek-v4-flash".to_string(),
-            notice: "Test notice".to_string(),
-        };
-        let json = serde_json::to_value(&dep).unwrap();
-        let deserialized: ModelDeprecation = serde_json::from_value(json).unwrap();
-        assert_eq!(dep, deserialized);
-    }
 }

@@ -218,7 +218,7 @@ pub fn context_window_for_model(model: &str) -> Option<u32> {
         if let Some(explicit_window) = deepseek_context_window_hint(&lower) {
             return Some(explicit_window);
         }
-        if lower.contains("v4") || is_current_deepseek_v4_alias(&lower) {
+        if lower.contains("v4") {
             return Some(DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS);
         }
         return Some(LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS);
@@ -227,13 +227,6 @@ pub fn context_window_for_model(model: &str) -> Option<u32> {
         return Some(200_000);
     }
     None
-}
-
-fn is_current_deepseek_v4_alias(model_lower: &str) -> bool {
-    matches!(
-        model_lower,
-        "deepseek-chat" | "deepseek-reasoner" | "deepseek-r1" | "deepseek-v3" | "deepseek-v3.2"
-    )
 }
 
 fn deepseek_context_window_hint(model_lower: &str) -> Option<u32> {
@@ -376,21 +369,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn current_deepseek_aliases_map_to_v4_1m_context_window() {
+    fn v4_snapshots_preserve_context_window() {
+        // v-series snapshots get 1M context since they contain "v4"
         assert_eq!(
-            context_window_for_model("deepseek-reasoner"),
+            context_window_for_model("deepseek-v4-flash-20260423"),
             Some(DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS)
         );
         assert_eq!(
-            context_window_for_model("deepseek-chat"),
-            Some(DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS)
-        );
-        assert_eq!(
-            context_window_for_model("deepseek-v3"),
-            Some(DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS)
-        );
-        assert_eq!(
-            context_window_for_model("deepseek-v3.2"),
+            context_window_for_model("deepseek-v4-pro-20260423"),
             Some(DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS)
         );
     }

@@ -2172,12 +2172,13 @@ mod tests {
     #[test]
     fn sanitize_thinking_mode_returns_none_for_non_thinking_model() {
         let mut body = json!({
-            "model": "deepseek-chat",
+            "model": "deepseek-v4-flash",
             "messages": [
                 { "role": "user", "content": "hi" }
             ]
         });
-        let result = sanitize_thinking_mode_messages(&mut body, "deepseek-chat", None);
+        let result = sanitize_thinking_mode_messages(&mut body, "deepseek-v4-flash", None);
+        // reasoning_effort is None → no thinking injection, result is None
         assert!(result.is_none());
     }
 
