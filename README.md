@@ -4,28 +4,30 @@
 
 [简体中文 README](README.zh-CN.md)
 
-Before proceeding, ensure that `Node.js` and `npm` are installed.
+## Install
+
+`deepseek` ships as a self-contained Rust binary — **no Node.js or Python
+runtime is required to run it.** Pick whichever path you already have on
+your machine; they all land the same binary on your `PATH`.
 
 ```bash
-node --version
-npm --version
-```
-
-If `Node.js` and `npm` are not installed in your environment, refer to the installation guides provided below:
-
-* English version: [https://nodejs.org/en/download](https://nodejs.org/en/download)
-* Chinese version: [https://nodejs.org/zh-cn/download](https://nodejs.org/zh-cn/download)
-
-Select the version that best matches your device specifications and operating system. 
-
-Install the `deepseek-tui` now:
-
-```bash
+# 1. npm — easiest if you already use Node. The npm package is a thin
+#    installer that downloads the matching prebuilt binary from GitHub
+#    Releases; it does NOT add a Node runtime dependency to deepseek itself.
 npm install -g deepseek-tui
 
-# When installing deepseek-tui in China's internet environment, you can use an npm mirror to speed up the installation process.
-# npm install -g deepseek-tui@latest --registry=https://registry.npmmirror.com
+# 2. Cargo — no Node needed.
+cargo install deepseek-tui-cli --locked   # `deepseek` (entry point)
+cargo install deepseek-tui     --locked   # `deepseek-tui` (TUI binary)
+
+# 3. Direct download — no Node, no toolchain.
+#    https://github.com/Hmbown/DeepSeek-TUI/releases
+#    Prebuilt for Linux x64/ARM64, macOS x64/ARM64, Windows x64.
 ```
+
+> In mainland China, speed up the npm path with
+> `--registry=https://registry.npmmirror.com`, or use the
+> [Cargo mirror](#china--mirror-friendly-installation) below.
 
 [![CI](https://github.com/Hmbown/DeepSeek-TUI/actions/workflows/ci.yml/badge.svg)](https://github.com/Hmbown/DeepSeek-TUI/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/deepseek-tui)](https://www.npmjs.com/package/deepseek-tui)
