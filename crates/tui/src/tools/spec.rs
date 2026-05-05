@@ -228,7 +228,6 @@ impl ToolContext {
 
     /// Attach an external sandbox backend for remote shell execution.
     #[must_use]
-    #[allow(dead_code)]
     pub fn with_sandbox_backend(mut self, backend: std::sync::Arc<dyn SandboxBackend>) -> Self {
         self.sandbox_backend = Some(backend);
         self

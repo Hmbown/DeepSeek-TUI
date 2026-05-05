@@ -309,6 +309,9 @@ pub struct Engine {
     /// Diagnostics collected during the current step's tool calls. Drained
     /// and forwarded as a synthetic user message before the next API call.
     pending_lsp_blocks: Vec<crate::lsp::DiagnosticBlock>,
+    /// Optional pluggable sandbox backend (e.g. Alibaba OpenSandbox). `None`
+    /// when `sandbox_backend` is absent or `"none"` in config.
+    sandbox_backend: Option<Arc<dyn crate::sandbox::backend::SandboxBackend>>,
 }
 
 // === Internal tool helpers ===
@@ -420,6 +423,15 @@ impl Engine {
             None => crate::lsp::LspManager::disabled(),
         });
 
+        let sandbox_backend = match crate::sandbox::backend::create_backend(api_config) {
+            Ok(Some(b)) => Some(Arc::from(b)),
+            Ok(None) => None,
+            Err(e) => {
+                tracing::warn!("Failed to initialize sandbox backend: {e}");
+                None
+            }
+        };
+
         let mut engine = Engine {
             config,
             deepseek_client,
@@ -442,6 +454,7 @@ impl Engine {
             turn_counter: 0,
             lsp_manager,
             pending_lsp_blocks: Vec::new(),
+            sandbox_backend,
         };
         engine.rehydrate_latest_canonical_state();
 
@@ -1280,6 +1293,10 @@ impl Engine {
 
         if let Some(decider) = self.config.network_policy.as_ref() {
             ctx = ctx.with_network_policy(decider.clone());
+        }
+
+        if let Some(backend) = self.sandbox_backend.as_ref() {
+            ctx = ctx.with_sandbox_backend(Arc::clone(backend));
         }
 
         match mode {
