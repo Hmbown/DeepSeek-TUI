@@ -593,6 +593,13 @@ impl Renderable for FooterWidget {
         all_spans.push(spacer_span);
         all_spans.extend(right_spans);
 
+        // Fill the footer area with the deepseek-ink background before
+        // painting the text line, so the status bar reads as part of the
+        // unified dark surface (issue #734).
+        ratatui::widgets::Block::default()
+            .style(ratatui::style::Style::default().bg(palette::DEEPSEEK_INK))
+            .render(area, buf);
+
         let paragraph = Paragraph::new(Line::from(all_spans));
         paragraph.render(area, buf);
     }
