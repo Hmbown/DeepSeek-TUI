@@ -68,7 +68,7 @@ function buildFromSourceHint() {
   return [
     "You can still run DeepSeek TUI by building from source with Cargo:",
     "",
-    "  # Requires Rust 1.85+ (https://rustup.rs)",
+    "  # Requires Rust 1.88+ (https://rustup.rs)",
     "  cargo install deepseek-tui-cli --locked   # provides `deepseek`",
     "  cargo install deepseek-tui     --locked   # provides `deepseek-tui`",
     "",

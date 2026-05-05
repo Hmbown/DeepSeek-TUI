@@ -8,7 +8,7 @@
 # in a minimal runtime layer. No MCP servers or heavy toolchains are included
 # — keep it slim.
 
-ARG RUST_VERSION=1.85
+ARG RUST_VERSION=1.88
 
 # ── Stage 1: Build ────────────────────────────────────────────────────
 FROM --platform=$BUILDPLATFORM rust:${RUST_VERSION}-slim-bookworm AS builder
