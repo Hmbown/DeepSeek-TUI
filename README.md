@@ -174,24 +174,18 @@ SGLANG_BASE_URL="http://localhost:30000/v1" deepseek --provider sglang --model d
 
 ---
 
-## What's New In v0.8.12
+## What's New In v0.8.13
 
-A feature release with 20 community PRs on top of the v0.8.11 cache-maxing foundation. [Full changelog](CHANGELOG.md).
+A stabilization release focused on DeepSeek V4 runtime reliability, tool-call recovery, and TUI truthfulness. [Full changelog](CHANGELOG.md).
 
-- **Reasoning-effort auto mode** — `reasoning_effort = "auto"` picks the right tier from the prompt: debug/error → Max, search/lookup → Low, default → High
-- **Bash arity dictionary** — `auto_allow = ["git status"]` matches `git status -s` but not `git push`. Knows git, cargo, npm, docker, kubectl, and more
-- **Vim modal editing** — normal/insert mode in the composer with standard Vim keybindings
-- **Skill registry sync** — `/skills sync` fetches and installs/updates the community registry
-- **FIM edit tool** — surgical code edits via DeepSeek's `/beta` fill-in-the-middle endpoint
-- **Large-tool-output routing** — outsized tool results get truncated previews with spillover, protecting parent context
-- **Pluggable sandbox backends** — `exec_shell` can route to Alibaba OpenSandbox or other remote backends
-- **Layered permission rulesets** — builtin/agent/user priority layers for execpolicy deny/allow rules
-- **Cache-aware resident sub-agents** — file content prepended for V4 prefix-cache locality; global lease table
-- **Unified slash-command namespace** — user commands with `$1`/`$2`/`$ARGUMENTS` templates
-- **Color::Reset migration** — all hardcoded backgrounds replaced with `Color::Reset` for light-terminal support
-- **New docs**: SECURITY.md (#648), CODE_OF_CONDUCT.md (#686), zh-Hans locale activation (#652)
-
-*28 community PRs by [@merchloubna70-dot](https://github.com/merchloubna70-dot). First-time contributor [@zichen0116](https://github.com/zichen0116) (#686).*
+- **No-LLM compaction prune** — old verbose tool results are mechanically summarized before any paid summary call; duplicate reads keep only the freshest full body
+- **Repeated-tool anti-loop guard** — the third identical `(tool, args)` call in a turn becomes a corrective tool result instead of another stuck retry
+- **V4 cache-hit footer telemetry** — the status line now understands `usage.prompt_tokens_details.cached_tokens`
+- **Tool-call recovery** — invalid JSON arguments, hallucinated tool names, and strict schema issues are repaired or sanitized before dispatch
+- **Case-sensitive model IDs** — provider-specific model names keep caller-provided case while compact DeepSeek aliases still normalize
+- **Stale busy-state fix** — failed dispatch before turn start clears `working...` so input does not get stuck in pending state
+- **Prompt-free doctor key checks** — diagnostics no longer read the OS keyring
+- **macOS Terminal color compatibility** — `xterm-256color` sessions no longer render whale blues as green/cyan blocks
 
 ---
 

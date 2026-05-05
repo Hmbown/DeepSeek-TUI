@@ -168,24 +168,18 @@ SGLANG_BASE_URL="http://localhost:30000/v1" deepseek --provider sglang --model d
 
 ---
 
-## v0.8.12 新功能
+## v0.8.13 新功能
 
-功能发布：在 v0.8.11 缓存优化基础上合并了 20 个社区 PR。[完整更新日志](CHANGELOG.md)。
+稳定性发布：聚焦 DeepSeek V4 运行时可靠性、工具调用恢复和 TUI 状态准确性。[完整更新日志](CHANGELOG.md)。
 
-- **推理强度自动模式** —— `reasoning_effort = "auto"` 根据提示词自动选择档位：debug/error → Max，search/lookup → Low，默认 → High
-- **Bash 参数匹配字典** —— `auto_allow = ["git status"]` 匹配 `git status -s` 但不匹配 `git push`。支持 git、cargo、npm、docker、kubectl 等
-- **Vim 模态编辑** —— 在输入框中支持 Vim 普通/插入模式切换
-- **技能注册表同步** —— `/skills sync` 拉取并安装/更新社区技能注册表
-- **FIM 编辑工具** —— 通过 DeepSeek `/beta` 的 fill-in-the-middle 端点进行精确代码编辑
-- **大工具输出路由** —— 超大工具结果被截断预览，保护父上下文窗口
-- **可插拔沙箱后端** —— `exec_shell` 可路由到 Alibaba OpenSandbox 或其他远程后端
-- **分层权限规则** —— builtin/agent/user 三层优先级，deny 永远优先
-- **缓存感知常驻子智能体** —— 文件内容预置于系统提示中以利用 V4 前缀缓存；全局租约表
-- **统一斜杠命令命名空间** —— 用户命令支持 `$1`/`$2`/`$ARGUMENTS` 模板
-- **Color::Reset 迁移** —— 所有硬编码背景替换为 `Color::Reset`，适配浅色终端
-- **新文档**：SECURITY.md (#648)、CODE_OF_CONDUCT.md (#686)、zh-Hans 语言激活 (#652)
-
-**28 个社区 PR 由 [@merchloubna70-dot](https://github.com/merchloubna70-dot) 贡献。首次贡献者 [@zichen0116](https://github.com/zichen0116) (#686)。**
+- **无需 LLM 的压缩预剪枝** —— 付费摘要前先机械压缩旧的大型工具结果；重复读取只保留最新完整内容
+- **重复工具调用防循环** —— 同一轮内第三次完全相同的 `(tool, args)` 会变成纠正性工具结果，而不是继续卡住重试
+- **V4 缓存命中率状态栏** —— 状态栏现在识别 `usage.prompt_tokens_details.cached_tokens`
+- **工具调用恢复** —— 无效 JSON 参数、幻觉工具名和严格 schema 问题会在分发前修复或清理
+- **区分大小写的模型 ID** —— 第三方 provider 的模型名保留用户输入大小写，同时继续规范化紧凑 DeepSeek 别名
+- **忙碌状态修复** —— 如果 turn 开始前分发失败，会清除 `working...`，避免后续输入一直进入 pending
+- **不会弹出 Keychain 的 doctor 密钥检查** —— 诊断流程不再读取 OS keyring
+- **macOS Terminal 颜色兼容** —— `xterm-256color` 会使用 256 色索引，避免鲸蓝主题被渲染成绿色/青色块
 
 ---
 

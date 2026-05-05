@@ -191,7 +191,8 @@ impl ColorDepth {
 #[must_use]
 pub fn adapt_color(color: Color, depth: ColorDepth) -> Color {
     match (color, depth) {
-        (_, ColorDepth::TrueColor | ColorDepth::Ansi256) => color,
+        (_, ColorDepth::TrueColor) => color,
+        (Color::Rgb(r, g, b), ColorDepth::Ansi256) => Color::Indexed(rgb_to_ansi256(r, g, b)),
         (Color::Rgb(r, g, b), ColorDepth::Ansi16) => nearest_ansi16(r, g, b),
         _ => color,
     }
@@ -203,9 +204,11 @@ pub fn adapt_color(color: Color, depth: ColorDepth) -> Color {
 #[allow(dead_code)]
 #[must_use]
 pub fn adapt_bg(color: Color, depth: ColorDepth) -> Color {
-    match depth {
-        ColorDepth::TrueColor | ColorDepth::Ansi256 => color,
-        ColorDepth::Ansi16 => Color::Reset,
+    match (color, depth) {
+        (_, ColorDepth::TrueColor) => color,
+        (Color::Rgb(r, g, b), ColorDepth::Ansi256) => Color::Indexed(rgb_to_ansi256(r, g, b)),
+        (_, ColorDepth::Ansi256) => color,
+        (_, ColorDepth::Ansi16) => Color::Reset,
     }
 }
 
@@ -236,7 +239,10 @@ pub fn blend(fg: Color, bg: Color, alpha: f32) -> Color {
 pub fn reasoning_surface_tint(depth: ColorDepth) -> Option<Color> {
     match depth {
         ColorDepth::Ansi16 => None,
-        _ => Some(blend(SURFACE_REASONING, DEEPSEEK_INK, 0.12)),
+        _ => Some(adapt_bg(
+            blend(SURFACE_REASONING, DEEPSEEK_INK, 0.12),
+            depth,
+        )),
     }
 }
 
@@ -327,12 +333,59 @@ fn nearest_ansi16(r: u8, g: u8, b: u8) -> Color {
     }
 }
 
+/// Map an RGB color to the nearest xterm 256-color palette index. We use only
+/// the stable 6x6x6 cube and grayscale ramp (16..255), not the terminal's
+/// user-configurable 0..15 colors.
+#[allow(dead_code)]
+fn rgb_to_ansi256(r: u8, g: u8, b: u8) -> u8 {
+    const CUBE_LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
+
+    fn nearest_cube_level(channel: u8) -> usize {
+        CUBE_LEVELS
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, level)| channel.abs_diff(**level))
+            .map(|(idx, _)| idx)
+            .unwrap_or(0)
+    }
+
+    fn dist_sq(a: (u8, u8, u8), b: (u8, u8, u8)) -> u32 {
+        let dr = i32::from(a.0) - i32::from(b.0);
+        let dg = i32::from(a.1) - i32::from(b.1);
+        let db = i32::from(a.2) - i32::from(b.2);
+        (dr * dr + dg * dg + db * db) as u32
+    }
+
+    let ri = nearest_cube_level(r);
+    let gi = nearest_cube_level(g);
+    let bi = nearest_cube_level(b);
+    let cube_rgb = (CUBE_LEVELS[ri], CUBE_LEVELS[gi], CUBE_LEVELS[bi]);
+    let cube_index = 16 + (36 * ri) as u8 + (6 * gi) as u8 + bi as u8;
+
+    let avg = ((u16::from(r) + u16::from(g) + u16::from(b)) / 3) as u8;
+    let gray_i = if avg <= 8 {
+        0
+    } else if avg >= 238 {
+        23
+    } else {
+        ((u16::from(avg) - 8 + 5) / 10).min(23) as u8
+    };
+    let gray = 8 + 10 * gray_i;
+    let gray_index = 232 + gray_i;
+
+    if dist_sq((r, g, b), (gray, gray, gray)) < dist_sq((r, g, b), cube_rgb) {
+        gray_index
+    } else {
+        cube_index
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         ACCENT_REASONING_LIVE, ColorDepth, DEEPSEEK_INK, DEEPSEEK_RED, DEEPSEEK_SKY,
         SURFACE_REASONING, adapt_bg, adapt_color, blend, nearest_ansi16, pulse_brightness,
-        reasoning_surface_tint,
+        reasoning_surface_tint, rgb_to_ansi256,
     };
     use ratatui::style::Color;
 
@@ -340,7 +393,23 @@ mod tests {
     fn adapt_color_passes_through_truecolor() {
         let c = Color::Rgb(53, 120, 229);
         assert_eq!(adapt_color(c, ColorDepth::TrueColor), c);
-        assert_eq!(adapt_color(c, ColorDepth::Ansi256), c);
+    }
+
+    #[test]
+    fn adapt_color_maps_rgb_to_indexed_on_ansi256() {
+        let c = Color::Rgb(53, 120, 229);
+        assert!(matches!(
+            adapt_color(c, ColorDepth::Ansi256),
+            Color::Indexed(_)
+        ));
+    }
+
+    #[test]
+    fn adapt_bg_maps_rgb_to_indexed_on_ansi256() {
+        assert!(matches!(
+            adapt_bg(SURFACE_REASONING, ColorDepth::Ansi256),
+            Color::Indexed(_)
+        ));
     }
 
     #[test]
@@ -370,6 +439,10 @@ mod tests {
     fn reasoning_tint_is_none_on_ansi16() {
         assert!(reasoning_surface_tint(ColorDepth::Ansi16).is_none());
         assert!(reasoning_surface_tint(ColorDepth::TrueColor).is_some());
+        assert!(matches!(
+            reasoning_surface_tint(ColorDepth::Ansi256),
+            Some(Color::Indexed(_))
+        ));
     }
 
     #[test]
@@ -422,6 +495,12 @@ mod tests {
         assert_eq!(nearest_ansi16(106, 174, 242), Color::LightCyan);
         assert_eq!(nearest_ansi16(226, 80, 96), Color::Red);
         assert_eq!(nearest_ansi16(11, 21, 38), Color::Black);
+    }
+
+    #[test]
+    fn rgb_to_ansi256_uses_stable_extended_palette() {
+        assert!(rgb_to_ansi256(53, 120, 229) >= 16);
+        assert!(rgb_to_ansi256(11, 21, 38) >= 16);
     }
 
     #[test]

@@ -37,6 +37,7 @@ fn make_plan(
         supports_parallel,
         read_only,
         blocked_error: None,
+        guard_result: None,
     }
 }
 

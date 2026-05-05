@@ -88,10 +88,18 @@ impl DefaultKeyringStore {
     /// Probe the OS keyring without writing anything. Returns `Ok(())` if
     /// a backend is reachable, otherwise an error describing why not.
     pub fn probe(&self) -> Result<(), SecretsError> {
-        // `Entry::new` is enough to surface "no backend / no storage" on
-        // headless Linux; no actual read happens until `.get_password()`.
+        // `Entry::new` is enough to validate the native macOS/Windows
+        // backend path. Avoid a dummy read there because it can trigger
+        // a second user-visible Keychain/Credential Manager access before
+        // the real provider key lookup.
         let entry = keyring::Entry::new(&self.service, "__probe__")
             .map_err(|err| SecretsError::Keyring(err.to_string()))?;
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        {
+            let _ = entry;
+            Ok(())
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         match entry.get_password() {
             Ok(_) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(keyring::Error::PlatformFailure(err)) => {

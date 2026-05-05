@@ -146,8 +146,6 @@ pub enum RequestPayloadMode {
     ChatCompletions,
 }
 
-
-
 /// Resolve the provider capability for a given [`ApiProvider`] and resolved
 /// model string.
 ///
@@ -201,26 +199,25 @@ pub fn provider_capability(provider: ApiProvider, resolved_model: &str) -> Provi
     }
 }
 
-/// Canonicalize common model aliases to stable DeepSeek IDs.
+/// Canonicalize compact DeepSeek model aliases to stable IDs.
 ///
-/// v4-pro/v4-flash provide canonical forms; v-series snapshots pass through
-/// unchanged. Legacy aliases (deepseek-chat, etc.) are no longer folded —
-/// DeepSeek's own `/v1/models` endpoint is the source of truth.
+/// Already-valid model IDs pass through unchanged. Only the compact
+/// `v4pro`/`v4flash` spellings are rewritten to their hyphenated forms.
 #[must_use]
 pub fn canonical_model_name(model: &str) -> Option<&'static str> {
     match model.trim().to_ascii_lowercase().as_str() {
-        "deepseek-v4-pro" | "deepseek-v4pro" => Some("deepseek-v4-pro"),
-        "deepseek-v4-flash" | "deepseek-v4flash" => Some("deepseek-v4-flash"),
+        "deepseek-v4pro" => Some("deepseek-v4-pro"),
+        "deepseek-v4flash" => Some("deepseek-v4-flash"),
         _ => None,
     }
 }
 
 /// Normalize a configured/runtime model name.
 ///
-/// Trims whitespace and lowercases. v-series snapshots (deepseek-v4-flash-20260423)
-/// pass through unchanged so users can pin dated variants. Non-DeepSeek or
-/// malformed names return `None`; DeepSeek's `/v1/models` endpoint is the
-/// authority on valid model IDs.
+/// Trims whitespace, preserves caller-provided case for already-valid model
+/// IDs, and only canonicalizes compact aliases like `deepseek-v4pro`.
+/// Non-DeepSeek or malformed names return `None`; DeepSeek's `/v1/models`
+/// endpoint is the authority on valid model IDs.
 #[must_use]
 pub fn normalize_model_name(model: &str) -> Option<String> {
     let trimmed = model.trim();
@@ -236,10 +233,11 @@ pub fn normalize_model_name(model: &str) -> Option<String> {
         return None;
     }
 
-    if normalized.chars().all(|ch| {
-        ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '-' | '_' | '.' | ':' | '/')
-    }) {
-        return Some(normalized);
+    if trimmed
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | ':' | '/'))
+    {
+        return Some(trimmed.to_string());
     }
 
     None
@@ -1869,7 +1867,8 @@ fn normalize_model_for_provider(provider: ApiProvider, model: &str) -> Option<St
 }
 
 fn model_for_provider(provider: ApiProvider, normalized: String) -> String {
-    match (provider, normalized.as_str()) {
+    let lowered = normalized.to_ascii_lowercase();
+    match (provider, lowered.as_str()) {
         (ApiProvider::NvidiaNim, "deepseek-v4-pro") => DEFAULT_NVIDIA_NIM_MODEL.to_string(),
         (ApiProvider::NvidiaNim, "deepseek-v4-flash") => DEFAULT_NVIDIA_NIM_FLASH_MODEL.to_string(),
         (ApiProvider::Openrouter, "deepseek-v4-pro") => DEFAULT_OPENROUTER_MODEL.to_string(),
@@ -3212,6 +3211,27 @@ api_key = "old-openrouter-key"
             normalize_model_name("deepseek-ai/deepseek-v4-pro").as_deref(),
             Some("deepseek-ai/deepseek-v4-pro")
         );
+        // preserve exact case for providers that require case-sensitive model IDs
+        assert_eq!(
+            normalize_model_name("DeepSeek-V4-Pro").as_deref(),
+            Some("DeepSeek-V4-Pro")
+        );
+        assert_eq!(
+            normalize_model_name("deepseek-ai/DeepSeek-V4-Pro").as_deref(),
+            Some("deepseek-ai/DeepSeek-V4-Pro")
+        );
+    }
+
+    #[test]
+    fn normalize_model_for_provider_keeps_provider_remaps_when_case_is_preserved() {
+        assert_eq!(
+            normalize_model_for_provider(ApiProvider::Deepseek, "DeepSeek-V4-Pro").as_deref(),
+            Some("DeepSeek-V4-Pro")
+        );
+        assert_eq!(
+            normalize_model_for_provider(ApiProvider::NvidiaNim, "DeepSeek-V4-Pro").as_deref(),
+            Some(DEFAULT_NVIDIA_NIM_MODEL)
+        );
     }
 
     #[test]
@@ -4023,5 +4043,4 @@ model = "deepseek-v4-pro"
         let deserialized: ProviderCapability = serde_json::from_value(json).unwrap();
         assert_eq!(cap, deserialized);
     }
-
 }

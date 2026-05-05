@@ -699,6 +699,134 @@ fn tail_chars(text: &str, max_chars: usize) -> String {
     text[start_idx..].to_string()
 }
 
+#[derive(Debug, Clone)]
+struct ToolUseInfo {
+    name: String,
+    key: String,
+    args_preview: String,
+}
+
+fn tool_use_key(name: &str, input: &serde_json::Value) -> String {
+    format!(
+        "{name}:{}",
+        serde_json::to_string(input).unwrap_or_else(|_| input.to_string())
+    )
+}
+
+fn tool_args_preview(input: &serde_json::Value) -> String {
+    let raw = serde_json::to_string(input).unwrap_or_else(|_| input.to_string());
+    truncate_chars(&raw, 120).to_string()
+}
+
+fn collect_tool_uses(messages: &[Message]) -> HashMap<String, ToolUseInfo> {
+    let mut tool_uses = HashMap::new();
+    for message in messages {
+        for block in &message.content {
+            if let ContentBlock::ToolUse {
+                id, name, input, ..
+            } = block
+            {
+                tool_uses.insert(
+                    id.clone(),
+                    ToolUseInfo {
+                        name: name.clone(),
+                        key: tool_use_key(name, input),
+                        args_preview: tool_args_preview(input),
+                    },
+                );
+            }
+        }
+    }
+    tool_uses
+}
+
+struct ToolResultPruneCandidate {
+    message_idx: usize,
+    block_idx: usize,
+    key: String,
+    tool_name: String,
+    args_preview: String,
+    original_len: usize,
+}
+
+/// Mechanically prune old verbose tool results before paying for an LLM summary.
+///
+/// The most recent `protected_window` messages stay byte-for-byte intact. Older
+/// duplicate tool results keep the freshest full body and replace earlier
+/// copies with one-line summaries; non-duplicate old results are summarized only
+/// when they exceed the normal summary snippet size.
+pub fn prune_tool_results(messages: &mut [Message], protected_window: usize) -> usize {
+    let cutoff = messages.len().saturating_sub(protected_window);
+    if cutoff == 0 {
+        return 0;
+    }
+
+    let tool_uses = collect_tool_uses(messages);
+    let mut candidates = Vec::new();
+    let mut latest_by_key: HashMap<String, usize> = HashMap::new();
+    let mut count_by_key: HashMap<String, usize> = HashMap::new();
+
+    for (message_idx, message) in messages.iter().take(cutoff).enumerate() {
+        for (block_idx, block) in message.content.iter().enumerate() {
+            let ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                ..
+            } = block
+            else {
+                continue;
+            };
+            let Some(info) = tool_uses.get(tool_use_id) else {
+                continue;
+            };
+            latest_by_key.insert(info.key.clone(), message_idx);
+            *count_by_key.entry(info.key.clone()).or_insert(0) += 1;
+            candidates.push(ToolResultPruneCandidate {
+                message_idx,
+                block_idx,
+                key: info.key.clone(),
+                tool_name: info.name.clone(),
+                args_preview: info.args_preview.clone(),
+                original_len: content.len(),
+            });
+        }
+    }
+
+    let mut bytes_saved = 0usize;
+    for candidate in candidates {
+        let duplicate_count = count_by_key.get(&candidate.key).copied().unwrap_or(0);
+        let is_latest_duplicate = duplicate_count > 1
+            && latest_by_key.get(&candidate.key) == Some(&candidate.message_idx);
+        if is_latest_duplicate {
+            continue;
+        }
+        if duplicate_count <= 1 && candidate.original_len <= SUMMARY_TOOL_RESULT_SNIPPET_CHARS {
+            continue;
+        }
+
+        let summary = format!(
+            "[{}] tool result pruned ({} bytes; args: {})",
+            candidate.tool_name, candidate.original_len, candidate.args_preview
+        );
+        if summary.len() >= candidate.original_len {
+            continue;
+        }
+
+        if let ContentBlock::ToolResult {
+            content,
+            content_blocks,
+            ..
+        } = &mut messages[candidate.message_idx].content[candidate.block_idx]
+        {
+            bytes_saved = bytes_saved.saturating_add(content.len().saturating_sub(summary.len()));
+            *content = summary;
+            *content_blocks = None;
+        }
+    }
+
+    bytes_saved
+}
+
 /// Result of a compaction operation with metadata.
 #[derive(Debug)]
 pub struct CompactionResult {
@@ -747,6 +875,39 @@ pub async fn compact_messages_safe(
     const MAX_RETRIES: u32 = 3;
     const BASE_DELAY_MS: u64 = 1000;
 
+    let mut pruned_messages = messages.to_vec();
+    let pruned_bytes = prune_tool_results(&mut pruned_messages, KEEP_RECENT_MESSAGES);
+    let compaction_input: &[Message] = if pruned_bytes > 0 {
+        logging::info(format!(
+            "Local tool-result prune saved {pruned_bytes} bytes before LLM compaction"
+        ));
+        let was_over_threshold = should_compact(
+            messages,
+            config,
+            workspace,
+            external_pins,
+            external_working_set_paths,
+        );
+        let now_under_threshold = !should_compact(
+            &pruned_messages,
+            config,
+            workspace,
+            external_pins,
+            external_working_set_paths,
+        );
+        if was_over_threshold && now_under_threshold {
+            return Ok(CompactionResult {
+                messages: pruned_messages,
+                summary_prompt: None,
+                removed_messages: Vec::new(),
+                retries_used: 0,
+            });
+        }
+        &pruned_messages
+    } else {
+        messages
+    };
+
     let mut last_error: Option<anyhow::Error> = None;
 
     for attempt in 0..MAX_RETRIES {
@@ -758,7 +919,7 @@ pub async fn compact_messages_safe(
 
         match compact_messages(
             client,
-            messages,
+            compaction_input,
             config,
             workspace,
             external_pins,
@@ -1269,6 +1430,30 @@ mod tests {
         }
     }
 
+    fn tool_use(id: &str, name: &str, input: serde_json::Value) -> Message {
+        Message {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::ToolUse {
+                id: id.to_string(),
+                name: name.to_string(),
+                input,
+                caller: None,
+            }],
+        }
+    }
+
+    fn tool_result(id: &str, content: &str) -> Message {
+        Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: id.to_string(),
+                content: content.to_string(),
+                is_error: None,
+                content_blocks: None,
+            }],
+        }
+    }
+
     #[test]
     fn truncate_chars_respects_unicode_boundaries() {
         let text = "abc😀é";
@@ -1277,6 +1462,73 @@ mod tests {
         assert_eq!(truncate_chars(text, 3), "abc");
         assert_eq!(truncate_chars(text, 4), "abc😀");
         assert_eq!(truncate_chars(text, 5), "abc😀é");
+    }
+
+    #[test]
+    fn prune_tool_results_summarizes_old_verbose_outputs() {
+        let verbose = "x".repeat(SUMMARY_TOOL_RESULT_SNIPPET_CHARS + 80);
+        let mut messages = vec![
+            tool_use("call-1", "read_file", json!({"path": "Cargo.toml"})),
+            tool_result("call-1", &verbose),
+            msg("user", "recent question"),
+            msg("assistant", "recent answer"),
+        ];
+
+        let saved = prune_tool_results(&mut messages, 2);
+
+        assert!(saved > 0);
+        let ContentBlock::ToolResult { content, .. } = &messages[1].content[0] else {
+            panic!("expected tool result");
+        };
+        assert!(content.contains("[read_file] tool result pruned"));
+        assert!(content.contains("Cargo.toml"));
+        assert!(content.len() < verbose.len());
+    }
+
+    #[test]
+    fn prune_tool_results_preserves_protected_tail() {
+        let verbose = "x".repeat(SUMMARY_TOOL_RESULT_SNIPPET_CHARS + 80);
+        let mut messages = vec![
+            msg("user", "older context"),
+            tool_use("call-1", "read_file", json!({"path": "Cargo.toml"})),
+            tool_result("call-1", &verbose),
+        ];
+
+        let saved = prune_tool_results(&mut messages, 2);
+
+        assert_eq!(saved, 0);
+        let ContentBlock::ToolResult { content, .. } = &messages[2].content[0] else {
+            panic!("expected tool result");
+        };
+        assert_eq!(content, &verbose);
+    }
+
+    #[test]
+    fn prune_tool_results_dedupes_identical_reads_but_keeps_latest_full_body() {
+        let first = "first ".repeat(80);
+        let second = "second ".repeat(80);
+        let mut messages = vec![
+            tool_use("call-1", "read_file", json!({"path": "Cargo.toml"})),
+            tool_result("call-1", &first),
+            tool_use("call-2", "read_file", json!({"path": "Cargo.toml"})),
+            tool_result("call-2", &second),
+            msg("user", "tail"),
+        ];
+
+        let saved = prune_tool_results(&mut messages, 1);
+
+        assert!(saved > 0);
+        let ContentBlock::ToolResult { content: older, .. } = &messages[1].content[0] else {
+            panic!("expected older tool result");
+        };
+        assert!(older.contains("tool result pruned"));
+        let ContentBlock::ToolResult {
+            content: latest, ..
+        } = &messages[3].content[0]
+        else {
+            panic!("expected latest tool result");
+        };
+        assert_eq!(latest, &second);
     }
 
     #[test]

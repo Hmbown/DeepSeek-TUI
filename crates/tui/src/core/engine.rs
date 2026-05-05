@@ -1878,6 +1878,7 @@ use context::{
     turn_response_headroom_tokens,
 };
 mod dispatch;
+mod loop_guard;
 mod lsp_hooks;
 mod streaming;
 mod tool_catalog;
@@ -1893,6 +1894,7 @@ use self::dispatch::{
     parse_parallel_tool_calls, parse_tool_input, should_force_update_plan_first,
     should_parallelize_tool_batch, should_stop_after_plan_tool,
 };
+use self::loop_guard::{AttemptDecision, LoopGuard, OutcomeDecision};
 #[cfg(test)]
 use self::lsp_hooks::{edited_paths_for_tool, parse_patch_paths};
 #[cfg(test)]

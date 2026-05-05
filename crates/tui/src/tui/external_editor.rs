@@ -22,8 +22,10 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{Terminal, backend::CrosstermBackend};
+use ratatui::Terminal;
 use tempfile::Builder;
+
+use super::color_compat::ColorCompatBackend;
 
 /// Outcome of a single external-editor invocation.
 #[derive(Debug, PartialEq, Eq)]
@@ -120,8 +122,8 @@ pub fn run_editor_raw(seed: &str) -> io::Result<EditorOutcome> {
 ///
 /// On any error (raw-mode toggle, IO, editor spawn failure), the function
 /// still attempts to fully restore the terminal before returning.
-pub fn spawn_editor_for_input(
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+pub(crate) fn spawn_editor_for_input(
+    terminal: &mut Terminal<ColorCompatBackend<Stdout>>,
     use_alt_screen: bool,
     use_mouse_capture: bool,
     use_bracketed_paste: bool,

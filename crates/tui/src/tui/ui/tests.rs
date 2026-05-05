@@ -695,6 +695,30 @@ async fn model_change_update_syncs_engine_model_before_compaction() {
     }
 }
 
+#[tokio::test]
+async fn dispatch_user_message_failed_send_clears_loading_state() {
+    let mut app = create_test_app();
+    let engine = mock_engine_handle();
+    drop(engine.rx_op);
+
+    let result = dispatch_user_message(
+        &mut app,
+        &engine.handle,
+        QueuedMessage::new("hello".to_string(), None),
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "dispatch should fail when engine channel is closed"
+    );
+    assert!(
+        !app.is_loading,
+        "failed dispatch must not leave the composer in a permanent busy state"
+    );
+    assert!(app.last_send_at.is_none());
+}
+
 fn init_git_repo() -> TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
 

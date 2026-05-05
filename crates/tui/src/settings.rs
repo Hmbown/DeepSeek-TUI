@@ -36,7 +36,7 @@ use crate::localization::normalize_configured_locale;
 /// ```
 //
 // NOTE: the loader is defined but not yet called from startup — wiring is
-// deferred to v0.8.13 (#657). The `#[allow(dead_code)]` suppresses the CI
+// deferred to a later settings pass (#657). The `#[allow(dead_code)]` suppresses the CI
 // `-D warnings` failure until the call site lands.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,7 +63,7 @@ impl Default for TuiPrefs {
 }
 
 /// Per-action keybinding overrides stored inside [`TuiPrefs`].
-#[allow(dead_code)] // see TuiPrefs note above; deferred to v0.8.13 (#657).
+#[allow(dead_code)] // see TuiPrefs note above; deferred to a later settings pass (#657).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct KeybindPrefs {
@@ -84,7 +84,7 @@ pub struct KeybindPrefs {
     pub toggle_sidebar: Option<String>,
 }
 
-#[allow(dead_code)] // see TuiPrefs note above; deferred to v0.8.13 (#657).
+#[allow(dead_code)] // see TuiPrefs note above; deferred to a later settings pass (#657).
 impl TuiPrefs {
     /// Return the canonical path of the TUI preferences file:
     /// `~/.deepseek/tui.toml`.

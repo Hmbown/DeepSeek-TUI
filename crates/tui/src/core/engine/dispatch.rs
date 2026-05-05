@@ -48,6 +48,7 @@ pub(super) struct ToolExecutionPlan {
     pub(super) supports_parallel: bool,
     pub(super) read_only: bool,
     pub(super) blocked_error: Option<ToolError>,
+    pub(super) guard_result: Option<ToolResult>,
 }
 
 #[derive(Debug, serde::Serialize)]

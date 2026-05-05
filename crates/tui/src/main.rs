@@ -1574,45 +1574,6 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     }
     println!("  · credential sources: env, ~/.deepseek/config.toml");
 
-    // #593: surface keyring/config disagreement explicitly. The runtime
-    // resolution order is `keyring → env → config-file`, so a stale
-    // keyring entry from a prior install can shadow the value the user
-    // sees in `~/.deepseek/config.toml`. We only check the DeepSeek
-    // slot — other providers don't write to the keyring today, and
-    // probing entries that aren't there triggers macOS keychain
-    // prompts for nothing.
-    let secrets = deepseek_secrets::Secrets::auto_detect();
-    let keyring_key = secrets.get("deepseek").ok().flatten();
-    let config_key = config
-        .api_key
-        .as_ref()
-        .filter(|v| !v.trim().is_empty() && v.as_str() != "__KEYRING__")
-        .map(|s| s.to_string());
-    match (keyring_key.as_deref(), config_key.as_deref()) {
-        (Some(k), Some(c)) if k.trim() != c.trim() => {
-            println!();
-            println!(
-                "  {} `deepseek`: OS keyring and config.toml hold different values.",
-                "⚠".truecolor(red_r, red_g, red_b)
-            );
-            println!(
-                "    Resolution order is keyring → env → config-file, so the keyring value wins."
-            );
-            println!("    Reconcile by overwriting both with the current key:");
-            println!("        deepseek auth set --provider deepseek");
-            println!(
-                "    (Or paste the key into the in-TUI onboarding screen — it now writes both layers.)"
-            );
-        }
-        (Some(_), None) => {
-            println!(
-                "  {} `deepseek`: key is in OS keyring only (config.toml has no copy).",
-                "·".dimmed()
-            );
-        }
-        _ => {}
-    }
-
     let has_api_key = if config.deepseek_api_key().is_ok() {
         println!(
             "  {} active provider key resolved",

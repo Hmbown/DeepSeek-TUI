@@ -5,6 +5,49 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.13] - 2026-05-05
+
+A stabilization release for DeepSeek V4 runtime and TUI reliability. The
+v0.8.13 milestone was narrowed to direct runtime/TUI fixes; prompt hygiene,
+trajectory logging, Anthropic-wire support, and larger UI cleanup were moved
+out of this release.
+
+### Added
+- **No-LLM tool-result prune before compaction** (#710) — old verbose tool
+  results are mechanically summarized before the paid summary pass. Duplicate
+  reads keep the freshest full body and replace older copies with one-line
+  summaries; if that gets the session back under the compaction threshold, the
+  LLM summary call is skipped entirely.
+- **Repeated-tool anti-loop guard** (#714) — the engine now tracks
+  `(tool_name, args)` pairs per user turn. On the third identical call it
+  inserts a synthetic corrective tool result instead of running the same tool
+  again unchanged; per-tool failures warn at three and halt at eight.
+- **V4 cache-hit telemetry fallback** (#721) — usage parsing now recognizes
+  `usage.prompt_tokens_details.cached_tokens`, so the existing footer cache-hit
+  chip works with DeepSeek V4's automatic prefix-cache telemetry as well as the
+  older explicit hit/miss fields.
+
+### Fixed
+- **Invalid tool-call JSON repair** (#712) — malformed streamed tool arguments
+  now pass through a deterministic repair ladder before dispatch.
+- **Hallucinated tool-name recovery** (#713) — common non-canonical tool names
+  are resolved through the registry before the engine reports a missing tool.
+- **Tool-schema sanitation** (#715) — schemas are normalized before API
+  emission so provider-strict JSON Schema handling does not reject valid tools.
+- **Case-sensitive model IDs** (#717, #729) — valid configured model IDs keep
+  caller-provided case while compact DeepSeek aliases still canonicalize.
+- **Stale `working...` state after failed dispatch** (#738) — if the UI fails
+  to send a message to the engine before a turn starts, the composer loading
+  state is cleared instead of trapping later input in pending state.
+- **Prompt-free doctor key checks** — `deepseek doctor` no longer reads the OS
+  keyring, avoiding macOS Keychain prompts during diagnostics.
+- **macOS Terminal color compatibility** — `xterm-256color` sessions now
+  receive 256-color palette indexes instead of truecolor SGR, preventing
+  Apple Terminal from misrendering whale blues as green/cyan blocks.
+- **Chat client repair after Responses cleanup** — restored the chat client
+  body and regression coverage after removing the dead experimental Responses
+  fallback path.
+
 ## [0.8.11] - 2026-05-04
 
 ### Changed

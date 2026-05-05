@@ -7,6 +7,7 @@ pub mod app;
 pub mod approval;
 pub mod backtrack;
 pub mod clipboard;
+mod color_compat;
 pub mod command_palette;
 pub mod context_inspector;
 pub mod context_menu;

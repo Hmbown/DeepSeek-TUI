@@ -18,7 +18,6 @@ use crossterm::{
 };
 use ratatui::{
     Frame, Terminal,
-    backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
     prelude::Widget,
     style::{Color, Style},
@@ -52,6 +51,7 @@ use crate::task_manager::{
 };
 use crate::tools::spec::RuntimeToolServices;
 use crate::tools::subagent::SubAgentStatus;
+use crate::tui::color_compat::ColorCompatBackend;
 use crate::tui::command_palette::{
     CommandPaletteView, build_entries as build_command_palette_entries,
 };
@@ -131,6 +131,8 @@ const UI_STATUS_ANIMATION_MS: u64 = 80;
 const WORKSPACE_CONTEXT_REFRESH_SECS: u64 = 15;
 const SIDEBAR_VISIBLE_MIN_WIDTH: u16 = 100;
 const DEFAULT_TERMINAL_PROBE_TIMEOUT_MS: u64 = 500;
+
+type AppTerminal = Terminal<ColorCompatBackend<Stdout>>;
 
 /// Run the interactive TUI event loop.
 ///
@@ -230,7 +232,9 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
             "PushKeyboardEnhancementFlags ignored (terminal lacks support)"
         );
     }
-    let backend = CrosstermBackend::new(stdout);
+    let color_depth = palette::ColorDepth::detect();
+    tracing::debug!(?color_depth, "terminal color depth detected");
+    let backend = ColorCompatBackend::new(stdout, color_depth);
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
     let event_broker = EventBroker::new();
@@ -576,7 +580,7 @@ async fn refresh_active_task_panel(app: &mut App, task_manager: &SharedTaskManag
 
 #[allow(clippy::too_many_lines)]
 async fn run_event_loop(
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    terminal: &mut AppTerminal,
     app: &mut App,
     config: &mut Config,
     mut engine_handle: EngineHandle,
@@ -3289,7 +3293,7 @@ async fn dispatch_user_message(
         app.model.clone()
     };
 
-    engine_handle
+    if let Err(err) = engine_handle
         .send(Op::SendMessage {
             content,
             mode: app.mode,
@@ -3300,7 +3304,12 @@ async fn dispatch_user_message(
             trust_mode: app.trust_mode,
             auto_approve: app.mode == AppMode::Yolo,
         })
-        .await?;
+        .await
+    {
+        app.is_loading = false;
+        app.last_send_at = None;
+        return Err(err);
+    }
 
     Ok(())
 }
@@ -3815,7 +3824,7 @@ fn workspace_path_to_picker_string(path: &Path) -> Option<String> {
 }
 
 async fn apply_command_result(
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    terminal: &mut AppTerminal,
     app: &mut App,
     engine_handle: &mut EngineHandle,
     task_manager: &SharedTaskManager,
@@ -4305,7 +4314,7 @@ fn handle_shell_job_action(app: &mut App, action: crate::tui::app::ShellJobActio
 }
 
 async fn execute_command_input(
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    terminal: &mut AppTerminal,
     app: &mut App,
     engine_handle: &mut EngineHandle,
     task_manager: &SharedTaskManager,
@@ -4864,7 +4873,7 @@ fn toggle_live_transcript_overlay(app: &mut App) {
 }
 
 async fn handle_view_events(
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    terminal: &mut AppTerminal,
     app: &mut App,
     config: &mut Config,
     task_manager: &SharedTaskManager,
@@ -5552,7 +5561,7 @@ fn run_git_query(workspace: &Path, args: &[&str]) -> std::io::Result<String> {
 }
 
 fn pause_terminal(
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    terminal: &mut AppTerminal,
     use_alt_screen: bool,
     use_mouse_capture: bool,
     use_bracketed_paste: bool,
@@ -5576,7 +5585,7 @@ fn pause_terminal(
 }
 
 fn resume_terminal(
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    terminal: &mut AppTerminal,
     use_alt_screen: bool,
     use_mouse_capture: bool,
     use_bracketed_paste: bool,

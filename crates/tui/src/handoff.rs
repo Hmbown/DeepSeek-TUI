@@ -1,6 +1,6 @@
 // Used by the deferred context-limit handoff feature (#667). The implementation
 // path is staged but not yet wired from the engine; suppress dead-code warnings
-// rather than delete the table, since v0.8.13 will consume it.
+// rather than delete the table until the follow-up feature consumes it.
 #[allow(dead_code)]
 pub const THRESHOLDS: [(f32, &str); 3] = [
     (

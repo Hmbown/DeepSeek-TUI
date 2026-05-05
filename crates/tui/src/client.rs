@@ -1,10 +1,8 @@
 //! HTTP client for DeepSeek's OpenAI-compatible Chat Completions API.
 //!
-//! DeepSeek documents `/chat/completions` as the primary endpoint. A legacy
-//! Responses probe remains available behind `DEEPSEEK_EXPERIMENTAL_RESPONSES_API`
-//! for local compatibility experiments, but normal traffic uses chat completions.
+//! DeepSeek documents `/chat/completions` as the primary endpoint, and this
+//! client now routes all normal traffic through that surface.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -16,8 +14,7 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use crate::config::{ApiProvider, Config, RetryPolicy};
 use crate::llm_client::{
-    LlmClient, LlmError, RetryConfig as LlmRetryConfig, StreamEventBox, extract_retry_after,
-    with_retry,
+    LlmClient, LlmError, RetryConfig as LlmRetryConfig, extract_retry_after, with_retry,
 };
 use crate::logging;
 use crate::models::{MessageRequest, MessageResponse, ServerToolUsage, SystemPrompt, Usage};
@@ -130,15 +127,10 @@ pub struct DeepSeekClient {
     pub(super) api_provider: ApiProvider,
     retry: RetryPolicy,
     default_model: String,
-    use_chat_completions: AtomicBool,
-    /// Counter of chat-completions requests since last experimental Responses API probe.
-    /// After RESPONSES_RECOVERY_INTERVAL requests, we retry the Responses API when
     connection_health: Arc<AsyncMutex<ConnectionHealth>>,
     rate_limiter: Arc<AsyncMutex<TokenBucket>>,
 }
 
-/// After this many chat-completions requests, retry the experimental Responses
-/// API to see if it has recovered.
 const CONNECTION_FAILURE_THRESHOLD: u32 = 2;
 const RECOVERY_PROBE_COOLDOWN: Duration = Duration::from_secs(15);
 
@@ -302,8 +294,817 @@ impl Clone for DeepSeekClient {
             api_provider: self.api_provider,
             retry: self.retry.clone(),
             default_model: self.default_model.clone(),
-            use_chat_completions: AtomicBool::new(
-                self.use_chat_completions.load(Ordering::Relaxed),
+            connection_health: self.connection_health.clone(),
+            rate_limiter: self.rate_limiter.clone(),
+        }
+    }
+}
+
+// === Helpers ===
+
+/// Maximum bytes to read from an error response body (64 KB).
+pub(super) const ERROR_BODY_MAX_BYTES: usize = 64 * 1024;
+
+/// Read an error response body with a size limit to prevent unbounded allocation.
+pub(super) async fn bounded_error_text(response: reqwest::Response, max_bytes: usize) -> String {
+    use futures_util::StreamExt;
+    let mut stream = response.bytes_stream();
+    let mut buf = Vec::with_capacity(max_bytes.min(8192));
+    while let Some(chunk) = stream.next().await {
+        let Ok(chunk) = chunk else { break };
+        let remaining = max_bytes.saturating_sub(buf.len());
+        if remaining == 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+    }
+    String::from_utf8_lossy(&buf).into_owned()
+}
+
+fn validate_base_url_security(base_url: &str) -> Result<()> {
+    if base_url.starts_with("https://")
+        || base_url.starts_with("http://localhost")
+        || base_url.starts_with("http://127.0.0.1")
+        || base_url.starts_with("http://[::1]")
+    {
+        return Ok(());
+    }
+
+    if base_url.starts_with("http://")
+        && std::env::var(ALLOW_INSECURE_HTTP_ENV)
+            .ok()
+            .as_deref()
+            .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+    {
+        logging::warn(format!(
+            "Using insecure HTTP base URL because {} is set",
+            ALLOW_INSECURE_HTTP_ENV
+        ));
+        return Ok(());
+    }
+
+    if base_url.starts_with("http://") {
+        anyhow::bail!(
+            "Refusing insecure base URL '{}'. Use HTTPS or set {}=1 to override for trusted environments.",
+            base_url,
+            ALLOW_INSECURE_HTTP_ENV
+        );
+    }
+
+    anyhow::bail!(
+        "Refusing base URL '{}': only HTTPS (or explicitly allowed HTTP) URLs are supported.",
+        base_url,
+    )
+}
+
+pub(super) fn versioned_base_url(base_url: &str) -> String {
+    let trimmed = base_url.trim_end_matches('/');
+    if trimmed.ends_with("/v1") || trimmed.ends_with("/beta") {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}/v1")
+    }
+}
+
+pub(super) fn api_url(base_url: &str, path: &str) -> String {
+    format!(
+        "{}/{}",
+        versioned_base_url(base_url).trim_end_matches('/'),
+        path.trim_start_matches('/')
+    )
+}
+
+// === DeepSeekClient ===
+
+/// Returns true when DEEPSEEK_FORCE_HTTP1 is set to a truthy value
+/// (`1`, `true`, `yes`, `on`, case-insensitive). Used by `build_http_client`
+/// to opt out of HTTP/2 entirely when DeepSeek's edge mishandles long-lived H2
+/// streams (#103). Anything else (unset, `0`, `false`, ...) leaves HTTP/2 on.
+fn force_http1_from_env() -> bool {
+    std::env::var("DEEPSEEK_FORCE_HTTP1")
+        .ok()
+        .map(|v| v.trim().to_ascii_lowercase())
+        .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
+}
+
+/// Read `SSL_CERT_FILE` and add its contents as extra root
+/// certificates on the reqwest builder (#418). Tries the PEM-bundle
+/// parser first (covers single-cert files too), then falls back to
+/// DER. All failures log a warning and return the builder unchanged
+/// so a malformed env var degrades gracefully.
+fn add_extra_root_certs(
+    mut builder: reqwest::ClientBuilder,
+    cert_path: &str,
+) -> reqwest::ClientBuilder {
+    let bytes = match std::fs::read(cert_path) {
+        Ok(b) => b,
+        Err(err) => {
+            logging::warn(format!(
+                "SSL_CERT_FILE={cert_path} could not be read: {err}"
+            ));
+            return builder;
+        }
+    };
+
+    if let Ok(certs) = reqwest::Certificate::from_pem_bundle(&bytes) {
+        let added = certs.len();
+        for cert in certs {
+            builder = builder.add_root_certificate(cert);
+        }
+        logging::info(format!(
+            "SSL_CERT_FILE={cert_path} loaded ({added} cert(s))"
+        ));
+        return builder;
+    }
+
+    match reqwest::Certificate::from_der(&bytes) {
+        Ok(cert) => {
+            builder = builder.add_root_certificate(cert);
+            logging::info(format!("SSL_CERT_FILE={cert_path} loaded (1 DER cert)"));
+        }
+        Err(err) => {
+            logging::warn(format!(
+                "SSL_CERT_FILE={cert_path} could not be parsed as PEM bundle or DER: {err}"
+            ));
+        }
+    }
+    builder
+}
+
+impl DeepSeekClient {
+    /// Create a DeepSeek client from CLI configuration.
+    pub fn new(config: &Config) -> Result<Self> {
+        let api_key = config.deepseek_api_key()?;
+        let base_url = config.deepseek_base_url();
+        let api_provider = config.api_provider();
+        validate_base_url_security(&base_url)?;
+        let retry = config.retry_policy();
+        let default_model = config.default_model();
+
+        logging::info(format!("API provider: {}", api_provider.as_str()));
+        logging::info(format!("API base URL: {base_url}"));
+        logging::info(format!(
+            "Retry policy: enabled={}, max_retries={}, initial_delay={}s, max_delay={}s",
+            retry.enabled, retry.max_retries, retry.initial_delay, retry.max_delay
+        ));
+
+        let http_client = Self::build_http_client(&api_key)?;
+
+        Ok(Self {
+            http_client,
+            api_key,
+            base_url,
+            api_provider,
+            retry,
+            default_model,
+            connection_health: Arc::new(AsyncMutex::new(ConnectionHealth::default())),
+            rate_limiter: Arc::new(AsyncMutex::new(TokenBucket::from_env())),
+        })
+    }
+
+    fn build_http_client(api_key: &str) -> Result<reqwest::Client> {
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        if !api_key.trim().is_empty() {
+            headers.insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {api_key}"))?,
+            );
+        }
+        let mut builder = reqwest::Client::builder()
+            .default_headers(headers)
+            .connect_timeout(Duration::from_secs(30))
+            .tcp_keepalive(Some(Duration::from_secs(30)))
+            .http2_keep_alive_interval(Some(Duration::from_secs(15)))
+            .http2_keep_alive_timeout(Duration::from_secs(20))
+            .min_tls_version(reqwest::tls::Version::TLS_1_2);
+        if force_http1_from_env() {
+            logging::info("DEEPSEEK_FORCE_HTTP1=1 — pinning HTTP client to HTTP/1.1");
+            builder = builder.http1_only();
+        }
+        if let Ok(cert_path) = std::env::var("SSL_CERT_FILE")
+            && !cert_path.is_empty()
+        {
+            builder = add_extra_root_certs(builder, &cert_path);
+        }
+        builder.build().map_err(Into::into)
+    }
+
+    /// List available models from the provider.
+    pub async fn list_models(&self) -> Result<Vec<AvailableModel>> {
+        let url = api_url(&self.base_url, "models");
+        let response = self.send_with_retry(|| self.http_client.get(&url)).await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = bounded_error_text(response, ERROR_BODY_MAX_BYTES).await;
+            anyhow::bail!("Failed to list models: HTTP {status}: {error_text}");
+        }
+        let response_text = response.text().await.unwrap_or_default();
+
+        parse_models_response(&response_text)
+    }
+
+    async fn wait_for_rate_limit(&self) {
+        let maybe_delay = {
+            let mut limiter = self.rate_limiter.lock().await;
+            limiter.delay_until_available(1.0)
+        };
+        if let Some(delay) = maybe_delay {
+            tokio::time::sleep(delay).await;
+        }
+    }
+
+    async fn mark_request_success(&self) {
+        let mut health = self.connection_health.lock().await;
+        if apply_request_success(&mut health, Instant::now()) {
+            logging::info("Connection recovered");
+        }
+    }
+
+    async fn mark_request_failure(&self, reason: &str) {
+        let mut health = self.connection_health.lock().await;
+        apply_request_failure(&mut health, Instant::now());
+        logging::warn(format!(
+            "Connection degraded (failures={}): {}",
+            health.consecutive_failures, reason
+        ));
+    }
+
+    async fn maybe_probe_recovery(&self) {
+        let should_probe = {
+            let mut health = self.connection_health.lock().await;
+            mark_recovery_probe_if_due(&mut health, Instant::now())
+        };
+        if !should_probe {
+            return;
+        }
+        let health_url = api_url(&self.base_url, "models");
+        let probe = self.http_client.get(health_url).send().await;
+        match probe {
+            Ok(resp) if resp.status().is_success() => {
+                self.mark_request_success().await;
+                logging::info("Recovery probe succeeded");
+            }
+            Ok(resp) => {
+                self.mark_request_failure(&format!("probe status={}", resp.status()))
+                    .await;
+            }
+            Err(err) => {
+                self.mark_request_failure(&format!("probe error={err}"))
+                    .await;
+            }
+        }
+    }
+
+    pub(super) async fn send_with_retry<F>(&self, mut build: F) -> Result<reqwest::Response>
+    where
+        F: FnMut() -> reqwest::RequestBuilder,
+    {
+        let retry_cfg: LlmRetryConfig = self.retry.clone().into();
+        let request_result = with_retry(
+            &retry_cfg,
+            || {
+                let request = build();
+                async move {
+                    self.wait_for_rate_limit().await;
+                    let response = request
+                        .send()
+                        .await
+                        .map_err(|err| LlmError::from_reqwest(&err))?;
+                    let status = response.status();
+                    if status.is_success() {
+                        return Ok(response);
+                    }
+                    let retryable = status.as_u16() == 429 || status.is_server_error();
+                    if !retryable {
+                        return Ok(response);
+                    }
+                    let retry_after = extract_retry_after(response.headers());
+                    let body = bounded_error_text(response, ERROR_BODY_MAX_BYTES).await;
+                    Err(LlmError::from_http_response_with_retry_after(
+                        status.as_u16(),
+                        &body,
+                        retry_after,
+                    ))
+                }
+            },
+            Some(Box::new(|err, attempt, delay| {
+                let (reason_label, human_reason) = retry_reason_label_and_human(err);
+                logging::warn(format!(
+                    "HTTP retry reason={} attempt={} delay={:.2}s",
+                    reason_label,
+                    attempt + 1,
+                    delay.as_secs_f64(),
+                ));
+                crate::retry_status::start(attempt + 1, delay, human_reason);
+            })),
+        )
+        .await;
+
+        match request_result {
+            Ok(response) => {
+                crate::retry_status::succeeded();
+                self.mark_request_success().await;
+                Ok(response)
+            }
+            Err(err) => {
+                let last = err.last_error.to_string();
+                if err.attempts > 1 {
+                    crate::retry_status::failed(last.clone());
+                } else {
+                    crate::retry_status::clear();
+                }
+                self.mark_request_failure(&last).await;
+                self.maybe_probe_recovery().await;
+                Err(anyhow::anyhow!(last))
+            }
+        }
+    }
+}
+
+/// Translate the structured `LlmError` into both a categorical label
+/// (for structured logs / metrics) and a short human reason string
+/// (for the retry banner). Returning both from one match avoids the
+/// double-classification we had before.
+fn retry_reason_label_and_human(err: &LlmError) -> (&'static str, String) {
+    match err {
+        LlmError::RateLimited { retry_after, .. } => {
+            let human = if let Some(after) = retry_after {
+                format!("rate limited (Retry-After {}s)", after.as_secs())
+            } else {
+                "rate limited".to_string()
+            };
+            ("rate_limited", human)
+        }
+        LlmError::ServerError { status, .. } => ("server_error", format!("upstream {status}")),
+        LlmError::NetworkError(_) => ("network_error", "network error".to_string()),
+        LlmError::Timeout(_) => ("timeout", "timeout".to_string()),
+        _ => ("other", "other".to_string()),
+    }
+}
+
+impl LlmClient for DeepSeekClient {
+    fn provider_name(&self) -> &'static str {
+        self.api_provider.as_str()
+    }
+
+    fn model(&self) -> &str {
+        &self.default_model
+    }
+
+    async fn health_check(&self) -> Result<bool> {
+        let health_url = api_url(&self.base_url, "models");
+        self.wait_for_rate_limit().await;
+        let response = self.http_client.get(health_url).send().await;
+        match response {
+            Ok(resp) if resp.status().is_success() => {
+                self.mark_request_success().await;
+                Ok(true)
+            }
+            Ok(resp) => {
+                self.mark_request_failure(&format!("health status={}", resp.status()))
+                    .await;
+                Ok(false)
+            }
+            Err(err) => {
+                self.mark_request_failure(&format!("health error={err}"))
+                    .await;
+                Ok(false)
+            }
+        }
+    }
+
+    async fn create_message(&self, request: MessageRequest) -> Result<MessageResponse> {
+        self.create_message_chat(&request).await
+    }
+
+    async fn create_message_stream(
+        &self,
+        request: MessageRequest,
+    ) -> Result<crate::llm_client::StreamEventBox> {
+        self.handle_chat_completion_stream(request).await
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelsListResponse {
+    data: Vec<ModelListItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelListItem {
+    id: String,
+    #[serde(default)]
+    owned_by: Option<String>,
+    #[serde(default)]
+    created: Option<u64>,
+}
+
+pub(super) fn parse_models_response(payload: &str) -> Result<Vec<AvailableModel>> {
+    let parsed: ModelsListResponse =
+        serde_json::from_str(payload).context("Failed to parse model list JSON")?;
+
+    let mut models = parsed
+        .data
+        .into_iter()
+        .map(|item| AvailableModel {
+            id: item.id,
+            owned_by: item.owned_by,
+            created: item.created,
+        })
+        .collect::<Vec<_>>();
+    models.sort_by(|a, b| a.id.cmp(&b.id));
+    models.dedup_by(|a, b| a.id == b.id);
+    Ok(models)
+}
+
+pub(super) fn system_to_instructions(system: Option<SystemPrompt>) -> Option<String> {
+    match system {
+        Some(SystemPrompt::Text(text)) => Some(text),
+        Some(SystemPrompt::Blocks(blocks)) => {
+            let joined = blocks
+                .into_iter()
+                .map(|b| b.text)
+                .collect::<Vec<_>>()
+                .join("\n\n---\n\n");
+            if joined.trim().is_empty() {
+                None
+            } else {
+                Some(joined)
+            }
+        }
+        None => None,
+    }
+}
+
+pub(super) fn apply_reasoning_effort(
+    body: &mut Value,
+    effort: Option<&str>,
+    provider: ApiProvider,
+) {
+    let Some(effort) = effort else {
+        return;
+    };
+    let normalized = effort.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "off" | "disabled" | "none" | "false" => match provider {
+            ApiProvider::Deepseek
+            | ApiProvider::DeepseekCN
+            | ApiProvider::Openrouter
+            | ApiProvider::Novita
+            | ApiProvider::Fireworks
+            | ApiProvider::Sglang => {
+                body["thinking"] = json!({ "type": "disabled" });
+            }
+            ApiProvider::NvidiaNim => {
+                body["chat_template_kwargs"] = json!({
+                    "thinking": false,
+                });
+            }
+        },
+        "low" | "minimal" | "medium" | "mid" | "high" | "" => match provider {
+            ApiProvider::Deepseek
+            | ApiProvider::DeepseekCN
+            | ApiProvider::Openrouter
+            | ApiProvider::Novita
+            | ApiProvider::Fireworks
+            | ApiProvider::Sglang => {
+                body["reasoning_effort"] = json!("high");
+                body["thinking"] = json!({ "type": "enabled" });
+            }
+            ApiProvider::NvidiaNim => {
+                body["chat_template_kwargs"] = json!({
+                    "thinking": true,
+                    "reasoning_effort": "high",
+                });
+            }
+        },
+        "xhigh" | "max" | "highest" => match provider {
+            ApiProvider::Deepseek
+            | ApiProvider::DeepseekCN
+            | ApiProvider::Openrouter
+            | ApiProvider::Novita
+            | ApiProvider::Fireworks
+            | ApiProvider::Sglang => {
+                body["reasoning_effort"] = json!("max");
+                body["thinking"] = json!({ "type": "enabled" });
+            }
+            ApiProvider::NvidiaNim => {
+                body["chat_template_kwargs"] = json!({
+                    "thinking": true,
+                    "reasoning_effort": "max",
+                });
+            }
+        },
+        _ => {}
+    }
+}
+
+pub(super) fn parse_usage(usage: Option<&Value>) -> Usage {
+    let input_tokens = usage
+        .and_then(|u| u.get("input_tokens").or_else(|| u.get("prompt_tokens")))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let output_tokens = usage
+        .and_then(|u| {
+            u.get("output_tokens")
+                .or_else(|| u.get("completion_tokens"))
+        })
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let cached_tokens = usage
+        .and_then(|u| u.get("prompt_tokens_details"))
+        .and_then(|details| details.get("cached_tokens"))
+        .and_then(Value::as_u64);
+    let prompt_cache_hit_tokens = usage
+        .and_then(|u| u.get("prompt_cache_hit_tokens"))
+        .and_then(Value::as_u64)
+        .or(cached_tokens)
+        .map(|v| v as u32);
+    let prompt_cache_miss_tokens = usage
+        .and_then(|u| u.get("prompt_cache_miss_tokens"))
+        .and_then(Value::as_u64)
+        .or_else(|| cached_tokens.map(|cached| input_tokens.saturating_sub(cached)))
+        .map(|v| v as u32);
+    let reasoning_tokens = usage
+        .and_then(|u| u.get("completion_tokens_details"))
+        .and_then(|details| details.get("reasoning_tokens"))
+        .and_then(Value::as_u64)
+        .map(|v| v as u32);
+
+    let server_tool_use = usage.and_then(|u| u.get("server_tool_use")).map(|server| {
+        let code_execution_requests = server
+            .get("code_execution_requests")
+            .and_then(Value::as_u64)
+            .map(|v| v as u32);
+        let tool_search_requests = server
+            .get("tool_search_requests")
+            .and_then(Value::as_u64)
+            .map(|v| v as u32);
+        ServerToolUsage {
+            code_execution_requests,
+            tool_search_requests,
+        }
+    });
+
+    Usage {
+        input_tokens: input_tokens as u32,
+        output_tokens: output_tokens as u32,
+        prompt_cache_hit_tokens,
+        prompt_cache_miss_tokens,
+        reasoning_tokens,
+        reasoning_replay_tokens: None,
+        server_tool_use,
+    }
+}
+
+impl DeepSeekClient {
+    /// Call the DeepSeek `/beta/completions` FIM endpoint.
+    pub async fn fim_completion(
+        &self,
+        model: &str,
+        prompt: &str,
+        suffix: &str,
+        max_tokens: u32,
+    ) -> anyhow::Result<String> {
+        let url = api_url(&self.base_url, "beta/completions");
+        let body = json!({
+            "model": model,
+            "prompt": prompt,
+            "suffix": suffix,
+            "max_tokens": max_tokens,
+        });
+        let response = self
+            .send_with_retry(|| self.http_client.post(&url).json(&body))
+            .await?;
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = bounded_error_text(response, ERROR_BODY_MAX_BYTES).await;
+            anyhow::bail!("FIM API error: HTTP {status}: {error_text}");
+        }
+        let response_text = response.text().await.unwrap_or_default();
+        let value: serde_json::Value =
+            serde_json::from_str(&response_text).context("Failed to parse FIM API response")?;
+        let text = value
+            .pointer("/choices/0/text")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("FIM response missing choices[0].text"))?;
+        Ok(text.to_string())
+    }
+}
+
+mod chat;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::client::chat::{
+        build_chat_messages, build_chat_messages_for_request, count_reasoning_replay_chars,
+        parse_chat_message, parse_sse_chunk, sanitize_thinking_mode_messages, tool_to_chat,
+    };
+    use crate::models::{
+        ContentBlock, ContentBlockStart, Delta, Message, MessageRequest, StreamEvent, Tool,
+    };
+    use serde_json::json;
+
+    #[test]
+    fn tool_name_roundtrip_dot() {
+        let original = "multi_tool_use.parallel";
+        let encoded = to_api_tool_name(original);
+        assert_eq!(encoded, "multi_tool_use-x00002E-parallel");
+        let decoded = from_api_tool_name(&encoded);
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn tool_name_decode_mangled_dot_prefix() {
+        let mangled = "multi_tool_use.x00002E-parallel";
+        let decoded = from_api_tool_name(mangled);
+        assert_eq!(decoded, "multi_tool_use..parallel");
+    }
+
+    #[test]
+    fn tool_name_decode_bare_hex_no_trailing_dash() {
+        let mangled = "foo_x00002Ebar";
+        let decoded = from_api_tool_name(mangled);
+        assert_eq!(decoded, "foo_.bar");
+    }
+
+    #[test]
+    fn tool_name_bare_hex_preserves_alnum() {
+        let input = "foox000041bar";
+        let decoded = from_api_tool_name(input);
+        assert_eq!(decoded, input);
+    }
+
+    #[test]
+    fn tool_name_bare_hex_preserves_underscore() {
+        let input = "foox00005Fbar";
+        let decoded = from_api_tool_name(input);
+        assert_eq!(decoded, input);
+    }
+
+    #[test]
+    fn tool_name_roundtrip_colon() {
+        let original = "mcp__server:tool_name";
+        let encoded = to_api_tool_name(original);
+        let decoded = from_api_tool_name(&encoded);
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn api_url_handles_default_v1_and_beta_base_urls() {
+        assert_eq!(
+            api_url("https://api.deepseek.com", "chat/completions"),
+            "https://api.deepseek.com/v1/chat/completions"
+        );
+        assert_eq!(
+            api_url("https://api.deepseek.com/v1", "chat/completions"),
+            "https://api.deepseek.com/v1/chat/completions"
+        );
+        assert_eq!(
+            api_url("https://api.deepseek.com/beta", "chat/completions"),
+            "https://api.deepseek.com/beta/chat/completions"
+        );
+    }
+
+    #[test]
+    fn chat_messages_keep_reasoning_content_on_all_assistant_messages() {
+        let message = Message {
+            role: "assistant".to_string(),
+            content: vec![
+                ContentBlock::Thinking {
+                    thinking: "plan".to_string(),
+                },
+                ContentBlock::Text {
+                    text: "done".to_string(),
+                    cache_control: None,
+                },
+            ],
+        };
+        let out = build_chat_messages(None, &[message], "deepseek-v4-pro");
+        let assistant = out
+            .iter()
+            .find(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
+            .expect("assistant message");
+        assert_eq!(
+            assistant.get("content").and_then(Value::as_str),
+            Some("done")
+        );
+        assert_eq!(
+            assistant.get("reasoning_content").and_then(Value::as_str),
+            Some("plan"),
+            "thinking-mode models must keep reasoning_content on all assistant messages"
+        );
+    }
+
+    #[test]
+    fn chat_messages_replay_prior_tool_round_reasoning_after_new_user_turn() {
+        let messages = vec![
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "Need the date".to_string(),
+                    cache_control: None,
+                }],
+            },
+            Message {
+                role: "assistant".to_string(),
+                content: vec![
+                    ContentBlock::Thinking {
+                        thinking: "Need to call a tool".to_string(),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "tool-1".to_string(),
+                        name: "get_date".to_string(),
+                        input: json!({}),
+                        caller: None,
+                    },
+                ],
+            },
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "tool-1".to_string(),
+                    content: "2026-04-23".to_string(),
+                    is_error: None,
+                    content_blocks: None,
+                }],
+            },
+            Message {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "It is 2026-04-23.".to_string(),
+                    cache_control: None,
+                }],
+            },
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "Thanks. Next question.".to_string(),
+                    cache_control: None,
+                }],
+            },
+        ];
+        let out = build_chat_messages(None, &messages, "deepseek-v4-pro");
+        let tool_assistant = out
+            .iter()
+            .find(|value| {
+                value.get("role").and_then(Value::as_str) == Some("assistant")
+                    && value.get("tool_calls").is_some()
+            })
+            .expect("tool-call assistant message");
+        assert_eq!(
+            tool_assistant
+                .get("reasoning_content")
+                .and_then(Value::as_str),
+            Some("Need to call a tool"),
+            "thinking-mode tool rounds must replay reasoning_content on later requests"
+        );
+    }
+
+    #[test]
+    fn chat_messages_allow_tool_round_without_reasoning_when_thinking_disabled() {
+        let request = MessageRequest {
+            model: "deepseek-v4-pro".to_string(),
+            messages: vec![
+                Message {
+                    role: "assistant".to_string(),
+                    content: vec![ContentBlock::ToolUse {
+                        id: "call-no-thinking".to_string(),
+                        name: "read_file".to_string(),
+                        input: json!({"path": "Cargo.toml"}),
+                        caller: None,
+                    }],
+                },
+                Message {
+                    role: "user".to_string(),
+                    content: vec![ContentBlock::ToolResult {
+                        tool_use_id: "call-no-thinking".to_string(),
+                        content: "workspace manifest".to_string(),
+                        is_error: None,
+                        content_blocks: None,
+                    }],
+                },
+            ],
+            max_tokens: 1024,
+            system: None,
+            tools: None,
+            tool_choice: None,
+            metadata: None,
+            thinking: None,
+            reasoning_effort: Some("off".to_string()),
+            stream: None,
+            temperature: None,
+            top_p: None,
+        };
+
+        let out = build_chat_messages_for_request(&request);
+        assert!(
+            out.iter().any(
+                |value| value.get("role").and_then(Value::as_str) == Some("assistant")
+                    && value.get("tool_calls").is_some()
             ),
             "tool calls remain valid when thinking mode is disabled"
         );
@@ -876,41 +1677,6 @@ impl Clone for DeepSeekClient {
 
     #[test]
     fn parse_usage_reads_deepseek_cache_and_reasoning_tokens() {
-        fn parse_usage(usage: Option<&Value>) -> Usage {
-            let usage = usage.expect("usage");
-            let input_tokens = usage
-                .get("prompt_tokens")
-                .and_then(Value::as_u64)
-                .expect("prompt tokens") as u32;
-            let output_tokens = usage
-                .get("completion_tokens")
-                .and_then(Value::as_u64)
-                .expect("completion tokens") as u32;
-            let prompt_cache_hit_tokens = usage
-                .get("prompt_cache_hit_tokens")
-                .and_then(Value::as_u64)
-                .map(|v| v as u32);
-            let prompt_cache_miss_tokens = usage
-                .get("prompt_cache_miss_tokens")
-                .and_then(Value::as_u64)
-                .map(|v| v as u32);
-            let reasoning_tokens = usage
-                .get("completion_tokens_details")
-                .and_then(|d| d.get("reasoning_tokens"))
-                .and_then(Value::as_u64)
-                .map(|v| v as u32);
-
-            Usage {
-                input_tokens,
-                output_tokens,
-                prompt_cache_hit_tokens,
-                prompt_cache_miss_tokens,
-                reasoning_tokens,
-                reasoning_replay_tokens: None,
-                server_tool_use: None,
-            }
-        }
-
         let usage = parse_usage(Some(&json!({
             "prompt_tokens": 100,
             "completion_tokens": 20,
@@ -926,6 +1692,22 @@ impl Clone for DeepSeekClient {
         assert_eq!(usage.prompt_cache_hit_tokens, Some(70));
         assert_eq!(usage.prompt_cache_miss_tokens, Some(30));
         assert_eq!(usage.reasoning_tokens, Some(12));
+    }
+
+    #[test]
+    fn parse_usage_reads_v4_prompt_tokens_details_cached_tokens() {
+        let usage = parse_usage(Some(&json!({
+            "prompt_tokens": 4000,
+            "completion_tokens": 20,
+            "prompt_tokens_details": {
+                "cached_tokens": 3000
+            }
+        })));
+
+        assert_eq!(usage.input_tokens, 4000);
+        assert_eq!(usage.output_tokens, 20);
+        assert_eq!(usage.prompt_cache_hit_tokens, Some(3000));
+        assert_eq!(usage.prompt_cache_miss_tokens, Some(1000));
     }
 
     #[test]

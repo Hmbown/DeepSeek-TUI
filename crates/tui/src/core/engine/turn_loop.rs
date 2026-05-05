@@ -29,6 +29,7 @@ impl Engine {
             ensure_advanced_tooling(&mut tool_catalog);
         }
         let mut active_tool_names = initial_active_tools(&tool_catalog);
+        let mut loop_guard = LoopGuard::default();
 
         // Transparent stream-retry counter: when the chunked-transfer
         // connection dies mid-stream and we got nothing useful out of it
@@ -974,6 +975,7 @@ impl Engine {
                 let mut supports_parallel = false;
                 let mut read_only = false;
                 let mut blocked_error: Option<ToolError> = None;
+                let mut guard_result: Option<ToolResult> = None;
                 if maybe_activate_requested_deferred_tool(
                     &tool_name,
                     &tool_catalog,
@@ -996,8 +998,7 @@ impl Engine {
                 {
                     crate::logging::info(format!(
                         "Resolved hallucinated tool name '{}' -> '{}'",
-                        tool_name,
-                        canonical
+                        tool_name, canonical
                     ));
                     tool_def = tool_catalog.iter().find(|d| d.name == canonical);
                     if tool_def.is_some() {
@@ -1067,6 +1068,17 @@ impl Engine {
                     read_only = true;
                 }
 
+                if blocked_error.is_none()
+                    && let AttemptDecision::Block(message) =
+                        loop_guard.record_attempt(&tool_name, &tool_input)
+                {
+                    crate::logging::warn(message.clone());
+                    guard_result = Some(
+                        ToolResult::success(message)
+                            .with_metadata(json!({"loop_guard": "identical_tool_call"})),
+                    );
+                }
+
                 plans.push(ToolExecutionPlan {
                     index,
                     id: tool_id,
@@ -1079,6 +1091,7 @@ impl Engine {
                     supports_parallel,
                     read_only,
                     blocked_error,
+                    guard_result,
                 });
             }
 
@@ -1106,6 +1119,26 @@ impl Engine {
             if parallel_allowed {
                 let mut tool_tasks = FuturesUnordered::new();
                 for plan in plans {
+                    if let Some(result) = plan.guard_result.clone() {
+                        let result = Ok(result);
+                        let _ = self
+                            .tx_event
+                            .send(Event::ToolCallComplete {
+                                id: plan.id.clone(),
+                                name: plan.name.clone(),
+                                result: result.clone(),
+                            })
+                            .await;
+                        outcomes[plan.index] = Some(ToolExecOutcome {
+                            index: plan.index,
+                            id: plan.id,
+                            name: plan.name,
+                            input: plan.input,
+                            started_at: Instant::now(),
+                            result,
+                        });
+                        continue;
+                    }
                     if let Some(err) = plan.blocked_error.clone() {
                         outcomes[plan.index] = Some(ToolExecOutcome {
                             index: plan.index,
@@ -1182,6 +1215,27 @@ impl Engine {
                     let tool_name = plan.name.clone();
                     let tool_input = plan.input.clone();
                     let tool_caller = plan.caller.clone();
+
+                    if let Some(result) = plan.guard_result.clone() {
+                        let result = Ok(result);
+                        let _ = self
+                            .tx_event
+                            .send(Event::ToolCallComplete {
+                                id: tool_id.clone(),
+                                name: tool_name.clone(),
+                                result: result.clone(),
+                            })
+                            .await;
+                        outcomes[plan.index] = Some(ToolExecOutcome {
+                            index: plan.index,
+                            id: tool_id,
+                            name: tool_name,
+                            input: tool_input,
+                            started_at: Instant::now(),
+                            result,
+                        });
+                        continue;
+                    }
 
                     if let Some(err) = plan.blocked_error.clone() {
                         let result = Err(err);
@@ -1472,6 +1526,7 @@ impl Engine {
             // denial that should not.
             let mut step_error_categories: Vec<ErrorCategory> = Vec::new();
             let mut stop_after_plan_tool = false;
+            let mut loop_guard_halt: Option<String> = None;
 
             for outcome in outcomes.into_iter().flatten() {
                 let duration = outcome.started_at.elapsed();
@@ -1484,6 +1539,16 @@ impl Engine {
 
                 match outcome.result {
                     Ok(output) => {
+                        match loop_guard.record_outcome(&outcome.name, output.success) {
+                            OutcomeDecision::Continue => {}
+                            OutcomeDecision::Warn(message) => {
+                                crate::logging::warn(message.clone());
+                                let _ = self.tx_event.send(Event::status(message)).await;
+                            }
+                            OutcomeDecision::Halt(message) => {
+                                loop_guard_halt.get_or_insert(message);
+                            }
+                        }
                         emit_tool_audit(json!({
                             "event": "tool.result",
                             "tool_id": outcome.id.clone(),
@@ -1526,6 +1591,16 @@ impl Engine {
                         .await;
                     }
                     Err(e) => {
+                        match loop_guard.record_outcome(&outcome.name, false) {
+                            OutcomeDecision::Continue => {}
+                            OutcomeDecision::Warn(message) => {
+                                crate::logging::warn(message.clone());
+                                let _ = self.tx_event.send(Event::status(message)).await;
+                            }
+                            OutcomeDecision::Halt(message) => {
+                                loop_guard_halt.get_or_insert(message);
+                            }
+                        }
                         let envelope: ErrorEnvelope = e.clone().into();
                         emit_tool_audit(json!({
                             "event": "tool.result",
@@ -1564,6 +1639,12 @@ impl Engine {
             }
 
             if stop_after_plan_tool {
+                break;
+            }
+
+            if let Some(message) = loop_guard_halt {
+                crate::logging::warn(message.clone());
+                let _ = self.tx_event.send(Event::status(message)).await;
                 break;
             }
 
@@ -1617,16 +1698,6 @@ impl Engine {
             {
                 turn.next_step();
                 continue;
-            }
-
-            if consecutive_tool_error_steps >= 3 {
-                let _ = self
-                    .tx_event
-                    .send(Event::status(
-                        "Stopping after repeated tool failures. Try a narrower scope or adjust approvals.",
-                    ))
-                    .await;
-                break;
             }
 
             turn.next_step();
