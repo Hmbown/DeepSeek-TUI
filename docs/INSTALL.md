@@ -27,7 +27,7 @@ platform/architecture combinations from v0.8.8 onward:
 
 ¹ The npm package will exit with a clear error and point you here.
 ² Provided your toolchain can compile a recent Rust workspace; see
-  [Build from source](#5-build-from-source) below.
+  [Build from source](#6-build-from-source) below.
 
 > **Linux ARM64 note (v0.8.7 and earlier).** v0.8.7 and earlier do **not**
 > publish a Linux ARM64 prebuilt; users on HarmonyOS thin-and-light, Asahi
@@ -35,7 +35,7 @@ platform/architecture combinations from v0.8.8 onward:
 > from `npm i -g deepseek-tui`. v0.8.8 publishes both `deepseek-linux-arm64`
 > and `deepseek-tui-linux-arm64`, so a plain `npm i -g deepseek-tui` works
 > on any glibc-based ARM64 Linux. If you're stuck on v0.8.7, jump to
-> [Build from source](#5-build-from-source) — `cargo install` works fine.
+> [Build from source](#6-build-from-source) — `cargo install` works fine.
 
 ---
 
@@ -67,12 +67,32 @@ Useful environment variables:
 > npm config set registry https://registry.npmmirror.com
 > npm install -g deepseek-tui
 > ```
-> See also [Section 3](#3-install-via-cargo-any-tier-1-rust-target) if you
+> See also [Section 4](#4-install-via-cargo-any-tier-1-rust-target) if you
 > prefer Cargo over npm.
 
 ---
 
-## 3. Install via Cargo (any Tier-1 Rust target)
+## 3. Install via Scoop (Windows)
+
+[Scoop](https://scoop.sh) is a command-line installer for Windows. `deepseek-tui`
+is available in the Scoop main bucket, so no extra bucket needs to be added:
+
+```powershell
+scoop install deepseek-tui
+```
+
+Scoop installs both the `deepseek` dispatcher and the `deepseek-tui` companion
+binary and adds them to your `PATH` automatically. To upgrade later:
+
+```powershell
+scoop update deepseek-tui
+```
+
+> You can verify the package at <https://scoop.sh/#/apps?q=deepseek-tui>.
+
+---
+
+## 4. Install via Cargo (any Tier-1 Rust target)
 
 If GitHub releases are slow, blocked, or you're on an unsupported architecture,
 install from crates.io directly. Both crates are required — the dispatcher
@@ -129,7 +149,7 @@ is fastest from your network.
 
 ---
 
-## 4. Manual download from GitHub Releases
+## 5. Manual download from GitHub Releases
 
 Grab the matching pair of binaries for your platform from the
 [Releases page](https://github.com/Hmbown/DeepSeek-TUI/releases) and drop them
@@ -158,7 +178,7 @@ curl -L -o /tmp/deepseek-artifacts-sha256.txt \
 
 ---
 
-## 5. Build from source
+## 6. Build from source
 
 This is the catch-all for any platform we don't ship — including musl, riscv64,
 LoongArch, FreeBSD, and pre-2024 ARM64 distros.
@@ -295,13 +315,13 @@ Both binaries appear in `target\release\deepseek.exe` and
 
 ---
 
-## 6. Troubleshooting
+## 7. Troubleshooting
 
 ### `Unsupported architecture: arm64 on platform linux`
 
 You're on a release earlier than v0.8.8 that doesn't publish Linux ARM64
 binaries. Either upgrade (`npm i -g deepseek-tui@latest`) or use
-`cargo install` per [Section 3](#3-install-via-cargo-any-tier-1-rust-target).
+`cargo install` per [Section 4](#4-install-via-cargo-any-tier-1-rust-target).
 
 ### `MISSING_COMPANION_BINARY` at runtime
 
@@ -330,7 +350,7 @@ cargo install deepseek-tui-cli --locked
 
 Set `DEEPSEEK_TUI_RELEASE_BASE_URL` to a mirrored release-asset directory
 (rsproxy, TUNA, Tencent COS, Aliyun OSS), or skip npm entirely and use the
-Cargo mirror setup in [Section 3](#3-install-via-cargo-any-tier-1-rust-target).
+Cargo mirror setup in [Section 4](#4-install-via-cargo-any-tier-1-rust-target).
 
 ### Debian/Ubuntu: `error: linker 'cc' not found` while building
 
@@ -404,7 +424,7 @@ target/debug/build/libsqlite3-sys-*/build-script-build
 
 ---
 
-## 7. Verifying your install
+## 8. Verifying your install
 
 ```bash
 deepseek --version
