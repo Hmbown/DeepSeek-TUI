@@ -1665,6 +1665,18 @@ impl ToolSpec for AgentSpawnTool {
             )
             .map_err(|e| ToolError::execution_failed(format!("Failed to spawn sub-agent: {e}")))?;
 
+        // Update the resident-file lease from the "pending" placeholder to the
+        // real agent_id now that spawn succeeded and we have the actual id.
+        // Without this, conflict warnings say "agent pending already holds a
+        // lease" rather than showing the actual agent nickname.
+        if let Some(ref file_path) = spawn_request.resident_file {
+            let leases = resident_lease_table();
+            let mut guard = leases.lock().unwrap_or_else(|p| p.into_inner());
+            if guard.get(file_path).is_some_and(|v| v == "pending") {
+                guard.insert(file_path.clone(), result.agent_id.clone());
+            }
+        }
+
         let mut tool_result = if self.name == "spawn_agent" {
             let mut payload = json!({
                 "agent_id": result.agent_id.clone(),
