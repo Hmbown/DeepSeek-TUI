@@ -104,6 +104,35 @@ impl SnapshotRepo {
             let _ = run_git(&git_dir, &work_tree, &["config", "gc.auto", "0"]);
             // Ignore CRLF rewriting — we want byte-for-byte fidelity.
             let _ = run_git(&git_dir, &work_tree, &["config", "core.autocrlf", "false"]);
+
+            // Write an exclude file that skips well-known large build-artifact
+            // and dependency directories. Without this, `git add -A` traverses
+            // the entire workspace on the first snapshot, which can take 10+
+            // seconds in directories with node_modules, Rust target/, etc.
+            // (#697). The user's own .gitignore is still honoured; this adds a
+            // baseline that applies even when no .gitignore is present.
+            let exclude_dir = git_dir.join("info");
+            let _ = std::fs::create_dir_all(&exclude_dir);
+            let _ = std::fs::write(
+                exclude_dir.join("exclude"),
+                concat!(
+                    "# deepseek-tui snapshot excludes — auto-generated, do not edit\n",
+                    "# These directories are excluded to keep `git add -A` fast (#697).\n",
+                    "/node_modules\n",
+                    "/target\n",
+                    "/.build\n",
+                    "/dist\n",
+                    "/build\n",
+                    "/__pycache__\n",
+                    "/.next\n",
+                    "/.nuxt\n",
+                    "/vendor\n",
+                    "/venv\n",
+                    "/.venv\n",
+                    "/.tox\n",
+                    "/.cache\n",
+                ),
+            );
         }
 
         Ok(Self { git_dir, work_tree })
