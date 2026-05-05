@@ -15,10 +15,7 @@ use crate::core::coherence::CoherenceState;
 use crate::cycle_manager::{CycleBriefing, CycleConfig};
 use crate::hooks::{HookContext, HookEvent, HookExecutor, HookResult};
 use crate::localization::{Locale, MessageId, resolve_locale, tr};
-use crate::models::{
-    Message, SystemPrompt, compaction_message_threshold_for_model,
-    compaction_threshold_for_model_and_effort,
-};
+use crate::models::{Message, SystemPrompt, compaction_threshold_for_model_and_effort};
 use crate::palette::{self, UiTheme};
 use crate::session_manager::SessionContextReference;
 use crate::settings::Settings;
@@ -3169,7 +3166,6 @@ impl App {
         CompactionConfig {
             enabled: self.auto_compact,
             token_threshold: self.compact_threshold,
-            message_threshold: compaction_message_threshold_for_model(&self.model),
             model: self.model.clone(),
             ..Default::default()
         }

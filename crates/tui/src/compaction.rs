@@ -18,19 +18,25 @@ use crate::models::{
 };
 
 /// Configuration for conversation compaction behavior.
+///
+/// v0.8.11 simplified this from the prior token-OR-message-count trigger
+/// to a token-only trigger gated by an absolute floor. The
+/// `message_threshold` field was removed: its only purpose was to fire
+/// compaction on long sessions of small messages, which is exactly the
+/// case where rewriting the V4 prefix cache is least valuable. Token
+/// budget is the right signal; message count was a 128K-era heuristic.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompactionConfig {
     pub enabled: bool,
     pub token_threshold: usize,
-    pub message_threshold: usize,
     pub model: String,
     pub cache_summary: bool,
     /// Hard floor — `should_compact` returns `false` when total session
-    /// tokens fall below this number, regardless of `enabled`,
-    /// `token_threshold`, or `message_threshold`. Defaults to
-    /// [`MINIMUM_AUTO_COMPACTION_TOKENS`] (500K) for v0.8.11+. Tests that
-    /// want to exercise the older threshold/message-count logic at small
-    /// fixture sizes can set this to `0` to disable the floor.
+    /// tokens fall below this number, regardless of `enabled` or
+    /// `token_threshold`. Defaults to [`MINIMUM_AUTO_COMPACTION_TOKENS`]
+    /// (500K) for v0.8.11+. Tests that want to exercise the threshold
+    /// logic at small fixture sizes can set this to `0` to disable the
+    /// floor.
     pub auto_floor_tokens: usize,
 }
 
@@ -50,7 +56,6 @@ impl Default for CompactionConfig {
             // default no longer lies. Real call sites override this via
             // `compaction_threshold_for_model_and_effort`.
             token_threshold: 800_000,
-            message_threshold: 50,
             model: DEFAULT_TEXT_MODEL.to_string(),
             cache_summary: true,
             auto_floor_tokens: MINIMUM_AUTO_COMPACTION_TOKENS,
@@ -61,17 +66,15 @@ impl Default for CompactionConfig {
 /// Hard floor for automatic compaction in v0.8.11+.
 ///
 /// Below this token count, `should_compact` returns `false` regardless of
-/// `enabled`, `token_threshold`, or `message_threshold`. The point of the
-/// floor is V4 prefix-cache economics: compaction rewrites the stable
-/// prefix, which destroys the KV cache. At low token counts the prefix
-/// cache is healthy and compaction's cost (full re-prefill at miss prices)
-/// dwarfs its benefit (a tiny budget reclaim). Above the floor compaction
-/// can still be net-positive — cache is already pressured, the prefix has
-/// drifted, and freeing budget matters.
+/// `enabled` or `token_threshold`. The point of the floor is V4 prefix-cache
+/// economics: compaction rewrites the stable prefix, which destroys the KV
+/// cache. At low token counts the prefix cache is healthy and compaction's
+/// cost (full re-prefill at miss prices) dwarfs its benefit (a tiny budget
+/// reclaim). Above the floor compaction can still be net-positive — cache
+/// is already pressured, the prefix has drifted, and freeing budget matters.
 ///
-/// Manual `/compact` slash command and the model-callable `compact_now`
-/// tool both bypass this floor with a deliberate refusal message — they
-/// represent explicit agency rather than implicit policy.
+/// Manual `/compact` slash command bypasses this floor with explicit user
+/// agency.
 ///
 /// Constant rather than configurable for v0.8.11. If anyone needs to dial
 /// it (smaller models, opinionated workflows), we can add a setting later.
@@ -645,7 +648,6 @@ pub fn should_compact(
         .iter()
         .map(|&idx| estimate_tokens_for_message(&messages[idx], false))
         .sum();
-    let pinned_count = plan.pinned_indices.len();
 
     let token_estimate: usize = plan
         .summarize_indices
@@ -656,21 +658,19 @@ pub fn should_compact(
 
     // Pinned messages consume part of the budget, so compact earlier when needed.
     let effective_token_threshold = config.token_threshold.saturating_sub(pinned_tokens);
-    let effective_message_threshold = config.message_threshold.saturating_sub(pinned_count);
 
-    // Always compact if we exceed the token threshold, even with few unpinned messages.
-    if token_estimate > effective_token_threshold && effective_token_threshold > 0 {
-        return true;
+    // Token-only trigger (v0.8.11): the prior message-count branch was a
+    // 128K-era heuristic that fired compaction on long chats of small
+    // messages — exactly the case where rewriting the V4 prefix cache is
+    // most wasteful. Token budget is the only signal that maps to actual
+    // model context pressure.
+    if effective_token_threshold == 0 {
+        return message_count >= MIN_SUMMARIZE_MESSAGES;
     }
-
-    let enough_unpinned = message_count >= MIN_SUMMARIZE_MESSAGES
-        || effective_token_threshold == 0
-        || effective_message_threshold == 0;
-    if !enough_unpinned {
+    if message_count < MIN_SUMMARIZE_MESSAGES {
         return false;
     }
-
-    token_estimate > effective_token_threshold || message_count > effective_message_threshold
+    token_estimate > effective_token_threshold
 }
 
 fn truncate_chars(text: &str, max_chars: usize) -> &str {
@@ -1487,20 +1487,22 @@ mod tests {
         assert!(!should_compact(&messages, &config, None, None, None));
     }
 
+    /// v0.8.11: message-count is no longer a compaction trigger. Long
+    /// chats of small messages stay uncompacted because rewriting the V4
+    /// prefix cache for a tiny budget reclaim is net-negative. Only token
+    /// pressure (and the explicit `/compact` slash command) trigger
+    /// compaction.
     #[test]
-    fn should_compact_respects_message_threshold() {
+    fn message_count_no_longer_triggers_compaction() {
         let config = CompactionConfig {
             enabled: true,
-            token_threshold: 1_000_000, // Very high
-            message_threshold: 5,
-            // Disable the v0.8.11 500K floor so this test exercises the
-            // pure message-count threshold logic at small fixture sizes.
+            token_threshold: 1_000_000,
             auto_floor_tokens: 0,
             ..Default::default()
         };
 
-        // Under threshold
-        let few_messages: Vec<Message> = (0..4)
+        // 200 tiny messages, well above the prior message threshold.
+        let many_messages: Vec<Message> = (0..200)
             .map(|_| Message {
                 role: "user".to_string(),
                 content: vec![ContentBlock::Text {
@@ -1509,19 +1511,9 @@ mod tests {
                 }],
             })
             .collect();
-        assert!(!should_compact(&few_messages, &config, None, None, None));
-
-        // Over threshold
-        let many_messages: Vec<Message> = (0..10)
-            .map(|_| Message {
-                role: "user".to_string(),
-                content: vec![ContentBlock::Text {
-                    text: "x".to_string(),
-                    cache_control: None,
-                }],
-            })
-            .collect();
-        assert!(should_compact(&many_messages, &config, None, None, None));
+        // Token total stays minuscule so the token threshold is not hit;
+        // without the prior message-count trigger, no compaction.
+        assert!(!should_compact(&many_messages, &config, None, None, None));
     }
 
     #[test]
@@ -1619,7 +1611,6 @@ mod tests {
         let config = CompactionConfig {
             enabled: true,
             token_threshold: 10,
-            message_threshold: 2,
             ..Default::default()
         };
 
@@ -1630,46 +1621,12 @@ mod tests {
         assert!(!should_compact(&messages, &config, None, None, None));
     }
 
-    #[test]
-    fn should_compact_counts_only_unpinned_messages() {
-        let config = CompactionConfig {
-            enabled: true,
-            token_threshold: 1_000_000,
-            message_threshold: 5,
-            auto_floor_tokens: 0,
-            ..Default::default()
-        };
-
-        let mut messages: Vec<Message> = (0..7)
-            .map(|i| msg("user", &format!("noise message {i}")))
-            .collect();
-        messages.push(msg("user", "Focus on src/core/engine.rs"));
-        messages.extend((0..4).map(|i| msg("assistant", &format!("recent {i}"))));
-
-        assert!(should_compact(&messages, &config, None, None, None));
-    }
-
-    #[test]
-    fn should_compact_when_pins_consume_budget() {
-        let config = CompactionConfig {
-            enabled: true,
-            token_threshold: 50,
-            message_threshold: 50,
-            auto_floor_tokens: 0,
-            ..Default::default()
-        };
-
-        let mut messages = vec![msg("user", "noise 0"), msg("assistant", "noise 1")];
-        messages.extend((0..4).map(|_| {
-            msg(
-                "assistant",
-                &format!("{} src/core/engine.rs", "x".repeat(400)),
-            )
-        }));
-
-        // Pinned recent messages exceed the token budget, so unpinned noise should trigger compaction.
-        assert!(should_compact(&messages, &config, None, None, None));
-    }
+    // v0.8.11: removed `should_compact_counts_only_unpinned_messages` and
+    // `should_compact_when_pins_consume_budget` — both tested the
+    // message-count compaction trigger that v0.8.11 deleted. The
+    // pinned-tokens accounting they exercised is still tested by
+    // `should_compact_ignores_fully_pinned_context` below; the rest of
+    // their setup has no contemporary contract to pin.
 
     #[test]
     fn enforce_tool_call_pairs_removes_orphaned_tool_call() {
@@ -1925,8 +1882,7 @@ mod tests {
     fn test_should_compact_token_threshold_triggers() {
         let config = CompactionConfig {
             enabled: true,
-            token_threshold: 100,    // Low threshold for testing
-            message_threshold: 1000, // High message threshold
+            token_threshold: 100, // Low threshold for testing
             auto_floor_tokens: 0,
             ..Default::default()
         };
@@ -1945,7 +1901,6 @@ mod tests {
         let config = CompactionConfig {
             enabled: true,
             token_threshold: 1000,
-            message_threshold: 1000,
             ..Default::default()
         };
 
@@ -1963,8 +1918,7 @@ mod tests {
     fn auto_compaction_floor_blocks_below_500k_even_when_threshold_says_yes() {
         let config = CompactionConfig {
             enabled: true,
-            token_threshold: 100,    // would normally fire instantly
-            message_threshold: 1000, // not the trigger
+            token_threshold: 100, // would normally fire instantly
             // Use the production default explicitly so this test pins the
             // floor's contract rather than relying on `Default`.
             auto_floor_tokens: MINIMUM_AUTO_COMPACTION_TOKENS,
@@ -1983,7 +1937,6 @@ mod tests {
         let config = CompactionConfig {
             enabled: true,
             token_threshold: 2_000_000,
-            message_threshold: 2_000,
             auto_floor_tokens: MINIMUM_AUTO_COMPACTION_TOKENS,
             ..Default::default()
         };
@@ -2307,7 +2260,6 @@ mod tests {
         let _config = CompactionConfig {
             enabled: true,
             token_threshold: 1000,
-            message_threshold: 5,
             ..Default::default()
         };
 
@@ -2323,9 +2275,7 @@ mod tests {
             msg("assistant", "recent 2"),
         ];
 
-        // Should compact because:
-        // - More than message_threshold (5) unpinned messages
-        // - src/main.rs mention pins message 0
+        // src/main.rs mention should pin message 0 in the plan.
         let plan = plan_compaction(
             &messages,
             Some(&workspace),

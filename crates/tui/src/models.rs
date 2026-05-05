@@ -14,10 +14,7 @@ pub const DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS: u32 = 1_000_000;
 /// models resolve to their own scaled value via
 /// [`compaction_threshold_for_model`] (#664).
 pub const DEFAULT_COMPACTION_TOKEN_THRESHOLD: usize = 102_400;
-pub const DEFAULT_COMPACTION_MESSAGE_THRESHOLD: usize = 50;
 const COMPACTION_THRESHOLD_PERCENT: u32 = 80;
-const COMPACTION_MESSAGE_DIVISOR: u32 = 500;
-const MAX_COMPACTION_MESSAGE_THRESHOLD: usize = 2_000;
 
 // === Core Message Types ===
 
@@ -298,21 +295,6 @@ pub fn compaction_threshold_for_model_and_effort(
     compaction_threshold_for_model(model)
 }
 
-/// Derive a compaction message-count threshold from model context window.
-#[must_use]
-pub fn compaction_message_threshold_for_model(model: &str) -> usize {
-    let Some(window) = context_window_for_model(model) else {
-        return DEFAULT_COMPACTION_MESSAGE_THRESHOLD;
-    };
-
-    let scaled = usize::try_from(window / COMPACTION_MESSAGE_DIVISOR)
-        .unwrap_or(DEFAULT_COMPACTION_MESSAGE_THRESHOLD);
-    scaled.clamp(
-        DEFAULT_COMPACTION_MESSAGE_THRESHOLD,
-        MAX_COMPACTION_MESSAGE_THRESHOLD,
-    )
-}
-
 // === Streaming Structures ===
 
 #[allow(dead_code)]
@@ -470,23 +452,8 @@ mod tests {
     }
 
     #[test]
-    fn compaction_message_threshold_scales_with_context_window() {
-        assert_eq!(
-            compaction_message_threshold_for_model("deepseek-v3.2-128k"),
-            256
-        );
-        assert_eq!(compaction_message_threshold_for_model("unknown-model"), 50);
-        // 200k / 500 = 400, within the 2k cap.
-        assert_eq!(compaction_message_threshold_for_model("claude-3"), 400);
-    }
-
-    #[test]
     fn compaction_scales_for_deepseek_v4_1m_context() {
         assert_eq!(compaction_threshold_for_model("deepseek-v4-pro"), 800_000);
-        assert_eq!(
-            compaction_message_threshold_for_model("deepseek-v4-pro"),
-            2_000
-        );
     }
 
     #[test]

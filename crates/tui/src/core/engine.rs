@@ -1183,7 +1183,10 @@ impl Engine {
             .token_threshold
             .min(target_budget.saturating_sub(1))
             .max(1);
-        forced_config.message_threshold = forced_config.message_threshold.max(1);
+        // v0.8.11: forced compaction (capacity guardrail) bypasses the floor
+        // because we're at a hard ceiling and have to free budget regardless
+        // of cache cost.
+        forced_config.auto_floor_tokens = 0;
 
         match compact_messages_safe(
             client,

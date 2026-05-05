@@ -23,10 +23,7 @@ use crate::core::coherence::CoherenceState;
 use crate::core::engine::{EngineConfig, EngineHandle, spawn_engine};
 use crate::core::events::{Event as EngineEvent, TurnOutcomeStatus};
 use crate::core::ops::Op;
-use crate::models::{
-    ContentBlock, Message, SystemPrompt, Usage, compaction_message_threshold_for_model,
-    compaction_threshold_for_model,
-};
+use crate::models::{ContentBlock, Message, SystemPrompt, Usage, compaction_threshold_for_model};
 use crate::tools::plan::new_shared_plan_state;
 use crate::tools::subagent::SubAgentStatus;
 use crate::tools::todo::new_shared_todo_list;
@@ -1765,7 +1762,6 @@ impl RuntimeThreadManager {
             enabled: false,
             model: thread.model.clone(),
             token_threshold: compaction_threshold_for_model(&thread.model),
-            message_threshold: compaction_message_threshold_for_model(&thread.model),
             ..Default::default()
         };
         let network_policy = self.config.network.clone().map(|toml_cfg| {
