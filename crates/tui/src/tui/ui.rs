@@ -1599,25 +1599,31 @@ async fn run_event_loop(
                         app.status_message = None;
                     }
                     // Language picker hotkeys: 1-5 select + persist (#566).
+                    //
+                    // Note: this used to be a single match-guard with `&& let`,
+                    // but `if_let_guard` is a nightly-only feature on Rust
+                    // before 1.94. Rewriting as a plain guard + nested `if let`
+                    // keeps `cargo install` working on stable.
                     KeyCode::Char(c)
-                        if app.onboarding == OnboardingState::Language
-                            && c.is_ascii_digit()
-                            && let Some((_, tag, _, _)) =
-                                onboarding::language::LANGUAGE_OPTIONS
-                                    .iter()
-                                    .find(|(hotkey, _, _, _)| *hotkey == c) =>
+                        if app.onboarding == OnboardingState::Language && c.is_ascii_digit() =>
                     {
-                        match app.set_locale_from_onboarding(tag) {
-                            Ok(()) => {
-                                app.push_status_toast(
-                                    format!("Language set to {tag}"),
-                                    StatusToastLevel::Info,
-                                    Some(2_500),
-                                );
-                                advance_after_language(app);
-                            }
-                            Err(err) => {
-                                app.status_message = Some(format!("Failed to save locale: {err}"));
+                        if let Some((_, tag, _, _)) = onboarding::language::LANGUAGE_OPTIONS
+                            .iter()
+                            .find(|(hotkey, _, _, _)| *hotkey == c)
+                        {
+                            match app.set_locale_from_onboarding(tag) {
+                                Ok(()) => {
+                                    app.push_status_toast(
+                                        format!("Language set to {tag}"),
+                                        StatusToastLevel::Info,
+                                        Some(2_500),
+                                    );
+                                    advance_after_language(app);
+                                }
+                                Err(err) => {
+                                    app.status_message =
+                                        Some(format!("Failed to save locale: {err}"));
+                                }
                             }
                         }
                     }
@@ -4719,8 +4725,7 @@ fn render(f: &mut Frame, app: &mut App) {
         // background before any sub-widgets render, so cells that end up
         // uncovered by layout splits (e.g. after file-tree toggle or
         // resize) don't retain stale content from a previous frame.
-        Block::default()
-            .render(chunks[1], f.buffer_mut());
+        Block::default().render(chunks[1], f.buffer_mut());
 
         let mut sidebar_area = None;
 

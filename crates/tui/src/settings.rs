@@ -34,6 +34,11 @@ use crate::localization::normalize_configured_locale;
 /// submit   = "ctrl+enter"
 /// new_line = "enter"
 /// ```
+//
+// NOTE: the loader is defined but not yet called from startup — wiring is
+// deferred to v0.8.13 (#657). The `#[allow(dead_code)]` suppresses the CI
+// `-D warnings` failure until the call site lands.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TuiPrefs {
@@ -58,6 +63,7 @@ impl Default for TuiPrefs {
 }
 
 /// Per-action keybinding overrides stored inside [`TuiPrefs`].
+#[allow(dead_code)] // see TuiPrefs note above; deferred to v0.8.13 (#657).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct KeybindPrefs {
@@ -78,6 +84,7 @@ pub struct KeybindPrefs {
     pub toggle_sidebar: Option<String>,
 }
 
+#[allow(dead_code)] // see TuiPrefs note above; deferred to v0.8.13 (#657).
 impl TuiPrefs {
     /// Return the canonical path of the TUI preferences file:
     /// `~/.deepseek/tui.toml`.
@@ -98,9 +105,8 @@ impl TuiPrefs {
             }
         }
 
-        let home = dirs::home_dir().context(
-            "Failed to resolve home directory: cannot determine tui.toml path.",
-        )?;
+        let home = dirs::home_dir()
+            .context("Failed to resolve home directory: cannot determine tui.toml path.")?;
         Ok(home.join(".deepseek").join("tui.toml"))
     }
 
@@ -127,14 +133,10 @@ impl TuiPrefs {
         let path = Self::path()?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).with_context(|| {
-                format!(
-                    "Failed to create config directory {}",
-                    parent.display()
-                )
+                format!("Failed to create config directory {}", parent.display())
             })?;
         }
-        let content =
-            toml::to_string_pretty(self).context("Failed to serialize TuiPrefs")?;
+        let content = toml::to_string_pretty(self).context("Failed to serialize TuiPrefs")?;
         std::fs::write(&path, content)
             .with_context(|| format!("Failed to write tui.toml to {}", path.display()))?;
         Ok(())
@@ -151,9 +153,7 @@ impl TuiPrefs {
                 self.theme = theme;
             }
             other => {
-                anyhow::bail!(
-                    "Invalid tui.toml theme '{other}': expected dark, light, or system."
-                );
+                anyhow::bail!("Invalid tui.toml theme '{other}': expected dark, light, or system.");
             }
         }
         Ok(())
@@ -805,7 +805,9 @@ mod tests {
                 theme: theme.to_string(),
                 ..TuiPrefs::default()
             };
-            prefs.validate().unwrap_or_else(|e| panic!("validate({theme}) failed: {e}"));
+            prefs
+                .validate()
+                .unwrap_or_else(|e| panic!("validate({theme}) failed: {e}"));
             assert_eq!(prefs.theme, theme);
         }
     }
@@ -826,7 +828,9 @@ mod tests {
             theme: "solarized".to_string(),
             ..TuiPrefs::default()
         };
-        let err = prefs.validate().expect_err("solarized is not a valid theme");
+        let err = prefs
+            .validate()
+            .expect_err("solarized is not a valid theme");
         assert!(err.to_string().contains("Invalid tui.toml theme"));
     }
 
