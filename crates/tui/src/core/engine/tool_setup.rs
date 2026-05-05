@@ -21,6 +21,12 @@ impl Engine {
                 .with_skill_tools()
                 .with_validation_tools()
                 .with_runtime_task_tools()
+                .with_goap_tool()
+                .with_swarm_tool()
+                .with_manager_tool()
+                .with_agent_memory_tools()
+                .with_graph_tool()
+                .with_web_pipeline_tool()
                 .with_todo_tool(todo_list)
                 .with_plan_tool(plan_state)
         } else {
@@ -33,6 +39,12 @@ impl Engine {
         builder = builder
             .with_review_tool(self.deepseek_client.clone(), self.session.model.clone())
             .with_rlm_tool(self.deepseek_client.clone(), self.session.model.clone())
+            .with_goap_tool()
+            .with_swarm_tool()
+            .with_manager_tool()
+            .with_agent_memory_tools()
+            .with_graph_tool()
+            .with_web_pipeline_tool()
             .with_user_input_tool()
             .with_parallel_tool();
 

@@ -1,6 +1,8 @@
 //! Tool system modules and re-exports.
 
 pub mod a2a;
+pub mod agent_graph;
+pub mod agent_memory;
 pub mod apply_patch;
 pub mod approval_cache;
 pub mod automation;
@@ -11,6 +13,7 @@ pub mod file_search;
 pub mod fim_edit;
 pub mod finance;
 pub mod goap;
+pub mod manager_agent;
 
 pub mod fetch_url;
 pub mod git;
@@ -39,6 +42,7 @@ pub mod todo;
 pub mod truncate;
 pub mod user_input;
 pub mod validate_data;
+pub mod web_pipeline;
 pub mod web_run;
 pub mod web_search;
 

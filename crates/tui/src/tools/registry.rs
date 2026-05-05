@@ -632,6 +632,52 @@ impl ToolRegistryBuilder {
         self.with_tool(Arc::new(UpdatePlanTool::new(plan_state)))
     }
 
+    /// Include the GOAP planner tool — A* goal-oriented action planning.
+    #[must_use]
+    pub fn with_goap_tool(self) -> Self {
+        use super::goap::GoapPlanTool;
+        self.with_tool(Arc::new(GoapPlanTool::with_default_actions()))
+    }
+
+    /// Include the swarm coordination tool — multi-agent topologies.
+    #[must_use]
+    pub fn with_swarm_tool(self) -> Self {
+        use super::swarm::SwarmInitTool;
+        self.with_tool(Arc::new(SwarmInitTool::new()))
+    }
+
+    /// Include the manager delegate tool — CrewAI-style hierarchical process.
+    #[must_use]
+    pub fn with_manager_tool(self) -> Self {
+        use super::manager_agent::ManagerDelegateTool;
+        self.with_tool(Arc::new(ManagerDelegateTool::new()))
+    }
+
+    /// Include agent memory tools — memory_store and memory_search.
+    #[must_use]
+    pub fn with_agent_memory_tools(self) -> Self {
+        use super::agent_memory::{MemorySearchTool, MemoryStoreTool};
+        let memory = std::sync::Arc::new(tokio::sync::Mutex::new(
+            super::agent_memory::AgentMemory::default(),
+        ));
+        self.with_tool(Arc::new(MemoryStoreTool::new()))
+            .with_tool(Arc::new(MemorySearchTool::new(memory)))
+    }
+
+    /// Include the agent graph tool — LangGraph-inspired workflow execution.
+    #[must_use]
+    pub fn with_graph_tool(self) -> Self {
+        use super::agent_graph::GraphExecuteTool;
+        self.with_tool(Arc::new(GraphExecuteTool::new()))
+    }
+
+    /// Include the web pipeline tool — deep crawl, filter, chunk.
+    #[must_use]
+    pub fn with_web_pipeline_tool(self) -> Self {
+        use super::web_pipeline::WebPipelineTool;
+        self.with_tool(Arc::new(WebPipelineTool::new()))
+    }
+
     /// Include sub-agent management tools.
     #[must_use]
     pub fn with_subagent_tools(

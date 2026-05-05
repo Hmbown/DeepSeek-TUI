@@ -232,6 +232,329 @@ fn sorted_state_key(state: &HashSet<String>) -> Vec<String> {
     sorted
 }
 
+// ── ToolSpec ──────────────────────────────────────────────────────────────
+
+use async_trait::async_trait;
+use serde_json::json;
+
+use crate::tools::spec::{ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec};
+
+/// Tool that exposes GOAP planning to the model.
+///
+/// The model can call `goap_plan` with a goal description, initial state
+/// facts, and available actions. Returns the lowest-cost action plan or
+/// an explanation of why no plan exists.
+pub struct GoapPlanTool {
+    planner: std::sync::Arc<tokio::sync::Mutex<GoapPlanner>>,
+}
+
+impl GoapPlanTool {
+    pub fn new() -> Self {
+        Self {
+            planner: std::sync::Arc::new(tokio::sync::Mutex::new(GoapPlanner::default())),
+        }
+    }
+
+    /// Register pre-built actions for a development workflow.
+    pub fn with_default_actions() -> Self {
+        let mut planner = GoapPlanner::default();
+        // Core development actions
+        planner.add_action(GoapAction::new(
+            "read_code",
+            Vec::<&str>::new(),
+            vec!["code_understood"],
+            1.0,
+        ));
+        planner.add_action(GoapAction::new(
+            "write_tests",
+            vec!["code_understood"],
+            vec!["tests_exist"],
+            2.0,
+        ));
+        planner.add_action(GoapAction::new(
+            "write_code",
+            vec!["code_understood"],
+            vec!["code_written"],
+            3.0,
+        ));
+        planner.add_action(GoapAction::new(
+            "run_tests",
+            vec!["tests_exist", "code_written"],
+            vec!["tests_pass"],
+            1.0,
+        ));
+        planner.add_action(GoapAction::new(
+            "review_code",
+            vec!["code_written"],
+            vec!["code_reviewed"],
+            1.0,
+        ));
+        planner.add_action(GoapAction::new(
+            "fix_bugs",
+            vec!["tests_fail"],
+            vec!["tests_pass", "code_written"],
+            2.0,
+        ));
+        planner.add_action(GoapAction::new(
+            "create_pr",
+            vec!["code_reviewed", "tests_pass"],
+            vec!["pr_created", "done"],
+            1.0,
+        ));
+        planner.add_action(GoapAction::new(
+            "audit_security",
+            vec!["code_written"],
+            vec!["security_audited"],
+            2.0,
+        ));
+        planner.add_action(GoapAction::new(
+            "write_docs",
+            vec!["code_written"],
+            vec!["docs_written"],
+            1.5,
+        ));
+        planner.add_action(GoapAction::new(
+            "deploy",
+            vec!["tests_pass", "code_reviewed"],
+            vec!["deployed", "done"],
+            2.0,
+        ));
+        planner.add_action(GoapAction::new(
+            "format_code",
+            vec!["code_written"],
+            vec!["code_formatted"],
+            0.5,
+        ));
+        planner.add_action(GoapAction::new(
+            "run_lints",
+            vec!["code_written"],
+            vec!["lints_pass"],
+            0.5,
+        ));
+        Self {
+            planner: std::sync::Arc::new(tokio::sync::Mutex::new(planner)),
+        }
+    }
+}
+
+#[async_trait]
+impl ToolSpec for GoapPlanTool {
+    fn name(&self) -> &'static str {
+        "goap_plan"
+    }
+
+    fn description(&self) -> &'static str {
+        "Plan a sequence of actions to achieve a goal using GOAP (Goal-Oriented Action Planning) with A* search. Provide goals, initial_state facts, and optionally custom actions. Returns the lowest-cost action plan."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "goal": {
+                    "type": "string",
+                    "description": "High-level description of the goal (for logging/display)"
+                },
+                "goals": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "World-state facts that must be true for the plan to succeed (e.g. ['tests_pass', 'code_reviewed'])"
+                },
+                "initial_state": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "World-state facts that are currently true (e.g. ['code_understood', 'src_exists'])"
+                },
+                "actions": {
+                    "type": "array",
+                    "description": "Optional custom actions for this specific domain",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string", "description": "Action name"},
+                            "preconditions": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Facts that must be true"
+                            },
+                            "effects": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Facts that become true after the action"
+                            },
+                            "cost": {
+                                "type": "number",
+                                "description": "Relative cost (lower = preferred, default 1.0)"
+                            }
+                        },
+                        "required": ["name", "effects"]
+                    }
+                }
+            },
+            "required": ["goal", "goals", "initial_state"]
+        })
+    }
+
+    fn capabilities(&self) -> Vec<ToolCapability> {
+        vec![ToolCapability::ReadOnly]
+    }
+
+    fn approval_requirement(&self) -> ApprovalRequirement {
+        ApprovalRequirement::Auto
+    }
+
+    async fn execute(
+        &self,
+        input: serde_json::Value,
+        _context: &ToolContext,
+    ) -> Result<ToolResult, ToolError> {
+        let goal_desc = input
+            .get("goal")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError::invalid_input("Missing 'goal'"))?;
+
+        let goals: Vec<String> = input
+            .get("goals")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ToolError::invalid_input("Missing or invalid 'goals' array"))?
+            .iter()
+            .filter_map(|v| v.as_str().map(std::string::ToString::to_string))
+            .collect();
+
+        let initial_state: Vec<String> = input
+            .get("initial_state")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ToolError::invalid_input("Missing or invalid 'initial_state' array"))?
+            .iter()
+            .filter_map(|v| v.as_str().map(std::string::ToString::to_string))
+            .collect();
+
+        let mut planner = GoapPlanner::new();
+
+        // Register default development actions
+        planner.add_action(GoapAction::new(
+            "read_code", Vec::<&str>::new(), vec!["code_understood"], 1.0,
+        ));
+        planner.add_action(GoapAction::new(
+            "write_tests", vec!["code_understood"], vec!["tests_exist"], 2.0,
+        ));
+        planner.add_action(GoapAction::new(
+            "write_code", vec!["code_understood"], vec!["code_written"], 3.0,
+        ));
+        planner.add_action(GoapAction::new(
+            "run_tests", vec!["tests_exist", "code_written"], vec!["tests_pass"], 1.0,
+        ));
+        planner.add_action(GoapAction::new(
+            "review_code", vec!["code_written"], vec!["code_reviewed"], 1.0,
+        ));
+        planner.add_action(GoapAction::new(
+            "fix_bugs", vec!["tests_fail"], vec!["tests_pass", "code_written"], 2.0,
+        ));
+        planner.add_action(GoapAction::new(
+            "create_pr", vec!["code_reviewed", "tests_pass"], vec!["pr_created", "done"], 1.0,
+        ));
+        planner.add_action(GoapAction::new(
+            "audit_security", vec!["code_written"], vec!["security_audited"], 2.0,
+        ));
+        planner.add_action(GoapAction::new(
+            "write_docs", vec!["code_written"], vec!["docs_written"], 1.5,
+        ));
+        planner.add_action(GoapAction::new(
+            "deploy", vec!["tests_pass", "code_reviewed"], vec!["deployed", "done"], 2.0,
+        ));
+        planner.add_action(GoapAction::new(
+            "format_code", vec!["code_written"], vec!["code_formatted"], 0.5,
+        ));
+        planner.add_action(GoapAction::new(
+            "run_lints", vec!["code_written"], vec!["lints_pass"], 0.5,
+        ));
+
+        // Register any custom actions provided by the caller
+        if let Some(custom_actions) = input.get("actions").and_then(|v| v.as_array()) {
+            for entry in custom_actions {
+                let name = entry
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unnamed");
+                let preconditions: Vec<String> = entry
+                    .get("preconditions")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(std::string::ToString::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let effects: Vec<String> = entry
+                    .get("effects")
+                    .and_then(|v| v.as_array())
+                    .ok_or_else(|| {
+                        ToolError::invalid_input(format!(
+                            "Custom action '{name}' missing 'effects' array"
+                        ))
+                    })?
+                    .iter()
+                    .filter_map(|v| v.as_str().map(std::string::ToString::to_string))
+                    .collect();
+                let cost = entry
+                    .get("cost")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(1.0);
+
+                planner.add_action(GoapAction::new(name, preconditions, effects, cost));
+            }
+        }
+
+        let plan = planner.plan(&goals, &initial_state);
+
+        let result = match plan {
+            Some(actions) => {
+                let _steps = actions
+                    .iter()
+                    .enumerate()
+                    .map(|(i, a)| format!("{}. {}", i + 1, a))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+
+                let total_cost: f64 = actions.len() as f64; // approximate
+
+                serde_json::json!({
+                    "goal": goal_desc,
+                    "found": true,
+                    "steps": actions,
+                    "total_steps": actions.len(),
+                    "estimated_cost": total_cost,
+                })
+            }
+            None => {
+                serde_json::json!({
+                    "goal": goal_desc,
+                    "found": false,
+                    "reason": format!(
+                        "No plan found to achieve goals {goals:?} from state {initial_state:?}",
+                    ),
+                })
+            }
+        };
+
+        let summary = if result["found"].as_bool().unwrap_or(false) {
+            format!(
+                "GOAP plan found for '{}': {} steps",
+                goal_desc,
+                result["total_steps"].as_u64().unwrap_or(0)
+            )
+        } else {
+            format!("No GOAP plan found for '{}'", goal_desc)
+        };
+
+        Ok(ToolResult::success(format!(
+            "{}\n{}",
+            summary,
+            serde_json::to_string_pretty(&result).unwrap_or_default()
+        )))
+    }
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
