@@ -230,7 +230,7 @@ impl Engine {
             };
             let request = MessageRequest {
                 model: self.session.model.clone(),
-                messages: self.session.messages.clone(),
+                messages: self.messages_with_turn_metadata(),
                 max_tokens: TURN_MAX_OUTPUT_TOKENS,
                 system: self.session.system_prompt.clone(),
                 tools: active_tools.clone(),
@@ -1593,5 +1593,52 @@ impl Engine {
             return (TurnOutcomeStatus::Failed, Some(err));
         }
         (TurnOutcomeStatus::Completed, None)
+    }
+
+    pub(super) fn messages_with_turn_metadata(&self) -> Vec<Message> {
+        let Some(summary) = self
+            .session
+            .working_set
+            .summary_block(&self.config.workspace)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+        else {
+            return self.session.messages.clone();
+        };
+
+        let mut messages = self.session.messages.clone();
+        // v0.8.11 hotfix: tool-result messages are stored as role="user" in
+        // our internal representation but serialize to role="tool" on the
+        // wire. Prepending a Text block onto a tool-result message breaks
+        // the assistant→tool_result invariant — the API rejects the request
+        // with `"insufficient tool messages following tool_calls"`. Inject
+        // only into actual user-typed messages, recognizable by having at
+        // least one Text content block (and no ToolResult blocks).
+        let Some(last_user) = messages.iter_mut().rev().find(|message| {
+            message.role == "user"
+                && message
+                    .content
+                    .iter()
+                    .all(|block| !matches!(block, ContentBlock::ToolResult { .. }))
+                && message
+                    .content
+                    .iter()
+                    .any(|block| matches!(block, ContentBlock::Text { .. }))
+        }) else {
+            // No real user message in the trailing slice (e.g. mid-turn
+            // after a tool call). Skip injection — the working_set will
+            // surface again on the next genuine user prompt.
+            return messages;
+        };
+
+        let turn_meta = format!("<turn_meta>\n{summary}\n</turn_meta>");
+        last_user.content.insert(
+            0,
+            ContentBlock::Text {
+                text: turn_meta,
+                cache_control: None,
+            },
+        );
+        messages
     }
 }

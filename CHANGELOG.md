@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.11] - Unreleased
+
+### Changed
+- **Cache-maxing prompt path for DeepSeek V4** — the engine now skips
+  system-prompt reassignment when the assembled stable prompt is unchanged,
+  keeps the volatile repo working-set summary out of the system prompt, and
+  injects it as per-turn metadata on the latest user message instead.
+- **Tool catalog cache anchor** — the model-visible tool array now marks
+  the final native tool with `cache_control: ephemeral` so DeepSeek can
+  anchor the stable tool prefix explicitly.
+- **V4-scale automatic compaction defaults** — automatic compaction keeps a
+  500K-token hard floor and the fallback compaction threshold now reflects
+  the V4-scale late-trigger policy instead of the old 50K-era default.
+- **Token-only compaction trigger** — the message-count compaction trigger
+  was a 128K-era heuristic that fired on long sessions of small messages
+  — exactly the case where rewriting V4's prefix cache is most wasteful.
+  Removed `CompactionConfig::message_threshold` and the message-count
+  branch in `should_compact`; token budget is now the sole automatic
+  trigger (gated by the 500K floor). Manual `/compact` is unchanged.
+
+### Fixed
+- **Legacy 128K context naming** — the 128K fallback is now named and
+  documented as legacy DeepSeek-only behavior, reducing ambiguity with the
+  1M-token DeepSeek V4 defaults.
+- **`npm install` resilience for slow / firewalled networks** — the
+  postinstall binary fetch from GitHub Releases now retries on transient
+  errors (5 attempts, 1-16 s exponential backoff with jitter), enforces a
+  per-attempt timeout (default 5 min, configurable via
+  `DEEPSEEK_TUI_DOWNLOAD_TIMEOUT_MS`) plus a 30 s stall detector, honors
+  `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` env vars (pure-Node CONNECT
+  tunneling, no new dependencies), and prints a download-progress line
+  to stderr so users know it isn't hung. Suppressible with
+  `DEEPSEEK_TUI_QUIET_INSTALL=1`. Reported by a community user from China
+  whose install through a CN npm mirror took 18 minutes — the bottleneck
+  was the GitHub fetch, which CN npm mirrors do not proxy.
+
 ## [0.8.10] - 2026-05-04
 
 A patch release: hotfixes, small UX polish, and four whalescale-unblocking

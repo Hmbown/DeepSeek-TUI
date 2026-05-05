@@ -254,11 +254,11 @@ pub fn system_prompt_for_mode_with_context(
 ///   4. `## Context Management` (compile-time constant, Agent/Yolo only)
 ///   5. compaction handoff template (compile-time constant)
 ///   6. handoff block — file-backed; rewritten by `/compact` and on exit
-///   7. working-set summary — drifts when a new path is observed
 ///
 /// Anything appended after a volatile block forfeits the cache for the rest
-/// of the request. New blocks belong above the handoff/working-set boundary
-/// unless they themselves are turn-volatile.
+/// of the request. New blocks belong above the handoff boundary unless they
+/// themselves are turn-volatile. Working-set metadata is now injected into the
+/// latest user message as per-turn metadata instead of this system prompt.
 pub fn system_prompt_for_mode_with_context_and_skills(
     mode: AppMode,
     workspace: &Path,
@@ -283,7 +283,7 @@ pub fn system_prompt_for_mode_with_context_and_skills(
 pub fn system_prompt_for_mode_with_context_skills_and_session(
     mode: AppMode,
     workspace: &Path,
-    working_set_summary: Option<&str>,
+    _working_set_summary: Option<&str>,
     skills_dir: Option<&Path>,
     instructions: Option<&[PathBuf]>,
     session_context: PromptSessionContext<'_>,
@@ -360,6 +360,7 @@ pub fn system_prompt_for_mode_with_context_skills_and_session(
              If you notice context is getting long (>80%), proactively suggest using `/compact` to the user.\n\n\
              ### Prompt-cache awareness\n\n\
              DeepSeek caches the longest *byte-stable prefix* of every request and charges roughly 100× less for cache-hit tokens than miss tokens. The system prompt above is layered most-static-first specifically so the prefix stays stable turn-over-turn. To keep cache hits high:\n\
+             - **Working set location:** the current repo working set is injected into the latest user message inside a `<turn_meta>` block. Treat it as high-priority turn metadata, not as a stable system-prompt section.\n\
              - **Append, don't reorder.** New context goes at the end (latest user / tool messages). Reshuffling earlier messages or rewriting their content invalidates the cache for everything after the change.\n\
              - **Don't paraphrase quoted content.** If you've already read a file, refer to it by path or line range instead of re-quoting it with different formatting.\n\
              - **Use `/compact` as a hard reset, not a tweak.** Compaction is meant for when the cache is already losing — it intentionally rewrites the prefix to a shorter summary. Don't trigger it for small wins.\n\
@@ -380,13 +381,6 @@ pub fn system_prompt_for_mode_with_context_skills_and_session(
     // 6. Previous-session handoff (file-backed, rewritten by `/compact`).
     if let Some(handoff_block) = load_handoff_block(workspace) {
         full_prompt = format!("{full_prompt}\n\n{handoff_block}");
-    }
-
-    // 7. Working-set summary (drifts when a new path is observed).
-    if let Some(summary) = working_set_summary
-        && !summary.trim().is_empty()
-    {
-        full_prompt = format!("{full_prompt}\n\n{summary}");
     }
 
     SystemPrompt::Text(full_prompt)
@@ -547,7 +541,7 @@ mod tests {
     }
 
     #[test]
-    fn session_goal_is_injected_above_volatile_prompt_tail() {
+    fn session_goal_is_injected_above_handoff_tail() {
         let tmp = tempdir().expect("tempdir");
         let prompt = match system_prompt_for_mode_with_context_skills_and_session(
             AppMode::Agent,
@@ -566,11 +560,10 @@ mod tests {
 
         let goal_pos = prompt.find("<session_goal>").expect("goal block");
         let compact_pos = prompt.find("## Compaction Handoff").expect("compact block");
-        let working_set_pos = prompt.find("## Repo Working Set").expect("working set");
 
         assert!(prompt.contains("Fix transcript corruption"));
         assert!(goal_pos < compact_pos);
-        assert!(goal_pos < working_set_pos);
+        assert!(!prompt.contains("src/lib.rs"));
     }
 
     #[test]
@@ -729,12 +722,10 @@ mod tests {
     }
 
     #[test]
-    fn system_prompt_with_working_set_summary_is_byte_stable_for_constant_summary() {
-        // The `working_set_summary` argument is the volatile surface (suspect
-        // #1 in #263). Independently verifying THIS surface needs a separate
-        // test in working_set.rs; here we just pin that the surrounding
-        // prompt construction faithfully embeds whatever summary it's given
-        // without injecting any non-determinism on its own.
+    fn system_prompt_ignores_working_set_summary_argument() {
+        // Working-set metadata is now injected into the latest user message
+        // per turn. The legacy argument remains for call-site compatibility
+        // but must not reintroduce volatile bytes into the system prompt.
         let tmp = tempdir().expect("tempdir");
         let workspace = tmp.path();
         let summary = "## Repo Working Set\nWorkspace: /tmp/x\n";
@@ -754,16 +745,18 @@ mod tests {
             &a,
             &b,
         );
-        assert!(a.contains(summary), "summary must be embedded as-is");
+        assert!(
+            !a.contains(summary),
+            "summary must not be embedded in system prompt"
+        );
     }
 
     #[test]
     fn system_prompt_with_handoff_file_is_byte_stable_when_file_is_unchanged() {
-        // Companion to the working-set stability test: if `.deepseek/handoff.md`
-        // hasn't moved between two builds, the rendered prompt must produce
-        // identical bytes. The handoff block is the second volatile surface
-        // (the first is the working-set summary) — both land below the static
-        // boundary in `system_prompt_for_mode_with_context_and_skills`.
+        // If `.deepseek/handoff.md` hasn't moved between two builds, the
+        // rendered prompt must produce identical bytes. The handoff block
+        // lands below the static boundary in
+        // `system_prompt_for_mode_with_context_and_skills`.
         let tmp = tempdir().expect("tempdir");
         let workspace = tmp.path();
         let handoff_dir = workspace.join(".deepseek");
@@ -792,14 +785,11 @@ mod tests {
     }
 
     #[test]
-    fn handoff_and_working_set_appear_after_static_blocks() {
-        // Cache-prefix invariant: the volatile blocks (handoff, working_set)
-        // must come *after* the static `## Context Management` and the
-        // compaction handoff template (`## Compaction Handoff`) so a churn
-        // in either volatile section doesn't drag the static blocks out of
-        // the cached prefix. Pre-fix ordering placed handoff between the
-        // skills block and `## Context Management`, which busted the cache
-        // every time `/compact` rewrote the file.
+    fn handoff_appears_after_static_blocks_without_working_set() {
+        // Cache-prefix invariant: the handoff block must come after static
+        // `## Context Management` and the compaction handoff template
+        // (`## Compaction Handoff`). Working-set metadata is per-turn user
+        // metadata now, not a system-prompt tail block.
         let tmp = tempdir().expect("tempdir");
         let workspace = tmp.path();
         let handoff_dir = workspace.join(".deepseek");
@@ -822,9 +812,10 @@ mod tests {
         let handoff_pos = prompt
             .find(HANDOFF_BLOCK_MARKER)
             .expect("handoff block present when fixture file exists");
-        let working_set_pos = prompt
-            .find("## Repo Working Set")
-            .expect("working-set summary present when supplied");
+        assert!(
+            !prompt.contains("## Repo Working Set"),
+            "working-set summary must stay out of the system prompt"
+        );
 
         assert!(
             context_pos < handoff_pos,
@@ -833,10 +824,6 @@ mod tests {
         assert!(
             compact_pos < handoff_pos,
             "## Compaction Handoff must precede the handoff block"
-        );
-        assert!(
-            handoff_pos < working_set_pos,
-            "handoff block must precede the working-set summary (most-volatile last)"
         );
     }
 

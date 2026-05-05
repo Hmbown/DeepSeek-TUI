@@ -3711,7 +3711,7 @@ async fn run_exec_agent(
     use crate::core::engine::{EngineConfig, spawn_engine};
     use crate::core::events::Event;
     use crate::core::ops::Op;
-    use crate::models::{compaction_message_threshold_for_model, compaction_threshold_for_model};
+    use crate::models::compaction_threshold_for_model;
     use crate::tools::plan::new_shared_plan_state;
     use crate::tools::todo::new_shared_todo_list;
     use crate::tui::app::AppMode;
@@ -3725,7 +3725,6 @@ async fn run_exec_agent(
         enabled: false,
         model: model.to_string(),
         token_threshold: compaction_threshold_for_model(model),
-        message_threshold: compaction_message_threshold_for_model(model),
         ..Default::default()
     };
 
