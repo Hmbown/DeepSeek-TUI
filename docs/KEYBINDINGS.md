@@ -2,7 +2,7 @@
 
 This is the source-of-truth catalog of every keyboard shortcut the TUI recognizes. Bindings are grouped by **context** — the focus or modal state they fire in. A binding listed under "Composer" only takes effect when the composer is focused; one under "Transcript" only when the transcript has focus; and so on.
 
-Bindings are not (yet) user-configurable — that's tracked as a v0.8.11 follow-up (#436, #437). This document is the contract that future config-file overrides will name into.
+Bindings are not (yet) user-configurable — tracked for a future release (#436, #437). This document is the contract that future config-file overrides will name into.
 
 ## Global (any context)
 
@@ -35,9 +35,10 @@ Editing the message you're about to send.
 | `Ctrl-→` / `Alt-→`          | Move forward one word                                   |
 | `Ctrl-V` / `Cmd-V`          | Paste from clipboard (also bracketed-paste auto-handled)|
 | `Ctrl-Y`                    | Yank (paste) from kill buffer                           |
-| `↑` / `↓`                   | Cycle composer history (when composer is empty / at top) |
+| `↑` / `↓`                   | Cycle composer history (also selects popup/attachment items) |
 | `Ctrl-P` / `Ctrl-N`         | Cycle composer history (alternative)                     |
-| `Ctrl-S`                    | Reverse history search (Ctrl-S to advance, Esc to exit) |
+| `Ctrl-S`                    | Stash current draft (`/stash list`, `/stash pop` to recover) |
+| `Alt-R`                    | Search prompt history (Alt-R to exit)                  |
 | `Tab`                       | Slash-command / `@`-mention completion (popup-aware)    |
 | `Ctrl-O`                    | Open external editor for the composer draft             |
 
@@ -53,7 +54,7 @@ When `[memory] enabled = true`, typing `# foo` and pressing `Enter` appends `foo
 
 | Chord                | Action                                              |
 |----------------------|-----------------------------------------------------|
-| `↑` / `↓` / `j` / `k`| Scroll one line                                    |
+| `↑` / `↓` / `j` / `k`| Scroll one line (v0.8.13+: bare arrows also scroll when composer empty) |
 | `PgUp` / `PgDn`      | Scroll one page                                    |
 | `Home` / `g`         | Jump to top                                         |
 | `End` / `G`          | Jump to bottom                                     |
@@ -98,9 +99,10 @@ When `[memory] enabled = true`, typing `# foo` and pressing `Enter` appends `foo
 | `y` / `Y`            | Trust the workspace (Trust step)                   |
 | `n` / `N`            | Skip the trust prompt                              |
 
-## v0.8.10 audit notes
+## v0.8.13 audit notes
 
-- **No broken bindings found.** Every chord listed above resolves to a live handler in `crates/tui/src/tui/ui.rs` (key-event dispatch) or `crates/tui/src/tui/app.rs` (mode + state transitions).
-- **Conflicts deduped.** `Ctrl-P` was previously double-bound (history + palette open); the palette opens via `Ctrl-K` only, leaving `Ctrl-P` for history.
-- **Help overlay reconciled.** Every entry shown in the `?` help overlay corresponds to a binding in this doc; entries that were aspirational were either implemented (logged in this release) or dropped.
-- **Configurable keymap (#436) and `tui.toml` (#437) are deferred to v0.8.11.** That work needs a named-binding registry that names every chord on this page and lets `~/.deepseek/keybinds.toml` override individual entries with conflict detection. Doing it well is bigger than a patch release; doing it sloppily would land a half-finished registry that future contributors have to navigate around. v0.8.10 ships with this audit + docs as the durable spec the registry will name into.
+- **Ctrl-S is stash, not history search.** Fixed in this revision — `Alt-R` is history search.
+- **Phantom `Alt+Up` removed.** The "Edit last queued message" binding was listed in README but never existed in the key dispatch code.
+- **Bare Up/Down arrows scroll transcript when composer empty (v0.8.13).** Previously the `should_scroll_with_arrows` gate was hardcoded to false, meaning bare arrows always navigated composer history even when the composer was empty. Users in virtual terminals (Ghostty, Codex, Kitty-protocol) were especially affected because they couldn't use Cmd+Up / Alt+Up shortcuts.
+- **Configurable keymap (#436) and `tui.toml` (#437) remain deferred.** The `TuiPrefs` struct and loader exist in `settings.rs` but are not wired at startup. The named-binding registry that would let `~/.deepseek/tui.toml` override individual entries is still pending.
+- **No other broken bindings found.** Every other chord listed above resolves to a live handler in `crates/tui/src/tui/ui.rs` (key-event dispatch) or `crates/tui/src/tui/app.rs` (mode + state transitions).
