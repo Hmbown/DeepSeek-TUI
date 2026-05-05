@@ -70,6 +70,7 @@ fn show_single_setting(app: &App, key: &str) -> CommandResult {
         match l {
             crate::localization::Locale::En => "en",
             crate::localization::Locale::ZhHans => "zh-Hans",
+            crate::localization::Locale::ZhHant => "zh-Hant",
             crate::localization::Locale::Ja => "ja",
             crate::localization::Locale::PtBr => "pt-BR",
         }
@@ -427,7 +428,8 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
 #[allow(dead_code)]
 pub fn set_config(app: &mut App, args: Option<&str>) -> CommandResult {
     let Some(args) = args else {
-        let available = Settings::available_settings()
+        let locale = app.ui_locale;
+        let available = Settings::localized_available_settings(locale)
             .iter()
             .map(|(k, d)| format!("  {k}: {d}"))
             .collect::<Vec<_>>()

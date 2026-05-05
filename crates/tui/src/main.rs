@@ -31,6 +31,7 @@ mod eval;
 mod execpolicy;
 mod features;
 mod hooks;
+mod json_locale;
 mod llm_client;
 mod localization;
 mod logging;
@@ -3739,6 +3740,7 @@ async fn run_exec_agent(
         .map(crate::config::LspConfigToml::into_runtime);
 
     let engine_config = EngineConfig {
+        locale: crate::localization::Locale::En,
         model: model.to_string(),
         workspace: workspace.clone(),
         allow_shell: auto_approve || config.allow_shell(),

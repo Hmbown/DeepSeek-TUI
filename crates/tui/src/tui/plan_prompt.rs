@@ -8,26 +8,40 @@ use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph, Widget, Wrap};
 use crate::palette;
 use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
 
-const PLAN_OPTIONS: [(&str, &str); 4] = [
-    (
-        "Accept plan (Agent)",
-        "Start implementation in Agent mode with approvals",
-    ),
-    (
-        "Accept plan (YOLO)",
-        "Start implementation in YOLO mode (auto-approve)",
-    ),
-    ("Revise plan", "Ask follow-ups or request plan changes"),
-    (
-        "Exit Plan mode",
-        "Return to Agent mode without implementation",
-    ),
+#[derive(Debug, Clone, Copy)]
+pub struct PlanOption {
+    pub title: &'static str,
+    pub description: &'static str,
+}
+
+pub const PLAN_OPTIONS: [PlanOption; 4] = [
+    PlanOption {
+        title: "plan_opt1_title",
+        description: "plan_opt1_desc",
+    },
+    PlanOption {
+        title: "plan_opt2_title",
+        description: "plan_opt2_desc",
+    },
+    PlanOption {
+        title: "plan_opt3_title",
+        description: "plan_opt3_desc",
+    },
+    PlanOption {
+        title: "plan_opt4_title",
+        description: "plan_opt4_desc",
+    },
 ];
 
-fn modal_block() -> Block<'static> {
+fn modal_block(locale: crate::localization::Locale) -> Block<'static> {
+    let tr = |key: &str, fallback: &'static str| -> String {
+        crate::json_locale::tr_ui_label(locale, key)
+            .unwrap_or(fallback)
+            .to_string()
+    };
     Block::default()
         .title(Line::from(vec![Span::styled(
-            " Plan Confirmation ",
+            tr("plan_prompt_title", " Plan Confirmation "),
             Style::default().fg(palette::DEEPSEEK_BLUE).bold(),
         )]))
         .borders(Borders::ALL)
@@ -67,9 +81,35 @@ fn push_option_lines(
     lines: &mut Vec<Line<'static>>,
     selected: bool,
     number: usize,
-    label: &str,
-    description: &str,
+    label_key: &str,
+    desc_key: &str,
+    locale: crate::localization::Locale,
 ) {
+    let tr = |key: &str, fallback: &'static str| -> String {
+        crate::json_locale::tr_ui_label(locale, key)
+            .unwrap_or(fallback)
+            .to_string()
+    };
+    // Provide English fallbacks for plan option labels.
+    let (label, description) = match label_key {
+        "plan_opt1_title" => (
+            tr(label_key, "Accept plan (Agent)"),
+            tr(desc_key, "Start implementation in Agent mode with approvals"),
+        ),
+        "plan_opt2_title" => (
+            tr(label_key, "Accept plan (YOLO)"),
+            tr(desc_key, "Start implementation in YOLO mode (auto-approve)"),
+        ),
+        "plan_opt3_title" => (
+            tr(label_key, "Revise plan"),
+            tr(desc_key, "Ask follow-ups or request plan changes"),
+        ),
+        "plan_opt4_title" => (
+            tr(label_key, "Exit Plan mode"),
+            tr(desc_key, "Return to Agent mode without implementation"),
+        ),
+        _ => (tr(label_key, ""), tr(desc_key, "")),
+    };
     let row_style = if selected {
         Style::default()
             .fg(palette::SELECTION_TEXT)
@@ -95,14 +135,18 @@ fn push_option_lines(
     )));
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct PlanPromptView {
     selected: usize,
+    locale: crate::localization::Locale,
 }
 
 impl PlanPromptView {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(locale: crate::localization::Locale) -> Self {
+        Self {
+            selected: 0,
+            locale,
+        }
     }
 
     fn max_index(&self) -> usize {
@@ -188,20 +232,33 @@ impl ModalView for PlanPromptView {
     }
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
+        let tr = |key: &str, fallback: &'static str| -> String {
+            crate::json_locale::tr_ui_label(self.locale, key)
+                .unwrap_or(fallback)
+                .to_string()
+        };
+
         let mut lines: Vec<Line> = Vec::new();
         lines.push(Line::from(vec![Span::styled(
-            "Action required",
+            tr("plan_prompt_action", "Action required"),
             Style::default().fg(palette::DEEPSEEK_SKY).bold(),
         )]));
         lines.push(Line::from(vec![Span::styled(
-            "Choose what should happen after this plan.",
+            tr("plan_prompt_choose", "Choose what should happen after this plan."),
             Style::default().fg(palette::TEXT_PRIMARY).bold(),
         )]));
         lines.push(Line::from(""));
 
-        for (idx, (label, description)) in PLAN_OPTIONS.iter().enumerate() {
+        for (idx, opt) in PLAN_OPTIONS.iter().enumerate() {
             let number = idx + 1;
-            push_option_lines(&mut lines, self.selected == idx, number, label, description);
+            push_option_lines(
+                &mut lines,
+                self.selected == idx,
+                number,
+                opt.title,
+                opt.description,
+                self.locale,
+            );
         }
 
         lines.push(Line::from(""));
@@ -210,22 +267,34 @@ impl ModalView for PlanPromptView {
                 "1-4 / a / y / r / q",
                 Style::default().fg(palette::DEEPSEEK_SKY).bold(),
             ),
-            Span::styled(" quick pick", Style::default().fg(palette::TEXT_MUTED)),
+            Span::styled(
+                format!(" {}", tr("plan_prompt_quick_pick", "quick pick")),
+                Style::default().fg(palette::TEXT_MUTED),
+            ),
             Span::raw("  "),
             Span::styled("Up/Down", Style::default().fg(palette::DEEPSEEK_SKY).bold()),
-            Span::styled(" move", Style::default().fg(palette::TEXT_MUTED)),
+            Span::styled(
+                format!(" {}", tr("plan_prompt_move", "move")),
+                Style::default().fg(palette::TEXT_MUTED),
+            ),
             Span::raw("  "),
             Span::styled("Enter", Style::default().fg(palette::DEEPSEEK_SKY).bold()),
-            Span::styled(" confirm", Style::default().fg(palette::TEXT_MUTED)),
+            Span::styled(
+                format!(" {}", tr("plan_prompt_confirm", "confirm")),
+                Style::default().fg(palette::TEXT_MUTED),
+            ),
             Span::raw("  "),
             Span::styled("Esc", Style::default().fg(palette::DEEPSEEK_SKY).bold()),
-            Span::styled(" close", Style::default().fg(palette::TEXT_MUTED)),
+            Span::styled(
+                format!(" {}", tr("plan_prompt_close", "close")),
+                Style::default().fg(palette::TEXT_MUTED),
+            ),
         ]));
 
         let paragraph = Paragraph::new(lines)
             .alignment(Alignment::Left)
             .wrap(Wrap { trim: true })
-            .block(modal_block());
+            .block(modal_block(self.locale));
 
         let popup_area = centered_rect(72, 52, area);
         render_modal_chrome(area, popup_area, buf);
@@ -270,7 +339,7 @@ mod tests {
 
     #[test]
     fn plan_prompt_calls_out_required_action_and_controls() {
-        let rendered = render_view(&PlanPromptView::new(), 110, 36);
+        let rendered = render_view(&PlanPromptView::new(crate::localization::Locale::En), 110, 36);
 
         assert!(rendered.contains("Action required"));
         assert!(rendered.contains("Choose what should happen after this plan."));
@@ -280,7 +349,7 @@ mod tests {
 
     #[test]
     fn plan_prompt_keeps_selected_option_and_description_together() {
-        let mut view = PlanPromptView::new();
+        let mut view = PlanPromptView::new(crate::localization::Locale::En);
         view.selected = 1;
 
         let rendered = render_view(&view, 110, 36);

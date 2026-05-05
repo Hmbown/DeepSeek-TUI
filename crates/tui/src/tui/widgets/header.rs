@@ -42,6 +42,8 @@ pub struct HeaderData<'a> {
     /// fact that requests are going somewhere other than DeepSeek's API so
     /// it's visible at a glance after a `/provider nvidia-nim`.
     pub provider_label: Option<&'a str>,
+    /// UI locale for localized labels (e.g. mode name, "Live").
+    pub locale: Option<crate::localization::Locale>,
 }
 
 impl<'a> HeaderData<'a> {
@@ -66,6 +68,7 @@ impl<'a> HeaderData<'a> {
             last_prompt_tokens: None,
             reasoning_effort_label: None,
             provider_label: None,
+            locale: None,
         }
     }
 
@@ -81,6 +84,13 @@ impl<'a> HeaderData<'a> {
     #[must_use]
     pub fn with_provider(mut self, label: Option<&'a str>) -> Self {
         self.provider_label = label;
+        self
+    }
+
+    /// Set the UI locale for localized labels.
+    #[must_use]
+    pub fn with_locale(mut self, locale: crate::localization::Locale) -> Self {
+        self.locale = Some(locale);
         self
     }
 
@@ -126,6 +136,16 @@ impl<'a> HeaderWidget<'a> {
             AppMode::Yolo => "Yolo",
             AppMode::Plan => "Plan",
         }
+    }
+
+    /// Localized mode label for the header bar.
+    fn localized_mode_name(mode: AppMode, locale: crate::localization::Locale) -> &'static str {
+        let key = match mode {
+            AppMode::Agent => "mode_agent",
+            AppMode::Yolo => "mode_yolo",
+            AppMode::Plan => "mode_plan",
+        };
+        crate::json_locale::tr_ui_label(locale, key).unwrap_or_else(|| Self::mode_name(mode))
     }
 
     fn span_width(spans: &[Span<'_>]) -> usize {
@@ -402,7 +422,11 @@ impl<'a> HeaderWidget<'a> {
             return Vec::new();
         }
 
-        let mode_label = Self::mode_name(self.data.mode);
+        let mode_label = if let Some(locale) = self.data.locale {
+            Self::localized_mode_name(self.data.mode, locale)
+        } else {
+            Self::mode_name(self.data.mode)
+        };
         let mode_style = Style::default()
             .fg(Self::mode_color(self.data.mode))
             .add_modifier(Modifier::BOLD);

@@ -59,7 +59,7 @@ pub fn build_entries(
         let mut description = command.palette_description_for(locale);
         if command.requires_argument() {
             description.push_str("  ");
-            description.push_str(command.usage);
+            description.push_str(&command.localized_usage(locale));
         }
         let action = if command_runs_directly(command.name) {
             CommandPaletteAction::ExecuteCommand {

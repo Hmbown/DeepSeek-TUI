@@ -539,9 +539,11 @@ impl Renderable for ComposerWidget<'_> {
                         self.app
                             .tr(crate::localization::MessageId::HistorySearchTitle)
                     } else if is_draft_mode {
-                        "Draft"
+                        crate::json_locale::tr_ui_label(self.app.ui_locale, "composer_panel_draft")
+                            .unwrap_or("Draft")
                     } else {
-                        "Composer"
+                        crate::json_locale::tr_ui_label(self.app.ui_locale, "composer_panel_title")
+                            .unwrap_or("Composer")
                     },
                     Style::default().fg(palette::TEXT_MUTED),
                 )))
@@ -668,6 +670,7 @@ impl Renderable for ComposerWidget<'_> {
             } else {
                 ""
             };
+            let is_slash_menu = self.mention_menu_entries.is_empty();
 
             // Compute a viewport window into the menu entries so the
             // selection cursor stays visible even when there are more
@@ -693,6 +696,11 @@ impl Renderable for ComposerWidget<'_> {
                 }
             };
             let menu_bottom = (menu_top + menu_visible_rows).min(menu_total);
+            // Show command name + localized description in the slash menu.
+            // The description label is dimmed to visually separate from the
+            // command name so the user can still find the command by typing
+            // the English name.
+            let max_content_width = (inner_area.width as usize).saturating_sub(4);
 
             for (idx, entry) in menu_entries
                 .iter()
@@ -709,11 +717,27 @@ impl Renderable for ComposerWidget<'_> {
                     Style::default().fg(palette::TEXT_MUTED)
                 };
                 let marker = if is_selected { "▸" } else { " " };
+                let entry_text = if is_slash_menu {
+                    // Look up localized description for registered slash commands.
+                    let name = entry.trim_start_matches('/');
+                    if let Some(cmd_info) = commands::get_command_info(name) {
+                        let desc = cmd_info.description_for(self.app.ui_locale);
+                        let full = format!(
+                            "{}{}  {}",
+                            prefix, entry, desc
+                        );
+                        crate::localization::truncate_to_width(&full, max_content_width)
+                    } else {
+                        format!("{prefix}{entry}")
+                    }
+                } else {
+                    format!("{prefix}{entry}")
+                };
                 lines.push(Line::from(vec![
                     Span::styled(" ", Style::default()),
                     Span::styled(marker, style),
                     Span::styled(" ", style),
-                    Span::styled(format!("{prefix}{entry}"), style),
+                    Span::styled(entry_text, style),
                 ]));
             }
         }
@@ -815,6 +839,12 @@ impl Renderable for ApprovalWidget<'_> {
 
         let risk = self.request.risk;
         let palette_colors = approval_palette(risk);
+        let locale = self.view.locale;
+        let tr = |key: &str, fallback: &'static str| -> String {
+            crate::json_locale::tr_ui_label(locale, key)
+                .unwrap_or(fallback)
+                .to_string()
+        };
         let mut lines: Vec<Line<'static>> = Vec::with_capacity(20);
 
         // Header: stakes badge + tool identifier. The badge is the
@@ -823,7 +853,7 @@ impl Renderable for ApprovalWidget<'_> {
         lines.push(Line::from(vec![
             Span::raw("  "),
             Span::styled(
-                format!(" {} ", risk_badge_text(risk)),
+                format!(" {} ", risk_badge_text(risk, locale)),
                 Style::default()
                     .fg(palette::DEEPSEEK_INK)
                     .bg(palette_colors.accent)
@@ -831,19 +861,20 @@ impl Renderable for ApprovalWidget<'_> {
             ),
             Span::raw("  "),
             Span::styled(
-                self.request.tool_name.clone(),
+                crate::json_locale::tr_tool_name(locale, &self.request.tool_name),
                 Style::default()
                     .fg(palette::DEEPSEEK_SKY)
                     .add_modifier(Modifier::BOLD),
             ),
         ]));
 
-        // Category line — unchanged vocabulary so existing tests still
-        // recognise the rendering.
-        let (cat_label, cat_color) = category_label_for(self.request.category);
+        let (cat_label, cat_color) = category_label_for(self.request.category, locale);
         lines.push(Line::from(vec![
             Span::raw("  "),
-            Span::styled("Type: ", Style::default().fg(palette::TEXT_HINT)),
+            Span::styled(
+                tr("approval_label_type", "Type: "),
+                Style::default().fg(palette::TEXT_HINT),
+            ),
             Span::styled(
                 cat_label,
                 Style::default().fg(cat_color).add_modifier(Modifier::BOLD),
@@ -855,7 +886,10 @@ impl Renderable for ApprovalWidget<'_> {
         // they tell the user what will happen.
         lines.push(Line::from(vec![
             Span::raw("  "),
-            Span::styled("About:  ", Style::default().fg(palette::TEXT_HINT)),
+            Span::styled(
+                tr("approval_label_about", "About:  "),
+                Style::default().fg(palette::TEXT_HINT),
+            ),
             Span::styled(
                 self.request.description.clone(),
                 Style::default().fg(palette::TEXT_BODY),
@@ -864,7 +898,10 @@ impl Renderable for ApprovalWidget<'_> {
         for impact in self.request.impacts.iter().take(4) {
             lines.push(Line::from(vec![
                 Span::raw("  "),
-                Span::styled("Impact: ", Style::default().fg(palette::TEXT_HINT)),
+                Span::styled(
+                    tr("approval_label_impact", "Impact: "),
+                    Style::default().fg(palette::TEXT_HINT),
+                ),
                 Span::styled(impact.clone(), Style::default().fg(palette::TEXT_BODY)),
             ]));
         }
@@ -876,7 +913,10 @@ impl Renderable for ApprovalWidget<'_> {
             crate::utils::truncate_with_ellipsis(&params_str, params_width.max(20), "...");
         lines.push(Line::from(vec![
             Span::raw("  "),
-            Span::styled("Params: ", Style::default().fg(palette::TEXT_HINT)),
+            Span::styled(
+                tr("approval_label_params", "Params: "),
+                Style::default().fg(palette::TEXT_HINT),
+            ),
             Span::styled(
                 params_truncated,
                 Style::default().fg(palette::TEXT_SECONDARY),
@@ -913,12 +953,15 @@ impl Renderable for ApprovalWidget<'_> {
                         .fg(palette_colors.shortcut)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(opt.label.to_string(), row_style.fg(label_color)),
+                Span::styled(
+                    tr(opt.label_key, opt.label_fallback),
+                    row_style.fg(label_color),
+                ),
             ];
             if staged {
                 spans.push(Span::raw("  "));
                 spans.push(Span::styled(
-                    "(staged)",
+                    tr("approval_staged", "(staged)"),
                     Style::default()
                         .fg(palette_colors.accent)
                         .add_modifier(Modifier::BOLD),
@@ -936,7 +979,7 @@ impl Renderable for ApprovalWidget<'_> {
                 lines.push(Line::from(vec![
                     Span::raw("  "),
                     Span::styled(
-                        "Single key approves: ",
+                        tr("approval_benign_hint", "Single key approves: "),
                         Style::default().fg(palette::TEXT_HINT),
                     ),
                     Span::styled(
@@ -946,7 +989,7 @@ impl Renderable for ApprovalWidget<'_> {
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
-                        "  ·  v: full params  ·  Esc: abort",
+                        tr("approval_hint_tail", "  ·  v: full params  ·  Esc: abort"),
                         Style::default().fg(palette::TEXT_HINT),
                     ),
                 ]));
@@ -960,7 +1003,7 @@ impl Renderable for ApprovalWidget<'_> {
                 lines.push(Line::from(vec![
                     Span::raw("  "),
                     Span::styled(
-                        "Confirm destructive action — press ",
+                        tr("approval_confirm_start", "Confirm destructive action — press "),
                         Style::default()
                             .fg(palette_colors.accent)
                             .add_modifier(Modifier::BOLD),
@@ -973,7 +1016,7 @@ impl Renderable for ApprovalWidget<'_> {
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
-                        " again to commit, anything else cancels.",
+                        tr("approval_confirm_tail", " again to commit, anything else cancels."),
                         Style::default().fg(palette::TEXT_HINT),
                     ),
                 ]));
@@ -982,7 +1025,7 @@ impl Renderable for ApprovalWidget<'_> {
                 lines.push(Line::from(vec![
                     Span::raw("  "),
                     Span::styled(
-                        "Two keys to approve: ",
+                        tr("approval_destructive_hint", "Two keys to approve: "),
                         Style::default().fg(palette::TEXT_HINT),
                     ),
                     Span::styled(
@@ -992,7 +1035,7 @@ impl Renderable for ApprovalWidget<'_> {
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
-                        "  ·  v: full params  ·  Esc: abort",
+                        tr("approval_hint_tail", "  ·  v: full params  ·  Esc: abort"),
                         Style::default().fg(palette::TEXT_HINT),
                     ),
                 ]));
@@ -1000,9 +1043,10 @@ impl Renderable for ApprovalWidget<'_> {
         }
 
         let title = format!(
-            " {} approval — {} ",
-            risk_badge_text(risk),
-            self.request.tool_name
+            " {} {} — {} ",
+            risk_badge_text(risk, locale),
+            tr("approval_block_suffix", "approval"),
+            crate::json_locale::tr_tool_name(locale, &self.request.tool_name)
         );
         let block = Block::default()
             .title(title)
@@ -1088,28 +1132,39 @@ fn approval_palette(risk: RiskLevel) -> ApprovalColors {
     }
 }
 
-fn risk_badge_text(risk: RiskLevel) -> &'static str {
+fn risk_badge_text(risk: RiskLevel, locale: crate::localization::Locale) -> String {
+    let tr = |key: &str, fallback: &'static str| -> String {
+        crate::json_locale::tr_ui_label(locale, key)
+            .unwrap_or(fallback)
+            .to_string()
+    };
     match risk {
-        RiskLevel::Benign => "REVIEW",
-        RiskLevel::Destructive => "DESTRUCTIVE",
+        RiskLevel::Benign => tr("approval_badge_review", "REVIEW"),
+        RiskLevel::Destructive => tr("approval_badge_destructive", "DESTRUCTIVE"),
     }
 }
 
-fn category_label_for(category: ToolCategory) -> (&'static str, Color) {
+fn category_label_for(category: ToolCategory, locale: crate::localization::Locale) -> (String, Color) {
+    let tr = |key: &str, fallback: &'static str| -> String {
+        crate::json_locale::tr_ui_label(locale, key)
+            .unwrap_or(fallback)
+            .to_string()
+    };
     match category {
-        ToolCategory::Safe => ("Safe", palette::STATUS_SUCCESS),
-        ToolCategory::FileWrite => ("File Write", palette::STATUS_WARNING),
-        ToolCategory::Shell => ("Shell Command", palette::STATUS_ERROR),
-        ToolCategory::Network => ("Network", palette::STATUS_WARNING),
-        ToolCategory::McpRead => ("MCP Read", palette::DEEPSEEK_SKY),
-        ToolCategory::McpAction => ("MCP Action", palette::STATUS_WARNING),
-        ToolCategory::Unknown => ("Unknown", palette::STATUS_ERROR),
+        ToolCategory::Safe => (tr("approval_cat_safe", "Safe"), palette::STATUS_SUCCESS),
+        ToolCategory::FileWrite => (tr("approval_cat_file_write", "File Write"), palette::STATUS_WARNING),
+        ToolCategory::Shell => (tr("approval_cat_shell", "Shell Command"), palette::STATUS_ERROR),
+        ToolCategory::Network => (tr("approval_cat_network", "Network"), palette::STATUS_WARNING),
+        ToolCategory::McpRead => (tr("approval_cat_mcp_read", "MCP Read"), palette::DEEPSEEK_SKY),
+        ToolCategory::McpAction => (tr("approval_cat_mcp_action", "MCP Action"), palette::STATUS_WARNING),
+        ToolCategory::Unknown => (tr("approval_cat_unknown", "Unknown"), palette::STATUS_ERROR),
     }
 }
 
 struct ApprovalOptionRow {
     option: crate::tui::approval::ApprovalOption,
-    label: &'static str,
+    label_key: &'static str,
+    label_fallback: &'static str,
     key_hint: &'static str,
     dangerous: bool,
 }
@@ -1120,25 +1175,29 @@ fn approval_options_for(risk: RiskLevel) -> [ApprovalOptionRow; 4] {
     [
         ApprovalOptionRow {
             option: O::ApproveOnce,
-            label: "Approve once",
+            label_key: "approval_opt_approve_once",
+            label_fallback: "Approve once",
             key_hint: "1 / y",
             dangerous,
         },
         ApprovalOptionRow {
             option: O::ApproveAlways,
-            label: "Approve always for this kind",
+            label_key: "approval_opt_approve_always",
+            label_fallback: "Approve always for this kind",
             key_hint: "2 / a",
             dangerous,
         },
         ApprovalOptionRow {
             option: O::Deny,
-            label: "Deny this call",
+            label_key: "approval_opt_deny",
+            label_fallback: "Deny this call",
             key_hint: "3 / d / n",
             dangerous: false,
         },
         ApprovalOptionRow {
             option: O::Abort,
-            label: "Abort the turn",
+            label_key: "approval_opt_abort",
+            label_fallback: "Abort the turn",
             key_hint: "Esc",
             dangerous: false,
         },
@@ -1148,11 +1207,12 @@ fn approval_options_for(risk: RiskLevel) -> [ApprovalOptionRow; 4] {
 pub struct ElevationWidget<'a> {
     request: &'a ElevationRequest,
     selected: usize,
+    locale: crate::localization::Locale,
 }
 
 impl<'a> ElevationWidget<'a> {
-    pub fn new(request: &'a ElevationRequest, selected: usize) -> Self {
-        Self { request, selected }
+    pub fn new(request: &'a ElevationRequest, selected: usize, locale: crate::localization::Locale) -> Self {
+        Self { request, selected, locale }
     }
 }
 
@@ -1179,9 +1239,15 @@ impl Renderable for ElevationWidget<'_> {
             )]),
             Line::from(""),
             Line::from(vec![
-                Span::raw("  Tool: "),
+                // Note: elevation widget gets locale from app, falls back to raw name
+                Span::raw("  "),
                 Span::styled(
-                    &self.request.tool_name,
+                    crate::json_locale::tr_elevation_label(self.locale, "tool").unwrap_or("Tool:"),
+                    Style::default().fg(palette::TEXT_HINT),
+                ),
+                Span::raw(" "),
+                Span::styled(
+                    crate::json_locale::tr_tool_name(self.locale, &self.request.tool_name),
                     Style::default()
                         .fg(palette::DEEPSEEK_SKY)
                         .add_modifier(Modifier::BOLD),
@@ -1193,14 +1259,24 @@ impl Renderable for ElevationWidget<'_> {
         if let Some(ref command) = self.request.command {
             let cmd_display = crate::utils::truncate_with_ellipsis(command, 45, "...");
             lines.push(Line::from(vec![
-                Span::raw("  Cmd:  "),
+                Span::raw("  "),
+                Span::styled(
+                    crate::json_locale::tr_elevation_label(self.locale, "cmd").unwrap_or("Cmd:"),
+                    Style::default().fg(palette::TEXT_HINT),
+                ),
+                Span::raw(" "),
                 Span::styled(cmd_display, Style::default().fg(palette::TEXT_MUTED)),
             ]));
         }
 
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
-            Span::raw("  Reason: "),
+            Span::raw("  "),
+            Span::styled(
+                crate::json_locale::tr_elevation_label(self.locale, "reason").unwrap_or("Reason:"),
+                Style::default().fg(palette::TEXT_HINT),
+            ),
+            Span::raw(" "),
             Span::styled(
                 &self.request.denial_reason,
                 Style::default().fg(palette::STATUS_WARNING),
@@ -1209,7 +1285,8 @@ impl Renderable for ElevationWidget<'_> {
 
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "  Impact if approved:",
+            crate::json_locale::tr_elevation_label(self.locale, "impact_if_approved")
+                .unwrap_or("  Impact if approved:"),
             Style::default().fg(palette::TEXT_MUTED),
         )));
         if self
@@ -1219,7 +1296,8 @@ impl Renderable for ElevationWidget<'_> {
             .any(|option| matches!(option, ElevationOption::WithNetwork))
         {
             lines.push(Line::from(Span::styled(
-                "    - network retry enables outbound downloads and HTTP requests",
+                crate::json_locale::tr_elevation_label(self.locale, "impact_network")
+                    .unwrap_or("    - network retry enables outbound downloads and HTTP requests"),
                 Style::default().fg(palette::TEXT_PRIMARY),
             )));
         }
@@ -1230,17 +1308,20 @@ impl Renderable for ElevationWidget<'_> {
             .any(|option| matches!(option, ElevationOption::WithWriteAccess(_)))
         {
             lines.push(Line::from(Span::styled(
-                "    - write retry expands writable filesystem scope for this tool call",
+                crate::json_locale::tr_elevation_label(self.locale, "impact_write")
+                    .unwrap_or("    - write retry expands writable filesystem scope for this tool call"),
                 Style::default().fg(palette::TEXT_PRIMARY),
             )));
         }
         lines.push(Line::from(Span::styled(
-            "    - full access removes sandbox restrictions entirely for this retry",
+            crate::json_locale::tr_elevation_label(self.locale, "impact_full_access")
+                .unwrap_or("    - full access removes sandbox restrictions entirely for this retry"),
             Style::default().fg(palette::TEXT_PRIMARY),
         )));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "  Choose how to proceed:",
+            crate::json_locale::tr_elevation_label(self.locale, "choose_how_to_proceed")
+                .unwrap_or("  Choose how to proceed:"),
             Style::default().fg(palette::TEXT_MUTED),
         )));
         lines.push(Line::from(""));
@@ -1269,13 +1350,23 @@ impl Renderable for ElevationWidget<'_> {
                 _ => palette::TEXT_PRIMARY,
             };
 
+            let option_label_key = match option {
+                ElevationOption::WithNetwork => "option_network",
+                ElevationOption::WithWriteAccess(_) => "option_write",
+                ElevationOption::FullAccess => "option_full_access",
+                ElevationOption::Abort => "option_abort",
+            };
             lines.push(Line::from(vec![
                 Span::raw("  "),
                 Span::styled(
                     format!("[{key}] "),
                     Style::default().fg(palette::STATUS_SUCCESS),
                 ),
-                Span::styled(option.label(), style.fg(label_color)),
+                Span::styled(
+                    crate::json_locale::tr_elevation_label(self.locale, option_label_key)
+                        .unwrap_or(option.label()),
+                    style.fg(label_color),
+                ),
             ]));
             lines.push(Line::from(vec![
                 Span::raw("      "),

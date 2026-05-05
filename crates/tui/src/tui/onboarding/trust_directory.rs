@@ -7,29 +7,36 @@ use crate::palette;
 use crate::tui::app::App;
 
 pub fn lines(app: &App) -> Vec<Line<'static>> {
+    let tr = |key: &str, fallback: &str| -> String {
+        crate::json_locale::tr_ui_label(app.ui_locale, key)
+            .unwrap_or(fallback)
+            .to_string()
+    };
+
     let mut lines = Vec::new();
     lines.push(Line::from(Span::styled(
-        "Trust Workspace",
+        tr("onboarding_trust_title", "Trust Workspace"),
         Style::default()
             .fg(palette::DEEPSEEK_SKY)
             .add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "Allow DeepSeek to access files outside this workspace?",
+        tr("onboarding_trust_desc", "Allow DeepSeek to access files outside this workspace?"),
         Style::default().fg(palette::TEXT_PRIMARY),
     )));
     lines.push(Line::from(Span::styled(
-        format!("Workspace: {}", crate::utils::display_path(&app.workspace)),
+        tr("onboarding_trust_workspace", "Workspace: {path}")
+            .replace("{path}", &crate::utils::display_path(&app.workspace)),
         Style::default().fg(palette::TEXT_MUTED),
     )));
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "Y = let reviews, searches, and agents reach outside this workspace when a task needs it.",
+        tr("onboarding_trust_y", "Y = let reviews, searches, and agents reach outside this workspace when a task needs it."),
         Style::default().fg(palette::TEXT_MUTED),
     )));
     lines.push(Line::from(Span::styled(
-        "N = keep file access scoped to this workspace and review approvals case by case.",
+        tr("onboarding_trust_n", "N = keep file access scoped to this workspace and review approvals case by case."),
         Style::default().fg(palette::TEXT_MUTED),
     )));
     if let Some(message) = app.status_message.as_deref() {
@@ -41,21 +48,30 @@ pub fn lines(app: &App) -> Vec<Line<'static>> {
     }
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
-        Span::styled("Press ", Style::default().fg(palette::TEXT_MUTED)),
+        Span::styled(
+            tr("onboarding_trust_press_y", "Press "),
+            Style::default().fg(palette::TEXT_MUTED),
+        ),
         Span::styled(
             "Y",
             Style::default()
                 .fg(palette::TEXT_PRIMARY)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" to trust, ", Style::default().fg(palette::TEXT_MUTED)),
+        Span::styled(
+            tr("onboarding_trust_or_n", " to trust, "),
+            Style::default().fg(palette::TEXT_MUTED),
+        ),
         Span::styled(
             "N",
             Style::default()
                 .fg(palette::TEXT_PRIMARY)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" to skip", Style::default().fg(palette::TEXT_MUTED)),
+        Span::styled(
+            tr("onboarding_trust_skip", " to skip"),
+            Style::default().fg(palette::TEXT_MUTED),
+        ),
     ]));
     lines
 }

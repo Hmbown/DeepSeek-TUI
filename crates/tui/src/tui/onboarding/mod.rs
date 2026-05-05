@@ -32,25 +32,35 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     };
 
     let lines = match app.onboarding {
-        OnboardingState::Welcome => welcome::lines(),
+        OnboardingState::Welcome => welcome::lines(app),
         OnboardingState::Language => language::lines(app),
         OnboardingState::ApiKey => api_key::lines(app),
         OnboardingState::TrustDirectory => trust_directory::lines(app),
-        OnboardingState::Tips => tips_lines(),
+        OnboardingState::Tips => tips_lines(app),
         OnboardingState::None => Vec::new(),
     };
 
     if !lines.is_empty() {
         let (step, total) = onboarding_step(app);
+        let tr_title = |key: &str, fallback: &str| -> String {
+            crate::json_locale::tr_ui_label(app.ui_locale, key)
+                .unwrap_or(fallback)
+                .to_string()
+        };
+        let title = tr_title("onboarding_title", " DeepSeek TUI ");
+        let step_text = tr_title("onboarding_step", " Step {step}/{total} ")
+            .replace("{step}", &step.to_string())
+            .replace("{total}", &total.to_string());
+
         let panel = Block::default()
             .title(Line::from(Span::styled(
-                " DeepSeek TUI ",
+                title,
                 Style::default()
                     .fg(palette::DEEPSEEK_BLUE)
                     .add_modifier(Modifier::BOLD),
             )))
             .title_bottom(Line::from(Span::styled(
-                format!(" Step {step}/{total} "),
+                step_text,
                 Style::default()
                     .fg(palette::TEXT_MUTED)
                     .add_modifier(Modifier::BOLD),
@@ -68,8 +78,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
 
 fn onboarding_step(app: &App) -> (usize, usize) {
     let needs_trust = !app.trust_mode && needs_trust(&app.workspace);
-    // Welcome + Language + Tips are always shown.
-    let mut total = 3;
+    // Language + Tips are always shown. Welcome is skipped — Language is
+    // the natural first touchpoint (#566 follow-up).
+    let mut total = 2;
     if app.onboarding_needs_api_key {
         total += 1;
     }
@@ -78,12 +89,12 @@ fn onboarding_step(app: &App) -> (usize, usize) {
     }
 
     let step = match app.onboarding {
-        OnboardingState::Welcome => 1,
-        OnboardingState::Language => 2,
-        OnboardingState::ApiKey => 3,
+        OnboardingState::Welcome => 0,
+        OnboardingState::Language => 1,
+        OnboardingState::ApiKey => 2,
         OnboardingState::TrustDirectory => {
-            // Welcome (1) + Language (2) + optional ApiKey
-            if app.onboarding_needs_api_key { 4 } else { 3 }
+            // Language (1) + optional ApiKey
+            if app.onboarding_needs_api_key { 3 } else { 2 }
         }
         OnboardingState::Tips => total,
         OnboardingState::None => total,
@@ -92,32 +103,30 @@ fn onboarding_step(app: &App) -> (usize, usize) {
     (step, total)
 }
 
-pub fn tips_lines() -> Vec<ratatui::text::Line<'static>> {
+pub fn tips_lines(app: &App) -> Vec<ratatui::text::Line<'static>> {
     use ratatui::style::Modifier;
     use ratatui::text::{Line, Span};
 
+    let tr = |key: &str, fallback: &str| -> String {
+        crate::json_locale::tr_ui_label(app.ui_locale, key)
+            .unwrap_or(fallback)
+            .to_string()
+    };
+
     vec![
         Line::from(Span::styled(
-            "Start Simple",
+            tr("onboarding_tips_title", "Start Simple"),
             Style::default()
                 .fg(palette::DEEPSEEK_SKY)
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        Line::from(Span::raw(
-            "Write the task in plain language. Use /help or Ctrl+K when you want a command.",
-        )),
-        Line::from(Span::raw(
-            "The bottom composer is multi-line: Enter sends, Alt+Enter or Ctrl+J adds a new line.",
-        )),
-        Line::from(Span::raw(
-            "Switch modes only when the job changes: Plan for review-first work, Agent for execution, YOLO when you want auto-approval.",
-        )),
-        Line::from(Span::raw(
-            "Ctrl+R resumes earlier sessions, and Esc backs out of the current draft or overlay.",
-        )),
+        Line::from(Span::raw(tr("onboarding_tips_line1", "Write the task in plain language. Use /help or Ctrl+K when you want a command."))),
+        Line::from(Span::raw(tr("onboarding_tips_line2", "The bottom composer is multi-line: Enter sends, Alt+Enter or Ctrl+J adds a new line."))),
+        Line::from(Span::raw(tr("onboarding_tips_line3", "Switch modes only when the job changes: Plan for review-first work, Agent for execution, YOLO when you want auto-approval."))),
+        Line::from(Span::raw(tr("onboarding_tips_line4", "Ctrl+R resumes earlier sessions, and Esc backs out of the current draft or overlay."))),
         Line::from(vec![
-            Span::styled("Press ", Style::default().fg(palette::TEXT_MUTED)),
+            Span::styled(tr("onboarding_tips_press", "Press "), Style::default().fg(palette::TEXT_MUTED)),
             Span::styled(
                 "Enter",
                 Style::default()
@@ -125,7 +134,7 @@ pub fn tips_lines() -> Vec<ratatui::text::Line<'static>> {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                " to open the workspace",
+                tr("onboarding_tips_enter_hint", " to open the workspace"),
                 Style::default().fg(palette::TEXT_MUTED),
             ),
         ]),

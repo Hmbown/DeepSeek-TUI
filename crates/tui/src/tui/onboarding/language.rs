@@ -20,23 +20,30 @@ pub const LANGUAGE_OPTIONS: &[(char, &str, &str, &str)] = &[
     ('2', "en", "English", ""),
     ('3', "ja", "日本語", "(Japanese)"),
     ('4', "zh-Hans", "简体中文", "(Simplified Chinese)"),
-    ('5', "pt-BR", "Português (Brasil)", "(Brazilian Portuguese)"),
+    ('5', "zh-Hant", "繁體中文", "(Traditional Chinese)"),
+    ('6', "pt-BR", "Português (Brasil)", "(Brazilian Portuguese)"),
 ];
 
 pub fn lines(app: &App) -> Vec<Line<'static>> {
     let current_owned = app.current_locale_tag();
     let current = current_owned.as_str();
 
+    let tr = |key: &str, fallback: &str| -> String {
+        crate::json_locale::tr_ui_label(app.ui_locale, key)
+            .unwrap_or(fallback)
+            .to_string()
+    };
+
     let mut out: Vec<Line<'static>> = vec![
         Line::from(Span::styled(
-            "Choose your language",
+            tr("onboarding_language_title", "Choose your language"),
             Style::default()
                 .fg(palette::DEEPSEEK_SKY)
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(Span::styled(
-            "Pick the UI language. You can change it any time with `/settings set locale <tag>`.",
+            tr("onboarding_language_desc", "Pick the UI language. You can change it any time with `/settings set locale <tag>`."),
             Style::default().fg(palette::TEXT_MUTED),
         )),
         Line::from(""),
@@ -73,26 +80,11 @@ pub fn lines(app: &App) -> Vec<Line<'static>> {
     }
 
     out.push(Line::from(""));
-    out.push(Line::from(vec![
-        Span::styled("Press ", Style::default().fg(palette::TEXT_MUTED)),
-        Span::styled(
-            "1-5",
-            Style::default()
-                .fg(palette::TEXT_PRIMARY)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" to choose, or ", Style::default().fg(palette::TEXT_MUTED)),
-        Span::styled(
-            "Enter",
-            Style::default()
-                .fg(palette::TEXT_PRIMARY)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            " to keep the current setting",
-            Style::default().fg(palette::TEXT_MUTED),
-        ),
-    ]));
+    let choose_text = tr("onboarding_language_choose", "Press 1-6 to choose, or Enter to keep the current setting");
+    out.push(Line::from(Span::styled(
+        choose_text,
+        Style::default().fg(palette::TEXT_MUTED),
+    )));
 
     out
 }

@@ -415,14 +415,13 @@ impl Default for SnapshotsConfig {
 
 /// User-level memory configuration (#489).
 ///
-/// Default is opt-in: when this table is absent or `enabled = false`, the
-/// memory file is neither read nor written, and `# foo` quick-adds in the
-/// composer fall through to the normal turn-submission path.
+/// Default is **on**: the memory file is read and written unless explicitly
+/// disabled via `[memory] enabled = false` in config.toml or
+/// `DEEPSEEK_MEMORY=off` in the environment.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct MemoryConfig {
-    /// When `true`, load the user memory file at `Config::memory_path()`
-    /// into the system prompt as a `<user_memory>` block, and intercept
-    /// `# foo` typed in the composer to append to that file. Default `false`.
+    /// When `false`, the memory file is neither read nor written, and
+    /// `# foo` quick-adds fall through to normal turn-submission. Default `true`.
     #[serde(default)]
     pub enabled: Option<bool>,
 }
@@ -721,6 +720,17 @@ pub struct Config {
     pub approval_policy: Option<String>,
     pub sandbox_mode: Option<String>,
     pub managed_config_path: Option<String>,
+    /// Path to a project-level config file (e.g. `deepseek.toml` in the
+    /// workspace root). Inherited fields override the user config: this
+    /// lets teams ship a shared `deepseek.toml` in their repo that sets
+    /// `default_model`, `instructions`, `allow_shell`, etc. without
+    /// each developer having to manually configure the same values.
+    ///
+    /// Resolution order (highest priority first):
+    /// `DEEPSEEK_PROJECT_CONFIG_PATH` env var → `{cwd}/deepseek.toml` → none.
+    /// Missing file is silently skipped so repos without one don't fail.
+    #[serde(skip)]
+    pub project_config_path: Option<String>,
     pub requirements_path: Option<String>,
     pub max_subagents: Option<usize>,
     pub retry: Option<RetryConfig>,
@@ -999,6 +1009,7 @@ impl Config {
 
         apply_env_overrides(&mut config);
         apply_managed_overrides(&mut config)?;
+        apply_project_overrides(&mut config)?;
         apply_requirements(&mut config)?;
         normalize_model_config(&mut config);
         config.validate()?;
@@ -1343,14 +1354,14 @@ impl Config {
 
     /// Whether the user-memory feature is enabled. The default is **off**
     /// to preserve zero-overhead behavior for users who haven't opted in.
-    /// Flips to `true` when `[memory] enabled = true` in `config.toml` or
+    /// Flips to `true` when `[memory] enabled != false` in `config.toml` or
     /// `DEEPSEEK_MEMORY=on` is set in the environment.
     #[must_use]
     pub fn memory_enabled(&self) -> bool {
         self.memory
             .as_ref()
             .and_then(|m| m.enabled)
-            .unwrap_or(false)
+            .unwrap_or(true)
     }
 
     /// Return whether shell execution is allowed.
@@ -1572,6 +1583,14 @@ fn default_managed_config_path() -> Option<PathBuf> {
     }
 }
 
+/// Default path for project-level config: `{cwd}/deepseek.toml`.
+///
+/// Uses the current working directory so a `deepseek.toml` in the
+/// workspace root is automatically picked up without any config.
+fn default_project_config_path() -> Option<PathBuf> {
+    std::env::current_dir().ok().map(|cwd| cwd.join("deepseek.toml"))
+}
+
 fn default_requirements_path() -> Option<PathBuf> {
     #[cfg(unix)]
     {
@@ -1733,6 +1752,9 @@ fn apply_env_overrides(config: &mut Config) {
     }
     if let Ok(value) = std::env::var("DEEPSEEK_MANAGED_CONFIG_PATH") {
         config.managed_config_path = Some(value);
+    }
+    if let Ok(value) = std::env::var("DEEPSEEK_PROJECT_CONFIG_PATH") {
+        config.project_config_path = Some(value);
     }
     if let Ok(value) = std::env::var("DEEPSEEK_REQUIREMENTS_PATH") {
         config.requirements_path = Some(value);
@@ -1991,6 +2013,9 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         managed_config_path: override_cfg
             .managed_config_path
             .or(base.managed_config_path),
+        project_config_path: override_cfg
+            .project_config_path
+            .or(base.project_config_path),
         requirements_path: override_cfg.requirements_path.or(base.requirements_path),
         max_subagents: override_cfg.max_subagents.or(base.max_subagents),
         retry: override_cfg.retry.or(base.retry),
@@ -2085,6 +2110,31 @@ fn apply_managed_overrides(config: &mut Config) -> Result<()> {
     }
     let managed = load_single_config_file(&path)?;
     *config = merge_config(config.clone(), managed);
+    Ok(())
+}
+
+/// Apply project-level config overrides from `deepseek.toml` in the
+/// workspace root (or `DEEPSEEK_PROJECT_CONFIG_PATH`).
+///
+/// Project config has higher priority than the user's home config but
+/// lower than managed config and env vars. This mirrors the typical
+/// team-workflow: a repo ships `deepseek.toml` with shared settings
+/// (model, instructions, etc.) and individual developers override via
+/// `~/.deepseek/config.toml` or env vars.
+fn apply_project_overrides(config: &mut Config) -> Result<()> {
+    let path = config
+        .project_config_path
+        .as_deref()
+        .map(expand_path)
+        .or_else(default_project_config_path);
+    let Some(path) = path else {
+        return Ok(());
+    };
+    if !path.exists() {
+        return Ok(());
+    }
+    let project = load_single_config_file(&path)?;
+    *config = merge_config(config.clone(), project);
     Ok(())
 }
 
@@ -4109,5 +4159,118 @@ model = "deepseek-v4-pro"
         let json = serde_json::to_value(&dep).unwrap();
         let deserialized: ModelDeprecation = serde_json::from_value(json).unwrap();
         assert_eq!(dep, deserialized);
+    }
+
+    #[test]
+    fn project_config_overrides_user_config() {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = std::env::temp_dir().join(format!(
+            "deepseek-tui-project-config-test-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        let _ = std::fs::remove_dir_all(&temp_root);
+        std::fs::create_dir_all(&temp_root).unwrap();
+        let _guard = EnvGuard::new(&temp_root);
+
+        // Write a user config with allow_shell = false
+        let config_dir = temp_root.join(".deepseek");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let config_path = config_dir.join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"allow_shell = false
+default_text_model = "deepseek-v4-flash"
+"#,
+        )
+        .unwrap();
+
+        // Write a project config (deepseek.toml) in a dedicated location
+        let project_dir = temp_root.join("my-project");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        let project_config_path = project_dir.join("deepseek.toml");
+        std::fs::write(
+            &project_config_path,
+            r#"allow_shell = true
+default_text_model = "deepseek-v4-pro"
+"#,
+        )
+        .unwrap();
+
+        // Set DEEPSEEK_PROJECT_CONFIG_PATH to point to our project config
+        unsafe {
+            std::env::set_var(
+                "DEEPSEEK_PROJECT_CONFIG_PATH",
+                project_config_path.to_str().unwrap(),
+            );
+        }
+
+        // Load config — the project config should override the user config
+        let config = Config::load(Some(config_path), None).unwrap();
+
+        // Project config overrides user config
+        assert_eq!(
+            config.allow_shell,
+            Some(true),
+            "project config overrides allow_shell"
+        );
+        assert_eq!(
+            config.default_text_model.as_deref(),
+            Some("deepseek-v4-pro"),
+            "project config overrides default_text_model"
+        );
+    }
+
+    #[test]
+    fn project_config_does_not_override_with_env_var() {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = std::env::temp_dir().join(format!(
+            "deepseek-tui-project-config-env-test-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        let _ = std::fs::remove_dir_all(&temp_root);
+        std::fs::create_dir_all(&temp_root).unwrap();
+        let _guard = EnvGuard::new(&temp_root);
+
+        // Write user config
+        let config_dir = temp_root.join(".deepseek");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let config_path = config_dir.join("config.toml");
+        std::fs::write(&config_path, r#"default_text_model = "deepseek-v4-flash""#).unwrap();
+
+        // Write project config in a custom location
+        let custom_project_dir = temp_root.join("myproject");
+        std::fs::create_dir_all(&custom_project_dir).unwrap();
+        let project_config_path = custom_project_dir.join("deepseek.toml");
+        std::fs::write(
+            &project_config_path,
+            r#"default_text_model = "deepseek-v4-pro""#,
+        )
+        .unwrap();
+
+        // Set env var to point to the custom project config
+        unsafe {
+            std::env::set_var(
+                "DEEPSEEK_PROJECT_CONFIG_PATH",
+                project_config_path.to_str().unwrap(),
+            );
+        }
+
+        let config = Config::load(Some(config_path), None).unwrap();
+
+        assert_eq!(
+            config.default_text_model.as_deref(),
+            Some("deepseek-v4-pro"),
+            "env var path should be used"
+        );
     }
 }

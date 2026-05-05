@@ -504,6 +504,7 @@ fn handle_memory_quick_add(app: &mut App, input: &str, config: &Config) {
 
 fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
     EngineConfig {
+        locale: app.ui_locale,
         model: app.model.clone(),
         workspace: app.workspace.clone(),
         allow_shell: app.allow_shell,
@@ -978,7 +979,7 @@ async fn run_event_loop(
                                 content: plan_next_step_prompt(),
                             });
                             if app.view_stack.top_kind() != Some(ModalKind::PlanPrompt) {
-                                app.view_stack.push(PlanPromptView::new());
+                                app.view_stack.push(PlanPromptView::new(app.ui_locale));
                             }
                         }
                         app.plan_tool_used_in_turn = false;
@@ -1233,7 +1234,7 @@ async fn run_event_loop(
                                     "mode": app.mode.label(),
                                 }),
                             );
-                            app.view_stack.push(ApprovalView::new(request));
+                            app.view_stack.push(ApprovalView::new(request, app.ui_locale));
                             app.status_message = Some(format!(
                                 "Approval required for '{tool_name}': {description}"
                             ));
@@ -1295,7 +1296,7 @@ async fn run_event_loop(
                                 blocked_network,
                                 blocked_write,
                             );
-                            app.view_stack.push(ElevationView::new(request));
+                            app.view_stack.push(ElevationView::new(request, app.ui_locale));
                             app.status_message =
                                 Some(format!("Sandbox blocked {tool_name}: {denial_reason}"));
                         }
@@ -1587,13 +1588,13 @@ async fn run_event_loop(
                         return Ok(());
                     }
                     KeyCode::Esc if app.onboarding == OnboardingState::ApiKey => {
-                        app.onboarding = OnboardingState::Welcome;
+                        app.onboarding = OnboardingState::Language;
                         app.api_key_input.clear();
                         app.api_key_cursor = 0;
                         app.status_message = None;
                     }
                     KeyCode::Esc if app.onboarding == OnboardingState::Language => {
-                        app.onboarding = OnboardingState::Welcome;
+                        app.onboarding = OnboardingState::None;
                         app.status_message = None;
                     }
                     // Language picker hotkeys: 1-5 select + persist (#566).
@@ -1677,7 +1678,10 @@ async fn run_event_loop(
                                             .await;
                                     }
 
-                                    advance_onboarding(app);
+                                    // After saving the key, advance to the next
+                                    // step (TrustDirectory or Tips) instead of
+                                    // going back to Language.
+                                    advance_after_language(app);
                                 }
                                 Err(e) => {
                                     app.status_message = Some(e.to_string());
@@ -1988,7 +1992,7 @@ async fn run_event_loop(
                 KeyCode::Char('1') if key.modifiers.contains(KeyModifiers::ALT) => {
                     if key.modifiers.contains(KeyModifiers::CONTROL) {
                         app.set_sidebar_focus(SidebarFocus::Plan);
-                        app.status_message = Some("Sidebar focus: plan".to_string());
+                        app.status_message = Some(sidebar_focus_status(app, SidebarFocus::Plan));
                     } else {
                         app.set_mode(AppMode::Plan);
                     }
@@ -1997,7 +2001,7 @@ async fn run_event_loop(
                 KeyCode::Char('2') if key.modifiers.contains(KeyModifiers::ALT) => {
                     if key.modifiers.contains(KeyModifiers::CONTROL) {
                         app.set_sidebar_focus(SidebarFocus::Todos);
-                        app.status_message = Some("Sidebar focus: todos".to_string());
+                        app.status_message = Some(sidebar_focus_status(app, SidebarFocus::Todos));
                     } else {
                         app.set_mode(AppMode::Agent);
                     }
@@ -2006,7 +2010,7 @@ async fn run_event_loop(
                 KeyCode::Char('3') if key.modifiers.contains(KeyModifiers::ALT) => {
                     if key.modifiers.contains(KeyModifiers::CONTROL) {
                         app.set_sidebar_focus(SidebarFocus::Tasks);
-                        app.status_message = Some("Sidebar focus: tasks".to_string());
+                        app.status_message = Some(sidebar_focus_status(app, SidebarFocus::Tasks));
                     } else {
                         app.set_mode(AppMode::Yolo);
                     }
@@ -2018,37 +2022,37 @@ async fn run_event_loop(
                 }
                 KeyCode::Char('!') if key.modifiers.contains(KeyModifiers::ALT) => {
                     app.set_sidebar_focus(SidebarFocus::Plan);
-                    app.status_message = Some("Sidebar focus: plan".to_string());
+                    app.status_message = Some(sidebar_focus_status(app, SidebarFocus::Plan));
                     continue;
                 }
                 KeyCode::Char('@') if key.modifiers.contains(KeyModifiers::ALT) => {
                     app.set_sidebar_focus(SidebarFocus::Todos);
-                    app.status_message = Some("Sidebar focus: todos".to_string());
+                    app.status_message = Some(sidebar_focus_status(app, SidebarFocus::Todos));
                     continue;
                 }
                 KeyCode::Char('#') if key.modifiers.contains(KeyModifiers::ALT) => {
                     app.set_sidebar_focus(SidebarFocus::Tasks);
-                    app.status_message = Some("Sidebar focus: tasks".to_string());
+                    app.status_message = Some(sidebar_focus_status(app, SidebarFocus::Tasks));
                     continue;
                 }
                 KeyCode::Char('$') if key.modifiers.contains(KeyModifiers::ALT) => {
                     app.set_sidebar_focus(SidebarFocus::Agents);
-                    app.status_message = Some("Sidebar focus: agents".to_string());
+                    app.status_message = Some(sidebar_focus_status(app, SidebarFocus::Agents));
                     continue;
                 }
                 KeyCode::Char('%') if key.modifiers.contains(KeyModifiers::ALT) => {
                     app.set_sidebar_focus(SidebarFocus::Context);
-                    app.status_message = Some("Sidebar focus: context".to_string());
+                    app.status_message = Some(sidebar_focus_status(app, SidebarFocus::Context));
                     continue;
                 }
                 KeyCode::Char(')') if key.modifiers.contains(KeyModifiers::ALT) => {
                     app.set_sidebar_focus(SidebarFocus::Auto);
-                    app.status_message = Some("Sidebar focus: auto".to_string());
+                    app.status_message = Some(sidebar_focus_status(app, SidebarFocus::Auto));
                     continue;
                 }
                 KeyCode::Char('0') if key.modifiers.contains(KeyModifiers::ALT) => {
                     app.set_sidebar_focus(SidebarFocus::Auto);
-                    app.status_message = Some("Sidebar focus: auto".to_string());
+                    app.status_message = Some(sidebar_focus_status(app, SidebarFocus::Auto));
                     continue;
                 }
                 KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -2682,9 +2686,33 @@ async fn run_event_loop(
     }
 }
 
+/// Localized sidebar focus status message.
+fn sidebar_focus_status(app: &App, focus: SidebarFocus) -> String {
+    let key = match focus {
+        SidebarFocus::Plan => "status_sidebar_focus_plan",
+        SidebarFocus::Todos => "status_sidebar_focus_todos",
+        SidebarFocus::Tasks => "status_sidebar_focus_tasks",
+        SidebarFocus::Agents => "status_sidebar_focus_agents",
+        SidebarFocus::Context => "status_sidebar_focus_context",
+        SidebarFocus::Auto => "status_sidebar_focus_auto",
+    };
+    match crate::json_locale::tr_ui_label(app.ui_locale, key) {
+        Some(label) => label.to_string(),
+        None => match focus {
+            SidebarFocus::Plan => "Sidebar focus: plan",
+            SidebarFocus::Todos => "Sidebar focus: todos",
+            SidebarFocus::Tasks => "Sidebar focus: tasks",
+            SidebarFocus::Agents => "Sidebar focus: agents",
+            SidebarFocus::Context => "Sidebar focus: context",
+            SidebarFocus::Auto => "Sidebar focus: auto",
+        }
+        .to_string(),
+    }
+}
+
 fn apply_alt_4_shortcut(app: &mut App, _modifiers: KeyModifiers) {
     app.set_sidebar_focus(SidebarFocus::Agents);
-    app.status_message = Some("Sidebar focus: agents".to_string());
+    app.status_message = Some(sidebar_focus_status(app, SidebarFocus::Agents));
 }
 
 async fn fetch_available_models(config: &Config) -> Result<Vec<String>> {
@@ -3128,6 +3156,7 @@ async fn dispatch_user_message(
                 user_memory_block: None,
                 goal_objective: app.goal.goal_objective.as_deref(),
             },
+            app.ui_locale,
         ),
     );
     app.add_message(HistoryCell::User {
@@ -4585,6 +4614,7 @@ fn render(f: &mut Frame, app: &mut App) {
             app.is_loading,
             app.ui_theme.header_bg,
         )
+        .with_locale(app.ui_locale)
         .with_usage(
             app.session.total_conversation_tokens,
             sanitized_context_window,
@@ -5776,7 +5806,7 @@ fn open_shell_control(app: &mut App) {
         return;
     }
 
-    app.view_stack.push(ShellControlView::new());
+    app.view_stack.push(ShellControlView::new(app.ui_locale));
     app.status_message = Some("Shell control opened".to_string());
 }
 
@@ -6026,8 +6056,10 @@ fn footer_auxiliary_spans(app: &App, max_width: usize) -> Vec<Span<'static>> {
     let cache_spans = footer_cache_spans(app);
     let displayed_cost = app.displayed_session_cost();
     let cost_spans = if displayed_cost > 0.001 {
+        let symbol = crate::json_locale::tr_ui_label(app.ui_locale, "currency_symbol")
+            .unwrap_or("$");
         vec![Span::styled(
-            format!("${displayed_cost:.2}"),
+            format!("{symbol}{displayed_cost:.2}"),
             Style::default().fg(palette::TEXT_MUTED),
         )]
     } else {
@@ -6108,8 +6140,10 @@ fn footer_cache_spans(app: &App) -> Vec<Span<'static>> {
     } else {
         palette::STATUS_ERROR
     };
+    let template = crate::json_locale::tr_ui_label(app.ui_locale, "footer_cache_hit")
+        .unwrap_or("cache hit");
     vec![Span::styled(
-        format!("cache hit {:.0}%", percent),
+        format!("{template} {:.0}%", percent),
         Style::default().fg(color),
     )]
 }
@@ -6128,7 +6162,9 @@ fn footer_reasoning_replay_spans(app: &App) -> Vec<Span<'static>> {
     if replay == 0 {
         return Vec::new();
     }
-    let label = format!("rsn {}", format_token_count_compact(u64::from(replay)));
+    let template = crate::json_locale::tr_ui_label(app.ui_locale, "footer_reasoning_replay")
+        .unwrap_or("rsn");
+    let label = format!("{} {}", template, format_token_count_compact(u64::from(replay)));
     let color = match app.session.last_prompt_tokens {
         Some(input) if input > 0 && f64::from(replay) / f64::from(input) > 0.5 => {
             palette::STATUS_WARNING

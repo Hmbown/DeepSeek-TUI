@@ -1777,6 +1777,7 @@ impl RuntimeThreadManager {
             .clone()
             .map(crate::config::LspConfigToml::into_runtime);
         let engine_cfg = EngineConfig {
+            locale: crate::localization::Locale::En,
             model: thread.model.clone(),
             workspace: thread.workspace.clone(),
             allow_shell: thread.allow_shell,

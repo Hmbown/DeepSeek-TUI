@@ -73,6 +73,8 @@ use super::turn::{TurnContext, TurnToolCall, post_turn_snapshot, pre_turn_snapsh
 /// Configuration for the engine
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
+    /// UI locale for the language instruction in the system prompt.
+    pub locale: crate::localization::Locale,
     /// Model identifier to use for responses.
     pub model: String,
     /// Workspace root for tool execution and file operations.
@@ -145,6 +147,7 @@ pub struct EngineConfig {
 impl Default for EngineConfig {
     fn default() -> Self {
         Self {
+            locale: crate::localization::Locale::En,
             model: DEFAULT_TEXT_MODEL.to_string(),
             workspace: PathBuf::from("."),
             allow_shell: true,
@@ -367,6 +370,7 @@ impl Engine {
                 user_memory_block: user_memory_block.as_deref(),
                 goal_objective: config.goal_objective.as_deref(),
             },
+            config.locale,
         );
         session.system_prompt =
             append_working_set_summary(Some(system_prompt), working_set_summary.as_deref());
@@ -1661,6 +1665,7 @@ impl Engine {
                 user_memory_block: user_memory_block.as_deref(),
                 goal_objective: self.config.goal_objective.as_deref(),
             },
+            self.config.locale,
         );
         let stable_prompt =
             merge_system_prompts(Some(&base), self.session.compaction_summary_prompt.clone());

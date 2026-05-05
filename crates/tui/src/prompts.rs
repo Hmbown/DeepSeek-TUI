@@ -7,6 +7,7 @@
 //! This keeps each concern in its own file and makes prompt tuning
 //! a single-file operation.
 
+use crate::localization::Locale;
 use crate::models::SystemPrompt;
 use crate::project_context::{ProjectContext, load_project_context_with_parents};
 use crate::tui::app::AppMode;
@@ -117,6 +118,12 @@ pub const NEVER_APPROVAL: &str = include_str!("prompts/approvals/never.md");
 /// Compaction handoff template — written into the system prompt so the
 /// model knows the format to use when writing `.deepseek/handoff.md`.
 pub const COMPACT_TEMPLATE: &str = include_str!("prompts/compact.md");
+
+/// Language mirroring instructions shipped with every mode prompt (#588).
+/// These tell the model what language to use for `reasoning_content` and
+/// final replies based on the user's configured UI locale.
+pub const LANG_EN: &str = include_str!("prompts/language/en.md");
+pub const LANG_ZH: &str = include_str!("prompts/language/zh.md");
 
 // ── Legacy prompt constants (kept for backwards compatibility) ────────
 
@@ -231,6 +238,7 @@ pub fn system_prompt_for_mode_with_context(
     mode: AppMode,
     workspace: &Path,
     working_set_summary: Option<&str>,
+    locale: Locale,
 ) -> SystemPrompt {
     system_prompt_for_mode_with_context_and_skills(
         mode,
@@ -239,6 +247,7 @@ pub fn system_prompt_for_mode_with_context(
         None,
         None,
         None,
+        locale,
     )
 }
 
@@ -266,6 +275,7 @@ pub fn system_prompt_for_mode_with_context_and_skills(
     skills_dir: Option<&Path>,
     instructions: Option<&[PathBuf]>,
     user_memory_block: Option<&str>,
+    locale: Locale,
 ) -> SystemPrompt {
     system_prompt_for_mode_with_context_skills_and_session(
         mode,
@@ -277,7 +287,28 @@ pub fn system_prompt_for_mode_with_context_and_skills(
             user_memory_block,
             goal_objective: None,
         },
+        locale,
     )
+}
+
+/// Build the language instruction block based on the configured locale.
+///
+/// Unlike the old hardcoded `## Language` section in `base.md` which told
+/// the model to detect and mirror the user's input language, this version
+/// ties the reasoning/response language to the configured UI locale so
+/// that Chinese-UI users get Chinese reasoning even when typing in English.
+fn build_language_instruction(locale: Locale) -> String {
+    match locale {
+        Locale::ZhHant => {
+            // Traditional Chinese: load the zh.md and substitute character variants.
+            let mut text = LANG_ZH.to_string();
+            text = text.replace("简体", "繁體");
+            text = text.replace("Simplified", "Traditional");
+            text
+        }
+        Locale::ZhHans => LANG_ZH.to_string(),
+        _ => LANG_EN.to_string(),
+    }
 }
 
 pub fn system_prompt_for_mode_with_context_skills_and_session(
@@ -287,22 +318,25 @@ pub fn system_prompt_for_mode_with_context_skills_and_session(
     skills_dir: Option<&Path>,
     instructions: Option<&[PathBuf]>,
     session_context: PromptSessionContext<'_>,
+    locale: Locale,
 ) -> SystemPrompt {
     let mode_prompt = compose_mode_prompt(mode);
+    let language_block = build_language_instruction(locale);
+    let combined = format!("{mode_prompt}\n\n{language_block}");
 
     // Load project context from workspace
     let project_context = load_project_context_with_parents(workspace);
 
-    // 1–2. Mode prompt + project context (or fallback automap).
+    // 1–2. Mode prompt + language instruction + project context (or fallback automap).
     let mut full_prompt = if let Some(project_block) = project_context.as_system_block() {
-        format!("{}\n\n{}", mode_prompt, project_block)
+        format!("{}\n\n{}", combined, project_block)
     } else {
         // Fallback: Generate an automatic project map summary
         let summary = crate::utils::summarize_project(workspace);
         let tree = crate::utils::project_tree(workspace, 2); // Shallow tree for prompt
         format!(
             "{}\n\n### Project Structure (Automatic Map)\n**Summary:** {}\n\n**Tree:**\n```\n{}\n```",
-            mode_prompt, summary, tree
+            combined, summary, tree
         )
     };
 
@@ -447,7 +481,12 @@ mod tests {
         )
         .unwrap();
 
-        let prompt = match system_prompt_for_mode_with_context(AppMode::Agent, workspace, None) {
+        let prompt = match system_prompt_for_mode_with_context(
+            AppMode::Agent,
+            workspace,
+            None,
+            Locale::En,
+        ) {
             SystemPrompt::Text(text) => text,
             SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
         };
@@ -460,10 +499,12 @@ mod tests {
     #[test]
     fn missing_handoff_does_not_inject_block() {
         let tmp = tempdir().expect("tempdir");
-        let prompt = match system_prompt_for_mode_with_context(AppMode::Agent, tmp.path(), None) {
-            SystemPrompt::Text(text) => text,
-            SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
-        };
+        let prompt =
+            match system_prompt_for_mode_with_context(AppMode::Agent, tmp.path(), None, Locale::En)
+            {
+                SystemPrompt::Text(text) => text,
+                SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
+            };
         assert!(!prompt.contains(HANDOFF_BLOCK_MARKER));
     }
 
@@ -473,10 +514,12 @@ mod tests {
         let dir = tmp.path().join(".deepseek");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("handoff.md"), "   \n\n  ").unwrap();
-        let prompt = match system_prompt_for_mode_with_context(AppMode::Agent, tmp.path(), None) {
-            SystemPrompt::Text(text) => text,
-            SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
-        };
+        let prompt =
+            match system_prompt_for_mode_with_context(AppMode::Agent, tmp.path(), None, Locale::En)
+            {
+                SystemPrompt::Text(text) => text,
+                SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
+            };
         assert!(!prompt.contains(HANDOFF_BLOCK_MARKER));
     }
 
@@ -529,10 +572,12 @@ mod tests {
     #[test]
     fn compact_template_is_included_in_full_prompt() {
         let tmp = tempdir().expect("tempdir");
-        let prompt = match system_prompt_for_mode_with_context(AppMode::Agent, tmp.path(), None) {
-            SystemPrompt::Text(text) => text,
-            SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
-        };
+        let prompt =
+            match system_prompt_for_mode_with_context(AppMode::Agent, tmp.path(), None, Locale::En)
+            {
+                SystemPrompt::Text(text) => text,
+                SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
+            };
         assert!(prompt.contains("## Compaction Handoff"));
         // #429: structured Markdown template. Goal/Constraints/Progress
         // (Done/InProgress/Blocked)/Key Decisions/Next step.
@@ -559,6 +604,7 @@ mod tests {
                 user_memory_block: None,
                 goal_objective: Some("Fix transcript corruption"),
             },
+            Locale::En,
         ) {
             SystemPrompt::Text(text) => text,
             SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
@@ -586,6 +632,7 @@ mod tests {
                 user_memory_block: None,
                 goal_objective: Some("   "),
             },
+            Locale::En,
         ) {
             SystemPrompt::Text(text) => text,
             SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
@@ -608,16 +655,26 @@ mod tests {
 
     /// #588: language-mirroring directive must ship in every mode so
     /// DeepSeek's `reasoning_content` and final reply follow the user's
-    /// language. Structural test — wording is not a test concern, but
-    /// the cross-cutting commitment of #588 is specifically that the
-    /// `reasoning_content` field tracks the user's language (not just
-    /// the visible reply); pin that anchor token so a future edit
-    /// can't silently weaken the section to a generic "respond in the
-    /// user's language" directive while keeping the heading.
+    /// language. Now driven by the configured UI locale (not the base.md
+    /// which used to contain a static `## Language` section). The locale
+    /// instruction is injected dynamically by
+    /// `system_prompt_for_mode_with_context_skills_and_session`.
     #[test]
     fn language_mirroring_section_present_in_all_modes() {
+        let tmp = tempdir().expect("tempdir");
         for mode in [AppMode::Agent, AppMode::Yolo, AppMode::Plan] {
-            let prompt = compose_prompt(mode, Personality::Calm);
+            let prompt = match system_prompt_for_mode_with_context_skills_and_session(
+                mode,
+                tmp.path(),
+                None,
+                None,
+                None,
+                PromptSessionContext::default(),
+                Locale::En,
+            ) {
+                SystemPrompt::Text(text) => text,
+                SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
+            };
             assert!(
                 prompt.contains("## Language"),
                 "## Language section missing from mode {mode:?}"
@@ -712,11 +769,11 @@ mod tests {
         let workspace = tmp.path();
 
         for mode in [AppMode::Agent, AppMode::Yolo, AppMode::Plan] {
-            let a = match system_prompt_for_mode_with_context(mode, workspace, None) {
+            let a = match system_prompt_for_mode_with_context(mode, workspace, None, Locale::En) {
                 SystemPrompt::Text(text) => text,
                 SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
             };
-            let b = match system_prompt_for_mode_with_context(mode, workspace, None) {
+            let b = match system_prompt_for_mode_with_context(mode, workspace, None, Locale::En) {
                 SystemPrompt::Text(text) => text,
                 SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
             };
@@ -739,13 +796,21 @@ mod tests {
         let workspace = tmp.path();
         let summary = "## Repo Working Set\nWorkspace: /tmp/x\n";
 
-        let a = match system_prompt_for_mode_with_context(AppMode::Agent, workspace, Some(summary))
-        {
+        let a = match system_prompt_for_mode_with_context(
+            AppMode::Agent,
+            workspace,
+            Some(summary),
+            Locale::En,
+        ) {
             SystemPrompt::Text(text) => text,
             SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
         };
-        let b = match system_prompt_for_mode_with_context(AppMode::Agent, workspace, Some(summary))
-        {
+        let b = match system_prompt_for_mode_with_context(
+            AppMode::Agent,
+            workspace,
+            Some(summary),
+            Locale::En,
+        ) {
             SystemPrompt::Text(text) => text,
             SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
         };
@@ -774,11 +839,21 @@ mod tests {
         )
         .unwrap();
 
-        let a = match system_prompt_for_mode_with_context(AppMode::Agent, workspace, None) {
+        let a = match system_prompt_for_mode_with_context(
+            AppMode::Agent,
+            workspace,
+            None,
+            Locale::En,
+        ) {
             SystemPrompt::Text(text) => text,
             SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
         };
-        let b = match system_prompt_for_mode_with_context(AppMode::Agent, workspace, None) {
+        let b = match system_prompt_for_mode_with_context(
+            AppMode::Agent,
+            workspace,
+            None,
+            Locale::En,
+        ) {
             SystemPrompt::Text(text) => text,
             SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
         };
@@ -807,11 +882,15 @@ mod tests {
         std::fs::write(handoff_dir.join("handoff.md"), "# handoff body\n").unwrap();
 
         let summary = "## Repo Working Set\nWorkspace: /tmp/x\n";
-        let prompt =
-            match system_prompt_for_mode_with_context(AppMode::Agent, workspace, Some(summary)) {
-                SystemPrompt::Text(text) => text,
-                SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
-            };
+        let prompt = match system_prompt_for_mode_with_context(
+            AppMode::Agent,
+            workspace,
+            Some(summary),
+            Locale::En,
+        ) {
+            SystemPrompt::Text(text) => text,
+            SystemPrompt::Blocks(_) => panic!("expected text system prompt"),
+        };
 
         let context_pos = prompt
             .find("## Context Management")
@@ -921,6 +1000,7 @@ mod tests {
             None,
             Some(std::slice::from_ref(&extra)),
             None,
+            Locale::En,
         ) {
             SystemPrompt::Text(text) => text,
             SystemPrompt::Blocks(_) => panic!("expected text system prompt"),

@@ -33,7 +33,7 @@ pub struct Settings {
     pub show_thinking: bool,
     /// Show detailed tool output
     pub show_tool_details: bool,
-    /// UI locale: auto, en, ja, zh-Hans, pt-BR
+    /// UI locale: auto, en, ja, zh-Hans, zh-Hant, pt-BR
     pub locale: String,
     /// Composer layout density: compact, comfortable, spacious
     pub composer_density: String,
@@ -194,18 +194,18 @@ impl Settings {
             }
             "locale" | "language" => {
                 let Some(locale) = normalize_configured_locale(value) else {
-                    anyhow::bail!(
-                        "Failed to update setting: invalid locale '{value}'. Expected: auto, en, ja, zh-Hans, pt-BR."
-                    );
+                    return Err(anyhow::anyhow!(
+                        "Failed to update setting: invalid locale '{value}'. Expected: auto, en, ja, zh-Hans, zh-Hant, pt-BR."
+                    ));
                 };
                 self.locale = locale.to_string();
             }
             "composer_density" | "composer" => {
                 let normalized = normalize_composer_density(value);
                 if !["compact", "comfortable", "spacious"].contains(&normalized) {
-                    anyhow::bail!(
+                    return Err(anyhow::anyhow!(
                         "Failed to update setting: invalid composer density '{value}'. Expected: compact, comfortable, spacious."
-                    );
+                    ));
                 }
                 self.composer_density = normalized.to_string();
             }
@@ -215,18 +215,18 @@ impl Settings {
             "transcript_spacing" | "spacing" => {
                 let normalized = normalize_transcript_spacing(value);
                 if !["compact", "comfortable", "spacious"].contains(&normalized) {
-                    anyhow::bail!(
+                    return Err(anyhow::anyhow!(
                         "Failed to update setting: invalid transcript spacing '{value}'. Expected: compact, comfortable, spacious."
-                    );
+                    ));
                 }
                 self.transcript_spacing = normalized.to_string();
             }
             "default_mode" | "mode" => {
                 let normalized = normalize_mode(value);
                 if !["agent", "plan", "yolo"].contains(&normalized) {
-                    anyhow::bail!(
+                    return Err(anyhow::anyhow!(
                         "Failed to update setting: invalid mode '{value}'. Expected: agent, plan, yolo."
-                    );
+                    ));
                 }
                 self.default_mode = normalized.to_string();
             }
@@ -239,9 +239,9 @@ impl Settings {
                         )
                     })?;
                 if !(10..=50).contains(&width) {
-                    anyhow::bail!(
+                    return Err(anyhow::anyhow!(
                         "Failed to update setting: width must be between 10 and 50 percent."
-                    );
+                    ));
                 }
                 self.sidebar_width_percent = width;
             }
@@ -253,9 +253,9 @@ impl Settings {
                     "tasks" => "tasks",
                     "agents" | "subagents" | "sub-agents" => "agents",
                     _ => {
-                        anyhow::bail!(
+                        return Err(anyhow::anyhow!(
                             "Failed to update setting: invalid sidebar focus '{value}'. Expected: auto, plan, todos, tasks, agents."
-                        )
+                        ));
                     }
                 };
                 self.sidebar_focus = normalized.to_string();
@@ -281,14 +281,16 @@ impl Settings {
                 }
 
                 let Some(model) = normalize_model_name(trimmed) else {
-                    anyhow::bail!(
+                    return Err(anyhow::anyhow!(
                         "Failed to update setting: invalid model '{value}'. Expected: a DeepSeek model ID (for example deepseek-v4-pro, deepseek-v4-flash), or none/default."
-                    );
+                    ));
                 };
                 self.default_model = Some(model);
             }
             _ => {
-                anyhow::bail!("Failed to update setting: unknown setting '{key}'.");
+                return Err(anyhow::anyhow!(
+                    "Failed to update setting: unknown setting '{key}'."
+                ));
             }
         }
         Ok(())
@@ -338,56 +340,126 @@ impl Settings {
     /// Get available setting keys and their descriptions
     #[allow(dead_code)]
     pub fn available_settings() -> Vec<(&'static str, &'static str)> {
-        vec![
-            (
+        available_settings_impl(None)
+    }
+
+    /// Get available setting keys and their descriptions, localized for the given locale.
+    /// Falls back to English when JSON translation is not available.
+    pub fn localized_available_settings(
+        locale: crate::localization::Locale,
+    ) -> Vec<(&'static str, &'static str)> {
+        available_settings_impl(Some(locale))
+    }
+}
+
+/// Get available setting keys and their descriptions
+fn available_settings_impl(
+    locale: Option<crate::localization::Locale>,
+) -> Vec<(&'static str, &'static str)> {
+    let desc = |key: &'static str, english: &'static str| -> &'static str {
+        match locale {
+            Some(l) => crate::json_locale::tr_settings_desc(l, key).unwrap_or(english),
+            None => english,
+        }
+    };
+
+    vec![
+        (
+            "auto_compact",
+            desc(
                 "auto_compact",
                 "Auto-compact near context limit: on/off (default on)",
             ),
-            ("calm_mode", "Calmer UI defaults: on/off"),
-            ("low_motion", "Reduce animation and redraw churn: on/off"),
-            (
+        ),
+        ("calm_mode", desc("calm_mode", "Calmer UI defaults: on/off")),
+        (
+            "low_motion",
+            desc("low_motion", "Reduce animation and redraw churn: on/off"),
+        ),
+        (
+            "fancy_animations",
+            desc(
                 "fancy_animations",
                 "Fancy footer animations (water-spout strip): on/off",
             ),
-            (
+        ),
+        (
+            "bracketed_paste",
+            desc(
                 "bracketed_paste",
                 "Terminal bracketed-paste mode: on/off (rare to disable)",
             ),
-            (
+        ),
+        (
+            "paste_burst_detection",
+            desc(
                 "paste_burst_detection",
                 "Fallback rapid-key paste detection: on/off",
             ),
-            ("show_thinking", "Show model thinking: on/off"),
-            ("show_tool_details", "Show detailed tool output: on/off"),
-            (
+        ),
+        (
+            "show_thinking",
+            desc("show_thinking", "Show model thinking: on/off"),
+        ),
+        (
+            "show_tool_details",
+            desc("show_tool_details", "Show detailed tool output: on/off"),
+        ),
+        (
+            "locale",
+            desc(
                 "locale",
-                "UI locale: auto, en, ja, zh-Hans, pt-BR (model output is unchanged)",
+                "UI locale: auto, en, ja, zh-Hans, zh-Hant, pt-BR (model output is unchanged)",
             ),
-            (
+        ),
+        (
+            "composer_density",
+            desc(
                 "composer_density",
                 "Composer density: compact, comfortable, spacious",
             ),
-            (
+        ),
+        (
+            "composer_border",
+            desc(
                 "composer_border",
                 "Show a border around the composer input area: on/off",
             ),
-            (
+        ),
+        (
+            "transcript_spacing",
+            desc(
                 "transcript_spacing",
                 "Transcript spacing: compact, comfortable, spacious",
             ),
-            ("default_mode", "Default mode: agent, plan, yolo"),
-            ("sidebar_width", "Sidebar width percentage: 10-50"),
-            (
+        ),
+        (
+            "default_mode",
+            desc("default_mode", "Default mode: agent, plan, yolo"),
+        ),
+        (
+            "sidebar_width",
+            desc("sidebar_width", "Sidebar width percentage: 10-50"),
+        ),
+        (
+            "sidebar_focus",
+            desc(
                 "sidebar_focus",
                 "Sidebar focus: auto, plan, todos, tasks, agents",
             ),
-            ("max_history", "Max input history entries"),
-            (
+        ),
+        (
+            "max_history",
+            desc("max_history", "Max input history entries"),
+        ),
+        (
+            "default_model",
+            desc(
                 "default_model",
                 "Default model: any DeepSeek model ID (e.g. deepseek-v4-pro)",
             ),
-        ]
-    }
+        ),
+    ]
 }
 
 /// Parse a boolean value from various formats
@@ -395,9 +467,9 @@ fn parse_bool(value: &str) -> Result<bool> {
     match value.to_lowercase().as_str() {
         "on" | "true" | "yes" | "1" | "enabled" => Ok(true),
         "off" | "false" | "no" | "0" | "disabled" => Ok(false),
-        _ => {
-            anyhow::bail!("Failed to parse boolean '{value}': expected on/off, true/false, yes/no.")
-        }
+        _ => Err(anyhow::anyhow!(
+            "Failed to parse boolean '{value}': expected on/off, true/false, yes/no."
+        )),
     }
 }
 

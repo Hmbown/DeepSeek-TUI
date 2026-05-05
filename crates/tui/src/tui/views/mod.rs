@@ -353,12 +353,14 @@ impl ShellControlChoice {
 
 pub struct ShellControlView {
     selected: ShellControlChoice,
+    locale: crate::localization::Locale,
 }
 
 impl ShellControlView {
-    pub fn new() -> Self {
+    pub fn new(locale: crate::localization::Locale) -> Self {
         Self {
             selected: ShellControlChoice::Background,
+            locale,
         }
     }
 
@@ -417,7 +419,7 @@ impl ModalView for ShellControlView {
 
         Clear.render(popup_area, buf);
 
-        let option_line = |choice: ShellControlChoice, key: &'static str, label: &'static str| {
+        let option_line = |choice: ShellControlChoice, key: &'static str, label: String| {
             let selected = self.selected == choice;
             let style = if selected {
                 Style::default()
@@ -433,21 +435,27 @@ impl ModalView for ShellControlView {
             ])
         };
 
+        let tr_sc = |key: &str, fallback: &'static str| -> String {
+            crate::json_locale::tr_shell_control(self.locale, key)
+                .unwrap_or(fallback)
+                .to_string()
+        };
+
         let lines = vec![
             Line::from(Span::styled(
-                "Foreground shell command is still running.",
+                tr_sc("body", "Foreground shell command is still running."),
                 Style::default().fg(palette::TEXT_PRIMARY),
             )),
             Line::from(""),
             option_line(
                 ShellControlChoice::Background,
                 "B",
-                "Background - detach and keep the command running",
+                tr_sc("option_bg", "Background - detach and keep the command running"),
             ),
             option_line(
                 ShellControlChoice::Cancel,
                 "C",
-                "Cancel - stop the command and interrupt this turn",
+                tr_sc("option_cancel", "Cancel - stop the command and interrupt this turn"),
             ),
         ];
 
@@ -455,11 +463,11 @@ impl ModalView for ShellControlView {
             .block(
                 Block::default()
                     .title(Line::from(vec![Span::styled(
-                        " Shell command ",
+                        tr_sc("title", " Shell command "),
                         Style::default().fg(palette::DEEPSEEK_BLUE).bold(),
                     )]))
                     .title_bottom(Line::from(Span::styled(
-                        " Enter select | Esc close ",
+                        tr_sc("footer", " Enter select | Esc close "),
                         Style::default().fg(palette::TEXT_MUTED),
                     )))
                     .borders(Borders::ALL)
@@ -480,11 +488,15 @@ enum ConfigScope {
 }
 
 impl ConfigScope {
-    fn label(self) -> &'static str {
-        match self {
+    fn label(self, locale: Locale) -> &'static str {
+        let key = match self {
+            ConfigScope::Session => "scope_session",
+            ConfigScope::Saved => "scope_saved",
+        };
+        crate::json_locale::tr_ui_label(locale, key).unwrap_or(match self {
             ConfigScope::Session => "SESSION",
             ConfigScope::Saved => "SAVED",
-        }
+        })
     }
 
     fn persist(self) -> bool {
@@ -523,6 +535,19 @@ impl ConfigSection {
             ConfigSection::History => "History",
             ConfigSection::Mcp => "MCP",
         }
+    }
+
+    fn localized_label(self, locale: crate::localization::Locale) -> &'static str {
+        let key = match self {
+            ConfigSection::Model => "model",
+            ConfigSection::Permissions => "permissions",
+            ConfigSection::Display => "display",
+            ConfigSection::Composer => "composer",
+            ConfigSection::Sidebar => "sidebar",
+            ConfigSection::History => "history",
+            ConfigSection::Mcp => "mcp",
+        };
+        crate::json_locale::tr_config_section(locale, key).unwrap_or_else(|| self.label())
     }
 }
 
@@ -716,14 +741,18 @@ impl ConfigView {
             return true;
         }
 
-        let section = row.section.label().to_lowercase();
-        let key = row.key.to_lowercase();
+        let section = row.section.localized_label(self.locale).to_lowercase();
+        let display_key = crate::json_locale::tr_config_key(self.locale, &row.key)
+            .unwrap_or(&row.key)
+            .to_lowercase();
+        let raw_key = row.key.to_lowercase();
         let value = row.value.to_lowercase();
-        let scope = row.scope.label().to_lowercase();
+        let scope = row.scope.label(self.locale).to_lowercase();
 
         filter.split_whitespace().all(|term| {
             section.contains(term)
-                || key.contains(term)
+                || display_key.contains(term)
+                || raw_key.contains(term)
                 || value.contains(term)
                 || scope.contains(term)
         })
@@ -843,7 +872,9 @@ impl ConfigView {
         match key.code {
             KeyCode::Esc => {
                 self.editing = None;
-                self.status = Some("Edit cancelled".to_string());
+                let msg = crate::json_locale::tr_ui_label(self.locale, "edit_cancelled")
+                    .unwrap_or("Edit cancelled");
+                self.status = Some(msg.to_string());
                 ViewAction::None
             }
             KeyCode::Enter => {
@@ -988,8 +1019,28 @@ impl ConfigView {
     }
 }
 
-fn config_hint_for_key(key: &str) -> &'static str {
-    match key {
+fn config_hint_for_key(key: &str, locale: Locale) -> &'static str {
+    let json_key = match key {
+        "model" => "config_hint_model",
+        "approval_mode" => "config_hint_approval_mode",
+        "auto_compact"
+        | "calm_mode"
+        | "low_motion"
+        | "show_thinking"
+        | "show_tool_details"
+        | "composer_border"
+        | "paste_burst_detection" => "config_hint_bool",
+        "composer_density" | "transcript_spacing" => "config_hint_density",
+        "locale" => "config_hint_locale",
+        "default_mode" => "config_hint_default_mode",
+        "sidebar_width" => "config_hint_sidebar_width",
+        "sidebar_focus" => "config_hint_sidebar_focus",
+        "max_history" => "config_hint_max_history",
+        "default_model" => "config_hint_default_model",
+        "mcp_config_path" => "config_hint_mcp_config_path",
+        _ => return "",
+    };
+    crate::json_locale::tr_ui_label(locale, json_key).unwrap_or(match key {
         "model" => "deepseek-v4-pro | deepseek-v4-flash | deepseek-*",
         "approval_mode" => "auto | suggest | never",
         "auto_compact"
@@ -1000,7 +1051,7 @@ fn config_hint_for_key(key: &str) -> &'static str {
         | "composer_border"
         | "paste_burst_detection" => "on/off, true/false, yes/no, 1/0",
         "composer_density" | "transcript_spacing" => "compact | comfortable | spacious",
-        "locale" => "auto | en | ja | zh-Hans | pt-BR",
+        "locale" => "auto | en | ja | zh-Hans | zh-Hant | pt-BR",
         "default_mode" => "agent | plan | yolo",
         "sidebar_width" => "10..=50",
         "sidebar_focus" => "auto | plan | todos | tasks | agents",
@@ -1008,10 +1059,13 @@ fn config_hint_for_key(key: &str) -> &'static str {
         "default_model" => "deepseek-v4-pro | deepseek-v4-flash | deepseek-* | none/default",
         "mcp_config_path" => "path to mcp.json",
         _ => "",
-    }
+    })
 }
 
-fn render_config_editor_value_line(edit: &ConfigEdit) -> ratatui::text::Line<'static> {
+fn render_config_editor_value_line(
+    edit: &ConfigEdit,
+    locale: Locale,
+) -> ratatui::text::Line<'static> {
     use ratatui::{
         prelude::Stylize,
         style::Style,
@@ -1019,8 +1073,9 @@ fn render_config_editor_value_line(edit: &ConfigEdit) -> ratatui::text::Line<'st
     };
 
     let mut spans = Vec::new();
+    let new_label = crate::json_locale::tr_ui_label(locale, "new_label").unwrap_or("New: ");
     spans.push(Span::styled(
-        "New: ",
+        new_label,
         Style::default().fg(palette::TEXT_MUTED),
     ));
 
@@ -1176,34 +1231,52 @@ impl ModalView for ConfigView {
         let inner = base_block.inner(popup_area);
         let (lines, footer) = if let Some(edit) = self.editing.as_ref() {
             let mut lines: Vec<Line> = Vec::new();
+            let edit_title =
+                crate::json_locale::tr_ui_label(self.locale, "edit_title").unwrap_or("Edit");
+            let scope_label =
+                crate::json_locale::tr_ui_label(self.locale, "scope_label").unwrap_or("Scope:");
+            let current_label =
+                crate::json_locale::tr_ui_label(self.locale, "current_label").unwrap_or("Current:");
+            let hint_label =
+                crate::json_locale::tr_ui_label(self.locale, "hint_label").unwrap_or("Hint:");
+            let editor_footer =
+                crate::json_locale::tr_ui_label(self.locale, "config_editor_footer").unwrap_or(
+                    " Enter=apply, Esc=cancel, Ctrl+U=clear, Ctrl+A=all, \u{2190}/\u{2192}=move ",
+                );
+
             lines.push(Line::from(vec![Span::styled(
-                format!("Edit {}", edit.key),
+                format!("{} {}", edit_title, edit.key),
                 Style::default().fg(palette::DEEPSEEK_SKY).bold(),
             )]));
             lines.push(Line::from(""));
             lines.push(Line::from(vec![
-                Span::styled("Scope: ", Style::default().fg(palette::TEXT_MUTED)),
-                Span::raw(edit.scope.label()),
+                Span::styled(
+                    format!("{} ", scope_label),
+                    Style::default().fg(palette::TEXT_MUTED),
+                ),
+                Span::raw(edit.scope.label(self.locale)),
             ]));
             lines.push(Line::from(vec![
-                Span::styled("Current: ", Style::default().fg(palette::TEXT_MUTED)),
+                Span::styled(
+                    format!("{} ", current_label),
+                    Style::default().fg(palette::TEXT_MUTED),
+                ),
                 Span::raw(truncate_view_text(&edit.original_value, 60)),
             ]));
             lines.push(Line::from(""));
-            lines.push(render_config_editor_value_line(edit));
+            lines.push(render_config_editor_value_line(edit, self.locale));
             lines.push(Line::from(""));
-            let hint = config_hint_for_key(&edit.key);
+            let hint = config_hint_for_key(&edit.key, self.locale);
             if !hint.is_empty() {
                 lines.push(Line::from(vec![
-                    Span::styled("Hint: ", Style::default().fg(palette::TEXT_MUTED)),
+                    Span::styled(
+                        format!("{} ", hint_label),
+                        Style::default().fg(palette::TEXT_MUTED),
+                    ),
                     Span::raw(hint),
                 ]));
             }
-            (
-                lines,
-                " Enter=apply, Esc=cancel, Ctrl+U=clear, Ctrl+A=all, \u{2190}/\u{2192}=move "
-                    .to_string(),
-            )
+            (lines, editor_footer.to_string())
         } else {
             let content_height = usize::from(inner.height);
             let header_lines = 5usize;
@@ -1224,13 +1297,27 @@ impl ModalView for ConfigView {
                 self.filter.clone()
             };
 
+            let key_header =
+                crate::json_locale::tr_ui_label(self.locale, "config_table_key_header")
+                    .unwrap_or("Key");
+            let value_header =
+                crate::json_locale::tr_ui_label(self.locale, "config_table_value_header")
+                    .unwrap_or("Value");
+            let scope_header =
+                crate::json_locale::tr_ui_label(self.locale, "config_table_scope_header")
+                    .unwrap_or("Scope");
+
             let mut lines: Vec<Line> = vec![
                 Line::from(vec![Span::styled(
                     self.tr(MessageId::ConfigTitle),
                     Style::default().fg(palette::DEEPSEEK_BLUE).bold(),
                 )]),
                 Line::from(vec![
-                    Span::styled("  Search: ", Style::default().fg(palette::TEXT_MUTED)),
+                    Span::styled(
+                        crate::json_locale::tr_ui_label(self.locale, "search_label")
+                            .unwrap_or("  Search: "),
+                        Style::default().fg(palette::TEXT_MUTED),
+                    ),
                     Span::raw(search_value),
                     Span::styled(
                         format!("  ({match_count}/{})", self.rows.len()),
@@ -1238,7 +1325,10 @@ impl ModalView for ConfigView {
                     ),
                 ]),
                 Line::from(""),
-                Line::from("  Key                 Value                                    Scope"),
+                Line::from(format!(
+                    "  {:<19} {:<44} {}",
+                    key_header, value_header, scope_header
+                )),
                 Line::from("  ----------------------------------------------------------------"),
             ];
 
@@ -1246,7 +1336,7 @@ impl ModalView for ConfigView {
                 match item {
                     ConfigListItem::Section(section) => {
                         lines.push(Line::from(Span::styled(
-                            format!("  {}", section.label()),
+                            format!("  {}", section.localized_label(self.locale)),
                             Style::default().fg(palette::DEEPSEEK_SKY).bold(),
                         )));
                     }
@@ -1263,11 +1353,13 @@ impl ModalView for ConfigView {
                             Style::default().fg(palette::TEXT_PRIMARY)
                         };
                         let value = truncate_view_text(&row.value, 44);
+                        let display_key = crate::json_locale::tr_config_key(self.locale, &row.key)
+                            .unwrap_or(&row.key);
                         let mut line = Line::from(format!(
                             "  {:<19} {:<44} {}",
-                            row.key,
+                            display_key,
                             value,
-                            row.scope.label()
+                            row.scope.label(self.locale)
                         ));
                         line.style = style;
                         lines.push(line);
@@ -1354,11 +1446,16 @@ pub use help::HelpView;
 pub struct SubAgentsView {
     agents: Vec<SubAgentResult>,
     scroll: usize,
+    locale: crate::localization::Locale,
 }
 
 impl SubAgentsView {
-    pub fn new(agents: Vec<SubAgentResult>) -> Self {
-        Self { agents, scroll: 0 }
+    pub fn new(agents: Vec<SubAgentResult>, locale: crate::localization::Locale) -> Self {
+        Self {
+            agents,
+            scroll: 0,
+            locale,
+        }
     }
 }
 
@@ -1417,12 +1514,18 @@ impl ModalView for SubAgentsView {
 
         Clear.render(popup_area, buf);
 
+        let tr = |key: &str, fallback: &'static str| -> String {
+            crate::json_locale::tr_ui_label(self.locale, key)
+                .unwrap_or(fallback)
+                .to_string()
+        };
+
         let mut lines: Vec<Line> = Vec::new();
         let content_width = popup_width.saturating_sub(4) as usize;
 
         if self.agents.is_empty() {
             lines.push(Line::from(Span::styled(
-                "No agents running.",
+                tr("no_agents_running", "No agents running."),
                 Style::default().fg(palette::TEXT_MUTED),
             )));
         } else {
@@ -1443,20 +1546,21 @@ impl ModalView for SubAgentsView {
             }
 
             let status_summary = [
-                ("Running", running.len(), palette::STATUS_WARNING),
-                ("Completed", completed.len(), palette::STATUS_SUCCESS),
-                ("Interrupted", interrupted.len(), palette::STATUS_WARNING),
-                ("Failed", failed.len(), palette::DEEPSEEK_RED),
-                ("Cancelled", cancelled.len(), palette::TEXT_MUTED),
+                ("subagent_group_running", running.len(), palette::STATUS_WARNING),
+                ("subagent_group_completed", completed.len(), palette::STATUS_SUCCESS),
+                ("subagent_group_interrupted", interrupted.len(), palette::STATUS_WARNING),
+                ("subagent_group_failed", failed.len(), palette::DEEPSEEK_RED),
+                ("subagent_group_cancelled", cancelled.len(), palette::TEXT_MUTED),
             ];
 
             lines.push(Line::from(Span::styled(
-                "Sub-agents",
+                tr("sub_agents_title", "Sub-agents"),
                 Style::default().fg(palette::DEEPSEEK_SKY).bold(),
             )));
 
             let mut summary_parts = Vec::new();
-            for (label, count, color) in status_summary {
+            for (key, count, color) in status_summary {
+                let label = tr(key, key);
                 summary_parts.push(Line::from(Span::styled(
                     format!("{}: {}", label, count),
                     Style::default().fg(color),
@@ -1499,38 +1603,43 @@ impl ModalView for SubAgentsView {
 
             append_subagent_group(
                 &mut lines,
-                "Running",
+                &tr("subagent_group_running", "Running"),
                 palette::STATUS_WARNING.into(),
                 &running,
                 content_width,
+                self.locale,
             );
             append_subagent_group(
                 &mut lines,
-                "Completed",
+                &tr("subagent_group_completed", "Completed"),
                 palette::STATUS_SUCCESS.into(),
                 &completed,
                 content_width,
+                self.locale,
             );
             append_subagent_group(
                 &mut lines,
-                "Interrupted",
+                &tr("subagent_group_interrupted", "Interrupted"),
                 palette::STATUS_WARNING.into(),
                 &interrupted,
                 content_width,
+                self.locale,
             );
             append_subagent_group(
                 &mut lines,
-                "Failed",
+                &tr("subagent_group_failed", "Failed"),
                 palette::DEEPSEEK_RED.into(),
                 &failed,
                 content_width,
+                self.locale,
             );
             append_subagent_group(
                 &mut lines,
-                "Cancelled",
+                &tr("subagent_group_cancelled", "Cancelled"),
                 palette::TEXT_MUTED.into(),
                 &cancelled,
                 content_width,
+                self.locale,
             );
         }
 
@@ -1574,6 +1683,7 @@ fn append_subagent_group(
     section_style: ratatui::style::Style,
     agents: &[&SubAgentResult],
     content_width: usize,
+    locale: crate::localization::Locale,
 ) {
     use ratatui::{
         prelude::Stylize,
@@ -1589,10 +1699,16 @@ fn append_subagent_group(
         section_style.bold(),
     )));
 
+    let tr = |key: &str, fallback: &'static str| -> String {
+        crate::json_locale::tr_ui_label(locale, key)
+            .unwrap_or(fallback)
+            .to_string()
+    };
+
     for agent in agents {
         let id = truncate_view_text(&agent.agent_id, 11);
-        let kind = format_agent_type(&agent.agent_type);
-        let (status, status_style, status_detail) = format_agent_status(&agent.status);
+        let kind = format_agent_type(&agent.agent_type, locale);
+        let (status, status_style, status_detail) = format_agent_status(&agent.status, locale);
 
         lines.push(Line::from(vec![
             Span::raw("  "),
@@ -1622,7 +1738,10 @@ fn append_subagent_group(
             let max_len = content_width.saturating_sub(10);
             let detail = truncate_view_text(detail, max_len);
             lines.push(Line::from(vec![
-                Span::styled("    reason: ", Style::default().fg(palette::TEXT_MUTED)),
+                Span::styled(
+                    tr("subagent_field_reason", "    reason: "),
+                    Style::default().fg(palette::TEXT_MUTED),
+                ),
                 Span::styled(detail, Style::default().fg(palette::DEEPSEEK_RED)),
             ]));
         }
@@ -1631,7 +1750,10 @@ fn append_subagent_group(
             let max_len = content_width.saturating_sub(14);
             let role = truncate_view_text(role, max_len);
             lines.push(Line::from(vec![
-                Span::styled("    role: ", Style::default().fg(palette::TEXT_MUTED)),
+                Span::styled(
+                    tr("subagent_field_role", "    role: "),
+                    Style::default().fg(palette::TEXT_MUTED),
+                ),
                 Span::styled(role, Style::default().fg(palette::DEEPSEEK_SKY)),
             ]));
         }
@@ -1639,7 +1761,10 @@ fn append_subagent_group(
         let max_len = content_width.saturating_sub(18);
         let objective = truncate_view_text(&agent.assignment.objective, max_len);
         lines.push(Line::from(vec![
-            Span::styled("    objective: ", Style::default().fg(palette::TEXT_MUTED)),
+            Span::styled(
+                tr("subagent_field_objective", "    objective: "),
+                Style::default().fg(palette::TEXT_MUTED),
+            ),
             Span::styled(objective, Style::default().fg(palette::TEXT_DIM)),
         ]));
 
@@ -1647,7 +1772,10 @@ fn append_subagent_group(
             let max_len = content_width.saturating_sub(16);
             let preview = truncate_view_text(result, max_len);
             lines.push(Line::from(vec![
-                Span::styled("    result: ", Style::default().fg(palette::TEXT_MUTED)),
+                Span::styled(
+                    tr("subagent_field_result", "    result: "),
+                    Style::default().fg(palette::TEXT_MUTED),
+                ),
                 Span::styled(preview, Style::default().fg(palette::TEXT_DIM)),
             ]));
         }
@@ -1668,32 +1796,50 @@ fn agent_type_order(agent_type: &SubAgentType) -> u8 {
     }
 }
 
-fn format_agent_type(agent_type: &SubAgentType) -> &'static str {
-    // Source of truth lives on the enum so any new role lands in both
-    // the user-visible label and the sort order via the as_str() helper.
-    agent_type.as_str()
+fn format_agent_type(agent_type: &SubAgentType, locale: crate::localization::Locale) -> String {
+    let key = format!("subagent_type_{}", agent_type.as_str());
+    // Provide English fallback for each agent type.
+    let fallback = agent_type.as_str();
+    crate::json_locale::tr_ui_label(locale, &key)
+        .unwrap_or(fallback)
+        .to_string()
 }
 
 fn format_agent_status(
     status: &SubAgentStatus,
-) -> (&'static str, ratatui::style::Style, Option<&str>) {
+    locale: crate::localization::Locale,
+) -> (String, ratatui::style::Style, Option<&str>) {
     use ratatui::style::Style;
 
+    let tr = |key: &str, fallback: &'static str| -> String {
+        crate::json_locale::tr_ui_label(locale, key)
+            .unwrap_or(fallback)
+            .to_string()
+    };
+
     match status {
-        SubAgentStatus::Running => ("running", Style::default().fg(palette::DEEPSEEK_SKY), None),
+        SubAgentStatus::Running => (
+            tr("subagent_status_running", "running"),
+            Style::default().fg(palette::DEEPSEEK_SKY),
+            None,
+        ),
         SubAgentStatus::Completed => (
-            "completed",
+            tr("subagent_status_completed", "completed"),
             Style::default().fg(palette::DEEPSEEK_BLUE),
             None,
         ),
         SubAgentStatus::Interrupted(reason) => (
-            "interrupted",
+            tr("subagent_status_interrupted", "interrupted"),
             Style::default().fg(palette::STATUS_WARNING),
             Some(reason.as_str()),
         ),
-        SubAgentStatus::Cancelled => ("cancelled", Style::default().fg(palette::TEXT_MUTED), None),
+        SubAgentStatus::Cancelled => (
+            tr("subagent_status_cancelled", "cancelled"),
+            Style::default().fg(palette::TEXT_MUTED),
+            None,
+        ),
         SubAgentStatus::Failed(reason) => (
-            "failed",
+            tr("subagent_status_failed", "failed"),
             Style::default().fg(palette::DEEPSEEK_RED),
             Some(reason.as_str()),
         ),
@@ -1792,13 +1938,13 @@ mod tests {
         assert_eq!(
             visible_section_labels(&view),
             vec![
-                ConfigSection::Model.label(),
-                ConfigSection::Permissions.label(),
-                ConfigSection::Display.label(),
-                ConfigSection::Composer.label(),
-                ConfigSection::Sidebar.label(),
-                ConfigSection::History.label(),
-                ConfigSection::Mcp.label(),
+                ConfigSection::Model.localized_label(Locale::En),
+                ConfigSection::Permissions.localized_label(Locale::En),
+                ConfigSection::Display.localized_label(Locale::En),
+                ConfigSection::Composer.localized_label(Locale::En),
+                ConfigSection::Sidebar.localized_label(Locale::En),
+                ConfigSection::History.localized_label(Locale::En),
+                ConfigSection::Mcp.localized_label(Locale::En),
             ]
         );
     }
@@ -1975,7 +2121,8 @@ mod tests {
 
     #[test]
     fn config_view_escape_cancels_editing() {
-        let app = create_test_app();
+        let mut app = create_test_app();
+        app.ui_locale = Locale::En;
         let mut view = ConfigView::new_for_app(&app);
         let _ = view.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(view.editing.is_some());
@@ -1988,7 +2135,7 @@ mod tests {
 
     #[test]
     fn shell_control_view_defaults_to_background() {
-        let mut view = ShellControlView::new();
+        let mut view = ShellControlView::new(crate::localization::Locale::En);
 
         let action = view.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
@@ -2000,7 +2147,7 @@ mod tests {
 
     #[test]
     fn shell_control_view_can_select_cancel() {
-        let mut view = ShellControlView::new();
+        let mut view = ShellControlView::new(crate::localization::Locale::En);
 
         let action = view.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
 
@@ -2017,7 +2164,7 @@ mod tests {
     #[test]
     fn default_modal_does_not_consume_paste() {
         let mut stack = ViewStack::new();
-        stack.push(ShellControlView::new());
+        stack.push(ShellControlView::new(crate::localization::Locale::En));
         assert!(!stack.handle_paste("hello"));
         assert_eq!(stack.top_kind(), Some(ModalKind::ShellControl));
     }

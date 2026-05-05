@@ -361,7 +361,7 @@ fn plan_choice_from_option_maps_expected_values() {
 
 #[test]
 fn plan_prompt_view_escape_emits_dismiss_event() {
-    let mut view = PlanPromptView::new();
+    let mut view = PlanPromptView::new(crate::localization::Locale::En);
 
     let action = view.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
@@ -744,6 +744,7 @@ fn alt_4_focuses_agents_sidebar_without_switching_modes() {
     let mut app = create_test_app();
     app.mode = AppMode::Agent;
     app.sidebar_focus = SidebarFocus::Auto;
+    app.ui_locale = crate::localization::Locale::En;
 
     apply_alt_4_shortcut(&mut app, KeyModifiers::ALT);
 
@@ -757,6 +758,7 @@ fn ctrl_alt_4_focuses_agents_sidebar_without_switching_modes() {
     let mut app = create_test_app();
     app.mode = AppMode::Agent;
     app.sidebar_focus = SidebarFocus::Auto;
+    app.ui_locale = crate::localization::Locale::En;
 
     apply_alt_4_shortcut(&mut app, KeyModifiers::ALT | KeyModifiers::CONTROL);
 

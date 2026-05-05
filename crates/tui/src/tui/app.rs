@@ -1141,11 +1141,11 @@ impl App {
             agent_activity_started_at: None,
             ui_theme,
             onboarding: if needs_onboarding {
-                if was_onboarded && needs_api_key {
-                    OnboardingState::ApiKey
-                } else {
-                    OnboardingState::Welcome
-                }
+                // Always start at Language so the user can pick their
+                // preferred locale before any other config steps.
+                // Welcome screen is skipped — Language is the natural
+                // first touchpoint (#566 follow-up).
+                OnboardingState::Language
             } else {
                 OnboardingState::None
             },
@@ -1300,7 +1300,9 @@ impl App {
         let entering_yolo = mode == AppMode::Yolo && previous_mode != AppMode::Yolo;
         let leaving_yolo = previous_mode == AppMode::Yolo && mode != AppMode::Yolo;
         self.mode = mode;
-        self.status_message = Some(format!("Switched to {} mode", mode.label()));
+        let mode_label = crate::json_locale::tr_ui_label(self.ui_locale, &format!("mode_{}", mode.as_setting()))
+            .unwrap_or_else(|| mode.label());
+        self.status_message = Some(format!("Switched to {} mode", mode_label));
 
         if entering_yolo {
             self.yolo_restore = Some(YoloRestoreState {
@@ -2301,7 +2303,9 @@ impl App {
                 Some("Attachment selected - Backspace/Delete removes it".to_string());
         } else {
             self.selected_attachment_index = None;
-            self.status_message = Some("Composer focused".to_string());
+            let focused_msg = crate::json_locale::tr_ui_label(self.ui_locale, "status_composer_focused")
+                .unwrap_or("Composer focused");
+            self.status_message = Some(focused_msg.to_string());
         }
         self.needs_redraw = true;
         true
@@ -2309,7 +2313,9 @@ impl App {
 
     pub fn clear_composer_attachment_selection(&mut self) -> bool {
         if self.selected_attachment_index.take().is_some() {
-            self.status_message = Some("Composer focused".to_string());
+            let focused_msg = crate::json_locale::tr_ui_label(self.ui_locale, "status_composer_focused")
+                .unwrap_or("Composer focused");
+            self.status_message = Some(focused_msg.to_string());
             self.needs_redraw = true;
             true
         } else {

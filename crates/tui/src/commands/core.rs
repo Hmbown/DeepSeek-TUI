@@ -2,9 +2,10 @@
 
 use std::fmt::Write;
 
-use crate::config::{COMMON_DEEPSEEK_MODELS, normalize_model_name};
+use crate::config::{COMMON_DEEPSEEK_MODELS, has_api_key, normalize_model_name};
 use crate::localization::{MessageId, tr};
-use crate::tui::app::{App, AppAction, AppMode};
+use crate::tui::app::{App, AppAction, AppMode, OnboardingState};
+use crate::tui::onboarding;
 use crate::tui::views::{HelpView, ModalKind, SubAgentsView};
 
 use super::CommandResult;
@@ -122,7 +123,7 @@ pub fn models(_app: &mut App) -> CommandResult {
 pub fn subagents(app: &mut App) -> CommandResult {
     if app.view_stack.top_kind() != Some(ModalKind::SubAgents) {
         app.view_stack
-            .push(SubAgentsView::new(app.subagent_cache.clone()));
+            .push(SubAgentsView::new(app.subagent_cache.clone(), app.ui_locale));
     }
     app.status_message = Some(tr(app.ui_locale, MessageId::SubagentsFetching).to_string());
     CommandResult::action(AppAction::ListSubAgents)
@@ -271,6 +272,36 @@ pub fn home_dashboard(app: &mut App) -> CommandResult {
     CommandResult::message(stats)
 }
 
+/// Restart the full onboarding wizard (language, API key, trust).
+///
+/// Resets the `.onboarded` marker so the welcome flow runs again, then
+/// transitions to `OnboardingState::Language` — the first interactive
+/// step. The user can re-pick their locale, re-enter an API key, and
+/// re-configure workspace trust without restarting the process.
+pub fn setup(app: &mut App) -> CommandResult {
+    // Remove the onboarded marker so next startup also shows onboarding.
+    if let Some(path) = onboarding::default_marker_path() {
+        let _ = std::fs::remove_file(&path);
+    }
+
+    app.onboarding = OnboardingState::Language;
+    // Re-evaluate whether an API key is available — the user may have
+    // cleared it or may want to enter a new one.
+    app.onboarding_needs_api_key = !has_api_key(
+        // We don't have the Config reference here, but the App stores
+        // enough to derive the need. If we can't load config, assume
+        // a key is needed.
+        &crate::config::Config::load(None, None).unwrap_or_default(),
+    );
+    app.api_key_input.clear();
+    app.api_key_cursor = 0;
+    app.needs_redraw = true;
+
+    CommandResult::message(
+        "Starting setup wizard. Choose your language to begin.",
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,7 +333,9 @@ mod tests {
             resume_session_id: None,
             initial_input: None,
         };
-        App::new(options, &Config::default())
+        let mut app = App::new(options, &Config::default());
+        app.ui_locale = crate::localization::Locale::En;
+        app
     }
 
     #[test]

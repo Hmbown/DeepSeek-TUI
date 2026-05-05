@@ -78,6 +78,8 @@ pub struct FooterProps {
     /// off `frame_idx` (deterministic given the frame). `None` keeps the gap
     /// as plain whitespace, which is the idle/ready state.
     pub working_strip_frame: Option<u64>,
+    /// UI locale, used to localise chip labels.
+    pub locale: Locale,
 }
 
 /// One frame of the footer's water-spout animation. `col` is the cell index
@@ -191,12 +193,14 @@ pub fn footer_agents_chip(running: usize, locale: Locale) -> Vec<Span<'static>> 
 /// reuses [`crate::tui::notifications::humanize_duration`] for
 /// consistent w/d/h/m formatting.
 #[must_use]
-pub fn footer_worked_chip(elapsed: std::time::Duration) -> Vec<Span<'static>> {
+pub fn footer_worked_chip(elapsed: std::time::Duration, locale: Locale) -> Vec<Span<'static>> {
     if elapsed < std::time::Duration::from_secs(60) {
         return Vec::new();
     }
+    let template = crate::json_locale::tr_ui_label(locale, "footer_worked").unwrap_or("worked");
     let label = format!(
-        "worked {}",
+        "{} {}",
+        template,
         crate::tui::notifications::humanize_duration(elapsed)
     );
     vec![Span::styled(
@@ -216,15 +220,16 @@ pub fn footer_worked_chip(elapsed: std::time::Duration) -> Vec<Span<'static>> {
 /// - none reachable but at least one configured → error
 /// - configured but no live snapshot yet → muted (count only)
 #[must_use]
-pub fn footer_mcp_chip(connected: Option<usize>, configured: usize) -> Vec<Span<'static>> {
+pub fn footer_mcp_chip(connected: Option<usize>, configured: usize, locale: Locale) -> Vec<Span<'static>> {
     if configured == 0 {
         return Vec::new();
     }
+    let prefix = crate::json_locale::tr_ui_label(locale, "footer_mcp").unwrap_or("MCP");
     let (label, color) = match connected {
-        None => (format!("MCP {configured}"), palette::TEXT_MUTED),
-        Some(c) if c == configured => (format!("MCP {c}/{configured}"), palette::STATUS_SUCCESS),
-        Some(0) => (format!("MCP 0/{configured}"), palette::STATUS_ERROR),
-        Some(c) => (format!("MCP {c}/{configured}"), palette::STATUS_WARNING),
+        None => (format!("{prefix} {configured}"), palette::TEXT_MUTED),
+        Some(c) if c == configured => (format!("{prefix} {c}/{configured}"), palette::STATUS_SUCCESS),
+        Some(0) => (format!("{prefix} 0/{configured}"), palette::STATUS_ERROR),
+        Some(c) => (format!("{prefix} {c}/{configured}"), palette::STATUS_WARNING),
     };
     vec![Span::styled(label, Style::default().fg(color))]
 }
@@ -267,13 +272,13 @@ impl FooterProps {
             .mcp_snapshot
             .as_ref()
             .map(|s| s.servers.iter().filter(|server| server.connected).count());
-        let mcp = footer_mcp_chip(mcp_connected, mcp_configured);
+        let mcp = footer_mcp_chip(mcp_connected, mcp_configured, app.ui_locale);
         // #448: cumulative work-time chip. Sums actual turn durations
         // (set on `TurnComplete`) rather than wall-clock uptime — a TUI
         // that's been open and idle for 4 minutes shouldn't claim
         // "worked 4m". The chip stays empty until enough turns add up
         // to cross the 60s threshold inside `footer_worked_chip`.
-        let worked = footer_worked_chip(app.cumulative_turn_duration);
+        let worked = footer_worked_chip(app.cumulative_turn_duration, app.ui_locale);
         Self {
             model: app.model.clone(),
             mode_label,
@@ -293,6 +298,7 @@ impl FooterProps {
             toast,
             working_strip_frame: None,
             retry: crate::retry_status::snapshot(),
+            locale: app.ui_locale,
         }
     }
 }
@@ -525,20 +531,27 @@ fn spans_text(spans: &[Span<'_>]) -> String {
 /// Render the retry banner (#499) when the props' captured snapshot
 /// reports an active retry or a final failure. Returns `None` when idle
 /// so callers fall back to the regular status line / toast.
-fn retry_banner_spans(max_width: usize, props: &FooterProps) -> Option<Vec<Span<'static>>> {
+fn retry_banner_spans(max_width: usize, props: &FooterProps, locale: Locale) -> Option<Vec<Span<'static>>> {
     let (label, color) = match &props.retry {
         crate::retry_status::RetryState::Active(banner) => {
             let secs = props.retry.seconds_remaining().unwrap_or(0);
             // Round to 1s — we redraw each frame anyway so the
             // countdown ticks visually without us having to schedule
             // anything extra.
+            let template = crate::json_locale::tr_ui_label(locale, "footer_retry_active")
+                .unwrap_or("⟳ retry {attempt} in {secs}s — {reason}");
             (
-                format!("⟳ retry {} in {secs}s — {}", banner.attempt, banner.reason),
+                template
+                    .replace("{attempt}", &banner.attempt.to_string())
+                    .replace("{secs}", &secs.to_string())
+                    .replace("{reason}", &banner.reason),
                 crate::palette::STATUS_WARNING,
             )
         }
         crate::retry_status::RetryState::Failed { reason, .. } => {
-            (format!("× failed: {reason}"), crate::palette::STATUS_ERROR)
+            let template = crate::json_locale::tr_ui_label(locale, "footer_retry_failed")
+                .unwrap_or("× failed: {reason}");
+            (template.replace("{reason}", reason), crate::palette::STATUS_ERROR)
         }
         crate::retry_status::RetryState::Idle => return None,
     };
@@ -564,7 +577,7 @@ impl Renderable for FooterWidget {
             .saturating_sub(min_gap)
             .max(1);
 
-        let left_spans = if let Some(banner) = retry_banner_spans(max_left_width, &self.props) {
+        let left_spans = if let Some(banner) = retry_banner_spans(max_left_width, &self.props, self.props.locale) {
             // Retry banner takes precedence over toast and the regular
             // status line so the user sees it loud and clear (#499).
             // The banner clears automatically on success or on the next
@@ -758,7 +771,7 @@ mod tests {
     fn footer_worked_chip_hidden_below_one_minute() {
         use std::time::Duration;
         for secs in [0, 1, 30, 59] {
-            let chip = super::footer_worked_chip(Duration::from_secs(secs));
+            let chip = super::footer_worked_chip(Duration::from_secs(secs), Locale::En);
             assert!(
                 chip.is_empty(),
                 "worked chip must be hidden at {secs}s; got {chip:?}"
@@ -770,17 +783,17 @@ mod tests {
     fn footer_worked_chip_shows_humanized_label_above_threshold() {
         use std::time::Duration;
         // 1 minute on the dot — boundary, must render.
-        let chip = super::footer_worked_chip(Duration::from_secs(60));
+        let chip = super::footer_worked_chip(Duration::from_secs(60), Locale::En);
         let text: String = chip.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "worked 1m");
 
         // 3h 12m — the issue's golden example.
-        let chip = super::footer_worked_chip(Duration::from_secs(11_550));
+        let chip = super::footer_worked_chip(Duration::from_secs(11_550), Locale::En);
         let text: String = chip.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "worked 3h 12m");
 
         // Multi-day session — exercises the d/h band.
-        let chip = super::footer_worked_chip(Duration::from_secs(2 * 86_400 + 5 * 3600));
+        let chip = super::footer_worked_chip(Duration::from_secs(2 * 86_400 + 5 * 3600), Locale::En);
         let text: String = chip.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "worked 2d 5h");
     }
@@ -891,20 +904,20 @@ mod tests {
 
     #[test]
     fn footer_mcp_chip_hidden_when_no_servers() {
-        assert!(super::footer_mcp_chip(None, 0).is_empty());
-        assert!(super::footer_mcp_chip(Some(0), 0).is_empty());
+        assert!(super::footer_mcp_chip(None, 0, Locale::En).is_empty());
+        assert!(super::footer_mcp_chip(Some(0), 0, Locale::En).is_empty());
     }
 
     #[test]
     fn footer_mcp_chip_shows_count_only_until_snapshot_arrives() {
-        let spans = super::footer_mcp_chip(None, 3);
+        let spans = super::footer_mcp_chip(None, 3, Locale::En);
         let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "MCP 3");
     }
 
     #[test]
     fn footer_mcp_chip_uses_success_color_when_all_connected() {
-        let spans = super::footer_mcp_chip(Some(3), 3);
+        let spans = super::footer_mcp_chip(Some(3), 3, Locale::En);
         let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "MCP 3/3");
         assert_eq!(spans[0].style.fg, Some(palette::STATUS_SUCCESS));
@@ -912,7 +925,7 @@ mod tests {
 
     #[test]
     fn footer_mcp_chip_uses_warning_color_when_partial() {
-        let spans = super::footer_mcp_chip(Some(2), 3);
+        let spans = super::footer_mcp_chip(Some(2), 3, Locale::En);
         let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "MCP 2/3");
         assert_eq!(spans[0].style.fg, Some(palette::STATUS_WARNING));
@@ -920,7 +933,7 @@ mod tests {
 
     #[test]
     fn footer_mcp_chip_uses_error_color_when_zero_connected() {
-        let spans = super::footer_mcp_chip(Some(0), 3);
+        let spans = super::footer_mcp_chip(Some(0), 3, Locale::En);
         let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "MCP 0/3");
         assert_eq!(spans[0].style.fg, Some(palette::STATUS_ERROR));

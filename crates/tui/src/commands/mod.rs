@@ -124,8 +124,22 @@ impl CommandInfo {
         if self.aliases.is_empty() {
             desc.to_string()
         } else {
-            format!("{}  aliases: {}", desc, self.aliases.join(", "))
+            let aliases_label = crate::json_locale::tr_ui_label(
+                locale,
+                "cmd_usage_aliases",
+            )
+            .unwrap_or("aliases");
+            format!("{}  {aliases_label}: {}", desc, self.aliases.join(", "))
         }
+    }
+
+    /// Return a localized usage string. Falls back to the hardcoded English
+    /// `usage` field when no JSON locale entry exists for this command.
+    pub fn localized_usage(&self, locale: Locale) -> String {
+        let key = format!("usage_{}", self.name);
+        crate::json_locale::tr_ui_label(locale, &key)
+            .unwrap_or(self.usage)
+            .to_string()
     }
 }
 
@@ -332,6 +346,12 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "/logout",
         description_id: MessageId::CmdLogoutDescription,
     },
+    CommandInfo {
+        name: "setup",
+        aliases: &[],
+        usage: "/setup",
+        description_id: MessageId::CmdSetupDescription,
+    },
     // Debug commands
     CommandInfo {
         name: "tokens",
@@ -513,6 +533,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "plan" => config::plan_mode(app),
         "trust" => config::trust(app, arg),
         "logout" => config::logout(app),
+        "setup" => core::setup(app),
 
         // Debug commands
         "tokens" => debug::tokens(app),
