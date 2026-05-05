@@ -1,6 +1,6 @@
 # 🐳 DeepSeek TUI
 
-> **This terminal-native coding agent is built around DeepSeek V4's 1M-token context window and prefix cache capability. It is distributed as a single binary and requires no Node.js or Python runtime. It also includes an MCP client, a sandbox, and a durable task queue out of the box.**
+> **Terminal-native coding agent built for DeepSeek V4: 1M-token context, thinking-mode streaming, and prefix-cache aware. Ships as self-contained Rust binaries — MCP client, sandbox, and durable task queue included.**
 
 [简体中文 README](README.zh-CN.md)
 
@@ -20,7 +20,11 @@ npm install -g deepseek-tui
 cargo install deepseek-tui-cli --locked   # `deepseek` (entry point)
 cargo install deepseek-tui     --locked   # `deepseek-tui` (TUI binary)
 
-# 3. Direct download — no Node, no toolchain.
+# 3. Homebrew — macOS package manager.
+brew tap Hmbown/deepseek-tui
+brew install deepseek-tui
+
+# 4. Direct download — no Node, no toolchain.
 #    https://github.com/Hmbown/DeepSeek-TUI/releases
 #    Prebuilt for Linux x64/ARM64, macOS x64/ARM64, Windows x64.
 ```
@@ -149,7 +153,7 @@ Works on any Tier-1 Rust target — including musl, riscv64, FreeBSD, and older 
 git clone https://github.com/Hmbown/DeepSeek-TUI.git
 cd DeepSeek-TUI
 
-cargo install --path crates/cli --locked   # requires Rust 1.85+; provides `deepseek`
+cargo install --path crates/cli --locked   # requires Rust 1.88+; provides `deepseek`
 cargo install --path crates/tui --locked   # provides `deepseek-tui`
 ```
 
@@ -227,7 +231,6 @@ deepseek mcp-server                              # run dispatcher MCP stdio serv
 | `Ctrl+S` | Stash current draft (`/stash list`, `/stash pop` to recover) |
 | `@path` | Attach file/directory context in composer |
 | `↑` (at composer start) | Select attachment row for removal |
-| `Alt+↑` | Edit last queued message |
 
 Full shortcut catalog: [docs/KEYBINDINGS.md](docs/KEYBINDINGS.md).
 
@@ -318,6 +321,7 @@ Commands: `/skills` (list), `/skill <name>` (activate), `/skill new` (scaffold),
 | [SUBAGENTS.md](docs/SUBAGENTS.md) | Sub-agent role taxonomy and lifecycle |
 | [KEYBINDINGS.md](docs/KEYBINDINGS.md) | Full shortcut catalog |
 | [RELEASE_RUNBOOK.md](docs/RELEASE_RUNBOOK.md) | Release process |
+| [LOCALIZATION.md](docs/LOCALIZATION.md) | UI locale matrix & switching |
 | [OPERATIONS_RUNBOOK.md](docs/OPERATIONS_RUNBOOK.md) | Ops & recovery |
 
 Full Changelog: [CHANGELOG.md](CHANGELOG.md).
@@ -343,6 +347,8 @@ This project ships with help from a growing community of contributors:
 - **[woyxiang](https://github.com/woyxiang)** — Windows Scoop install docs (#696)
 - **[wangfeng](mailto:wangfengcsu@qq.com)** — Pricing/discount info update (#692)
 - **[zichen0116](https://github.com/zichen0116)** — CODE_OF_CONDUCT.md (#686)
+- **[dfwqdyl-ui](https://github.com/dfwqdyl-ui)** — model ID case-sensitivity compatibility report (#729)
+- **[Oliver-ZPLiu](https://github.com/Oliver-ZPLiu)** — stale `working...` state bug report with detailed reproduction and fix (#738)
 - **Hafeez Pizofreude** — SSRF protection in `fetch_url` and Star History chart
 - **Unic (YuniqueUnic)** — Schema-driven config UI (TUI + web)
 - **Jason** — SSRF security hardening
