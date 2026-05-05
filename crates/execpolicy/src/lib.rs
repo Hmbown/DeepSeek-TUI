@@ -183,7 +183,11 @@ impl ExecPolicyEngine {
     }
 
     /// Resolve the effective trusted/denied prefix sets by merging all rulesets.
-    /// Higher-priority layers override lower ones; within a layer, longest prefix wins.
+    ///
+    /// Collects all prefixes from every layer (builtin → agent → user) into flat
+    /// trusted/denied lists. The `check()` method then applies deny-always-wins
+    /// semantics: any matching deny prefix blocks the command regardless of layer.
+    /// Trusted rules are only consulted after deny checks pass.
     fn resolve_prefixes(&self) -> (Vec<String>, Vec<String>) {
         if self.rulesets.is_empty() {
             return (self.trusted_prefixes.clone(), self.denied_prefixes.clone());

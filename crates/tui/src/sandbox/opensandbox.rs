@@ -53,19 +53,22 @@ impl OpenSandboxBackend {
     /// `"http://localhost:8080"`). `api_key` is optional and sent as
     /// `Authorization: Bearer <key>` when set. `timeout_secs` controls the
     /// HTTP request timeout.
-    #[must_use]
-    pub fn new(base_url: String, api_key: Option<String>, timeout_secs: u64) -> Self {
+    pub fn new(
+        base_url: String,
+        api_key: Option<String>,
+        timeout_secs: u64,
+    ) -> Result<Self> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(timeout_secs))
             .build()
-            .expect("reqwest::Client::builder should not fail with default settings");
+            .context("failed to construct HTTP client for OpenSandbox backend")?;
 
-        Self {
+        Ok(Self {
             base_url,
             api_key,
             timeout_secs,
             client,
-        }
+        })
     }
 
     /// Build the full URL for the sandbox run endpoint.
