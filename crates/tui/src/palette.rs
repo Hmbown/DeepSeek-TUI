@@ -109,6 +109,7 @@ pub struct UiTheme {
     pub composer_bg: Color,
     pub selection_bg: Color,
     pub header_bg: Color,
+    pub footer_bg: Color,
     /// Statusline mode colors (agent/yolo/plan)
     pub mode_agent: Color,
     pub mode_yolo: Color,
@@ -128,6 +129,7 @@ pub const UI_THEME: UiTheme = UiTheme {
     composer_bg: DEEPSEEK_SLATE,
     selection_bg: SELECTION_BG,
     header_bg: DEEPSEEK_INK,
+    footer_bg: DEEPSEEK_INK,
     mode_agent: MODE_AGENT,
     mode_yolo: MODE_YOLO,
     mode_plan: MODE_PLAN,
