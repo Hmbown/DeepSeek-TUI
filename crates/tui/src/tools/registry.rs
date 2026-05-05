@@ -186,7 +186,6 @@ impl ToolRegistry {
 
     /// Convert tools to API Tool format with optional cache control on the last tool.
     #[must_use]
-    #[allow(dead_code)]
     pub fn to_api_tools_with_cache(&self, enable_cache: bool) -> Vec<Tool> {
         let mut tools = self.to_api_tools();
         if enable_cache && let Some(last) = tools.last_mut() {
@@ -869,6 +868,27 @@ mod tests {
         assert_eq!(api_tools.len(), 1);
         assert_eq!(api_tools[0].name, "my_tool");
         assert_eq!(api_tools[0].description, "A test tool");
+    }
+
+    #[test]
+    fn api_tools_with_cache_marks_last_tool_ephemeral() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let mut registry = ToolRegistry::new(ctx);
+
+        registry.register(make_test_tool("tool_a"));
+        registry.register(make_test_tool("tool_b"));
+
+        let api_tools = registry.to_api_tools_with_cache(true);
+        assert_eq!(api_tools.len(), 2);
+        assert!(api_tools[0].cache_control.is_none());
+        assert_eq!(
+            api_tools[1]
+                .cache_control
+                .as_ref()
+                .map(|c| c.cache_type.as_str()),
+            Some("ephemeral")
+        );
     }
 
     /// Tool whose `description()` advances through a script of pre-built

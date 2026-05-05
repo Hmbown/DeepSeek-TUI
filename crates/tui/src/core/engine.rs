@@ -887,9 +887,9 @@ impl Engine {
         } else {
             Vec::new()
         };
-        let tools = tool_registry
-            .as_ref()
-            .map(|registry| build_model_tool_catalog(registry.to_api_tools(), mcp_tools, mode));
+        let tools = tool_registry.as_ref().map(|registry| {
+            build_model_tool_catalog(registry.to_api_tools_with_cache(true), mcp_tools, mode)
+        });
 
         // Main turn loop
         let (status, error) = self
