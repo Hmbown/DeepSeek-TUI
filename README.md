@@ -163,27 +163,17 @@ SGLANG_BASE_URL="http://localhost:30000/v1" deepseek --provider sglang --model d
 
 ---
 
-## What's New In v0.8.10
+## What's New In v0.8.11
 
-A patch release: hotfixes, UX polish, and runtime API additions for the whalescale desktop integration. No breaking changes. [Full changelog](CHANGELOG.md).
+A targeted patch for the V4 cache-maxing overhaul plus three runtime fixes discovered in YOLO long-session dogfooding. [Full changelog](CHANGELOG.md).
 
-- **Stacked toast overlay** — status toasts queue and render together instead of overwriting each other
-- **File @-mention frecency** — file mention suggestions learn from recent selections (`~/.deepseek/file-frecency.jsonl`)
-- **Runtime API expansion** — CORS origins config, full thread editing (`PATCH /v1/threads/{id}`), `archived_only` query filter, aggregate usage endpoint (`GET /v1/usage?group_by=day|model|provider|thread`)
-- **Language picker on first run** — new onboarding step selects locale before entering the API key
-- **OPENCODE shell.env hook** — lifecycle hooks can inject shell environment into spawned commands
-- **Cache-aware compaction** — compaction calls reuse cached prompt prefixes, cutting `/compact` costs significantly
-- **glibc 2.28 baseline** — prebuilts now target glibc 2.28 (via `cargo zigbuild`), covering older distros; npm postinstall fails fast with a clear source-build message when incompatible
-- **Better markdown rendering** — transcript now handles tables, bold/italic, and horizontal rules; no more infinite loops on unclosed markers
-- **MCP SIGTERM on shutdown** — stdio servers receive SIGTERM with a 2-second grace period instead of SIGKILL
-- **Shell-child PDEATHSIG on Linux** — children auto-SIGTERM when the parent exits, closing a leak window
-- **Windows Terminal paste fix** — Ctrl/Cmd+V during onboarding now works correctly
-- **Terminal startup repaint** — no more stale background rows above the first frame
-- **Slash-prefix Enter activation** — typing `/mo` and pressing Enter activates the first match
-- **Shell `cwd` boundary validation** — path escape returns `PathEscape` on out-of-workspace `cwd`, consistent with file tools
-
-**6 first-time contributors:** [@staryxchen](https://github.com/staryxchen) (#556), [@shentoumengxin](https://github.com/shentoumengxin) (#524), [@Vishnu1837](https://github.com/Vishnu1837) (#565), [@20bytes](https://github.com/20bytes) (#569), [@loongmiaow-pixel](https://github.com/loongmiaow-pixel) (#578), [@WyxBUPT-22](https://github.com/WyxBUPT-22) (#579).
-Thanks also to [@lloydzhou](https://github.com/lloydzhou), [@jeoor](https://github.com/jeoor), [@toi500](https://github.com/toi500), [@xsstomy](https://github.com/xsstomy), and [@melody0709](https://github.com/melody0709) for bug reports.
+- **Cache-maxing prompt path for DeepSeek V4** — the engine skips system-prompt reassembly when the stable prefix is unchanged, moves the working-set summary out of the system prompt into per-turn metadata, and anchors the tool array with `cache_control: ephemeral`. Net effect: fewer prefix rewrites, higher cache-hit rates, lower cost per turn.
+- **500K token compaction floor** — automatic compaction refuses below 500K tokens; manual `/compact` still bypasses. The message-count trigger (a 128K-era heuristic) is removed — token budget is the sole auto-trigger.
+- **`npm install` resilience** — retry with exponential backoff, per-attempt timeout + stall detector, `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` support (pure Node, no new deps), and download progress to stderr. Driven by a community report from China where `npm install` took 18 minutes through a CN mirror.
+- **YOLO sandbox dropped** — YOLO now uses DangerFullAccess (no sandbox), consistent with its auto-approval + trust mode posture. Previously, the WorkspaceWrite sandbox was intercepting legitimate outside-workspace writes.
+- **Scroll lock preserved during live streaming** — scrolling up mid-stream no longer gets yanked back to the tail on the next chunk. The `user_scrolled_during_stream` lock now survives render-time clamping.
+- **Capacity controller off by default** — the controller was silently clearing transcripts independent of token usage or `auto_compact` settings. Now defaults to disabled; opt-in via `capacity.enabled = true`.
+- **README clarity pass** (#685) — title-cased headings, explicit prerequisites, China-friendly install variant. *Thanks to [@Agent-Skill-007](https://github.com/Agent-Skill-007) for this PR.*
 
 ---
 

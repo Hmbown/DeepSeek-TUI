@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.8.11] - 2026-05-05
+## [0.8.11] - 2026-05-04
 
 ### Changed
 - **Cache-maxing prompt path for DeepSeek V4** — the engine now skips
@@ -40,6 +40,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `DEEPSEEK_TUI_QUIET_INSTALL=1`. Reported by a community user from China
   whose install through a CN npm mirror took 18 minutes — the bottleneck
   was the GitHub fetch, which CN npm mirrors do not proxy.
+- **YOLO sandbox dropped to DangerFullAccess** — YOLO mode was still
+  routing shell commands through the WorkspaceWrite sandbox, which
+  intercepted legitimate outside-workspace writes (package installs,
+  sub-agent workspaces, `~/.cache`, brew, `npm install -g`, pipx) and
+  forced approval round-trips — contradicting the "no guardrails"
+  contract. YOLO already auto-approves all tools and enables trust mode;
+  the sandbox was the last residual restriction. Now uses
+  DangerFullAccess (no sandbox), consistent with the full YOLO posture.
+- **Scroll position lock preserved across render resolve** — user
+  scroll-up during live streaming was being yanked back to the live tail
+  on the next chunk. The `user_scrolled_during_stream` lock was cleared
+  prematurely when content briefly fit in one screen, or when the
+  transcript shrank between renders (e.g. sub-agent card collapsed).
+  Fixed by snapshotting the prior tail state before `resolve_top` and
+  only clearing the lock when the user was deliberately at the bottom.
+- **Capacity controller disabled by default** — the capacity controller
+  was silently clearing the transcript (`messages.clear()`) based on
+  slack-based `p_fail` calculations, independent of token utilization or
+  the `auto_compact` setting. This contradicted the v0.8.11 default of
+  `auto_compact = false` — the user opted into trusting the model with
+  the full 1M-token V4 window, and the controller was auto-managing the
+  prefix on their behalf. The controller now defaults to `enabled = false`;
+  power users can opt in via `capacity.enabled = true`.
 
 ### Docs
 - **README clarity pass** (#685) — title-cased section headings, an explicit
