@@ -47,6 +47,12 @@ out of this release.
 - **Chat client repair after Responses cleanup** — restored the chat client
   body and regression coverage after removing the dead experimental Responses
   fallback path.
+- **Up/Down arrow transcript scroll when composer is empty** — bare Up/Down
+  arrows now scroll the transcript when the composer input is empty (or
+  whitespace-only); with text present they still navigate composer history.
+  Previously the gate was hardcoded to false, leaving users in virtual
+  terminals (Ghostty, Codex, Kitty-protocol) unable to scroll without
+  modifier shortcuts.
 
 ## [0.8.11] - 2026-05-04
 
