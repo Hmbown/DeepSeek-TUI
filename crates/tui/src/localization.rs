@@ -241,6 +241,7 @@ pub enum MessageId {
     CmdMemoryDescription,
     CmdModelDescription,
     CmdModelsDescription,
+    CmdNetworkDescription,
     CmdNoteDescription,
     CmdPlanDescription,
     CmdProviderDescription,
@@ -428,6 +429,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CmdMemoryDescription,
     MessageId::CmdModelDescription,
     MessageId::CmdModelsDescription,
+    MessageId::CmdNetworkDescription,
     MessageId::CmdNoteDescription,
     MessageId::CmdPlanDescription,
     MessageId::CmdProviderDescription,
@@ -744,6 +746,7 @@ fn english(id: MessageId) -> &'static str {
         MessageId::CmdMemoryDescription => "Inspect or manage the persistent user-memory file",
         MessageId::CmdModelDescription => "Switch or view current model",
         MessageId::CmdModelsDescription => "List available models from API",
+        MessageId::CmdNetworkDescription => "Manage network allow and deny rules",
         MessageId::CmdNoteDescription => {
             "Append note to persistent notes file (.deepseek/notes.md)"
         }
@@ -1026,6 +1029,7 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::CmdMemoryDescription => "永続ユーザーメモリファイルを確認・管理",
         MessageId::CmdModelDescription => "現在のモデルを切り替え・確認",
         MessageId::CmdModelsDescription => "API から利用可能なモデルを一覧表示",
+        MessageId::CmdNetworkDescription => "ネットワーク許可・拒否ルールを管理",
         MessageId::CmdNoteDescription => "永続ノートファイル（.deepseek/notes.md）に追記",
         MessageId::CmdPlanDescription => "Plan モードに切り替え、推奨される実装手順を確認",
         MessageId::CmdProviderDescription => {
@@ -1288,6 +1292,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::CmdMemoryDescription => "查看或管理持久用户记忆文件",
         MessageId::CmdModelDescription => "切换或查看当前模型",
         MessageId::CmdModelsDescription => "列出 API 中可用的模型",
+        MessageId::CmdNetworkDescription => "管理网络允许和拒绝规则",
         MessageId::CmdNoteDescription => "将笔记追加到持久笔记文件（.deepseek/notes.md）",
         MessageId::CmdPlanDescription => "切换到 Plan 模式并查看建议的实现步骤",
         MessageId::CmdProviderDescription => "切换或查看当前 LLM 后端（deepseek | nvidia-nim）",
@@ -1540,6 +1545,7 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         }
         MessageId::CmdModelDescription => "Trocar ou exibir o modelo atual",
         MessageId::CmdModelsDescription => "Listar os modelos disponíveis pela API",
+        MessageId::CmdNetworkDescription => "Gerenciar regras de rede permitidas e bloqueadas",
         MessageId::CmdNoteDescription => {
             "Adicionar nota ao arquivo persistente (.deepseek/notes.md)"
         }

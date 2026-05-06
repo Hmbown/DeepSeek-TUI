@@ -236,7 +236,7 @@ pub fn persist_root_string_key(key: &str, value: &str) -> anyhow::Result<PathBuf
 /// Resolve the path to `~/.deepseek/config.toml` (or
 /// `$DEEPSEEK_CONFIG_PATH`). Mirrors what `Config::load` accepts so we
 /// never write to a different file than the one we read.
-fn config_toml_path() -> anyhow::Result<PathBuf> {
+pub(super) fn config_toml_path() -> anyhow::Result<PathBuf> {
     use anyhow::Context;
     if let Ok(env) = std::env::var("DEEPSEEK_CONFIG_PATH") {
         let trimmed = env.trim();
