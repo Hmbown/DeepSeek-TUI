@@ -6320,12 +6320,8 @@ fn render_footer_from(
     } else {
         Vec::new()
     };
-    let displayed_cost = app.displayed_session_cost_for_currency(app.cost_currency);
-    let cost = if has(S::Cost) && displayed_cost > 0.001 {
-        vec![Span::styled(
-            app.format_cost_amount(displayed_cost),
-            Style::default().fg(palette::TEXT_MUTED),
-        )]
+    let cost = if has(S::Cost) {
+        footer_cost_spans(app)
     } else {
         Vec::new()
     };
@@ -6401,6 +6397,21 @@ fn footer_context_percent_spans(app: &App) -> Vec<Span<'static>> {
     )]
 }
 
+fn footer_cost_spans(app: &App) -> Vec<Span<'static>> {
+    let displayed_cost = app.displayed_session_cost_for_currency(app.cost_currency);
+    if !should_show_footer_cost(displayed_cost) {
+        return Vec::new();
+    }
+    vec![Span::styled(
+        app.format_cost_amount(displayed_cost),
+        Style::default().fg(palette::TEXT_MUTED),
+    )]
+}
+
+fn should_show_footer_cost(displayed_cost: f64) -> bool {
+    displayed_cost.is_finite() && displayed_cost > 0.0
+}
+
 /// Test-only helper retained as a parity reference for `FooterWidget`'s
 /// auxiliary-span composition. Production rendering is performed by the
 /// widget itself; the existing footer parity tests still exercise this
@@ -6416,15 +6427,7 @@ fn footer_auxiliary_spans(app: &App, max_width: usize) -> Vec<Span<'static>> {
         crate::tui::widgets::footer_agents_chip(running_agent_count(app), app.ui_locale);
     let replay_spans = footer_reasoning_replay_spans(app);
     let cache_spans = footer_cache_spans(app);
-    let displayed_cost = app.displayed_session_cost_for_currency(app.cost_currency);
-    let cost_spans = if displayed_cost > 0.001 {
-        vec![Span::styled(
-            app.format_cost_amount(displayed_cost),
-            Style::default().fg(palette::TEXT_MUTED),
-        )]
-    } else {
-        Vec::new()
-    };
+    let cost_spans = footer_cost_spans(app);
 
     let parts: Vec<&Vec<Span<'static>>> = [
         &coherence_spans,

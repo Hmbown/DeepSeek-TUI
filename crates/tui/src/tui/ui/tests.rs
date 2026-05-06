@@ -1130,6 +1130,15 @@ fn footer_auxiliary_spans_show_cache_and_cost_when_roomy() {
 }
 
 #[test]
+fn footer_auxiliary_spans_show_tiny_positive_cost_when_roomy() {
+    let mut app = create_test_app();
+    app.session.session_cost = 0.00005;
+
+    let roomy = spans_text(&footer_auxiliary_spans(&app, 32));
+    assert!(roomy.contains("<$0.0001"));
+}
+
+#[test]
 fn footer_auxiliary_spans_use_configured_cost_currency() {
     let mut app = create_test_app();
     app.cost_currency = crate::pricing::CostCurrency::Cny;
@@ -3207,13 +3216,14 @@ fn render_footer_from_with_default_items_renders_mode_and_model() {
     // Default footer composition should show the mode chip and model
     // identifier — whatever the configured default model is.
     let mut app = create_test_app();
-    app.session.session_cost = 0.42;
+    app.session.session_cost = 0.00005;
     let items = crate::config::StatusItem::default_footer();
     let props = render_footer_from(&app, &items, None);
     assert_eq!(props.mode_label, "agent");
     assert!(!props.model.is_empty(), "footer should show a model name");
-    // Cost chip is included whenever cost > 0.001.
+    // Tiny but real costs should render instead of disappearing as "$0.00".
     assert!(!props.cost.is_empty());
+    assert_eq!(spans_text(&props.cost), "<$0.0001");
 }
 
 #[test]
