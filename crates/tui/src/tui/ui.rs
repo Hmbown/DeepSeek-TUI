@@ -1747,9 +1747,7 @@ async fn run_event_loop(
                         app.delete_api_key_char();
                         sync_api_key_validation_status(app, false);
                     }
-                    KeyCode::Char('v') | KeyCode::Char('V')
-                        if is_paste_shortcut(&key) && app.onboarding == OnboardingState::ApiKey =>
-                    {
+                    _ if is_paste_shortcut(&key) && app.onboarding == OnboardingState::ApiKey => {
                         // Cmd+V / Ctrl+V paste (bracketed paste handled above)
                         app.paste_api_key_from_clipboard();
                         sync_api_key_validation_status(app, false);
@@ -2671,7 +2669,7 @@ async fn run_event_loop(
                     };
                     app.set_mode(new_mode);
                 }
-                KeyCode::Char('v') if is_paste_shortcut(&key) => {
+                _ if is_paste_shortcut(&key) => {
                     app.paste_from_clipboard();
                 }
                 KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::ALT) => {
@@ -7535,8 +7533,13 @@ fn details_shortcut_modifiers(modifiers: KeyModifiers) -> bool {
 
 fn is_paste_shortcut(key: &KeyEvent) -> bool {
     let is_v = matches!(key.code, KeyCode::Char('v') | KeyCode::Char('V'));
-    if !is_v {
+    let is_legacy_ctrl_v = matches!(key.code, KeyCode::Char('\u{16}'));
+    if !is_v && !is_legacy_ctrl_v {
         return false;
+    }
+
+    if is_legacy_ctrl_v {
+        return true;
     }
 
     // Cmd+V on macOS
@@ -7549,6 +7552,10 @@ fn is_paste_shortcut(key: &KeyEvent) -> bool {
 }
 
 fn is_text_input_key(key: &KeyEvent) -> bool {
+    if matches!(key.code, KeyCode::Char(c) if c.is_control()) {
+        return false;
+    }
+
     !key.modifiers.contains(KeyModifiers::CONTROL)
         && !key.modifiers.contains(KeyModifiers::ALT)
         && !key.modifiers.contains(KeyModifiers::SUPER)
