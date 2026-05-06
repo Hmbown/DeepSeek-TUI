@@ -154,6 +154,30 @@ enum Commands {
     /// Run the app-server transport.
     AppServer(AppServerArgs),
     /// Generate shell completions.
+    #[command(after_help = r#"Examples:
+  Bash (current shell only):
+    source <(deepseek completion bash)
+
+  Bash (persistent, Linux/bash-completion):
+    mkdir -p ~/.local/share/bash-completion/completions
+    deepseek completion bash > ~/.local/share/bash-completion/completions/deepseek
+    # Requires bash-completion to be installed and loaded by your shell.
+
+  Zsh:
+    mkdir -p ~/.zfunc
+    deepseek completion zsh > ~/.zfunc/_deepseek
+    # Add to ~/.zshrc if needed:
+    #   fpath=(~/.zfunc $fpath)
+    #   autoload -Uz compinit && compinit
+
+  Fish:
+    mkdir -p ~/.config/fish/completions
+    deepseek completion fish > ~/.config/fish/completions/deepseek.fish
+
+  PowerShell (current shell only):
+    deepseek completion powershell | Out-String | Invoke-Expression
+
+The command prints the completion script to stdout; redirect it to a path your shell loads automatically."#)]
     Completion {
         #[arg(value_enum)]
         shell: Shell,
@@ -1888,7 +1912,18 @@ mod tests {
                 "app-server",
                 vec!["--host", "--port", "--config", "--stdio"],
             ),
-            ("completion", vec!["<SHELL>", "bash"]),
+            (
+                "completion",
+                vec![
+                    "<SHELL>",
+                    "bash",
+                    "source <(deepseek completion bash)",
+                    "~/.local/share/bash-completion/completions/deepseek",
+                    "fpath=(~/.zfunc $fpath)",
+                    "deepseek completion fish > ~/.config/fish/completions/deepseek.fish",
+                    "deepseek completion powershell | Out-String | Invoke-Expression",
+                ],
+            ),
             ("metrics", vec!["--json", "--since"]),
         ];
 
