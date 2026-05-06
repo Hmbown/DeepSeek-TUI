@@ -1990,7 +1990,7 @@ fn mention_popup_is_empty_when_cursor_is_not_in_a_mention() {
     let mut app = create_test_app();
     app.input = "no mention here".to_string();
     app.cursor_position = app.input.chars().count();
-    assert!(visible_mention_menu_entries(&app, 6).is_empty());
+    assert!(visible_mention_menu_entries(&mut app, 6).is_empty());
 }
 
 #[test]
@@ -2006,11 +2006,63 @@ fn mention_popup_lists_workspace_matches_for_cursor_partial() {
     app.input = "look at @docs/".to_string();
     app.cursor_position = app.input.chars().count();
 
-    let entries = visible_mention_menu_entries(&app, 6);
+    let entries = visible_mention_menu_entries(&mut app, 6);
     assert!(!entries.is_empty(), "popup should surface docs/ entries");
     assert!(entries.iter().any(|e| e.starts_with("docs/")));
     // README.md doesn't match `docs/` — confirm we didn't dump every file.
     assert!(!entries.iter().any(|e| e == "README.md"));
+}
+
+#[test]
+fn mention_popup_reuses_cache_when_cursor_moves_inside_same_token() {
+    let tmpdir = TempDir::new().expect("tempdir");
+    std::fs::create_dir_all(tmpdir.path().join("docs")).unwrap();
+    let target = tmpdir.path().join("docs/target.md");
+    std::fs::write(&target, "x").unwrap();
+
+    let mut app = create_test_app();
+    app.workspace = tmpdir.path().to_path_buf();
+    app.input = "open @docs/target.md please".to_string();
+    app.cursor_position = "open @docs/target.md".chars().count();
+
+    let entries = visible_mention_menu_entries(&mut app, 6);
+    assert_eq!(entries, vec!["docs/target.md".to_string()]);
+    assert!(app.composer.mention_completion_cache.is_some());
+
+    std::fs::remove_file(target).unwrap();
+    app.move_cursor_left();
+
+    let cached = visible_mention_menu_entries(&mut app, 6);
+    assert_eq!(
+        cached, entries,
+        "cursor-only movement inside the same mention token should not walk the workspace again"
+    );
+}
+
+#[test]
+fn mention_popup_cache_misses_after_input_changes() {
+    let tmpdir = TempDir::new().expect("tempdir");
+    std::fs::create_dir_all(tmpdir.path().join("docs")).unwrap();
+    let target = tmpdir.path().join("docs/target.md");
+    std::fs::write(&target, "x").unwrap();
+
+    let mut app = create_test_app();
+    app.workspace = tmpdir.path().to_path_buf();
+    app.input = "open @docs/target.md please".to_string();
+    app.cursor_position = "open @docs/target.md".chars().count();
+
+    let entries = visible_mention_menu_entries(&mut app, 6);
+    assert_eq!(entries, vec!["docs/target.md".to_string()]);
+
+    std::fs::remove_file(target).unwrap();
+    app.move_cursor_left();
+    app.insert_char('x');
+
+    let recomputed = visible_mention_menu_entries(&mut app, 6);
+    assert!(
+        recomputed.is_empty(),
+        "input mutation should miss the mention completion cache and recompute"
+    );
 }
 
 #[test]
@@ -2025,7 +2077,7 @@ fn mention_popup_respects_hidden_flag() {
     app.mention_menu_hidden = true;
 
     assert!(
-        visible_mention_menu_entries(&app, 6).is_empty(),
+        visible_mention_menu_entries(&mut app, 6).is_empty(),
         "Esc-hidden popup must not surface entries until next input edit",
     );
 }
@@ -2042,7 +2094,7 @@ fn apply_mention_menu_selection_splices_selected_entry() {
     app.input = "open @crates/tui/m".to_string();
     app.cursor_position = app.input.chars().count();
 
-    let entries = visible_mention_menu_entries(&app, 6);
+    let entries = visible_mention_menu_entries(&mut app, 6);
     assert!(!entries.is_empty(), "expected entries for @crates/tui/m");
     // Pick whichever entry appears at index 0; it's deterministic given the
     // workspace setup. Apply it.

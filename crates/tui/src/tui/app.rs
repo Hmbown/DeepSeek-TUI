@@ -466,6 +466,17 @@ impl VimMode {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MentionCompletionCache {
+    pub input: String,
+    pub workspace: PathBuf,
+    pub cwd: Option<PathBuf>,
+    pub token_start_byte: usize,
+    pub partial: String,
+    pub limit: usize,
+    pub entries: Vec<String>,
+}
+
 /// Composer input state — grouped fields for the text input area.
 pub struct ComposerState {
     /// Current composer text content.
@@ -485,6 +496,9 @@ pub struct ComposerState {
     pub slash_menu_hidden: bool,
     pub mention_menu_selected: usize,
     pub mention_menu_hidden: bool,
+    /// Last resolved `@path` popup entries. Cursor-only movement within the
+    /// same mention token reuses this instead of walking the workspace again.
+    pub(crate) mention_completion_cache: Option<MentionCompletionCache>,
     /// Whether vim modal editing is enabled for this composer.
     /// Sourced from `Settings::composer_vim_mode` at startup.
     pub vim_enabled: bool,
@@ -513,6 +527,7 @@ impl Default for ComposerState {
             slash_menu_hidden: false,
             mention_menu_selected: 0,
             mention_menu_hidden: false,
+            mention_completion_cache: None,
             vim_enabled: false,
             vim_mode: VimMode::Normal,
             vim_pending_d: false,
@@ -1186,6 +1201,7 @@ impl App {
                 slash_menu_hidden: false,
                 mention_menu_selected: 0,
                 mention_menu_hidden: false,
+                mention_completion_cache: None,
                 vim_enabled: composer_vim_enabled,
                 vim_mode: VimMode::Normal,
                 vim_pending_d: false,

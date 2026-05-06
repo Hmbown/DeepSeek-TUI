@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::tui::app::App;
+use crate::tui::app::{App, MentionCompletionCache};
 use crate::working_set::Workspace;
 
 /// Maximum number of `@`-mentions whose contents are inlined into one user
@@ -166,7 +166,11 @@ pub fn find_file_mention_completions(
 /// captures the process CWD so the resolver and completion walker honor the
 /// user's launch directory when it differs from `--workspace`.
 fn workspace_for_app(app: &App) -> Workspace {
-    Workspace::with_cwd(app.workspace.clone(), std::env::current_dir().ok())
+    workspace_for_app_with_cwd(app, std::env::current_dir().ok())
+}
+
+fn workspace_for_app_with_cwd(app: &App, cwd: Option<PathBuf>) -> Workspace {
+    Workspace::with_cwd(app.workspace.clone(), cwd)
 }
 
 /// Resolve the `@`-mention completion popup contents for the current
@@ -182,11 +186,11 @@ fn workspace_for_app(app: &App) -> Workspace {
 /// Once the composer widget is extended to render this as a popup, it will
 /// pair with `apply_mention_menu_selection` for the Up/Down/Enter flow.
 #[must_use]
-pub fn visible_mention_menu_entries(app: &App, limit: usize) -> Vec<String> {
+pub fn visible_mention_menu_entries(app: &mut App, limit: usize) -> Vec<String> {
     if app.mention_menu_hidden {
         return Vec::new();
     }
-    let Some((_byte_start, partial)) =
+    let Some((token_start_byte, partial)) =
         partial_file_mention_at_cursor(&app.input, app.cursor_position)
     else {
         return Vec::new();
@@ -194,8 +198,32 @@ pub fn visible_mention_menu_entries(app: &App, limit: usize) -> Vec<String> {
     if limit == 0 {
         return Vec::new();
     }
-    let ws = workspace_for_app(app);
-    find_file_mention_completions(&ws, &partial, limit)
+    let cwd = std::env::current_dir().ok();
+    let workspace = app.workspace.clone();
+
+    if let Some(cache) = app.composer.mention_completion_cache.as_ref()
+        && cache.input == app.input
+        && cache.workspace == workspace
+        && cache.cwd == cwd
+        && cache.token_start_byte == token_start_byte
+        && cache.partial == partial
+        && cache.limit == limit
+    {
+        return cache.entries.clone();
+    }
+
+    let ws = workspace_for_app_with_cwd(app, cwd.clone());
+    let entries = find_file_mention_completions(&ws, &partial, limit);
+    app.composer.mention_completion_cache = Some(MentionCompletionCache {
+        input: app.input.clone(),
+        workspace,
+        cwd,
+        token_start_byte,
+        partial,
+        limit,
+        entries: entries.clone(),
+    });
+    entries
 }
 
 /// Apply the currently selected `@`-mention popup entry to the composer
