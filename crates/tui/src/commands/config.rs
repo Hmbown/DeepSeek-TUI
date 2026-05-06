@@ -129,12 +129,10 @@ fn show_single_setting(app: &App, key: &str) -> CommandResult {
             Some(spacing_display(app.transcript_spacing).to_string())
         }
         "vision_model" => {
-            let enabled = crate::config::Config::load(
-                app.config_path.clone(),
-                app.config_profile.as_deref(),
-            )
-            .map(|c| c.features().enabled(Feature::VisionModel))
-            .unwrap_or(false);
+            let enabled =
+                crate::config::Config::load(app.config_path.clone(), app.config_profile.as_deref())
+                    .map(|c| c.features().enabled(Feature::VisionModel))
+                    .unwrap_or(false);
             Some(enabled.to_string())
         }
         _ => {

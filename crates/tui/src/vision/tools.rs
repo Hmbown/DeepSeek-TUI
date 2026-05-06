@@ -12,7 +12,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde_json::{Value, json};
 
 use crate::tools::spec::{
-    ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, required_str, optional_str,
+    ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, optional_str, required_str,
 };
 use crate::vision::session::VisionSessionManager;
 
@@ -58,7 +58,7 @@ impl VisionAnalyzeTool {
             _ => {
                 return Err(ToolError::execution_failed(format!(
                     "Unsupported image format: {extension}"
-                )))
+                )));
             }
         };
 
@@ -116,17 +116,16 @@ impl ToolSpec for VisionAnalyzeTool {
 
         // Get or create a session
         let session = if let Some(id) = session_id {
-            self.session_manager
-                .get_session(id)
-                .await
-                .ok_or_else(|| {
-                    ToolError::execution_failed(format!("Vision session not found: {id}"))
-                })?
+            self.session_manager.get_session(id).await.ok_or_else(|| {
+                ToolError::execution_failed(format!("Vision session not found: {id}"))
+            })?
         } else {
             self.session_manager
                 .create_session(None, Some(format!("Analysis of {}", image_path)))
                 .await
-                .map_err(|e| ToolError::execution_failed(format!("Failed to create vision session: {e}")))?
+                .map_err(|e| {
+                    ToolError::execution_failed(format!("Failed to create vision session: {e}"))
+                })?
         };
 
         // Analyze the image

@@ -57,9 +57,7 @@ impl Engine {
         }
 
         // Register vision tools when the feature is enabled and config is present.
-        if self.config.features.enabled(Feature::VisionModel)
-            && self.config.vision_model_enabled
-        {
+        if self.config.features.enabled(Feature::VisionModel) && self.config.vision_model_enabled {
             if let Some(ref session_manager) = self.config.vision_session_manager {
                 builder = builder.with_vision_tools(session_manager.clone());
             }

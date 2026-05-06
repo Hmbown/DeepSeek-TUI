@@ -693,7 +693,10 @@ impl ConfigView {
             ConfigRow {
                 section: ConfigSection::Features,
                 key: "vision_model".to_string(),
-                value: config.features().enabled(crate::features::Feature::VisionModel).to_string(),
+                value: config
+                    .features()
+                    .enabled(crate::features::Feature::VisionModel)
+                    .to_string(),
                 editable: true,
                 scope: ConfigScope::Saved,
             },

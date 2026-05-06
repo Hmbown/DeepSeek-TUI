@@ -5,7 +5,6 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -218,7 +217,10 @@ impl VisionSessionManager {
         let handle = VisionSessionHandle::new(config, description).await?;
         let id = handle.id().await;
 
-        self.sessions.write().await.insert(id.clone(), handle.clone());
+        self.sessions
+            .write()
+            .await
+            .insert(id.clone(), handle.clone());
 
         Ok(handle)
     }
@@ -227,7 +229,6 @@ impl VisionSessionManager {
     pub async fn get_session(&self, id: &str) -> Option<VisionSessionHandle> {
         self.sessions.read().await.get(id).cloned()
     }
-
 }
 
 impl Default for VisionSessionManager {
@@ -254,7 +255,10 @@ mod tests {
         let session = VisionSession::new(config, Some("Test session".to_string()));
 
         assert_eq!(session.conversation_history.len(), 0);
-        assert_eq!(session.metadata.description, Some("Test session".to_string()));
+        assert_eq!(
+            session.metadata.description,
+            Some("Test session".to_string())
+        );
     }
 
     #[test]

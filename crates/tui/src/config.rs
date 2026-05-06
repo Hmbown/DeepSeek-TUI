@@ -678,7 +678,6 @@ impl Default for VisionModelConfig {
     }
 }
 
-
 /// Per-model context tuning.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PerModelContextConfig {

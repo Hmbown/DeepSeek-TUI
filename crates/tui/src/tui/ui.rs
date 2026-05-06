@@ -508,14 +508,12 @@ fn handle_memory_quick_add(app: &mut App, input: &str, config: &Config) {
 
 fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
     // 创建 vision session manager
-    let vision_session_manager = config
-        .resolve_vision_model_config()
-        .map(|vision_config| {
-            use crate::vision::client::VisionClientConfig;
-            use crate::vision::session::VisionSessionManager;
-            let client_config = VisionClientConfig::from(vision_config);
-            std::sync::Arc::new(VisionSessionManager::with_config(client_config))
-        });
+    let vision_session_manager = config.resolve_vision_model_config().map(|vision_config| {
+        use crate::vision::client::VisionClientConfig;
+        use crate::vision::session::VisionSessionManager;
+        let client_config = VisionClientConfig::from(vision_config);
+        std::sync::Arc::new(VisionSessionManager::with_config(client_config))
+    });
     EngineConfig {
         model: app.model.clone(),
         workspace: app.workspace.clone(),

@@ -433,10 +433,7 @@ pub fn apply_document(
         ("sidebar_focus", doc.settings.sidebar_focus.as_setting()),
         ("max_history", &doc.settings.max_history.to_string()),
         ("mcp_config_path", doc.config.mcp_config_path.as_str()),
-        (
-            "vision_model",
-            bool_str(doc.config.features_vision_model),
-        ),
+        ("vision_model", bool_str(doc.config.features_vision_model)),
     ] {
         let result = commands::set_config_value(app, key, value, persist);
         if result.is_error {

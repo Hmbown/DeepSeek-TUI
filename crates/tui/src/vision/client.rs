@@ -29,7 +29,9 @@ impl From<VisionModelConfig> for VisionClientConfig {
         Self {
             model: config.model,
             api_key: config.api_key.unwrap_or_default(),
-            base_url: config.base_url.unwrap_or_else(|| "https://api.openai.com/v1".to_string()),
+            base_url: config
+                .base_url
+                .unwrap_or_else(|| "https://api.openai.com/v1".to_string()),
             max_tokens: config.max_tokens,
             temperature: config.temperature,
             timeout_secs: config.timeout_secs,
@@ -60,7 +62,11 @@ pub struct VisionRequest {
 impl VisionRequest {
     /// Create a new vision request
     #[must_use]
-    pub fn new(prompt: impl Into<String>, image_base64: impl Into<String>, image_mime_type: impl Into<String>) -> Self {
+    pub fn new(
+        prompt: impl Into<String>,
+        image_base64: impl Into<String>,
+        image_mime_type: impl Into<String>,
+    ) -> Self {
         Self {
             prompt: prompt.into(),
             image_base64: image_base64.into(),
@@ -77,7 +83,6 @@ impl VisionRequest {
         self.system_message = Some(message.into());
         self
     }
-
 }
 
 /// Response from a vision model
@@ -183,40 +188,44 @@ impl VisionClient {
             ..RetryConfig::default()
         };
 
-        with_retry(&retry_config, || {
-            let client = client.clone();
-            let url = url.clone();
-            let api_key = api_key.clone();
-            let payload = payload.clone();
-            async move {
-                let mut headers = HeaderMap::new();
-                headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-                headers.insert(
-                    AUTHORIZATION,
-                    HeaderValue::from_str(&format!("Bearer {}", api_key))
-                        .map_err(|e| LlmError::NetworkError(format!("Invalid header: {e}")))?,
-                );
+        with_retry(
+            &retry_config,
+            || {
+                let client = client.clone();
+                let url = url.clone();
+                let api_key = api_key.clone();
+                let payload = payload.clone();
+                async move {
+                    let mut headers = HeaderMap::new();
+                    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+                    headers.insert(
+                        AUTHORIZATION,
+                        HeaderValue::from_str(&format!("Bearer {}", api_key))
+                            .map_err(|e| LlmError::NetworkError(format!("Invalid header: {e}")))?,
+                    );
 
-                let response = client
-                    .post(&url)
-                    .headers(headers)
-                    .json(&payload)
-                    .send()
-                    .await
-                    .map_err(|e| LlmError::from_reqwest(&e))?;
-
-                let status = response.status();
-                if !status.is_success() {
-                    let error_text = response
-                        .text()
+                    let response = client
+                        .post(&url)
+                        .headers(headers)
+                        .json(&payload)
+                        .send()
                         .await
-                        .unwrap_or_else(|_| "Unknown error".to_string());
-                    return Err(LlmError::from_http_response(status.as_u16(), &error_text));
-                }
+                        .map_err(|e| LlmError::from_reqwest(&e))?;
 
-                Ok(response)
-            }
-        }, None)
+                    let status = response.status();
+                    if !status.is_success() {
+                        let error_text = response
+                            .text()
+                            .await
+                            .unwrap_or_else(|_| "Unknown error".to_string());
+                        return Err(LlmError::from_http_response(status.as_u16(), &error_text));
+                    }
+
+                    Ok(response)
+                }
+            },
+            None,
+        )
         .await
         .map_err(|e| anyhow::anyhow!("Vision request failed: {}", e))
     }
@@ -241,7 +250,10 @@ impl VisionClient {
         // Extract usage information
         let usage = json.get("usage").map(|u| VisionUsage {
             prompt_tokens: u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-            completion_tokens: u.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+            completion_tokens: u
+                .get("completion_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32,
             total_tokens: u.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
         });
 
