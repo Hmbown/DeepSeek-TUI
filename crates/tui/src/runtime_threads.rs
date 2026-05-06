@@ -1835,6 +1835,15 @@ impl RuntimeThreadManager {
             memory_enabled: self.config.memory_enabled(),
             memory_path: self.config.memory_path(),
             vision_model_enabled: self.config.vision_model_enabled(),
+            vision_session_manager: self
+                .config
+                .resolve_vision_model_config()
+                .map(|vision_config| {
+                    use crate::vision::client::VisionClientConfig;
+                    use crate::vision::session::VisionSessionManager;
+                    let client_config = VisionClientConfig::from(vision_config);
+                    std::sync::Arc::new(VisionSessionManager::with_config(client_config))
+                }),
             strict_tool_mode: self.config.strict_tool_mode.unwrap_or(false),
             goal_objective: None,
             workshop: self.config.workshop.clone(),

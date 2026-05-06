@@ -60,7 +60,9 @@ impl Engine {
         if self.config.features.enabled(Feature::VisionModel)
             && self.config.vision_model_enabled
         {
-            builder = builder.with_vision_tools();
+            if let Some(ref session_manager) = self.config.vision_session_manager {
+                builder = builder.with_vision_tools(session_manager.clone());
+            }
         }
 
         builder

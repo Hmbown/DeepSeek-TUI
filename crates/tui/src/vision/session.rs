@@ -195,7 +195,7 @@ pub struct SessionSummary {
 }
 
 /// Handle to an active vision session
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct VisionSessionHandle {
     session: Arc<Mutex<VisionSession>>,
     client: VisionClient,
@@ -311,7 +311,7 @@ impl VisionSessionHandle {
 }
 
 /// Manager for vision sessions
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct VisionSessionManager {
     sessions: Arc<RwLock<HashMap<String, VisionSessionHandle>>>,
     default_config: Option<VisionClientConfig>,

@@ -118,7 +118,7 @@ pub struct VisionUsage {
 }
 
 /// HTTP client for vision-capable models
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct VisionClient {
     http_client: reqwest::Client,
     config: VisionClientConfig,

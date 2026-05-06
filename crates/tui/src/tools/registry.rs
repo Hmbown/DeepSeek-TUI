@@ -560,10 +560,15 @@ impl ToolRegistryBuilder {
     /// Include vision tools (image analysis, OCR, comparison, session management).
     /// Only registered when `[vision_model]` is configured in config.toml.
     #[must_use]
-    pub fn with_vision_tools(self) -> Self {
-        // Vision tools are registered through the vision module
-        // when the vision_model config is present
-        self
+    pub fn with_vision_tools(
+        self,
+        session_manager: std::sync::Arc<crate::vision::session::VisionSessionManager>,
+    ) -> Self {
+        use crate::vision::tools::{VisionAnalyzeTool, VisionOcrTool};
+        self.with_tool(std::sync::Arc::new(VisionAnalyzeTool::new(
+            session_manager.clone(),
+        )))
+        .with_tool(std::sync::Arc::new(VisionOcrTool::new(session_manager)))
     }
 
     /// Previously registered the OpenAI-style `multi_tool_use.parallel`

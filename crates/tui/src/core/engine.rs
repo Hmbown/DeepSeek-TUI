@@ -143,6 +143,8 @@ pub struct EngineConfig {
     /// consulted when `memory_enabled` is `true`.
     pub memory_path: PathBuf,
     pub vision_model_enabled: bool,
+    pub vision_session_manager:
+        Option<std::sync::Arc<crate::vision::session::VisionSessionManager>>,
     pub goal_objective: Option<String>,
     /// When true, force `tool_choice: "required"` so the model always calls
     /// a tool on every turn step (V4 strict tool-following mode).
@@ -179,6 +181,7 @@ impl Default for EngineConfig {
             memory_enabled: false,
             memory_path: PathBuf::from("./memory.md"),
             vision_model_enabled: false,
+            vision_session_manager: None,
             strict_tool_mode: false,
             goal_objective: None,
             workshop: None,
