@@ -237,7 +237,7 @@ pub fn normalize_model_name(model: &str) -> Option<String> {
     }
 
     let normalized = trimmed.to_ascii_lowercase();
-    if !normalized.starts_with("deepseek") {
+    if !normalized.starts_with("deepseek") && !normalized.contains("/deepseek") {
         return None;
     }
 
@@ -3539,6 +3539,18 @@ api_key = "old-openrouter-key"
         assert!(normalize_model_name("gpt-4o").is_none());
         assert!(normalize_model_name("deepseek v4").is_none());
         assert!(normalize_model_name("").is_none());
+    }
+
+    #[test]
+    fn normalize_model_name_accepts_provider_prefixed_deepseek_ids() {
+        assert_eq!(
+            normalize_model_name("accounts/fireworks/models/deepseek-v4-flash").as_deref(),
+            Some("accounts/fireworks/models/deepseek-v4-flash")
+        );
+        assert_eq!(
+            normalize_model_name("provider/deepseek-ai/deepseek-v4-pro").as_deref(),
+            Some("provider/deepseek-ai/deepseek-v4-pro")
+        );
     }
 
     #[test]
