@@ -430,10 +430,14 @@ fn render_line_with_links(
 }
 
 /// Parse an entire line into (text, style) segments, handling **bold**,
-/// *italic*, and bare URLs that may span multiple words.
+/// *italic*, `code`, ~~strikethrough~~, [text](url) links, and bare URLs.
 fn parse_inline_spans(line: &str, base_style: Style, link_style: Style) -> Vec<(String, Style)> {
     let bold_style = base_style.add_modifier(Modifier::BOLD);
     let italic_style = base_style.add_modifier(Modifier::ITALIC);
+    let code_style = base_style
+        .add_modifier(Modifier::ITALIC)
+        .bg(palette::SURFACE_ELEVATED);
+    let strike_style = base_style.add_modifier(Modifier::CROSSED_OUT);
     let mut out = Vec::new();
     let mut rest = line;
 
@@ -472,6 +476,40 @@ fn parse_inline_spans(line: &str, base_style: Style, link_style: Style) -> Vec<(
             rest = &rest[1 + end + 1..];
             continue;
         }
+        // `inline code`
+        if let Some(end) = rest.strip_prefix('`').and_then(|s| s.find('`')) {
+            let inner = &rest[1..1 + end];
+            out.push((inner.to_string(), code_style));
+            rest = &rest[1 + end + 1..];
+            continue;
+        }
+        // ~~strikethrough~~
+        if let Some(end) = rest.strip_prefix("~~").and_then(|s| s.find("~~")) {
+            let inner = &rest[2..2 + end];
+            out.push((inner.to_string(), strike_style));
+            rest = &rest[2 + end + 2..];
+            continue;
+        }
+        // [text](url)
+        if rest.starts_with('[')
+            && let Some(bracket_end) = rest.find(']')
+        {
+            let text = &rest[1..bracket_end];
+            let after_bracket = &rest[bracket_end + 1..];
+            if after_bracket.starts_with('(')
+                && let Some(paren_end) = after_bracket.find(')')
+            {
+                let url = &after_bracket[1..paren_end];
+                let content = if osc8::enabled() {
+                    osc8::wrap_link(url, text)
+                } else {
+                    format!("{text} ({url})")
+                };
+                out.push((content, link_style));
+                rest = &after_bracket[paren_end + 1..];
+                continue;
+            }
+        }
         // URL: consume until whitespace
         if rest.starts_with("http://") || rest.starts_with("https://") {
             let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
@@ -503,6 +541,9 @@ fn find_next_marker(s: &str) -> usize {
         let slice = &s[i..];
         if slice.starts_with("**")
             || slice.starts_with("__")
+            || slice.starts_with("~~")
+            || slice.starts_with('`')
+            || slice.starts_with('[')
             || (slice.starts_with('*') && !slice.starts_with("**"))
             || (slice.starts_with('_') && !slice.starts_with("__"))
             || slice.starts_with("http://")

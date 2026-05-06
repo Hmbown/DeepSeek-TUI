@@ -139,7 +139,7 @@ fn selection_to_text_handles_multiline_and_reversed_endpoints() {
         column: 6,
     });
 
-    assert_eq!(selection_to_text(&app).as_deref(), Some("a beta\n  gam"));
+    assert_eq!(selection_to_text(&app).as_deref(), Some("a beta\n▏ gam"));
 }
 
 #[test]
