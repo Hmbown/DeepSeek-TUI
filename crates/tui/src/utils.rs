@@ -274,6 +274,40 @@ fn write_panic_dump_to(
     Ok(())
 }
 
+/// Fire-and-forget `spawn_blocking` with panic dump protection.
+///
+/// In contrast to `spawn_supervised` (which wraps `tokio::spawn` for async
+/// tasks), this helper wraps `tokio::task::spawn_blocking`.  Use it when a
+/// CPU-bound or blocking-I/O task must run off the async runtime and its
+/// completion is *not* awaited — for example a post-turn disk snapshot or a
+/// file-tree build polled later via a shared data structure.  If the closure
+/// panics, a crash dump is written to `~/.deepseek/crashes/` and the panic
+/// is logged at ERROR level rather than being silently swallowed.
+#[track_caller]
+pub fn spawn_blocking_supervised<F>(name: &'static str, f: F)
+where
+    F: FnOnce() + Send + 'static,
+{
+    let location = std::panic::Location::caller();
+    tokio::task::spawn_blocking(move || {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+        if let Err(panic_info) = result {
+            let msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
+                s.to_string()
+            } else if let Some(s) = panic_info.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "unknown panic".to_string()
+            };
+            tracing::error!(
+                target: "panic",
+                "Blocking task '{name}' panicked at {location}: {msg}",
+            );
+            let _ = write_panic_dump(name, location, &msg);
+        }
+    });
+}
+
 #[allow(dead_code)]
 pub fn ensure_dir(path: &Path) -> Result<()> {
     fs::create_dir_all(path)

@@ -61,7 +61,7 @@ impl FileTreeState {
         let loading_cell = Arc::new(Mutex::new(None));
         let cell = loading_cell.clone();
         let ws = workspace.to_path_buf();
-        tokio::task::spawn_blocking(move || {
+        crate::utils::spawn_blocking_supervised("file-tree-build", move || {
             let entries = build_file_tree_inner(&ws, &HashSet::new(), None);
             if let Ok(mut guard) = cell.lock() {
                 *guard = Some(entries);

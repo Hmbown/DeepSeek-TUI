@@ -1003,7 +1003,7 @@ impl Engine {
         if self.config.snapshots_enabled {
             let post_workspace = self.session.workspace.clone();
             let post_seq = self.turn_counter;
-            tokio::task::spawn_blocking(move || {
+            crate::utils::spawn_blocking_supervised("post-turn-snapshot", move || {
                 post_turn_snapshot(&post_workspace, post_seq);
             });
         }
