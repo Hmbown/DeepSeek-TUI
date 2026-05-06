@@ -284,6 +284,9 @@ Legacy aliases `deepseek-chat` / `deepseek-reasoner` map to `deepseek-v4-flash`.
 
 *DeepSeek Pro rates currently reflect a limited-time 75% discount, which remains valid until 15:59 UTC on 31 May 2026. After that time, the TUI cost estimator will revert to the base Pro rates.*
 
+> [!Note]
+> According to a [post](https://mp.weixin.qq.com/s/8bxXqS2R8Fx5-1TLDBiEDg) published by DeepSeek, the service throughput of DeepSeek-V4-Pro is currently constrained by limited access to high-end computing power. It is expected that, in the second half of this year, the large-scale commercial deployment of **Ascend 950 SuperNodes** is expected to significantly **reduce the price of DeepSeek-V4-Pro**.
+
 ---
 
 ## Publishing Your Own Skill
