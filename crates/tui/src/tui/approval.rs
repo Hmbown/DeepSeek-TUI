@@ -27,6 +27,7 @@
 //! happen *before* the view is constructed (see `tui/ui.rs`); this
 //! module always assumes the user is being asked.
 
+use crate::localization::{self, Locale};
 use crate::sandbox::SandboxPolicy;
 use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
 use crate::tui::widgets::{ApprovalWidget, ElevationWidget, Renderable};
@@ -407,16 +408,18 @@ pub struct ApprovalView {
     pending_confirm: Option<ApprovalOption>,
     timeout: Option<Duration>,
     requested_at: Instant,
+    locale: Locale,
 }
 
 impl ApprovalView {
-    pub fn new(request: ApprovalRequest) -> Self {
+    pub fn new(request: ApprovalRequest, locale: Locale) -> Self {
         Self {
             request,
             selected: 0,
             pending_confirm: None,
             timeout: None,
             requested_at: Instant::now(),
+            locale,
         }
     }
 
@@ -553,7 +556,7 @@ impl ModalView for ApprovalView {
     }
 
     fn render(&self, area: ratatui::layout::Rect, buf: &mut ratatui::buffer::Buffer) {
-        let approval_widget = ApprovalWidget::new(&self.request, self);
+        let approval_widget = ApprovalWidget::new(&self.request, self, self.locale);
         approval_widget.render(area, buf);
     }
 
@@ -620,29 +623,35 @@ pub enum ElevationOption {
 
 impl ElevationOption {
     /// Get the display label for this option.
-    pub fn label(&self) -> &'static str {
-        match self {
-            ElevationOption::WithNetwork => "Allow outbound network",
-            ElevationOption::WithWriteAccess(_) => "Allow extra write access",
-            ElevationOption::FullAccess => "Full access (filesystem + network)",
-            ElevationOption::Abort => "Abort",
-        }
+    pub fn label(&self, locale: Locale) -> &'static str {
+        localization::tr(
+            locale,
+            match self {
+                ElevationOption::WithNetwork => localization::MessageId::ElevationOptionNetwork,
+                ElevationOption::WithWriteAccess(_) => {
+                    localization::MessageId::ElevationOptionWrite
+                }
+                ElevationOption::FullAccess => localization::MessageId::ElevationOptionFullAccess,
+                ElevationOption::Abort => localization::MessageId::ElevationOptionAbort,
+            },
+        )
     }
 
     /// Get a short description.
-    pub fn description(&self) -> &'static str {
-        match self {
-            ElevationOption::WithNetwork => {
-                "Retry this tool call with outbound network access for downloads and HTTP requests"
-            }
-            ElevationOption::WithWriteAccess(_) => {
-                "Retry this tool call with additional writable filesystem scope"
-            }
-            ElevationOption::FullAccess => {
-                "Retry without sandbox limits; grants unrestricted filesystem and network access"
-            }
-            ElevationOption::Abort => "Cancel this tool execution",
-        }
+    pub fn description(&self, locale: Locale) -> &'static str {
+        localization::tr(
+            locale,
+            match self {
+                ElevationOption::WithNetwork => localization::MessageId::ElevationOptionNetworkDesc,
+                ElevationOption::WithWriteAccess(_) => {
+                    localization::MessageId::ElevationOptionWriteDesc
+                }
+                ElevationOption::FullAccess => {
+                    localization::MessageId::ElevationOptionFullAccessDesc
+                }
+                ElevationOption::Abort => localization::MessageId::ElevationOptionAbortDesc,
+            },
+        )
     }
 
     /// Convert to a sandbox policy.
@@ -726,13 +735,15 @@ impl ElevationRequest {
 pub struct ElevationView {
     request: ElevationRequest,
     selected: usize,
+    locale: Locale,
 }
 
 impl ElevationView {
-    pub fn new(request: ElevationRequest) -> Self {
+    pub fn new(request: ElevationRequest, locale: Locale) -> Self {
         Self {
             request,
             selected: 0,
+            locale,
         }
     }
 
@@ -807,7 +818,7 @@ impl ModalView for ElevationView {
     }
 
     fn render(&self, area: ratatui::layout::Rect, buf: &mut ratatui::buffer::Buffer) {
-        let elevation_widget = ElevationWidget::new(&self.request, self.selected);
+        let elevation_widget = ElevationWidget::new(&self.request, self.selected, self.locale);
         elevation_widget.render(area, buf);
     }
 }
@@ -1037,7 +1048,7 @@ mod tests {
 
     #[test]
     fn test_approval_view_initial_state() {
-        let view = ApprovalView::new(benign_request());
+        let view = ApprovalView::new(benign_request(), Locale::En);
         assert_eq!(view.selected, 0);
         assert!(view.timeout.is_none());
         assert_eq!(view.pending_confirm(), None);
@@ -1046,7 +1057,7 @@ mod tests {
 
     #[test]
     fn test_approval_view_navigation() {
-        let mut view = ApprovalView::new(benign_request());
+        let mut view = ApprovalView::new(benign_request(), Locale::En);
         assert_eq!(view.selected, 0);
 
         view.select_next();
@@ -1066,7 +1077,7 @@ mod tests {
 
     #[test]
     fn benign_y_one_step_approves() {
-        let mut view = ApprovalView::new(benign_request());
+        let mut view = ApprovalView::new(benign_request(), Locale::En);
         let action = view.handle_key(create_key_event(KeyCode::Char('y')));
         assert!(matches!(
             action,
@@ -1079,7 +1090,7 @@ mod tests {
 
     #[test]
     fn benign_one_key_approves_via_numeric_pad() {
-        let mut view = ApprovalView::new(benign_request());
+        let mut view = ApprovalView::new(benign_request(), Locale::En);
         let action = view.handle_key(create_key_event(KeyCode::Char('1')));
         assert!(matches!(
             action,
@@ -1092,7 +1103,7 @@ mod tests {
 
     #[test]
     fn benign_enter_approves_in_one_step() {
-        let mut view = ApprovalView::new(benign_request());
+        let mut view = ApprovalView::new(benign_request(), Locale::En);
         let action = view.handle_key(create_key_event(KeyCode::Enter));
         assert!(matches!(
             action,
@@ -1105,7 +1116,7 @@ mod tests {
 
     #[test]
     fn benign_a_two_approves_for_session() {
-        let mut view = ApprovalView::new(benign_request());
+        let mut view = ApprovalView::new(benign_request(), Locale::En);
         let action = view.handle_key(create_key_event(KeyCode::Char('a')));
         assert!(matches!(
             action,
@@ -1115,7 +1126,7 @@ mod tests {
             })
         ));
 
-        let mut view = ApprovalView::new(benign_request());
+        let mut view = ApprovalView::new(benign_request(), Locale::En);
         let action = view.handle_key(create_key_event(KeyCode::Char('2')));
         assert!(matches!(
             action,
@@ -1129,7 +1140,7 @@ mod tests {
     #[test]
     fn benign_n_d_three_all_deny() {
         for code in [KeyCode::Char('n'), KeyCode::Char('d'), KeyCode::Char('3')] {
-            let mut view = ApprovalView::new(benign_request());
+            let mut view = ApprovalView::new(benign_request(), Locale::En);
             let action = view.handle_key(create_key_event(code));
             assert!(
                 matches!(
@@ -1146,7 +1157,7 @@ mod tests {
 
     #[test]
     fn benign_esc_aborts() {
-        let mut view = ApprovalView::new(benign_request());
+        let mut view = ApprovalView::new(benign_request(), Locale::En);
         let action = view.handle_key(create_key_event(KeyCode::Esc));
         assert!(matches!(
             action,
@@ -1159,7 +1170,7 @@ mod tests {
 
     #[test]
     fn test_approval_view_enter_uses_selected_option() {
-        let mut view = ApprovalView::new(benign_request());
+        let mut view = ApprovalView::new(benign_request(), Locale::En);
 
         // Navigate to index 2 (Denied)
         view.select_next();
@@ -1178,7 +1189,7 @@ mod tests {
 
     #[test]
     fn test_approval_view_navigation_keys() {
-        let mut view = ApprovalView::new(benign_request());
+        let mut view = ApprovalView::new(benign_request(), Locale::En);
 
         view.handle_key(create_key_event(KeyCode::Up));
         assert_eq!(view.selected, 0); // clamped at 0
@@ -1195,14 +1206,14 @@ mod tests {
 
     #[test]
     fn test_approval_view_view_params() {
-        let mut view = ApprovalView::new(benign_request());
+        let mut view = ApprovalView::new(benign_request(), Locale::En);
         let action = view.handle_key(create_key_event(KeyCode::Char('v')));
         assert!(matches!(
             action,
             ViewAction::Emit(ViewEvent::OpenTextPager { .. })
         ));
 
-        let mut view = ApprovalView::new(benign_request());
+        let mut view = ApprovalView::new(benign_request(), Locale::En);
         let action = view.handle_key(create_key_event(KeyCode::Char('V')));
         assert!(matches!(
             action,
@@ -1212,7 +1223,7 @@ mod tests {
 
     #[test]
     fn test_approval_view_current_decision_mapping() {
-        let mut view = ApprovalView::new(benign_request());
+        let mut view = ApprovalView::new(benign_request(), Locale::En);
 
         view.selected = 0;
         assert_eq!(view.current_decision(), ReviewDecision::Approved);
@@ -1230,13 +1241,13 @@ mod tests {
 
     #[test]
     fn destructive_request_routes_destructive() {
-        let view = ApprovalView::new(destructive_request());
+        let view = ApprovalView::new(destructive_request(), Locale::En);
         assert_eq!(view.risk(), RiskLevel::Destructive);
     }
 
     #[test]
     fn destructive_y_first_press_stages_then_second_commits() {
-        let mut view = ApprovalView::new(destructive_request());
+        let mut view = ApprovalView::new(destructive_request(), Locale::En);
 
         // First press stages — no decision emitted yet.
         let action = view.handle_key(create_key_event(KeyCode::Char('y')));
@@ -1256,7 +1267,7 @@ mod tests {
 
     #[test]
     fn destructive_enter_first_press_stages_then_second_commits() {
-        let mut view = ApprovalView::new(destructive_request());
+        let mut view = ApprovalView::new(destructive_request(), Locale::En);
 
         // Selection starts at ApproveOnce — Enter stages.
         let action = view.handle_key(create_key_event(KeyCode::Enter));
@@ -1276,7 +1287,7 @@ mod tests {
 
     #[test]
     fn destructive_navigation_clears_staged_confirmation() {
-        let mut view = ApprovalView::new(destructive_request());
+        let mut view = ApprovalView::new(destructive_request(), Locale::En);
 
         view.handle_key(create_key_event(KeyCode::Char('y')));
         assert_eq!(view.pending_confirm(), Some(ApprovalOption::ApproveOnce));
@@ -1288,7 +1299,7 @@ mod tests {
 
     #[test]
     fn destructive_unrelated_key_clears_staged_confirmation() {
-        let mut view = ApprovalView::new(destructive_request());
+        let mut view = ApprovalView::new(destructive_request(), Locale::En);
 
         view.handle_key(create_key_event(KeyCode::Char('y')));
         assert_eq!(view.pending_confirm(), Some(ApprovalOption::ApproveOnce));
@@ -1301,7 +1312,7 @@ mod tests {
 
     #[test]
     fn destructive_a_first_press_stages_then_second_commits_session() {
-        let mut view = ApprovalView::new(destructive_request());
+        let mut view = ApprovalView::new(destructive_request(), Locale::En);
 
         let action = view.handle_key(create_key_event(KeyCode::Char('a')));
         assert!(matches!(action, ViewAction::None));
@@ -1321,7 +1332,7 @@ mod tests {
     fn destructive_y_then_a_does_not_commit_either() {
         // Pressing 'y' then 'a' must NOT commit ApproveAlways — the
         // second key is a different option, so it re-stages instead.
-        let mut view = ApprovalView::new(destructive_request());
+        let mut view = ApprovalView::new(destructive_request(), Locale::En);
 
         let action = view.handle_key(create_key_event(KeyCode::Char('y')));
         assert!(matches!(action, ViewAction::None));
@@ -1335,7 +1346,7 @@ mod tests {
     #[test]
     fn destructive_deny_does_not_require_confirmation() {
         // Deny / Abort skip the two-key dance — the user is bailing.
-        let mut view = ApprovalView::new(destructive_request());
+        let mut view = ApprovalView::new(destructive_request(), Locale::En);
         let action = view.handle_key(create_key_event(KeyCode::Char('n')));
         assert!(matches!(
             action,
@@ -1348,7 +1359,7 @@ mod tests {
 
     #[test]
     fn destructive_esc_aborts_immediately() {
-        let mut view = ApprovalView::new(destructive_request());
+        let mut view = ApprovalView::new(destructive_request(), Locale::En);
         // Stage something first.
         view.handle_key(create_key_event(KeyCode::Char('y')));
         // Esc still aborts in one press.
@@ -1383,7 +1394,7 @@ mod tests {
 
     #[test]
     fn render_benign_includes_review_badge_and_one_step_hint() {
-        let view = ApprovalView::new(benign_request());
+        let view = ApprovalView::new(benign_request(), Locale::En);
         let lines = render_lines(&view, 100, 40);
         let joined = lines.join("\n");
         assert!(joined.contains("REVIEW"), "missing REVIEW badge:\n{joined}");
@@ -1396,7 +1407,7 @@ mod tests {
 
     #[test]
     fn render_destructive_shows_warning_badge_and_two_step_hint() {
-        let view = ApprovalView::new(destructive_request());
+        let view = ApprovalView::new(destructive_request(), Locale::En);
         let lines = render_lines(&view, 100, 40);
         let joined = lines.join("\n");
         assert!(
@@ -1412,7 +1423,7 @@ mod tests {
 
     #[test]
     fn render_destructive_after_stage_shows_confirm_banner() {
-        let mut view = ApprovalView::new(destructive_request());
+        let mut view = ApprovalView::new(destructive_request(), Locale::En);
         view.handle_key(create_key_event(KeyCode::Char('y')));
         let lines = render_lines(&view, 100, 40);
         let joined = lines.join("\n");
@@ -1431,7 +1442,7 @@ mod tests {
         // The card should be wider than the old 65-cell popup whenever
         // the terminal can hold it; this guards against a regression
         // back to the centered popup.
-        let view = ApprovalView::new(benign_request());
+        let view = ApprovalView::new(benign_request(), Locale::En);
         let lines = render_lines(&view, 120, 40);
         // Find the widest non-blank rendered row.
         let widest = lines
@@ -1453,7 +1464,7 @@ mod tests {
     fn test_elevation_view_initial_state() {
         let request =
             ElevationRequest::for_shell("test-id", "cargo build", "network blocked", true, false);
-        let view = ElevationView::new(request);
+        let view = ElevationView::new(request, Locale::En);
         assert_eq!(view.selected, 0);
     }
 
@@ -1461,7 +1472,7 @@ mod tests {
     fn test_elevation_view_keybindings() {
         let request =
             ElevationRequest::for_shell("test-id", "cargo test", "write blocked", false, true);
-        let mut view = ElevationView::new(request);
+        let mut view = ElevationView::new(request, Locale::En);
 
         let action = view.handle_key(create_key_event(KeyCode::Char('n')));
         assert!(matches!(
@@ -1474,7 +1485,7 @@ mod tests {
 
         let request =
             ElevationRequest::for_shell("test-id", "cargo build", "write blocked", false, true);
-        let mut view = ElevationView::new(request);
+        let mut view = ElevationView::new(request, Locale::En);
         let action = view.handle_key(create_key_event(KeyCode::Char('w')));
         assert!(matches!(
             action,
@@ -1486,7 +1497,7 @@ mod tests {
 
         let request =
             ElevationRequest::for_shell("test-id", "cargo build", "blocked", false, false);
-        let mut view = ElevationView::new(request);
+        let mut view = ElevationView::new(request, Locale::En);
         let action = view.handle_key(create_key_event(KeyCode::Char('f')));
         assert!(matches!(
             action,
@@ -1498,7 +1509,7 @@ mod tests {
 
         let request =
             ElevationRequest::for_shell("test-id", "cargo build", "blocked", false, false);
-        let mut view = ElevationView::new(request);
+        let mut view = ElevationView::new(request, Locale::En);
         let action = view.handle_key(create_key_event(KeyCode::Esc));
         assert!(matches!(
             action,
@@ -1510,7 +1521,7 @@ mod tests {
 
         let request =
             ElevationRequest::for_shell("test-id", "cargo build", "blocked", false, false);
-        let mut view = ElevationView::new(request);
+        let mut view = ElevationView::new(request, Locale::En);
         let action = view.handle_key(create_key_event(KeyCode::Char('a')));
         assert!(matches!(
             action,
@@ -1524,7 +1535,7 @@ mod tests {
     #[test]
     fn test_elevation_view_navigation() {
         let request = ElevationRequest::for_shell("test-id", "cargo build", "blocked", true, false);
-        let mut view = ElevationView::new(request);
+        let mut view = ElevationView::new(request, Locale::En);
 
         assert_eq!(view.selected, 0);
 
@@ -1544,7 +1555,7 @@ mod tests {
     #[test]
     fn test_elevation_view_enter_uses_selected_option() {
         let request = ElevationRequest::for_shell("test-id", "cargo build", "blocked", true, false);
-        let mut view = ElevationView::new(request);
+        let mut view = ElevationView::new(request, Locale::En);
 
         view.handle_key(create_key_event(KeyCode::Down));
         assert_eq!(view.selected, 1);
@@ -1566,34 +1577,38 @@ mod tests {
     #[test]
     fn test_elevation_option_labels() {
         assert_eq!(
-            ElevationOption::WithNetwork.label(),
+            ElevationOption::WithNetwork.label(Locale::En),
             "Allow outbound network"
         );
         assert_eq!(
-            ElevationOption::FullAccess.label(),
+            ElevationOption::FullAccess.label(Locale::En),
             "Full access (filesystem + network)"
         );
         assert!(
             ElevationOption::WithWriteAccess(vec![])
-                .label()
+                .label(Locale::En)
                 .contains("write")
         );
-        assert_eq!(ElevationOption::Abort.label(), "Abort");
+        assert_eq!(ElevationOption::Abort.label(Locale::En), "Abort");
     }
 
     #[test]
     fn test_elevation_option_descriptions() {
         assert!(
             ElevationOption::WithNetwork
-                .description()
+                .description(Locale::En)
                 .contains("network")
         );
         assert!(
             ElevationOption::FullAccess
-                .description()
+                .description(Locale::En)
                 .contains("filesystem and network access")
         );
-        assert!(ElevationOption::Abort.description().contains("Cancel"));
+        assert!(
+            ElevationOption::Abort
+                .description(Locale::En)
+                .contains("Cancel")
+        );
     }
 
     #[test]

@@ -22,6 +22,8 @@ pub use renderable::Renderable;
 
 use std::time::Duration;
 
+use crate::localization;
+use crate::localization::Locale;
 use crate::palette;
 use crate::tui::app::{App, AppMode, ComposerDensity, VimMode};
 use crate::tui::approval::{
@@ -834,11 +836,16 @@ impl Renderable for ComposerWidget<'_> {
 pub struct ApprovalWidget<'a> {
     request: &'a ApprovalRequest,
     view: &'a ApprovalView,
+    locale: Locale,
 }
 
 impl<'a> ApprovalWidget<'a> {
-    pub fn new(request: &'a ApprovalRequest, view: &'a ApprovalView) -> Self {
-        Self { request, view }
+    pub fn new(request: &'a ApprovalRequest, view: &'a ApprovalView, locale: Locale) -> Self {
+        Self {
+            request,
+            view,
+            locale,
+        }
     }
 }
 
@@ -855,6 +862,7 @@ const APPROVAL_CARD_MAX_WIDTH: u16 = 96;
 
 impl Renderable for ApprovalWidget<'_> {
     fn render(&self, area: Rect, buf: &mut Buffer) {
+        let t = |id| localization::tr(self.locale, id);
         let card_area = compute_takeover_area(area);
         Clear.render(card_area, buf);
 
@@ -862,13 +870,16 @@ impl Renderable for ApprovalWidget<'_> {
         let palette_colors = approval_palette(risk);
         let mut lines: Vec<Line<'static>> = Vec::with_capacity(20);
 
-        // Header: stakes badge + tool identifier. The badge is the
-        // first thing the eye lands on.
+        // Header: stakes badge + tool identifier.
+        let badge_text = match risk {
+            RiskLevel::Benign => t(localization::MessageId::ApprovalRiskReview),
+            RiskLevel::Destructive => t(localization::MessageId::ApprovalRiskDestructive),
+        };
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
             Span::raw("  "),
             Span::styled(
-                format!(" {} ", risk_badge_text(risk)),
+                format!(" {badge_text} "),
                 Style::default()
                     .fg(palette::DEEPSEEK_INK)
                     .bg(palette_colors.accent)
@@ -883,12 +894,14 @@ impl Renderable for ApprovalWidget<'_> {
             ),
         ]));
 
-        // Category line — unchanged vocabulary so existing tests still
-        // recognise the rendering.
-        let (cat_label, cat_color) = category_label_for(self.request.category);
+        // Category line — keep cat_color for visual styling.
+        let (cat_label, cat_color) = category_label_for(self.request.category, self.locale);
         lines.push(Line::from(vec![
             Span::raw("  "),
-            Span::styled("Type: ", Style::default().fg(palette::TEXT_HINT)),
+            Span::styled(
+                t(localization::MessageId::ApprovalFieldType),
+                Style::default().fg(palette::TEXT_HINT),
+            ),
             Span::styled(
                 cat_label,
                 Style::default().fg(cat_color).add_modifier(Modifier::BOLD),
@@ -896,11 +909,12 @@ impl Renderable for ApprovalWidget<'_> {
         ]));
 
         lines.push(Line::from(""));
-        // About + impacts. Impact lines are the load-bearing content;
-        // they tell the user what will happen.
         lines.push(Line::from(vec![
             Span::raw("  "),
-            Span::styled("About:  ", Style::default().fg(palette::TEXT_HINT)),
+            Span::styled(
+                t(localization::MessageId::ApprovalFieldAbout),
+                Style::default().fg(palette::TEXT_HINT),
+            ),
             Span::styled(
                 self.request.description.clone(),
                 Style::default().fg(palette::TEXT_BODY),
@@ -909,7 +923,10 @@ impl Renderable for ApprovalWidget<'_> {
         for impact in self.request.impacts.iter().take(4) {
             lines.push(Line::from(vec![
                 Span::raw("  "),
-                Span::styled("Impact: ", Style::default().fg(palette::TEXT_HINT)),
+                Span::styled(
+                    t(localization::MessageId::ApprovalFieldImpact),
+                    Style::default().fg(palette::TEXT_HINT),
+                ),
                 Span::styled(impact.clone(), Style::default().fg(palette::TEXT_BODY)),
             ]));
         }
@@ -921,7 +938,10 @@ impl Renderable for ApprovalWidget<'_> {
             crate::utils::truncate_with_ellipsis(&params_str, params_width.max(20), "...");
         lines.push(Line::from(vec![
             Span::raw("  "),
-            Span::styled("Params: ", Style::default().fg(palette::TEXT_HINT)),
+            Span::styled(
+                t(localization::MessageId::ApprovalFieldParams),
+                Style::default().fg(palette::TEXT_HINT),
+            ),
             Span::styled(
                 params_truncated,
                 Style::default().fg(palette::TEXT_SECONDARY),
@@ -950,6 +970,21 @@ impl Renderable for ApprovalWidget<'_> {
                 Style::default()
             };
 
+            let option_label = t(match opt.option {
+                crate::tui::approval::ApprovalOption::ApproveOnce => {
+                    localization::MessageId::ApprovalOptionApproveOnce
+                }
+                crate::tui::approval::ApprovalOption::ApproveAlways => {
+                    localization::MessageId::ApprovalOptionApproveAlways
+                }
+                crate::tui::approval::ApprovalOption::Deny => {
+                    localization::MessageId::ApprovalOptionDeny
+                }
+                crate::tui::approval::ApprovalOption::Abort => {
+                    localization::MessageId::ApprovalOptionAbortTurn
+                }
+            });
+
             let mut spans = vec![
                 Span::raw("  "),
                 Span::styled(
@@ -958,12 +993,12 @@ impl Renderable for ApprovalWidget<'_> {
                         .fg(palette_colors.shortcut)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(opt.label.to_string(), row_style.fg(label_color)),
+                Span::styled(option_label, row_style.fg(label_color)),
             ];
             if staged {
                 spans.push(Span::raw("  "));
                 spans.push(Span::styled(
-                    "(staged)",
+                    t(localization::MessageId::ApprovalStaged),
                     Style::default()
                         .fg(palette_colors.accent)
                         .add_modifier(Modifier::BOLD),
@@ -972,16 +1007,14 @@ impl Renderable for ApprovalWidget<'_> {
             lines.push(Line::from(spans));
         }
 
-        // Variant-specific footer: benign nudges single-key approve;
-        // destructive shows either the standing prompt or the
-        // confirmation banner when an approve key has been staged.
+        // Variant-specific footer.
         lines.push(Line::from(""));
         match (risk, pending) {
             (RiskLevel::Benign, _) => {
                 lines.push(Line::from(vec![
                     Span::raw("  "),
                     Span::styled(
-                        "Single key approves: ",
+                        t(localization::MessageId::ApprovalFooterBenignPrefix),
                         Style::default().fg(palette::TEXT_HINT),
                     ),
                     Span::styled(
@@ -991,7 +1024,7 @@ impl Renderable for ApprovalWidget<'_> {
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
-                        "  ·  v: full params  ·  Esc: abort",
+                        t(localization::MessageId::ApprovalFooterBenignSuffix),
                         Style::default().fg(palette::TEXT_HINT),
                     ),
                 ]));
@@ -1005,7 +1038,7 @@ impl Renderable for ApprovalWidget<'_> {
                 lines.push(Line::from(vec![
                     Span::raw("  "),
                     Span::styled(
-                        "Confirm destructive action — press ",
+                        t(localization::MessageId::ApprovalFooterDestructiveConfirmPrefix),
                         Style::default()
                             .fg(palette_colors.accent)
                             .add_modifier(Modifier::BOLD),
@@ -1018,7 +1051,7 @@ impl Renderable for ApprovalWidget<'_> {
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
-                        " again to commit, anything else cancels.",
+                        t(localization::MessageId::ApprovalFooterDestructiveConfirmSuffix),
                         Style::default().fg(palette::TEXT_HINT),
                     ),
                 ]));
@@ -1027,7 +1060,7 @@ impl Renderable for ApprovalWidget<'_> {
                 lines.push(Line::from(vec![
                     Span::raw("  "),
                     Span::styled(
-                        "Two keys to approve: ",
+                        t(localization::MessageId::ApprovalFooterDestructivePrefix),
                         Style::default().fg(palette::TEXT_HINT),
                     ),
                     Span::styled(
@@ -1037,7 +1070,7 @@ impl Renderable for ApprovalWidget<'_> {
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
-                        "  ·  v: full params  ·  Esc: abort",
+                        t(localization::MessageId::ApprovalFooterDestructiveSuffix),
                         Style::default().fg(palette::TEXT_HINT),
                     ),
                 ]));
@@ -1045,8 +1078,9 @@ impl Renderable for ApprovalWidget<'_> {
         }
 
         let title = format!(
-            " {} approval — {} ",
-            risk_badge_text(risk),
+            " {} {} — {} ",
+            badge_text,
+            t(localization::MessageId::ApprovalBlockTitle),
             self.request.tool_name
         );
         let block = Block::default()
@@ -1133,28 +1167,42 @@ fn approval_palette(risk: RiskLevel) -> ApprovalColors {
     }
 }
 
-fn risk_badge_text(risk: RiskLevel) -> &'static str {
-    match risk {
-        RiskLevel::Benign => "REVIEW",
-        RiskLevel::Destructive => "DESTRUCTIVE",
-    }
-}
-
-fn category_label_for(category: ToolCategory) -> (&'static str, Color) {
+fn category_label_for(category: ToolCategory, locale: Locale) -> (&'static str, Color) {
+    let t = |id| localization::tr(locale, id);
     match category {
-        ToolCategory::Safe => ("Safe", palette::STATUS_SUCCESS),
-        ToolCategory::FileWrite => ("File Write", palette::STATUS_WARNING),
-        ToolCategory::Shell => ("Shell Command", palette::STATUS_ERROR),
-        ToolCategory::Network => ("Network", palette::STATUS_WARNING),
-        ToolCategory::McpRead => ("MCP Read", palette::DEEPSEEK_SKY),
-        ToolCategory::McpAction => ("MCP Action", palette::STATUS_WARNING),
-        ToolCategory::Unknown => ("Unknown", palette::STATUS_ERROR),
+        ToolCategory::Safe => (
+            t(localization::MessageId::ApprovalCategorySafe),
+            palette::STATUS_SUCCESS,
+        ),
+        ToolCategory::FileWrite => (
+            t(localization::MessageId::ApprovalCategoryFileWrite),
+            palette::STATUS_WARNING,
+        ),
+        ToolCategory::Shell => (
+            t(localization::MessageId::ApprovalCategoryShell),
+            palette::STATUS_ERROR,
+        ),
+        ToolCategory::Network => (
+            t(localization::MessageId::ApprovalCategoryNetwork),
+            palette::STATUS_WARNING,
+        ),
+        ToolCategory::McpRead => (
+            t(localization::MessageId::ApprovalCategoryMcpRead),
+            palette::DEEPSEEK_SKY,
+        ),
+        ToolCategory::McpAction => (
+            t(localization::MessageId::ApprovalCategoryMcpAction),
+            palette::STATUS_WARNING,
+        ),
+        ToolCategory::Unknown => (
+            t(localization::MessageId::ApprovalCategoryUnknown),
+            palette::STATUS_ERROR,
+        ),
     }
 }
 
 struct ApprovalOptionRow {
     option: crate::tui::approval::ApprovalOption,
-    label: &'static str,
     key_hint: &'static str,
     dangerous: bool,
 }
@@ -1165,25 +1213,21 @@ fn approval_options_for(risk: RiskLevel) -> [ApprovalOptionRow; 4] {
     [
         ApprovalOptionRow {
             option: O::ApproveOnce,
-            label: "Approve once",
             key_hint: "1 / y",
             dangerous,
         },
         ApprovalOptionRow {
             option: O::ApproveAlways,
-            label: "Approve always for this kind",
             key_hint: "2 / a",
             dangerous,
         },
         ApprovalOptionRow {
             option: O::Deny,
-            label: "Deny this call",
             key_hint: "3 / d / n",
             dangerous: false,
         },
         ApprovalOptionRow {
             option: O::Abort,
-            label: "Abort the turn",
             key_hint: "Esc",
             dangerous: false,
         },
@@ -1193,16 +1237,22 @@ fn approval_options_for(risk: RiskLevel) -> [ApprovalOptionRow; 4] {
 pub struct ElevationWidget<'a> {
     request: &'a ElevationRequest,
     selected: usize,
+    locale: Locale,
 }
 
 impl<'a> ElevationWidget<'a> {
-    pub fn new(request: &'a ElevationRequest, selected: usize) -> Self {
-        Self { request, selected }
+    pub fn new(request: &'a ElevationRequest, selected: usize, locale: Locale) -> Self {
+        Self {
+            request,
+            selected,
+            locale,
+        }
     }
 }
 
 impl Renderable for ElevationWidget<'_> {
     fn render(&self, area: Rect, buf: &mut Buffer) {
+        let t = |id| localization::tr(self.locale, id);
         let popup_width = 70.min(area.width.saturating_sub(4));
         let popup_height = 22.min(area.height.saturating_sub(4));
         let popup_area = Rect {
@@ -1217,14 +1267,17 @@ impl Renderable for ElevationWidget<'_> {
         let mut lines = vec![
             Line::from(""),
             Line::from(vec![Span::styled(
-                "  ⚠ Sandbox Denied ",
+                t(localization::MessageId::ElevationTitleSandboxDenied),
                 Style::default()
                     .fg(palette::STATUS_ERROR)
                     .add_modifier(Modifier::BOLD),
             )]),
             Line::from(""),
             Line::from(vec![
-                Span::raw("  Tool: "),
+                Span::styled(
+                    t(localization::MessageId::ElevationFieldTool),
+                    Style::default().fg(palette::TEXT_HINT),
+                ),
                 Span::styled(
                     &self.request.tool_name,
                     Style::default()
@@ -1238,14 +1291,20 @@ impl Renderable for ElevationWidget<'_> {
         if let Some(ref command) = self.request.command {
             let cmd_display = crate::utils::truncate_with_ellipsis(command, 45, "...");
             lines.push(Line::from(vec![
-                Span::raw("  Cmd:  "),
+                Span::styled(
+                    t(localization::MessageId::ElevationFieldCmd),
+                    Style::default().fg(palette::TEXT_HINT),
+                ),
                 Span::styled(cmd_display, Style::default().fg(palette::TEXT_MUTED)),
             ]));
         }
 
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
-            Span::raw("  Reason: "),
+            Span::styled(
+                t(localization::MessageId::ElevationFieldReason),
+                Style::default().fg(palette::TEXT_HINT),
+            ),
             Span::styled(
                 &self.request.denial_reason,
                 Style::default().fg(palette::STATUS_WARNING),
@@ -1254,7 +1313,7 @@ impl Renderable for ElevationWidget<'_> {
 
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "  Impact if approved:",
+            t(localization::MessageId::ElevationImpactHeader),
             Style::default().fg(palette::TEXT_MUTED),
         )));
         if self
@@ -1264,7 +1323,10 @@ impl Renderable for ElevationWidget<'_> {
             .any(|option| matches!(option, ElevationOption::WithNetwork))
         {
             lines.push(Line::from(Span::styled(
-                "    - network retry enables outbound downloads and HTTP requests",
+                format!(
+                    "    - {}",
+                    t(localization::MessageId::ElevationImpactNetwork)
+                ),
                 Style::default().fg(palette::TEXT_PRIMARY),
             )));
         }
@@ -1275,17 +1337,20 @@ impl Renderable for ElevationWidget<'_> {
             .any(|option| matches!(option, ElevationOption::WithWriteAccess(_)))
         {
             lines.push(Line::from(Span::styled(
-                "    - write retry expands writable filesystem scope for this tool call",
+                format!("    - {}", t(localization::MessageId::ElevationImpactWrite)),
                 Style::default().fg(palette::TEXT_PRIMARY),
             )));
         }
         lines.push(Line::from(Span::styled(
-            "    - full access removes sandbox restrictions entirely for this retry",
+            format!(
+                "    - {}",
+                t(localization::MessageId::ElevationImpactFullAccess)
+            ),
             Style::default().fg(palette::TEXT_PRIMARY),
         )));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "  Choose how to proceed:",
+            t(localization::MessageId::ElevationPromptProceed),
             Style::default().fg(palette::TEXT_MUTED),
         )));
         lines.push(Line::from(""));
@@ -1320,20 +1385,19 @@ impl Renderable for ElevationWidget<'_> {
                     format!("[{key}] "),
                     Style::default().fg(palette::STATUS_SUCCESS),
                 ),
-                Span::styled(option.label(), style.fg(label_color)),
+                Span::styled(option.label(self.locale), style.fg(label_color)),
             ]));
             lines.push(Line::from(vec![
                 Span::raw("      "),
                 Span::styled(
-                    option.description(),
+                    option.description(self.locale),
                     Style::default().fg(palette::TEXT_MUTED),
                 ),
             ]));
         }
 
-        let title = " Sandbox Elevation Required ";
         let block = Block::default()
-            .title(title)
+            .title(t(localization::MessageId::ElevationTitleRequired))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(palette::BORDER_COLOR))
             .style(Style::default().bg(palette::DEEPSEEK_INK))
