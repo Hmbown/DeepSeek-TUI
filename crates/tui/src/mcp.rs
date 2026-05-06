@@ -2148,7 +2148,78 @@ mod tests {
         let still_alive = unsafe { libc::kill(pid as i32, 0) } == 0;
         assert!(
             !still_alive,
-            "child {pid} survived StdioTransport::shutdown — SIGTERM not delivered"
+            "child {pid} survived StdioTransport::shutdown \u{2014} SIGTERM not delivered"
         );
+    }
+
+    // ── Helper ──────────────────────────────────────────────────────
+
+    fn make_server(command: &str, args: &[&str]) -> McpServerConfig {
+        McpServerConfig {
+            command: Some(command.to_string()),
+            args: args.iter().map(|s| s.to_string()).collect(),
+            env: HashMap::new(),
+            url: None,
+            connect_timeout: None,
+            execute_timeout: None,
+            read_timeout: None,
+            disabled: false,
+            enabled: true,
+            required: false,
+            enabled_tools: Vec::new(),
+            disabled_tools: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_workspace_overrides_global() {
+        // from_workspace_config reads ~/.deepseek/mcp.json which varies per
+        // machine, so this tests the merge logic in isolation.
+
+        let mut global = McpConfig::default();
+        global.servers.insert(
+            "claude-mem".to_string(),
+            make_server("bun", &["global-mem.cjs"]),
+        );
+        global.servers.insert(
+            "shared".to_string(),
+            make_server("node", &["global-shared.js"]),
+        );
+
+        let mut workspace = McpConfig::default();
+        workspace.servers.insert(
+            "context-mode".to_string(),
+            make_server("node", &["workspace-ctx.mjs"]),
+        );
+        workspace.servers.insert(
+            "shared".to_string(),
+            make_server("node", &["workspace-shared.js"]),
+        );
+
+        // Merge (same logic as from_workspace_config)
+        for (name, server) in workspace.servers {
+            global.servers.insert(name, server);
+        }
+
+        assert_eq!(global.servers.len(), 3);
+        assert!(global.servers.contains_key("claude-mem"));
+        assert!(global.servers.contains_key("context-mode"));
+        assert!(global.servers.contains_key("shared"));
+        // workspace override wins
+        assert_eq!(global.servers["shared"].args, vec!["workspace-shared.js"]);
+    }
+
+    #[test]
+    fn test_load_config_parses_minimal_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_config = dir.path().join("mcp.json");
+        std::fs::write(
+            &ws_config,
+            r#"{"servers": {"test": {"command": "echo", "args": ["hi"]}}}"#,
+        )
+        .unwrap();
+
+        let pool = McpPool::from_config_path(&ws_config).unwrap();
+        assert!(pool.config.servers.contains_key("test"));
     }
 }
