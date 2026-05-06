@@ -83,6 +83,13 @@ impl RlmBridge {
         Arc::clone(&self.usage)
     }
 
+    fn enforced_child_model(&self, _requested: Option<String>) -> String {
+        // RLM child calls are background LLM work that can fan out quickly.
+        // Keep REPL-generated model arguments from silently upgrading the
+        // billed model away from the child model selected by the outer tool.
+        self.child_model.clone()
+    }
+
     async fn dispatch_llm(
         &self,
         prompt: String,
@@ -91,9 +98,7 @@ impl RlmBridge {
         system: Option<String>,
     ) -> SingleResp {
         let request = MessageRequest {
-            model: model
-                .filter(|m| !m.is_empty())
-                .unwrap_or_else(|| self.child_model.clone()),
+            model: self.enforced_child_model(model),
             messages: vec![Message {
                 role: "user".to_string(),
                 content: vec![ContentBlock::Text {
@@ -155,11 +160,7 @@ impl RlmBridge {
             return resp;
         }
 
-        let model = Arc::new(
-            model
-                .filter(|m| !m.is_empty())
-                .unwrap_or_else(|| self.child_model.clone()),
-        );
+        let model = Arc::new(self.enforced_child_model(model));
 
         let futures = prompts.into_iter().map(|prompt| {
             let model = Arc::clone(&model);
@@ -192,9 +193,7 @@ impl RlmBridge {
             async move { while rx.recv().await.is_some() {} },
         );
 
-        let child_model = model
-            .filter(|m| !m.is_empty())
-            .unwrap_or_else(|| self.child_model.clone());
+        let child_model = self.enforced_child_model(model);
 
         // Recursive call. The dyn-erasure on `run_rlm_turn_inner` breaks
         // the `bridge → turn → bridge` opaque-future cycle.
@@ -228,10 +227,10 @@ impl RlmBridge {
             return resp;
         }
 
-        let model = Arc::new(model);
+        let model = Arc::new(self.enforced_child_model(model));
         let futures = prompts.into_iter().map(|p| {
             let model = Arc::clone(&model);
-            async move { self.dispatch_rlm(p, (*model).clone()).await }
+            async move { self.dispatch_rlm(p, Some((*model).clone())).await }
         });
         BatchResp {
             results: join_all(futures).await,
@@ -341,7 +340,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn llm_dispatch_uses_trait_backed_mock_client() {
+    async fn llm_dispatch_uses_enforced_child_model() {
         let mock = Arc::new(MockLlmClient::new(Vec::new()));
         mock.push_message_response(mock_response("child answer", 7, 11));
         let bridge = bridge_for(Arc::clone(&mock), 1);
@@ -365,7 +364,7 @@ mod tests {
 
         let captured = mock.captured_requests();
         assert_eq!(captured.len(), 1);
-        assert_eq!(captured[0].model, "override-model");
+        assert_eq!(captured[0].model, "child-model");
         assert_eq!(captured[0].max_tokens, 123);
         assert_eq!(
             captured[0].system,
@@ -375,6 +374,34 @@ mod tests {
         let usage = bridge.usage.lock().await;
         assert_eq!(usage.input_tokens, 7);
         assert_eq!(usage.output_tokens, 11);
+    }
+
+    #[tokio::test]
+    async fn llm_dispatch_ignores_pro_override_for_child_calls() {
+        let mock = Arc::new(MockLlmClient::new(Vec::new()));
+        mock.push_message_response(mock_response("child answer", 7, 11));
+        let bridge = bridge_for(Arc::clone(&mock), 1);
+
+        let response = bridge
+            .dispatch(RpcRequest::Llm {
+                prompt: "child prompt".to_string(),
+                model: Some("deepseek-v4-pro".to_string()),
+                max_tokens: None,
+                system: None,
+            })
+            .await;
+
+        match response {
+            RpcResponse::Single(single) => {
+                assert_eq!(single.text, "child answer");
+                assert!(single.error.is_none());
+            }
+            other => panic!("expected single response, got {other:?}"),
+        }
+
+        let captured = mock.captured_requests();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].model, "child-model");
     }
 
     #[tokio::test]
@@ -410,7 +437,7 @@ mod tests {
         assert!(
             captured
                 .iter()
-                .all(|request| request.model == "batch-model")
+                .all(|request| request.model == "child-model")
         );
 
         let usage = bridge.usage.lock().await;
@@ -445,6 +472,6 @@ mod tests {
 
         let captured = mock.captured_requests();
         assert_eq!(captured.len(), 1);
-        assert_eq!(captured[0].model, "override-model");
+        assert_eq!(captured[0].model, "child-model");
     }
 }

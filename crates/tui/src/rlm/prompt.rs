@@ -15,10 +15,10 @@ const RLM_SYSTEM_PROMPT: &str = r#"You are the root of a Recursive Language Mode
 
 The REPL exposes:
 - `context` (alias `ctx`) — the full input string. Often huge — never `print(context)` in full.
-- `llm_query(prompt, model=None, max_tokens=None, system=None)` — one-shot child LLM. Cheap. Use for chunk-level work.
-- `llm_query_batched(prompts, model=None)` — concurrent fan-out. Returns `list[str]` in input order.
-- `rlm_query(prompt, model=None)` — recursive sub-RLM. Use when a sub-task itself needs decomposition.
-- `rlm_query_batched(prompts, model=None)` — concurrent recursive sub-RLMs.
+- `llm_query(prompt, max_tokens=None, system=None)` — one-shot child LLM. Cheap. Use for chunk-level work.
+- `llm_query_batched(prompts)` — concurrent fan-out. Returns `list[str]` in input order.
+- `rlm_query(prompt)` — recursive sub-RLM. Use when a sub-task itself needs decomposition.
+- `rlm_query_batched(prompts)` — concurrent recursive sub-RLMs.
 - `SHOW_VARS()` — list user variables and their types.
 - `repl_set(name, value)` / `repl_get(name)` — explicit cross-round storage.
 - `print(...)` — diagnostic output. The driver feeds you a truncated preview next round.
@@ -73,6 +73,7 @@ Rules
 - Never `print(context)` or otherwise dump it whole — slice, sample, or chunk.
 - You MUST call `llm_query` / `llm_query_batched` / `rlm_query` at least once before `FINAL(...)`. Calling FINAL from a top-level prose answer (without ever running a `repl` block that touched `context` via a sub-LLM) is REJECTED — the driver will discard the FINAL and ask you to actually use the REPL.
 - Sub-LLMs are powerful — feed them generous chunks (tens of thousands of chars), not tiny windows.
+- Do not pass `model=` to helper calls. Child model selection is enforced by the driver so RLM fan-out stays on the configured low-cost child model.
 - Do NOT pad your output with prose like "Here is what I'll do:" — just emit the next ```repl block.
 "#;
 

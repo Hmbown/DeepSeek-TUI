@@ -52,7 +52,8 @@ pub struct ReplRound {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RpcRequest {
-    /// `llm_query(prompt, model=None, max_tokens=None, system=None)`
+    /// `llm_query(prompt, model=None, max_tokens=None, system=None)`.
+    /// The bridge enforces the configured child model and ignores `model`.
     Llm {
         prompt: String,
         #[serde(default)]
@@ -62,19 +63,22 @@ pub enum RpcRequest {
         #[serde(default)]
         system: Option<String>,
     },
-    /// `llm_query_batched(prompts, model=None)`
+    /// `llm_query_batched(prompts, model=None)`.
+    /// The bridge enforces the configured child model and ignores `model`.
     LlmBatch {
         prompts: Vec<String>,
         #[serde(default)]
         model: Option<String>,
     },
     /// `rlm_query(prompt, model=None)` — recursive sub-RLM (paper's `sub_RLM`).
+    /// The bridge enforces the configured child model and ignores `model`.
     Rlm {
         prompt: String,
         #[serde(default)]
         model: Option<String>,
     },
-    /// `rlm_query_batched(prompts, model=None)`
+    /// `rlm_query_batched(prompts, model=None)`.
+    /// The bridge enforces the configured child model and ignores `model`.
     RlmBatch {
         prompts: Vec<String>,
         #[serde(default)]
@@ -495,7 +499,7 @@ def _rpc(req):
     return {"error": f"unexpected protocol line: {line[:120]!r}"}
 
 def llm_query(prompt, model=None, max_tokens=None, system=None):
-    """One-shot sub-LLM call. Returns the completion text as a string."""
+    """One-shot sub-LLM call. The Rust bridge enforces the child model."""
     resp = _rpc({"type":"llm","prompt":str(prompt),"model":model,
                  "max_tokens":max_tokens,"system":system})
     if isinstance(resp, dict) and resp.get("error"):
@@ -505,7 +509,7 @@ def llm_query(prompt, model=None, max_tokens=None, system=None):
     return str(resp)
 
 def llm_query_batched(prompts, model=None):
-    """Run multiple sub-LLM calls concurrently. Returns a list of strings."""
+    """Run sub-LLM calls concurrently. The Rust bridge enforces the child model."""
     if not isinstance(prompts, (list, tuple)):
         return ["[llm_query_batched: prompts must be a list]"]
     resp = _rpc({"type":"llm_batch","prompts":[str(p) for p in prompts],"model":model})
@@ -523,7 +527,7 @@ def llm_query_batched(prompts, model=None):
     return out
 
 def rlm_query(prompt, model=None):
-    """Recursive sub-RLM (paper's `sub_RLM`). Each call gets its own REPL."""
+    """Recursive sub-RLM. The Rust bridge enforces the child model."""
     resp = _rpc({"type":"rlm","prompt":str(prompt),"model":model})
     if isinstance(resp, dict) and resp.get("error"):
         return f"[rlm_query error: {resp['error']}]"
@@ -532,7 +536,7 @@ def rlm_query(prompt, model=None):
     return str(resp)
 
 def rlm_query_batched(prompts, model=None):
-    """Run multiple recursive sub-RLMs in parallel."""
+    """Run recursive sub-RLMs in parallel. The Rust bridge enforces the child model."""
     if not isinstance(prompts, (list, tuple)):
         return ["[rlm_query_batched: prompts must be a list]"]
     resp = _rpc({"type":"rlm_batch","prompts":[str(p) for p in prompts],"model":model})
