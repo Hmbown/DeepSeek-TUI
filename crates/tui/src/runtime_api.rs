@@ -10,6 +10,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
+#[cfg(not(target_os = "windows"))]
+use mdns_sd::{ServiceDaemon, ServiceInfo};
 use async_stream::stream;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderValue, Method, StatusCode};
@@ -65,6 +67,8 @@ pub struct RuntimeApiOptions {
     /// `DEEPSEEK_CORS_ORIGINS` (comma-separated), and `[runtime_api]
     /// cors_origins` in `config.toml`. Whalescale#255 / #561.
     pub cors_origins: Vec<String>,
+    /// Advertise the server via mDNS (zeroconf) for local network discovery.
+    pub mdns: bool,
 }
 
 impl Default for RuntimeApiOptions {
@@ -74,6 +78,7 @@ impl Default for RuntimeApiOptions {
             port: 7878,
             workers: 2,
             cors_origins: Vec::new(),
+            mdns: false,
         }
     }
 }
@@ -322,9 +327,29 @@ pub async fn run_http_server(
 
     println!("Runtime API listening on http://{addr}");
     println!("Security: this server is local-first. Do not expose it to untrusted networks.");
+
+    // Optional mDNS advertisement so other machines on the LAN can discover
+    // the server as `_deepseek._tcp.local.`.
+    let _mdns_guard = if options.mdns {
+        match register_mdns_service(addr.port()) {
+            Ok(guard) => {
+                println!("mDNS: advertising on _deepseek._tcp.local. (port {})", addr.port());
+                Some(guard)
+            }
+            Err(e) => {
+                eprintln!("mDNS: failed to register service: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let serve_result = axum::serve(listener, app)
         .await
         .map_err(|e| anyhow!("Runtime API server error: {e}"));
+    // Drop _mdns_guard here to unregister before exiting.
+    drop(_mdns_guard);
     scheduler_cancel.cancel();
     scheduler_handle.abort();
     serve_result
@@ -1586,6 +1611,39 @@ impl IntoResponse for ApiError {
         )
             .into_response()
     }
+}
+
+/// Register a `_deepseek._tcp.local.` mDNS service on the LAN so other
+/// machines can discover the runtime API server without a static address.
+///
+/// Returns a guard whose drop triggers service unregistration.
+#[cfg(not(target_os = "windows"))]
+fn register_mdns_service(port: u16) -> Result<mdns_sd::ServiceDaemon> {
+    let daemon = ServiceDaemon::new()?;
+    let service_type = "_deepseek._tcp.local.";
+    let instance_name = hostname();
+    let properties = [("path", "/")];
+
+    let addrs: &[std::net::IpAddr] = &[]; // empty = auto-detect
+    let service_info = ServiceInfo::new(
+        service_type,
+        &instance_name,
+        &instance_name,
+        addrs,
+        port,
+        &properties[..],
+    )?;
+
+    daemon.register(service_info)?;
+    Ok(daemon)
+}
+
+/// Best-effort hostname, falling back to a static placeholder.
+#[cfg(not(target_os = "windows"))]
+fn hostname() -> String {
+    std::env::var("HOSTNAME")
+        .or_else(|_| std::env::var("HOST"))
+        .unwrap_or_else(|_| "deepseek".to_string())
 }
 
 #[cfg(test)]

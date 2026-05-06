@@ -68,6 +68,7 @@ pdf-extract = "0.7"
 tar = "0.4"
 flate2 = "1.1"
 sha2 = "0.10"
+mdns-sd.workspace = true
 
 [dev-dependencies]
 wiremock = "0.6"
