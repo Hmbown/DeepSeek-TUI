@@ -6,6 +6,7 @@
 use crate::compaction::CompactionConfig;
 use crate::models::{Message, SystemPrompt};
 use crate::tui::app::AppMode;
+use crate::tui::approval::ApprovalMode;
 use std::path::PathBuf;
 
 /// Operations that can be submitted to the engine.
@@ -28,6 +29,7 @@ pub enum Op {
         allow_shell: bool,
         trust_mode: bool,
         auto_approve: bool,
+        approval_mode: ApprovalMode,
     },
 
     /// Cancel the current request

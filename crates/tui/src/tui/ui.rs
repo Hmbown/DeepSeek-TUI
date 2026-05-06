@@ -3368,6 +3368,7 @@ async fn dispatch_user_message(
             allow_shell: app.allow_shell,
             trust_mode: app.trust_mode,
             auto_approve: app.mode == AppMode::Yolo,
+            approval_mode: app.approval_mode,
         })
         .await
     {

@@ -55,6 +55,15 @@ impl ApprovalMode {
             ApprovalMode::Never => "NEVER",
         }
     }
+
+    pub fn from_config_value(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(ApprovalMode::Auto),
+            "suggest" | "suggested" | "on-request" | "untrusted" => Some(ApprovalMode::Suggest),
+            "never" | "deny" | "denied" => Some(ApprovalMode::Never),
+            _ => None,
+        }
+    }
 }
 
 /// User's decision for a pending approval
@@ -1684,5 +1693,22 @@ mod tests {
         assert_eq!(ApprovalMode::Auto.label(), "AUTO");
         assert_eq!(ApprovalMode::Suggest.label(), "SUGGEST");
         assert_eq!(ApprovalMode::Never.label(), "NEVER");
+    }
+
+    #[test]
+    fn test_approval_mode_from_config_value_accepts_aliases() {
+        assert_eq!(
+            ApprovalMode::from_config_value("auto"),
+            Some(ApprovalMode::Auto)
+        );
+        assert_eq!(
+            ApprovalMode::from_config_value("on-request"),
+            Some(ApprovalMode::Suggest)
+        );
+        assert_eq!(
+            ApprovalMode::from_config_value("deny"),
+            Some(ApprovalMode::Never)
+        );
+        assert_eq!(ApprovalMode::from_config_value("unknown"), None);
     }
 }
