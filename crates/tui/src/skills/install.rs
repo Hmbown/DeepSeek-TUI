@@ -24,8 +24,11 @@
 //!   only created (via atomic rename) once the tarball clears every check.
 //!   Half-installed skills can never appear on disk.
 //! * Path traversal rejection covers both `..` segments and absolute paths.
-//!   Symlinks inside the archive are also rejected — there's no use case for
-//!   them in a SKILL.md bundle and they're a notorious foothold for escape.
+//!   Symlinks inside the selected skill subtree are rejected — there's no use
+//!   case for them in a SKILL.md bundle and they're a notorious foothold for
+//!   escape. Multi-skill repository archives may contain unrelated symlinks
+//!   outside that selected subtree; those entries are ignored and never
+//!   extracted.
 //! * No `+x` is granted on extracted files. The optional `/skill trust <name>`
 //!   command writes a `.trusted` marker; tool-execution gating is a separate
 //!   concern that lives next to the tool registry.
@@ -238,8 +241,9 @@ pub enum InstallError {
 ///    [`InstallOutcome::NetworkDenied`]; `Prompt` returns
 ///    [`InstallOutcome::NeedsApproval`] without touching disk.
 /// 3. Stream the tarball into a tempfile (capped at `max_size`).
-/// 4. Validate the archive (path-traversal, size, no symlinks, SKILL.md present
-///    with required frontmatter fields) into a sibling `<name>.tmp/` directory.
+/// 4. Validate the archive (path-traversal, size, no symlinks in the selected
+///    skill subtree, SKILL.md present with required frontmatter fields) into a
+///    sibling `<name>.tmp/` directory.
 /// 5. Atomic-rename `<name>.tmp/` → `<name>/`.
 /// 6. Write `.installed-from` and return [`InstalledSkill`].
 ///
@@ -1053,8 +1057,8 @@ struct TarballScan {
 }
 
 /// First pass: locate SKILL.md, validate frontmatter, compute total size,
-/// reject path-traversal / symlink entries. We do not write anything in this
-/// pass; that's the second pass's job.
+/// reject path-traversal entries and symlinks inside the selected install
+/// subtree. We do not write anything in this pass; that's the second pass's job.
 fn scan_tarball(bytes: &[u8], max_size: u64) -> Result<TarballScan> {
     let cursor = std::io::Cursor::new(bytes);
     let gz = GzDecoder::new(cursor);
@@ -1063,6 +1067,7 @@ fn scan_tarball(bytes: &[u8], max_size: u64) -> Result<TarballScan> {
     let mut total_size: u64 = 0;
     let mut prefix: Option<String> = None;
     let mut skill_md_relative: Option<(String, Vec<u8>)> = None;
+    let mut link_paths: Vec<String> = Vec::new();
 
     for entry in archive
         .entries()
@@ -1071,9 +1076,6 @@ fn scan_tarball(bytes: &[u8], max_size: u64) -> Result<TarballScan> {
         let mut entry = entry.context("failed to read tar entry")?;
         let header = entry.header().clone();
         let entry_type = header.entry_type();
-        if entry_type.is_symlink() || entry_type.is_hard_link() {
-            return Err(InstallError::SymlinkRejected.into());
-        }
         let path = entry
             .path()
             .context("tar entry has invalid path")?
@@ -1115,6 +1117,11 @@ fn scan_tarball(bytes: &[u8], max_size: u64) -> Result<TarballScan> {
             }
         }
 
+        if entry_type.is_symlink() || entry_type.is_hard_link() {
+            link_paths.push(path_str);
+            continue;
+        }
+
         // SKILL.md detection. Match either:
         //   * `<prefix>/SKILL.md`
         //   * `<prefix>/skills/<name>/SKILL.md`
@@ -1143,11 +1150,6 @@ fn scan_tarball(bytes: &[u8], max_size: u64) -> Result<TarballScan> {
         .ok_or(InstallError::MissingSkillMd)
         .map_err(anyhow::Error::from)?;
 
-    // Parse frontmatter to extract the skill name. We reuse the same parser
-    // shape as `SkillRegistry::parse_skill` but inline it here so we don't
-    // depend on the discovery module's private function.
-    let name = parse_frontmatter_name(&skill_md_bytes)?;
-
     let skill_root = if skill_md_path == "SKILL.md" {
         String::new()
     } else {
@@ -1157,6 +1159,17 @@ fn scan_tarball(bytes: &[u8], max_size: u64) -> Result<TarballScan> {
             .unwrap_or("")
             .to_string()
     };
+
+    for link_path in link_paths {
+        if is_within_selected_root(&link_path, &prefix, &skill_root) {
+            return Err(InstallError::SymlinkRejected.into());
+        }
+    }
+
+    // Parse frontmatter to extract the skill name. We reuse the same parser
+    // shape as `SkillRegistry::parse_skill` but inline it here so we don't
+    // depend on the discovery module's private function.
+    let name = parse_frontmatter_name(&skill_md_bytes)?;
 
     Ok(TarballScan {
         skill_name: name,
@@ -1186,9 +1199,6 @@ fn extract_into(scan: &TarballScan, bytes: &[u8], dest: &Path, max_size: u64) ->
         let mut entry = entry.context("failed to read tar entry")?;
         let header = entry.header().clone();
         let entry_type = header.entry_type();
-        if entry_type.is_symlink() || entry_type.is_hard_link() {
-            return Err(InstallError::SymlinkRejected.into());
-        }
         let path = entry
             .path()
             .context("tar entry has invalid path")?
@@ -1214,6 +1224,9 @@ fn extract_into(scan: &TarballScan, bytes: &[u8], dest: &Path, max_size: u64) ->
         let stripped_path = Path::new(&stripped);
         if !is_safe_path(stripped_path) {
             return Err(InstallError::PathTraversal(stripped).into());
+        }
+        if entry_type.is_symlink() || entry_type.is_hard_link() {
+            return Err(InstallError::SymlinkRejected.into());
         }
 
         let target = dest.join(stripped_path);
@@ -1256,6 +1269,24 @@ fn extract_into(scan: &TarballScan, bytes: &[u8], dest: &Path, max_size: u64) ->
         }
     }
     Ok(())
+}
+
+fn selected_root(prefix: &str, skill_root: &str) -> String {
+    if skill_root.is_empty() {
+        prefix.to_string()
+    } else if prefix.is_empty() {
+        skill_root.to_string()
+    } else {
+        format!("{prefix}/{skill_root}")
+    }
+}
+
+fn is_within_selected_root(path: &str, prefix: &str, skill_root: &str) -> bool {
+    let root = selected_root(prefix, skill_root);
+    if root.is_empty() {
+        return true;
+    }
+    path == root || path.starts_with(&format!("{root}/"))
 }
 
 /// Ensure a tar path has no `..` segments and is not absolute.
