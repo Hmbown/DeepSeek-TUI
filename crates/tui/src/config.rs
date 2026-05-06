@@ -2454,6 +2454,7 @@ pub fn active_provider_has_env_api_key(config: &Config) -> bool {
             std::env::var("FIREWORKS_API_KEY").is_ok_and(|k| !k.trim().is_empty())
         }
         ApiProvider::Sglang => std::env::var("SGLANG_API_KEY").is_ok_and(|k| !k.trim().is_empty()),
+        ApiProvider::Vllm => std::env::var("VLLM_API_KEY").is_ok_and(|k| !k.trim().is_empty()),
     }
 }
 
@@ -3940,6 +3941,10 @@ api_key = "novita-table-key"
         assert!(
             has_api_key_for(&config, ApiProvider::Sglang),
             "SGLang is self-hosted and does not require a key by default"
+        );
+        assert!(
+            has_api_key_for(&config, ApiProvider::Vllm),
+            "vLLM is self-hosted and does not require a key by default"
         );
 
         // Safety: test-only environment mutation guarded by a global mutex.

@@ -3,12 +3,45 @@ use super::*;
 use crate::models::SystemBlock;
 use serde_json::json;
 use std::collections::HashSet;
+use std::ffi::OsString;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use std::time::Instant;
 use tempfile::tempdir;
 
 const WORKING_SET_SUMMARY_MARKER: &str = "## Repo Working Set";
+static CAPACITY_MEMORY_ENV_LOCK: LazyLock<tokio::sync::Mutex<()>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+struct ScopedCapacityMemoryDir {
+    previous: Option<OsString>,
+}
+
+impl ScopedCapacityMemoryDir {
+    fn set(path: &Path) -> Self {
+        let previous = std::env::var_os("DEEPSEEK_CAPACITY_MEMORY_DIR");
+        // Safety: capacity-memory tests serialize access with CAPACITY_MEMORY_ENV_LOCK
+        // and restore the original value in Drop.
+        unsafe {
+            std::env::set_var("DEEPSEEK_CAPACITY_MEMORY_DIR", path);
+        }
+        Self { previous }
+    }
+}
+
+impl Drop for ScopedCapacityMemoryDir {
+    fn drop(&mut self) {
+        // Safety: capacity-memory tests serialize access with CAPACITY_MEMORY_ENV_LOCK.
+        unsafe {
+            if let Some(previous) = self.previous.take() {
+                std::env::set_var("DEEPSEEK_CAPACITY_MEMORY_DIR", previous);
+            } else {
+                std::env::remove_var("DEEPSEEK_CAPACITY_MEMORY_DIR");
+            }
+        }
+    }
+}
 
 fn build_engine_with_capacity(capacity: CapacityControllerConfig) -> Engine {
     let engine_config = EngineConfig {
@@ -906,14 +939,9 @@ async fn post_tool_replay_invoked_when_high_non_severe_risk() {
 
 #[tokio::test]
 async fn error_escalation_triggers_replan_when_severe_or_repeated_failures() {
+    let _env_lock = CAPACITY_MEMORY_ENV_LOCK.lock().await;
     let tmp = tempdir().expect("tempdir");
-    // Safety: scoped to test process; reset at end.
-    unsafe {
-        std::env::set_var(
-            "DEEPSEEK_CAPACITY_MEMORY_DIR",
-            tmp.path().to_string_lossy().to_string(),
-        );
-    }
+    let _env = ScopedCapacityMemoryDir::set(tmp.path());
 
     let capacity = CapacityControllerConfig {
         enabled: true,
@@ -961,9 +989,6 @@ async fn error_escalation_triggers_replan_when_severe_or_repeated_failures() {
     let records = load_last_k_capacity_records(&engine.session.id, 1).expect("load memory");
     assert!(!records.is_empty());
     assert!(!records[0].canonical_state.goal.is_empty());
-    unsafe {
-        std::env::remove_var("DEEPSEEK_CAPACITY_MEMORY_DIR");
-    }
 }
 
 /// v0.8.11: `CapacityControllerConfig::default()` ships with
@@ -977,13 +1002,9 @@ async fn error_escalation_triggers_replan_when_severe_or_repeated_failures() {
 /// Power users can still opt in via `capacity.enabled = true`.
 #[tokio::test]
 async fn capacity_disabled_by_default_keeps_messages_intact() {
+    let _env_lock = CAPACITY_MEMORY_ENV_LOCK.lock().await;
     let tmp = tempdir().expect("tempdir");
-    unsafe {
-        std::env::set_var(
-            "DEEPSEEK_CAPACITY_MEMORY_DIR",
-            tmp.path().to_string_lossy().to_string(),
-        );
-    }
+    let _env = ScopedCapacityMemoryDir::set(tmp.path());
 
     // Default config — what real users get.
     let mut engine = build_engine_with_capacity(CapacityControllerConfig::default());
@@ -1022,10 +1043,6 @@ async fn capacity_disabled_by_default_keeps_messages_intact() {
     // Capacity is disabled → no replan, no message clear.
     assert!(!restarted);
     assert_eq!(engine.session.messages.len(), before_len);
-
-    unsafe {
-        std::env::remove_var("DEEPSEEK_CAPACITY_MEMORY_DIR");
-    }
 }
 
 #[tokio::test]
