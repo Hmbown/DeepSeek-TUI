@@ -176,16 +176,18 @@ Tools from a self-hosted DeepSeek server follow the standard naming convention:
 
 For example, the `shell` tool becomes `mcp_deepseek_shell`.
 
-### MCP Server vs HTTP/SSE API
+### MCP Server vs HTTP/SSE API vs ACP
 
-| | `deepseek-tui serve --mcp` | `deepseek-tui serve --http` |
-|---|---|---|
-| **Protocol** | MCP stdio | HTTP/SSE JSON-RPC |
-| **Use case** | Tool server for MCP clients | Runtime API for apps |
-| **Config** | `~/.deepseek/mcp.json` entry | Direct URL connection |
-| **Lifecycle** | Spawned per client session | Long-running daemon |
+| | `deepseek-tui serve --mcp` | `deepseek-tui serve --http` | `deepseek-tui serve --acp` |
+|---|---|---|---|
+| **Protocol** | MCP stdio | HTTP/SSE JSON-RPC | ACP stdio |
+| **Use case** | Tool server for MCP clients | Runtime API for apps | Editor agent for Zed/custom ACP clients |
+| **Config** | `~/.deepseek/mcp.json` entry | Direct URL connection | Editor `agent_servers` custom command |
+| **Lifecycle** | Spawned per client session | Long-running daemon | Spawned per editor agent session |
 
-Use `mcp add-self` when you want DeepSeek tools available to other MCP clients. Use `serve --http` when building applications that consume the API directly.
+Use `mcp add-self` when you want DeepSeek tools available to other MCP clients.
+Use `serve --http` when building applications that consume the API directly.
+Use `serve --acp` when an editor wants to talk to DeepSeek as an ACP agent.
 
 ### Verification
 

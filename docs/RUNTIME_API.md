@@ -1,10 +1,11 @@
 # Runtime API & Integration Contract
 
 DeepSeek TUI exposes a local runtime API through `deepseek serve --http` and
-machine-readable health via `deepseek doctor --json`. This document is the
-stable integration contract for native macOS workbench applications (and other
-local supervisors) that embed the DeepSeek engine without screen-scraping
-terminal output.
+machine-readable health via `deepseek doctor --json`. It also exposes
+`deepseek serve --acp` for editor clients that speak the Agent Client Protocol
+over stdio. This document is the stable integration contract for native macOS
+workbench applications (and other local supervisors) that embed the DeepSeek
+engine without screen-scraping terminal output.
 
 ## Architecture
 
@@ -13,12 +14,32 @@ macOS workbench (or any local supervisor)
         │
         ├─ deepseek doctor --json   → machine-readable health & capability
         ├─ deepseek serve --http    → HTTP/SSE runtime API
+        ├─ deepseek serve --acp     → ACP stdio agent for editors such as Zed
         ├─ deepseek serve --mcp     → MCP stdio server
         └─ deepseek [args]          → interactive TUI session
 ```
 
 The engine runs as a local-only process. All APIs bind to `localhost` by
 default. No hosted relay, no provider-token custody, no secret leakage.
+
+## ACP stdio adapter: `deepseek serve --acp`
+
+`deepseek serve --acp` speaks JSON-RPC 2.0 over newline-delimited stdio for
+ACP-compatible editor clients. The initial adapter implements the ACP baseline:
+
+- `initialize`
+- `session/new`
+- `session/prompt`
+- `session/cancel`
+
+Prompt requests are routed through the configured DeepSeek client and current
+default model. Responses are emitted as `session/update` agent message chunks
+followed by a `session/prompt` response with `stopReason: "end_turn"`.
+
+The adapter is intentionally conservative: it does not yet expose shell tools,
+file-write tools, checkpoint replay, or session loading through ACP. Use
+`deepseek serve --http` for the full local runtime API and `deepseek serve --mcp`
+when another client needs DeepSeek's tools as MCP tools.
 
 ## Capability endpoint: `deepseek doctor --json`
 

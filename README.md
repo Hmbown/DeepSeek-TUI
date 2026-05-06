@@ -227,11 +227,34 @@ deepseek resume --last                           # resume the most recent sessio
 deepseek resume <SESSION_ID>                     # resume a specific session by UUID
 deepseek fork <SESSION_ID>                       # fork a session at a chosen turn
 deepseek serve --http                            # HTTP/SSE API server
+deepseek serve --acp                             # ACP stdio adapter for Zed/custom agents
 deepseek pr <N>                                  # fetch PR and pre-seed review prompt
 deepseek mcp list                                # list configured MCP servers
 deepseek mcp validate                            # validate MCP config/connectivity
 deepseek mcp-server                              # run dispatcher MCP stdio server
 ```
+
+### Zed / ACP
+
+DeepSeek can run as a custom Agent Client Protocol server for editors that
+spawn local ACP agents over stdio. In Zed, add a custom agent server:
+
+```json
+{
+  "agent_servers": {
+    "DeepSeek": {
+      "type": "custom",
+      "command": "deepseek",
+      "args": ["serve", "--acp"],
+      "env": {}
+    }
+  }
+}
+```
+
+The first ACP slice supports new sessions and prompt responses through your
+existing DeepSeek config/API key. Tool-backed editing and checkpoint replay are
+not exposed through ACP yet.
 
 ### Keyboard Shortcuts
 
