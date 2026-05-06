@@ -126,7 +126,7 @@ struct Cli {
     #[arg(short, long)]
     resume: Option<String>,
 
-    /// Continue the most recent session
+    /// Continue the most recent session in this workspace
     #[arg(short = 'c', long = "continue")]
     continue_session: bool,
 
@@ -231,7 +231,7 @@ enum Commands {
         /// Conversation/session id (UUID or prefix)
         #[arg(value_name = "SESSION_ID")]
         session_id: Option<String>,
-        /// Continue the most recent session without a picker
+        /// Continue the most recent session in this workspace without a picker
         #[arg(long = "last", default_value_t = false, conflicts_with = "session_id")]
         last: bool,
     },
@@ -240,7 +240,7 @@ enum Commands {
         /// Conversation/session id (UUID or prefix)
         #[arg(value_name = "SESSION_ID")]
         session_id: Option<String>,
-        /// Fork the most recent session without a picker
+        /// Fork the most recent session in this workspace without a picker
         #[arg(long = "last", default_value_t = false, conflicts_with = "session_id")]
         last: bool,
     },
@@ -727,12 +727,14 @@ async fn main() -> Result<()> {
             }
             Commands::Resume { session_id, last } => {
                 let config = load_config_from_cli(&cli)?;
-                let resume_id = resolve_session_id(session_id, last)?;
+                let workspace = resolve_workspace(&cli);
+                let resume_id = resolve_session_id(session_id, last, &workspace)?;
                 run_interactive(&cli, &config, Some(resume_id), None).await
             }
             Commands::Fork { session_id, last } => {
                 let config = load_config_from_cli(&cli)?;
-                let new_session_id = fork_session(session_id, last)?;
+                let workspace = resolve_workspace(&cli);
+                let new_session_id = fork_session(session_id, last, &workspace)?;
                 run_interactive(&cli, &config, Some(new_session_id), None).await
             }
         };
@@ -747,11 +749,8 @@ async fn main() -> Result<()> {
 
     // Handle session resume
     let resume_session_id = if cli.continue_session {
-        // Get most recent session
-        match session_manager::SessionManager::default_location() {
-            Ok(manager) => manager.get_latest_session().ok().flatten().map(|m| m.id),
-            Err(_) => None,
-        }
+        let workspace = resolve_workspace(&cli);
+        latest_session_id_for_workspace(&workspace).ok().flatten()
     } else if let Some(id) = cli.resume.clone() {
         Some(id)
     } else if !cli.fresh {
@@ -2351,7 +2350,7 @@ fn list_sessions(limit: usize, search: Option<String>) -> Result<()> {
         "<session-id>".dimmed()
     );
     println!(
-        "Continue latest: {}",
+        "Continue latest in this workspace: {}",
         "deepseek --continue".truecolor(blue_r, blue_g, blue_b)
     );
 
@@ -2449,9 +2448,14 @@ fn run_logout() -> Result<()> {
     Ok(())
 }
 
-fn resolve_session_id(session_id: Option<String>, last: bool) -> Result<String> {
+fn resolve_session_id(session_id: Option<String>, last: bool, workspace: &Path) -> Result<String> {
     if last {
-        return Ok("latest".to_string());
+        return latest_session_id_for_workspace(workspace)?.ok_or_else(|| {
+            anyhow!(
+                "No saved sessions found for workspace {}. Use `deepseek sessions` to list all sessions, or `deepseek resume <SESSION_ID>` to resume one explicitly.",
+                workspace.display()
+            )
+        });
     }
     if let Some(id) = session_id {
         return Ok(id);
@@ -2459,15 +2463,25 @@ fn resolve_session_id(session_id: Option<String>, last: bool) -> Result<String> 
     pick_session_id()
 }
 
-fn fork_session(session_id: Option<String>, last: bool) -> Result<String> {
+fn latest_session_id_for_workspace(workspace: &Path) -> std::io::Result<Option<String>> {
+    let manager = SessionManager::default_location()?;
+    Ok(manager
+        .get_latest_session_for_workspace(workspace)?
+        .map(|session| session.id))
+}
+
+fn fork_session(session_id: Option<String>, last: bool, workspace: &Path) -> Result<String> {
     let manager = SessionManager::default_location()?;
     let saved = if last {
-        let Some(meta) = manager.get_latest_session()? else {
-            bail!("No saved sessions found.");
+        let Some(meta) = manager.get_latest_session_for_workspace(workspace)? else {
+            bail!(
+                "No saved sessions found for workspace {}.",
+                workspace.display()
+            );
         };
         manager.load_session(&meta.id)?
     } else {
-        let id = resolve_session_id(session_id, false)?;
+        let id = resolve_session_id(session_id, false, workspace)?;
         manager.load_session_by_prefix(&id)?
     };
 
@@ -2618,10 +2632,8 @@ async fn run_pr(
 
     let prompt = format_pr_prompt(number, &view, &diff);
     let resume_session_id = if cli.continue_session {
-        match session_manager::SessionManager::default_location() {
-            Ok(manager) => manager.get_latest_session().ok().flatten().map(|m| m.id),
-            Err(_) => None,
-        }
+        let workspace = resolve_workspace(cli);
+        latest_session_id_for_workspace(&workspace).ok().flatten()
     } else {
         cli.resume.clone()
     };

@@ -252,8 +252,8 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         // Try to load by prefix or full ID
         let load_result: std::io::Result<Option<crate::session_manager::SavedSession>> =
             if session_id == "latest" {
-                // Special case: resume the most recent session
-                match manager.get_latest_session() {
+                // Special case: resume the most recent session in this workspace.
+                match manager.get_latest_session_for_workspace(&options.workspace) {
                     Ok(Some(meta)) => manager.load_session(&meta.id).map(Some),
                     Ok(None) => Ok(None),
                     Err(e) => Err(e),
