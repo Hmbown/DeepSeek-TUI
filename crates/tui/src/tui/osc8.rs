@@ -114,12 +114,41 @@ pub fn strip_ansi_into(s: &str, out: &mut String) {
         // mean nothing in transcript output) but keep \n, \r, \t as legitimate
         // formatting.
         let b = bytes[i];
-        if b < 0x20 && b != b'\n' && b != b'\r' && b != b'\t' {
+        if b < 0x80 {
+            if b < 0x20 && b != b'\n' && b != b'\r' && b != b'\t' {
+                i += 1;
+                continue;
+            }
+            out.push(b as char);
             i += 1;
-            continue;
+        } else {
+            // UTF-8 multi-byte sequence: copy the whole code point intact.
+            // Pushing `b as char` would mis-decode it as Latin-1 and mangle
+            // non-ASCII text (CJK, accented Latin, emoji, …).
+            let len = utf8_seq_len(b);
+            let end = (i + len).min(bytes.len());
+            if let Ok(chunk) = std::str::from_utf8(&bytes[i..end]) {
+                out.push_str(chunk);
+            }
+            i = end;
         }
-        out.push(b as char);
-        i += 1;
+    }
+}
+
+/// Length in bytes of the UTF-8 sequence that starts with `lead`. Falls back
+/// to `1` for continuation bytes / invalid leads so callers always make
+/// forward progress.
+fn utf8_seq_len(lead: u8) -> usize {
+    if lead < 0x80 {
+        1
+    } else if lead < 0xc0 {
+        1
+    } else if lead < 0xe0 {
+        2
+    } else if lead < 0xf0 {
+        3
+    } else {
+        4
     }
 }
 
@@ -154,8 +183,18 @@ pub fn strip_into(s: &str, out: &mut String) {
             i = j;
             continue;
         }
-        out.push(bytes[i] as char);
-        i += 1;
+        let b = bytes[i];
+        if b < 0x80 {
+            out.push(b as char);
+            i += 1;
+        } else {
+            let len = utf8_seq_len(b);
+            let end = (i + len).min(bytes.len());
+            if let Ok(chunk) = std::str::from_utf8(&bytes[i..end]) {
+                out.push_str(chunk);
+            }
+            i = end;
+        }
     }
 }
 
@@ -241,6 +280,23 @@ mod tests {
         // so they can't paint as visible cells.
         let s = "a\x07b\x01c";
         assert_eq!(strip_ansi(s), "abc");
+    }
+
+    #[test]
+    fn strip_ansi_preserves_utf8_multibyte_chars() {
+        // CJK, accented Latin, and emoji must survive the strip without being
+        // re-decoded as Latin-1 (which would explode 你 -> ä½ ).
+        let s = "Phase 1: 第一步 README é 🚀";
+        assert_eq!(strip_ansi(s), "Phase 1: 第一步 README é 🚀");
+
+        let coloured = "\x1b[1;32m第一步\x1b[0m done";
+        assert_eq!(strip_ansi(coloured), "第一步 done");
+    }
+
+    #[test]
+    fn strip_preserves_utf8_multibyte_chars() {
+        let wrapped = wrap_link("https://example.com", "点击我");
+        assert_eq!(strip(&wrapped), "点击我");
     }
 
     #[test]
