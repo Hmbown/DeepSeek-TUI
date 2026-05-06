@@ -17,6 +17,23 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 #[test]
+fn format_resume_hint_uses_canonical_resume_command() {
+    assert_eq!(
+        format_resume_hint(Some("019dd9d6-4f44-7c83-9863-59674a12b827")),
+        Some(
+            "To continue this session, run deepseek resume 019dd9d6-4f44-7c83-9863-59674a12b827"
+                .to_string()
+        )
+    );
+}
+
+#[test]
+fn format_resume_hint_omits_missing_session_id() {
+    assert_eq!(format_resume_hint(None), None);
+    assert_eq!(format_resume_hint(Some("   ")), None);
+}
+
+#[test]
 fn composer_newline_shortcuts_do_not_steal_ctrl_enter() {
     assert!(is_composer_newline_key(KeyEvent::new(
         KeyCode::Char('j'),

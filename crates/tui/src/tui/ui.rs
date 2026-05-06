@@ -447,8 +447,25 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         execute!(terminal.backend_mut(), DisableBracketedPaste)?;
     }
     terminal.show_cursor()?;
+    drop(terminal);
+
+    if result.is_ok()
+        && let Some(hint) = format_resume_hint(app.current_session_id.as_deref())
+    {
+        println!("{hint}");
+    }
 
     result
+}
+
+fn format_resume_hint(session_id: Option<&str>) -> Option<String> {
+    let session_id = session_id?.trim();
+    if session_id.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "To continue this session, run deepseek resume {session_id}"
+    ))
 }
 
 fn terminal_probe_timeout(config: &Config) -> Duration {
