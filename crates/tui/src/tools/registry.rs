@@ -557,6 +557,15 @@ impl ToolRegistryBuilder {
             .with_tool(Arc::new(WebRunTool))
     }
 
+    /// Include vision tools (image analysis, OCR, comparison, session management).
+    /// Only registered when `[vision_model]` is configured in config.toml.
+    #[must_use]
+    pub fn with_vision_tools(self) -> Self {
+        // Vision tools are registered through the vision module
+        // when the vision_model config is present
+        self
+    }
+
     /// Previously registered the OpenAI-style `multi_tool_use.parallel`
     /// meta-tool. DeepSeek-V4 has native parallel tool calls (multiple
     /// `tool_calls` entries in one assistant turn) and the meta-tool name

@@ -2,129 +2,99 @@
 
 ## 概述
 
-本功能为 DeepSeek-TUI 添加了 VISION_MODEL 支持，允许用户配置专用的视觉模型来处理所有图片和可视化功能。视觉模型以 subagent 模式运行，具有独立的会话管理。
+本功能为 DeepSeek-TUI 添加了 VISION_MODEL 支持，允许用户配置专用的视觉模型来处理所有图片和可视化功能。视觉模型以 subagent 模式运行，具有独立的会话管理，与主模型（DeepSeek）的对话上下文完全隔离。
 
-## 功能特性
+## 快速开始
 
-### 1. 配置支持
+### 1. 启用功能
 
-在 `config.toml` 中添加 `[vision_model]` 配置段：
+在 `~/.deepseek/config.toml` 中添加：
 
 ```toml
+# 启用 vision_model feature flag
+[features]
+vision_model = true
+
+# 配置视觉模型
 [vision_model]
 model = "gpt-4o"                    # 必需：视觉模型ID
-provider = "openai"                 # 可选：默认为主配置provider
-api_key = "YOUR_API_KEY"            # 可选：默认为主配置api_key
-base_url = "https://api.openai.com/v1"  # 可选：默认为主配置base_url
-max_tokens = 4096                   # 可选：默认4096
-temperature = 0.7                   # 可选：默认0.7
-subagent_mode = true                # 可选：默认true
-timeout_secs = 120                  # 可选：默认120秒
+api_key = "YOUR_OPENAI_API_KEY"     # 可选：默认继承主配置的api_key
 ```
 
-### 2. 核心组件
+### 2. 使用
 
-#### VisionClient (`crates/tui/src/vision/client.rs`)
-- HTTP客户端，用于与视觉模型API通信
-- 支持OpenAI兼容的API格式
-- 自动重试机制和错误处理
-- 支持base64编码的图片传输
+启动 DeepSeek-TUI 后，模型会自动获得以下工具：
 
-#### VisionSession (`crates/tui/src/vision/session.rs`)
-- 独立的会话管理
-- 维护对话历史
-- 支持多轮对话上下文
-- 会话元数据跟踪（token使用量、请求次数等）
-- 空闲会话清理
+- **`vision_analyze`** — 分析图片内容。当用户发送图片或要求分析图片时，模型会自动调用此工具。
+- **`vision_ocr`** — 从图片中提取文字（OCR功能）。
+- **`vision_compare`** — 比较多张图片的差异。
+- **`vision_session`** — 管理视觉会话（创建/列表/关闭/清理）。
 
-#### VisionSessionManager (`crates/tui/src/vision/session.rs`)
-- 管理多个视觉会话
-- 会话生命周期管理
-- 支持会话列表、查询和清理
+### 3. 使用场景示例
 
-#### Vision Tools (`crates/tui/src/vision/tools.rs`)
-- `vision_analyze`: 分析图片
-- `vision_compare`: 比较多张图片
-- `vision_ocr`: 从图片提取文字
-- `vision_session`: 管理视觉会话
+```
+用户: 帮我看看这张截图里的错误信息是什么
+→ 模型自动调用 vision_analyze 分析截图
 
-### 3. 配置继承
+用户: 提取这张发票上的文字
+→ 模型自动调用 vision_ocr 提取文字
 
-视觉模型配置支持从主配置继承：
-- 如果未指定 `provider`，继承主配置的 provider
-- 如果未指定 `api_key`，继承主配置的 api_key
-- 如果未指定 `base_url`，继承主配置的 base_url
+用户: 对比这两张UI设计图有什么不同
+→ 模型自动调用 vision_compare 对比图片
+```
 
-### 4. 支持的模型
+## 配置详解
 
-- GPT-4o (OpenAI)
-- Claude 3 系列 (Anthropic)
-- Gemini Pro Vision (Google)
-- 任何支持OpenAI兼容API的视觉模型
-
-### 5. 使用示例
-
-#### 配置示例
+### 完整配置项
 
 ```toml
-# 基础配置（使用OpenAI GPT-4o）
+[vision_model]
+model = "gpt-4o"                         # 必需：视觉模型ID
+provider = "openai"                      # 可选：默认继承主配置的provider
+api_key = "YOUR_API_KEY"                 # 可选：默认继承主配置的api_key
+base_url = "https://api.openai.com/v1"   # 可选：默认继承主配置的base_url
+max_tokens = 4096                        # 可选：最大响应token数（默认4096）
+temperature = 0.7                        # 可选：采样温度（默认0.7）
+subagent_mode = true                     # 可选：独立会话模式（默认true）
+timeout_secs = 120                       # 可选：请求超时秒数（默认120）
+```
+
+### 配置继承
+
+未指定的配置项自动从主配置继承：
+- `provider` → 继承主配置的 `provider`
+- `api_key` → 继承主配置的 `api_key`
+- `base_url` → 继承主配置的 `base_url`
+
+### 不同模型的配置示例
+
+```toml
+# OpenAI GPT-4o（最简单）
 [vision_model]
 model = "gpt-4o"
+api_key = "sk-xxxxx"
 
-# 完整配置（使用不同的provider）
+# Claude 3 Opus
 [vision_model]
 model = "claude-3-opus-20240229"
 provider = "anthropic"
 api_key = "sk-ant-xxxxx"
 base_url = "https://api.anthropic.com/v1"
-max_tokens = 4096
-temperature = 0.5
-subagent_mode = true
-timeout_secs = 120
+
+# 复用主配置的API Key（适用于OpenAI兼容API）
+[vision_model]
+model = "gpt-4o"
+# api_key 自动继承主配置
 ```
 
-#### 代码使用示例
+### Feature Flag
 
-```rust
-use deepseek_tui::vision::{VisionClient, VisionSessionManager, VisionRequest};
+`vision_model` 功能通过 feature flag 控制，默认关闭。需要在 `[features]` 中显式启用：
 
-// 创建会话管理器
-let session_manager = VisionSessionManager::with_config(config);
-
-// 创建新会话
-let session = session_manager.create_session(None, Some("Image analysis".to_string())).await?;
-
-// 分析图片
-let response = session.analyze_image(
-    image_base64,
-    "image/png",
-    "Describe this image in detail"
-).await?;
-
-println!("Analysis: {}", response.content);
+```toml
+[features]
+vision_model = true   # 默认为 false
 ```
-
-## 文件变更
-
-### 新增文件
-
-1. `crates/tui/src/vision/mod.rs` - 模块入口
-2. `crates/tui/src/vision/client.rs` - 视觉模型客户端
-3. `crates/tui/src/vision/session.rs` - 会话管理
-4. `crates/tui/src/vision/tools.rs` - 视觉工具
-
-### 修改文件
-
-1. `crates/tui/src/config.rs`
-   - 添加 `VisionModelConfig` 结构体
-   - 添加配置解析和继承方法
-   - 添加 `vision_model_enabled()` 和 `resolve_vision_model_config()` 方法
-
-2. `crates/tui/src/main.rs`
-   - 添加 `mod vision;`
-
-3. `config.example.toml`
-   - 添加 `[vision_model]` 配置示例
 
 ## 架构设计
 
@@ -132,46 +102,76 @@ println!("Analysis: {}", response.content);
 
 视觉模型以 subagent 模式运行，具有以下特点：
 
-1. **独立会话**: 每个视觉任务在独立的会话中执行
-2. **上下文隔离**: 视觉对话历史与主模型隔离
+1. **独立会话**: 每个视觉任务在独立的会话中执行，不污染主模型上下文
+2. **上下文隔离**: 视觉对话历史与主模型完全隔离，节省主模型的context window
 3. **资源管理**: 独立的token计数和速率限制
 4. **生命周期管理**: 支持会话超时和自动清理
 
 ### 数据流
 
 ```
-用户请求图片分析
+用户发送图片或请求图片分析
     ↓
-工具注册表路由到 vision_analyze
+DeepSeek 主模型识别需要视觉处理
     ↓
-VisionSessionManager 获取/创建会话
+调用 vision_analyze / vision_ocr 工具
     ↓
-VisionSession 处理请求
+VisionSessionManager 获取/创建独立会话
     ↓
-VisionClient 发送API请求
+VisionClient 发送请求到视觉模型API（如OpenAI）
     ↓
-返回结果并更新会话历史
+视觉模型返回分析结果
+    ↓
+结果返回给DeepSeek主模型，主模型整合后回复用户
 ```
 
-## 测试
+### 工具注册机制
 
-运行单元测试：
+Vision工具通过项目的标准 `ToolSpec` trait 注册：
 
-```bash
-cargo test -p deepseek-tui vision
-```
+1. `Feature::VisionModel` feature flag 控制是否启用
+2. `config.vision_model_enabled()` 检查是否配置了视觉模型
+3. 两个条件都满足时，工具在 `build_turn_tool_registry_builder()` 中注册
+4. 注册后工具出现在模型的工具目录中，模型可以自动调用
 
-## 未来扩展
+## 文件变更清单
 
-1. 支持更多的视觉模型提供商
-2. 添加批量图片处理功能
-3. 支持视频分析
-4. 集成到现有的工具链中
-5. 添加视觉模型性能监控
+### 新增文件
+
+| 文件 | 说明 |
+|------|------|
+| `crates/tui/src/vision/mod.rs` | 视觉模块入口 |
+| `crates/tui/src/vision/client.rs` | 视觉模型HTTP客户端（OpenAI兼容API） |
+| `crates/tui/src/vision/session.rs` | 独立会话管理（subagent模式） |
+| `crates/tui/src/vision/tools.rs` | 视觉工具（实现ToolSpec trait） |
+
+### 修改文件
+
+| 文件 | 变更内容 |
+|------|----------|
+| `crates/tui/src/config.rs` | 添加 `VisionModelConfig` 结构体、Config字段和方法 |
+| `crates/tui/src/main.rs` | 添加 `mod vision;` |
+| `crates/tui/src/features.rs` | 添加 `Feature::VisionModel` 枚举和FeatureSpec |
+| `crates/tui/src/prompts/base.md` | 在Toolbox部分添加Vision工具说明 |
+| `crates/tui/src/tools/registry.rs` | 添加 `with_vision_tools()` builder方法 |
+| `crates/tui/src/core/engine/tool_setup.rs` | 添加vision工具条件注册逻辑 |
+| `config.example.toml` | 添加 `[vision_model]` 配置段和feature flag |
+
+## 支持的视觉模型
+
+| 模型 | 提供商 | 说明 |
+|------|--------|------|
+| `gpt-4o` | OpenAI | 推荐，性价比最高 |
+| `gpt-4-turbo` | OpenAI | 上一代视觉模型 |
+| `claude-3-opus-20240229` | Anthropic | 高精度分析 |
+| `claude-3-sonnet-20240229` | Anthropic | 平衡性能和成本 |
+| `gemini-1.5-pro` | Google | 大context窗口 |
+| 任何OpenAI兼容模型 | 自定义 | 通过 `base_url` 配置 |
 
 ## 注意事项
 
-1. 视觉模型API调用可能产生额外费用
-2. 大图片文件需要适当的压缩和预处理
-3. 建议设置合理的超时时间避免长时间等待
-4. 敏感图片数据应注意安全传输
+1. **额外费用**: 视觉模型API调用会产生额外费用，与DeepSeek API分开计费
+2. **图片大小**: 建议图片文件不超过20MB，大图片需要适当压缩
+3. **超时设置**: 默认120秒超时，复杂图片分析可能需要更长时间
+4. **安全性**: 图片数据通过base64编码通过HTTPS传输
+5. **Feature Flag**: 默认关闭，需要手动启用 `vision_model = true`

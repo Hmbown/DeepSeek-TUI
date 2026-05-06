@@ -10,3 +10,4 @@ pub mod tools;
 
 pub use client::{VisionClient, VisionClientConfig, VisionRequest, VisionResponse};
 pub use session::{VisionSession, VisionSessionHandle, VisionSessionManager};
+pub use tools::{VisionAnalyzeTool, VisionOcrTool};
