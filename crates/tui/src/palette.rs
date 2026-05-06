@@ -167,17 +167,32 @@ impl ColorDepth {
                 return Self::TrueColor;
             }
         }
+        if std::env::var_os("WT_SESSION").is_some() {
+            return Self::TrueColor;
+        }
+        if let Ok(term_program) = std::env::var("TERM_PROGRAM") {
+            let term_program = term_program.to_ascii_lowercase();
+            if term_program.contains("iterm")
+                || term_program.contains("wezterm")
+                || term_program.contains("vscode")
+                || term_program.contains("warp")
+            {
+                return Self::TrueColor;
+            }
+        }
         let term = std::env::var("TERM").unwrap_or_default();
         let term = term.to_ascii_lowercase();
-        if term.contains("256") {
+        if term.contains("truecolor") || term.contains("24bit") {
+            Self::TrueColor
+        } else if term.contains("256") {
             Self::Ansi256
         } else if term.is_empty() || term == "dumb" {
             Self::Ansi16
         } else {
-            // Conservative default for unknown TERM strings — most modern
-            // terminals advertise truecolor, but if we're wrong here, dropping
-            // bg tints is the safe failure mode.
-            Self::TrueColor
+            // Unknown TERM strings should not receive 24-bit SGR by default.
+            // Older macOS/remote terminals can render truecolor backgrounds as
+            // bright cyan blocks; 256-color output is the safer compromise.
+            Self::Ansi256
         }
     }
 }
@@ -314,13 +329,13 @@ fn nearest_ansi16(r: u8, g: u8, b: u8) -> Color {
         } else {
             Color::Green
         }
-    } else if r > g + 24 {
+    } else if r.saturating_add(48) >= b && r > g + 24 {
         if bright {
             Color::LightMagenta
         } else {
             Color::Magenta
         }
-    } else if g > r + 24 {
+    } else if g.saturating_add(48) >= b && g > r + 24 {
         if bright {
             Color::LightCyan
         } else {
@@ -414,10 +429,10 @@ mod tests {
 
     #[test]
     fn adapt_color_drops_to_named_on_ansi16() {
-        // Sky: light blue with strong blue dominance and lum>144 → LightCyan.
+        // Sky: blue-dominant and bright → LightBlue, not terminal cyan.
         assert_eq!(
             adapt_color(DEEPSEEK_SKY, ColorDepth::Ansi16),
-            Color::LightCyan
+            Color::LightBlue
         );
         // Red: red-dominant, mid lum → Red (not the bright variant).
         assert_eq!(adapt_color(DEEPSEEK_RED, ColorDepth::Ansi16), Color::Red);
@@ -489,10 +504,12 @@ mod tests {
 
     #[test]
     fn nearest_ansi16_routes_known_brand_colors() {
-        // Blue at lum 134 with strong b-dominance lands on Cyan (pure named
-        // Blue is too dark to read as the brand colour at this lightness).
-        assert_eq!(nearest_ansi16(53, 120, 229), Color::Cyan);
-        assert_eq!(nearest_ansi16(106, 174, 242), Color::LightCyan);
+        // Blue-dominant brand colors should stay blue rather than collapsing
+        // to the user's terminal cyan, which is often much louder.
+        assert_eq!(nearest_ansi16(53, 120, 229), Color::Blue);
+        assert_eq!(nearest_ansi16(106, 174, 242), Color::LightBlue);
+        assert_eq!(nearest_ansi16(42, 74, 127), Color::Blue);
+        assert_eq!(nearest_ansi16(54, 187, 212), Color::LightCyan);
         assert_eq!(nearest_ansi16(226, 80, 96), Color::Red);
         assert_eq!(nearest_ansi16(11, 21, 38), Color::Black);
     }

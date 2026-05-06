@@ -1,6 +1,6 @@
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{buffer::Buffer, layout::Rect};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::fmt;
 
 use crate::localization::{Locale, MessageId, tr};
@@ -551,6 +551,7 @@ pub struct ConfigView {
     status: Option<String>,
     locale: Locale,
     last_visible_rows: Cell<usize>,
+    last_row_hitboxes: RefCell<Vec<(u16, usize)>>,
 }
 
 impl ConfigView {
@@ -698,6 +699,7 @@ impl ConfigView {
             status: None,
             locale: app.ui_locale,
             last_visible_rows: Cell::new(0),
+            last_row_hitboxes: RefCell::new(Vec::new()),
         }
     }
 
@@ -1147,6 +1149,27 @@ impl ModalView for ConfigView {
         }
     }
 
+    fn handle_mouse(&mut self, mouse: MouseEvent) -> ViewAction {
+        if self.editing.is_some() {
+            return ViewAction::None;
+        }
+        if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+            return ViewAction::None;
+        }
+
+        let selected = self
+            .last_row_hitboxes
+            .borrow()
+            .iter()
+            .find_map(|(y, row_idx)| (*y == mouse.row).then_some(*row_idx));
+        if let Some(row_idx) = selected {
+            self.selected = row_idx;
+            self.status = None;
+            self.adjust_scroll(self.visible_rows_cached());
+        }
+        ViewAction::None
+    }
+
     fn render(&self, area: Rect, buf: &mut Buffer) {
         use ratatui::{
             prelude::Stylize,
@@ -1241,6 +1264,7 @@ impl ModalView for ConfigView {
                 Line::from("  Key                 Value                                    Scope"),
                 Line::from("  ----------------------------------------------------------------"),
             ];
+            let mut row_hitboxes = Vec::new();
 
             for item in items.iter().skip(start).take(visible_rows) {
                 match item {
@@ -1254,11 +1278,14 @@ impl ModalView for ConfigView {
                         let Some(row) = self.rows.get(*idx) else {
                             continue;
                         };
+                        let line_y = inner.y.saturating_add(lines.len() as u16);
+                        row_hitboxes.push((line_y, *idx));
                         let selected = *idx == self.selected;
                         let style = if selected {
                             Style::default()
-                                .fg(palette::SELECTION_TEXT)
-                                .bg(palette::SELECTION_BG)
+                                .fg(ratatui::style::Color::White)
+                                .bg(palette::DEEPSEEK_BLUE)
+                                .add_modifier(ratatui::style::Modifier::BOLD)
                         } else {
                             Style::default().fg(palette::TEXT_PRIMARY)
                         };
@@ -1274,6 +1301,7 @@ impl ModalView for ConfigView {
                     }
                 }
             }
+            *self.last_row_hitboxes.borrow_mut() = row_hitboxes;
 
             if items.is_empty() {
                 let message = if self.filter.is_empty() {
@@ -1719,7 +1747,9 @@ mod tests {
     use crate::config::Config;
     use crate::localization::Locale;
     use crate::tui::app::{App, TuiOptions};
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use crossterm::event::{
+        KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
     use ratatui::{buffer::Buffer, layout::Rect};
     use std::path::PathBuf;
 
@@ -1957,6 +1987,40 @@ mod tests {
             other => panic!("expected config update emit, got {other:?}"),
         }
         assert!(view.editing.is_none());
+    }
+
+    #[test]
+    fn config_view_mouse_click_selects_row() {
+        let app = create_test_app();
+        let mut view = ConfigView::new_for_app(&app);
+        let area = Rect::new(0, 0, 100, 30);
+        let mut buf = Buffer::empty(area);
+        view.render(area, &mut buf);
+
+        let hitboxes = view.last_row_hitboxes.borrow().clone();
+        let (_, row_idx) = hitboxes
+            .iter()
+            .find(|(_, idx)| {
+                view.rows
+                    .get(*idx)
+                    .is_some_and(|row| row.key == "default_model")
+            })
+            .copied()
+            .expect("default_model row should have a hitbox");
+        let y = hitboxes
+            .iter()
+            .find_map(|(y, idx)| (*idx == row_idx).then_some(*y))
+            .expect("selected row should have a y coordinate");
+
+        let action = view.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 20,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        });
+
+        assert!(matches!(action, ViewAction::None));
+        assert_eq!(view.selected, row_idx);
     }
 
     #[test]

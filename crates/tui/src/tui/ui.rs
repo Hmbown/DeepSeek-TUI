@@ -1842,6 +1842,24 @@ async fn run_event_loop(
                 continue;
             }
 
+            if !app.view_stack.is_empty() {
+                let events = app.view_stack.handle_key(key);
+                if handle_view_events(
+                    terminal,
+                    app,
+                    config,
+                    &task_manager,
+                    &mut engine_handle,
+                    &mut web_config_session,
+                    events,
+                )
+                .await?
+                {
+                    return Ok(());
+                }
+                continue;
+            }
+
             // File-tree navigation: intercept keys when the file-tree pane is
             // visible so Up/Down/Enter/Esc operate on the tree rather than
             // falling through to composer or modal handlers.
@@ -1883,24 +1901,6 @@ async fn run_event_loop(
                     }
                     _ => {}
                 }
-            }
-
-            if !app.view_stack.is_empty() {
-                let events = app.view_stack.handle_key(key);
-                if handle_view_events(
-                    terminal,
-                    app,
-                    config,
-                    &task_manager,
-                    &mut engine_handle,
-                    &mut web_config_session,
-                    events,
-                )
-                .await?
-                {
-                    return Ok(());
-                }
-                continue;
             }
 
             if app.is_history_search_active() {
@@ -6692,7 +6692,8 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) -> Vec<ViewEvent> {
     }
 
     if !app.view_stack.is_empty() {
-        return Vec::new();
+        app.needs_redraw = true;
+        return app.view_stack.handle_mouse(mouse);
     }
 
     match mouse.kind {
