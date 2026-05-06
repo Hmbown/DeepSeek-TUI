@@ -86,6 +86,131 @@ pub fn exit() -> CommandResult {
     CommandResult::action(AppAction::Quit)
 }
 
+/// Pin a file to be re-read and injected into context at every turn (#528).
+pub fn pin_command(app: &mut App, arg: Option<&str>) -> CommandResult {
+    let path_str = match arg {
+        Some(p) if !p.trim().is_empty() => p.trim(),
+        _ => {
+            // No argument: list pinned files
+            if app.resident_files.is_empty() {
+                return CommandResult::message(
+                    "No files pinned. Use /pin <file> to pin a file that will be \
+                     re-read and injected into context at the start of every turn.\n\
+                     Use /unpin <file> to remove one.",
+                );
+            }
+            let mut msg = format!(
+                "Pinned files ({}):\n",
+                app.resident_files.len()
+            );
+            for (i, p) in app.resident_files.iter().enumerate() {
+                msg.push_str(&format!("  {}. {}\n", i + 1, p.display()));
+            }
+            msg.push_str("\nUse /pin <file> to pin more, /unpin <file> to remove one.");
+            return CommandResult::message(msg);
+        }
+    };
+    let path = std::path::PathBuf::from(path_str);
+    let canonical = if path.is_absolute() {
+        path
+    } else {
+        app.workspace.join(&path)
+    };
+
+    if !canonical.exists() {
+        return CommandResult::error(format!(
+            "File not found: {}",
+            canonical.display()
+        ));
+    }
+    if !canonical.is_file() {
+        return CommandResult::error(format!(
+            "Not a file: {}",
+            canonical.display()
+        ));
+    }
+
+    // Check for duplicates
+    if app.resident_files.contains(&canonical) {
+        return CommandResult::message(format!(
+            "Already pinned: {}",
+            canonical.display()
+        ));
+    }
+
+    app.resident_files.push(canonical.clone());
+    // Read content immediately to populate cache
+    match std::fs::read_to_string(&canonical) {
+        Ok(content) => {
+            app.resident_file_cache.insert(canonical.clone(), content);
+            CommandResult::message(format!(
+                "Pinned {} ({} files pinned)",
+                canonical.display(),
+                app.resident_files.len(),
+            ))
+        }
+        Err(e) => {
+            // Remove from resident list since we couldn't read it
+            app.resident_files.pop();
+            CommandResult::error(format!(
+                "Cannot read file {}: {}",
+                canonical.display(),
+                e
+            ))
+        }
+    }
+}
+
+/// Unpin a file so it is no longer re-read and injected into context (#528).
+pub fn unpin_command(app: &mut App, arg: Option<&str>) -> CommandResult {
+    let path_str = match arg {
+        Some(p) if !p.trim().is_empty() => p.trim(),
+        _ => {
+            return CommandResult::error(
+                "Usage: /unpin <file>\n\nRemove a file from the resident set. \
+                 Use /pin <file> to add one.",
+            );
+        }
+    };
+
+    if app.resident_files.is_empty() {
+        return CommandResult::message("No files are currently pinned.");
+    }
+
+    let path = std::path::PathBuf::from(path_str);
+    let is_absolute = path.is_absolute();
+    let target = if is_absolute {
+        path.clone()
+    } else {
+        app.workspace.join(&path)
+    };
+
+    // Try exact match first, then suffix match
+    let pos = app.resident_files.iter().position(|p| *p == target);
+    let pos = pos.or_else(|| {
+        app.resident_files
+            .iter()
+            .position(|p| p.ends_with(&path))
+    });
+
+    match pos {
+        Some(idx) => {
+            let removed = app.resident_files.remove(idx);
+            app.resident_file_cache.remove(&removed);
+            CommandResult::message(format!(
+                "Unpinned {} ({} files pinned)",
+                removed.display(),
+                app.resident_files.len(),
+            ))
+        }
+        None => CommandResult::error(format!(
+            "No pinned file matches: {}. Use `/pin <file>` to pin files. \
+             Run `/pin` with no arguments to see the list.",
+            path_str
+        )),
+    }
+}
+
 /// Switch or view current model. With no argument, open the two-pane
 /// picker (Pro/Flash + thinking effort) per #39 — gives users a discoverable
 /// way to flip both knobs without memorising the docs.
