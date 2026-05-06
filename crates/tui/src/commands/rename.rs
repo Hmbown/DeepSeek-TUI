@@ -20,9 +20,7 @@ pub fn rename(app: &mut App, arg: Option<&str>) -> CommandResult {
     };
 
     if new_title.chars().count() > MAX_TITLE_LEN {
-        return CommandResult::error(format!(
-            "Title too long (max {MAX_TITLE_LEN} characters)"
-        ));
+        return CommandResult::error(format!("Title too long (max {MAX_TITLE_LEN} characters)"));
     }
 
     let session_id = match &app.current_session_id {
@@ -42,7 +40,12 @@ pub fn rename(app: &mut App, arg: Option<&str>) -> CommandResult {
     rename_with_manager(new_title, &session_id, &manager, app)
 }
 
-fn rename_with_manager(new_title: &str, session_id: &str, manager: &SessionManager, app: &App) -> CommandResult {
+fn rename_with_manager(
+    new_title: &str,
+    session_id: &str,
+    manager: &SessionManager,
+    app: &App,
+) -> CommandResult {
     let mut session = match manager.load_session(session_id) {
         Ok(s) => s,
         Err(e) => return CommandResult::error(format!("Could not load session: {e}")),
@@ -146,14 +149,8 @@ mod tests {
         let manager = make_session_manager(&tmp);
         let app = make_app(&tmp);
 
-        let session = create_saved_session_with_mode(
-            &[],
-            "deepseek-v4-pro",
-            tmp.path(),
-            0,
-            None,
-            None,
-        );
+        let session =
+            create_saved_session_with_mode(&[], "deepseek-v4-pro", tmp.path(), 0, None, None);
         let session_id = session.metadata.id.clone();
         manager.save_session(&session).unwrap();
 
@@ -171,14 +168,8 @@ mod tests {
         let manager = make_session_manager(&tmp);
         let app = make_app(&tmp);
 
-        let session = create_saved_session_with_mode(
-            &[],
-            "deepseek-v4-pro",
-            tmp.path(),
-            0,
-            None,
-            None,
-        );
+        let session =
+            create_saved_session_with_mode(&[], "deepseek-v4-pro", tmp.path(), 0, None, None);
         let session_id = session.metadata.id.clone();
         manager.save_session(&session).unwrap();
 
