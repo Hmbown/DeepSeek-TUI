@@ -64,6 +64,16 @@ key, base URL, provider, and model to the TUI process. Use
 save hosted-provider keys through the facade. SGLang and vLLM are self-hosted and can run
 without an API key by default.
 
+Third-party OpenAI-compatible gateways that need extra request headers can set
+`http_headers = { "X-Model-Provider-Id" = "your-model-provider" }` at the top
+level or under a provider table such as `[providers.deepseek]`. When configured,
+DeepSeek TUI sends those custom headers on model API requests. The equivalent
+environment override is `DEEPSEEK_HTTP_HEADERS`, using comma-separated
+`name=value` pairs such as
+`X-Model-Provider-Id=your-model-provider,X-Gateway-Route=dev`. `Authorization`
+and `Content-Type` are managed by the client and are not overridden by this
+setting.
+
 To bootstrap MCP and skills directories at their resolved paths, run `deepseek-tui setup`.
 To only scaffold MCP, run `deepseek-tui mcp init`.
 
@@ -119,6 +129,7 @@ These override config values:
 
 - `DEEPSEEK_API_KEY`
 - `DEEPSEEK_BASE_URL`
+- `DEEPSEEK_HTTP_HEADERS` (custom model request headers, comma-separated `name=value` pairs)
 - `DEEPSEEK_PROVIDER` (`deepseek|nvidia-nim|openrouter|novita|fireworks|sglang|vllm`)
 - `DEEPSEEK_MODEL` or `DEEPSEEK_DEFAULT_TEXT_MODEL`
 - `NVIDIA_API_KEY` or `NVIDIA_NIM_API_KEY` (preferred when provider is `nvidia-nim`; falls back to `DEEPSEEK_API_KEY`)

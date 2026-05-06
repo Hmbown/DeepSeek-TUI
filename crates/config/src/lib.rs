@@ -86,6 +86,8 @@ pub struct ProviderConfigToml {
     pub api_key: Option<String>,
     pub base_url: Option<String>,
     pub model: Option<String>,
+    #[serde(default)]
+    pub http_headers: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -144,6 +146,9 @@ pub struct ConfigToml {
     pub api_key: Option<String>,
     /// TUI-compatible DeepSeek base URL.
     pub base_url: Option<String>,
+    /// Optional extra HTTP headers forwarded to model API requests.
+    #[serde(default)]
+    pub http_headers: BTreeMap<String, String>,
     /// TUI-compatible default DeepSeek model.
     pub default_text_model: Option<String>,
     #[serde(default)]
@@ -294,6 +299,9 @@ impl ConfigToml {
         if project.base_url.is_some() {
             self.base_url = project.base_url;
         }
+        if !project.http_headers.is_empty() {
+            self.http_headers = project.http_headers;
+        }
         if project.default_text_model.is_some() {
             self.default_text_model = project.default_text_model;
         }
@@ -359,6 +367,7 @@ impl ConfigToml {
             "provider" => Some(self.provider.as_str().to_string()),
             "api_key" => self.api_key.clone(),
             "base_url" => self.base_url.clone(),
+            "http_headers" => serialize_http_headers(&self.http_headers),
             "default_text_model" => self.default_text_model.clone(),
             "model" => self.model.clone(),
             "auth.mode" => self.auth_mode.clone(),
@@ -372,27 +381,51 @@ impl ConfigToml {
             "providers.deepseek.api_key" => self.providers.deepseek.api_key.clone(),
             "providers.deepseek.base_url" => self.providers.deepseek.base_url.clone(),
             "providers.deepseek.model" => self.providers.deepseek.model.clone(),
+            "providers.deepseek.http_headers" => {
+                serialize_http_headers(&self.providers.deepseek.http_headers)
+            }
             "providers.nvidia_nim.api_key" => self.providers.nvidia_nim.api_key.clone(),
             "providers.nvidia_nim.base_url" => self.providers.nvidia_nim.base_url.clone(),
             "providers.nvidia_nim.model" => self.providers.nvidia_nim.model.clone(),
+            "providers.nvidia_nim.http_headers" => {
+                serialize_http_headers(&self.providers.nvidia_nim.http_headers)
+            }
             "providers.openai.api_key" => self.providers.openai.api_key.clone(),
             "providers.openai.base_url" => self.providers.openai.base_url.clone(),
             "providers.openai.model" => self.providers.openai.model.clone(),
+            "providers.openai.http_headers" => {
+                serialize_http_headers(&self.providers.openai.http_headers)
+            }
             "providers.openrouter.api_key" => self.providers.openrouter.api_key.clone(),
             "providers.openrouter.base_url" => self.providers.openrouter.base_url.clone(),
             "providers.openrouter.model" => self.providers.openrouter.model.clone(),
+            "providers.openrouter.http_headers" => {
+                serialize_http_headers(&self.providers.openrouter.http_headers)
+            }
             "providers.novita.api_key" => self.providers.novita.api_key.clone(),
             "providers.novita.base_url" => self.providers.novita.base_url.clone(),
             "providers.novita.model" => self.providers.novita.model.clone(),
+            "providers.novita.http_headers" => {
+                serialize_http_headers(&self.providers.novita.http_headers)
+            }
             "providers.fireworks.api_key" => self.providers.fireworks.api_key.clone(),
             "providers.fireworks.base_url" => self.providers.fireworks.base_url.clone(),
             "providers.fireworks.model" => self.providers.fireworks.model.clone(),
+            "providers.fireworks.http_headers" => {
+                serialize_http_headers(&self.providers.fireworks.http_headers)
+            }
             "providers.sglang.api_key" => self.providers.sglang.api_key.clone(),
             "providers.sglang.base_url" => self.providers.sglang.base_url.clone(),
             "providers.sglang.model" => self.providers.sglang.model.clone(),
+            "providers.sglang.http_headers" => {
+                serialize_http_headers(&self.providers.sglang.http_headers)
+            }
             "providers.vllm.api_key" => self.providers.vllm.api_key.clone(),
             "providers.vllm.base_url" => self.providers.vllm.base_url.clone(),
             "providers.vllm.model" => self.providers.vllm.model.clone(),
+            "providers.vllm.http_headers" => {
+                serialize_http_headers(&self.providers.vllm.http_headers)
+            }
             _ => self.extras.get(key).map(toml::Value::to_string),
         }
     }
@@ -405,6 +438,7 @@ impl ConfigToml {
             }
             "api_key" => self.api_key = Some(value.to_string()),
             "base_url" => self.base_url = Some(value.to_string()),
+            "http_headers" => self.http_headers = parse_http_headers(value)?,
             "default_text_model" => self.default_text_model = Some(value.to_string()),
             "model" => self.model = Some(value.to_string()),
             "auth.mode" => self.auth_mode = Some(value.to_string()),
@@ -432,9 +466,17 @@ impl ConfigToml {
                 self.providers.deepseek.model = Some(value.clone());
                 self.default_text_model = Some(value);
             }
+            "providers.deepseek.http_headers" => {
+                let headers = parse_http_headers(value)?;
+                self.providers.deepseek.http_headers = headers.clone();
+                self.http_headers = headers;
+            }
             "providers.openai.api_key" => self.providers.openai.api_key = Some(value.to_string()),
             "providers.openai.base_url" => self.providers.openai.base_url = Some(value.to_string()),
             "providers.openai.model" => self.providers.openai.model = Some(value.to_string()),
+            "providers.openai.http_headers" => {
+                self.providers.openai.http_headers = parse_http_headers(value)?;
+            }
             "providers.nvidia_nim.api_key" => {
                 self.providers.nvidia_nim.api_key = Some(value.to_string());
             }
@@ -443,6 +485,9 @@ impl ConfigToml {
             }
             "providers.nvidia_nim.model" => {
                 self.providers.nvidia_nim.model = Some(value.to_string());
+            }
+            "providers.nvidia_nim.http_headers" => {
+                self.providers.nvidia_nim.http_headers = parse_http_headers(value)?;
             }
             "providers.openrouter.api_key" => {
                 self.providers.openrouter.api_key = Some(value.to_string());
@@ -453,6 +498,9 @@ impl ConfigToml {
             "providers.openrouter.model" => {
                 self.providers.openrouter.model = Some(value.to_string());
             }
+            "providers.openrouter.http_headers" => {
+                self.providers.openrouter.http_headers = parse_http_headers(value)?;
+            }
             "providers.novita.api_key" => {
                 self.providers.novita.api_key = Some(value.to_string());
             }
@@ -461,6 +509,9 @@ impl ConfigToml {
             }
             "providers.novita.model" => {
                 self.providers.novita.model = Some(value.to_string());
+            }
+            "providers.novita.http_headers" => {
+                self.providers.novita.http_headers = parse_http_headers(value)?;
             }
             "providers.fireworks.api_key" => {
                 self.providers.fireworks.api_key = Some(value.to_string());
@@ -471,6 +522,9 @@ impl ConfigToml {
             "providers.fireworks.model" => {
                 self.providers.fireworks.model = Some(value.to_string());
             }
+            "providers.fireworks.http_headers" => {
+                self.providers.fireworks.http_headers = parse_http_headers(value)?;
+            }
             "providers.sglang.api_key" => {
                 self.providers.sglang.api_key = Some(value.to_string());
             }
@@ -480,6 +534,9 @@ impl ConfigToml {
             "providers.sglang.model" => {
                 self.providers.sglang.model = Some(value.to_string());
             }
+            "providers.sglang.http_headers" => {
+                self.providers.sglang.http_headers = parse_http_headers(value)?;
+            }
             "providers.vllm.api_key" => {
                 self.providers.vllm.api_key = Some(value.to_string());
             }
@@ -488,6 +545,9 @@ impl ConfigToml {
             }
             "providers.vllm.model" => {
                 self.providers.vllm.model = Some(value.to_string());
+            }
+            "providers.vllm.http_headers" => {
+                self.providers.vllm.http_headers = parse_http_headers(value)?;
             }
             _ => {
                 self.extras
@@ -502,6 +562,7 @@ impl ConfigToml {
             "provider" => self.provider = ProviderKind::Deepseek,
             "api_key" => self.api_key = None,
             "base_url" => self.base_url = None,
+            "http_headers" => self.http_headers.clear(),
             "default_text_model" => self.default_text_model = None,
             "model" => self.model = None,
             "auth.mode" => self.auth_mode = None,
@@ -524,27 +585,38 @@ impl ConfigToml {
                 self.providers.deepseek.model = None;
                 self.default_text_model = None;
             }
+            "providers.deepseek.http_headers" => {
+                self.providers.deepseek.http_headers.clear();
+                self.http_headers.clear();
+            }
             "providers.openai.api_key" => self.providers.openai.api_key = None,
             "providers.openai.base_url" => self.providers.openai.base_url = None,
             "providers.openai.model" => self.providers.openai.model = None,
+            "providers.openai.http_headers" => self.providers.openai.http_headers.clear(),
             "providers.nvidia_nim.api_key" => self.providers.nvidia_nim.api_key = None,
             "providers.nvidia_nim.base_url" => self.providers.nvidia_nim.base_url = None,
             "providers.nvidia_nim.model" => self.providers.nvidia_nim.model = None,
+            "providers.nvidia_nim.http_headers" => self.providers.nvidia_nim.http_headers.clear(),
             "providers.openrouter.api_key" => self.providers.openrouter.api_key = None,
             "providers.openrouter.base_url" => self.providers.openrouter.base_url = None,
             "providers.openrouter.model" => self.providers.openrouter.model = None,
+            "providers.openrouter.http_headers" => self.providers.openrouter.http_headers.clear(),
             "providers.novita.api_key" => self.providers.novita.api_key = None,
             "providers.novita.base_url" => self.providers.novita.base_url = None,
             "providers.novita.model" => self.providers.novita.model = None,
+            "providers.novita.http_headers" => self.providers.novita.http_headers.clear(),
             "providers.fireworks.api_key" => self.providers.fireworks.api_key = None,
             "providers.fireworks.base_url" => self.providers.fireworks.base_url = None,
             "providers.fireworks.model" => self.providers.fireworks.model = None,
+            "providers.fireworks.http_headers" => self.providers.fireworks.http_headers.clear(),
             "providers.sglang.api_key" => self.providers.sglang.api_key = None,
             "providers.sglang.base_url" => self.providers.sglang.base_url = None,
             "providers.sglang.model" => self.providers.sglang.model = None,
+            "providers.sglang.http_headers" => self.providers.sglang.http_headers.clear(),
             "providers.vllm.api_key" => self.providers.vllm.api_key = None,
             "providers.vllm.base_url" => self.providers.vllm.base_url = None,
             "providers.vllm.model" => self.providers.vllm.model = None,
+            "providers.vllm.http_headers" => self.providers.vllm.http_headers.clear(),
             _ => {
                 self.extras.remove(key);
             }
@@ -562,6 +634,9 @@ impl ConfigToml {
         }
         if let Some(v) = self.base_url.as_ref() {
             out.insert("base_url".to_string(), v.clone());
+        }
+        if let Some(v) = serialize_http_headers(&self.http_headers) {
+            out.insert("http_headers".to_string(), v);
         }
         if let Some(v) = self.default_text_model.as_ref() {
             out.insert("default_text_model".to_string(), v.clone());
@@ -602,6 +677,9 @@ impl ConfigToml {
         if let Some(v) = self.providers.deepseek.model.as_ref() {
             out.insert("providers.deepseek.model".to_string(), v.clone());
         }
+        if let Some(v) = serialize_http_headers(&self.providers.deepseek.http_headers) {
+            out.insert("providers.deepseek.http_headers".to_string(), v);
+        }
         if let Some(v) = self.providers.openai.api_key.as_ref() {
             out.insert("providers.openai.api_key".to_string(), redact_secret(v));
         }
@@ -610,6 +688,9 @@ impl ConfigToml {
         }
         if let Some(v) = self.providers.openai.model.as_ref() {
             out.insert("providers.openai.model".to_string(), v.clone());
+        }
+        if let Some(v) = serialize_http_headers(&self.providers.openai.http_headers) {
+            out.insert("providers.openai.http_headers".to_string(), v);
         }
         if let Some(v) = self.providers.nvidia_nim.api_key.as_ref() {
             out.insert("providers.nvidia_nim.api_key".to_string(), redact_secret(v));
@@ -620,6 +701,9 @@ impl ConfigToml {
         if let Some(v) = self.providers.nvidia_nim.model.as_ref() {
             out.insert("providers.nvidia_nim.model".to_string(), v.clone());
         }
+        if let Some(v) = serialize_http_headers(&self.providers.nvidia_nim.http_headers) {
+            out.insert("providers.nvidia_nim.http_headers".to_string(), v);
+        }
         if let Some(v) = self.providers.openrouter.api_key.as_ref() {
             out.insert("providers.openrouter.api_key".to_string(), redact_secret(v));
         }
@@ -628,6 +712,9 @@ impl ConfigToml {
         }
         if let Some(v) = self.providers.openrouter.model.as_ref() {
             out.insert("providers.openrouter.model".to_string(), v.clone());
+        }
+        if let Some(v) = serialize_http_headers(&self.providers.openrouter.http_headers) {
+            out.insert("providers.openrouter.http_headers".to_string(), v);
         }
         if let Some(v) = self.providers.novita.api_key.as_ref() {
             out.insert("providers.novita.api_key".to_string(), redact_secret(v));
@@ -638,6 +725,9 @@ impl ConfigToml {
         if let Some(v) = self.providers.novita.model.as_ref() {
             out.insert("providers.novita.model".to_string(), v.clone());
         }
+        if let Some(v) = serialize_http_headers(&self.providers.novita.http_headers) {
+            out.insert("providers.novita.http_headers".to_string(), v);
+        }
         if let Some(v) = self.providers.fireworks.api_key.as_ref() {
             out.insert("providers.fireworks.api_key".to_string(), redact_secret(v));
         }
@@ -646,6 +736,9 @@ impl ConfigToml {
         }
         if let Some(v) = self.providers.fireworks.model.as_ref() {
             out.insert("providers.fireworks.model".to_string(), v.clone());
+        }
+        if let Some(v) = serialize_http_headers(&self.providers.fireworks.http_headers) {
+            out.insert("providers.fireworks.http_headers".to_string(), v);
         }
         if let Some(v) = self.providers.sglang.api_key.as_ref() {
             out.insert("providers.sglang.api_key".to_string(), redact_secret(v));
@@ -656,6 +749,9 @@ impl ConfigToml {
         if let Some(v) = self.providers.sglang.model.as_ref() {
             out.insert("providers.sglang.model".to_string(), v.clone());
         }
+        if let Some(v) = serialize_http_headers(&self.providers.sglang.http_headers) {
+            out.insert("providers.sglang.http_headers".to_string(), v);
+        }
         if let Some(v) = self.providers.vllm.api_key.as_ref() {
             out.insert("providers.vllm.api_key".to_string(), redact_secret(v));
         }
@@ -664,6 +760,9 @@ impl ConfigToml {
         }
         if let Some(v) = self.providers.vllm.model.as_ref() {
             out.insert("providers.vllm.model".to_string(), v.clone());
+        }
+        if let Some(v) = serialize_http_headers(&self.providers.vllm.http_headers) {
+            out.insert("providers.vllm.http_headers".to_string(), v);
         }
 
         for (k, v) in &self.extras {
@@ -763,6 +862,13 @@ impl ConfigToml {
             });
         let model = normalize_model_for_provider(provider, &model);
 
+        let mut http_headers = self.http_headers.clone();
+        http_headers.extend(provider_cfg.http_headers.clone());
+        if let Some(env_headers) = env.http_headers {
+            http_headers.extend(env_headers);
+        }
+        http_headers.retain(|name, value| !name.trim().is_empty() && !value.trim().is_empty());
+
         let output_mode = cli
             .output_mode
             .clone()
@@ -806,6 +912,7 @@ impl ConfigToml {
             telemetry,
             approval_policy,
             sandbox_mode,
+            http_headers,
         }
     }
 }
@@ -819,6 +926,9 @@ fn merge_provider_config(target: &mut ProviderConfigToml, source: &ProviderConfi
     }
     if source.model.is_some() {
         target.model = source.model.clone();
+    }
+    if !source.http_headers.is_empty() {
+        target.http_headers = source.http_headers.clone();
     }
 }
 
@@ -930,6 +1040,7 @@ pub struct ResolvedRuntimeOptions {
     pub telemetry: bool,
     pub approval_policy: Option<String>,
     pub sandbox_mode: Option<String>,
+    pub http_headers: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1049,6 +1160,42 @@ fn parse_bool(raw: &str) -> Result<bool> {
     }
 }
 
+fn parse_http_headers(raw: &str) -> Result<BTreeMap<String, String>> {
+    let mut headers = BTreeMap::new();
+    for pair in raw.trim().split(',') {
+        let pair = pair.trim();
+        if pair.is_empty() {
+            continue;
+        }
+        let Some((name, value)) = pair.split_once('=') else {
+            bail!("invalid header pair '{pair}', expected name=value");
+        };
+        let name = name.trim();
+        let value = value.trim();
+        if name.is_empty() {
+            bail!("header name cannot be empty");
+        }
+        if value.is_empty() {
+            continue;
+        }
+        headers.insert(name.to_string(), value.to_string());
+    }
+    Ok(headers)
+}
+
+fn serialize_http_headers(headers: &BTreeMap<String, String>) -> Option<String> {
+    if headers.is_empty() {
+        return None;
+    }
+    Some(
+        headers
+            .iter()
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect::<Vec<_>>()
+            .join(","),
+    )
+}
+
 fn redact_secret(secret: &str) -> String {
     if secret.len() <= 16 {
         return "********".to_string();
@@ -1066,6 +1213,7 @@ struct EnvRuntimeOverrides {
     telemetry: Option<bool>,
     approval_policy: Option<String>,
     sandbox_mode: Option<String>,
+    http_headers: Option<BTreeMap<String, String>>,
     deepseek_base_url: Option<String>,
     nvidia_base_url: Option<String>,
     openai_base_url: Option<String>,
@@ -1091,6 +1239,10 @@ impl EnvRuntimeOverrides {
                 .and_then(|v| parse_bool(&v).ok()),
             approval_policy: std::env::var("DEEPSEEK_APPROVAL_POLICY").ok(),
             sandbox_mode: std::env::var("DEEPSEEK_SANDBOX_MODE").ok(),
+            http_headers: std::env::var("DEEPSEEK_HTTP_HEADERS")
+                .ok()
+                .and_then(|value| parse_http_headers(&value).ok())
+                .filter(|headers| !headers.is_empty()),
             deepseek_base_url: std::env::var("DEEPSEEK_BASE_URL")
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
@@ -1151,6 +1303,7 @@ mod tests {
     struct EnvGuard {
         deepseek_api_key: Option<OsString>,
         deepseek_base_url: Option<OsString>,
+        deepseek_http_headers: Option<OsString>,
         deepseek_model: Option<OsString>,
         deepseek_provider: Option<OsString>,
         nvidia_api_key: Option<OsString>,
@@ -1175,6 +1328,7 @@ mod tests {
             let guard = Self {
                 deepseek_api_key: env::var_os("DEEPSEEK_API_KEY"),
                 deepseek_base_url: env::var_os("DEEPSEEK_BASE_URL"),
+                deepseek_http_headers: env::var_os("DEEPSEEK_HTTP_HEADERS"),
                 deepseek_model: env::var_os("DEEPSEEK_MODEL"),
                 deepseek_provider: env::var_os("DEEPSEEK_PROVIDER"),
                 nvidia_api_key: env::var_os("NVIDIA_API_KEY"),
@@ -1197,6 +1351,7 @@ mod tests {
             unsafe {
                 env::remove_var("DEEPSEEK_API_KEY");
                 env::remove_var("DEEPSEEK_BASE_URL");
+                env::remove_var("DEEPSEEK_HTTP_HEADERS");
                 env::remove_var("DEEPSEEK_MODEL");
                 env::remove_var("DEEPSEEK_PROVIDER");
                 env::remove_var("NVIDIA_API_KEY");
@@ -1233,6 +1388,7 @@ mod tests {
             unsafe {
                 Self::restore_var("DEEPSEEK_API_KEY", self.deepseek_api_key.take());
                 Self::restore_var("DEEPSEEK_BASE_URL", self.deepseek_base_url.take());
+                Self::restore_var("DEEPSEEK_HTTP_HEADERS", self.deepseek_http_headers.take());
                 Self::restore_var("DEEPSEEK_MODEL", self.deepseek_model.take());
                 Self::restore_var("DEEPSEEK_PROVIDER", self.deepseek_provider.take());
                 Self::restore_var("NVIDIA_API_KEY", self.nvidia_api_key.take());
@@ -1292,6 +1448,75 @@ mod tests {
         assert_eq!(resolved.api_key.as_deref(), Some("provider-key"));
         assert_eq!(resolved.base_url, "https://api.deepseeki.com");
         assert_eq!(resolved.model, "deepseek-v4-flash");
+    }
+
+    #[test]
+    fn provider_http_headers_override_root_headers() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let mut config = ConfigToml {
+            api_key: Some("root-key".to_string()),
+            base_url: Some("https://api.deepseek.com".to_string()),
+            default_text_model: Some("deepseek-v4-pro".to_string()),
+            ..ConfigToml::default()
+        };
+        config.providers.deepseek.api_key = Some("provider-key".to_string());
+        config.providers.deepseek.base_url = Some("https://api.deepseeki.com".to_string());
+        config.providers.deepseek.model = Some("deepseek-v4-flash".to_string());
+        config
+            .http_headers
+            .insert("X-Shared".to_string(), "root".to_string());
+        config
+            .providers
+            .deepseek
+            .http_headers
+            .insert("X-Model-Provider-Id".to_string(), "tongyi".to_string());
+        config
+            .providers
+            .deepseek
+            .http_headers
+            .insert("X-Shared".to_string(), "provider".to_string());
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.api_key.as_deref(), Some("provider-key"));
+        assert_eq!(resolved.base_url, "https://api.deepseeki.com");
+        assert_eq!(resolved.model, "deepseek-v4-flash");
+        assert_eq!(
+            resolved
+                .http_headers
+                .get("X-Model-Provider-Id")
+                .map(String::as_str),
+            Some("tongyi")
+        );
+        assert_eq!(
+            resolved.http_headers.get("X-Shared").map(String::as_str),
+            Some("provider")
+        );
+    }
+
+    #[test]
+    fn http_headers_env_overrides_config() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let mut config = ConfigToml::default();
+        config
+            .http_headers
+            .insert("X-Model-Provider-Id".to_string(), "from-file".to_string());
+        // Safety: test-only environment mutation guarded by a module mutex.
+        unsafe {
+            env::set_var("DEEPSEEK_HTTP_HEADERS", "X-Model-Provider-Id=from-env");
+        }
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(
+            resolved
+                .http_headers
+                .get("X-Model-Provider-Id")
+                .map(String::as_str),
+            Some("from-env")
+        );
     }
 
     #[test]

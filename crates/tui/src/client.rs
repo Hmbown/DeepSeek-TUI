@@ -3,11 +3,12 @@
 //! DeepSeek documents `/chat/completions` as the primary endpoint, and this
 //! client now routes all normal traffic through that surface.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::Mutex as AsyncMutex;
@@ -440,15 +441,22 @@ impl DeepSeekClient {
         validate_base_url_security(&base_url)?;
         let retry = config.retry_policy();
         let default_model = config.default_model();
+        let http_headers = config.http_headers();
 
         logging::info(format!("API provider: {}", api_provider.as_str()));
         logging::info(format!("API base URL: {base_url}"));
+        if !http_headers.is_empty() {
+            logging::info(format!(
+                "{} custom HTTP header(s) configured",
+                http_headers.len()
+            ));
+        }
         logging::info(format!(
             "Retry policy: enabled={}, max_retries={}, initial_delay={}s, max_delay={}s",
             retry.enabled, retry.max_retries, retry.initial_delay, retry.max_delay
         ));
 
-        let http_client = Self::build_http_client(&api_key)?;
+        let http_client = Self::build_http_client(&api_key, &http_headers)?;
 
         Ok(Self {
             http_client,
@@ -462,15 +470,11 @@ impl DeepSeekClient {
         })
     }
 
-    fn build_http_client(api_key: &str) -> Result<reqwest::Client> {
-        let mut headers = HeaderMap::new();
-        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        if !api_key.trim().is_empty() {
-            headers.insert(
-                AUTHORIZATION,
-                HeaderValue::from_str(&format!("Bearer {api_key}"))?,
-            );
-        }
+    fn build_http_client(
+        api_key: &str,
+        extra_headers: &HashMap<String, String>,
+    ) -> Result<reqwest::Client> {
+        let headers = build_default_headers(api_key, extra_headers)?;
         let mut builder = reqwest::Client::builder()
             .default_headers(headers)
             .connect_timeout(Duration::from_secs(30))
@@ -490,6 +494,43 @@ impl DeepSeekClient {
         builder.build().map_err(Into::into)
     }
 
+    #[cfg(test)]
+    fn default_headers(
+        api_key: &str,
+        extra_headers: &HashMap<String, String>,
+    ) -> Result<HeaderMap> {
+        build_default_headers(api_key, extra_headers)
+    }
+}
+
+fn build_default_headers(
+    api_key: &str,
+    extra_headers: &HashMap<String, String>,
+) -> Result<HeaderMap> {
+    let mut headers = HeaderMap::new();
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    if !api_key.trim().is_empty() {
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {api_key}"))?,
+        );
+    }
+    for (name, value) in extra_headers {
+        let name = name.trim();
+        let value = value.trim();
+        if name.is_empty() || value.is_empty() {
+            continue;
+        }
+        let header_name = HeaderName::from_bytes(name.as_bytes())?;
+        if header_name == AUTHORIZATION || header_name == CONTENT_TYPE {
+            continue;
+        }
+        headers.insert(header_name, HeaderValue::from_str(value)?);
+    }
+    Ok(headers)
+}
+
+impl DeepSeekClient {
     /// List available models from the provider.
     pub async fn list_models(&self) -> Result<Vec<AvailableModel>> {
         let url = api_url(&self.base_url, "models");
@@ -975,6 +1016,27 @@ mod tests {
             api_url("https://api.deepseek.com/beta", "chat/completions"),
             "https://api.deepseek.com/beta/chat/completions"
         );
+    }
+
+    #[test]
+    fn default_headers_include_custom_headers_when_configured() {
+        let mut extra = HashMap::new();
+        extra.insert("X-Model-Provider-Id".to_string(), "tongyi".to_string());
+        let headers = DeepSeekClient::default_headers("sk-test", &extra).expect("headers");
+        assert_eq!(
+            headers
+                .get("x-model-provider-id")
+                .and_then(|value| value.to_str().ok()),
+            Some("tongyi")
+        );
+    }
+
+    #[test]
+    fn default_headers_ignore_blank_custom_headers() {
+        let mut extra = HashMap::new();
+        extra.insert("X-Blank".to_string(), "   ".to_string());
+        let headers = DeepSeekClient::default_headers("sk-test", &extra).expect("headers");
+        assert!(headers.get("x-blank").is_none());
     }
 
     #[test]

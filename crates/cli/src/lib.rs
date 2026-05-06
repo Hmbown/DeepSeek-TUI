@@ -1294,6 +1294,15 @@ fn build_tui_command(
     cmd.env("DEEPSEEK_MODEL", &resolved_runtime.model);
     cmd.env("DEEPSEEK_BASE_URL", &resolved_runtime.base_url);
     cmd.env("DEEPSEEK_PROVIDER", resolved_runtime.provider.as_str());
+    if !resolved_runtime.http_headers.is_empty() {
+        let encoded = resolved_runtime
+            .http_headers
+            .iter()
+            .map(|(name, value)| format!("{}={}", name.trim(), value.trim()))
+            .collect::<Vec<_>>()
+            .join(",");
+        cmd.env("DEEPSEEK_HTTP_HEADERS", encoded);
+    }
     if let Some(api_key) = resolved_runtime.api_key.as_ref() {
         cmd.env("DEEPSEEK_API_KEY", api_key);
         let source = resolved_runtime

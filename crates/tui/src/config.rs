@@ -645,6 +645,8 @@ pub struct Config {
     pub provider: Option<String>,
     pub api_key: Option<String>,
     pub base_url: Option<String>,
+    /// Optional extra HTTP headers sent to model API requests.
+    pub http_headers: Option<HashMap<String, String>>,
     pub default_text_model: Option<String>,
     /// DeepSeek reasoning-effort tier: `"off" | "low" | "medium" | "high" | "max"`.
     /// Defaults to `"max"` at runtime if unset.
@@ -896,6 +898,7 @@ pub struct ProviderConfig {
     pub api_key: Option<String>,
     pub base_url: Option<String>,
     pub model: Option<String>,
+    pub http_headers: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -1099,6 +1102,19 @@ impl Config {
 
     pub(crate) fn provider_config(&self) -> Option<&ProviderConfig> {
         self.provider_config_for(self.api_provider())
+    }
+
+    #[must_use]
+    pub fn http_headers(&self) -> HashMap<String, String> {
+        let mut headers = self.http_headers.clone().unwrap_or_default();
+        if let Some(provider_headers) = self
+            .provider_config()
+            .and_then(|provider| provider.http_headers.as_ref())
+        {
+            headers.extend(provider_headers.clone());
+        }
+        headers.retain(|name, value| !name.trim().is_empty() && !value.trim().is_empty());
+        headers
     }
 
     #[must_use]
@@ -1784,6 +1800,32 @@ fn apply_env_overrides(config: &mut Config) {
             .vllm
             .base_url = Some(value);
     }
+    if let Ok(value) = std::env::var("DEEPSEEK_HTTP_HEADERS")
+        && let Ok(headers) = parse_http_headers(&value)
+        && !headers.is_empty()
+    {
+        let mut root_headers = config.http_headers.clone().unwrap_or_default();
+        root_headers.extend(headers.clone());
+        config.http_headers = Some(root_headers);
+
+        let provider = config.api_provider();
+        let providers = config
+            .providers
+            .get_or_insert_with(ProvidersConfig::default);
+        let entry = match provider {
+            ApiProvider::Deepseek => &mut providers.deepseek,
+            ApiProvider::DeepseekCN => &mut providers.deepseek_cn,
+            ApiProvider::NvidiaNim => &mut providers.nvidia_nim,
+            ApiProvider::Openrouter => &mut providers.openrouter,
+            ApiProvider::Novita => &mut providers.novita,
+            ApiProvider::Fireworks => &mut providers.fireworks,
+            ApiProvider::Sglang => &mut providers.sglang,
+            ApiProvider::Vllm => &mut providers.vllm,
+        };
+        let mut provider_headers = entry.http_headers.clone().unwrap_or_default();
+        provider_headers.extend(headers);
+        entry.http_headers = Some(provider_headers);
+    }
     if matches!(config.api_provider(), ApiProvider::Sglang)
         && let Ok(value) = std::env::var("SGLANG_MODEL")
     {
@@ -2061,6 +2103,29 @@ fn normalize_base_url(base: &str) -> String {
     trimmed.to_string()
 }
 
+fn parse_http_headers(raw: &str) -> Result<HashMap<String, String>> {
+    let mut headers = HashMap::new();
+    for pair in raw.trim().split(',') {
+        let pair = pair.trim();
+        if pair.is_empty() {
+            continue;
+        }
+        let Some((name, value)) = pair.split_once('=') else {
+            anyhow::bail!("invalid header pair '{pair}', expected name=value");
+        };
+        let name = name.trim();
+        let value = value.trim();
+        if name.is_empty() {
+            anyhow::bail!("header name cannot be empty");
+        }
+        if value.is_empty() {
+            continue;
+        }
+        headers.insert(name.to_string(), value.to_string());
+    }
+    Ok(headers)
+}
+
 fn apply_profile(config: ConfigFile, profile: Option<&str>) -> Result<Config> {
     if let Some(profile_name) = profile {
         let profiles = config.profiles.as_ref();
@@ -2095,6 +2160,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         provider: override_cfg.provider.or(base.provider),
         api_key: override_cfg.api_key.or(base.api_key),
         base_url: override_cfg.base_url.or(base.base_url),
+        http_headers: override_cfg.http_headers.or(base.http_headers),
         default_text_model: override_cfg.default_text_model.or(base.default_text_model),
         reasoning_effort: override_cfg.reasoning_effort.or(base.reasoning_effort),
         tools_file: override_cfg.tools_file.or(base.tools_file),
@@ -2166,6 +2232,7 @@ fn merge_provider_config(base: ProviderConfig, override_cfg: ProviderConfig) -> 
         api_key: override_cfg.api_key.or(base.api_key),
         base_url: override_cfg.base_url.or(base.base_url),
         model: override_cfg.model.or(base.model),
+        http_headers: override_cfg.http_headers.or(base.http_headers),
     }
 }
 
@@ -2818,6 +2885,7 @@ mod tests {
         deepseek_provider: Option<OsString>,
         deepseek_api_key: Option<OsString>,
         deepseek_base_url: Option<OsString>,
+        deepseek_http_headers: Option<OsString>,
         deepseek_model: Option<OsString>,
         deepseek_default_text_model: Option<OsString>,
         nvidia_api_key: Option<OsString>,
@@ -2851,6 +2919,7 @@ mod tests {
             let deepseek_provider_prev = env::var_os("DEEPSEEK_PROVIDER");
             let api_key_prev = env::var_os("DEEPSEEK_API_KEY");
             let base_url_prev = env::var_os("DEEPSEEK_BASE_URL");
+            let http_headers_prev = env::var_os("DEEPSEEK_HTTP_HEADERS");
             let model_prev = env::var_os("DEEPSEEK_MODEL");
             let default_text_model_prev = env::var_os("DEEPSEEK_DEFAULT_TEXT_MODEL");
             let nvidia_api_key_prev = env::var_os("NVIDIA_API_KEY");
@@ -2879,6 +2948,7 @@ mod tests {
                 env::remove_var("DEEPSEEK_PROVIDER");
                 env::remove_var("DEEPSEEK_API_KEY");
                 env::remove_var("DEEPSEEK_BASE_URL");
+                env::remove_var("DEEPSEEK_HTTP_HEADERS");
                 env::remove_var("DEEPSEEK_MODEL");
                 env::remove_var("DEEPSEEK_DEFAULT_TEXT_MODEL");
                 env::remove_var("NVIDIA_API_KEY");
@@ -2907,6 +2977,7 @@ mod tests {
                 deepseek_provider: deepseek_provider_prev,
                 deepseek_api_key: api_key_prev,
                 deepseek_base_url: base_url_prev,
+                deepseek_http_headers: http_headers_prev,
                 deepseek_model: model_prev,
                 deepseek_default_text_model: default_text_model_prev,
                 nvidia_api_key: nvidia_api_key_prev,
@@ -2941,6 +3012,7 @@ mod tests {
                 Self::restore_var("DEEPSEEK_PROVIDER", self.deepseek_provider.take());
                 Self::restore_var("DEEPSEEK_API_KEY", self.deepseek_api_key.take());
                 Self::restore_var("DEEPSEEK_BASE_URL", self.deepseek_base_url.take());
+                Self::restore_var("DEEPSEEK_HTTP_HEADERS", self.deepseek_http_headers.take());
                 Self::restore_var("DEEPSEEK_MODEL", self.deepseek_model.take());
                 Self::restore_var(
                     "DEEPSEEK_DEFAULT_TEXT_MODEL",
@@ -3770,6 +3842,110 @@ api_key = "old-openrouter-key"
         assert_eq!(
             config.default_text_model.as_deref(),
             Some("deepseek-v4-flash-20260423")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn http_headers_load_from_root_config() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-http-headers-root-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        let config_path = temp_root.join(".deepseek").join("config.toml");
+        ensure_parent_dir(&config_path)?;
+        fs::write(
+            &config_path,
+            r#"
+api_key = "test-key"
+http_headers = { "X-Model-Provider-Id" = "tongyi" }
+"#,
+        )?;
+
+        let config = Config::load(None, None)?;
+        assert_eq!(
+            config
+                .http_headers()
+                .get("X-Model-Provider-Id")
+                .map(String::as_str),
+            Some("tongyi")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn provider_http_headers_extend_and_override_root_config() {
+        let mut providers = ProvidersConfig::default();
+        providers.deepseek.http_headers = Some(HashMap::from([
+            ("X-Model-Provider-Id".to_string(), "tongyi".to_string()),
+            ("X-Shared".to_string(), "provider".to_string()),
+        ]));
+        let config = Config {
+            http_headers: Some(HashMap::from([
+                ("X-Root".to_string(), "root".to_string()),
+                ("X-Shared".to_string(), "root".to_string()),
+            ])),
+            providers: Some(providers),
+            ..Default::default()
+        };
+
+        let headers = config.http_headers();
+        assert_eq!(
+            headers.get("X-Model-Provider-Id").map(String::as_str),
+            Some("tongyi")
+        );
+        assert_eq!(headers.get("X-Root").map(String::as_str), Some("root"));
+        assert_eq!(
+            headers.get("X-Shared").map(String::as_str),
+            Some("provider")
+        );
+    }
+
+    #[test]
+    fn http_headers_env_overrides_config() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-http-headers-env-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        let config_path = temp_root.join(".deepseek").join("config.toml");
+        ensure_parent_dir(&config_path)?;
+        fs::write(
+            &config_path,
+            r#"
+api_key = "test-key"
+http_headers = { "X-Model-Provider-Id" = "from-file" }
+"#,
+        )?;
+        // Safety: test-only environment mutation guarded by a global mutex.
+        unsafe {
+            env::set_var("DEEPSEEK_HTTP_HEADERS", "X-Model-Provider-Id=from-env");
+        }
+
+        let config = Config::load(None, None)?;
+        assert_eq!(
+            config
+                .http_headers()
+                .get("X-Model-Provider-Id")
+                .map(String::as_str),
+            Some("from-env")
         );
         Ok(())
     }
