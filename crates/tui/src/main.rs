@@ -1245,10 +1245,23 @@ fn report_write_status(label: &str, path: &Path, status: WriteStatus) {
 enum ApiKeySource {
     Env,
     Config,
+    Keyring,
     Missing,
 }
 
 fn resolve_api_key_source(config: &Config) -> ApiKeySource {
+    if std::env::var("DEEPSEEK_API_KEY")
+        .ok()
+        .filter(|k| !k.trim().is_empty())
+        .is_some()
+    {
+        match std::env::var("DEEPSEEK_API_KEY_SOURCE").ok().as_deref() {
+            Some("config") => return ApiKeySource::Config,
+            Some("keyring") => return ApiKeySource::Keyring,
+            _ => {}
+        }
+    }
+
     if config
         .api_key
         .as_ref()
@@ -1301,6 +1314,10 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
     match resolve_api_key_source(config) {
         ApiKeySource::Env => println!(
             "  {} api_key: set via DEEPSEEK_API_KEY",
+            "✓".truecolor(aqua_r, aqua_g, aqua_b)
+        ),
+        ApiKeySource::Keyring => println!(
+            "  {} api_key: set via OS keyring",
             "✓".truecolor(aqua_r, aqua_g, aqua_b)
         ),
         ApiKeySource::Config => println!(
@@ -1546,6 +1563,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
 
     // Per-provider state: env + config file only (no values printed).
     // Keep doctor/status prompt-free even for unsigned rebuilt binaries.
+    let dispatcher_api_key_source = std::env::var("DEEPSEEK_API_KEY_SOURCE").ok();
     for (provider, slot, env_names) in [
         (
             crate::config::ApiProvider::Deepseek,
@@ -1589,11 +1607,16 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
                 .filter(|v| !v.trim().is_empty())
                 .is_some()
         });
+        let injected_runtime_key = matches!(
+            dispatcher_api_key_source.as_deref(),
+            Some("keyring" | "env" | "cli")
+        );
         let in_config = config
             .provider_config_for(provider)
             .and_then(|entry| entry.api_key.as_ref())
             .is_some_and(|v| !v.trim().is_empty())
             || (matches!(provider, crate::config::ApiProvider::Deepseek)
+                && !injected_runtime_key
                 && config
                     .api_key
                     .as_ref()
@@ -1610,12 +1633,13 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             if in_config { "yes" } else { "no" }
         );
     }
-    println!("  · credential precedence: ~/.deepseek/config.toml, then env");
+    println!("  · credential precedence: ~/.deepseek/config.toml, OS keyring, then env");
 
     let api_key_source = resolve_api_key_source(config);
     let has_api_key = if config.deepseek_api_key().is_ok() {
         let source_label = match api_key_source {
             ApiKeySource::Config => "config.toml",
+            ApiKeySource::Keyring => "OS keyring",
             ApiKeySource::Env => "environment",
             ApiKeySource::Missing => "unknown source",
         };
@@ -1662,8 +1686,17 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
                     "✗".truecolor(red_r, red_g, red_b)
                 );
                 if error_msg.contains("401") || error_msg.contains("Unauthorized") {
-                    println!("    Invalid API key. Check your DEEPSEEK_API_KEY or config.toml");
-                    if matches!(api_key_source, ApiKeySource::Env) {
+                    println!(
+                        "    Invalid API key. Check `deepseek auth status`, DEEPSEEK_API_KEY, or config.toml"
+                    );
+                    if matches!(api_key_source, ApiKeySource::Keyring) {
+                        println!(
+                            "    The rejected key came from the OS keyring via the dispatcher."
+                        );
+                        println!(
+                            "    Run `deepseek auth status` to inspect config/keyring/env sources."
+                        );
+                    } else if matches!(api_key_source, ApiKeySource::Env) {
                         println!(
                             "    The rejected key came from DEEPSEEK_API_KEY; no saved config key is present."
                         );
@@ -2041,6 +2074,7 @@ fn run_doctor_json(
     let api_key_state = match resolve_api_key_source(config) {
         ApiKeySource::Env => "env",
         ApiKeySource::Config => "config",
+        ApiKeySource::Keyring => "keyring",
         ApiKeySource::Missing => "missing",
     };
 
@@ -5032,8 +5066,10 @@ mod setup_helper_tests {
     fn resolve_api_key_source_reports_env_when_set() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var("DEEPSEEK_API_KEY").ok();
+        let prev_source = std::env::var("DEEPSEEK_API_KEY_SOURCE").ok();
         unsafe {
             std::env::set_var("DEEPSEEK_API_KEY", "test-helper-value");
+            std::env::remove_var("DEEPSEEK_API_KEY_SOURCE");
         }
         let cfg = Config::default();
         let source = resolve_api_key_source(&cfg);
@@ -5041,15 +5077,43 @@ mod setup_helper_tests {
             Some(value) => unsafe { std::env::set_var("DEEPSEEK_API_KEY", value) },
             None => unsafe { std::env::remove_var("DEEPSEEK_API_KEY") },
         }
+        match prev_source {
+            Some(value) => unsafe { std::env::set_var("DEEPSEEK_API_KEY_SOURCE", value) },
+            None => unsafe { std::env::remove_var("DEEPSEEK_API_KEY_SOURCE") },
+        }
         assert_eq!(source, ApiKeySource::Env);
+    }
+
+    #[test]
+    fn resolve_api_key_source_reports_dispatcher_keyring() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("DEEPSEEK_API_KEY").ok();
+        let prev_source = std::env::var("DEEPSEEK_API_KEY_SOURCE").ok();
+        unsafe {
+            std::env::set_var("DEEPSEEK_API_KEY", "test-helper-value");
+            std::env::set_var("DEEPSEEK_API_KEY_SOURCE", "keyring");
+        }
+        let cfg = Config::default();
+        let source = resolve_api_key_source(&cfg);
+        match prev {
+            Some(value) => unsafe { std::env::set_var("DEEPSEEK_API_KEY", value) },
+            None => unsafe { std::env::remove_var("DEEPSEEK_API_KEY") },
+        }
+        match prev_source {
+            Some(value) => unsafe { std::env::set_var("DEEPSEEK_API_KEY_SOURCE", value) },
+            None => unsafe { std::env::remove_var("DEEPSEEK_API_KEY_SOURCE") },
+        }
+        assert_eq!(source, ApiKeySource::Keyring);
     }
 
     #[test]
     fn resolve_api_key_source_prefers_config_over_env() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var("DEEPSEEK_API_KEY").ok();
+        let prev_source = std::env::var("DEEPSEEK_API_KEY_SOURCE").ok();
         unsafe {
             std::env::set_var("DEEPSEEK_API_KEY", "stale-env-key");
+            std::env::remove_var("DEEPSEEK_API_KEY_SOURCE");
         }
         let cfg = Config {
             api_key: Some("fresh-config-key".to_string()),
@@ -5059,6 +5123,10 @@ mod setup_helper_tests {
         match prev {
             Some(value) => unsafe { std::env::set_var("DEEPSEEK_API_KEY", value) },
             None => unsafe { std::env::remove_var("DEEPSEEK_API_KEY") },
+        }
+        match prev_source {
+            Some(value) => unsafe { std::env::set_var("DEEPSEEK_API_KEY_SOURCE", value) },
+            None => unsafe { std::env::remove_var("DEEPSEEK_API_KEY_SOURCE") },
         }
         assert_eq!(source, ApiKeySource::Config);
     }

@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use anyhow::{Context, Result, bail};
+use deepseek_secrets::SecretSource;
 pub use deepseek_secrets::Secrets;
 use serde::{Deserialize, Serialize};
 
@@ -673,10 +674,9 @@ impl ConfigToml {
 
     /// Resolve runtime options without touching platform credential stores.
     ///
-    /// v0.8.8 keeps the default auth path deliberately boring:
-    /// CLI flag → config file → environment. Explicit keyring migration
-    /// remains available through auth commands, but normal startup and
-    /// diagnostics must not trigger platform credential prompts.
+    /// This method keeps library callers prompt-free: CLI flag → config file
+    /// → environment. Call `resolve_runtime_options_with_secrets` when a
+    /// user-facing dispatcher should recover OS-keyring credentials.
     #[must_use]
     pub fn resolve_runtime_options(&self, cli: &CliRuntimeOverrides) -> ResolvedRuntimeOptions {
         let no_keyring = Secrets::new(std::sync::Arc::new(
@@ -687,9 +687,7 @@ impl ConfigToml {
 
     /// Resolve runtime options using an explicit secrets façade.
     ///
-    /// API-key precedence is **CLI flag → config-file → environment**.
-    /// If a caller explicitly injects a secrets façade with a populated
-    /// credential store, that store is used only when config/env are empty.
+    /// API-key precedence is **CLI flag → config-file → keyring → environment**.
     #[must_use]
     pub fn resolve_runtime_options_with_secrets(
         &self,
@@ -711,15 +709,23 @@ impl ConfigToml {
             .flatten();
         // CLI flag wins outright. Otherwise: config-file → injected secrets/env.
         // This makes `deepseek auth set` a reliable fix even when the user's
-        // shell still exports an old key. The default caller injects an empty
-        // in-memory store, so this path does not touch platform credential
-        // stores during ordinary startup.
+        // shell still exports an old key. When the file is empty, the injected
+        // secrets façade recovers older OS-keyring credentials before falling
+        // back to ambient env.
         let from_file = provider_cfg.api_key.clone().or(root_deepseek_api_key);
-        let api_key = cli
-            .api_key
-            .clone()
-            .or_else(|| from_file.clone())
-            .or_else(|| secrets.resolve(provider.as_str()));
+        let (api_key, api_key_source) = if let Some(value) = cli.api_key.clone() {
+            (Some(value), Some(RuntimeApiKeySource::Cli))
+        } else if let Some(value) = from_file.clone().filter(|v| !v.trim().is_empty()) {
+            (Some(value), Some(RuntimeApiKeySource::ConfigFile))
+        } else if let Some((value, source)) = secrets.resolve_with_source(provider.as_str()) {
+            let source = match source {
+                SecretSource::Keyring => RuntimeApiKeySource::Keyring,
+                SecretSource::Env => RuntimeApiKeySource::Env,
+            };
+            (Some(value), Some(source))
+        } else {
+            (None, None)
+        };
 
         let base_url = cli
             .base_url
@@ -792,6 +798,7 @@ impl ConfigToml {
             provider,
             model,
             api_key,
+            api_key_source,
             base_url,
             auth_mode,
             output_mode,
@@ -890,11 +897,32 @@ pub struct CliRuntimeOverrides {
     pub sandbox_mode: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeApiKeySource {
+    Cli,
+    ConfigFile,
+    Keyring,
+    Env,
+}
+
+impl RuntimeApiKeySource {
+    #[must_use]
+    pub fn as_env_value(self) -> &'static str {
+        match self {
+            Self::Cli => "cli",
+            Self::ConfigFile => "config",
+            Self::Keyring => "keyring",
+            Self::Env => "env",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ResolvedRuntimeOptions {
     pub provider: ProviderKind,
     pub model: String,
     pub api_key: Option<String>,
+    pub api_key_source: Option<RuntimeApiKeySource>,
     pub base_url: String,
     pub auth_mode: Option<String>,
     pub output_mode: Option<String>,
@@ -1687,6 +1715,10 @@ mod tests {
         let resolved =
             config.resolve_runtime_options_with_secrets(&CliRuntimeOverrides::default(), &secrets);
         assert_eq!(resolved.api_key.as_deref(), Some("file-key"));
+        assert_eq!(
+            resolved.api_key_source,
+            Some(RuntimeApiKeySource::ConfigFile)
+        );
 
         // Safety: env mutation guarded by env_lock().
         unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
@@ -1707,6 +1739,7 @@ mod tests {
         let resolved =
             config.resolve_runtime_options_with_secrets(&CliRuntimeOverrides::default(), &secrets);
         assert_eq!(resolved.api_key.as_deref(), Some("env-key"));
+        assert_eq!(resolved.api_key_source, Some(RuntimeApiKeySource::Env));
 
         // Safety: env mutation guarded by env_lock().
         unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
@@ -1726,6 +1759,31 @@ mod tests {
         let resolved =
             config.resolve_runtime_options_with_secrets(&CliRuntimeOverrides::default(), &secrets);
         assert_eq!(resolved.api_key.as_deref(), Some("file-key"));
+        assert_eq!(
+            resolved.api_key_source,
+            Some(RuntimeApiKeySource::ConfigFile)
+        );
+    }
+
+    #[test]
+    fn keyring_resolves_when_config_file_empty_even_if_env_is_set() {
+        use deepseek_secrets::KeyringStore;
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        // Safety: env mutation guarded by env_lock().
+        unsafe { std::env::set_var("DEEPSEEK_API_KEY", "stale-env-key") };
+
+        let store = std::sync::Arc::new(deepseek_secrets::InMemoryKeyringStore::new());
+        store.set("deepseek", "ring-key").unwrap();
+        let secrets = Secrets::new(store);
+
+        let resolved = ConfigToml::default()
+            .resolve_runtime_options_with_secrets(&CliRuntimeOverrides::default(), &secrets);
+        assert_eq!(resolved.api_key.as_deref(), Some("ring-key"));
+        assert_eq!(resolved.api_key_source, Some(RuntimeApiKeySource::Keyring));
+
+        // Safety: env mutation guarded by env_lock().
+        unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
     }
 
     #[test]
@@ -1744,5 +1802,6 @@ mod tests {
         };
         let resolved = ConfigToml::default().resolve_runtime_options_with_secrets(&cli, &secrets);
         assert_eq!(resolved.api_key.as_deref(), Some("cli-key"));
+        assert_eq!(resolved.api_key_source, Some(RuntimeApiKeySource::Cli));
     }
 }

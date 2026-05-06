@@ -328,6 +328,15 @@ pub struct Secrets {
     service: String,
 }
 
+/// Source layer that provided a resolved secret.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecretSource {
+    /// The configured keyring backend returned the secret.
+    Keyring,
+    /// A process environment variable returned the secret.
+    Env,
+}
+
 impl std::fmt::Debug for Secrets {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Secrets")
@@ -379,12 +388,18 @@ impl Secrets {
     /// Empty strings on either layer are treated as "not set".
     #[must_use]
     pub fn resolve(&self, name: &str) -> Option<String> {
+        self.resolve_with_source(name).map(|(value, _)| value)
+    }
+
+    /// Resolve a secret and report which layer supplied it.
+    #[must_use]
+    pub fn resolve_with_source(&self, name: &str) -> Option<(String, SecretSource)> {
         if let Ok(Some(v)) = self.store.get(name)
             && !v.trim().is_empty()
         {
-            return Some(v);
+            return Some((v, SecretSource::Keyring));
         }
-        env_for(name)
+        env_for(name).map(|value| (value, SecretSource::Env))
     }
 
     /// Convenience: write a secret through the underlying store.
@@ -494,6 +509,10 @@ mod tests {
         let secrets = Secrets::new(store);
 
         assert_eq!(secrets.resolve("deepseek").as_deref(), Some("ring-key"));
+        assert_eq!(
+            secrets.resolve_with_source("deepseek"),
+            Some(("ring-key".to_string(), SecretSource::Keyring))
+        );
         // Safety: env mutation guarded by env_lock().
         unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
     }
@@ -507,6 +526,10 @@ mod tests {
 
         let secrets = Secrets::new(Arc::new(InMemoryKeyringStore::new()));
         assert_eq!(secrets.resolve("deepseek").as_deref(), Some("env-fallback"));
+        assert_eq!(
+            secrets.resolve_with_source("deepseek"),
+            Some(("env-fallback".to_string(), SecretSource::Env))
+        );
         // Safety: env mutation guarded by env_lock().
         unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
     }

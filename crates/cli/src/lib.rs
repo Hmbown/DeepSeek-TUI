@@ -13,7 +13,9 @@ use deepseek_agent::ModelRegistry;
 use deepseek_app_server::{
     AppServerOptions, run as run_app_server, run_stdio as run_app_server_stdio,
 };
-use deepseek_config::{CliRuntimeOverrides, ConfigStore, ProviderKind, ResolvedRuntimeOptions};
+use deepseek_config::{
+    CliRuntimeOverrides, ConfigStore, ProviderKind, ResolvedRuntimeOptions, RuntimeApiKeySource,
+};
 use deepseek_execpolicy::{AskForApproval, ExecPolicyContext, ExecPolicyEngine};
 use deepseek_mcp::{McpServerDefinition, run_stdio_server};
 use deepseek_secrets::Secrets;
@@ -232,7 +234,7 @@ struct AuthArgs {
 
 #[derive(Debug, Subcommand)]
 enum AuthCommand {
-    /// Show current provider, env vars, and config-file presence.
+    /// Show current provider and credential source state.
     Status,
     /// Save an API key to the shared user config file. Reads from
     /// `--api-key`, `--api-key-stdin`, or prompts on stdin when
@@ -253,7 +255,7 @@ enum AuthCommand {
         #[arg(long, value_enum)]
         provider: ProviderArg,
     },
-    /// Delete a provider's key from the shared user config file.
+    /// Delete a provider's key from config and keyring storage.
     Clear {
         #[arg(long, value_enum)]
         provider: ProviderArg,
@@ -423,53 +425,71 @@ fn run() -> Result<()> {
         approval_policy: cli.approval_policy.clone(),
         sandbox_mode: cli.sandbox_mode.clone(),
     };
-    let resolved_runtime = store.config.resolve_runtime_options(&runtime_overrides);
-
     let command = cli.command.take();
 
     match command {
-        Some(Commands::Run(args)) => delegate_to_tui(&cli, &resolved_runtime, args.args),
+        Some(Commands::Run(args)) => {
+            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
+            delegate_to_tui(&cli, &resolved_runtime, args.args)
+        }
         Some(Commands::Doctor(args)) => {
+            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             delegate_to_tui(&cli, &resolved_runtime, tui_args("doctor", args))
         }
         Some(Commands::Models(args)) => {
+            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             delegate_to_tui(&cli, &resolved_runtime, tui_args("models", args))
         }
         Some(Commands::Sessions(args)) => {
+            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             delegate_to_tui(&cli, &resolved_runtime, tui_args("sessions", args))
         }
-        Some(Commands::Resume(args)) => run_resume_command(&cli, &resolved_runtime, args),
+        Some(Commands::Resume(args)) => {
+            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
+            run_resume_command(&cli, &resolved_runtime, args)
+        }
         Some(Commands::Fork(args)) => {
+            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             delegate_to_tui(&cli, &resolved_runtime, tui_args("fork", args))
         }
         Some(Commands::Init(args)) => {
+            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             delegate_to_tui(&cli, &resolved_runtime, tui_args("init", args))
         }
         Some(Commands::Setup(args)) => {
+            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             delegate_to_tui(&cli, &resolved_runtime, tui_args("setup", args))
         }
         Some(Commands::Exec(args)) => {
+            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             delegate_to_tui(&cli, &resolved_runtime, tui_args("exec", args))
         }
         Some(Commands::Review(args)) => {
+            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             delegate_to_tui(&cli, &resolved_runtime, tui_args("review", args))
         }
         Some(Commands::Apply(args)) => {
+            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             delegate_to_tui(&cli, &resolved_runtime, tui_args("apply", args))
         }
         Some(Commands::Eval(args)) => {
+            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             delegate_to_tui(&cli, &resolved_runtime, tui_args("eval", args))
         }
         Some(Commands::Mcp(args)) => {
+            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             delegate_to_tui(&cli, &resolved_runtime, tui_args("mcp", args))
         }
         Some(Commands::Features(args)) => {
+            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             delegate_to_tui(&cli, &resolved_runtime, tui_args("features", args))
         }
         Some(Commands::Serve(args)) => {
+            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             delegate_to_tui(&cli, &resolved_runtime, tui_args("serve", args))
         }
         Some(Commands::Completions(args)) => {
+            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             delegate_to_tui(&cli, &resolved_runtime, tui_args("completions", args))
         }
         Some(Commands::Login(args)) => run_login_command(&mut store, args),
@@ -489,6 +509,7 @@ fn run() -> Result<()> {
         Some(Commands::Metrics(args)) => run_metrics_command(args),
         Some(Commands::Update) => update::run_update(),
         None => {
+            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             let mut forwarded = Vec::new();
             if let Some(prompt) = cli.prompt_flag.clone().or_else(|| cli.prompt.clone()) {
                 forwarded.push("--prompt".to_string());
@@ -499,6 +520,48 @@ fn run() -> Result<()> {
     }
 }
 
+fn resolve_runtime_for_dispatch(
+    store: &mut ConfigStore,
+    runtime_overrides: &CliRuntimeOverrides,
+) -> ResolvedRuntimeOptions {
+    let runtime_secrets = Secrets::auto_detect();
+    resolve_runtime_for_dispatch_with_secrets(store, runtime_overrides, &runtime_secrets)
+}
+
+fn resolve_runtime_for_dispatch_with_secrets(
+    store: &mut ConfigStore,
+    runtime_overrides: &CliRuntimeOverrides,
+    secrets: &Secrets,
+) -> ResolvedRuntimeOptions {
+    let mut resolved = store
+        .config
+        .resolve_runtime_options_with_secrets(runtime_overrides, secrets);
+
+    if resolved.api_key_source == Some(RuntimeApiKeySource::Keyring)
+        && !provider_config_set(store, resolved.provider)
+        && let Some(api_key) = resolved.api_key.clone()
+    {
+        write_provider_api_key_to_config(store, resolved.provider, &api_key);
+        match store.save() {
+            Ok(()) => {
+                eprintln!(
+                    "info: recovered API key from OS keyring and saved it to {}",
+                    store.path().display()
+                );
+                resolved.api_key_source = Some(RuntimeApiKeySource::ConfigFile);
+            }
+            Err(err) => {
+                eprintln!(
+                    "warning: recovered API key from OS keyring but failed to save {}: {err}",
+                    store.path().display()
+                );
+            }
+        }
+    }
+
+    resolved
+}
+
 fn tui_args(command: &str, args: TuiPassthroughArgs) -> Vec<String> {
     let mut forwarded = Vec::with_capacity(args.args.len() + 1);
     forwarded.push(command.to_string());
@@ -507,13 +570,13 @@ fn tui_args(command: &str, args: TuiPassthroughArgs) -> Vec<String> {
 }
 
 fn run_login_command(store: &mut ConfigStore, args: LoginArgs) -> Result<()> {
-    run_login_command_with_secrets(store, args, &no_keyring_secrets())
+    run_login_command_with_secrets(store, args, &Secrets::auto_detect())
 }
 
 fn run_login_command_with_secrets(
     store: &mut ConfigStore,
     args: LoginArgs,
-    _secrets: &Secrets,
+    secrets: &Secrets,
 ) -> Result<()> {
     let provider: ProviderKind = args.provider.into();
     store.config.provider = provider;
@@ -552,31 +615,35 @@ fn run_login_command_with_secrets(
         None => read_api_key_from_stdin()?,
     };
     write_provider_api_key_to_config(store, provider, &api_key);
+    let keyring_saved = write_provider_api_key_to_keyring(secrets, provider, &api_key);
     store.save()?;
+    let destination = if keyring_saved {
+        format!("{} and {}", store.path().display(), secrets.backend_name())
+    } else {
+        store.path().display().to_string()
+    };
     if provider == ProviderKind::Deepseek {
-        println!(
-            "logged in using API key mode (deepseek); saved key to {}",
-            store.path().display()
-        );
+        println!("logged in using API key mode (deepseek); saved key to {destination}");
     } else {
         println!(
-            "logged in using API key mode ({}); saved key to {}",
+            "logged in using API key mode ({}); saved key to {destination}",
             provider.as_str(),
-            store.path().display()
         );
     }
     Ok(())
 }
 
 fn run_logout_command(store: &mut ConfigStore) -> Result<()> {
-    run_logout_command_with_secrets(store, &no_keyring_secrets())
+    run_logout_command_with_secrets(store, &Secrets::auto_detect())
 }
 
-fn run_logout_command_with_secrets(store: &mut ConfigStore, _secrets: &Secrets) -> Result<()> {
+fn run_logout_command_with_secrets(store: &mut ConfigStore, secrets: &Secrets) -> Result<()> {
+    let active_provider = store.config.provider;
     store.config.api_key = None;
     for provider in PROVIDER_LIST {
         clear_provider_api_key_from_config(store, provider);
     }
+    clear_provider_api_key_from_keyring(secrets, active_provider);
     store.config.auth_mode = None;
     store.config.chatgpt_access_token = None;
     store.config.device_code_session = None;
@@ -611,6 +678,7 @@ const PROVIDER_LIST: [ProviderKind; 8] = [
     ProviderKind::Openai,
 ];
 
+#[cfg(test)]
 fn no_keyring_secrets() -> Secrets {
     Secrets::new(std::sync::Arc::new(
         deepseek_secrets::InMemoryKeyringStore::new(),
@@ -665,15 +733,28 @@ fn provider_config_set(store: &ConfigStore, provider: ProviderKind) -> bool {
     slot.or(root).is_some_and(|v| !v.trim().is_empty())
 }
 
+fn provider_keyring_set(secrets: &Secrets, provider: ProviderKind) -> bool {
+    secrets
+        .get(provider_slot(provider))
+        .ok()
+        .flatten()
+        .is_some_and(|v| !v.trim().is_empty())
+}
+
+fn write_provider_api_key_to_keyring(
+    secrets: &Secrets,
+    provider: ProviderKind,
+    api_key: &str,
+) -> bool {
+    secrets.set(provider_slot(provider), api_key).is_ok()
+}
+
+fn clear_provider_api_key_from_keyring(secrets: &Secrets, provider: ProviderKind) {
+    let _ = secrets.delete(provider_slot(provider));
+}
+
 fn run_auth_command(store: &mut ConfigStore, command: AuthCommand) -> Result<()> {
-    match command {
-        AuthCommand::Migrate { dry_run } => run_auth_command_with_secrets(
-            store,
-            AuthCommand::Migrate { dry_run },
-            &Secrets::auto_detect(),
-        ),
-        other => run_auth_command_with_secrets(store, other, &no_keyring_secrets()),
-    }
+    run_auth_command_with_secrets(store, command, &Secrets::auto_detect())
 }
 
 fn run_auth_command_with_secrets(
@@ -683,13 +764,28 @@ fn run_auth_command_with_secrets(
 ) -> Result<()> {
     match command {
         AuthCommand::Status => {
-            println!("provider: {}", store.config.provider.as_str());
-            for provider in PROVIDER_LIST {
-                let slot = provider_slot(provider);
-                let env_set = provider_env_set(provider);
-                let file_set = provider_config_set(store, provider);
-                println!("{slot} auth: env={}, config={}", env_set, file_set);
-            }
+            let provider = store.config.provider;
+            println!("provider: {}", provider.as_str());
+            println!("credential precedence: config -> keyring -> env");
+            let slot = provider_slot(provider);
+            let file_set = provider_config_set(store, provider);
+            let keyring_set = (!file_set).then(|| provider_keyring_set(secrets, provider));
+            let env_set = provider_env_set(provider);
+            let active = if file_set {
+                "config"
+            } else if keyring_set == Some(true) {
+                "keyring"
+            } else if env_set {
+                "env"
+            } else {
+                "missing"
+            };
+            println!(
+                "{slot} auth: config={}, keyring={}, env={}, active={active}",
+                file_set,
+                keyring_status_short(keyring_set),
+                env_set
+            );
             Ok(())
         }
         AuthCommand::Set {
@@ -705,23 +801,39 @@ fn run_auth_command_with_secrets(
                 (None, false) => prompt_api_key(slot)?,
             };
             write_provider_api_key_to_config(store, provider, &api_key);
+            let keyring_saved = write_provider_api_key_to_keyring(secrets, provider, &api_key);
             store.save()?;
             // Don't print the key. Don't echo length.
-            println!("saved API key for {slot} to {}", store.path().display());
+            if keyring_saved {
+                println!(
+                    "saved API key for {slot} to {} and {}",
+                    store.path().display(),
+                    secrets.backend_name()
+                );
+            } else {
+                println!("saved API key for {slot} to {}", store.path().display());
+            }
             Ok(())
         }
         AuthCommand::Get { provider } => {
             let provider: ProviderKind = provider.into();
             let slot = provider_slot(provider);
-            let in_env = provider_env_set(provider);
             let in_file = provider_config_set(store, provider);
+            let in_keyring = !in_file && provider_keyring_set(secrets, provider);
+            let in_env = provider_env_set(provider);
             // Report the highest-priority source that has it.
-            let resolved = in_env || in_file;
-            if resolved {
-                let source = if in_file { "config-file" } else { "env" };
-                println!("{slot}: set (source: {source})");
+            let source = if in_file {
+                Some("config-file")
+            } else if in_keyring {
+                Some("keyring")
+            } else if in_env {
+                Some("env")
             } else {
-                println!("{slot}: not set");
+                None
+            };
+            match source {
+                Some(source) => println!("{slot}: set (source: {source})"),
+                None => println!("{slot}: not set"),
             }
             Ok(())
         }
@@ -729,17 +841,35 @@ fn run_auth_command_with_secrets(
             let provider: ProviderKind = provider.into();
             let slot = provider_slot(provider);
             clear_provider_api_key_from_config(store, provider);
+            clear_provider_api_key_from_keyring(secrets, provider);
             store.save()?;
-            println!("cleared API key for {slot}");
+            println!("cleared API key for {slot} from config and keyring");
             Ok(())
         }
         AuthCommand::List => {
-            println!("provider     env  config");
+            println!("provider     config keyring env  active");
+            let active_provider = store.config.provider;
             for provider in PROVIDER_LIST {
                 let slot = provider_slot(provider);
-                let env = provider_env_set(provider);
                 let file = provider_config_set(store, provider);
-                println!("{slot:<12}  {}     {}", yes_no(env), yes_no(file));
+                let keyring = (provider == active_provider && !file)
+                    .then(|| provider_keyring_set(secrets, provider));
+                let env = provider_env_set(provider);
+                let active = if file {
+                    "config"
+                } else if keyring == Some(true) {
+                    "keyring"
+                } else if env {
+                    "env"
+                } else {
+                    "missing"
+                };
+                println!(
+                    "{slot:<12}  {}     {}      {}   {active}",
+                    yes_no(file),
+                    keyring_status_short(keyring),
+                    yes_no(env)
+                );
             }
             Ok(())
         }
@@ -749,6 +879,14 @@ fn run_auth_command_with_secrets(
 
 fn yes_no(b: bool) -> &'static str {
     if b { "yes" } else { "no " }
+}
+
+fn keyring_status_short(state: Option<bool>) -> &'static str {
+    match state {
+        Some(true) => "yes",
+        Some(false) => "no ",
+        None => "n/a",
+    }
 }
 
 fn prompt_api_key(slot: &str) -> Result<String> {
@@ -1158,7 +1296,11 @@ fn build_tui_command(
     cmd.env("DEEPSEEK_PROVIDER", resolved_runtime.provider.as_str());
     if let Some(api_key) = resolved_runtime.api_key.as_ref() {
         cmd.env("DEEPSEEK_API_KEY", api_key);
-        cmd.env("DEEPSEEK_API_KEY_SOURCE", "dispatcher");
+        let source = resolved_runtime
+            .api_key_source
+            .unwrap_or(RuntimeApiKeySource::Env)
+            .as_env_value();
+        cmd.env("DEEPSEEK_API_KEY_SOURCE", source);
     }
 
     if let Some(model) = cli.model.as_ref() {
@@ -1768,13 +1910,17 @@ mod tests {
 
     #[test]
     fn auth_set_writes_to_shared_config_file() {
+        use deepseek_secrets::{InMemoryKeyringStore, KeyringStore};
+        use std::sync::Arc;
+
         let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
         let path = std::env::temp_dir().join(format!(
             "deepseek-cli-auth-set-test-{}-{nanos}.toml",
             std::process::id()
         ));
         let mut store = ConfigStore::load(Some(path.clone())).expect("store should load");
-        let secrets = no_keyring_secrets();
+        let inner = Arc::new(InMemoryKeyringStore::new());
+        let secrets = Secrets::new(inner.clone());
 
         run_auth_command_with_secrets(
             &mut store,
@@ -1794,12 +1940,19 @@ mod tests {
         );
         let saved = std::fs::read_to_string(&path).unwrap_or_default();
         assert!(saved.contains("api_key = \"sk-keyring\""));
+        assert_eq!(
+            inner.get("deepseek").unwrap().as_deref(),
+            Some("sk-keyring")
+        );
 
         let _ = std::fs::remove_file(path);
     }
 
     #[test]
     fn auth_clear_removes_from_config() {
+        use deepseek_secrets::{InMemoryKeyringStore, KeyringStore};
+        use std::sync::Arc;
+
         let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
         let path = std::env::temp_dir().join(format!(
             "deepseek-cli-auth-clear-test-{}-{nanos}.toml",
@@ -1810,7 +1963,9 @@ mod tests {
         store.config.providers.deepseek.api_key = Some("sk-stale".to_string());
         store.save().unwrap();
 
-        let secrets = no_keyring_secrets();
+        let inner = Arc::new(InMemoryKeyringStore::new());
+        inner.set("deepseek", "sk-stale").unwrap();
+        let secrets = Secrets::new(inner.clone());
 
         run_auth_command_with_secrets(
             &mut store,
@@ -1823,6 +1978,108 @@ mod tests {
 
         assert!(store.config.api_key.is_none());
         assert!(store.config.providers.deepseek.api_key.is_none());
+        assert_eq!(inner.get("deepseek").unwrap(), None);
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn auth_status_and_list_only_probe_active_provider_keyring() {
+        use deepseek_secrets::{KeyringStore, SecretsError};
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Default)]
+        struct RecordingStore {
+            gets: Mutex<Vec<String>>,
+        }
+
+        impl KeyringStore for RecordingStore {
+            fn get(&self, key: &str) -> Result<Option<String>, SecretsError> {
+                self.gets.lock().unwrap().push(key.to_string());
+                Ok(None)
+            }
+
+            fn set(&self, _key: &str, _value: &str) -> Result<(), SecretsError> {
+                Ok(())
+            }
+
+            fn delete(&self, _key: &str) -> Result<(), SecretsError> {
+                Ok(())
+            }
+
+            fn backend_name(&self) -> &'static str {
+                "recording"
+            }
+        }
+
+        let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
+        let path = std::env::temp_dir().join(format!(
+            "deepseek-cli-auth-active-keyring-test-{}-{nanos}.toml",
+            std::process::id()
+        ));
+        let mut store = ConfigStore::load(Some(path.clone())).expect("store should load");
+        store.config.provider = ProviderKind::Deepseek;
+        let inner = Arc::new(RecordingStore::default());
+        let secrets = Secrets::new(inner.clone());
+
+        run_auth_command_with_secrets(&mut store, AuthCommand::Status, &secrets)
+            .expect("status should succeed");
+        run_auth_command_with_secrets(&mut store, AuthCommand::List, &secrets)
+            .expect("list should succeed");
+
+        assert_eq!(
+            inner.gets.lock().unwrap().as_slice(),
+            ["deepseek", "deepseek"]
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn dispatch_keyring_recovery_self_heals_into_config_file() {
+        use deepseek_secrets::{InMemoryKeyringStore, KeyringStore};
+        use std::sync::Arc;
+
+        let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
+        let path = std::env::temp_dir().join(format!(
+            "deepseek-cli-dispatch-keyring-heal-test-{}-{nanos}.toml",
+            std::process::id()
+        ));
+        let mut store = ConfigStore::load(Some(path.clone())).expect("store should load");
+        let inner = Arc::new(InMemoryKeyringStore::new());
+        inner.set("deepseek", "ring-key").unwrap();
+        let secrets = Secrets::new(inner);
+
+        let resolved = resolve_runtime_for_dispatch_with_secrets(
+            &mut store,
+            &CliRuntimeOverrides::default(),
+            &secrets,
+        );
+
+        assert_eq!(resolved.api_key.as_deref(), Some("ring-key"));
+        assert_eq!(
+            resolved.api_key_source,
+            Some(RuntimeApiKeySource::ConfigFile)
+        );
+        assert_eq!(store.config.api_key.as_deref(), Some("ring-key"));
+        assert_eq!(
+            store.config.providers.deepseek.api_key.as_deref(),
+            Some("ring-key")
+        );
+
+        let saved = std::fs::read_to_string(&path).expect("config should be written");
+        assert!(saved.contains("api_key = \"ring-key\""));
+
+        let resolved_again = resolve_runtime_for_dispatch_with_secrets(
+            &mut store,
+            &CliRuntimeOverrides::default(),
+            &no_keyring_secrets(),
+        );
+        assert_eq!(resolved_again.api_key.as_deref(), Some("ring-key"));
+        assert_eq!(
+            resolved_again.api_key_source,
+            Some(RuntimeApiKeySource::ConfigFile)
+        );
 
         let _ = std::fs::remove_file(path);
     }
