@@ -16,7 +16,7 @@ Press `Shift+Tab` to cycle reasoning effort.
 - **Agent**: multi-step tool use. Approvals for shell and paid tools (file writes are allowed without a prompt).
 - **YOLO**: enables shell + trust mode and auto-approves all tools. Use only in trusted repos.
 
-All three modes have access to the `rlm_query` tool — a structured tool call that fans out 1–16 cheap parallel children on `deepseek-v4-flash`. The model reaches for it when work is decomposable.
+All three modes have access to the `rlm` tool. Inside its Python REPL, `llm_query_batched` fans out 1–16 cheap parallel child calls pinned to `deepseek-v4-flash`. The model reaches for it when work is decomposable.
 
 ## Compatibility Notes
 
