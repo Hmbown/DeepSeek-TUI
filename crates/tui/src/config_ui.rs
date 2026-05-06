@@ -12,6 +12,7 @@ use serde_json::Value;
 
 use crate::commands;
 use crate::config::{Config, StatusItem, normalize_model_name};
+use crate::features::Feature;
 use crate::localization::{normalize_configured_locale, resolve_locale};
 use crate::settings::Settings;
 use crate::tui::app::{
@@ -77,6 +78,8 @@ pub struct ConfigSection {
     pub reasoning_effort: ReasoningEffortValue,
     #[schemars(title = "Status line items")]
     pub status_items: Vec<StatusItemValue>,
+    #[schemars(title = "Vision model")]
+    pub features_vision_model: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -273,6 +276,7 @@ pub fn build_document(app: &App, config: &Config) -> Result<ConfigUiDocument> {
             mcp_config_path: app.mcp_config_path.display().to_string(),
             reasoning_effort,
             status_items,
+            features_vision_model: config.features().enabled(Feature::VisionModel),
         },
     })
 }
@@ -429,6 +433,10 @@ pub fn apply_document(
         ("sidebar_focus", doc.settings.sidebar_focus.as_setting()),
         ("max_history", &doc.settings.max_history.to_string()),
         ("mcp_config_path", doc.config.mcp_config_path.as_str()),
+        (
+            "vision_model",
+            bool_str(doc.config.features_vision_model),
+        ),
     ] {
         let result = commands::set_config_value(app, key, value, persist);
         if result.is_error {

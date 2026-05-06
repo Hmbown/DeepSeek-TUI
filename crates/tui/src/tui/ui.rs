@@ -4097,7 +4097,7 @@ async fn apply_command_result(
             AppAction::OpenConfigEditor(mode) => match mode {
                 ConfigUiMode::Native => {
                     if app.view_stack.top_kind() != Some(ModalKind::Config) {
-                        app.view_stack.push(ConfigView::new_for_app(app));
+                        app.view_stack.push(ConfigView::new_for_app(app, config));
                     }
                 }
                 ConfigUiMode::Tui => {
@@ -4160,7 +4160,7 @@ async fn apply_command_result(
             },
             AppAction::OpenConfigView => {
                 if app.view_stack.top_kind() != Some(ModalKind::Config) {
-                    app.view_stack.push(ConfigView::new_for_app(app));
+                    app.view_stack.push(ConfigView::new_for_app(app, config));
                 }
             }
             AppAction::OpenModelPicker => {
@@ -5257,7 +5257,7 @@ async fn handle_view_events(
 
                 if app.view_stack.top_kind() == Some(ModalKind::Config) {
                     app.view_stack.pop();
-                    app.view_stack.push(ConfigView::new_for_app(app));
+                    app.view_stack.push(ConfigView::new_for_app(app, config));
                 }
             }
             ViewEvent::StatusItemsUpdated { items, final_save } => {

@@ -7,6 +7,7 @@ use super::CommandResult;
 use crate::client::DeepSeekClient;
 use crate::config::{COMMON_DEEPSEEK_MODELS, clear_api_key, normalize_model_name};
 use crate::config_ui::{ConfigUiMode, parse_mode};
+use crate::features::Feature;
 use crate::llm_client::LlmClient;
 use crate::localization::resolve_locale;
 use crate::models::{ContentBlock, Message, MessageRequest, MessageResponse, SystemPrompt};
@@ -127,6 +128,15 @@ fn show_single_setting(app: &App, key: &str) -> CommandResult {
         "transcript_spacing" | "spacing" => {
             Some(spacing_display(app.transcript_spacing).to_string())
         }
+        "vision_model" => {
+            let enabled = crate::config::Config::load(
+                app.config_path.clone(),
+                app.config_profile.as_deref(),
+            )
+            .map(|c| c.features().enabled(Feature::VisionModel))
+            .unwrap_or(false);
+            Some(enabled.to_string())
+        }
         _ => {
             let known = Settings::available_settings()
                 .iter()
@@ -233,6 +243,45 @@ pub fn persist_root_string_key(key: &str, value: &str) -> anyhow::Result<PathBuf
     Ok(path)
 }
 
+/// Persist a single boolean feature flag into the `[features]` table of
+/// `~/.deepseek/config.toml`. Round-trips through `toml::Value` so all other
+/// keys survive untouched.
+pub fn persist_feature_flag(key: &str, enabled: bool) -> anyhow::Result<PathBuf> {
+    use anyhow::Context;
+    use std::fs;
+
+    let path = config_toml_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create config directory {}", parent.display()))?;
+    }
+
+    let mut doc: toml::Value = if path.exists() {
+        let raw = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read config at {}", path.display()))?;
+        toml::from_str(&raw)
+            .with_context(|| format!("failed to parse config at {}", path.display()))?
+    } else {
+        toml::Value::Table(toml::value::Table::new())
+    };
+
+    let table = doc
+        .as_table_mut()
+        .context("config.toml root must be a table")?;
+    let features_entry = table
+        .entry("features".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::value::Table::new()));
+    let features_table = features_entry
+        .as_table_mut()
+        .context("`features` section in config.toml must be a table")?;
+    features_table.insert(key.to_string(), toml::Value::Boolean(enabled));
+
+    let body = toml::to_string_pretty(&doc).context("failed to serialize config.toml")?;
+    fs::write(&path, body)
+        .with_context(|| format!("failed to write config at {}", path.display()))?;
+    Ok(path)
+}
+
 /// Resolve the path to `~/.deepseek/config.toml` (or
 /// `$DEEPSEEK_CONFIG_PATH`). Mirrors what `Config::load` accepts so we
 /// never write to a different file than the one we read.
@@ -321,6 +370,19 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
                 )
             };
             return CommandResult::message(message);
+        }
+        "vision_model" => {
+            let enabled = match value.to_lowercase().as_str() {
+                "true" | "1" | "on" | "yes" => true,
+                "false" | "0" | "off" | "no" => false,
+                _ => return CommandResult::error("vision_model: use true or false"),
+            };
+            return match persist_feature_flag("vision_model", enabled) {
+                Ok(_) => CommandResult::message(format!(
+                    "vision_model = {enabled} (saved; restart session for changes)"
+                )),
+                Err(err) => CommandResult::error(format!("Failed to save: {err}")),
+            };
         }
         _ => {}
     }

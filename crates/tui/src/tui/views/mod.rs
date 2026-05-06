@@ -510,6 +510,7 @@ enum ConfigSection {
     Sidebar,
     History,
     Mcp,
+    Features,
 }
 
 impl ConfigSection {
@@ -522,6 +523,7 @@ impl ConfigSection {
             ConfigSection::Sidebar => "Sidebar",
             ConfigSection::History => "History",
             ConfigSection::Mcp => "MCP",
+            ConfigSection::Features => "Features",
         }
     }
 }
@@ -555,7 +557,7 @@ pub struct ConfigView {
 }
 
 impl ConfigView {
-    pub fn new_for_app(app: &App) -> Self {
+    pub fn new_for_app(app: &App, config: &crate::config::Config) -> Self {
         let settings = Settings::load().unwrap_or_else(|_| Settings::default());
         let rows = vec![
             ConfigRow {
@@ -685,6 +687,13 @@ impl ConfigView {
                 section: ConfigSection::Mcp,
                 key: "mcp_config_path".to_string(),
                 value: app.mcp_config_path.display().to_string(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                section: ConfigSection::Features,
+                key: "vision_model".to_string(),
+                value: config.features().enabled(crate::features::Feature::VisionModel).to_string(),
                 editable: true,
                 scope: ConfigScope::Saved,
             },
@@ -1818,7 +1827,7 @@ mod tests {
     #[test]
     fn config_view_groups_rows_by_expected_sections() {
         let app = create_test_app();
-        let view = ConfigView::new_for_app(&app);
+        let view = ConfigView::new_for_app(&app, &Config::default());
         assert_eq!(
             visible_section_labels(&view),
             vec![
@@ -1829,6 +1838,7 @@ mod tests {
                 ConfigSection::Sidebar.label(),
                 ConfigSection::History.label(),
                 ConfigSection::Mcp.label(),
+                ConfigSection::Features.label(),
             ]
         );
     }
@@ -1836,7 +1846,7 @@ mod tests {
     #[test]
     fn config_view_includes_expected_editable_rows() {
         let app = create_test_app();
-        let view = ConfigView::new_for_app(&app);
+        let view = ConfigView::new_for_app(&app, &Config::default());
         let keys = view
             .rows
             .iter()
@@ -1854,7 +1864,7 @@ mod tests {
     #[test]
     fn config_view_filter_matches_group_and_rows() {
         let app = create_test_app();
-        let mut view = ConfigView::new_for_app(&app);
+        let mut view = ConfigView::new_for_app(&app, &Config::default());
 
         type_filter(&mut view, "side");
 
@@ -1870,7 +1880,7 @@ mod tests {
     #[test]
     fn config_view_filter_accepts_j_k_and_unicode_case() {
         let app = create_test_app();
-        let mut view = ConfigView::new_for_app(&app);
+        let mut view = ConfigView::new_for_app(&app, &Config::default());
 
         type_filter(&mut view, "thinking");
         assert_eq!(visible_row_keys(&view), vec!["show_thinking"]);
@@ -1885,7 +1895,7 @@ mod tests {
     fn localized_config_view_renders_at_narrow_width() {
         let mut app = create_test_app();
         app.ui_locale = Locale::PtBr;
-        let view = ConfigView::new_for_app(&app);
+        let view = ConfigView::new_for_app(&app, &Config::default());
         let area = Rect::new(0, 0, 60, 18);
         let mut buf = Buffer::empty(area);
 
@@ -1905,7 +1915,7 @@ mod tests {
     #[test]
     fn config_view_filter_no_match_does_not_edit_hidden_row() {
         let app = create_test_app();
-        let mut view = ConfigView::new_for_app(&app);
+        let mut view = ConfigView::new_for_app(&app, &Config::default());
 
         type_filter(&mut view, "zzzz");
         assert!(visible_row_keys(&view).is_empty());
@@ -1923,7 +1933,7 @@ mod tests {
     #[test]
     fn config_view_can_edit_filtered_row() {
         let app = create_test_app();
-        let mut view = ConfigView::new_for_app(&app);
+        let mut view = ConfigView::new_for_app(&app, &Config::default());
 
         type_filter(&mut view, "mcp");
         assert_eq!(visible_row_keys(&view), vec!["mcp_config_path"]);
@@ -1954,7 +1964,7 @@ mod tests {
     #[test]
     fn config_view_enter_and_ctrl_u_emit_config_updated() {
         let app = create_test_app();
-        let mut view = ConfigView::new_for_app(&app);
+        let mut view = ConfigView::new_for_app(&app, &Config::default());
 
         let start = view.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(matches!(start, ViewAction::None));
@@ -1992,7 +2002,7 @@ mod tests {
     #[test]
     fn config_view_mouse_click_selects_row() {
         let app = create_test_app();
-        let mut view = ConfigView::new_for_app(&app);
+        let mut view = ConfigView::new_for_app(&app, &Config::default());
         let area = Rect::new(0, 0, 100, 30);
         let mut buf = Buffer::empty(area);
         view.render(area, &mut buf);
@@ -2026,7 +2036,7 @@ mod tests {
     #[test]
     fn config_view_typing_replaces_on_first_char() {
         let app = create_test_app();
-        let mut view = ConfigView::new_for_app(&app);
+        let mut view = ConfigView::new_for_app(&app, &Config::default());
 
         let _ = view.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         let edit = view.editing.as_ref().expect("editing should be active");
@@ -2040,7 +2050,7 @@ mod tests {
     #[test]
     fn config_view_escape_cancels_editing() {
         let app = create_test_app();
-        let mut view = ConfigView::new_for_app(&app);
+        let mut view = ConfigView::new_for_app(&app, &Config::default());
         let _ = view.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(view.editing.is_some());
 
