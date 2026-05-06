@@ -603,7 +603,8 @@ impl ToolSpec for WebRunTool {
                     ))
                 })?;
                 let target = link.url.clone();
-                let fetched = resolve_or_fetch_page(&target, DEFAULT_OPEN_TIMEOUT_MS, context).await?;
+                let fetched =
+                    resolve_or_fetch_page(&target, DEFAULT_OPEN_TIMEOUT_MS, context).await?;
                 click_counter += 1;
                 let click_ref = format!("{scope}turn{turn}click{click_counter}");
                 store_page(&context.state_namespace, &click_ref, fetched.clone());
@@ -688,7 +689,11 @@ fn next_turn_for_namespace(namespace: &str) -> u64 {
     with_state(|state| state.next_turn(namespace))
 }
 
-async fn resolve_or_fetch_page(ref_id: &str, timeout_ms: u64, context: &ToolContext) -> Result<WebPage, ToolError> {
+async fn resolve_or_fetch_page(
+    ref_id: &str,
+    timeout_ms: u64,
+    context: &ToolContext,
+) -> Result<WebPage, ToolError> {
     if let Some(page) = get_page(ref_id) {
         return Ok(page);
     }
@@ -1631,6 +1636,7 @@ fn url_encode(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn sample_page(url: &str) -> WebPage {
         WebPage {
@@ -1782,5 +1788,23 @@ mod tests {
         assert!(looks_like_url("https://example.com"));
         assert!(looks_like_url("http://example.com"));
         assert!(!looks_like_url("turn0search0"));
+    }
+
+    #[test]
+    fn network_policy_denies_direct_open_url() {
+        use crate::network_policy::{Decision, NetworkPolicy, NetworkPolicyDecider};
+
+        let policy = NetworkPolicy {
+            default: Decision::Deny.into(),
+            allow: vec!["api.deepseek.com".to_string()],
+            deny: vec![],
+            audit: false,
+        };
+        let decider = NetworkPolicyDecider::new(policy, None);
+        let ctx = ToolContext::new(PathBuf::from(".")).with_network_policy(decider);
+
+        let err = check_network_policy("https://example.com/private", &ctx)
+            .expect_err("blocked host should fail");
+        assert!(format!("{err}").contains("blocked by network policy"));
     }
 }
