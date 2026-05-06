@@ -3594,16 +3594,17 @@ async fn run_interactive(
         ),
     }
 
-    // Non-blocking update check: spawn a background task and race against a
-    // short timeout. If a newer version is available, print a one-line hint
-    // before entering the TUI. This never delays startup by more than 2s
-    // (falls back to cached result if network is slow).
+    // Non-blocking update check: run on a dedicated thread with its own
+    // runtime to avoid "cannot start a runtime from within a runtime" when
+    // the dispatcher already runs inside tokio. The thread joins with a 2s
+    // timeout so startup is never noticeably delayed.
     {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build();
-        if let Ok(rt) = rt {
-            let result = rt.block_on(async {
+        let handle = std::thread::spawn(|| {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .ok()?;
+            rt.block_on(async {
                 tokio::time::timeout(
                     std::time::Duration::from_secs(2),
                     update_check::spawn_update_check(),
@@ -3612,10 +3613,10 @@ async fn run_interactive(
                 .ok()
                 .and_then(|r| r.ok())
                 .flatten()
-            });
-            if let Some(update) = result {
-                eprintln!("\n  {}\n", update.notification_message());
-            }
+            })
+        });
+        if let Ok(Some(update)) = handle.join() {
+            eprintln!("\n  {}\n", update.notification_message());
         }
     }
 
