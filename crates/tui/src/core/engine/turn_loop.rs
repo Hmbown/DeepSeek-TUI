@@ -239,7 +239,7 @@ impl Engine {
             let request = MessageRequest {
                 model: self.session.model.clone(),
                 messages: self.messages_with_turn_metadata(),
-                max_tokens: TURN_MAX_OUTPUT_TOKENS,
+                max_tokens: effective_max_output_tokens(&self.session.model),
                 system: self.session.system_prompt.clone(),
                 tools: active_tools.clone(),
                 tool_choice: if active_tools.is_some() {

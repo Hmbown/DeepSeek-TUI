@@ -502,6 +502,53 @@ fn context_budget_reserves_output_and_headroom() {
 }
 
 #[test]
+fn effective_max_output_tokens_caps_api_request_for_large_window_models() {
+    // V4 models have a 1M context window but the API request cap must stay
+    // well below common provider limits (e.g., 131K total on self-hosted
+    // vLLM/SGLang). The cap should never exceed 65K.
+    let v4_cap = effective_max_output_tokens("deepseek-v4-pro");
+    assert!(
+        v4_cap <= 65_536,
+        "V4 API request cap should be ≤64K, got {v4_cap}"
+    );
+    assert!(
+        v4_cap > 0,
+        "V4 API request cap should be positive, got {v4_cap}"
+    );
+
+    let flash_cap = effective_max_output_tokens("deepseek-v4-flash");
+    assert_eq!(v4_cap, flash_cap);
+}
+
+#[test]
+fn internal_context_budget_unaffected_by_api_request_cap() {
+    // The internal context budget (used for compaction/preflight/recovery)
+    // must still use the full TURN_MAX_OUTPUT_TOKENS headroom, NOT the
+    // smaller API request cap. This ensures long-context V4 sessions don't
+    // compact prematurely.
+    let internal_budget = context_input_budget("deepseek-v4-pro", TURN_MAX_OUTPUT_TOKENS)
+        .expect("V4 should have a known context window");
+    let api_cap_budget = context_input_budget(
+        "deepseek-v4-pro",
+        effective_max_output_tokens("deepseek-v4-pro"),
+    )
+    .expect("V4 should have a known context window");
+
+    // Internal budget reserves 262K for output; API-cap budget would only
+    // reserve 64K. Internal budget must be smaller (more conservative).
+    assert!(
+        internal_budget < api_cap_budget,
+        "Internal budget ({internal_budget}) should be smaller than API-cap budget ({api_cap_budget}) \
+         because it reserves more headroom for output"
+    );
+
+    // Verify the internal budget is what the compaction logic actually uses.
+    let v4_window: usize = 1_000_000;
+    let expected_internal = v4_window - (TURN_MAX_OUTPUT_TOKENS as usize) - 1_024usize;
+    assert_eq!(internal_budget, expected_internal);
+}
+
+#[test]
 fn v4_tool_outputs_keep_large_file_reads_in_context() {
     let content = "0123456789abcdef\n".repeat(2_000);
     let output = ToolResult::success(content.clone());
