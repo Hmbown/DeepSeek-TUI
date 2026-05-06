@@ -421,6 +421,10 @@ struct ServeArgs {
     /// `[runtime_api] cors_origins` from `config.toml`. Whalescale#255.
     #[arg(long = "cors-origin", value_name = "URL")]
     cors_origin: Vec<String>,
+    /// Require this bearer token for `/v1/*` runtime API routes. Also reads
+    /// `DEEPSEEK_RUNTIME_TOKEN` when omitted.
+    #[arg(long = "auth-token", value_name = "TOKEN")]
+    auth_token: Option<String>,
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -730,6 +734,7 @@ async fn main() -> Result<()> {
                             port: args.port,
                             workers: args.workers.clamp(1, 8),
                             cors_origins,
+                            auth_token: args.auth_token,
                         },
                     )
                     .await
