@@ -2528,7 +2528,11 @@ pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf>
     ensure_parent_dir(&config_path)?;
 
     let table_name = match provider {
-        ApiProvider::Deepseek | ApiProvider::DeepseekCN => unreachable!(),
+        ApiProvider::Deepseek | ApiProvider::DeepseekCN => {
+            return Err(anyhow::anyhow!(
+                "save_api_key_for: DeepSeek variants must use the root api_key field, not provider-specific storage"
+            ));
+        }
         ApiProvider::NvidiaNim => "providers.nvidia_nim",
         ApiProvider::Openrouter => "providers.openrouter",
         ApiProvider::Novita => "providers.novita",
@@ -2556,7 +2560,11 @@ pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf>
         .as_table_mut()
         .context("`providers` must be a table.")?;
     let key_inside = match provider {
-        ApiProvider::Deepseek | ApiProvider::DeepseekCN => unreachable!(),
+        ApiProvider::Deepseek | ApiProvider::DeepseekCN => {
+            return Err(anyhow::anyhow!(
+                "save_api_key_for: DeepSeek variants must use the root api_key field, not provider-specific storage"
+            ));
+        }
         ApiProvider::NvidiaNim => "nvidia_nim",
         ApiProvider::Openrouter => "openrouter",
         ApiProvider::Novita => "novita",

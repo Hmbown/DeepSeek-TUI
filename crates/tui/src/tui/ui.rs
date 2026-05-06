@@ -5520,7 +5520,10 @@ async fn apply_provider_picker_api_key(
             .providers
             .get_or_insert_with(ProvidersConfig::default);
         let entry: &mut ProviderConfig = match provider {
-            ApiProvider::Deepseek | ApiProvider::DeepseekCN => unreachable!(),
+            ApiProvider::Deepseek | ApiProvider::DeepseekCN => {
+                // Guarded by the outer `if` above; safety net against refactors.
+                return;
+            }
             ApiProvider::NvidiaNim => &mut providers.nvidia_nim,
             ApiProvider::Openrouter => &mut providers.openrouter,
             ApiProvider::Novita => &mut providers.novita,
