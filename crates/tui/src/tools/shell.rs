@@ -2438,7 +2438,7 @@ impl ToolSpec for ShellInteractTool {
                 return Ok(build_shell_delta_tool_result(delta));
             }
 
-            std::thread::sleep(Duration::from_millis(50));
+            tokio::time::sleep(Duration::from_millis(50)).await;
             elapsed = elapsed.saturating_add(50);
         }
     }
