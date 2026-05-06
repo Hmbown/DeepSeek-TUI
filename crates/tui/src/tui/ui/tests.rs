@@ -2784,11 +2784,16 @@ fn truncate_line_to_width_respects_display_width_for_tiny_budgets() {
 }
 
 #[test]
-fn notification_settings_tui_always_forces_osc9_without_threshold() {
+fn notification_settings_tui_always_keeps_auto_fallback_without_threshold() {
     let config = Config {
         tui: Some(crate::config::TuiConfig {
             notification_condition: Some(crate::config::NotificationCondition::Always),
             ..Default::default()
+        }),
+        notifications: Some(crate::config::NotificationsConfig {
+            method: crate::config::NotificationMethod::Auto,
+            threshold_secs: 120,
+            include_summary: true,
         }),
         ..Config::default()
     };
@@ -2796,7 +2801,30 @@ fn notification_settings_tui_always_forces_osc9_without_threshold() {
     let (method, threshold, include_summary) =
         notification_settings(&config).expect("notification should be enabled");
 
-    assert_eq!(method, crate::tui::notifications::Method::Osc9);
+    assert_eq!(method, crate::tui::notifications::Method::Auto);
+    assert_eq!(threshold, Duration::ZERO);
+    assert!(include_summary);
+}
+
+#[test]
+fn notification_settings_tui_always_honors_configured_method() {
+    let config = Config {
+        tui: Some(crate::config::TuiConfig {
+            notification_condition: Some(crate::config::NotificationCondition::Always),
+            ..Default::default()
+        }),
+        notifications: Some(crate::config::NotificationsConfig {
+            method: crate::config::NotificationMethod::Bel,
+            threshold_secs: 120,
+            include_summary: false,
+        }),
+        ..Config::default()
+    };
+
+    let (method, threshold, include_summary) =
+        notification_settings(&config).expect("notification should be enabled");
+
+    assert_eq!(method, crate::tui::notifications::Method::Bel);
     assert_eq!(threshold, Duration::ZERO);
     assert!(!include_summary);
 }

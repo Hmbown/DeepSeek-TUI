@@ -2969,23 +2969,6 @@ fn sanitize_stream_chunk(chunk: &str) -> String {
 fn notification_settings(
     config: &Config,
 ) -> Option<(crate::tui::notifications::Method, Duration, bool)> {
-    if let Some(condition) = config
-        .tui
-        .as_ref()
-        .and_then(|tui| tui.notification_condition)
-    {
-        match condition {
-            crate::config::NotificationCondition::Always => {
-                return Some((
-                    crate::tui::notifications::Method::Osc9,
-                    Duration::ZERO,
-                    false,
-                ));
-            }
-            crate::config::NotificationCondition::Never => return None,
-        }
-    }
-
     let notif = config.notifications_config();
     let method = match notif.method {
         crate::config::NotificationMethod::Auto => crate::tui::notifications::Method::Auto,
@@ -2993,6 +2976,19 @@ fn notification_settings(
         crate::config::NotificationMethod::Bel => crate::tui::notifications::Method::Bel,
         crate::config::NotificationMethod::Off => crate::tui::notifications::Method::Off,
     };
+
+    if let Some(condition) = config
+        .tui
+        .as_ref()
+        .and_then(|tui| tui.notification_condition)
+    {
+        match condition {
+            crate::config::NotificationCondition::Always => {
+                return Some((method, Duration::ZERO, notif.include_summary));
+            }
+            crate::config::NotificationCondition::Never => return None,
+        }
+    }
 
     Some((
         method,
