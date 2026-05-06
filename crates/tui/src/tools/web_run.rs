@@ -1580,7 +1580,7 @@ fn extract_query_param(url: &str, key: &str) -> Option<String> {
 }
 
 fn percent_decode(input: &str) -> String {
-    let mut out = String::new();
+    let mut out = Vec::with_capacity(input.len());
     let bytes = input.as_bytes();
     let mut idx = 0;
     while idx < bytes.len() {
@@ -1589,14 +1589,14 @@ fn percent_decode(input: &str) -> String {
             && let Ok(hex) = std::str::from_utf8(&bytes[idx + 1..idx + 3])
             && let Ok(val) = u8::from_str_radix(hex, 16)
         {
-            out.push(val as char);
+            out.push(val);
             idx += 3;
             continue;
         }
-        out.push(bytes[idx] as char);
+        out.push(bytes[idx]);
         idx += 1;
     }
-    out
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn url_encode(input: &str) -> String {
@@ -1680,6 +1680,22 @@ mod tests {
         assert_eq!(results[0].title, "Example & Result");
         assert_eq!(results[0].url, "https://example.com/path?q=1");
         assert_eq!(results[0].snippet.as_deref(), Some("A useful snippet."));
+    }
+
+    #[test]
+    fn percent_decode_handles_utf8_multibyte_sequences() {
+        // Percent-encoded CJK: %E4%B8%AA%E4%BA%BA = 个人 (each glyph is 3 UTF-8 bytes).
+        assert_eq!(percent_decode("Hello %E4%B8%AA%E4%BA%BA"), "Hello 个人");
+        assert_eq!(percent_decode("%E7%B4%A0%E6%9D%90"), "素材");
+        // Percent-encoded UTF-8 inside a URL path (DuckDuckGo `uddg=` redirect shape).
+        assert_eq!(
+            percent_decode("https://example.com/%E9%A1%B5%E9%9D%A2"),
+            "https://example.com/页面"
+        );
+        // Raw UTF-8 in the input passes through unchanged.
+        assert_eq!(percent_decode("查询 keyword"), "查询 keyword");
+        // ASCII-only inputs preserve existing behavior; `+` stays literal.
+        assert_eq!(percent_decode("foo+bar%20baz"), "foo+bar baz");
     }
 
     #[test]
