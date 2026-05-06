@@ -145,7 +145,7 @@ pub const KEYBINDINGS: &[KeybindingEntry] = &[
         section: KeybindingSection::Editing,
     },
     KeybindingEntry {
-        chord: "Ctrl+J / Alt+Enter",
+        chord: "Ctrl+J / Alt+Enter / Shift+Enter",
         description_id: crate::localization::MessageId::KbInsertNewline,
         section: KeybindingSection::Editing,
     },

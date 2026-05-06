@@ -3867,6 +3867,15 @@ async fn run_exec_agent(
             allow_shell: auto_approve || config.allow_shell(),
             trust_mode,
             auto_approve,
+            approval_mode: if auto_approve {
+                crate::tui::approval::ApprovalMode::Auto
+            } else {
+                config
+                    .approval_policy
+                    .as_deref()
+                    .and_then(crate::tui::approval::ApprovalMode::from_config_value)
+                    .unwrap_or_default()
+            },
         })
         .await?;
 

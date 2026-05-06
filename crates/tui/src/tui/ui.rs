@@ -929,10 +929,12 @@ async fn run_event_loop(
                         } else {
                             &app.model
                         };
-                        let turn_cost =
-                            crate::pricing::calculate_turn_cost_from_usage(pricing_model, &usage);
+                        let turn_cost = crate::pricing::calculate_turn_cost_estimate_from_usage(
+                            pricing_model,
+                            &usage,
+                        );
                         if let Some(cost) = turn_cost {
-                            app.accrue_session_cost(cost);
+                            app.accrue_session_cost_estimate(cost);
                         }
 
                         // Emit OSC 9 / BEL desktop notification for long turns.
@@ -952,7 +954,11 @@ async fn run_event_loop(
                                     crate::tui::notifications::humanize_duration(turn_elapsed);
                                 match turn_cost {
                                     Some(c) => {
-                                        format!("deepseek: turn complete ({human}, ${c:.2})")
+                                        let cost = crate::pricing::format_cost_estimate(
+                                            c,
+                                            app.cost_currency,
+                                        );
+                                        format!("deepseek: turn complete ({human}, {cost})")
                                     }
                                     None => format!("deepseek: turn complete ({human})"),
                                 }
@@ -1393,8 +1399,8 @@ async fn run_event_loop(
         // the pool once per loop iteration so the footer chip matches
         // the DeepSeek website's billing.
         let pending_bg_cost = crate::cost_status::drain();
-        if pending_bg_cost > 0.0 {
-            app.accrue_subagent_cost(pending_bg_cost);
+        if pending_bg_cost.is_positive() {
+            app.accrue_subagent_cost_estimate(pending_bg_cost);
             app.needs_redraw = true;
         }
         // Expire the "Press Ctrl+C again to quit" prompt silently after its
@@ -2364,10 +2370,7 @@ async fn run_event_loop(
                     continue;
                 }
                 // Input handling
-                KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    app.insert_char('\n');
-                }
-                KeyCode::Enter if key.modifiers.contains(KeyModifiers::ALT) => {
+                _ if is_composer_newline_key(key) => {
                     app.insert_char('\n');
                 }
                 KeyCode::Enter
@@ -3102,6 +3105,18 @@ fn next_escape_action(app: &App, slash_menu_open: bool) -> EscapeAction {
     }
 }
 
+fn is_composer_newline_key(key: KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Char('j') => key.modifiers.contains(KeyModifiers::CONTROL),
+        KeyCode::Enter => {
+            key.modifiers.contains(KeyModifiers::ALT)
+                || (key.modifiers.contains(KeyModifiers::SHIFT)
+                    && !key.modifiers.contains(KeyModifiers::CONTROL))
+        }
+        _ => false,
+    }
+}
+
 fn handle_history_search_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Enter => {
@@ -3368,6 +3383,7 @@ async fn dispatch_user_message(
             allow_shell: app.allow_shell,
             trust_mode: app.trust_mode,
             auto_approve: app.mode == AppMode::Yolo,
+            approval_mode: app.approval_mode,
         })
         .await
     {
@@ -6236,10 +6252,10 @@ fn render_footer_from(
     } else {
         Vec::new()
     };
-    let displayed_cost = app.displayed_session_cost();
+    let displayed_cost = app.displayed_session_cost_for_currency(app.cost_currency);
     let cost = if has(S::Cost) && displayed_cost > 0.001 {
         vec![Span::styled(
-            format!("${displayed_cost:.2}"),
+            app.format_cost_amount(displayed_cost),
             Style::default().fg(palette::TEXT_MUTED),
         )]
     } else {
@@ -6332,10 +6348,10 @@ fn footer_auxiliary_spans(app: &App, max_width: usize) -> Vec<Span<'static>> {
         crate::tui::widgets::footer_agents_chip(running_agent_count(app), app.ui_locale);
     let replay_spans = footer_reasoning_replay_spans(app);
     let cache_spans = footer_cache_spans(app);
-    let displayed_cost = app.displayed_session_cost();
+    let displayed_cost = app.displayed_session_cost_for_currency(app.cost_currency);
     let cost_spans = if displayed_cost > 0.001 {
         vec![Span::styled(
-            format!("${displayed_cost:.2}"),
+            app.format_cost_amount(displayed_cost),
             Style::default().fg(palette::TEXT_MUTED),
         )]
     } else {

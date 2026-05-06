@@ -371,23 +371,24 @@ impl Engine {
             config.notes_path.clone(),
             config.mcp_config_path.clone(),
         );
-
         // Set up stable system prompt with project context (default to agent mode).
         // Per-turn working-set metadata is injected into the latest user
         // message at request time so file churn does not rewrite this prefix.
         let user_memory_block =
             crate::memory::compose_block(config.memory_enabled, &config.memory_path);
-        let system_prompt = prompts::system_prompt_for_mode_with_context_skills_and_session(
-            AppMode::Agent,
-            &config.workspace,
-            None,
-            Some(&config.skills_dir),
-            Some(&config.instructions),
-            prompts::PromptSessionContext {
-                user_memory_block: user_memory_block.as_deref(),
-                goal_objective: config.goal_objective.as_deref(),
-            },
-        );
+        let system_prompt =
+            prompts::system_prompt_for_mode_with_context_skills_session_and_approval(
+                AppMode::Agent,
+                &config.workspace,
+                None,
+                Some(&config.skills_dir),
+                Some(&config.instructions),
+                prompts::PromptSessionContext {
+                    user_memory_block: user_memory_block.as_deref(),
+                    goal_objective: config.goal_objective.as_deref(),
+                },
+                session.approval_mode,
+            );
         let stable_prompt = Some(system_prompt);
         session.last_system_prompt_hash = Some(system_prompt_hash(stable_prompt.as_ref()));
         session.system_prompt = stable_prompt;
@@ -521,6 +522,7 @@ impl Engine {
                     allow_shell,
                     trust_mode,
                     auto_approve,
+                    approval_mode,
                 } => {
                     self.handle_send_message(
                         content,
@@ -533,6 +535,7 @@ impl Engine {
                         allow_shell,
                         trust_mode,
                         auto_approve,
+                        approval_mode,
                     )
                     .await;
                 }
@@ -730,6 +733,7 @@ impl Engine {
                         self.session.allow_shell,
                         self.session.trust_mode,
                         self.session.auto_approve,
+                        self.session.approval_mode,
                     )
                     .await;
                 }
@@ -781,6 +785,7 @@ impl Engine {
         allow_shell: bool,
         trust_mode: bool,
         auto_approve: bool,
+        approval_mode: crate::tui::approval::ApprovalMode,
     ) {
         // Reset cancel token for fresh turn (in case previous was cancelled)
         self.reset_cancel_token();
@@ -865,6 +870,11 @@ impl Engine {
         self.session.trust_mode = trust_mode;
         self.config.trust_mode = trust_mode;
         self.session.auto_approve = auto_approve;
+        self.session.approval_mode = if auto_approve {
+            crate::tui::approval::ApprovalMode::Auto
+        } else {
+            approval_mode
+        };
 
         // Update system prompt to match current mode and include persisted compaction context.
         self.refresh_system_prompt(mode);
@@ -1755,7 +1765,7 @@ impl Engine {
     fn refresh_system_prompt(&mut self, mode: AppMode) {
         let user_memory_block =
             crate::memory::compose_block(self.config.memory_enabled, &self.config.memory_path);
-        let base = prompts::system_prompt_for_mode_with_context_skills_and_session(
+        let base = prompts::system_prompt_for_mode_with_context_skills_session_and_approval(
             mode,
             &self.config.workspace,
             None,
@@ -1765,6 +1775,7 @@ impl Engine {
                 user_memory_block: user_memory_block.as_deref(),
                 goal_objective: self.config.goal_objective.as_deref(),
             },
+            self.session.approval_mode,
         );
         let stable_prompt =
             merge_system_prompts(Some(&base), self.session.compaction_summary_prompt.clone());

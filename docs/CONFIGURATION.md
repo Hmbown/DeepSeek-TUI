@@ -242,6 +242,9 @@ Common settings keys:
   locale. `auto` checks `LC_ALL`, `LC_MESSAGES`, then `LANG`; unsupported or
   missing locales fall back to English. This does not force model output
   language.
+- `cost_currency` (`usd`, `cny`; default `usd`): currency used by the footer,
+  context panel, `/cost`, `/tokens`, and long-turn notification summaries. The
+  aliases `rmb` and `yuan` normalize to `cny`.
 - `default_mode` (agent, plan, yolo; legacy `normal` is accepted and normalized to `agent`)
 - `max_history` (number of submitted input history entries; cleared drafts are
   also kept locally for composer history search)
@@ -389,7 +392,7 @@ If you are upgrading from older releases:
   notification.
 - `[notifications].include_summary` (bool, optional): defaults to
   `false`. When `true`, the notification body includes the elapsed
-  duration and the turn's USD cost.
+  duration and the turn's cost in the configured display currency.
 - `tui.alternate_screen` (string, optional): `auto`, `always`, or `never`. `auto` disables the alternate screen in Zellij; `--no-alt-screen` forces inline mode. Set `never` or run with `--no-alt-screen` when you want real terminal scrollback.
 - `tui.mouse_capture` (bool, optional, default `true` on non-Windows terminals and `false` on Windows when the alternate screen is active): enable internal mouse scrolling, transcript selection, and right-click context actions. TUI-owned drag selection copies only user/assistant transcript text. Set this to `false` or run with `--no-mouse-capture` for raw terminal selection; set it to `true` or run with `--mouse-capture` to opt in on Windows.
 - `tui.terminal_probe_timeout_ms` (int, optional, default `500`): startup terminal-mode probe timeout in milliseconds. Values are clamped to `100..=5000`; timeout emits a warning and aborts startup instead of hanging indefinitely.

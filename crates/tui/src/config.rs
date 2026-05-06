@@ -237,7 +237,7 @@ pub fn normalize_model_name(model: &str) -> Option<String> {
     }
 
     let normalized = trimmed.to_ascii_lowercase();
-    if !normalized.starts_with("deepseek") {
+    if !normalized.starts_with("deepseek") && !normalized.contains("/deepseek") {
         return None;
     }
 
@@ -398,7 +398,7 @@ pub enum StatusItem {
     Mode,
     /// Model identifier (e.g. `deepseek-v4-pro`).
     Model,
-    /// Session cost in USD ("$0.42").
+    /// Session cost in the configured display currency.
     Cost,
     /// Activity label: "ready" / "draft" / "working".
     Status,
@@ -483,7 +483,7 @@ impl StatusItem {
         match self {
             StatusItem::Mode => "agent · yolo · plan",
             StatusItem::Model => "the model id you'll send to",
-            StatusItem::Cost => "running USD total for this session",
+            StatusItem::Cost => "running total for this session",
             StatusItem::Status => "what the agent is doing right now",
             StatusItem::Coherence => "shown only when the engine intervenes",
             StatusItem::Agents => "agents or RLM work in progress",
@@ -3436,6 +3436,18 @@ api_key = "old-openrouter-key"
         assert!(normalize_model_name("gpt-4o").is_none());
         assert!(normalize_model_name("deepseek v4").is_none());
         assert!(normalize_model_name("").is_none());
+    }
+
+    #[test]
+    fn normalize_model_name_accepts_provider_prefixed_deepseek_ids() {
+        assert_eq!(
+            normalize_model_name("accounts/fireworks/models/deepseek-v4-flash").as_deref(),
+            Some("accounts/fireworks/models/deepseek-v4-flash")
+        );
+        assert_eq!(
+            normalize_model_name("provider/deepseek-ai/deepseek-v4-pro").as_deref(),
+            Some("provider/deepseek-ai/deepseek-v4-pro")
+        );
     }
 
     #[test]
