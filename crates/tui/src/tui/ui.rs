@@ -3883,6 +3883,40 @@ async fn apply_command_result(
                 let queued = build_queued_message(app, content);
                 submit_or_steer_message(app, engine_handle, queued).await?;
             }
+            AppAction::Verify { claim } => {
+                app.status_message =
+                    Some(format!("Verifying: {claim} — spawning sub-agent with repo context"));
+                app.add_message(HistoryCell::System {
+                    content: format!(
+                        "**Verification request:** {}\n\n\
+                         Spawning a verifier sub-agent with full repository context \
+                         to research this claim and report pass/fail with evidence.",
+                        claim
+                    ),
+                });
+                let instruction = format!(
+                    "You are now running a codebase verification. \
+                     Your task is to verify the following claim by reading the \
+                     relevant source code and reporting pass/fail with evidence.\n\n\
+                     **Claim:** {}\n\n\
+                     ## Protocol\n\
+                     1. **Investigate** — use `read_file`, `grep_files`, and \
+                     `file_search` to examine the relevant source.\n\
+                     2. **Analyze** — determine whether the claim holds. \
+                     If it depends on specific conditions, state them.\n\
+                     3. **Report** — structure your answer as:\n\
+                        - **Result**: PASS | FAIL | INCONCLUSIVE\n\
+                        - **Evidence**: the specific lines, types, or call \
+                     chains that support the conclusion\n\
+                        - **Edge cases**: any conditions or callers that \
+                     could invalidate the claim\n\
+                     4. **Show your work** — include the relevant code \
+                     snippets with file paths and line numbers.",
+                    claim
+                );
+                let queued = build_queued_message(app, instruction);
+                submit_or_steer_message(app, engine_handle, queued).await?;
+            }
             AppAction::Rlm {
                 prompt,
                 model,
