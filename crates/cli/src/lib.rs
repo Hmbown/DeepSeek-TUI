@@ -156,17 +156,24 @@ enum Commands {
   Bash (current shell only):
     source <(deepseek completion bash)
 
-  Bash (persistent, Ubuntu/bash-completion):
+  Bash (persistent, Linux/bash-completion):
     mkdir -p ~/.local/share/bash-completion/completions
     deepseek completion bash > ~/.local/share/bash-completion/completions/deepseek
+    # Requires bash-completion to be installed and loaded by your shell.
 
   Zsh:
     mkdir -p ~/.zfunc
     deepseek completion zsh > ~/.zfunc/_deepseek
-    # Ensure ~/.zfunc is in fpath from ~/.zshrc.
+    # Add to ~/.zshrc if needed:
+    #   fpath=(~/.zfunc $fpath)
+    #   autoload -Uz compinit && compinit
 
   Fish:
+    mkdir -p ~/.config/fish/completions
     deepseek completion fish > ~/.config/fish/completions/deepseek.fish
+
+  PowerShell (current shell only):
+    deepseek completion powershell | Out-String | Invoke-Expression
 
 The command prints the completion script to stdout; redirect it to a path your shell loads automatically."#)]
     Completion {
@@ -1897,7 +1904,9 @@ mod tests {
                     "bash",
                     "source <(deepseek completion bash)",
                     "~/.local/share/bash-completion/completions/deepseek",
+                    "fpath=(~/.zfunc $fpath)",
                     "deepseek completion fish > ~/.config/fish/completions/deepseek.fish",
+                    "deepseek completion powershell | Out-String | Invoke-Expression",
                 ],
             ),
             ("metrics", vec!["--json", "--since"]),
