@@ -197,14 +197,13 @@ pub fn visible_mention_menu_entries(app: &mut App, limit: usize) -> Vec<String> 
 
     let workspace = app.workspace.clone();
     let cwd = std::env::current_dir().ok();
-    if let Some(ref cache) = app.composer.mention_completion_cache {
-        if cache.workspace == workspace
-            && cache.cwd == cwd
-            && cache.partial == partial
-            && cache.limit == limit
-        {
-            return cache.entries.clone();
-        }
+    if let Some(ref cache) = app.composer.mention_completion_cache
+        && cache.workspace == workspace
+        && cache.cwd == cwd
+        && cache.partial == partial
+        && cache.limit == limit
+    {
+        return cache.entries.clone();
     }
 
     let ws = Workspace::with_cwd(workspace.clone(), cwd.clone());
