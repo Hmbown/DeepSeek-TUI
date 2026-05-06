@@ -12,6 +12,7 @@ use dotenvy::dotenv;
 use tempfile::NamedTempFile;
 use wait_timeout::ChildExt;
 
+mod acp_server;
 mod audit;
 mod auto_reasoning;
 mod automation_manager;
@@ -387,6 +388,9 @@ struct ServeArgs {
     /// Start runtime HTTP/SSE API server
     #[arg(long)]
     http: bool,
+    /// Start ACP server over stdio for editor clients such as Zed
+    #[arg(long)]
+    acp: bool,
     /// Bind host for HTTP server (default localhost)
     #[arg(long, default_value = "127.0.0.1")]
     host: String,
@@ -689,8 +693,12 @@ async fn main() -> Result<()> {
                 let workspace = cli.workspace.clone().unwrap_or_else(|| {
                     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
                 });
-                if args.mcp && args.http {
-                    bail!("Choose exactly one server mode: --mcp or --http");
+                let selected_modes = [args.mcp, args.http, args.acp]
+                    .into_iter()
+                    .filter(|selected| *selected)
+                    .count();
+                if selected_modes != 1 {
+                    bail!("Choose exactly one server mode: --mcp, --http, or --acp");
                 }
                 if args.mcp {
                     mcp_server::run_mcp_server(workspace)
@@ -708,8 +716,12 @@ async fn main() -> Result<()> {
                         },
                     )
                     .await
+                } else if args.acp {
+                    let config = load_config_from_cli(&cli)?;
+                    let model = config.default_model();
+                    acp_server::run_acp_server(config, model, workspace).await
                 } else {
-                    bail!("No server mode specified. Use --mcp or --http.")
+                    unreachable!("server mode count checked above")
                 }
             }
             Commands::Resume { session_id, last } => {

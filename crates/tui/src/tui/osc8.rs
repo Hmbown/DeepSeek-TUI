@@ -139,9 +139,7 @@ pub fn strip_ansi_into(s: &str, out: &mut String) {
 /// to `1` for continuation bytes / invalid leads so callers always make
 /// forward progress.
 fn utf8_seq_len(lead: u8) -> usize {
-    if lead < 0x80 {
-        1
-    } else if lead < 0xc0 {
+    if lead < 0xc0 {
         1
     } else if lead < 0xe0 {
         2
