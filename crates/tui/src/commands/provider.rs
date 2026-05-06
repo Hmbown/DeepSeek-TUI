@@ -26,9 +26,12 @@ pub fn provider(app: &mut App, args: Option<&str>) -> CommandResult {
     let model_arg = parts.next();
 
     let Some(target) = ApiProvider::parse(name) else {
-        return CommandResult::error(format!(
-            "Unknown provider '{name}'. Expected: deepseek, nvidia-nim, openrouter, novita, fireworks, sglang, or vllm."
-        ));
+        return CommandResult::error(
+            format!(
+                "Unknown provider '{name}'. Expected: deepseek, nvidia-nim, openrouter, novita, fireworks, sglang, or vllm.",
+            ),
+            app.ui_locale,
+        );
     };
 
     let model = match model_arg {
@@ -36,9 +39,12 @@ pub fn provider(app: &mut App, args: Option<&str>) -> CommandResult {
         Some(raw) => match normalize_model_name(&expand_model_alias(raw)) {
             Some(normalized) => Some(normalized),
             None => {
-                return CommandResult::error(format!(
-                    "Invalid model '{raw}'. Try: flash, pro, deepseek-v4-flash, deepseek-v4-pro."
-                ));
+                return CommandResult::error(
+                    format!(
+                        "Invalid model '{raw}'. Try: flash, pro, deepseek-v4-flash, deepseek-v4-pro.",
+                    ),
+                    app.ui_locale,
+                );
             }
         },
     };

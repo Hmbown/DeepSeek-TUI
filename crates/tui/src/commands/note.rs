@@ -11,12 +11,12 @@ pub fn note(app: &mut App, content: Option<&str>) -> CommandResult {
     let note_content = match content {
         Some(c) => c.trim(),
         None => {
-            return CommandResult::error("Usage: /note <text>");
+            return CommandResult::error("Usage: /note <text>", app.ui_locale);
         }
     };
 
     if note_content.is_empty() {
-        return CommandResult::error("Note content cannot be empty");
+        return CommandResult::error("Note content cannot be empty", app.ui_locale);
     }
 
     // Determine notes path: workspace/.deepseek/notes.md
@@ -26,7 +26,10 @@ pub fn note(app: &mut App, content: Option<&str>) -> CommandResult {
     if let Some(parent) = notes_path.parent()
         && let Err(e) = fs::create_dir_all(parent)
     {
-        return CommandResult::error(format!("Failed to create notes directory: {e}"));
+        return CommandResult::error(
+            format!("Failed to create notes directory: {e}"),
+            app.ui_locale,
+        );
     }
 
     // Append to notes file
@@ -37,13 +40,13 @@ pub fn note(app: &mut App, content: Option<&str>) -> CommandResult {
     {
         Ok(f) => f,
         Err(e) => {
-            return CommandResult::error(format!("Failed to open notes file: {e}"));
+            return CommandResult::error(format!("Failed to open notes file: {e}"), app.ui_locale);
         }
     };
 
     // Write separator and note content
     if let Err(e) = writeln!(file, "\n---\n{}", note_content) {
-        return CommandResult::error(format!("Failed to write note: {e}"));
+        return CommandResult::error(format!("Failed to write note: {e}"), app.ui_locale);
     }
 
     CommandResult::message(format!("Note appended to {}", notes_path.display()))

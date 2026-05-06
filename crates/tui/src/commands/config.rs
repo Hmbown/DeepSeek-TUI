@@ -8,7 +8,7 @@ use crate::client::DeepSeekClient;
 use crate::config::{COMMON_DEEPSEEK_MODELS, clear_api_key, normalize_model_name};
 use crate::config_ui::{ConfigUiMode, parse_mode};
 use crate::llm_client::LlmClient;
-use crate::localization::{self, MessageId, resolve_locale};
+use crate::localization::{self, Locale, MessageId, resolve_locale};
 use crate::models::{ContentBlock, Message, MessageRequest, MessageResponse, SystemPrompt};
 use crate::settings::Settings;
 use crate::tui::app::{App, AppAction, AppMode, OnboardingState, ReasoningEffort, SidebarFocus};
@@ -21,14 +21,15 @@ use anyhow::Result;
 /// preserving the v0.8.4 behaviour. `/config tui` opens the new
 /// schemaui-driven TUI editor; `/config web` launches the web editor (only
 /// available in builds compiled with the `web` feature).
-pub fn show_config(_app: &mut App, arg: Option<&str>) -> CommandResult {
+pub fn show_config(app: &mut App, arg: Option<&str>) -> CommandResult {
     let mode = match parse_mode(arg) {
         Ok(mode) => mode,
-        Err(err) => return CommandResult::error(err),
+        Err(err) => return CommandResult::error(err, app.ui_locale),
     };
     if mode == ConfigUiMode::Web && !cfg!(feature = "web") {
         return CommandResult::error(
             "This build does not include the web config UI. Rebuild with the `web` feature.",
+            app.ui_locale,
         );
     }
     let action = match mode {
@@ -140,9 +141,10 @@ fn show_single_setting(app: &App, key: &str) -> CommandResult {
     };
     match value {
         Some(v) => CommandResult::message(format!("{key} = {v}")),
-        None => CommandResult::error(format!(
-            "Unknown setting '{key}'. See `/help config` for available settings."
-        )),
+        None => CommandResult::error(
+            format!("Unknown setting '{key}'. See `/help config` for available settings."),
+            app.ui_locale,
+        ),
     }
 }
 
@@ -150,7 +152,7 @@ fn show_single_setting(app: &App, key: &str) -> CommandResult {
 pub fn show_settings(app: &mut App) -> CommandResult {
     match Settings::load() {
         Ok(settings) => CommandResult::message(settings.display(app.ui_locale)),
-        Err(e) => CommandResult::error(format!("Failed to load settings: {e}")),
+        Err(e) => CommandResult::error(format!("Failed to load settings: {e}"), app.ui_locale),
     }
 }
 
@@ -273,10 +275,13 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
             app.auto_model = false;
             app.last_effective_model = None;
             let Some(model) = normalize_model_name(value) else {
-                return CommandResult::error(format!(
-                    "Invalid model '{value}'. Expected a DeepSeek model ID. Common models: {}",
-                    COMMON_DEEPSEEK_MODELS.join(", ")
-                ));
+                return CommandResult::error(
+                    format!(
+                        "Invalid model '{value}'. Expected a DeepSeek model ID. Common models: {}",
+                        COMMON_DEEPSEEK_MODELS.join(", ")
+                    ),
+                    app.ui_locale,
+                );
             };
             app.model = model.clone();
             app.update_model_compaction_budget();
@@ -296,12 +301,13 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
                 }
                 None => CommandResult::error(
                     "Invalid approval_mode. Use: auto, suggest/on-request/untrusted, never/deny",
+                    app.ui_locale,
                 ),
             };
         }
         "mcp_config_path" | "mcp" => {
             if value.trim().is_empty() {
-                return CommandResult::error("mcp_config_path cannot be empty");
+                return CommandResult::error("mcp_config_path cannot be empty", app.ui_locale);
             }
             app.mcp_config_path = PathBuf::from(expand_tilde(value));
             app.mcp_restart_required = true;
@@ -312,7 +318,12 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
                         app.mcp_config_path.display(),
                         path.display()
                     ),
-                    Err(err) => return CommandResult::error(format!("Failed to save: {err}")),
+                    Err(err) => {
+                        return CommandResult::error(
+                            format!("Failed to save: {err}"),
+                            app.ui_locale,
+                        );
+                    }
                 }
             } else {
                 format!(
@@ -333,11 +344,13 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
             ));
             Settings::default()
         }
-        Err(e) => return CommandResult::error(format!("Failed to load settings: {e}")),
+        Err(e) => {
+            return CommandResult::error(format!("Failed to load settings: {e}"), app.ui_locale);
+        }
     };
 
     if let Err(e) = settings.set(&key, value) {
-        return CommandResult::error(format!("{e}"));
+        return CommandResult::error(format!("{e}"), app.ui_locale);
     }
 
     let mut action = None;
@@ -425,7 +438,7 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
 
     let message = if persist {
         if let Err(e) = settings.save() {
-            return CommandResult::error(format!("Failed to save: {e}"));
+            return CommandResult::error(format!("Failed to save: {e}"), app.ui_locale);
         }
         format!("{key} = {display_value} (saved)")
     } else {
@@ -460,7 +473,7 @@ pub fn set_config(app: &mut App, args: Option<&str>) -> CommandResult {
 
     let parts: Vec<&str> = args.splitn(2, ' ').collect();
     if parts.len() < 2 {
-        return CommandResult::error("Usage: /set <key> <value>");
+        return CommandResult::error("Usage: /set <key> <value>", app.ui_locale);
     }
 
     let key = parts[0].to_lowercase();
@@ -526,9 +539,9 @@ pub fn trust(app: &mut App, arg: Option<&str>) -> CommandResult {
             app.trust_mode = false;
             CommandResult::message(t(MessageId::CmdTrustDisabled))
         }
-        "add" => trust_add(&workspace, rest),
-        "remove" | "rm" | "del" | "delete" => trust_remove(&workspace, rest),
-        other => CommandResult::error_locale(
+        "add" => trust_add(&workspace, rest, app.ui_locale),
+        "remove" | "rm" | "del" | "delete" => trust_remove(&workspace, rest, app.ui_locale),
+        other => CommandResult::error(
             t(MessageId::CmdTrustUnknownAction).replace("{action}", other),
             app.ui_locale,
         ),
@@ -564,37 +577,41 @@ fn trust_status(workspace: &Path, app: &App, force_paths: bool) -> CommandResult
     CommandResult::message(lines.join("\n"))
 }
 
-fn trust_add(workspace: &Path, raw: &str) -> CommandResult {
+fn trust_add(workspace: &Path, raw: &str, locale: Locale) -> CommandResult {
     if raw.is_empty() {
         return CommandResult::error(
             "Usage: /trust add <path>. Supply an absolute path or a path relative to the workspace.",
+            locale,
         );
     }
     let path = PathBuf::from(expand_tilde(raw));
     if !path.exists() {
-        return CommandResult::error(format!(
-            "Path not found: {} — supply an existing directory or file.",
-            path.display()
-        ));
+        return CommandResult::error(
+            format!(
+                "Path not found: {} — supply an existing directory or file.",
+                path.display()
+            ),
+            locale,
+        );
     }
     match crate::workspace_trust::add(workspace, &path) {
         Ok(stored) => CommandResult::message(format!(
             "Added to trust list for this workspace: {}",
             stored.display()
         )),
-        Err(err) => CommandResult::error(format!("Failed to update trust list: {err}")),
+        Err(err) => CommandResult::error(format!("Failed to update trust list: {err}"), locale),
     }
 }
 
-fn trust_remove(workspace: &Path, raw: &str) -> CommandResult {
+fn trust_remove(workspace: &Path, raw: &str, locale: Locale) -> CommandResult {
     if raw.is_empty() {
-        return CommandResult::error("Usage: /trust remove <path>");
+        return CommandResult::error("Usage: /trust remove <path>", locale);
     }
     let path = PathBuf::from(expand_tilde(raw));
     match crate::workspace_trust::remove(workspace, &path) {
         Ok(true) => CommandResult::message(format!("Removed from trust list: {}", path.display())),
         Ok(false) => CommandResult::message(format!("Not in trust list: {}", path.display())),
-        Err(err) => CommandResult::error(format!("Failed to update trust list: {err}")),
+        Err(err) => CommandResult::error(format!("Failed to update trust list: {err}"), locale),
     }
 }
 
@@ -904,7 +921,7 @@ pub fn lsp_command(app: &mut App, arg: Option<&str>) -> CommandResult {
             app.lsp_enabled = false;
             CommandResult::message(t(MessageId::CmdLspDisabled))
         }
-        other => CommandResult::error_locale(
+        other => CommandResult::error(
             t(MessageId::CmdLspUnknownArg).replace("{arg}", other),
             app.ui_locale,
         ),
@@ -922,7 +939,7 @@ pub fn logout(app: &mut App) -> CommandResult {
             app.api_key_cursor = 0;
             CommandResult::message(t(MessageId::CmdLogoutSuccess))
         }
-        Err(e) => CommandResult::error_locale(
+        Err(e) => CommandResult::error(
             t(MessageId::CmdLogoutFailed).replace("{reason}", &e.to_string()),
             app.ui_locale,
         ),

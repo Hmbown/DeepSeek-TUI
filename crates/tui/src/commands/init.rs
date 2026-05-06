@@ -14,7 +14,10 @@ pub fn init(app: &mut App) -> CommandResult {
     // Check if AGENTS.md already exists
     let agents_path = workspace.join("AGENTS.md");
     if agents_path.exists() {
-        return CommandResult::error("AGENTS.md already exists. Delete it first to reinitialize.");
+        return CommandResult::error(
+            "AGENTS.md already exists. Delete it first to reinitialize.",
+            app.ui_locale,
+        );
     }
 
     // Detect project type and generate appropriate content
@@ -26,7 +29,7 @@ pub fn init(app: &mut App) -> CommandResult {
             "Created AGENTS.md at {}\n\nEdit this file to customize agent behavior for your project.",
             agents_path.display()
         )),
-        Err(e) => CommandResult::error(format!("Failed to create AGENTS.md: {e}")),
+        Err(e) => CommandResult::error(format!("Failed to create AGENTS.md: {e}"), app.ui_locale),
     }
 }
 

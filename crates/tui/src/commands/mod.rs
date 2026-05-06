@@ -78,17 +78,8 @@ impl CommandResult {
         }
     }
 
-    /// Create an error message result
-    pub fn error(msg: impl Into<String>) -> Self {
-        Self {
-            message: Some(format!("Error: {}", msg.into())),
-            action: None,
-            is_error: true,
-        }
-    }
-
     /// Create an error message result with a localized "Error:" prefix
-    pub fn error_locale(msg: impl Into<String>, locale: Locale) -> Self {
+    pub fn error(msg: impl Into<String>, locale: Locale) -> Self {
         Self {
             message: Some(format!(
                 "{} {}",
@@ -573,10 +564,12 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         // Legacy command migrations (kept out of registry/autocomplete intentionally).
         "set" => CommandResult::error(
             "The /set command was retired. Use /config to edit settings and /settings to inspect current values.",
+            app.ui_locale,
         ),
         "normal" => config::normal_mode(app),
         "deepseek" => CommandResult::error(
             "The /deepseek command was renamed. Use /links (aliases: /dashboard, /api).",
+            app.ui_locale,
         ),
 
         _ => {
@@ -587,18 +580,22 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
             }
             let suggestions = suggest_command_names(command, 3);
             if suggestions.is_empty() {
-                CommandResult::error(format!(
-                    "Unknown command: /{command}. Type /help for available commands."
-                ))
+                CommandResult::error(
+                    format!("Unknown command: /{command}. Type /help for available commands."),
+                    app.ui_locale,
+                )
             } else {
                 let list = suggestions
                     .into_iter()
                     .map(|name| format!("/{name}"))
                     .collect::<Vec<_>>()
                     .join(", ");
-                CommandResult::error(format!(
-                    "Unknown command: /{command}. Did you mean: {list}? Type /help for available commands."
-                ))
+                CommandResult::error(
+                    format!(
+                        "Unknown command: /{command}. Did you mean: {list}? Type /help for available commands."
+                    ),
+                    app.ui_locale,
+                )
             }
         }
     }
@@ -648,6 +645,7 @@ pub fn rlm(app: &mut App, arg: Option<&str>) -> CommandResult {
                  The prompt is stored in a REPL and the model writes code\n\
                  to decompose and process it recursively."
                     .to_string(),
+                app.ui_locale,
             );
         }
     };

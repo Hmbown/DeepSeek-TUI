@@ -33,6 +33,7 @@ pub fn help(app: &mut App, topic: Option<&str>) -> CommandResult {
         }
         return CommandResult::error(
             tr(app.ui_locale, MessageId::HelpUnknownCommand).replace("{topic}", topic),
+            app.ui_locale,
         );
     }
 
@@ -109,10 +110,13 @@ pub fn model(app: &mut App, model_name: Option<&str>) -> CommandResult {
             );
         }
         let Some(model_id) = normalize_model_name(name) else {
-            return CommandResult::error(format!(
-                "Invalid model '{name}'. Expected auto or a DeepSeek model ID. Common models: {}",
-                COMMON_DEEPSEEK_MODELS.join(", ")
-            ));
+            return CommandResult::error(
+                format!(
+                    "Invalid model '{name}'. Expected auto or a DeepSeek model ID. Common models: {}",
+                    COMMON_DEEPSEEK_MODELS.join(", ")
+                ),
+                app.ui_locale,
+            );
         };
         let old_model = app.model_display_label();
         app.auto_model = false;
@@ -148,12 +152,13 @@ pub fn subagents(app: &mut App) -> CommandResult {
 }
 
 /// Switch to a configured profile.
-pub fn profile_switch(_app: &mut App, arg: Option<&str>) -> CommandResult {
+pub fn profile_switch(app: &mut App, arg: Option<&str>) -> CommandResult {
     let profile_name = match arg {
         Some(name) if !name.trim().is_empty() => name.trim().to_string(),
         _ => {
             return CommandResult::error(
                 "Usage: /profile <name>\n\nSwitch to a named config profile. Profiles are defined in ~/.deepseek/config.toml under [profiles] sections.",
+                app.ui_locale,
             );
         }
     };

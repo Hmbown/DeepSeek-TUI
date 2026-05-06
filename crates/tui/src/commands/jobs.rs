@@ -4,7 +4,7 @@ use crate::tui::app::{App, AppAction, ShellJobAction};
 
 use super::CommandResult;
 
-pub fn jobs(_app: &mut App, args: Option<&str>) -> CommandResult {
+pub fn jobs(app: &mut App, args: Option<&str>) -> CommandResult {
     let raw = args.unwrap_or("").trim();
     if raw.is_empty() || raw.eq_ignore_ascii_case("list") {
         return CommandResult::action(AppAction::ShellJob(ShellJobAction::List));
@@ -21,14 +21,14 @@ pub fn jobs(_app: &mut App, args: Option<&str>) -> CommandResult {
             Some(id) => CommandResult::action(AppAction::ShellJob(ShellJobAction::Show {
                 id: id.to_string(),
             })),
-            None => CommandResult::error("Usage: /jobs show <id>"),
+            None => CommandResult::error("Usage: /jobs show <id>", app.ui_locale),
         },
         "poll" | "wait" => match id {
             Some(id) => CommandResult::action(AppAction::ShellJob(ShellJobAction::Poll {
                 id: id.to_string(),
                 wait: action == "wait",
             })),
-            None => CommandResult::error("Usage: /jobs poll <id>"),
+            None => CommandResult::error("Usage: /jobs poll <id>", app.ui_locale),
         },
         "stdin" | "send" => match id {
             Some(id) if !rest.is_empty() => {
@@ -38,7 +38,7 @@ pub fn jobs(_app: &mut App, args: Option<&str>) -> CommandResult {
                     close: false,
                 }))
             }
-            _ => CommandResult::error("Usage: /jobs stdin <id> <input>"),
+            _ => CommandResult::error("Usage: /jobs stdin <id> <input>", app.ui_locale),
         },
         "close-stdin" | "eof" => match id {
             Some(id) => CommandResult::action(AppAction::ShellJob(ShellJobAction::SendStdin {
@@ -46,16 +46,17 @@ pub fn jobs(_app: &mut App, args: Option<&str>) -> CommandResult {
                 input: String::new(),
                 close: true,
             })),
-            None => CommandResult::error("Usage: /jobs close-stdin <id>"),
+            None => CommandResult::error("Usage: /jobs close-stdin <id>", app.ui_locale),
         },
         "cancel" | "kill" | "stop" => match id {
             Some(id) => CommandResult::action(AppAction::ShellJob(ShellJobAction::Cancel {
                 id: id.to_string(),
             })),
-            None => CommandResult::error("Usage: /jobs cancel <id>"),
+            None => CommandResult::error("Usage: /jobs cancel <id>", app.ui_locale),
         },
         _ => CommandResult::error(
             "Usage: /jobs [list|show <id>|poll <id>|wait <id>|stdin <id> <input>|close-stdin <id>|cancel <id>]",
+            app.ui_locale,
         ),
     }
 }

@@ -40,7 +40,7 @@ pub fn list_skills(app: &mut App, arg: Option<&str>) -> CommandResult {
             return sync_skills(app);
         }
         if !trimmed.is_empty() {
-            return CommandResult::error("Usage: /skills [--remote|sync]");
+            return CommandResult::error("Usage: /skills [--remote|sync]", app.ui_locale);
         }
     }
     let skills_dir = app.skills_dir.clone();
@@ -101,6 +101,7 @@ pub fn run_skill(app: &mut App, name: Option<&str>) -> CommandResult {
         None => {
             return CommandResult::error(
                 "Usage: /skill <name>\n\nSubcommands:\n  /skill install <github:owner/repo|https://…|<registry-name>>\n  /skill update <name>\n  /skill uninstall <name>\n  /skill trust <name>",
+                app.ui_locale,
             );
         }
     };
@@ -149,16 +150,22 @@ fn activate_skill(app: &mut App, name: &str) -> CommandResult {
         let warnings = render_skill_warnings(&registry);
 
         if available.is_empty() {
-            CommandResult::error(format!(
-                "Skill '{name}' not found. No skills installed.\n\nUse /skills to see how to add skills.{warnings}"
-            ))
+            CommandResult::error(
+                format!(
+                    "Skill '{name}' not found. No skills installed.\n\nUse /skills to see how to add skills.{warnings}"
+                ),
+                app.ui_locale,
+            )
         } else {
-            CommandResult::error(format!(
-                "Skill '{}' not found.\n\nAvailable skills: {}{}",
-                name,
-                available.join(", "),
-                warnings
-            ))
+            CommandResult::error(
+                format!(
+                    "Skill '{}' not found.\n\nAvailable skills: {}{}",
+                    name,
+                    available.join(", "),
+                    warnings
+                ),
+                app.ui_locale,
+            )
         }
     }
 }
@@ -169,11 +176,14 @@ fn install_skill(app: &mut App, spec: &str) -> CommandResult {
     if spec.is_empty() {
         return CommandResult::error(
             "Usage: /skill install <github:owner/repo|https://…|<registry-name>>",
+            app.ui_locale,
         );
     }
     let source = match InstallSource::parse(spec) {
         Ok(s) => s,
-        Err(err) => return CommandResult::error(format!("Invalid install source: {err}")),
+        Err(err) => {
+            return CommandResult::error(format!("Invalid install source: {err}"), app.ui_locale);
+        }
     };
     let skills_dir = app.skills_dir.clone();
     let (network, max_size, registry_url) = installer_settings(app);
@@ -199,12 +209,12 @@ fn install_skill(app: &mut App, spec: &str) -> CommandResult {
             ))
         }
         Ok(InstallOutcome::NeedsApproval(host)) => {
-            CommandResult::error(needs_approval_message(&host))
+            CommandResult::error(needs_approval_message(&host), app.ui_locale)
         }
         Ok(InstallOutcome::NetworkDenied(host)) => {
-            CommandResult::error(network_denied_message(&host))
+            CommandResult::error(network_denied_message(&host), app.ui_locale)
         }
-        Err(err) => CommandResult::error(format!("Install failed: {err:#}")),
+        Err(err) => CommandResult::error(format!("Install failed: {err:#}"), app.ui_locale),
     }
 }
 
@@ -212,7 +222,7 @@ fn install_skill(app: &mut App, spec: &str) -> CommandResult {
 
 fn update_skill(app: &mut App, name: &str) -> CommandResult {
     if name.is_empty() {
-        return CommandResult::error("Usage: /skill update <name>");
+        return CommandResult::error("Usage: /skill update <name>", app.ui_locale);
     }
     let skills_dir = app.skills_dir.clone();
     let (network, max_size, registry_url) = installer_settings(app);
@@ -232,12 +242,12 @@ fn update_skill(app: &mut App, name: &str) -> CommandResult {
             path_or_default(&installed.path)
         )),
         Ok(UpdateResult::NeedsApproval(host)) => {
-            CommandResult::error(needs_approval_message(&host))
+            CommandResult::error(needs_approval_message(&host), app.ui_locale)
         }
         Ok(UpdateResult::NetworkDenied(host)) => {
-            CommandResult::error(network_denied_message(&host))
+            CommandResult::error(network_denied_message(&host), app.ui_locale)
         }
-        Err(err) => CommandResult::error(format!("Update failed: {err:#}")),
+        Err(err) => CommandResult::error(format!("Update failed: {err:#}"), app.ui_locale),
     }
 }
 
@@ -245,11 +255,11 @@ fn update_skill(app: &mut App, name: &str) -> CommandResult {
 
 fn uninstall_skill(app: &mut App, name: &str) -> CommandResult {
     if name.is_empty() {
-        return CommandResult::error("Usage: /skill uninstall <name>");
+        return CommandResult::error("Usage: /skill uninstall <name>", app.ui_locale);
     }
     match install::uninstall(name, &app.skills_dir) {
         Ok(()) => CommandResult::message(format!("Removed skill '{name}'.")),
-        Err(err) => CommandResult::error(format!("Uninstall failed: {err:#}")),
+        Err(err) => CommandResult::error(format!("Uninstall failed: {err:#}"), app.ui_locale),
     }
 }
 
@@ -257,13 +267,13 @@ fn uninstall_skill(app: &mut App, name: &str) -> CommandResult {
 
 fn trust_skill(app: &mut App, name: &str) -> CommandResult {
     if name.is_empty() {
-        return CommandResult::error("Usage: /skill trust <name>");
+        return CommandResult::error("Usage: /skill trust <name>", app.ui_locale);
     }
     match install::trust(name, &app.skills_dir) {
         Ok(()) => CommandResult::message(format!(
             "Marked skill '{name}' as trusted. Tools that consult the .trusted marker may now invoke its scripts/."
         )),
-        Err(err) => CommandResult::error(format!("Trust failed: {err:#}")),
+        Err(err) => CommandResult::error(format!("Trust failed: {err:#}"), app.ui_locale),
     }
 }
 
@@ -292,12 +302,14 @@ pub fn list_remote_skills(app: &mut App) -> CommandResult {
             CommandResult::message(out)
         }
         Ok(RegistryFetchResult::NeedsApproval(host)) => {
-            CommandResult::error(needs_approval_message(&host))
+            CommandResult::error(needs_approval_message(&host), app.ui_locale)
         }
         Ok(RegistryFetchResult::Denied(host)) => {
-            CommandResult::error(network_denied_message(&host))
+            CommandResult::error(network_denied_message(&host), app.ui_locale)
         }
-        Err(err) => CommandResult::error(format!("Failed to fetch registry: {err:#}")),
+        Err(err) => {
+            CommandResult::error(format!("Failed to fetch registry: {err:#}"), app.ui_locale)
+        }
     }
 }
 
@@ -317,9 +329,11 @@ fn sync_skills(app: &mut App) -> CommandResult {
     });
 
     match result {
-        Ok(SyncResult::RegistryDenied(host)) => CommandResult::error(network_denied_message(&host)),
+        Ok(SyncResult::RegistryDenied(host)) => {
+            CommandResult::error(network_denied_message(&host), app.ui_locale)
+        }
         Ok(SyncResult::RegistryNeedsApproval(host)) => {
-            CommandResult::error(needs_approval_message(&host))
+            CommandResult::error(needs_approval_message(&host), app.ui_locale)
         }
         Ok(SyncResult::Done { outcomes }) => {
             let total = outcomes.len();
@@ -363,7 +377,7 @@ fn sync_skills(app: &mut App) -> CommandResult {
 
             CommandResult::message(out)
         }
-        Err(err) => CommandResult::error(format!("Sync failed: {err:#}")),
+        Err(err) => CommandResult::error(format!("Sync failed: {err:#}"), app.ui_locale),
     }
 }
 
