@@ -667,10 +667,11 @@ mod tests {
         let tmpdir = TempDir::new().unwrap();
         let workspace = tmpdir.path();
 
-        // Create three of the four candidate dirs (skip `.opencode`).
+        // Create four of the five workspace candidate dirs (skip `.opencode`).
         std::fs::create_dir_all(workspace.join(".agents").join("skills")).unwrap();
         std::fs::create_dir_all(workspace.join("skills")).unwrap();
         std::fs::create_dir_all(workspace.join(".claude").join("skills")).unwrap();
+        std::fs::create_dir_all(workspace.join(".cursor").join("skills")).unwrap();
 
         let dirs = super::skills_directories(workspace);
         // We don't assert on the global default position because it's
@@ -679,6 +680,7 @@ mod tests {
         let agents = workspace.join(".agents").join("skills");
         let local = workspace.join("skills");
         let claude = workspace.join(".claude").join("skills");
+        let cursor = workspace.join(".cursor").join("skills");
 
         assert_eq!(dirs.get(idx), Some(&agents), "agents must come first");
         idx += 1;
@@ -692,6 +694,12 @@ mod tests {
             "missing dir must be omitted, got: {dirs:?}"
         );
         assert_eq!(dirs.get(idx), Some(&claude), "claude must come after local");
+        idx += 1;
+        assert_eq!(
+            dirs.get(idx),
+            Some(&cursor),
+            "cursor must come after claude"
+        );
     }
 
     #[test]
@@ -756,6 +764,24 @@ mod tests {
         assert!(
             registry.get("opencode-only").is_some(),
             ".opencode/skills must be scanned (#432)"
+        );
+    }
+
+    #[test]
+    fn discover_in_workspace_pulls_skills_from_cursor_dir() {
+        let tmpdir = TempDir::new().unwrap();
+        let workspace = tmpdir.path();
+        write_skill(
+            &workspace.join(".cursor").join("skills"),
+            "cursor-only",
+            "for cursor interop",
+            "body",
+        );
+
+        let registry = super::discover_in_workspace(workspace);
+        assert!(
+            registry.get("cursor-only").is_some(),
+            ".cursor/skills must be scanned"
         );
     }
 
