@@ -123,6 +123,25 @@ Defaults: host `127.0.0.1`, port `7878`, 2 workers (clamped 1–8).
 The server binds to `localhost` by default. Configuration is via CLI flags —
 there is no `[app_server]` config section.
 
+### Mobile control page
+
+```bash
+deepseek serve --mobile [--port 7878]
+```
+
+`--mobile` starts the same HTTP/SSE runtime API and serves a phone-friendly
+control page at `/mobile`. When `--host` is not supplied, mobile mode binds to
+`0.0.0.0` so a phone on the same LAN can open the printed URL.
+
+Mobile mode requires an API bearer token. Use `--auth-token <token>` or
+`DEEPSEEK_RUNTIME_TOKEN=<token>` to provide one. If neither is set, the process
+generates a one-time token and prints a local/LAN URL that includes it.
+
+The mobile page can list/create threads, send prompts, follow live SSE events,
+steer an active turn, interrupt an active turn, and optionally pass
+`allow_shell` / `auto_approve` flags for a turn. Keep `auto_approve` off unless
+the server is reachable only from a trusted network.
+
 ### Endpoints
 
 **Health**
@@ -295,7 +314,10 @@ Common event names: `thread.started`, `thread.forked`, `turn.started`,
 
 - **Localhost only**. The server binds to `127.0.0.1` by default. Set
   `--host 0.0.0.0` only when you have a reverse-proxy / VPN that
-  authenticates — there is no built-in auth, user isolation, or TLS.
+  authenticates. The runtime does not provide user isolation or TLS.
+- **Mobile mode token**. `deepseek serve --mobile` enables bearer-token
+  protection for `/v1/*` API routes. This is a local/LAN convenience guard,
+  not a replacement for TLS, VPN, or a trusted reverse proxy on public networks.
 - **No provider-token custody**. The server never returns the API key. The
   `api_key.source` capability field reports `env`, `config`, or `missing` —
   never the key itself.

@@ -209,6 +209,7 @@ deepseek resume --last                         # 恢复最近会话
 deepseek resume <SESSION_ID>                   # 按 UUID 恢复指定会话
 deepseek fork <SESSION_ID>                     # 在指定轮次分叉会话
 deepseek serve --http                          # HTTP/SSE API 服务
+deepseek serve --mobile                        # 适配手机的本地远程控制页面
 deepseek pr <N>                                # 获取 PR 并预填审查提示
 deepseek mcp list                              # 列出已配置 MCP 服务器
 deepseek mcp validate                          # 校验 MCP 配置和连接
