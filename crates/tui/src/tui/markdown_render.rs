@@ -183,14 +183,24 @@ pub fn render_parsed(parsed: &ParsedMarkdown, width: u16, base_style: Style) -> 
 
     let mut i = 0;
     while i < parsed.blocks.len() {
-        if matches!(&parsed.blocks[i], Block::TableRow(_) | Block::TableSeparator) {
+        if matches!(
+            &parsed.blocks[i],
+            Block::TableRow(_) | Block::TableSeparator
+        ) {
             let start = i;
             while i < parsed.blocks.len()
-                && matches!(&parsed.blocks[i], Block::TableRow(_) | Block::TableSeparator)
+                && matches!(
+                    &parsed.blocks[i],
+                    Block::TableRow(_) | Block::TableSeparator
+                )
             {
                 i += 1;
             }
-            out.extend(render_table_group(&parsed.blocks[start..i], width, base_style));
+            out.extend(render_table_group(
+                &parsed.blocks[start..i],
+                width,
+                base_style,
+            ));
             continue;
         }
 
@@ -618,14 +628,22 @@ fn render_table_group(blocks: &[Block], width: usize, base_style: Style) -> Vec<
 
     // Top border
     lines.push(render_table_border(
-        num_cols, col_width, sep_style,
-        "\u{250C}\u{2500}", "\u{2500}\u{252C}\u{2500}", "\u{2500}\u{2510}",
+        num_cols,
+        col_width,
+        sep_style,
+        "\u{250C}\u{2500}",
+        "\u{2500}\u{252C}\u{2500}",
+        "\u{2500}\u{2510}",
     ));
 
     let mid_border = || {
         render_table_border(
-            num_cols, col_width, sep_style,
-            "\u{251C}\u{2500}", "\u{2500}\u{253C}\u{2500}", "\u{2500}\u{2524}",
+            num_cols,
+            col_width,
+            sep_style,
+            "\u{251C}\u{2500}",
+            "\u{2500}\u{253C}\u{2500}",
+            "\u{2500}\u{2524}",
         )
     };
 
@@ -646,8 +664,12 @@ fn render_table_group(blocks: &[Block], width: usize, base_style: Style) -> Vec<
 
     // Bottom border
     lines.push(render_table_border(
-        num_cols, col_width, sep_style,
-        "\u{2514}\u{2500}", "\u{2500}\u{2534}\u{2500}", "\u{2500}\u{2518}",
+        num_cols,
+        col_width,
+        sep_style,
+        "\u{2514}\u{2500}",
+        "\u{2500}\u{2534}\u{2500}",
+        "\u{2500}\u{2518}",
     ));
 
     lines
@@ -890,14 +912,35 @@ mod tests {
         // Column pipes still present
         assert!(text.contains('│'), "table pipe separator missing: {text:?}");
         // Separator row rendered as middle border, not raw markdown
-        assert!(!text.contains("|---|"), "raw separator row leaked: {text:?}");
+        assert!(
+            !text.contains("|---|"),
+            "raw separator row leaked: {text:?}"
+        );
         // Top and bottom borders present
-        assert!(text.contains('\u{250C}'), "top-left corner missing: {text:?}");
-        assert!(text.contains('\u{2510}'), "top-right corner missing: {text:?}");
-        assert!(text.contains('\u{2514}'), "bottom-left corner missing: {text:?}");
-        assert!(text.contains('\u{2518}'), "bottom-right corner missing: {text:?}");
+        assert!(
+            text.contains('\u{250C}'),
+            "top-left corner missing: {text:?}"
+        );
+        assert!(
+            text.contains('\u{2510}'),
+            "top-right corner missing: {text:?}"
+        );
+        assert!(
+            text.contains('\u{2514}'),
+            "bottom-left corner missing: {text:?}"
+        );
+        assert!(
+            text.contains('\u{2518}'),
+            "bottom-right corner missing: {text:?}"
+        );
         // Middle separator present (at the |---|---| position)
-        assert!(text.contains('\u{251C}'), "middle-left junction missing: {text:?}");
-        assert!(text.contains('\u{2524}'), "middle-right junction missing: {text:?}");
+        assert!(
+            text.contains('\u{251C}'),
+            "middle-left junction missing: {text:?}"
+        );
+        assert!(
+            text.contains('\u{2524}'),
+            "middle-right junction missing: {text:?}"
+        );
     }
 }
