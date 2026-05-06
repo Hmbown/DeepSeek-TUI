@@ -1568,7 +1568,7 @@ fn chinese_traditional(id: MessageId) -> Option<&'static str> {
         MessageId::CmdUndoDescription => "移除最後一組訊息對",
         MessageId::CmdYoloDescription => "啟用 YOLO 模式（shell + 信任 + 自動核准）",
         MessageId::CmdCacheAdvice => {
-            "第 3 輪起命中率穩定在 ~70% 以上即表示前綴快取穩定；
+            "第 3 輪起命中率穩定在 ~70% 以上即表示前綴快取穩定；\n\
              長工作階段中明顯偏低則意味著前綴有抖動，值得排查（#263）。"
         }
         MessageId::CmdCacheFootnote => "* 當提供方未單獨回報未命中時，由「輸入 − 命中」推算。\n",
