@@ -1058,8 +1058,6 @@ impl App {
             initial_input,
         } = options;
 
-        let cached_skills = Self::discover_cached_skills(&global_skills_dir);
-
         // If no provider is explicitly configured AND the system locale
         // indicates Chinese (zh-*), suggest DeepseekCN (api.deepseeki.com)
         // as the appropriate default.
@@ -1162,6 +1160,7 @@ impl App {
         } else {
             global_skills_dir
         };
+        let cached_skills = Self::discover_cached_skills(&skills_dir);
 
         let input_history = crate::composer_history::load_history();
         let (initial_input_text, initial_input_cursor) = match initial_input {
@@ -3804,6 +3803,29 @@ mod tests {
     fn test_trust_mode_follows_yolo_on_startup() {
         let app = App::new(test_options(true), &Config::default());
         assert!(app.trust_mode);
+    }
+
+    #[test]
+    fn new_caches_workspace_skills_for_slash_menu() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let workspace = tmp.path().join("workspace");
+        let skill_dir = workspace.join(".agents").join("skills").join("local-skill");
+        std::fs::create_dir_all(&skill_dir).expect("skill dir");
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: local-skill\ndescription: Local workspace skill\n---\nUse the local skill.\n",
+        )
+        .expect("skill file");
+
+        let mut options = test_options(false);
+        options.workspace = workspace.clone();
+        options.skills_dir = tmp.path().join("global-skills");
+        let app = App::new(options, &Config::default());
+
+        assert_eq!(app.skills_dir, workspace.join(".agents").join("skills"));
+        assert!(app.cached_skills.iter().any(|(name, description)| {
+            name == "local-skill" && description == "Local workspace skill"
+        }));
     }
 
     #[test]

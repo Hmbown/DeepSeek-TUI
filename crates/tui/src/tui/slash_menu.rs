@@ -59,34 +59,24 @@ pub fn apply_slash_menu_selection(
 /// fully (with trailing space). On ambiguity, posts a status hint listing
 /// up to five candidates. Also considers skill names as completion candidates.
 pub fn try_autocomplete_slash_command(app: &mut App) -> bool {
-    if !app.input.starts_with('/') || app.input.contains(char::is_whitespace) {
+    if !app.input.starts_with('/') {
         return false;
     }
 
-    let prefix = app.input.trim_start_matches('/');
-
-    // Collect completion candidates from commands and skills
-    let mut candidates: Vec<String> = commands::commands_matching(prefix)
-        .iter()
-        .map(|info| info.name.to_string())
-        .collect();
-
-    // Add matching skill names
-    let prefix_lower = prefix.to_ascii_lowercase();
-    for (skill_name, _) in &app.cached_skills {
-        if skill_name.to_ascii_lowercase().starts_with(&prefix_lower) {
-            candidates.push(skill_name.clone());
-        }
-    }
+    let candidates = slash_completion_hints(&app.input, 128, &app.cached_skills, app.ui_locale)
+        .into_iter()
+        .map(|entry| entry.name)
+        .collect::<Vec<_>>();
 
     if candidates.is_empty() {
         return false;
     }
 
-    candidates.sort();
-    candidates.dedup();
-
-    let refs: Vec<&str> = candidates.iter().map(|s| s.as_str()).collect();
+    let prefix = app.input.trim_start_matches('/');
+    let refs: Vec<&str> = candidates
+        .iter()
+        .map(|name| name.trim_start_matches('/'))
+        .collect();
     let shared = crate::tui::file_mention::longest_common_prefix(&refs);
 
     if !shared.is_empty() && shared.len() > prefix.len() {
@@ -98,7 +88,10 @@ pub fn try_autocomplete_slash_command(app: &mut App) -> bool {
     }
 
     if candidates.len() == 1 {
-        let completed = format!("/{} ", candidates[0]);
+        let mut completed = candidates[0].clone();
+        if !completed.ends_with(' ') {
+            completed.push(' ');
+        }
         app.input = completed.clone();
         app.cursor_position = completed.chars().count();
         app.slash_menu_hidden = false;
@@ -109,7 +102,7 @@ pub fn try_autocomplete_slash_command(app: &mut App) -> bool {
     let preview = candidates
         .iter()
         .take(5)
-        .map(|name| format!("/{name}"))
+        .map(String::as_str)
         .collect::<Vec<_>>()
         .join(", ");
     app.status_message = Some(format!("Suggestions: {preview}"));

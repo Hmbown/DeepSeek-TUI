@@ -1728,37 +1728,51 @@ pub(crate) fn slash_completion_hints(
     cached_skills: &[(String, String)],
     locale: crate::localization::Locale,
 ) -> Vec<SlashMenuEntry> {
-    if !input.starts_with('/') || input.contains(char::is_whitespace) {
+    if !input.starts_with('/') {
         return Vec::new();
     }
 
     let prefix = input.trim_start_matches('/');
+    let completing_skill_arg = prefix.strip_prefix("skill ").map(str::trim_start);
+    if input.contains(char::is_whitespace) && completing_skill_arg.is_none() {
+        return Vec::new();
+    }
     let mut entries: Vec<SlashMenuEntry> = Vec::new();
 
     // Built-in commands + user-defined commands
     // `all_command_names_matching` returns both; we resolve descriptions for
     // built-in ones from the static registry and use a generic label for
     // user-defined commands.
-    for name in commands::all_command_names_matching(prefix) {
-        let command_key = name.trim_start_matches('/');
-        let description = if let Some(info) = commands::get_command_info(command_key) {
-            info.description_for(locale).to_string()
-        } else {
-            String::from("User-defined command")
-        };
-        entries.push(SlashMenuEntry {
-            name,
-            description,
-            is_skill: false,
-        });
+    if completing_skill_arg.is_none() {
+        for name in commands::all_command_names_matching(prefix) {
+            let command_key = name.trim_start_matches('/');
+            let description = if let Some(info) = commands::get_command_info(command_key) {
+                info.description_for(locale).to_string()
+            } else {
+                String::from("User-defined command")
+            };
+            entries.push(SlashMenuEntry {
+                name,
+                description,
+                is_skill: false,
+            });
+        }
     }
 
     // Cached skills
-    let prefix_lower = prefix.to_ascii_lowercase();
+    let skill_prefix = completing_skill_arg.unwrap_or(prefix);
+    let prefix_lower = skill_prefix.to_ascii_lowercase();
     for (skill_name, skill_desc) in cached_skills {
-        if skill_name.to_ascii_lowercase().starts_with(&prefix_lower) {
+        let skill_name_lower = skill_name.to_ascii_lowercase();
+        let command_prefix_matches = completing_skill_arg.is_none()
+            && (prefix_lower.is_empty()
+                || "skill".starts_with(&prefix_lower)
+                || skill_name_lower.starts_with(&prefix_lower));
+        let skill_arg_matches =
+            completing_skill_arg.is_some() && skill_name_lower.starts_with(&prefix_lower);
+        if command_prefix_matches || skill_arg_matches {
             entries.push(SlashMenuEntry {
-                name: format!("/{}", skill_name),
+                name: format!("/skill {skill_name}"),
                 description: skill_desc.clone(),
                 is_skill: true,
             });
@@ -2140,12 +2154,12 @@ mod tests {
         assert!(
             hints
                 .iter()
-                .any(|hint| hint.name == "/search-files" && hint.is_skill)
+                .any(|hint| hint.name == "/skill search-files" && hint.is_skill)
         );
         assert!(
             hints
                 .iter()
-                .any(|hint| hint.name == "/my-review" && hint.is_skill)
+                .any(|hint| hint.name == "/skill my-review" && hint.is_skill)
         );
     }
 
@@ -2159,9 +2173,21 @@ mod tests {
         assert!(
             hints
                 .iter()
-                .any(|hint| hint.name == "/search-files" && hint.is_skill)
+                .any(|hint| hint.name == "/skill search-files" && hint.is_skill)
         );
-        assert!(!hints.iter().any(|hint| hint.name == "/my-review"));
+        assert!(!hints.iter().any(|hint| hint.name == "/skill my-review"));
+    }
+
+    #[test]
+    fn slash_completion_hints_complete_skill_argument_prefix() {
+        let cached_skills = vec![
+            ("search-files".to_string(), "Search files".to_string()),
+            ("my-review".to_string(), "Review code".to_string()),
+        ];
+        let hints = slash_completion_hints("/skill my", 128, &cached_skills, Locale::En);
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].name, "/skill my-review");
+        assert!(hints[0].is_skill);
     }
 
     #[test]
