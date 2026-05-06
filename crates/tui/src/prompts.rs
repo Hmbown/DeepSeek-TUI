@@ -34,6 +34,32 @@ const INSTRUCTIONS_FILE_MAX_BYTES: usize = 100 * 1024;
 
 /// Render the `instructions = [...]` config array as a single
 /// system-prompt block (#454). Each path is loaded in declared order;
+/// Render a `## Environment` block with lang / platform / shell / pwd.
+///
+/// `lang` is resolved in priority order:
+/// 1. User-configured locale from `Settings` (e.g. `zh-Hans`, `ja`)
+/// 2. System environment variables (`LC_ALL`, `LC_MESSAGES`, `LANG`)
+/// 3. Fallback to `en_US.UTF-8`
+fn render_environment_block(workspace: &Path) -> String {
+    let lang = {
+        let settings = crate::settings::Settings::load().unwrap_or_default();
+        let locale = crate::localization::resolve_locale(&settings.locale);
+        locale.tag().to_string()
+    };
+    let platform = std::env::consts::OS;
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "unknown".to_string());
+    let pwd = workspace.display().to_string();
+
+    format!(
+        "## Environment\n\
+         \n\
+         - lang: {lang}\n\
+         - platform: {platform}\n\
+         - shell: {shell}\n\
+         - pwd: {pwd}"
+    )
+}
+
 /// missing files are skipped with a tracing warning so a stale entry
 /// in `~/.deepseek/config.toml` doesn't fail the launch. Empty input
 /// (or all paths missing) returns `None` so callers append nothing.
@@ -350,6 +376,14 @@ pub fn system_prompt_for_mode_with_context_skills_session_and_approval(
             mode_prompt, summary, tree
         )
     };
+
+    // 2.25. Environment block (lang / platform / shell / pwd).
+    // Placed after base+mode+project context, before instructions,
+    // so the `## Language` section in base.md can reference it.
+    full_prompt = format!(
+        "{full_prompt}\n\n{}",
+        render_environment_block(workspace)
+    );
 
     // 2.5a. Configured `instructions = [...]` files (#454). Loaded
     // and concatenated in declared order. Lives above the skills
