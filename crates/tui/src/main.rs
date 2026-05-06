@@ -135,6 +135,7 @@ struct Cli {
     no_alt_screen: bool,
 
     /// Enable TUI mouse capture for internal scrolling and transcript selection
+    /// (default off on Windows)
     #[arg(long = "mouse-capture", conflicts_with = "no_mouse_capture")]
     mouse_capture: bool,
 
@@ -3339,7 +3340,11 @@ fn should_use_mouse_capture(cli: &Cli, config: &Config, use_alt_screen: bool) ->
         .tui
         .as_ref()
         .and_then(|tui| tui.mouse_capture)
-        .unwrap_or(true)
+        .unwrap_or_else(default_mouse_capture_enabled)
+}
+
+fn default_mouse_capture_enabled() -> bool {
+    !cfg!(windows)
 }
 
 fn is_zellij() -> bool {
@@ -4026,11 +4031,21 @@ mod terminal_mode_tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn mouse_capture_defaults_on_when_alternate_screen_is_active() {
         let cli = parse_cli(&["deepseek"]);
         let config = Config::default();
 
         assert!(should_use_mouse_capture(&cli, &config, true));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn mouse_capture_defaults_off_on_windows_when_alternate_screen_is_active() {
+        let cli = parse_cli(&["deepseek"]);
+        let config = Config::default();
+
+        assert!(!should_use_mouse_capture(&cli, &config, true));
     }
 
     #[test]

@@ -84,7 +84,7 @@ Run `deepseek --help` for the canonical list. Common flags:
 - `-c, --continue`: resume the most recent session
 - `--max-subagents <N>`: clamp to `1..=20`
 - `--no-alt-screen`: run inline without the alternate screen buffer
-- `--mouse-capture` / `--no-mouse-capture`: opt in or out of internal mouse scrolling, transcript selection, and right-click context actions. Mouse capture is enabled by default so drag selection copies only user/assistant transcript text; hold Shift while dragging or use `--no-mouse-capture` for raw terminal selection.
+- `--mouse-capture` / `--no-mouse-capture`: opt in or out of internal mouse scrolling, transcript selection, and right-click context actions. Mouse capture is enabled by default on non-Windows terminals so drag selection copies only user/assistant transcript text; hold Shift while dragging or use `--no-mouse-capture` for raw terminal selection. On Windows it defaults off to avoid CMD/terminal mouse escape sequences being inserted into the prompt; use `--mouse-capture` to opt in.
 - `--profile <NAME>`: select config profile
 - `--config <PATH>`: config file path
 - `-v, --verbose`: verbose logging
