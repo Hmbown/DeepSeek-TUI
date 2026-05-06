@@ -1,5 +1,5 @@
 # Build artifacts
-/target
+/target/
 *.pdb
 *.dll
 *.so
@@ -11,21 +11,21 @@
 .env.*
 
 # Development
-node_modules/
-.vscode/
-.idea/
+/node_modules/
+/.vscode/
+/.idea/
 *.swp
 *.swo
 *~
 .DS_Store
 
 # Git
-.git
-.gitignore
-.gitattributes
+/.git/
+/.gitignore
+/.gitattributes
 
 # CI/CD
-.github/
+/.github/
 
 # Python
 __pycache__/
@@ -38,28 +38,28 @@ venv/
 *.log
 
 # Generated
-outputs/
-tmp/
+/outputs/
+/tmp/
 
 # Local runtime state
-.deepseek/
+/.deepseek/
 
 # Claude Code artifacts
-.claude/
-.ace-tool/
+/.claude/
+/.ace-tool/
 
 # Documentation (not needed at runtime)
-docs/
-website/
-*.md
-!README.md
+/docs/
+/website/
+/*.md
+!/README.md
 
 # Assets (screenshots, etc.)
-assets/
+/assets/
 
 # Scripts
-scripts/
+/scripts/
 
 # Development configs
-.devcontainer/
-config.example.toml
+/.devcontainer/
+/config.example.toml
