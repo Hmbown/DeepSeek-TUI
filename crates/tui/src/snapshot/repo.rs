@@ -61,12 +61,15 @@ impl SnapshotRepo {
         let work_tree = workspace
             .canonicalize()
             .unwrap_or_else(|_| workspace.to_path_buf());
-
-        // Refuse to snapshot the user's home directory: `git add -A` on $HOME
-        // can consume unbounded disk/CPU and effectively DoS the TUI (#793).
-        if is_home_directory(&work_tree, dirs::home_dir().as_deref()) {
-            return Err(io_other(
-                "refusing to snapshot home directory - start deepseek from a project directory instead",
+        if let Some(reason) =
+            unsafe_workspace_snapshot_reason(&work_tree, dirs::home_dir().as_deref())
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "workspace snapshots are disabled for {reason}: {}",
+                    work_tree.display()
+                ),
             ));
         }
 
@@ -415,6 +418,40 @@ fn io_other(msg: impl Into<String>) -> io::Error {
     io::Error::other(msg.into())
 }
 
+fn unsafe_workspace_snapshot_reason(workspace: &Path, home: Option<&Path>) -> Option<&'static str> {
+    let workspace = normalize_path_for_safety(workspace);
+    if is_filesystem_root(&workspace) {
+        return Some("filesystem root");
+    }
+
+    if is_home_directory(&workspace, home) {
+        return Some("home directory");
+    }
+
+    let home = home.map(normalize_path_for_safety)?;
+    if workspace.parent() == Some(home.as_path()) {
+        let name = workspace.file_name().and_then(|name| name.to_str());
+        if matches!(
+            name,
+            Some(
+                "Desktop" | "Documents" | "Downloads" | "Library" | "Movies" | "Music" | "Pictures"
+            )
+        ) {
+            return Some("home collection directory");
+        }
+    }
+
+    None
+}
+
+fn normalize_path_for_safety(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn is_filesystem_root(path: &Path) -> bool {
+    path.parent().is_none()
+}
+
 fn is_home_directory(work_tree: &Path, home: Option<&Path>) -> bool {
     let Some(home) = home else {
         return false;
@@ -673,6 +710,43 @@ mod tests {
         assert!(
             !names.contains("ignored.txt"),
             "ignored.txt should not be in snapshot: {names}",
+        );
+    }
+
+    #[test]
+    fn unsafe_workspace_rejects_home_directory_workspace() {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path();
+
+        assert_eq!(
+            unsafe_workspace_snapshot_reason(home, Some(home)),
+            Some("home directory")
+        );
+    }
+
+    #[test]
+    fn unsafe_workspace_rejects_home_collection_directories() {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path();
+        let desktop = tmp.path().join("Desktop");
+        std::fs::create_dir_all(&desktop).unwrap();
+
+        assert_eq!(
+            unsafe_workspace_snapshot_reason(&desktop, Some(home)),
+            Some("home collection directory")
+        );
+    }
+
+    #[test]
+    fn unsafe_workspace_allows_project_directories_under_home() {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path();
+        let workspace = tmp.path().join("code").join("project");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        assert_eq!(
+            unsafe_workspace_snapshot_reason(&workspace, Some(home)),
+            None
         );
     }
 
