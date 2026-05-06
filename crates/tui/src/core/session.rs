@@ -5,6 +5,7 @@
 use crate::cycle_manager::CycleBriefing;
 use crate::models::{Message, SystemPrompt, Usage};
 use crate::project_context::{ProjectContext, load_project_context_with_parents};
+use crate::tui::approval::ApprovalMode;
 use crate::working_set::WorkingSet;
 use chrono::{DateTime, Utc};
 use std::path::PathBuf;
@@ -50,6 +51,9 @@ pub struct Session {
 
     /// Whether the current session should auto-approve tool safety checks.
     pub auto_approve: bool,
+
+    /// Live UI approval policy used to steer the system prompt.
+    pub approval_mode: ApprovalMode,
 
     /// Notes file path
     pub notes_path: PathBuf,
@@ -133,6 +137,7 @@ impl Session {
             allow_shell,
             trust_mode,
             auto_approve: false,
+            approval_mode: ApprovalMode::Suggest,
             notes_path,
             mcp_config_path,
             id: uuid::Uuid::new_v4().to_string(),

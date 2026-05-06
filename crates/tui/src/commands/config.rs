@@ -288,19 +288,14 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
             );
         }
         "approval_mode" | "approval" => {
-            let mode = match value.to_lowercase().as_str() {
-                "auto" => Some(ApprovalMode::Auto),
-                "suggest" | "suggested" | "on-request" | "untrusted" => Some(ApprovalMode::Suggest),
-                "never" => Some(ApprovalMode::Never),
-                _ => None,
-            };
+            let mode = ApprovalMode::from_config_value(value);
             return match mode {
                 Some(m) => {
                     app.approval_mode = m;
                     CommandResult::message(format!("approval_mode = {}", m.label()))
                 }
                 None => CommandResult::error(
-                    "Invalid approval_mode. Use: auto, suggest/on-request/untrusted, never",
+                    "Invalid approval_mode. Use: auto, suggest/on-request/untrusted, never/deny",
                 ),
             };
         }

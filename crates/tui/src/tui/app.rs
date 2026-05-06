@@ -1118,7 +1118,11 @@ impl App {
             Some(YoloRestoreState {
                 allow_shell: config.allow_shell(),
                 trust_mode: false,
-                approval_mode: ApprovalMode::Suggest,
+                approval_mode: config
+                    .approval_policy
+                    .as_deref()
+                    .and_then(ApprovalMode::from_config_value)
+                    .unwrap_or_default(),
             })
         } else {
             None
@@ -1255,7 +1259,11 @@ impl App {
             approval_mode: if matches!(initial_mode, AppMode::Yolo) {
                 ApprovalMode::Auto
             } else {
-                ApprovalMode::Suggest
+                config
+                    .approval_policy
+                    .as_deref()
+                    .and_then(ApprovalMode::from_config_value)
+                    .unwrap_or_default()
             },
             view_stack: ViewStack::new(),
             backtrack: crate::tui::backtrack::BacktrackState::new(),
@@ -3922,6 +3930,21 @@ mod tests {
         assert!(!app.allow_shell);
         assert!(!app.trust_mode);
         assert_eq!(app.approval_mode, ApprovalMode::Suggest);
+    }
+
+    #[test]
+    fn configured_approval_policy_initializes_live_approval_mode() {
+        let config = Config {
+            approval_policy: Some("never".to_string()),
+            ..Default::default()
+        };
+        let mut options = test_options(false);
+        options.start_in_agent_mode = true;
+
+        let app = App::new(options, &config);
+
+        assert_eq!(app.mode, AppMode::Agent);
+        assert_eq!(app.approval_mode, ApprovalMode::Never);
     }
 
     #[test]

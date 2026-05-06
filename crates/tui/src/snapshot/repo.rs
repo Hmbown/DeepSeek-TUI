@@ -62,6 +62,14 @@ impl SnapshotRepo {
             .canonicalize()
             .unwrap_or_else(|_| workspace.to_path_buf());
 
+        // Refuse to snapshot the user's home directory: `git add -A` on $HOME
+        // can consume unbounded disk/CPU and effectively DoS the TUI (#793).
+        if is_home_directory(&work_tree, dirs::home_dir().as_deref()) {
+            return Err(io_other(
+                "refusing to snapshot home directory - start deepseek from a project directory instead",
+            ));
+        }
+
         let _ = ensure_snapshot_dir(&work_tree)?;
         let git_dir = snapshot_git_dir(&work_tree);
 
@@ -407,6 +415,15 @@ fn io_other(msg: impl Into<String>) -> io::Error {
     io::Error::other(msg.into())
 }
 
+fn is_home_directory(work_tree: &Path, home: Option<&Path>) -> bool {
+    let Some(home) = home else {
+        return false;
+    };
+
+    let home_canonical = home.canonicalize().unwrap_or_else(|_| home.to_path_buf());
+    work_tree == home_canonical
+}
+
 fn parse_nul_paths(bytes: &[u8]) -> HashSet<PathBuf> {
     bytes
         .split(|b| *b == 0)
@@ -429,33 +446,41 @@ mod tests {
     use std::sync::MutexGuard;
     use tempfile::tempdir;
 
-    /// Holds HOME pinned to a tempdir for the lifetime of a test. Also
+    /// Holds the home directory pinned to a tempdir for the lifetime of a test. Also
     /// owns the process-wide env-var mutex so tests across modules
-    /// don't trample each other's `HOME`.
+    /// don't trample each other's home env vars.
     pub(super) struct ScopedHome {
-        prev: Option<std::ffi::OsString>,
+        prev_vars: Vec<(&'static str, Option<std::ffi::OsString>)>,
         _guard: MutexGuard<'static, ()>,
     }
     impl Drop for ScopedHome {
         fn drop(&mut self) {
             // SAFETY: process-wide lock still held.
             unsafe {
-                match self.prev.take() {
-                    Some(v) => std::env::set_var("HOME", v),
-                    None => std::env::remove_var("HOME"),
+                for (key, prev) in self.prev_vars.drain(..) {
+                    match prev {
+                        Some(value) => std::env::set_var(key, value),
+                        None => std::env::remove_var(key),
+                    }
                 }
             }
         }
     }
     pub(super) fn scoped_home(home: &Path) -> ScopedHome {
         let guard = lock_test_env();
-        let prev = std::env::var_os("HOME");
+        let prev_vars = ["HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH"]
+            .into_iter()
+            .map(|key| (key, std::env::var_os(key)))
+            .collect();
         // SAFETY: serialised by the global env lock.
         unsafe {
             std::env::set_var("HOME", home);
+            std::env::set_var("USERPROFILE", home);
+            std::env::remove_var("HOMEDRIVE");
+            std::env::remove_var("HOMEPATH");
         }
         ScopedHome {
-            prev,
+            prev_vars,
             _guard: guard,
         }
     }
@@ -660,5 +685,19 @@ mod tests {
         // avoid double-acquiring HOME (the guard would deadlock).
         drop((_r, _h));
         let (_r2, _h2) = make_repo(tmp.path());
+    }
+
+    #[test]
+    fn home_directory_guard_matches_canonical_paths() {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path();
+        let home_canonical = home.canonicalize().unwrap();
+        let workspace = home.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let workspace_canonical = workspace.canonicalize().unwrap();
+
+        assert!(is_home_directory(&home_canonical, Some(home)));
+        assert!(!is_home_directory(&workspace_canonical, Some(home)));
+        assert!(!is_home_directory(&home_canonical, None));
     }
 }

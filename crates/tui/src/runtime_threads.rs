@@ -1493,6 +1493,11 @@ impl RuntimeThreadManager {
                 allow_shell,
                 trust_mode,
                 auto_approve,
+                approval_mode: if auto_approve {
+                    crate::tui::approval::ApprovalMode::Auto
+                } else {
+                    crate::tui::approval::ApprovalMode::Suggest
+                },
             })
             .await
             .map_err(|e| anyhow!("Failed to start turn: {e}"))?;

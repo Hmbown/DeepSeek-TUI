@@ -450,6 +450,7 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 # # condition = { type = "tool_category", category = "shell" }
 
 # ─────────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────
 # Vision Model Configuration (optional)
 # ─────────────────────────────────────────────────────────────────────────
 # Configure a dedicated vision model for image processing tasks.
