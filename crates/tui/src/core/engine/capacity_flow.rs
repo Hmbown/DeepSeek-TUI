@@ -958,19 +958,32 @@ impl Engine {
     }
 
     pub(super) fn rehydrate_latest_canonical_state(&mut self) {
-        let Ok(records) = load_last_k_capacity_records(&self.session.id, 1) else {
-            return;
-        };
-        let Some(last) = records.last() else {
-            return;
-        };
-        let pointer = format!("memory://{}/{}", self.session.id, last.id);
-        let prompt = self.canonical_prompt(
-            &last.canonical_state,
-            &pointer,
-            GuardrailAction::NoIntervention,
-            Some("Rehydrated canonical state from memory."),
-        );
-        self.merge_compaction_summary(Some(prompt));
+        // Try current session memory first.
+        if let Ok(records) = load_last_k_capacity_records(&self.session.id, 1) {
+            if let Some(last) = records.last() {
+                let pointer = format!("memory://{}/{}", self.session.id, last.id);
+                let prompt = self.canonical_prompt(
+                    &last.canonical_state,
+                    &pointer,
+                    GuardrailAction::NoIntervention,
+                    Some("Rehydrated canonical state from memory."),
+                );
+                self.merge_compaction_summary(Some(prompt));
+                return;
+            }
+        }
+
+        // Fall back to cross-session: scan all memory files so a fresh
+        // session can still inherit context from previous conversations.
+        if let Ok(Some(latest)) = load_latest_across_sessions() {
+            let pointer = format!("memory://cross-session/{}", latest.id);
+            let prompt = self.canonical_prompt(
+                &latest.canonical_state,
+                &pointer,
+                GuardrailAction::NoIntervention,
+                Some("Rehydrated canonical state from previous session."),
+            );
+            self.merge_compaction_summary(Some(prompt));
+        }
     }
 }

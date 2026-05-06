@@ -208,6 +208,58 @@ pub fn now_rfc3339() -> String {
     Utc::now().to_rfc3339()
 }
 
+/// Load the most recent capacity memory record across all sessions.
+///
+/// Scans all `*.jsonl` files in every memory directory and returns the
+/// record with the newest file-modification time. This is the fallback
+/// path for `rehydrate_latest_canonical_state` when the current session
+/// has no memory records yet (e.g. starting a brand-new session).
+///
+/// Returns `Ok(None)` when no memory files exist at all.
+pub fn load_latest_across_sessions() -> Result<Option<CapacityMemoryRecord>> {
+    let dirs = capacity_memory_dirs();
+
+    let mut best: Option<(SystemTime, CapacityMemoryRecord)> = None;
+
+    for dir in &dirs {
+        if !dir.exists() {
+            continue;
+        }
+        let read_dir = match fs::read_dir(dir) {
+            Ok(rd) => rd,
+            Err(_) => continue,
+        };
+        for entry in read_dir {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+            let modified = match fs::metadata(&path).and_then(|meta| meta.modified()) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            let Ok(records) = load_last_k_capacity_records_from_path(&path, 1) else {
+                continue;
+            };
+            if let Some(record) = records.into_iter().last() {
+                let should_replace = best
+                    .as_ref()
+                    .map(|(current_mtime, _)| modified >= *current_mtime)
+                    .unwrap_or(true);
+                if should_replace {
+                    best = Some((modified, record));
+                }
+            }
+        }
+    }
+
+    Ok(best.map(|(_, record)| record))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

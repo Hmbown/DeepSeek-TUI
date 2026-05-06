@@ -62,7 +62,7 @@ use super::capacity::{
 };
 use super::capacity_memory::{
     CanonicalState, CapacityMemoryRecord, ReplayInfo, append_capacity_record,
-    load_last_k_capacity_records, new_record_id, now_rfc3339,
+    load_last_k_capacity_records, load_latest_across_sessions, new_record_id, now_rfc3339,
 };
 use super::coherence::{CoherenceSignal, CoherenceState, next_coherence_state};
 use super::events::{Event, TurnOutcomeStatus};
