@@ -786,12 +786,19 @@ pub fn path_escapes_workspace(path: &str, workspace: &str) -> bool {
         return true;
     }
 
-    // Check for ../ traversal
-    if path.contains("..") {
-        // Count the ../ sequences and check if they escape
-        let workspace_depth = workspace.matches('/').count();
-        let escape_count = path.matches("..").count();
-        if escape_count > workspace_depth {
+    // Walk the path components. Track depth relative to the workspace root:
+    // non-`..` components increment depth, `..` components decrement it.
+    // If depth ever goes negative, the path escapes the workspace boundary.
+    // This correctly distinguishes genuine traversal like `../outside` from
+    // names that happen to contain consecutive dots like `foo..bar`.
+    let mut depth: i32 = 0;
+    for component in path_lower.split('/') {
+        match component {
+            "" | "." => {}
+            ".." => depth -= 1,
+            _ => depth += 1,
+        }
+        if depth < 0 {
             return true;
         }
     }
@@ -969,6 +976,31 @@ mod tests {
         assert!(path_escapes_workspace("~/secret", "/home/user/project"));
         assert!(!path_escapes_workspace(
             "./src/main.rs",
+            "/home/user/project"
+        ));
+    }
+
+    #[test]
+    fn test_path_escapes_workspace_doesnt_flag_double_dot_in_names() {
+        // Names like `foo..bar` should NOT be flagged as path traversal
+        assert!(!path_escapes_workspace(
+            "some..file.txt",
+            "/home/user/project"
+        ));
+        assert!(!path_escapes_workspace(
+            "./dir..name/file.txt",
+            "/home/user/project"
+        ));
+    }
+
+    #[test]
+    fn test_path_escapes_workspace_detects_genuine_traversal() {
+        assert!(path_escapes_workspace(
+            "../outside",
+            "/home/user/project"
+        ));
+        assert!(path_escapes_workspace(
+            "./subdir/../../etc/passwd",
             "/home/user/project"
         ));
     }
