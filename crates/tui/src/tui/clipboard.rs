@@ -10,7 +10,7 @@
 #[cfg(not(test))]
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
-#[cfg(all(target_os = "macos", not(test)))]
+#[cfg(all(any(target_os = "macos", target_os = "windows"), not(test)))]
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -110,6 +110,11 @@ impl ClipboardHandler {
                 return Ok(());
             }
 
+            #[cfg(target_os = "windows")]
+            if write_text_with_set_clipboard(text).is_ok() {
+                return Ok(());
+            }
+
             write_text_with_osc52(text)
                 .map_err(|err| anyhow::anyhow!("Clipboard unavailable: {err}"))
         }
@@ -139,6 +144,27 @@ fn write_text_with_pbcopy(text: &str) -> Result<()> {
         return Ok(());
     }
     Err(anyhow::anyhow!("pbcopy failed"))
+}
+
+#[cfg(all(target_os = "windows", not(test)))]
+fn write_text_with_set_clipboard(text: &str) -> Result<()> {
+    let mut child = Command::new("powershell.exe")
+        .args(["-NoProfile", "-Command", "Set-Clipboard -Value $input"])
+        .stdin(Stdio::piped())
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("Failed to run Set-Clipboard: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(text.as_bytes())
+            .map_err(|e| anyhow::anyhow!("Failed to write to Set-Clipboard: {e}"))?;
+    }
+    let status = child
+        .wait()
+        .map_err(|e| anyhow::anyhow!("Failed to wait for Set-Clipboard: {e}"))?;
+    if status.success() {
+        return Ok(());
+    }
+    Err(anyhow::anyhow!("Set-Clipboard failed"))
 }
 
 #[cfg(not(test))]
