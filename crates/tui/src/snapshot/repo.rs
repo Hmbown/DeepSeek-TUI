@@ -62,6 +62,17 @@ impl SnapshotRepo {
             .canonicalize()
             .unwrap_or_else(|_| workspace.to_path_buf());
 
+        // Refuse to snapshot the user's home directory — `git add -A` on $HOME
+        // can consume unbounded disk/CPU and effectively DoS the TUI (#793).
+        if let Some(home) = dirs::home_dir() {
+            let home_canonical = home.canonicalize().unwrap_or(home);
+            if work_tree == home_canonical {
+                return Err(io_other(
+                    "refusing to snapshot home directory — start deepseek from a project directory instead",
+                ));
+            }
+        }
+
         let _ = ensure_snapshot_dir(&work_tree)?;
         let git_dir = snapshot_git_dir(&work_tree);
 
@@ -660,5 +671,21 @@ mod tests {
         // avoid double-acquiring HOME (the guard would deadlock).
         drop((_r, _h));
         let (_r2, _h2) = make_repo(tmp.path());
+    }
+
+    #[test]
+    fn open_or_init_refuses_home_directory() {
+        let tmp = tempdir().unwrap();
+        let guard = scoped_home(tmp.path());
+
+        // Try to snapshot HOME itself.
+        let result = SnapshotRepo::open_or_init(tmp.path());
+        assert!(result.is_err(), "should refuse to snapshot home directory");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("home directory"),
+            "error should mention home directory: {err_msg}"
+        );
+        drop(guard);
     }
 }
