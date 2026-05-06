@@ -198,7 +198,7 @@ impl ToolSpec for VisionOcrTool {
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let image_path = required_str(&input, "image_path")?;
+        let _image_path = required_str(&input, "image_path")?;
         let language_hint = optional_str(&input, "language").unwrap_or("");
 
         let prompt = if language_hint.is_empty() {

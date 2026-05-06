@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 use crate::config::VisionModelConfig;
-use crate::llm_client::{LlmClient, LlmError, RetryConfig, with_retry};
+use crate::llm_client::{LlmError, RetryConfig, with_retry};
 
 /// Configuration for the vision client
 #[derive(Debug, Clone)]
@@ -220,39 +220,45 @@ impl VisionClient {
 
         let retry_config = RetryConfig {
             max_retries: 3,
-            initial_delay: Duration::from_secs(1),
-            max_delay: Duration::from_secs(30),
-            exponential_base: 2.0,
+            initial_delay: 1.0,
+            max_delay: 30.0,
+            ..RetryConfig::default()
         };
 
-        with_retry(retry_config, || async {
-            let mut headers = HeaderMap::new();
-            headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-            headers.insert(
-                AUTHORIZATION,
-                HeaderValue::from_str(&format!("Bearer {}", api_key))
-                    .map_err(|e| LlmError::Http(e.to_string()))?,
-            );
+        with_retry(&retry_config, || {
+            let client = client.clone();
+            let url = url.clone();
+            let api_key = api_key.clone();
+            let payload = payload.clone();
+            async move {
+                let mut headers = HeaderMap::new();
+                headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+                headers.insert(
+                    AUTHORIZATION,
+                    HeaderValue::from_str(&format!("Bearer {}", api_key))
+                        .map_err(|e| LlmError::NetworkError(format!("Invalid header: {e}")))?,
+                );
 
-            let response = client
-                .post(&url)
-                .headers(headers)
-                .json(&payload)
-                .send()
-                .await
-                .map_err(|e| LlmError::Http(e.to_string()))?;
-
-            let status = response.status();
-            if !status.is_success() {
-                let error_text = response
-                    .text()
+                let response = client
+                    .post(&url)
+                    .headers(headers)
+                    .json(&payload)
+                    .send()
                     .await
-                    .unwrap_or_else(|_| "Unknown error".to_string());
-                return Err(LlmError::Api(format!("HTTP {}: {}", status, error_text)));
-            }
+                    .map_err(|e| LlmError::from_reqwest(&e))?;
 
-            Ok(response)
-        })
+                let status = response.status();
+                if !status.is_success() {
+                    let error_text = response
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "Unknown error".to_string());
+                    return Err(LlmError::from_http_response(status.as_u16(), &error_text));
+                }
+
+                Ok(response)
+            }
+        }, None)
         .await
         .map_err(|e| anyhow::anyhow!("Vision request failed: {}", e))
     }

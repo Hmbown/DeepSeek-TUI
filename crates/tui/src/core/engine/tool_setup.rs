@@ -58,7 +58,7 @@ impl Engine {
 
         // Register vision tools when the feature is enabled and config is present.
         if self.config.features.enabled(Feature::VisionModel)
-            && self.config.vision_model_enabled()
+            && self.config.vision_model_enabled
         {
             builder = builder.with_vision_tools();
         }

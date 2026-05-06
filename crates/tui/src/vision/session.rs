@@ -12,7 +12,6 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
-use crate::config::VisionModelConfig;
 use crate::vision::client::{VisionClient, VisionClientConfig, VisionRequest, VisionResponse};
 
 /// A vision session represents an independent conversation with a vision model
@@ -379,19 +378,23 @@ impl VisionSessionManager {
 
     /// Clean up idle sessions
     pub async fn cleanup_idle_sessions(&self, max_idle_duration: Duration) -> usize {
-        let mut sessions = self.sessions.write().await;
-        let to_remove: Vec<String> = sessions
-            .iter()
-            .filter(|(_, handle)| {
+        let mut to_remove = Vec::new();
+        {
+            let sessions = self.sessions.read().await;
+            for (id, handle) in sessions.iter() {
                 let idle_time = handle.summary().await.idle_secs;
-                Duration::from_secs(idle_time) > max_idle_duration
-            })
-            .map(|(id, _)| id.clone())
-            .collect();
+                if Duration::from_secs(idle_time) > max_idle_duration {
+                    to_remove.push(id.clone());
+                }
+            }
+        }
 
         let count = to_remove.len();
-        for id in to_remove {
-            sessions.remove(&id);
+        if count > 0 {
+            let mut sessions = self.sessions.write().await;
+            for id in &to_remove {
+                sessions.remove(id);
+            }
         }
 
         count
