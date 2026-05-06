@@ -68,8 +68,9 @@ deepseek doctor --json
 | `mcp.present` | bool | Whether MCP config exists |
 | `mcp.servers` | array | Per-server health: `{name, enabled, status, detail}` |
 | `skills.selected` | string | Resolved skills directory |
-| `skills.global.path` / `.present` / `.count` | — | Global skills dir |
-| `skills.agents.path` / `.present` / `.count` | — | `.agents/skills/` dir |
+| `skills.global.path` / `.present` / `.count` | — | DeepSeek global skills dir (`~/.deepseek/skills`) |
+| `skills.agents.path` / `.present` / `.count` | — | Workspace `.agents/skills/` dir |
+| `skills.agents_global.path` / `.present` / `.count` | — | agentskills.io global skills dir (`~/.agents/skills`) |
 | `skills.local.path` / `.present` / `.count` | — | `skills/` dir |
 | `skills.opencode.path` / `.present` / `.count` | — | `.opencode/skills/` dir |
 | `skills.claude.path` / `.present` / `.count` | — | `.claude/skills/` dir |

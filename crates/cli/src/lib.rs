@@ -6,7 +6,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{Shell, generate};
 use deepseek_agent::ModelRegistry;
@@ -1044,7 +1044,7 @@ fn delegate_to_tui(
 ) -> Result<()> {
     let tui = locate_sibling_tui_binary()?;
 
-    let mut cmd = Command::new(tui);
+    let mut cmd = Command::new(&tui);
     if let Some(config) = cli.config.as_ref() {
         cmd.arg("--config").arg(config);
     }
@@ -1115,7 +1115,9 @@ fn delegate_to_tui(
         cmd.env("DEEPSEEK_BASE_URL", base_url);
     }
 
-    let status = cmd.status().context("failed to spawn deepseek-tui")?;
+    let status = cmd
+        .status()
+        .map_err(|err| anyhow!("{}", tui_spawn_error(&tui, &err)))?;
     match status.code() {
         Some(code) => std::process::exit(code),
         None => bail!("deepseek-tui terminated by signal"),
@@ -1124,11 +1126,31 @@ fn delegate_to_tui(
 
 fn delegate_simple_tui(args: Vec<String>) -> Result<()> {
     let tui = locate_sibling_tui_binary()?;
-    let status = Command::new(tui).args(args).status()?;
+    let status = Command::new(&tui)
+        .args(args)
+        .status()
+        .map_err(|err| anyhow!("{}", tui_spawn_error(&tui, &err)))?;
     match status.code() {
         Some(code) => std::process::exit(code),
         None => bail!("deepseek-tui terminated by signal"),
     }
+}
+
+fn tui_spawn_error(tui: &Path, err: &io::Error) -> String {
+    format!(
+        "failed to spawn companion TUI binary at {}: {err}\n\
+\n\
+The `deepseek` dispatcher found a `deepseek-tui` file, but the OS refused \
+to execute it. Common fixes:\n\
+  - Reinstall with `npm install -g deepseek-tui`, or run `deepseek update`.\n\
+  - On Windows, run `where deepseek` and `where deepseek-tui`; both should \
+come from the same install directory.\n\
+  - If you downloaded release assets manually, keep both `deepseek` and \
+`deepseek-tui` binaries together and make sure the TUI binary is executable.\n\
+  - Set DEEPSEEK_TUI_BIN to the absolute path of a working `deepseek-tui` \
+binary.",
+        tui.display()
+    )
 }
 
 /// Resolve the sibling `deepseek-tui` executable next to the running
@@ -1963,6 +1985,17 @@ mod tests {
 
         let found = sibling_tui_candidate(&dispatcher).expect("must locate sibling");
         assert_eq!(found, target, "primary platform-correct name wins");
+    }
+
+    #[test]
+    fn dispatcher_spawn_error_names_path_and_recovery_checks() {
+        let err = io::Error::new(io::ErrorKind::PermissionDenied, "access is denied");
+        let message = tui_spawn_error(Path::new("C:/tools/deepseek-tui.exe"), &err);
+
+        assert!(message.contains("C:/tools/deepseek-tui.exe"));
+        assert!(message.contains("access is denied"));
+        assert!(message.contains("where deepseek"));
+        assert!(message.contains("DEEPSEEK_TUI_BIN"));
     }
 
     /// Windows-only fallback: the user from #247 manually renamed the

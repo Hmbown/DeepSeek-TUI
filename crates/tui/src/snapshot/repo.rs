@@ -48,6 +48,32 @@ pub struct SnapshotRepo {
     work_tree: PathBuf,
 }
 
+const BUILTIN_EXCLUDES: &str = "\
+# DeepSeek TUI built-in snapshot exclusions
+node_modules/
+target/
+dist/
+build/
+.cargo/
+.rustup/
+.npm/
+.bun/
+.yarn/
+.pnpm-store/
+.cache/
+.venv/
+venv/
+__pycache__/
+*.pyc
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.gradle/
+.m2/
+.local/
+.DS_Store
+";
+
 impl SnapshotRepo {
     /// Open or initialize the snapshot repo for `workspace`.
     ///
@@ -61,6 +87,17 @@ impl SnapshotRepo {
         let work_tree = workspace
             .canonicalize()
             .unwrap_or_else(|_| workspace.to_path_buf());
+        if let Some(reason) =
+            unsafe_workspace_snapshot_reason(&work_tree, dirs::home_dir().as_deref())
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "workspace snapshots are disabled for {reason}: {}",
+                    work_tree.display()
+                ),
+            ));
+        }
 
         let _ = ensure_snapshot_dir(&work_tree)?;
         let git_dir = snapshot_git_dir(&work_tree);
@@ -106,6 +143,7 @@ impl SnapshotRepo {
             let _ = run_git(&git_dir, &work_tree, &["config", "core.autocrlf", "false"]);
         }
 
+        write_builtin_excludes(&git_dir)?;
         Ok(Self { git_dir, work_tree })
     }
 
@@ -393,6 +431,12 @@ impl SnapshotRepo {
     }
 }
 
+fn write_builtin_excludes(git_dir: &Path) -> io::Result<()> {
+    let info_dir = git_dir.join("info");
+    std::fs::create_dir_all(&info_dir)?;
+    std::fs::write(info_dir.join("exclude"), BUILTIN_EXCLUDES)
+}
+
 fn run_git(git_dir: &Path, work_tree: &Path, args: &[&str]) -> io::Result<Output> {
     Command::new("git")
         .arg("--git-dir")
@@ -405,6 +449,49 @@ fn run_git(git_dir: &Path, work_tree: &Path, args: &[&str]) -> io::Result<Output
 
 fn io_other(msg: impl Into<String>) -> io::Error {
     io::Error::other(msg.into())
+}
+
+fn unsafe_workspace_snapshot_reason(workspace: &Path, home: Option<&Path>) -> Option<&'static str> {
+    let workspace = normalize_path_for_safety(workspace);
+    if is_filesystem_root(&workspace) {
+        return Some("filesystem root");
+    }
+
+    if is_home_directory(&workspace, home) {
+        return Some("home directory");
+    }
+
+    let home = home.map(normalize_path_for_safety)?;
+    if workspace.parent() == Some(home.as_path()) {
+        let name = workspace.file_name().and_then(|name| name.to_str());
+        if matches!(
+            name,
+            Some(
+                "Desktop" | "Documents" | "Downloads" | "Library" | "Movies" | "Music" | "Pictures"
+            )
+        ) {
+            return Some("home collection directory");
+        }
+    }
+
+    None
+}
+
+fn normalize_path_for_safety(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn is_filesystem_root(path: &Path) -> bool {
+    path.parent().is_none()
+}
+
+fn is_home_directory(work_tree: &Path, home: Option<&Path>) -> bool {
+    let Some(home) = home else {
+        return false;
+    };
+
+    let home_canonical = home.canonicalize().unwrap_or_else(|_| home.to_path_buf());
+    work_tree == home_canonical
 }
 
 fn parse_nul_paths(bytes: &[u8]) -> HashSet<PathBuf> {
@@ -429,33 +516,41 @@ mod tests {
     use std::sync::MutexGuard;
     use tempfile::tempdir;
 
-    /// Holds HOME pinned to a tempdir for the lifetime of a test. Also
+    /// Holds the home directory pinned to a tempdir for the lifetime of a test. Also
     /// owns the process-wide env-var mutex so tests across modules
-    /// don't trample each other's `HOME`.
+    /// don't trample each other's home env vars.
     pub(super) struct ScopedHome {
-        prev: Option<std::ffi::OsString>,
+        prev_vars: Vec<(&'static str, Option<std::ffi::OsString>)>,
         _guard: MutexGuard<'static, ()>,
     }
     impl Drop for ScopedHome {
         fn drop(&mut self) {
             // SAFETY: process-wide lock still held.
             unsafe {
-                match self.prev.take() {
-                    Some(v) => std::env::set_var("HOME", v),
-                    None => std::env::remove_var("HOME"),
+                for (key, prev) in self.prev_vars.drain(..) {
+                    match prev {
+                        Some(value) => std::env::set_var(key, value),
+                        None => std::env::remove_var(key),
+                    }
                 }
             }
         }
     }
     pub(super) fn scoped_home(home: &Path) -> ScopedHome {
         let guard = lock_test_env();
-        let prev = std::env::var_os("HOME");
+        let prev_vars = ["HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH"]
+            .into_iter()
+            .map(|key| (key, std::env::var_os(key)))
+            .collect();
         // SAFETY: serialised by the global env lock.
         unsafe {
             std::env::set_var("HOME", home);
+            std::env::set_var("USERPROFILE", home);
+            std::env::remove_var("HOMEDRIVE");
+            std::env::remove_var("HOMEPATH");
         }
         ScopedHome {
-            prev,
+            prev_vars,
             _guard: guard,
         }
     }
@@ -652,6 +747,77 @@ mod tests {
     }
 
     #[test]
+    fn unsafe_workspace_rejects_home_directory_workspace() {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path();
+
+        assert_eq!(
+            unsafe_workspace_snapshot_reason(home, Some(home)),
+            Some("home directory")
+        );
+    }
+
+    #[test]
+    fn unsafe_workspace_rejects_home_collection_directories() {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path();
+        let desktop = tmp.path().join("Desktop");
+        std::fs::create_dir_all(&desktop).unwrap();
+
+        assert_eq!(
+            unsafe_workspace_snapshot_reason(&desktop, Some(home)),
+            Some("home collection directory")
+        );
+    }
+
+    #[test]
+    fn unsafe_workspace_allows_project_directories_under_home() {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path();
+        let workspace = tmp.path().join("code").join("project");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        assert_eq!(
+            unsafe_workspace_snapshot_reason(&workspace, Some(home)),
+            None
+        );
+    }
+
+    #[test]
+    fn snapshot_respects_builtin_excludes() {
+        let tmp = tempdir().unwrap();
+        let (repo, _home) = make_repo(tmp.path());
+        std::fs::create_dir_all(repo.work_tree().join("node_modules/pkg")).unwrap();
+        std::fs::create_dir_all(repo.work_tree().join("src")).unwrap();
+        std::fs::write(
+            repo.work_tree().join("node_modules/pkg/index.js"),
+            b"generated",
+        )
+        .unwrap();
+        std::fs::write(repo.work_tree().join("src/main.rs"), b"fn main() {}").unwrap();
+
+        let excludes = std::fs::read_to_string(repo.git_dir().join("info/exclude")).unwrap();
+        assert!(excludes.contains("node_modules/"));
+
+        let id = repo.snapshot("pre-turn:1").expect("snapshot");
+        let ls = run_git(
+            repo.git_dir(),
+            repo.work_tree(),
+            &["ls-tree", "-r", "--name-only", id.as_str()],
+        )
+        .expect("ls-tree");
+        let names = String::from_utf8_lossy(&ls.stdout);
+        assert!(
+            names.contains("src/main.rs"),
+            "src/main.rs missing: {names}"
+        );
+        assert!(
+            !names.contains("node_modules"),
+            "node_modules should not be in snapshot: {names}",
+        );
+    }
+
+    #[test]
     fn open_or_init_is_idempotent() {
         let tmp = tempdir().unwrap();
         let (_r, _h) = make_repo(tmp.path());
@@ -660,5 +826,19 @@ mod tests {
         // avoid double-acquiring HOME (the guard would deadlock).
         drop((_r, _h));
         let (_r2, _h2) = make_repo(tmp.path());
+    }
+
+    #[test]
+    fn home_directory_guard_matches_canonical_paths() {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path();
+        let home_canonical = home.canonicalize().unwrap();
+        let workspace = home.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let workspace_canonical = workspace.canonicalize().unwrap();
+
+        assert!(is_home_directory(&home_canonical, Some(home)));
+        assert!(!is_home_directory(&workspace_canonical, Some(home)));
+        assert!(!is_home_directory(&home_canonical, None));
     }
 }

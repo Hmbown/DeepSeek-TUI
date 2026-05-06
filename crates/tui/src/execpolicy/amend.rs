@@ -6,6 +6,7 @@ use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 
+use fd_lock::RwLock;
 use serde_json;
 use thiserror::Error;
 
@@ -91,7 +92,7 @@ pub fn blocking_append_allow_prefix_rule(
 }
 
 fn append_locked_line(policy_path: &Path, line: &str) -> Result<(), AmendError> {
-    let mut file = OpenOptions::new()
+    let file = OpenOptions::new()
         .create(true)
         .read(true)
         .append(true)
@@ -100,7 +101,8 @@ fn append_locked_line(policy_path: &Path, line: &str) -> Result<(), AmendError> 
             path: policy_path.to_path_buf(),
             source,
         })?;
-    file.lock().map_err(|source| AmendError::LockPolicyFile {
+    let mut file = RwLock::new(file);
+    let mut file = file.write().map_err(|source| AmendError::LockPolicyFile {
         path: policy_path.to_path_buf(),
         source,
     })?;

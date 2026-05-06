@@ -11,27 +11,32 @@
 use crate::commands;
 
 use super::app::App;
+use super::widgets::SlashMenuEntry;
 use super::widgets::slash_completion_hints;
 
 /// Return the slash-menu entries the composer should display, honouring
 /// `slash_menu_hidden` (set when the user dismisses the popup with Esc).
-pub fn visible_slash_menu_entries(app: &App, limit: usize) -> Vec<String> {
+pub fn visible_slash_menu_entries(app: &App, limit: usize) -> Vec<SlashMenuEntry> {
     if app.slash_menu_hidden {
         return Vec::new();
     }
-    slash_completion_hints(&app.input, limit)
+    slash_completion_hints(&app.input, limit, &app.cached_skills, app.ui_locale)
 }
 
 /// Apply the currently-selected slash menu entry to the composer input.
 /// Optionally appends a trailing space when the command takes arguments
 /// so the user can type the rest without an extra keystroke.
-pub fn apply_slash_menu_selection(app: &mut App, entries: &[String], append_space: bool) -> bool {
+pub fn apply_slash_menu_selection(
+    app: &mut App,
+    entries: &[SlashMenuEntry],
+    append_space: bool,
+) -> bool {
     if entries.is_empty() {
         return false;
     }
 
     let selected_idx = app.slash_menu_selected.min(entries.len().saturating_sub(1));
-    let mut command = entries[selected_idx].clone();
+    let mut command = entries[selected_idx].name.clone();
 
     if append_space
         && !command.ends_with(' ')
@@ -52,20 +57,27 @@ pub fn apply_slash_menu_selection(app: &mut App, entries: &[String], append_spac
 /// Tab-completion for a slash-command-like input. Extends the input to the
 /// longest unambiguous prefix; if exactly one command matches, completes it
 /// fully (with trailing space). On ambiguity, posts a status hint listing
-/// up to five candidates.
+/// up to five candidates. Also considers skill names as completion candidates.
 pub fn try_autocomplete_slash_command(app: &mut App) -> bool {
-    if !app.input.starts_with('/') || app.input.contains(char::is_whitespace) {
+    if !app.input.starts_with('/') {
+        return false;
+    }
+
+    let candidates = slash_completion_hints(&app.input, 128, &app.cached_skills, app.ui_locale)
+        .into_iter()
+        .map(|entry| entry.name)
+        .collect::<Vec<_>>();
+
+    if candidates.is_empty() {
         return false;
     }
 
     let prefix = app.input.trim_start_matches('/');
-    let matches = commands::commands_matching(prefix);
-    if matches.is_empty() {
-        return false;
-    }
-
-    let names = matches.iter().map(|info| info.name).collect::<Vec<_>>();
-    let shared = crate::tui::file_mention::longest_common_prefix(&names);
+    let refs: Vec<&str> = candidates
+        .iter()
+        .map(|name| name.trim_start_matches('/'))
+        .collect();
+    let shared = crate::tui::file_mention::longest_common_prefix(&refs);
 
     if !shared.is_empty() && shared.len() > prefix.len() {
         app.input = format!("/{shared}");
@@ -75,8 +87,11 @@ pub fn try_autocomplete_slash_command(app: &mut App) -> bool {
         return true;
     }
 
-    if matches.len() == 1 {
-        let completed = format!("/{} ", matches[0].name);
+    if candidates.len() == 1 {
+        let mut completed = candidates[0].clone();
+        if !completed.ends_with(' ') {
+            completed.push(' ');
+        }
         app.input = completed.clone();
         app.cursor_position = completed.chars().count();
         app.slash_menu_hidden = false;
@@ -84,10 +99,10 @@ pub fn try_autocomplete_slash_command(app: &mut App) -> bool {
         return true;
     }
 
-    let preview = matches
+    let preview = candidates
         .iter()
         .take(5)
-        .map(|info| format!("/{}", info.name))
+        .map(String::as_str)
         .collect::<Vec<_>>()
         .join(", ");
     app.status_message = Some(format!("Suggestions: {preview}"));

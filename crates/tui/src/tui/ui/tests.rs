@@ -17,6 +17,34 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 #[test]
+fn composer_newline_shortcuts_do_not_steal_ctrl_enter() {
+    assert!(is_composer_newline_key(KeyEvent::new(
+        KeyCode::Char('j'),
+        KeyModifiers::CONTROL,
+    )));
+    assert!(is_composer_newline_key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::ALT,
+    )));
+    assert!(is_composer_newline_key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::SHIFT,
+    )));
+    assert!(!is_composer_newline_key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert!(!is_composer_newline_key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::CONTROL,
+    )));
+    assert!(!is_composer_newline_key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    )));
+}
+
+#[test]
 fn selection_point_from_position_ignores_top_padding() {
     let area = Rect {
         x: 10,
@@ -1065,6 +1093,17 @@ fn footer_auxiliary_spans_show_cache_and_cost_when_roomy() {
 }
 
 #[test]
+fn footer_auxiliary_spans_use_configured_cost_currency() {
+    let mut app = create_test_app();
+    app.cost_currency = crate::pricing::CostCurrency::Cny;
+    app.session.session_cost_cny = 2.5;
+
+    let roomy = spans_text(&footer_auxiliary_spans(&app, 32));
+    assert!(roomy.contains("¥2.50"));
+    assert!(!roomy.contains('$'));
+}
+
+#[test]
 fn footer_auxiliary_spans_show_reasoning_replay_chip() {
     // Issue #30: when a thinking-mode tool-calling turn replays prior
     // reasoning_content, the footer surfaces the approximate input-token
@@ -1397,19 +1436,57 @@ fn visible_slash_menu_entries_excludes_removed_commands() {
     app.input = "/".to_string();
 
     let entries = visible_slash_menu_entries(&app, 128);
-    assert!(entries.iter().any(|entry| entry == "/config"));
-    assert!(entries.iter().any(|entry| entry == "/links"));
-    assert!(!entries.iter().any(|entry| entry == "/set"));
-    assert!(!entries.iter().any(|entry| entry == "/deepseek"));
+    assert!(entries.iter().any(|entry| entry.name == "/config"));
+    assert!(entries.iter().any(|entry| entry.name == "/links"));
+    assert!(!entries.iter().any(|entry| entry.name == "/set"));
+    assert!(!entries.iter().any(|entry| entry.name == "/deepseek"));
 }
 
 #[test]
 fn apply_slash_menu_selection_appends_space_for_arg_commands() {
     let mut app = create_test_app();
-    let entries = vec!["/model".to_string(), "/settings".to_string()];
+    let entries = vec![
+        crate::tui::widgets::SlashMenuEntry {
+            name: "/model".to_string(),
+            description: String::new(),
+            is_skill: false,
+        },
+        crate::tui::widgets::SlashMenuEntry {
+            name: "/settings".to_string(),
+            description: String::new(),
+            is_skill: false,
+        },
+    ];
     app.slash_menu_selected = 0;
     assert!(apply_slash_menu_selection(&mut app, &entries, true));
     assert_eq!(app.input, "/model ");
+}
+
+#[test]
+fn apply_slash_menu_selection_uses_skill_command_form() {
+    let mut app = create_test_app();
+    let entries = vec![crate::tui::widgets::SlashMenuEntry {
+        name: "/skill search-files".to_string(),
+        description: "Search files".to_string(),
+        is_skill: true,
+    }];
+
+    assert!(apply_slash_menu_selection(&mut app, &entries, true));
+    assert_eq!(app.input, "/skill search-files");
+}
+
+#[test]
+fn try_autocomplete_slash_command_completes_skill_argument() {
+    let mut app = create_test_app();
+    app.cached_skills = vec![
+        ("search-files".to_string(), "Search files".to_string()),
+        ("my-review".to_string(), "Review code".to_string()),
+    ];
+    app.input = "/skill my".to_string();
+    app.cursor_position = app.input.chars().count();
+
+    assert!(try_autocomplete_slash_command(&mut app));
+    assert_eq!(app.input, "/skill my-review");
 }
 
 #[test]
@@ -1547,6 +1624,34 @@ fn api_key_validation_warns_without_blocking_unusual_formats() {
         validate_api_key_for_onboarding("sk-valid-format-1234567890"),
         ApiKeyValidation::Accept { warning: None }
     ));
+}
+
+#[test]
+fn onboarding_after_api_key_save_does_not_repeat_language_step() {
+    let mut app = create_test_app();
+    app.onboarding = OnboardingState::ApiKey;
+    app.onboarding_needs_api_key = false;
+    app.trust_mode = true;
+    app.status_message = Some("saved".to_string());
+
+    advance_onboarding_after_language(&mut app);
+
+    assert_eq!(app.onboarding, OnboardingState::Tips);
+    assert_eq!(app.status_message, None);
+}
+
+#[test]
+fn onboarding_after_api_key_save_routes_to_trust_when_needed() {
+    let tmpdir = TempDir::new().expect("tempdir");
+    let mut app = create_test_app();
+    app.workspace = tmpdir.path().to_path_buf();
+    app.onboarding = OnboardingState::ApiKey;
+    app.onboarding_needs_api_key = false;
+    app.trust_mode = false;
+
+    advance_onboarding_after_language(&mut app);
+
+    assert_eq!(app.onboarding, OnboardingState::TrustDirectory);
 }
 
 #[test]
@@ -1951,7 +2056,7 @@ fn mention_popup_is_empty_when_cursor_is_not_in_a_mention() {
     let mut app = create_test_app();
     app.input = "no mention here".to_string();
     app.cursor_position = app.input.chars().count();
-    assert!(visible_mention_menu_entries(&app, 6).is_empty());
+    assert!(visible_mention_menu_entries(&mut app, 6).is_empty());
 }
 
 #[test]
@@ -1967,11 +2072,46 @@ fn mention_popup_lists_workspace_matches_for_cursor_partial() {
     app.input = "look at @docs/".to_string();
     app.cursor_position = app.input.chars().count();
 
-    let entries = visible_mention_menu_entries(&app, 6);
+    let entries = visible_mention_menu_entries(&mut app, 6);
     assert!(!entries.is_empty(), "popup should surface docs/ entries");
     assert!(entries.iter().any(|e| e.starts_with("docs/")));
     // README.md doesn't match `docs/` — confirm we didn't dump every file.
     assert!(!entries.iter().any(|e| e == "README.md"));
+}
+
+#[test]
+fn mention_popup_reuses_cache_when_cursor_moves_inside_same_token() {
+    let tmpdir = TempDir::new().expect("tempdir");
+    std::fs::create_dir_all(tmpdir.path().join("docs")).unwrap();
+    std::fs::write(tmpdir.path().join("docs/alpha.md"), "x").unwrap();
+
+    let mut app = create_test_app();
+    app.workspace = tmpdir.path().to_path_buf();
+    app.input = "look at @docs/".to_string();
+    app.cursor_position = app.input.chars().count();
+
+    let entries = visible_mention_menu_entries(&mut app, 6);
+    assert!(entries.iter().any(|e| e == "docs/alpha.md"));
+
+    std::fs::write(tmpdir.path().join("docs/beta.md"), "x").unwrap();
+    app.cursor_position = "look at @do".chars().count();
+
+    let entries_after_cursor_move = visible_mention_menu_entries(&mut app, 6);
+    assert_eq!(
+        entries_after_cursor_move, entries,
+        "cursor movement inside one @mention token should not re-walk the workspace",
+    );
+
+    app.input = "look at @docs/b".to_string();
+    app.cursor_position = app.input.chars().count();
+
+    let entries_after_partial_change = visible_mention_menu_entries(&mut app, 6);
+    assert!(
+        entries_after_partial_change
+            .iter()
+            .any(|e| e == "docs/beta.md"),
+        "changing the partial should invalidate the completion cache",
+    );
 }
 
 #[test]
@@ -1986,7 +2126,7 @@ fn mention_popup_respects_hidden_flag() {
     app.mention_menu_hidden = true;
 
     assert!(
-        visible_mention_menu_entries(&app, 6).is_empty(),
+        visible_mention_menu_entries(&mut app, 6).is_empty(),
         "Esc-hidden popup must not surface entries until next input edit",
     );
 }
@@ -2003,7 +2143,7 @@ fn apply_mention_menu_selection_splices_selected_entry() {
     app.input = "open @crates/tui/m".to_string();
     app.cursor_position = app.input.chars().count();
 
-    let entries = visible_mention_menu_entries(&app, 6);
+    let entries = visible_mention_menu_entries(&mut app, 6);
     assert!(!entries.is_empty(), "expected entries for @crates/tui/m");
     // Pick whichever entry appears at index 0; it's deterministic given the
     // workspace setup. Apply it.

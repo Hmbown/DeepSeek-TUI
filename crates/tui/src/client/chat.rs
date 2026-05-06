@@ -17,6 +17,33 @@ use tokio::time::timeout as tokio_timeout;
 /// yields a recoverable error so the caller can retry.
 const DEFAULT_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// Default timeout for the initial streaming response headers.
+///
+/// `doctor` uses a bounded non-streaming request, but normal TUI turns first
+/// wait for the SSE response to open. On some Windows/proxy paths that wait can
+/// hang before any stream chunk exists, leaving the UI stuck at "Working...".
+const DEFAULT_STREAM_OPEN_TIMEOUT: Duration = Duration::from_secs(45);
+
+/// Reads `DEEPSEEK_STREAM_OPEN_TIMEOUT_SECS` as a bounded override for the
+/// response-header wait. This is intentionally shorter than the per-chunk idle
+/// timeout because it only covers connection setup and upstream header return,
+/// not model thinking time after streaming has started.
+fn stream_open_timeout() -> Duration {
+    stream_open_timeout_from_env(
+        std::env::var("DEEPSEEK_STREAM_OPEN_TIMEOUT_SECS")
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn stream_open_timeout_from_env(value: Option<&str>) -> Duration {
+    let secs = value
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_STREAM_OPEN_TIMEOUT.as_secs())
+        .clamp(5, 300);
+    Duration::from_secs(secs)
+}
+
 /// Reads the `DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS` env var, falling back to
 /// the default 300s. The parsed value is clamped to [1, 3600] seconds.
 fn stream_idle_timeout() -> Duration {
@@ -75,9 +102,23 @@ impl DeepSeekClient {
         );
 
         let url = api_url(&self.base_url, "chat/completions");
-        let response = self
-            .send_with_retry(|| self.http_client.post(&url).json(&body))
-            .await?;
+        let open_timeout = stream_open_timeout();
+        let response = match tokio_timeout(
+            open_timeout,
+            self.send_with_retry(|| self.http_client.post(&url).json(&body)),
+        )
+        .await
+        {
+            Ok(result) => result?,
+            Err(_elapsed) => {
+                anyhow::bail!(
+                    "SSE stream request did not receive response headers after {}s. \
+                     `deepseek doctor` can still pass when non-streaming requests work; \
+                     on Windows or proxy networks, try `DEEPSEEK_FORCE_HTTP1=1` and rerun `deepseek`.",
+                    open_timeout.as_secs()
+                );
+            }
+        };
 
         let status = response.status();
         if !status.is_success() {
@@ -1289,6 +1330,27 @@ pub(super) fn parse_sse_chunk(
 mod stream_diagnostics_tests {
     use super::*;
     use reqwest::header::{HeaderMap, HeaderValue};
+
+    #[test]
+    fn stream_open_timeout_defaults_and_clamps_env_values() {
+        assert_eq!(stream_open_timeout_from_env(None), Duration::from_secs(45));
+        assert_eq!(
+            stream_open_timeout_from_env(Some("not-a-number")),
+            Duration::from_secs(45)
+        );
+        assert_eq!(
+            stream_open_timeout_from_env(Some("1")),
+            Duration::from_secs(5)
+        );
+        assert_eq!(
+            stream_open_timeout_from_env(Some("120")),
+            Duration::from_secs(120)
+        );
+        assert_eq!(
+            stream_open_timeout_from_env(Some("999")),
+            Duration::from_secs(300)
+        );
+    }
 
     #[test]
     fn format_stream_headers_renders_all_fields_when_present() {

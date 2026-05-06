@@ -7,16 +7,19 @@
 //! endpoint, so we materialize the bytes to disk instead of base64-embedding
 //! them in the request).
 
-#[cfg(all(target_os = "macos", not(test)))]
-use std::io::Write;
+#[cfg(not(test))]
+use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 #[cfg(all(target_os = "macos", not(test)))]
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use arboard::{Clipboard, ImageData};
+use base64::Engine as _;
 use image::{ImageBuffer, Rgba};
+
+const OSC52_MAX_BYTES: usize = 100 * 1024;
 
 // === Types ===
 
@@ -103,29 +106,12 @@ impl ClipboardHandler {
             }
 
             #[cfg(target_os = "macos")]
-            {
-                let mut child = Command::new("pbcopy")
-                    .stdin(Stdio::piped())
-                    .spawn()
-                    .map_err(|e| anyhow::anyhow!("Failed to run pbcopy: {e}"))?;
-                if let Some(mut stdin) = child.stdin.take() {
-                    stdin
-                        .write_all(text.as_bytes())
-                        .map_err(|e| anyhow::anyhow!("Failed to write to pbcopy: {e}"))?;
-                }
-                let status = child
-                    .wait()
-                    .map_err(|e| anyhow::anyhow!("Failed to wait for pbcopy: {e}"))?;
-                if status.success() {
-                    return Ok(());
-                }
-                Err(anyhow::anyhow!("pbcopy failed"))
+            if write_text_with_pbcopy(text).is_ok() {
+                return Ok(());
             }
 
-            #[cfg(not(target_os = "macos"))]
-            {
-                Err(anyhow::anyhow!("Clipboard unavailable"))
-            }
+            write_text_with_osc52(text)
+                .map_err(|err| anyhow::anyhow!("Clipboard unavailable: {err}"))
         }
     }
 
@@ -133,6 +119,54 @@ impl ClipboardHandler {
     pub fn last_written_text(&self) -> Option<&str> {
         self.written_text.last().map(String::as_str)
     }
+}
+
+#[cfg(all(target_os = "macos", not(test)))]
+fn write_text_with_pbcopy(text: &str) -> Result<()> {
+    let mut child = Command::new("pbcopy")
+        .stdin(Stdio::piped())
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("Failed to run pbcopy: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(text.as_bytes())
+            .map_err(|e| anyhow::anyhow!("Failed to write to pbcopy: {e}"))?;
+    }
+    let status = child
+        .wait()
+        .map_err(|e| anyhow::anyhow!("Failed to wait for pbcopy: {e}"))?;
+    if status.success() {
+        return Ok(());
+    }
+    Err(anyhow::anyhow!("pbcopy failed"))
+}
+
+#[cfg(not(test))]
+fn write_text_with_osc52(text: &str) -> Result<()> {
+    let mut stdout = io::stdout();
+    if !stdout.is_terminal() {
+        bail!("OSC 52 clipboard fallback requires a terminal");
+    }
+
+    let in_tmux = std::env::var_os("TMUX").is_some();
+    let sequence = osc52_sequence(text, in_tmux)?;
+    stdout
+        .write_all(sequence.as_bytes())
+        .context("write OSC 52 clipboard sequence")?;
+    stdout.flush().context("flush OSC 52 clipboard sequence")
+}
+
+fn osc52_sequence(text: &str, in_tmux: bool) -> Result<String> {
+    if text.len() > OSC52_MAX_BYTES {
+        bail!("selection is too large for OSC 52 clipboard fallback");
+    }
+
+    let encoded = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
+    let sequence = format!("\x1b]52;c;{encoded}\x07");
+    if in_tmux {
+        return Ok(format!("\x1bPtmux;\x1b{sequence}\x1b\\"));
+    }
+    Ok(sequence)
 }
 
 /// Resolve the directory pasted images should land in. Prefers
@@ -242,5 +276,27 @@ mod tests {
         };
         assert_eq!(p.short_label(), "1024x768 PNG");
         assert_eq!(p.size_label(), "235KB");
+    }
+
+    #[test]
+    fn osc52_sequence_encodes_text_clipboard_write() {
+        let sequence = osc52_sequence("hello", false).expect("sequence");
+        assert_eq!(sequence, "\x1b]52;c;aGVsbG8=\x07");
+    }
+
+    #[test]
+    fn osc52_sequence_wraps_for_tmux_passthrough() {
+        let sequence = osc52_sequence("copy", true).expect("sequence");
+        assert_eq!(sequence, "\x1bPtmux;\x1b\x1b]52;c;Y29weQ==\x07\x1b\\");
+    }
+
+    #[test]
+    fn osc52_sequence_rejects_oversized_selection() {
+        let text = "x".repeat(OSC52_MAX_BYTES + 1);
+        let err = osc52_sequence(&text, false).expect_err("oversized should fail");
+        assert!(
+            err.to_string().contains("too large"),
+            "unexpected error: {err}"
+        );
     }
 }

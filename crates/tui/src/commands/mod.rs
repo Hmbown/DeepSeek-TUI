@@ -14,9 +14,11 @@ mod init;
 mod jobs;
 mod mcp;
 mod memory;
+mod network;
 mod note;
 mod provider;
 mod queue;
+mod rename;
 mod restore;
 mod review;
 mod session;
@@ -240,7 +242,19 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "/mcp [init|add stdio <name> <command> [args...]|add http <name> <url>|enable <name>|disable <name>|remove <name>|validate|reload]",
         description_id: MessageId::CmdMcpDescription,
     },
+    CommandInfo {
+        name: "network",
+        aliases: &[],
+        usage: "/network [list|allow <host>|deny <host>|remove <host>|default <allow|deny|prompt>]",
+        description_id: MessageId::CmdNetworkDescription,
+    },
     // Session commands
+    CommandInfo {
+        name: "rename",
+        aliases: &[],
+        usage: "/rename <new title>",
+        description_id: MessageId::CmdRenameDescription,
+    },
     CommandInfo {
         name: "save",
         aliases: &[],
@@ -493,8 +507,10 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "task" | "tasks" => task::task(app, arg),
         "jobs" | "job" => jobs::jobs(app, arg),
         "mcp" => mcp::mcp(app, arg),
+        "network" => network::network(app, arg),
 
         // Session commands
+        "rename" => rename::rename(app, arg),
         "save" => session::save(app, arg),
         "sessions" | "resume" => session::sessions(app, arg),
         "load" => session::load(app, arg),

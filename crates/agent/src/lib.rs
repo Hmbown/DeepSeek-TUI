@@ -227,7 +227,7 @@ impl ModelRegistry {
             {
                 return ModelResolution {
                     requested: Some(name.to_string()),
-                    resolved: model,
+                    resolved: preserve_requested_model_id_case(model, name),
                     used_fallback: false,
                     fallback_chain,
                 };
@@ -235,7 +235,7 @@ impl ModelRegistry {
             if let Some(idx) = self.alias_map.get(&normalize(name)) {
                 return ModelResolution {
                     requested: Some(name.to_string()),
-                    resolved: self.models[*idx].clone(),
+                    resolved: preserve_requested_model_id_case(self.models[*idx].clone(), name),
                     used_fallback: false,
                     fallback_chain,
                 };
@@ -281,6 +281,14 @@ fn model_matches(model: &ModelInfo, requested: &str) -> bool {
             .aliases
             .iter()
             .any(|alias| normalize(alias) == requested)
+}
+
+fn preserve_requested_model_id_case(mut model: ModelInfo, requested: &str) -> ModelInfo {
+    let requested = requested.trim();
+    if model.id.eq_ignore_ascii_case(requested) {
+        model.id = requested.to_string();
+    }
+    model
 }
 
 #[cfg(test)]
@@ -405,5 +413,41 @@ mod tests {
 
         assert_eq!(resolved.resolved.provider, ProviderKind::Vllm);
         assert_eq!(resolved.resolved.id, "deepseek-ai/DeepSeek-V4-Flash");
+    }
+
+    #[test]
+    fn preserves_requested_model_casing_for_third_party_providers() {
+        let registry = ModelRegistry::default();
+        let resolved = registry.resolve(Some("DeepSeek-V4-Pro"), None);
+
+        assert_eq!(resolved.resolved.provider, ProviderKind::Deepseek);
+        assert_eq!(resolved.resolved.id, "DeepSeek-V4-Pro");
+    }
+
+    #[test]
+    fn preserves_requested_model_casing_with_provider_hint() {
+        let registry = ModelRegistry::default();
+        let resolved = registry.resolve(Some("DeepSeek-V4-Pro"), Some(ProviderKind::Deepseek));
+
+        assert_eq!(resolved.resolved.provider, ProviderKind::Deepseek);
+        assert_eq!(resolved.resolved.id, "DeepSeek-V4-Pro");
+    }
+
+    #[test]
+    fn preserves_requested_model_casing_without_surrounding_whitespace() {
+        let registry = ModelRegistry::default();
+        let resolved = registry.resolve(Some("  DeepSeek-V4-Pro  "), None);
+
+        assert_eq!(resolved.resolved.provider, ProviderKind::Deepseek);
+        assert_eq!(resolved.resolved.id, "DeepSeek-V4-Pro");
+    }
+
+    #[test]
+    fn alias_match_does_not_override_requested_casing() {
+        let registry = ModelRegistry::default();
+        let resolved = registry.resolve(Some("deepseek-reasoner"), None);
+
+        assert_eq!(resolved.resolved.provider, ProviderKind::Deepseek);
+        assert_eq!(resolved.resolved.id, "deepseek-v4-flash");
     }
 }

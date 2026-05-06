@@ -775,28 +775,68 @@ fn is_workspace_safe_command(command: &str) -> bool {
 
 /// Check if a path escapes the workspace
 pub fn path_escapes_workspace(path: &str, workspace: &str) -> bool {
-    let path_lower = path.to_lowercase();
+    let path_lower = normalize_safety_path(path);
+    let workspace_lower = normalize_safety_path(workspace);
 
     // Check for obvious escape patterns
-    if path_lower.starts_with('/') && !path_lower.starts_with(workspace) {
-        return true;
-    }
-
     if path_lower.starts_with("~/") || path_lower.starts_with("$home") {
         return true;
     }
 
-    // Check for ../ traversal
-    if path.contains("..") {
-        // Count the ../ sequences and check if they escape
-        let workspace_depth = workspace.matches('/').count();
-        let escape_count = path.matches("..").count();
-        if escape_count > workspace_depth {
+    if is_absolute_safety_path(&path_lower) {
+        let path_components = lexical_components(&path_lower);
+        let workspace_components = lexical_components(&workspace_lower);
+        return !components_start_with(&path_components, &workspace_components);
+    }
+
+    // Walk the path components. Track depth relative to the workspace root:
+    // non-`..` components increment depth, `..` components decrement it.
+    // If depth ever goes negative, the path escapes the workspace boundary.
+    // This correctly distinguishes genuine traversal like `../outside` from
+    // names that happen to contain consecutive dots like `foo..bar`.
+    let mut depth: i32 = 0;
+    for component in path_lower.split('/') {
+        match component {
+            "" | "." => {}
+            ".." => depth -= 1,
+            _ => depth += 1,
+        }
+        if depth < 0 {
             return true;
         }
     }
 
     false
+}
+
+fn normalize_safety_path(path: &str) -> String {
+    path.trim().replace('\\', "/").to_lowercase()
+}
+
+fn is_absolute_safety_path(path: &str) -> bool {
+    path.starts_with('/')
+        || path
+            .as_bytes()
+            .get(1..3)
+            .is_some_and(|bytes| bytes[0] == b':' && bytes[1] == b'/')
+}
+
+fn lexical_components(path: &str) -> Vec<&str> {
+    let mut components = Vec::new();
+    for component in path.split('/') {
+        match component {
+            "" | "." => {}
+            ".." => {
+                components.pop();
+            }
+            _ => components.push(component),
+        }
+    }
+    components
+}
+
+fn components_start_with(path: &[&str], prefix: &[&str]) -> bool {
+    path.len() >= prefix.len() && path.iter().zip(prefix.iter()).all(|(a, b)| a == b)
 }
 
 /// Parse a command and extract the primary command name
@@ -970,6 +1010,52 @@ mod tests {
         assert!(!path_escapes_workspace(
             "./src/main.rs",
             "/home/user/project"
+        ));
+    }
+
+    #[test]
+    fn test_path_escapes_workspace_doesnt_flag_double_dot_in_names() {
+        // Names like `foo..bar` should NOT be flagged as path traversal
+        assert!(!path_escapes_workspace(
+            "some..file.txt",
+            "/home/user/project"
+        ));
+        assert!(!path_escapes_workspace(
+            "./dir..name/file.txt",
+            "/home/user/project"
+        ));
+    }
+
+    #[test]
+    fn test_path_escapes_workspace_detects_genuine_traversal() {
+        assert!(path_escapes_workspace("../outside", "/home/user/project"));
+        assert!(path_escapes_workspace(
+            "..\\outside",
+            "C:\\Users\\me\\project"
+        ));
+        assert!(path_escapes_workspace(
+            "./subdir/../../etc/passwd",
+            "/home/user/project"
+        ));
+        assert!(path_escapes_workspace(
+            "/home/user/project/../secret",
+            "/home/user/project"
+        ));
+        assert!(path_escapes_workspace(
+            "C:\\Users\\me\\project\\..\\secret",
+            "C:\\Users\\me\\project"
+        ));
+    }
+
+    #[test]
+    fn test_path_escapes_workspace_allows_absolute_workspace_children() {
+        assert!(!path_escapes_workspace(
+            "/home/user/project/src/main.rs",
+            "/home/user/project"
+        ));
+        assert!(!path_escapes_workspace(
+            "C:\\Users\\me\\project\\src\\main.rs",
+            "C:\\Users\\me\\project"
         ));
     }
 

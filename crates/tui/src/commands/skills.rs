@@ -192,6 +192,7 @@ fn install_skill(app: &mut App, spec: &str) -> CommandResult {
 
     match outcome {
         Ok(InstallOutcome::Installed(installed)) => {
+            app.refresh_skill_cache();
             let path_str = path_or_default(&installed.path);
             CommandResult::message(format!(
                 "Installed skill '{}' from {}.\nLocation: {}\n\nRun /skills to see it in the list.",
@@ -248,7 +249,10 @@ fn uninstall_skill(app: &mut App, name: &str) -> CommandResult {
         return CommandResult::error("Usage: /skill uninstall <name>");
     }
     match install::uninstall(name, &app.skills_dir) {
-        Ok(()) => CommandResult::message(format!("Removed skill '{name}'.")),
+        Ok(()) => {
+            app.refresh_skill_cache();
+            CommandResult::message(format!("Removed skill '{name}'."))
+        }
         Err(err) => CommandResult::error(format!("Uninstall failed: {err:#}")),
     }
 }

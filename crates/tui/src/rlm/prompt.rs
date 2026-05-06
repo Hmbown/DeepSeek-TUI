@@ -15,10 +15,10 @@ const RLM_SYSTEM_PROMPT: &str = r#"You are the root of a Recursive Language Mode
 
 The REPL exposes:
 - `context` (alias `ctx`) — the full input string. Often huge — never `print(context)` in full.
-- `llm_query(prompt, model=None, max_tokens=None, system=None)` — one-shot child LLM. Cheap. Use for chunk-level work.
-- `llm_query_batched(prompts, model=None)` — concurrent fan-out. Returns `list[str]` in input order.
-- `rlm_query(prompt, model=None)` — recursive sub-RLM. Use when a sub-task itself needs decomposition.
-- `rlm_query_batched(prompts, model=None)` — concurrent recursive sub-RLMs.
+- `llm_query(prompt, model=None, max_tokens=None, system=None)` — one-shot child LLM. Cheap. Use for chunk-level work. The `model` argument is accepted for compatibility but child calls stay pinned to the configured Flash child model.
+- `llm_query_batched(prompts, model=None)` — concurrent fan-out. Returns `list[str]` in input order. The `model` argument is accepted for compatibility but ignored.
+- `rlm_query(prompt, model=None)` — recursive sub-RLM. Use when a sub-task itself needs decomposition. The `model` argument is accepted for compatibility but ignored.
+- `rlm_query_batched(prompts, model=None)` — concurrent recursive sub-RLMs. The `model` argument is accepted for compatibility but ignored.
 - `SHOW_VARS()` — list user variables and their types.
 - `repl_set(name, value)` / `repl_get(name)` — explicit cross-round storage.
 - `print(...)` — diagnostic output. The driver feeds you a truncated preview next round.

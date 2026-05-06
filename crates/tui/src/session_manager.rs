@@ -436,10 +436,15 @@ impl SessionManager {
         Ok(pruned)
     }
 
-    /// Get the most recent session
-    pub fn get_latest_session(&self) -> std::io::Result<Option<SessionMetadata>> {
+    /// Get the most recent session scoped to the current workspace.
+    pub fn get_latest_session_for_workspace(
+        &self,
+        workspace: &Path,
+    ) -> std::io::Result<Option<SessionMetadata>> {
         let sessions = self.list_sessions()?;
-        Ok(sessions.into_iter().next())
+        Ok(sessions
+            .into_iter()
+            .find(|session| workspace_scope_matches(&session.workspace, workspace)))
     }
 
     /// Search sessions by title
@@ -451,6 +456,42 @@ impl SessionManager {
             .into_iter()
             .filter(|s| s.title.to_lowercase().contains(&query_lower))
             .collect())
+    }
+}
+
+fn workspace_scope_matches(saved_workspace: &Path, current_workspace: &Path) -> bool {
+    if paths_equivalent(saved_workspace, current_workspace) {
+        return true;
+    }
+
+    match (
+        find_git_root(saved_workspace),
+        find_git_root(current_workspace),
+    ) {
+        (Some(saved_root), Some(current_root)) => paths_equivalent(&saved_root, &current_root),
+        _ => false,
+    }
+}
+
+fn paths_equivalent(lhs: &Path, rhs: &Path) -> bool {
+    let lhs_canonical = fs::canonicalize(lhs).ok();
+    let rhs_canonical = fs::canonicalize(rhs).ok();
+    match (lhs_canonical, rhs_canonical) {
+        (Some(lhs), Some(rhs)) => lhs == rhs,
+        _ => lhs == rhs,
+    }
+}
+
+fn find_git_root(path: &Path) -> Option<PathBuf> {
+    let mut current = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    loop {
+        if current.join(".git").exists() {
+            return Some(current);
+        }
+        match current.parent() {
+            Some(parent) if parent != current => current = parent.to_path_buf(),
+            _ => return None,
+        }
     }
 }
 
@@ -782,6 +823,32 @@ mod tests {
         }
     }
 
+    fn write_session_record(
+        manager: &SessionManager,
+        id: &str,
+        workspace: &Path,
+        updated_at: DateTime<Utc>,
+    ) {
+        let session = SavedSession {
+            schema_version: CURRENT_SESSION_SCHEMA_VERSION,
+            messages: vec![make_test_message("user", "hi")],
+            metadata: SessionMetadata {
+                id: id.to_string(),
+                title: format!("session-{id}"),
+                created_at: updated_at,
+                updated_at,
+                message_count: 1,
+                total_tokens: 0,
+                model: "deepseek-v4-flash".to_string(),
+                workspace: workspace.to_path_buf(),
+                mode: None,
+            },
+            system_prompt: None,
+            context_references: Vec::new(),
+        };
+        manager.save_session(&session).expect("save");
+    }
+
     #[test]
     fn test_session_manager_new() {
         let tmp = tempdir().expect("tempdir");
@@ -824,6 +891,66 @@ mod tests {
 
         let sessions = manager.list_sessions().expect("list");
         assert_eq!(sessions.len(), 3);
+    }
+
+    #[test]
+    fn latest_session_for_workspace_ignores_newer_other_directory() {
+        let tmp = tempdir().expect("tempdir");
+        let manager = SessionManager::new(tmp.path().join("sessions")).expect("new");
+        let workspace_a = tmp.path().join("aa").join("aaa");
+        let workspace_b = tmp.path().join("bb").join("bbb");
+        fs::create_dir_all(&workspace_a).expect("mkdir workspace a");
+        fs::create_dir_all(&workspace_b).expect("mkdir workspace b");
+
+        write_session_record(
+            &manager,
+            "current-workspace",
+            &workspace_a,
+            Utc::now() - chrono::Duration::minutes(10),
+        );
+        write_session_record(&manager, "other-workspace", &workspace_b, Utc::now());
+
+        let global = manager
+            .list_sessions()
+            .expect("list")
+            .into_iter()
+            .next()
+            .expect("global latest");
+        assert_eq!(global.id, "other-workspace");
+
+        let scoped = manager
+            .get_latest_session_for_workspace(&workspace_a)
+            .expect("latest for workspace")
+            .expect("scoped latest");
+        assert_eq!(scoped.id, "current-workspace");
+    }
+
+    #[test]
+    fn latest_session_for_workspace_matches_same_git_repository() {
+        let tmp = tempdir().expect("tempdir");
+        let manager = SessionManager::new(tmp.path().join("sessions")).expect("new");
+        let repo = tmp.path().join("repo");
+        let repo_app = repo.join("apps").join("client");
+        let repo_crate = repo.join("crates").join("server");
+        let other_repo = tmp.path().join("other").join("project");
+        fs::create_dir_all(repo.join(".git")).expect("mkdir .git");
+        fs::create_dir_all(&repo_app).expect("mkdir repo app");
+        fs::create_dir_all(&repo_crate).expect("mkdir repo crate");
+        fs::create_dir_all(&other_repo).expect("mkdir other repo");
+
+        write_session_record(
+            &manager,
+            "same-repo",
+            &repo_app,
+            Utc::now() - chrono::Duration::minutes(5),
+        );
+        write_session_record(&manager, "other-repo", &other_repo, Utc::now());
+
+        let scoped = manager
+            .get_latest_session_for_workspace(&repo_crate)
+            .expect("latest for workspace")
+            .expect("same repo latest");
+        assert_eq!(scoped.id, "same-repo");
     }
 
     #[test]
@@ -1207,24 +1334,7 @@ mod tests {
         // to whatever the helper functions emit; we just need a
         // metadata block whose `updated_at` matches the requested
         // value.
-        let session = SavedSession {
-            schema_version: CURRENT_SESSION_SCHEMA_VERSION,
-            messages: vec![make_test_message("user", "hi")],
-            metadata: SessionMetadata {
-                id: id.to_string(),
-                title: format!("session-{id}"),
-                created_at: updated_at,
-                updated_at,
-                message_count: 1,
-                total_tokens: 0,
-                model: "deepseek-v4-flash".to_string(),
-                workspace: PathBuf::from("/tmp"),
-                mode: None,
-            },
-            system_prompt: None,
-            context_references: Vec::new(),
-        };
-        manager.save_session(&session).expect("save");
+        write_session_record(manager, id, Path::new("/tmp"), updated_at);
     }
 
     #[test]
