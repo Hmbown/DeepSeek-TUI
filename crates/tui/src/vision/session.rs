@@ -243,15 +243,6 @@ mod tests {
 
     #[test]
     fn test_vision_session_creation() {
-        let config = VisionClientConfig {
-            model: "gemini-3.1-flash-lite-preview".to_string(),
-            api_key: "test-key".to_string(),
-            base_url: "https://generativelanguage.googleapis.com/v1beta/openai/".to_string(),
-            max_tokens: 4096,
-            temperature: 0.7,
-            timeout_secs: 120,
-        };
-
         let session = VisionSession::new(Some("Test session".to_string()));
 
         assert_eq!(session.conversation_history.len(), 0);
@@ -263,15 +254,6 @@ mod tests {
 
     #[test]
     fn test_vision_session_messages() {
-        let config = VisionClientConfig {
-            model: "gemini-3.1-flash-lite-preview".to_string(),
-            api_key: "test-key".to_string(),
-            base_url: "https://generativelanguage.googleapis.com/v1beta/openai/".to_string(),
-            max_tokens: 4096,
-            temperature: 0.7,
-            timeout_secs: 120,
-        };
-
         let mut session = VisionSession::new(None);
 
         session.conversation_history.push(VisionMessage {
