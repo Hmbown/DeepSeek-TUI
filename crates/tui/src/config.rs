@@ -3111,7 +3111,9 @@ mod tests {
             &config_path,
             format!(
                 "[projects.\"{}\"]\ntrust_level = \"trusted\"\n",
-                workspace.display()
+                workspace_config_key(&workspace)
+                    .replace('\\', "\\\\")
+                    .replace('"', "\\\"")
             ),
         )?;
 
