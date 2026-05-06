@@ -810,7 +810,7 @@ fn english(id: MessageId) -> &'static str {
         MessageId::CmdCostReport => {
             "Session Cost:\n\
              ─────────────────────────────\n\
-             Approx total spent: ${cost}\n\n\
+             Approx total spent: {cost}\n\n\
              Cost estimates are approximate and use provider usage telemetry when available.\n\n\
              DeepSeek API Pricing:\n\
              ─────────────────────────────\n\
@@ -841,7 +841,7 @@ fn english(id: MessageId) -> &'static str {
              Last API output:       {output}\n\
              Cache hit/miss:        {cache} (telemetry/cost only)\n\
              Cumulative tokens:     {total} (session usage telemetry)\n\
-             Approx session cost:   ${cost}\n\
+             Approx session cost:   {cost}\n\
              API messages:          {api_messages}\n\
              Chat messages:         {chat_messages}\n\
              Model:                 {model}"
@@ -1089,7 +1089,7 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::CmdCostReport => {
             "セッション費用:\n\
              ─────────────────────────────\n\
-             累計概算: ${cost}\n\n\
+             累計概算: {cost}\n\n\
              費用は概算値。プロバイダの使用量テレメトリがあれば優先して使用します。\n\n\
              DeepSeek API 料金:\n\
              ─────────────────────────────\n\
@@ -1120,7 +1120,7 @@ fn japanese(id: MessageId) -> Option<&'static str> {
              直近の API 出力:        {output}\n\
              キャッシュヒット/ミス:  {cache}（テレメトリ/コスト用のみ）\n\
              累計トークン:           {total}（セッション使用量テレメトリ）\n\
-             セッション費用概算:     ${cost}\n\
+             セッション費用概算:     {cost}\n\
              API メッセージ:         {api_messages}\n\
              チャットメッセージ:     {chat_messages}\n\
              モデル:                 {model}"
@@ -1337,7 +1337,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::CmdCostReport => {
             "会话费用：\n\
              ─────────────────────────────\n\
-             预估累计消耗：${cost}\n\n\
+             预估累计消耗：{cost}\n\n\
              费用为估算值；如有提供方用量遥测会优先使用。\n\n\
              DeepSeek API 计费：\n\
              ─────────────────────────────\n\
@@ -1368,7 +1368,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
              上次 API 输出：    {output}\n\
              缓存命中/未命中：  {cache}（仅用于遥测/计费）\n\
              累计令牌：         {total}（会话用量遥测）\n\
-             预估会话费用：     ${cost}\n\
+             预估会话费用：     {cost}\n\
              API 消息数：       {api_messages}\n\
              聊天消息数：       {chat_messages}\n\
              模型：             {model}"
@@ -1611,7 +1611,7 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         MessageId::CmdCostReport => {
             "Custo da sessão:\n\
              ─────────────────────────────\n\
-             Total aproximado: ${cost}\n\n\
+             Total aproximado: {cost}\n\n\
              Estimativas de custo são aproximadas e usam a telemetria de uso do provedor quando disponível.\n\n\
              Preços da API DeepSeek:\n\
              ─────────────────────────────\n\
@@ -1642,7 +1642,7 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
              Última saída da API:      {output}\n\
              Hit/miss do cache:        {cache} (apenas para telemetria/custo)\n\
              Tokens acumulados:        {total} (telemetria de uso da sessão)\n\
-             Custo aproximado:         ${cost}\n\
+             Custo aproximado:         {cost}\n\
              Mensagens da API:         {api_messages}\n\
              Mensagens do chat:        {chat_messages}\n\
              Modelo:                   {model}"

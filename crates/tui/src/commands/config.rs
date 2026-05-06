@@ -366,6 +366,11 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
             app.ui_locale = resolve_locale(&settings.locale);
             app.needs_redraw = true;
         }
+        "cost_currency" | "currency" => {
+            app.cost_currency = crate::pricing::CostCurrency::from_setting(&settings.cost_currency)
+                .unwrap_or(crate::pricing::CostCurrency::Usd);
+            app.needs_redraw = true;
+        }
         "composer_density" | "composer" => {
             app.composer_density =
                 crate::tui::app::ComposerDensity::from_setting(&settings.composer_density);
@@ -420,6 +425,7 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
 
     let display_value = match key.as_str() {
         "default_mode" | "mode" => settings.default_mode.clone(),
+        "cost_currency" | "currency" => settings.cost_currency.clone(),
         _ => value.to_string(),
     };
 
