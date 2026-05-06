@@ -466,6 +466,22 @@ impl VimMode {
     }
 }
 
+/// Cached @-mention completion results to avoid re-walking the filesystem
+/// on every keystroke. The cache is invalidated when the partial text,
+/// cursor position, or input content changes.
+#[derive(Debug, Clone)]
+pub struct MentionCompletionCache {
+    /// The partial text after `@` that triggered this completion.
+    pub partial: String,
+    /// Cursor position (in chars) when the completion was computed.
+    pub cursor_position: usize,
+    /// Input content hash to detect edits that don't change the partial
+    /// but change the surrounding context (e.g., typing before `@`).
+    pub input_hash: u64,
+    /// Cached completion entries.
+    pub entries: Vec<String>,
+}
+
 /// Composer input state — grouped fields for the text input area.
 pub struct ComposerState {
     /// Current composer text content.
@@ -485,6 +501,10 @@ pub struct ComposerState {
     pub slash_menu_hidden: bool,
     pub mention_menu_selected: usize,
     pub mention_menu_hidden: bool,
+    /// Cached @-mention completions to avoid re-walking the filesystem on
+    /// every keystroke. Invalidated when the partial text, cursor position,
+    /// or input content changes.
+    pub mention_completion_cache: Option<MentionCompletionCache>,
     /// Whether vim modal editing is enabled for this composer.
     /// Sourced from `Settings::composer_vim_mode` at startup.
     pub vim_enabled: bool,
@@ -513,6 +533,7 @@ impl Default for ComposerState {
             slash_menu_hidden: false,
             mention_menu_selected: 0,
             mention_menu_hidden: false,
+            mention_completion_cache: None,
             vim_enabled: false,
             vim_mode: VimMode::Normal,
             vim_pending_d: false,
@@ -1186,6 +1207,7 @@ impl App {
                 slash_menu_hidden: false,
                 mention_menu_selected: 0,
                 mention_menu_hidden: false,
+                mention_completion_cache: None,
                 vim_enabled: composer_vim_enabled,
                 vim_mode: VimMode::Normal,
                 vim_pending_d: false,

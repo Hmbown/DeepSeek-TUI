@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::tui::app::App;
+use crate::tui::app::{App, MentionCompletionCache};
 use crate::working_set::Workspace;
 
 /// Maximum number of `@`-mentions whose contents are inlined into one user
@@ -182,7 +182,7 @@ fn workspace_for_app(app: &App) -> Workspace {
 /// Once the composer widget is extended to render this as a popup, it will
 /// pair with `apply_mention_menu_selection` for the Up/Down/Enter flow.
 #[must_use]
-pub fn visible_mention_menu_entries(app: &App, limit: usize) -> Vec<String> {
+pub fn visible_mention_menu_entries(app: &mut App, limit: usize) -> Vec<String> {
     if app.mention_menu_hidden {
         return Vec::new();
     }
@@ -194,8 +194,40 @@ pub fn visible_mention_menu_entries(app: &App, limit: usize) -> Vec<String> {
     if limit == 0 {
         return Vec::new();
     }
+
+    // Check cache validity: same partial, same cursor position, same input
+    let input_hash = fast_input_hash(&app.input);
+    if let Some(ref cache) = app.composer.mention_completion_cache {
+        if cache.partial == partial
+            && cache.cursor_position == app.cursor_position
+            && cache.input_hash == input_hash
+        {
+            return cache.entries.clone();
+        }
+    }
+
+    // Cache miss — compute completions
     let ws = workspace_for_app(app);
-    find_file_mention_completions(&ws, &partial, limit)
+    let entries = find_file_mention_completions(&ws, &partial, limit);
+
+    // Update cache
+    app.composer.mention_completion_cache = Some(MentionCompletionCache {
+        partial,
+        cursor_position: app.cursor_position,
+        input_hash,
+        entries: entries.clone(),
+    });
+
+    entries
+}
+
+/// Fast hash of input content for cache invalidation. Uses length + first
+/// and last byte to detect changes without iterating the full string.
+fn fast_input_hash(input: &str) -> u64 {
+    let len = input.len() as u64;
+    let first = input.as_bytes().first().copied().unwrap_or(0) as u64;
+    let last = input.as_bytes().last().copied().unwrap_or(0) as u64;
+    len | (first << 32) | (last << 40)
 }
 
 /// Apply the currently selected `@`-mention popup entry to the composer
