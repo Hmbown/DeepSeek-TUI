@@ -1,6 +1,6 @@
 //! `/rename` command — set a custom title for the current session.
 
-use crate::session_manager::SessionManager;
+use crate::session_manager::{SessionManager, update_session};
 use crate::tui::app::App;
 
 use super::CommandResult;
@@ -39,17 +39,23 @@ pub fn rename(app: &mut App, arg: Option<&str>) -> CommandResult {
         Err(e) => return CommandResult::error(format!("Could not open sessions directory: {e}")),
     };
 
-    rename_with_manager(new_title, &session_id, &manager)
+    rename_with_manager(new_title, &session_id, &manager, app)
 }
 
-fn rename_with_manager(new_title: &str, session_id: &str, manager: &SessionManager) -> CommandResult {
+fn rename_with_manager(new_title: &str, session_id: &str, manager: &SessionManager, app: &App) -> CommandResult {
     let mut session = match manager.load_session(session_id) {
         Ok(s) => s,
         Err(e) => return CommandResult::error(format!("Could not load session: {e}")),
     };
 
+    // Sync with current App state to avoid overwriting unsaved messages.
+    session = update_session(
+        session,
+        &app.api_messages,
+        u64::from(app.session.total_tokens),
+        app.system_prompt.as_ref(),
+    );
     session.metadata.title = new_title.to_string();
-    session.metadata.updated_at = chrono::Utc::now();
 
     match manager.save_session(&session) {
         Ok(_) => CommandResult::message(format!("Session renamed to \"{new_title}\"")),
@@ -138,6 +144,7 @@ mod tests {
     fn rename_persists_new_title() {
         let tmp = TempDir::new().unwrap();
         let manager = make_session_manager(&tmp);
+        let app = make_app(&tmp);
 
         let session = create_saved_session_with_mode(
             &[],
@@ -150,7 +157,7 @@ mod tests {
         let session_id = session.metadata.id.clone();
         manager.save_session(&session).unwrap();
 
-        let result = rename_with_manager("Brand New Title", &session_id, &manager);
+        let result = rename_with_manager("Brand New Title", &session_id, &manager, &app);
         assert!(!result.is_error);
         assert!(result.message.unwrap().contains("Brand New Title"));
 
@@ -162,6 +169,7 @@ mod tests {
     fn rename_title_at_max_length_succeeds() {
         let tmp = TempDir::new().unwrap();
         let manager = make_session_manager(&tmp);
+        let app = make_app(&tmp);
 
         let session = create_saved_session_with_mode(
             &[],
@@ -174,8 +182,8 @@ mod tests {
         let session_id = session.metadata.id.clone();
         manager.save_session(&session).unwrap();
 
-        let max_title = "中".repeat(MAX_TITLE_LEN); // UTF-8 multibyte to verify char count
-        let result = rename_with_manager(&max_title, &session_id, &manager);
+        let max_title = "中".repeat(MAX_TITLE_LEN);
+        let result = rename_with_manager(&max_title, &session_id, &manager, &app);
         assert!(!result.is_error);
 
         let reloaded = manager.load_session(&session_id).unwrap();
