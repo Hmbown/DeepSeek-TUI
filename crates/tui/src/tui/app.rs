@@ -775,6 +775,10 @@ pub struct App {
     pub tool_log: Vec<String>,
     /// Active skill to apply to next user message
     pub active_skill: Option<String>,
+    /// Cached (name, description) pairs from the skill registry.
+    /// Populated once at startup and refreshed on install/uninstall so
+    /// the slash menu can show skills without filesystem I/O on every keystroke.
+    pub cached_skills: Vec<(String, String)>,
     /// Tool call cells by tool id (for cells already finalized in `history`).
     /// While a tool call is in flight inside `active_cell`, it is tracked by
     /// `active_tool_entries` instead and migrated here at flush time.
@@ -1054,6 +1058,8 @@ impl App {
             initial_input,
         } = options;
 
+        let cached_skills = Self::discover_cached_skills(&global_skills_dir);
+
         // If no provider is explicitly configured AND the system locale
         // indicates Chinese (zh-*), suggest DeepseekCN (api.deepseeki.com)
         // as the appropriate default.
@@ -1306,6 +1312,7 @@ impl App {
             mcp_restart_required: false,
             tool_log: Vec::new(),
             active_skill: None,
+            cached_skills,
             tool_cells: HashMap::new(),
             tool_details_by_cell: HashMap::new(),
             context_references_by_cell: HashMap::new(),
@@ -1352,6 +1359,18 @@ impl App {
             edit_in_progress: false,
             lsp_enabled: config.lsp.as_ref().and_then(|l| l.enabled).unwrap_or(true),
         }
+    }
+
+    fn discover_cached_skills(skills_dir: &std::path::Path) -> Vec<(String, String)> {
+        crate::skills::SkillRegistry::discover(skills_dir)
+            .list()
+            .iter()
+            .map(|s| (s.name.clone(), s.description.clone()))
+            .collect()
+    }
+
+    pub fn refresh_skill_cache(&mut self) {
+        self.cached_skills = Self::discover_cached_skills(&self.skills_dir);
     }
 
     pub fn submit_api_key(&mut self) -> Result<SavedCredential, ApiKeyError> {
