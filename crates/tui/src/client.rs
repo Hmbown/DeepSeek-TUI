@@ -806,13 +806,22 @@ pub(super) fn parse_usage(usage: Option<&Value>) -> Usage {
         .and_then(|u| u.get("input_tokens").or_else(|| u.get("prompt_tokens")))
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    let output_tokens = usage
+    let mut output_tokens = usage
         .and_then(|u| {
             u.get("output_tokens")
                 .or_else(|| u.get("completion_tokens"))
         })
         .and_then(Value::as_u64)
         .unwrap_or(0);
+    let reasoning_tokens_raw = usage
+        .and_then(|u| u.get("completion_tokens_details"))
+        .and_then(|details| details.get("reasoning_tokens"))
+        .and_then(Value::as_u64);
+    if output_tokens == 0
+        && let Some(reasoning_tokens) = reasoning_tokens_raw
+    {
+        output_tokens = reasoning_tokens;
+    }
     let cached_tokens = usage
         .and_then(|u| u.get("prompt_tokens_details"))
         .and_then(|details| details.get("cached_tokens"))
@@ -827,11 +836,7 @@ pub(super) fn parse_usage(usage: Option<&Value>) -> Usage {
         .and_then(Value::as_u64)
         .or_else(|| cached_tokens.map(|cached| input_tokens.saturating_sub(cached)))
         .map(|v| v as u32);
-    let reasoning_tokens = usage
-        .and_then(|u| u.get("completion_tokens_details"))
-        .and_then(|details| details.get("reasoning_tokens"))
-        .and_then(Value::as_u64)
-        .map(|v| v as u32);
+    let reasoning_tokens = reasoning_tokens_raw.map(|v| v as u32);
 
     let server_tool_use = usage.and_then(|u| u.get("server_tool_use")).map(|server| {
         let code_execution_requests = server
@@ -1692,6 +1697,26 @@ mod tests {
         assert_eq!(usage.prompt_cache_hit_tokens, Some(70));
         assert_eq!(usage.prompt_cache_miss_tokens, Some(30));
         assert_eq!(usage.reasoning_tokens, Some(12));
+    }
+
+    #[test]
+    fn parse_usage_counts_reasoning_tokens_when_completion_tokens_are_zero() {
+        let usage = parse_usage(Some(&json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 0,
+            "completion_tokens_details": {
+                "reasoning_tokens": 12
+            }
+        })));
+
+        assert_eq!(usage.input_tokens, 100);
+        assert_eq!(usage.output_tokens, 12);
+        assert_eq!(usage.reasoning_tokens, Some(12));
+        assert!(
+            crate::pricing::calculate_turn_cost_from_usage("deepseek-v4-pro", &usage)
+                .expect("DeepSeek V4 Pro pricing should apply")
+                > 0.0
+        );
     }
 
     #[test]
