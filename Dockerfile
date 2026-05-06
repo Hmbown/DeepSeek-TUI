@@ -46,8 +46,8 @@ RUN --mount=type=cache,target=/build/target \
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    libdbus-1-3 \
+    ca-certificates=20230311 \
+    libdbus-1-3=1.14.10-1~deb12u1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Non-root user.
@@ -66,3 +66,4 @@ ENV DEEPSEEK_NO_COLOR=""
 
 ENTRYPOINT ["deepseek"]
 CMD []
+MD []
