@@ -1,7 +1,7 @@
 mod metrics;
 mod update;
 
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -428,9 +428,7 @@ fn run() -> Result<()> {
         Some(Commands::Sessions(args)) => {
             delegate_to_tui(&cli, &resolved_runtime, tui_args("sessions", args))
         }
-        Some(Commands::Resume(args)) => {
-            delegate_to_tui(&cli, &resolved_runtime, tui_args("resume", args))
-        }
+        Some(Commands::Resume(args)) => run_resume_command(&cli, &resolved_runtime, args),
         Some(Commands::Fork(args)) => {
             delegate_to_tui(&cli, &resolved_runtime, tui_args("fork", args))
         }
@@ -1042,6 +1040,70 @@ fn delegate_to_tui(
     resolved_runtime: &ResolvedRuntimeOptions,
     passthrough: Vec<String>,
 ) -> Result<()> {
+    let mut cmd = build_tui_command(cli, resolved_runtime, passthrough)?;
+    let tui = PathBuf::from(cmd.get_program());
+    let status = cmd
+        .status()
+        .map_err(|err| anyhow!("{}", tui_spawn_error(&tui, &err)))?;
+    exit_with_tui_status(status)
+}
+
+fn run_resume_command(
+    cli: &Cli,
+    resolved_runtime: &ResolvedRuntimeOptions,
+    args: TuiPassthroughArgs,
+) -> Result<()> {
+    let passthrough = tui_args("resume", args);
+    if should_pick_resume_in_dispatcher(&passthrough, cfg!(windows)) {
+        return run_dispatcher_resume_picker(cli, resolved_runtime);
+    }
+    delegate_to_tui(cli, resolved_runtime, passthrough)
+}
+
+fn run_dispatcher_resume_picker(
+    cli: &Cli,
+    resolved_runtime: &ResolvedRuntimeOptions,
+) -> Result<()> {
+    let mut sessions_cmd = build_tui_command(cli, resolved_runtime, vec!["sessions".to_string()])?;
+    let tui = PathBuf::from(sessions_cmd.get_program());
+    let status = sessions_cmd
+        .status()
+        .map_err(|err| anyhow!("{}", tui_spawn_error(&tui, &err)))?;
+    if !status.success() {
+        return exit_with_tui_status(status);
+    }
+
+    println!();
+    println!("Windows note: enter a session id or prefix from the list above.");
+    println!("You can also run `deepseek resume --last` to skip this prompt.");
+    print!("Session id/prefix (Enter to cancel): ");
+    io::stdout().flush()?;
+
+    let mut input = String::new();
+    io::stdin()
+        .read_line(&mut input)
+        .context("failed to read session selection")?;
+    let session_id = input.trim();
+    if session_id.is_empty() {
+        bail!("No session selected.");
+    }
+
+    delegate_to_tui(
+        cli,
+        resolved_runtime,
+        vec!["resume".to_string(), session_id.to_string()],
+    )
+}
+
+fn should_pick_resume_in_dispatcher(passthrough: &[String], is_windows: bool) -> bool {
+    is_windows && passthrough == ["resume"]
+}
+
+fn build_tui_command(
+    cli: &Cli,
+    resolved_runtime: &ResolvedRuntimeOptions,
+    passthrough: Vec<String>,
+) -> Result<Command> {
     let tui = locate_sibling_tui_binary()?;
 
     let mut cmd = Command::new(&tui);
@@ -1115,9 +1177,10 @@ fn delegate_to_tui(
         cmd.env("DEEPSEEK_BASE_URL", base_url);
     }
 
-    let status = cmd
-        .status()
-        .map_err(|err| anyhow!("{}", tui_spawn_error(&tui, &err)))?;
+    Ok(cmd)
+}
+
+fn exit_with_tui_status(status: std::process::ExitStatus) -> Result<()> {
     match status.code() {
         Some(code) => std::process::exit(code),
         None => bail!("deepseek-tui terminated by signal"),
@@ -1496,6 +1559,26 @@ mod tests {
             cli.command,
             Some(Commands::Setup(TuiPassthroughArgs { ref args }))
                 if args == &["--skills", "--local"]
+        ));
+    }
+
+    #[test]
+    fn dispatcher_resume_picker_only_handles_bare_windows_resume() {
+        assert!(should_pick_resume_in_dispatcher(
+            &["resume".to_string()],
+            true
+        ));
+        assert!(!should_pick_resume_in_dispatcher(
+            &["resume".to_string(), "--last".to_string()],
+            true
+        ));
+        assert!(!should_pick_resume_in_dispatcher(
+            &["resume".to_string(), "abc123".to_string()],
+            true
+        ));
+        assert!(!should_pick_resume_in_dispatcher(
+            &["resume".to_string()],
+            false
         ));
     }
 
