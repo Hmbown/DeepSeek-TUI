@@ -252,8 +252,8 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         // Try to load by prefix or full ID
         let load_result: std::io::Result<Option<crate::session_manager::SavedSession>> =
             if session_id == "latest" {
-                // Special case: resume the most recent session
-                match manager.get_latest_session() {
+                // Special case: resume the most recent session in this workspace.
+                match manager.get_latest_session_for_workspace(&options.workspace) {
                     Ok(Some(meta)) => manager.load_session(&meta.id).map(Some),
                     Ok(None) => Ok(None),
                     Err(e) => Err(e),
@@ -940,10 +940,12 @@ async fn run_event_loop(
                         } else {
                             &app.model
                         };
-                        let turn_cost =
-                            crate::pricing::calculate_turn_cost_from_usage(pricing_model, &usage);
+                        let turn_cost = crate::pricing::calculate_turn_cost_estimate_from_usage(
+                            pricing_model,
+                            &usage,
+                        );
                         if let Some(cost) = turn_cost {
-                            app.accrue_session_cost(cost);
+                            app.accrue_session_cost_estimate(cost);
                         }
 
                         // Emit OSC 9 / BEL desktop notification for long turns.
@@ -963,7 +965,11 @@ async fn run_event_loop(
                                     crate::tui::notifications::humanize_duration(turn_elapsed);
                                 match turn_cost {
                                     Some(c) => {
-                                        format!("deepseek: turn complete ({human}, ${c:.2})")
+                                        let cost = crate::pricing::format_cost_estimate(
+                                            c,
+                                            app.cost_currency,
+                                        );
+                                        format!("deepseek: turn complete ({human}, {cost})")
                                     }
                                     None => format!("deepseek: turn complete ({human})"),
                                 }
@@ -1404,8 +1410,8 @@ async fn run_event_loop(
         // the pool once per loop iteration so the footer chip matches
         // the DeepSeek website's billing.
         let pending_bg_cost = crate::cost_status::drain();
-        if pending_bg_cost > 0.0 {
-            app.accrue_subagent_cost(pending_bg_cost);
+        if pending_bg_cost.is_positive() {
+            app.accrue_subagent_cost_estimate(pending_bg_cost);
             app.needs_redraw = true;
         }
         // Expire the "Press Ctrl+C again to quit" prompt silently after its
@@ -1591,24 +1597,6 @@ async fn run_event_loop(
 
             // Handle onboarding flow
             if app.onboarding != OnboardingState::None {
-                // After Welcome (and the new Language step) we route to either
-                // the API-key step, the trust prompt, or the tips screen
-                // depending on what the user still needs to set up.
-                let advance_after_language = |app: &mut App| {
-                    app.status_message = None;
-                    if app.onboarding_needs_api_key {
-                        app.onboarding = OnboardingState::ApiKey;
-                    } else if !app.trust_mode && onboarding::needs_trust(&app.workspace) {
-                        app.onboarding = OnboardingState::TrustDirectory;
-                    } else {
-                        app.onboarding = OnboardingState::Tips;
-                    }
-                };
-                let advance_onboarding = |app: &mut App| {
-                    app.status_message = None;
-                    app.onboarding = OnboardingState::Language;
-                };
-
                 match key.code {
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         let _ = engine_handle.send(Op::Shutdown).await;
@@ -1644,7 +1632,7 @@ async fn run_event_loop(
                                         StatusToastLevel::Info,
                                         Some(2_500),
                                     );
-                                    advance_after_language(app);
+                                    advance_onboarding_after_language(app);
                                 }
                                 Err(err) => {
                                     app.status_message =
@@ -1655,12 +1643,12 @@ async fn run_event_loop(
                     }
                     KeyCode::Enter => match app.onboarding {
                         OnboardingState::Welcome => {
-                            advance_onboarding(app);
+                            advance_onboarding_from_welcome(app);
                         }
                         OnboardingState::Language => {
                             // Enter without a digit pick keeps the existing
                             // setting (which defaults to "auto").
-                            advance_after_language(app);
+                            advance_onboarding_after_language(app);
                         }
                         OnboardingState::ApiKey => {
                             let key = app.api_key_input.trim().to_string();
@@ -1713,7 +1701,7 @@ async fn run_event_loop(
                                             .await;
                                     }
 
-                                    advance_onboarding(app);
+                                    advance_onboarding_after_language(app);
                                 }
                                 Err(e) => {
                                     app.status_message = Some(e.to_string());
@@ -2375,10 +2363,7 @@ async fn run_event_loop(
                     continue;
                 }
                 // Input handling
-                KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    app.insert_char('\n');
-                }
-                KeyCode::Enter if key.modifiers.contains(KeyModifiers::ALT) => {
+                _ if is_composer_newline_key(key) => {
                     app.insert_char('\n');
                 }
                 KeyCode::Enter
@@ -3113,6 +3098,18 @@ fn next_escape_action(app: &App, slash_menu_open: bool) -> EscapeAction {
     }
 }
 
+fn is_composer_newline_key(key: KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Char('j') => key.modifiers.contains(KeyModifiers::CONTROL),
+        KeyCode::Enter => {
+            key.modifiers.contains(KeyModifiers::ALT)
+                || (key.modifiers.contains(KeyModifiers::SHIFT)
+                    && !key.modifiers.contains(KeyModifiers::CONTROL))
+        }
+        _ => false,
+    }
+}
+
 fn handle_history_search_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Enter => {
@@ -3186,6 +3183,22 @@ fn validate_api_key_for_onboarding(api_key: &str) -> ApiKeyValidation {
         };
     }
     ApiKeyValidation::Accept { warning: None }
+}
+
+fn advance_onboarding_from_welcome(app: &mut App) {
+    app.status_message = None;
+    app.onboarding = OnboardingState::Language;
+}
+
+fn advance_onboarding_after_language(app: &mut App) {
+    app.status_message = None;
+    if app.onboarding_needs_api_key {
+        app.onboarding = OnboardingState::ApiKey;
+    } else if !app.trust_mode && onboarding::needs_trust(&app.workspace) {
+        app.onboarding = OnboardingState::TrustDirectory;
+    } else {
+        app.onboarding = OnboardingState::Tips;
+    }
 }
 
 fn sync_api_key_validation_status(app: &mut App, show_empty_error: bool) {
@@ -5516,7 +5529,10 @@ async fn apply_provider_picker_api_key(
             .providers
             .get_or_insert_with(ProvidersConfig::default);
         let entry: &mut ProviderConfig = match provider {
-            ApiProvider::Deepseek | ApiProvider::DeepseekCN => unreachable!(),
+            ApiProvider::Deepseek | ApiProvider::DeepseekCN => {
+                // Guarded by the outer `if` above; safety net against refactors.
+                return;
+            }
             ApiProvider::NvidiaNim => &mut providers.nvidia_nim,
             ApiProvider::Openrouter => &mut providers.openrouter,
             ApiProvider::Novita => &mut providers.novita,
@@ -6248,10 +6264,10 @@ fn render_footer_from(
     } else {
         Vec::new()
     };
-    let displayed_cost = app.displayed_session_cost();
+    let displayed_cost = app.displayed_session_cost_for_currency(app.cost_currency);
     let cost = if has(S::Cost) && displayed_cost > 0.001 {
         vec![Span::styled(
-            format!("${displayed_cost:.2}"),
+            app.format_cost_amount(displayed_cost),
             Style::default().fg(palette::TEXT_MUTED),
         )]
     } else {
@@ -6344,10 +6360,10 @@ fn footer_auxiliary_spans(app: &App, max_width: usize) -> Vec<Span<'static>> {
         crate::tui::widgets::footer_agents_chip(running_agent_count(app), app.ui_locale);
     let replay_spans = footer_reasoning_replay_spans(app);
     let cache_spans = footer_cache_spans(app);
-    let displayed_cost = app.displayed_session_cost();
+    let displayed_cost = app.displayed_session_cost_for_currency(app.cost_currency);
     let cost_spans = if displayed_cost > 0.001 {
         vec![Span::styled(
-            format!("${displayed_cost:.2}"),
+            app.format_cost_amount(displayed_cost),
             Style::default().fg(palette::TEXT_MUTED),
         )]
     } else {

@@ -7,6 +7,11 @@
 # The image ships both binaries (deepseek dispatcher + deepseek-tui runtime)
 # in a minimal runtime layer. No MCP servers or heavy toolchains are included
 # — keep it slim.
+#
+# API keys MUST be passed at runtime (never baked into the image):
+#   docker run --rm -it -e DEEPSEEK_API_KEY deepseek-tui
+# Or mount an env file:
+#   docker run --rm -it --env-file .env deepseek-tui
 
 ARG RUST_VERSION=1.88
 
@@ -50,8 +55,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libdbus-1-3 \
     && rm -rf /var/lib/apt/lists/*
 
-# Non-root user.
-RUN useradd --create-home --shell /bin/bash deepseek
+# Non-root user with explicit UID/GID for filesystem ownership clarity.
+RUN groupadd --gid 1000 deepseek \
+    && useradd --create-home --shell /bin/bash --uid 1000 --gid 1000 deepseek
 USER deepseek
 WORKDIR /home/deepseek
 
@@ -60,9 +66,6 @@ COPY --from=builder --chown=deepseek:deepseek /out/deepseek-tui /usr/local/bin/d
 
 # The dispatcher expects to find its companion binary next to it.
 # Both are in /usr/local/bin — no further path setup needed.
-
-ENV DEEPSEEK_API_KEY=""
-ENV DEEPSEEK_NO_COLOR=""
 
 ENTRYPOINT ["deepseek"]
 CMD []

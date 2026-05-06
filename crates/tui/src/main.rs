@@ -127,7 +127,7 @@ struct Cli {
     #[arg(short, long)]
     resume: Option<String>,
 
-    /// Continue the most recent session
+    /// Continue the most recent session in this workspace
     #[arg(short = 'c', long = "continue")]
     continue_session: bool,
 
@@ -232,7 +232,7 @@ enum Commands {
         /// Conversation/session id (UUID or prefix)
         #[arg(value_name = "SESSION_ID")]
         session_id: Option<String>,
-        /// Continue the most recent session without a picker
+        /// Continue the most recent session in this workspace without a picker
         #[arg(long = "last", default_value_t = false, conflicts_with = "session_id")]
         last: bool,
     },
@@ -241,7 +241,7 @@ enum Commands {
         /// Conversation/session id (UUID or prefix)
         #[arg(value_name = "SESSION_ID")]
         session_id: Option<String>,
-        /// Fork the most recent session without a picker
+        /// Fork the most recent session in this workspace without a picker
         #[arg(long = "last", default_value_t = false, conflicts_with = "session_id")]
         last: bool,
     },
@@ -728,12 +728,14 @@ async fn main() -> Result<()> {
             }
             Commands::Resume { session_id, last } => {
                 let config = load_config_from_cli(&cli)?;
-                let resume_id = resolve_session_id(session_id, last)?;
+                let workspace = resolve_workspace(&cli);
+                let resume_id = resolve_session_id(session_id, last, &workspace)?;
                 run_interactive(&cli, &config, Some(resume_id), None).await
             }
             Commands::Fork { session_id, last } => {
                 let config = load_config_from_cli(&cli)?;
-                let new_session_id = fork_session(session_id, last)?;
+                let workspace = resolve_workspace(&cli);
+                let new_session_id = fork_session(session_id, last, &workspace)?;
                 run_interactive(&cli, &config, Some(new_session_id), None).await
             }
         };
@@ -748,11 +750,8 @@ async fn main() -> Result<()> {
 
     // Handle session resume
     let resume_session_id = if cli.continue_session {
-        // Get most recent session
-        match session_manager::SessionManager::default_location() {
-            Ok(manager) => manager.get_latest_session().ok().flatten().map(|m| m.id),
-            Err(_) => None,
-        }
+        let workspace = resolve_workspace(&cli);
+        latest_session_id_for_workspace(&workspace).ok().flatten()
     } else if let Some(id) = cli.resume.clone() {
         Some(id)
     } else if !cli.fresh {
@@ -1624,8 +1623,12 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     // API connectivity test
     println!();
     println!("{}", "API Connectivity:".bold());
+    let api_target = doctor_api_target(config);
+    println!("  · provider: {}", api_target.provider);
+    println!("  · base_url: {}", api_target.base_url);
+    println!("  · model: {}", api_target.model);
     if has_api_key {
-        print!("  {} Testing connection to DeepSeek API...", "·".dimmed());
+        print!("  {} Testing connection...", "·".dimmed());
         use std::io::Write;
         std::io::stdout().flush().ok();
 
@@ -1658,7 +1661,9 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
                         "    API key lacks permissions. Verify key is active at platform.deepseek.com"
                     );
                 } else if error_msg.contains("timeout") || error_msg.contains("Timeout") {
-                    println!("    Connection timed out. Check your network connection");
+                    for line in doctor_timeout_recovery_lines(config) {
+                        println!("    {line}");
+                    }
                 } else if error_msg.contains("dns") || error_msg.contains("resolve") {
                     println!("    DNS resolution failed. Check your network connection");
                 } else if error_msg.contains("connect") {
@@ -1759,18 +1764,25 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     let global_skills_dir = config.skills_dir();
     let agents_skills_dir = workspace.join(".agents").join("skills");
     let local_skills_dir = workspace.join("skills");
+    let agents_global_skills_dir = crate::skills::agents_global_skills_dir();
     // #432: cross-tool skill discovery dirs. Presence is reported here
     // even though they sit lower in the precedence chain so users can
-    // see at a glance whether a `.opencode/skills/` or `.claude/skills/`
-    // directory is contributing to the merged catalogue.
+    // see at a glance whether a `.opencode/skills/`, `.claude/skills/`,
+    // `.cursor/skills/`, or global agentskills.io directory is contributing
+    // to the merged catalogue.
     let opencode_skills_dir = workspace.join(".opencode").join("skills");
     let claude_skills_dir = workspace.join(".claude").join("skills");
     let selected_skills_dir = if agents_skills_dir.exists() {
-        &agents_skills_dir
+        agents_skills_dir.clone()
     } else if local_skills_dir.exists() {
-        &local_skills_dir
+        local_skills_dir.clone()
+    } else if config.skills_dir.is_none()
+        && let Some(global_agents) = agents_global_skills_dir.as_ref()
+        && global_agents.exists()
+    {
+        global_agents.clone()
     } else {
-        &global_skills_dir
+        global_skills_dir.clone()
     };
 
     let describe_dir = |dir: &Path| -> usize {
@@ -1807,6 +1819,23 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             "·".dimmed(),
             crate::utils::display_path(&agents_skills_dir)
         );
+    }
+
+    if let Some(agents_global_skills_dir) = agents_global_skills_dir.as_ref() {
+        if agents_global_skills_dir.exists() {
+            println!(
+                "  {} global .agents skills dir found at {} ({} items)",
+                "✓".truecolor(aqua_r, aqua_g, aqua_b),
+                crate::utils::display_path(agents_global_skills_dir),
+                describe_dir(agents_global_skills_dir)
+            );
+        } else {
+            println!(
+                "  {} global .agents skills dir not found at {}",
+                "·".dimmed(),
+                crate::utils::display_path(agents_global_skills_dir)
+            );
+        }
     }
 
     if global_skills_dir.exists() {
@@ -1847,9 +1876,15 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     println!(
         "  {} selected skills dir: {}",
         "·".dimmed(),
-        crate::utils::display_path(selected_skills_dir)
+        crate::utils::display_path(&selected_skills_dir)
     );
-    if !agents_skills_dir.exists() && !local_skills_dir.exists() && !global_skills_dir.exists() {
+    if !agents_skills_dir.exists()
+        && !local_skills_dir.exists()
+        && !agents_global_skills_dir
+            .as_ref()
+            .is_some_and(|dir| dir.exists())
+        && !global_skills_dir.exists()
+    {
         println!("    Run `deepseek setup --skills` (or add --local for ./skills).");
     }
 
@@ -2033,19 +2068,41 @@ fn run_doctor_json(
     let global_skills_dir = config.skills_dir();
     let agents_skills_dir = workspace.join(".agents").join("skills");
     let local_skills_dir = workspace.join("skills");
+    let agents_global_skills_dir = crate::skills::agents_global_skills_dir();
     // #432: cross-tool skill discovery dirs surface in the JSON
     // report so external dashboards can see whether any
-    // `.opencode/skills/` or `.claude/skills/` content is contributing
-    // to the merged catalogue.
+    // `.opencode/skills/`, `.claude/skills/`, `.cursor/skills/`, or
+    // global agentskills.io content is contributing to the merged catalogue.
     let opencode_skills_dir = workspace.join(".opencode").join("skills");
     let claude_skills_dir = workspace.join(".claude").join("skills");
     let selected_skills_dir = if agents_skills_dir.exists() {
         agents_skills_dir.clone()
     } else if local_skills_dir.exists() {
         local_skills_dir.clone()
+    } else if config.skills_dir.is_none()
+        && let Some(global_agents) = agents_global_skills_dir.as_ref()
+        && global_agents.exists()
+    {
+        global_agents.clone()
     } else {
         global_skills_dir.clone()
     };
+    let agents_global_summary = agents_global_skills_dir
+        .as_ref()
+        .map(|path| {
+            json!({
+                "path": path.display().to_string(),
+                "present": path.exists(),
+                "count": skills_count_for(path),
+            })
+        })
+        .unwrap_or_else(|| {
+            json!({
+                "path": null,
+                "present": false,
+                "count": 0,
+            })
+        });
 
     let tools_dir = default_tools_dir();
     let plugins_dir = default_plugins_dir();
@@ -2075,6 +2132,7 @@ fn run_doctor_json(
         "path": memory_path.display().to_string(),
         "file_present": memory_path.exists(),
     });
+    let api_target = doctor_api_target(config);
 
     let report = json!({
         "version": env!("CARGO_PKG_VERSION"),
@@ -2084,14 +2142,8 @@ fn run_doctor_json(
         "api_key": {
             "source": api_key_state,
         },
-        "base_url": config
-            .base_url
-            .clone()
-            .unwrap_or_else(|| "https://api.deepseek.com".to_string()),
-        "default_text_model": config
-            .default_text_model
-            .clone()
-            .unwrap_or_else(|| DEFAULT_TEXT_MODEL.to_string()),
+        "base_url": api_target.base_url,
+        "default_text_model": api_target.model,
         "memory": memory_summary,
         "mcp": mcp_summary,
         "skills": {
@@ -2106,6 +2158,7 @@ fn run_doctor_json(
                 "present": agents_skills_dir.exists(),
                 "count": skills_count_for(&agents_skills_dir),
             },
+            "agents_global": agents_global_summary,
             "local": {
                 "path": local_skills_dir.display().to_string(),
                 "present": local_skills_dir.exists(),
@@ -2195,6 +2248,60 @@ fn provider_capability_report(config: &Config) -> serde_json::Value {
         "cache_telemetry_supported": cap.cache_telemetry_supported,
         "request_payload_mode": serde_json::to_value(cap.request_payload_mode).unwrap_or_default(),
     })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DoctorApiTarget {
+    provider: &'static str,
+    base_url: String,
+    model: String,
+}
+
+fn doctor_api_target(config: &Config) -> DoctorApiTarget {
+    let provider = config.api_provider();
+    DoctorApiTarget {
+        provider: provider.as_str(),
+        base_url: config.deepseek_base_url(),
+        model: config.default_model(),
+    }
+}
+
+fn doctor_timeout_recovery_lines(config: &Config) -> Vec<String> {
+    let target = doctor_api_target(config);
+    let mut lines = vec![format!(
+        "Connection timed out while reaching {}.",
+        target.base_url
+    )];
+
+    match config.api_provider() {
+        crate::config::ApiProvider::Deepseek
+            if target.base_url.contains("api.deepseek.com")
+                && !target.base_url.contains("api.deepseeki.com") =>
+        {
+            lines.push(
+                "If you are in mainland China, set `provider = \"deepseek-cn\"` or `base_url = \"https://api.deepseeki.com\"` in ~/.deepseek/config.toml, then rerun `deepseek doctor`."
+                    .to_string(),
+            );
+        }
+        crate::config::ApiProvider::Deepseek | crate::config::ApiProvider::DeepseekCN => {
+            lines.push(
+                "If this is a custom DeepSeek-compatible endpoint, confirm it serves `/v1/models` and `/v1/chat/completions` over HTTPS."
+                    .to_string(),
+            );
+        }
+        _ => {
+            lines.push(
+                "Confirm the configured provider endpoint is reachable and OpenAI-compatible for `/v1/models` and `/v1/chat/completions`."
+                    .to_string(),
+            );
+        }
+    }
+
+    lines.push(
+        "Run `deepseek doctor --json` and include `base_url`, `default_text_model`, and `api_connectivity` when filing an issue."
+            .to_string(),
+    );
+    lines
 }
 
 fn run_execpolicy_command(command: ExecpolicyCommand) -> Result<()> {
@@ -2352,7 +2459,7 @@ fn list_sessions(limit: usize, search: Option<String>) -> Result<()> {
         "<session-id>".dimmed()
     );
     println!(
-        "Continue latest: {}",
+        "Continue latest in this workspace: {}",
         "deepseek --continue".truecolor(blue_r, blue_g, blue_b)
     );
 
@@ -2450,9 +2557,14 @@ fn run_logout() -> Result<()> {
     Ok(())
 }
 
-fn resolve_session_id(session_id: Option<String>, last: bool) -> Result<String> {
+fn resolve_session_id(session_id: Option<String>, last: bool, workspace: &Path) -> Result<String> {
     if last {
-        return Ok("latest".to_string());
+        return latest_session_id_for_workspace(workspace)?.ok_or_else(|| {
+            anyhow!(
+                "No saved sessions found for workspace {}. Use `deepseek sessions` to list all sessions, or `deepseek resume <SESSION_ID>` to resume one explicitly.",
+                workspace.display()
+            )
+        });
     }
     if let Some(id) = session_id {
         return Ok(id);
@@ -2460,15 +2572,25 @@ fn resolve_session_id(session_id: Option<String>, last: bool) -> Result<String> 
     pick_session_id()
 }
 
-fn fork_session(session_id: Option<String>, last: bool) -> Result<String> {
+fn latest_session_id_for_workspace(workspace: &Path) -> std::io::Result<Option<String>> {
+    let manager = SessionManager::default_location()?;
+    Ok(manager
+        .get_latest_session_for_workspace(workspace)?
+        .map(|session| session.id))
+}
+
+fn fork_session(session_id: Option<String>, last: bool, workspace: &Path) -> Result<String> {
     let manager = SessionManager::default_location()?;
     let saved = if last {
-        let Some(meta) = manager.get_latest_session()? else {
-            bail!("No saved sessions found.");
+        let Some(meta) = manager.get_latest_session_for_workspace(workspace)? else {
+            bail!(
+                "No saved sessions found for workspace {}.",
+                workspace.display()
+            );
         };
         manager.load_session(&meta.id)?
     } else {
-        let id = resolve_session_id(session_id, false)?;
+        let id = resolve_session_id(session_id, false, workspace)?;
         manager.load_session_by_prefix(&id)?
     };
 
@@ -2619,10 +2741,8 @@ async fn run_pr(
 
     let prompt = format_pr_prompt(number, &view, &diff);
     let resume_session_id = if cli.continue_session {
-        match session_manager::SessionManager::default_location() {
-            Ok(manager) => manager.get_latest_session().ok().flatten().map(|m| m.id),
-            Err(_) => None,
-        }
+        let workspace = resolve_workspace(cli);
+        latest_session_id_for_workspace(&workspace).ok().flatten()
     } else {
         cli.resume.clone()
     };
@@ -4038,6 +4158,61 @@ async fn run_exec_agent(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod doctor_endpoint_tests {
+    use super::*;
+
+    #[test]
+    fn doctor_api_target_reports_default_endpoint() {
+        let config = Config::default();
+
+        let target = doctor_api_target(&config);
+
+        assert_eq!(target.provider, "deepseek");
+        assert_eq!(target.base_url, "https://api.deepseek.com");
+        assert_eq!(target.model, crate::config::DEFAULT_TEXT_MODEL);
+    }
+
+    #[test]
+    fn doctor_api_target_reports_deepseek_cn_endpoint() {
+        let config = Config {
+            provider: Some("deepseek-cn".to_string()),
+            ..Default::default()
+        };
+
+        let target = doctor_api_target(&config);
+
+        assert_eq!(target.provider, "deepseek-cn");
+        assert_eq!(target.base_url, crate::config::DEFAULT_DEEPSEEKCN_BASE_URL);
+        assert_eq!(target.model, crate::config::DEFAULT_TEXT_MODEL);
+    }
+
+    #[test]
+    fn timeout_recovery_points_global_deepseek_users_to_cn_endpoint() {
+        let config = Config::default();
+
+        let text = doctor_timeout_recovery_lines(&config).join("\n");
+
+        assert!(text.contains("api.deepseeki.com"));
+        assert!(text.contains("provider = \"deepseek-cn\""));
+        assert!(text.contains("deepseek doctor --json"));
+    }
+
+    #[test]
+    fn timeout_recovery_for_custom_provider_checks_openai_compatibility() {
+        let config = Config {
+            provider: Some("vllm".to_string()),
+            ..Default::default()
+        };
+
+        let text = doctor_timeout_recovery_lines(&config).join("\n");
+
+        assert!(text.contains("/v1/models"));
+        assert!(text.contains("/v1/chat/completions"));
+        assert!(!text.contains("api.deepseeki.com"));
+    }
 }
 
 #[cfg(test)]

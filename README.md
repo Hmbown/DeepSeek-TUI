@@ -223,7 +223,7 @@ deepseek setup --status                          # read-only setup status
 deepseek setup --tools --plugins                 # scaffold tool/plugin dirs
 deepseek models                                  # list live API models
 deepseek sessions                                # list saved sessions
-deepseek resume --last                           # resume the most recent session
+deepseek resume --last                           # resume the most recent session in this workspace
 deepseek resume <SESSION_ID>                     # resume a specific session by UUID
 deepseek fork <SESSION_ID>                       # fork a session at a chosen turn
 deepseek serve --http                            # HTTP/SSE API server
@@ -327,10 +327,10 @@ Legacy aliases `deepseek-chat` / `deepseek-reasoner` map to `deepseek-v4-flash`.
 
 ## Publishing Your Own Skill
 
-DeepSeek TUI discovers skills from workspace directories (`.agents/skills` → `skills` → `.opencode/skills` → `.claude/skills`) and the global `~/.deepseek/skills`. Each skill is a directory with a `SKILL.md` file:
+DeepSeek TUI discovers skills from workspace directories (`.agents/skills` → `skills` → `.opencode/skills` → `.claude/skills` → `.cursor/skills`) and global directories (`~/.agents/skills` → `~/.deepseek/skills`). Each skill is a directory with a `SKILL.md` file:
 
 ```text
-~/.deepseek/skills/my-skill/
+~/.agents/skills/my-skill/
 └── SKILL.md
 ```
 

@@ -614,20 +614,13 @@ mod tests {
         // flag is identical for both paths.
         let source = "# Title\n\nA paragraph with a https://example.com link.\n\n- one\n- two\n```\ncode\n```";
         let direct = render_with_osc8(false, source);
-        let two_step = {
-            use std::sync::Mutex;
-            static OSC8_GUARD: Mutex<()> = Mutex::new(());
-            let _guard = OSC8_GUARD.lock().unwrap_or_else(|e| e.into_inner());
-            let prior = osc8::enabled();
-            osc8::set_enabled(false);
+        let two_step = with_osc8(false, || {
             let parsed = parse(source);
-            let result: String = render_parsed(&parsed, 80, Style::default())
+            render_parsed(&parsed, 80, Style::default())
                 .iter()
                 .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
-                .collect();
-            osc8::set_enabled(prior);
-            result
-        };
+                .collect::<String>()
+        });
         assert_eq!(direct, two_step);
     }
 
@@ -713,18 +706,23 @@ mod tests {
     /// value. We serialize through a static mutex because `osc8::ENABLED` is
     /// process-wide state and other tests touching it would race otherwise.
     fn render_with_osc8(enabled: bool, source: &str) -> String {
+        with_osc8(enabled, || {
+            render_markdown(source, 80, Style::default())
+                .iter()
+                .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+                .collect::<String>()
+        })
+    }
+
+    fn with_osc8<T>(enabled: bool, f: impl FnOnce() -> T) -> T {
         use std::sync::Mutex;
         static OSC8_GUARD: Mutex<()> = Mutex::new(());
         let _guard = OSC8_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         let prior = osc8::enabled();
         osc8::set_enabled(enabled);
-        let lines = render_markdown(source, 80, Style::default());
-        let joined = lines
-            .iter()
-            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
-            .collect::<String>();
+        let result = f();
         osc8::set_enabled(prior);
-        joined
+        result
     }
 
     #[test]

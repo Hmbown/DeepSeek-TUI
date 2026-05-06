@@ -495,7 +495,7 @@ def _rpc(req):
     return {"error": f"unexpected protocol line: {line[:120]!r}"}
 
 def llm_query(prompt, model=None, max_tokens=None, system=None):
-    """One-shot sub-LLM call. Returns the completion text as a string."""
+    """One-shot sub-LLM call. The model arg is accepted for compatibility but ignored by Rust."""
     resp = _rpc({"type":"llm","prompt":str(prompt),"model":model,
                  "max_tokens":max_tokens,"system":system})
     if isinstance(resp, dict) and resp.get("error"):
@@ -505,7 +505,7 @@ def llm_query(prompt, model=None, max_tokens=None, system=None):
     return str(resp)
 
 def llm_query_batched(prompts, model=None):
-    """Run multiple sub-LLM calls concurrently. Returns a list of strings."""
+    """Run multiple sub-LLM calls concurrently. The model arg is accepted for compatibility but ignored."""
     if not isinstance(prompts, (list, tuple)):
         return ["[llm_query_batched: prompts must be a list]"]
     resp = _rpc({"type":"llm_batch","prompts":[str(p) for p in prompts],"model":model})
@@ -523,7 +523,7 @@ def llm_query_batched(prompts, model=None):
     return out
 
 def rlm_query(prompt, model=None):
-    """Recursive sub-RLM (paper's `sub_RLM`). Each call gets its own REPL."""
+    """Recursive sub-RLM. The model arg is accepted for compatibility but ignored by Rust."""
     resp = _rpc({"type":"rlm","prompt":str(prompt),"model":model})
     if isinstance(resp, dict) and resp.get("error"):
         return f"[rlm_query error: {resp['error']}]"
@@ -532,7 +532,7 @@ def rlm_query(prompt, model=None):
     return str(resp)
 
 def rlm_query_batched(prompts, model=None):
-    """Run multiple recursive sub-RLMs in parallel."""
+    """Run multiple recursive sub-RLMs in parallel. The model arg is accepted for compatibility but ignored."""
     if not isinstance(prompts, (list, tuple)):
         return ["[rlm_query_batched: prompts must be a list]"]
     resp = _rpc({"type":"rlm_batch","prompts":[str(p) for p in prompts],"model":model})

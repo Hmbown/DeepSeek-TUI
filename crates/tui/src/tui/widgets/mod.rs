@@ -337,7 +337,7 @@ impl Renderable for ChatWidget {
 pub struct ComposerWidget<'a> {
     app: &'a App,
     max_height: u16,
-    slash_menu_entries: &'a [String],
+    slash_menu_entries: &'a [SlashMenuEntry],
     mention_menu_entries: &'a [String],
 }
 
@@ -345,7 +345,7 @@ impl<'a> ComposerWidget<'a> {
     pub fn new(
         app: &'a App,
         max_height: u16,
-        slash_menu_entries: &'a [String],
+        slash_menu_entries: &'a [SlashMenuEntry],
         mention_menu_entries: &'a [String],
     ) -> Self {
         Self {
@@ -361,27 +361,13 @@ impl<'a> ComposerWidget<'a> {
     /// a `/cmd` token, not both at once. Mention takes precedence because
     /// the partial-mention check is positional and stricter than slash's
     /// "starts-with-/" check.
-    fn active_menu_entries(&self) -> &'a [String] {
-        if !self.mention_menu_entries.is_empty() {
-            self.mention_menu_entries
-        } else {
-            self.slash_menu_entries
-        }
-    }
-
-    fn active_menu_selected(&self) -> usize {
-        if !self.mention_menu_entries.is_empty() {
-            self.app.mention_menu_selected
-        } else {
-            self.app.slash_menu_selected
-        }
-    }
-
     fn active_menu_row_count(&self) -> usize {
         if self.app.is_history_search_active() {
             self.app.history_search_matches().len().max(1)
+        } else if !self.mention_menu_entries.is_empty() {
+            self.mention_menu_entries.len()
         } else {
-            self.active_menu_entries().len()
+            self.slash_menu_entries.len()
         }
     }
 
@@ -447,12 +433,7 @@ impl Renderable for ComposerWidget<'_> {
         } else {
             Vec::new()
         };
-        let menu_entries = self.active_menu_entries();
-        let menu_lines = if self.app.is_history_search_active() {
-            history_search_matches.len().max(1)
-        } else {
-            menu_entries.len()
-        };
+        let menu_lines = self.active_menu_row_count();
         // For the layout-budget calculation, treat the menu as if it were
         // already at its locked, worst-case height (see
         // `active_menu_reserved_rows`). Without this, when the matched-entry
@@ -689,32 +670,21 @@ impl Renderable for ComposerWidget<'_> {
                     ]));
                 }
             }
-        } else if !menu_entries.is_empty() {
+        } else if !self.mention_menu_entries.is_empty() {
             let selected = self
-                .active_menu_selected()
-                .min(menu_entries.len().saturating_sub(1));
-            // `@`-mention entries get an "@" prefix so the popup line reads
-            // like the actual mention the user is composing.
-            let prefix = if !self.mention_menu_entries.is_empty() {
-                "@"
-            } else {
-                ""
-            };
-
-            // Compute a viewport window into the menu entries so the
-            // selection cursor stays visible even when there are more
-            // entries than available rows.
+                .app
+                .mention_menu_selected
+                .min(self.mention_menu_entries.len().saturating_sub(1));
             let menu_visible_rows = inner_area
                 .height
                 .saturating_sub(visual_rows as u16)
                 .saturating_sub(top_padding as u16)
-                .saturating_sub(1) // at least one row for the cursor
+                .saturating_sub(1)
                 .max(1) as usize;
-            let menu_total = menu_entries.len();
+            let menu_total = self.mention_menu_entries.len();
             let menu_top = if menu_total <= menu_visible_rows {
                 0
             } else {
-                // Keep the selection centered in the viewport.
                 let half = menu_visible_rows / 2;
                 if selected <= half {
                     0
@@ -726,7 +696,8 @@ impl Renderable for ComposerWidget<'_> {
             };
             let menu_bottom = (menu_top + menu_visible_rows).min(menu_total);
 
-            for (idx, entry) in menu_entries
+            for (idx, entry) in self
+                .mention_menu_entries
                 .iter()
                 .enumerate()
                 .take(menu_bottom)
@@ -745,7 +716,133 @@ impl Renderable for ComposerWidget<'_> {
                     Span::styled(" ", Style::default()),
                     Span::styled(marker, style),
                     Span::styled(" ", style),
-                    Span::styled(format!("{prefix}{entry}"), style),
+                    Span::styled(format!("@{entry}"), style),
+                ]));
+            }
+        } else if !self.slash_menu_entries.is_empty() {
+            let selected = self
+                .app
+                .slash_menu_selected
+                .min(self.slash_menu_entries.len().saturating_sub(1));
+            let menu_visible_rows = inner_area
+                .height
+                .saturating_sub(visual_rows as u16)
+                .saturating_sub(top_padding as u16)
+                .saturating_sub(1)
+                .max(1) as usize;
+            let menu_total = self.slash_menu_entries.len();
+            let menu_top = if menu_total <= menu_visible_rows {
+                0
+            } else {
+                let half = menu_visible_rows / 2;
+                if selected <= half {
+                    0
+                } else if selected + half >= menu_total {
+                    menu_total.saturating_sub(menu_visible_rows)
+                } else {
+                    selected.saturating_sub(half)
+                }
+            };
+            let menu_bottom = (menu_top + menu_visible_rows).min(menu_total);
+
+            // Label column width for two-column layout (name + description)
+            let label_width = 22.min(content_width.saturating_sub(4));
+            for (idx, entry) in self
+                .slash_menu_entries
+                .iter()
+                .enumerate()
+                .take(menu_bottom)
+                .skip(menu_top)
+            {
+                let is_selected = idx == selected;
+                let sel_style = if is_selected {
+                    Style::default()
+                        .fg(palette::SELECTION_TEXT)
+                        .bg(palette::SELECTION_BG)
+                } else {
+                    Style::default().fg(palette::TEXT_MUTED)
+                };
+                let marker = if is_selected { "▸" } else { " " };
+
+                // Name column
+                let name_style = if entry.is_skill && !is_selected {
+                    Style::default().fg(palette::DEEPSEEK_SKY)
+                } else {
+                    sel_style
+                };
+
+                // Description column (muted when not selected, secondary when selected)
+                let desc_style = if is_selected {
+                    Style::default()
+                        .fg(palette::SELECTION_TEXT)
+                        .bg(palette::SELECTION_BG)
+                } else {
+                    Style::default().fg(palette::TEXT_DIM)
+                };
+
+                let name_display = {
+                    let display_width: usize = entry.name.width();
+                    if display_width > label_width {
+                        let mut s = String::new();
+                        let mut w = 0;
+                        for ch in entry.name.chars() {
+                            let cw = ch.width().unwrap_or(0);
+                            if w + cw + 1 > label_width {
+                                break;
+                            }
+                            s.push(ch);
+                            w += cw;
+                        }
+                        s.push('…');
+                        // pad to label_width display cols
+                        while s.width() < label_width {
+                            s.push(' ');
+                        }
+                        s
+                    } else {
+                        // pad to label_width display cols
+                        let mut s = entry.name.clone();
+                        while s.width() < label_width {
+                            s.push(' ');
+                        }
+                        s
+                    }
+                };
+
+                // Skill marker prefix
+                let skill_prefix = if entry.is_skill { "✦" } else { " " };
+
+                // Compute exact prefix display width to avoid Paragraph wrap:
+                // 1(" ") + 1(marker) + skill_prefix.width() + label_width + 2("  ")
+                let prefix_display_width = 1 + 1 + skill_prefix.width() + label_width + 2;
+                let desc_capacity = content_width.saturating_sub(prefix_display_width);
+                let desc_display = {
+                    let display_width: usize = entry.description.width();
+                    if display_width > desc_capacity && desc_capacity > 0 {
+                        let mut s = String::new();
+                        let mut w = 0;
+                        for ch in entry.description.chars() {
+                            let cw = ch.width().unwrap_or(0);
+                            if w + cw + 1 > desc_capacity {
+                                break;
+                            }
+                            s.push(ch);
+                            w += cw;
+                        }
+                        s.push('…');
+                        s
+                    } else {
+                        entry.description.clone()
+                    }
+                };
+
+                lines.push(Line::from(vec![
+                    Span::styled(" ", Style::default()),
+                    Span::styled(marker, sel_style),
+                    Span::styled(skill_prefix, name_style),
+                    Span::styled(name_display, name_style),
+                    Span::styled("  ", desc_style),
+                    Span::styled(desc_display, desc_style),
                 ]));
             }
         }
@@ -1618,24 +1715,84 @@ fn composer_height(
     line_count.clamp(1, max_height).try_into().unwrap_or(1)
 }
 
-pub(crate) fn slash_completion_hints(input: &str, limit: usize) -> Vec<String> {
-    if !input.starts_with('/') || input.contains(char::is_whitespace) {
+/// A single entry in the slash-command autocomplete popup.
+pub(crate) struct SlashMenuEntry {
+    pub name: String,
+    pub description: String,
+    pub is_skill: bool,
+}
+
+pub(crate) fn slash_completion_hints(
+    input: &str,
+    limit: usize,
+    cached_skills: &[(String, String)],
+    locale: crate::localization::Locale,
+) -> Vec<SlashMenuEntry> {
+    if !input.starts_with('/') {
         return Vec::new();
     }
 
     let prefix = input.trim_start_matches('/');
-    let mut hints = commands::all_command_names_matching(prefix);
+    let completing_skill_arg = prefix.strip_prefix("skill ").map(str::trim_start);
+    if input.contains(char::is_whitespace) && completing_skill_arg.is_none() {
+        return Vec::new();
+    }
+    let mut entries: Vec<SlashMenuEntry> = Vec::new();
 
-    if hints.is_empty() && prefix.eq_ignore_ascii_case("model") {
-        hints = COMMON_DEEPSEEK_MODELS
-            .iter()
-            .map(|name| format!("/model {name}"))
-            .collect();
+    // Built-in commands + user-defined commands
+    // `all_command_names_matching` returns both; we resolve descriptions for
+    // built-in ones from the static registry and use a generic label for
+    // user-defined commands.
+    if completing_skill_arg.is_none() {
+        for name in commands::all_command_names_matching(prefix) {
+            let command_key = name.trim_start_matches('/');
+            let description = if let Some(info) = commands::get_command_info(command_key) {
+                info.description_for(locale).to_string()
+            } else {
+                String::from("User-defined command")
+            };
+            entries.push(SlashMenuEntry {
+                name,
+                description,
+                is_skill: false,
+            });
+        }
     }
 
-    hints.sort();
-    hints.dedup();
-    hints.into_iter().take(limit).collect()
+    // Cached skills
+    let skill_prefix = completing_skill_arg.unwrap_or(prefix);
+    let prefix_lower = skill_prefix.to_ascii_lowercase();
+    for (skill_name, skill_desc) in cached_skills {
+        let skill_name_lower = skill_name.to_ascii_lowercase();
+        let command_prefix_matches = completing_skill_arg.is_none()
+            && (prefix_lower.is_empty()
+                || "skill".starts_with(&prefix_lower)
+                || skill_name_lower.starts_with(&prefix_lower));
+        let skill_arg_matches =
+            completing_skill_arg.is_some() && skill_name_lower.starts_with(&prefix_lower);
+        if command_prefix_matches || skill_arg_matches {
+            entries.push(SlashMenuEntry {
+                name: format!("/skill {skill_name}"),
+                description: skill_desc.clone(),
+                is_skill: true,
+            });
+        }
+    }
+
+    // Special: /model <name> completions when only /model matches
+    if entries.iter().any(|e| e.name == "/model") && prefix_lower.eq_ignore_ascii_case("model") {
+        for model_name in COMMON_DEEPSEEK_MODELS {
+            entries.push(SlashMenuEntry {
+                name: format!("/model {model_name}"),
+                description: String::from("Switch to this model"),
+                is_skill: false,
+            });
+        }
+    }
+
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    entries.dedup_by(|a, b| a.name == b.name);
+    entries.into_iter().take(limit).collect()
 }
 
 fn layout_input(
@@ -1779,10 +1936,11 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        COMPOSER_PANEL_HEIGHT, ChatWidget, ComposerWidget, Renderable, apply_selection_to_line,
-        composer_height, composer_max_height, composer_min_input_rows, composer_top_padding,
-        cursor_row_col, layout_input, pad_lines_to_bottom, placeholder_visual_lines,
-        should_render_empty_state, slash_completion_hints, wrap_input_lines, wrap_text,
+        COMPOSER_PANEL_HEIGHT, ChatWidget, ComposerWidget, Renderable, SlashMenuEntry,
+        apply_selection_to_line, composer_height, composer_max_height, composer_min_input_rows,
+        composer_top_padding, cursor_row_col, layout_input, pad_lines_to_bottom,
+        placeholder_visual_lines, should_render_empty_state, slash_completion_hints,
+        wrap_input_lines, wrap_text,
     };
     use crate::config::Config;
     use crate::localization::Locale;
@@ -1974,16 +2132,62 @@ mod tests {
 
     #[test]
     fn slash_completion_hints_include_links_and_config() {
-        let hints = slash_completion_hints("/", 128);
-        assert!(hints.iter().any(|hint| hint == "/config"));
-        assert!(hints.iter().any(|hint| hint == "/links"));
+        let hints = slash_completion_hints("/", 128, &[], Locale::En);
+        assert!(hints.iter().any(|hint| hint.name == "/config"));
+        assert!(hints.iter().any(|hint| hint.name == "/links"));
     }
 
     #[test]
     fn slash_completion_hints_exclude_set_and_deepseek_commands() {
-        let hints = slash_completion_hints("/", 128);
-        assert!(!hints.iter().any(|hint| hint == "/set"));
-        assert!(!hints.iter().any(|hint| hint == "/deepseek"));
+        let hints = slash_completion_hints("/", 128, &[], Locale::En);
+        assert!(!hints.iter().any(|hint| hint.name == "/set"));
+        assert!(!hints.iter().any(|hint| hint.name == "/deepseek"));
+    }
+
+    #[test]
+    fn slash_completion_hints_include_skills() {
+        let cached_skills = vec![
+            ("search-files".to_string(), "Search files".to_string()),
+            ("my-review".to_string(), "Review code".to_string()),
+        ];
+        let hints = slash_completion_hints("/", 128, &cached_skills, Locale::En);
+        assert!(
+            hints
+                .iter()
+                .any(|hint| hint.name == "/skill search-files" && hint.is_skill)
+        );
+        assert!(
+            hints
+                .iter()
+                .any(|hint| hint.name == "/skill my-review" && hint.is_skill)
+        );
+    }
+
+    #[test]
+    fn slash_completion_hints_skills_match_prefix() {
+        let cached_skills = vec![
+            ("search-files".to_string(), "Search files".to_string()),
+            ("my-review".to_string(), "Review code".to_string()),
+        ];
+        let hints = slash_completion_hints("/se", 128, &cached_skills, Locale::En);
+        assert!(
+            hints
+                .iter()
+                .any(|hint| hint.name == "/skill search-files" && hint.is_skill)
+        );
+        assert!(!hints.iter().any(|hint| hint.name == "/skill my-review"));
+    }
+
+    #[test]
+    fn slash_completion_hints_complete_skill_argument_prefix() {
+        let cached_skills = vec![
+            ("search-files".to_string(), "Search files".to_string()),
+            ("my-review".to_string(), "Review code".to_string()),
+        ];
+        let hints = slash_completion_hints("/skill my", 128, &cached_skills, Locale::En);
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].name, "/skill my-review");
+        assert!(hints[0].is_skill);
     }
 
     #[test]
@@ -2079,7 +2283,7 @@ mod tests {
         let mut app = create_test_app();
         // Pin density so the test is independent of any loaded user settings.
         app.composer_density = ComposerDensity::Comfortable;
-        let slash_menu_entries = Vec::<String>::new();
+        let slash_menu_entries = Vec::<SlashMenuEntry>::new();
         let mention_menu_entries = Vec::<String>::new();
         let widget = ComposerWidget::new(&app, 5, &slash_menu_entries, &mention_menu_entries);
 
@@ -2104,7 +2308,7 @@ mod tests {
     fn empty_composer_cursor_accounts_for_placeholder_wrapping() {
         let mut app = create_test_app();
         app.composer_density = ComposerDensity::Comfortable;
-        let slash_menu_entries = Vec::<String>::new();
+        let slash_menu_entries = Vec::<SlashMenuEntry>::new();
         let mention_menu_entries = Vec::<String>::new();
         let widget = ComposerWidget::new(&app, 5, &slash_menu_entries, &mention_menu_entries);
 
@@ -2139,9 +2343,19 @@ mod tests {
         app.composer_density = ComposerDensity::Comfortable;
         app.input = "/skill".to_string();
 
-        let many_matches: Vec<String> = (0..5).map(|i| format!("/skill{i}")).collect();
-        let one_match = vec!["/skill".to_string()];
-        let no_matches = Vec::<String>::new();
+        let many_matches: Vec<SlashMenuEntry> = (0..5)
+            .map(|i| SlashMenuEntry {
+                name: format!("/skill{i}"),
+                description: String::new(),
+                is_skill: false,
+            })
+            .collect();
+        let one_match = vec![SlashMenuEntry {
+            name: "/skill".to_string(),
+            description: String::new(),
+            is_skill: false,
+        }];
+        let no_matches = Vec::<SlashMenuEntry>::new();
 
         let widget_many = ComposerWidget::new(&app, 9, &many_matches, &[]);
         let widget_one = ComposerWidget::new(&app, 9, &one_match, &[]);
@@ -2170,7 +2384,7 @@ mod tests {
         let mut app = create_test_app();
         app.composer_density = ComposerDensity::Comfortable;
         app.composer_border = false;
-        let slash_menu_entries = Vec::<String>::new();
+        let slash_menu_entries = Vec::<SlashMenuEntry>::new();
         let mention_menu_entries = Vec::<String>::new();
         let widget = ComposerWidget::new(&app, 3, &slash_menu_entries, &mention_menu_entries);
 
@@ -2190,7 +2404,7 @@ mod tests {
             let mut app = create_test_app();
             app.ui_locale = locale;
             app.composer_density = ComposerDensity::Comfortable;
-            let slash_menu_entries = Vec::<String>::new();
+            let slash_menu_entries = Vec::<SlashMenuEntry>::new();
             let mention_menu_entries = Vec::<String>::new();
             let widget = ComposerWidget::new(&app, 5, &slash_menu_entries, &mention_menu_entries);
             let area = Rect {

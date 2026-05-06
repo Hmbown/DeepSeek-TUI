@@ -285,7 +285,7 @@ pub fn persist_feature_flag(key: &str, enabled: bool) -> anyhow::Result<PathBuf>
 /// Resolve the path to `~/.deepseek/config.toml` (or
 /// `$DEEPSEEK_CONFIG_PATH`). Mirrors what `Config::load` accepts so we
 /// never write to a different file than the one we read.
-fn config_toml_path() -> anyhow::Result<PathBuf> {
+pub(super) fn config_toml_path() -> anyhow::Result<PathBuf> {
     use anyhow::Context;
     if let Ok(env) = std::env::var("DEEPSEEK_CONFIG_PATH") {
         let trimmed = env.trim();
@@ -428,6 +428,11 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
             app.ui_locale = resolve_locale(&settings.locale);
             app.needs_redraw = true;
         }
+        "cost_currency" | "currency" => {
+            app.cost_currency = crate::pricing::CostCurrency::from_setting(&settings.cost_currency)
+                .unwrap_or(crate::pricing::CostCurrency::Usd);
+            app.needs_redraw = true;
+        }
         "composer_density" | "composer" => {
             app.composer_density =
                 crate::tui::app::ComposerDensity::from_setting(&settings.composer_density);
@@ -482,6 +487,7 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
 
     let display_value = match key.as_str() {
         "default_mode" | "mode" => settings.default_mode.clone(),
+        "cost_currency" | "currency" => settings.cost_currency.clone(),
         _ => value.to_string(),
     };
 

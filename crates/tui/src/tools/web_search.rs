@@ -474,13 +474,53 @@ fn strip_html_tags(text: &str) -> String {
 }
 
 fn decode_html_entities(text: &str) -> String {
-    text.replace("&amp;", "&")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&#x27;", "'")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&nbsp;", " ")
+    use regex::Regex;
+    use std::sync::OnceLock;
+
+    static ENTITY_RE: OnceLock<Regex> = OnceLock::new();
+    let re = ENTITY_RE.get_or_init(|| {
+        Regex::new(r"&(?:#(\d+)|#x([0-9A-Fa-f]+)|([a-zA-Z]+));").expect("HTML entity regex")
+    });
+
+    re.replace_all(text, |caps: &regex::Captures| {
+        if let Some(dec) = caps.get(1) {
+            return dec
+                .as_str()
+                .parse::<u32>()
+                .ok()
+                .and_then(std::char::from_u32)
+                .unwrap_or('\u{FFFD}')
+                .to_string();
+        }
+        if let Some(hex) = caps.get(2) {
+            return u32::from_str_radix(hex.as_str(), 16)
+                .ok()
+                .and_then(std::char::from_u32)
+                .unwrap_or('\u{FFFD}')
+                .to_string();
+        }
+        let named = caps.get(3).map(|m| m.as_str());
+        match named {
+            Some("amp") => "&",
+            Some("lt") => "<",
+            Some("gt") => ">",
+            Some("quot") => "\"",
+            Some("apos") => "'",
+            Some("nbsp") => " ",
+            Some("copy") => "\u{00A9}",
+            Some("reg") => "\u{00AE}",
+            Some("mdash") => "\u{2014}",
+            Some("ndash") => "\u{2013}",
+            Some("lsquo") => "\u{2018}",
+            Some("rsquo") => "\u{2019}",
+            Some("ldquo") => "\u{201C}",
+            Some("rdquo") => "\u{201D}",
+            Some("hellip") => "\u{2026}",
+            _ => return caps.get(0).map(|m| m.as_str()).unwrap_or("").to_string(),
+        }
+        .to_string()
+    })
+    .to_string()
 }
 
 fn url_encode(input: &str) -> String {
@@ -524,8 +564,46 @@ fn extract_query_param(url: &str, key: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_search_query, optional_search_max_results};
+    use super::{decode_html_entities, extract_search_query, optional_search_max_results};
     use serde_json::json;
+
+    #[test]
+    fn decode_html_entities_handles_named_entities() {
+        assert_eq!(decode_html_entities("&amp;"), "&");
+        assert_eq!(decode_html_entities("&lt;"), "<");
+        assert_eq!(decode_html_entities("&gt;"), ">");
+        assert_eq!(decode_html_entities("&quot;"), "\"");
+        assert_eq!(decode_html_entities("&apos;"), "'");
+        assert_eq!(decode_html_entities("&nbsp;"), " ");
+        assert_eq!(decode_html_entities("&copy;"), "\u{00A9}");
+        assert_eq!(decode_html_entities("&mdash;"), "\u{2014}");
+    }
+
+    #[test]
+    fn decode_html_entities_handles_decimal_numeric_references() {
+        assert_eq!(decode_html_entities("&#65;"), "A");
+        assert_eq!(decode_html_entities("&#60;"), "<");
+        assert_eq!(decode_html_entities("&#8211;"), "\u{2013}");
+    }
+
+    #[test]
+    fn decode_html_entities_handles_hex_numeric_references() {
+        assert_eq!(decode_html_entities("&#x41;"), "A");
+        assert_eq!(decode_html_entities("&#x3C;"), "<");
+        assert_eq!(decode_html_entities("&#x2014;"), "\u{2014}");
+    }
+
+    #[test]
+    fn decode_html_entities_passthrough_unknown() {
+        assert_eq!(decode_html_entities("&unknown;"), "&unknown;");
+    }
+
+    #[test]
+    fn decode_html_entities_mixed_content() {
+        let input = "Hello &amp; welcome to &quot;Rust&apos;s world&quot; &mdash; enjoy!";
+        let expected = "Hello & welcome to \"Rust's world\" \u{2014} enjoy!";
+        assert_eq!(decode_html_entities(input), expected);
+    }
 
     #[test]
     fn extract_search_query_accepts_legacy_query() {
