@@ -2014,6 +2014,41 @@ fn mention_popup_lists_workspace_matches_for_cursor_partial() {
 }
 
 #[test]
+fn mention_popup_reuses_cache_when_cursor_moves_inside_same_token() {
+    let tmpdir = TempDir::new().expect("tempdir");
+    std::fs::create_dir_all(tmpdir.path().join("docs")).unwrap();
+    std::fs::write(tmpdir.path().join("docs/alpha.md"), "x").unwrap();
+
+    let mut app = create_test_app();
+    app.workspace = tmpdir.path().to_path_buf();
+    app.input = "look at @docs/".to_string();
+    app.cursor_position = app.input.chars().count();
+
+    let entries = visible_mention_menu_entries(&mut app, 6);
+    assert!(entries.iter().any(|e| e == "docs/alpha.md"));
+
+    std::fs::write(tmpdir.path().join("docs/beta.md"), "x").unwrap();
+    app.cursor_position = "look at @do".chars().count();
+
+    let entries_after_cursor_move = visible_mention_menu_entries(&mut app, 6);
+    assert_eq!(
+        entries_after_cursor_move, entries,
+        "cursor movement inside one @mention token should not re-walk the workspace",
+    );
+
+    app.input = "look at @docs/b".to_string();
+    app.cursor_position = app.input.chars().count();
+
+    let entries_after_partial_change = visible_mention_menu_entries(&mut app, 6);
+    assert!(
+        entries_after_partial_change
+            .iter()
+            .any(|e| e == "docs/beta.md"),
+        "changing the partial should invalidate the completion cache",
+    );
+}
+
+#[test]
 fn mention_popup_respects_hidden_flag() {
     let tmpdir = TempDir::new().expect("tempdir");
     std::fs::write(tmpdir.path().join("README.md"), "x").unwrap();

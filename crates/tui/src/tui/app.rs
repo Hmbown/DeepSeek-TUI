@@ -466,18 +466,18 @@ impl VimMode {
     }
 }
 
-/// Cached @-mention completion results to avoid re-walking the filesystem
-/// on every keystroke. The cache is invalidated when the partial text,
-/// cursor position, or input content changes.
+/// Cached @-mention completion results to avoid re-walking the filesystem when
+/// the cursor moves inside the same mention token.
 #[derive(Debug, Clone)]
 pub struct MentionCompletionCache {
+    /// Workspace root used for this completion walk.
+    pub workspace: PathBuf,
+    /// Process cwd captured for cwd-relative completion entries.
+    pub cwd: Option<PathBuf>,
     /// The partial text after `@` that triggered this completion.
     pub partial: String,
-    /// Cursor position (in chars) when the completion was computed.
-    pub cursor_position: usize,
-    /// Input content hash to detect edits that don't change the partial
-    /// but change the surrounding context (e.g., typing before `@`).
-    pub input_hash: u64,
+    /// Candidate limit used for this completion walk.
+    pub limit: usize,
     /// Cached completion entries.
     pub entries: Vec<String>,
 }
@@ -501,9 +501,8 @@ pub struct ComposerState {
     pub slash_menu_hidden: bool,
     pub mention_menu_selected: usize,
     pub mention_menu_hidden: bool,
-    /// Cached @-mention completions to avoid re-walking the filesystem on
-    /// every keystroke. Invalidated when the partial text, cursor position,
-    /// or input content changes.
+    /// Cached @-mention completions to avoid re-walking the filesystem when
+    /// the cursor moves inside the same mention token.
     pub mention_completion_cache: Option<MentionCompletionCache>,
     /// Whether vim modal editing is enabled for this composer.
     /// Sourced from `Settings::composer_vim_mode` at startup.

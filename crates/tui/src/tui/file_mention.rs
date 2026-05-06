@@ -195,39 +195,30 @@ pub fn visible_mention_menu_entries(app: &mut App, limit: usize) -> Vec<String> 
         return Vec::new();
     }
 
-    // Check cache validity: same partial, same cursor position, same input
-    let input_hash = fast_input_hash(&app.input);
+    let workspace = app.workspace.clone();
+    let cwd = std::env::current_dir().ok();
     if let Some(ref cache) = app.composer.mention_completion_cache {
-        if cache.partial == partial
-            && cache.cursor_position == app.cursor_position
-            && cache.input_hash == input_hash
+        if cache.workspace == workspace
+            && cache.cwd == cwd
+            && cache.partial == partial
+            && cache.limit == limit
         {
             return cache.entries.clone();
         }
     }
 
-    // Cache miss — compute completions
-    let ws = workspace_for_app(app);
+    let ws = Workspace::with_cwd(workspace.clone(), cwd.clone());
     let entries = find_file_mention_completions(&ws, &partial, limit);
 
-    // Update cache
     app.composer.mention_completion_cache = Some(MentionCompletionCache {
+        workspace,
+        cwd,
         partial,
-        cursor_position: app.cursor_position,
-        input_hash,
+        limit,
         entries: entries.clone(),
     });
 
     entries
-}
-
-/// Fast hash of input content for cache invalidation. Uses length + first
-/// and last byte to detect changes without iterating the full string.
-fn fast_input_hash(input: &str) -> u64 {
-    let len = input.len() as u64;
-    let first = input.as_bytes().first().copied().unwrap_or(0) as u64;
-    let last = input.as_bytes().last().copied().unwrap_or(0) as u64;
-    len | (first << 32) | (last << 40)
 }
 
 /// Apply the currently selected `@`-mention popup entry to the composer
