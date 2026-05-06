@@ -65,6 +65,7 @@ fn expand_model_alias(name: &str) -> String {
 mod tests {
     use super::*;
     use crate::config::Config;
+    use crate::localization::Locale;
     use crate::tui::app::TuiOptions;
     use std::path::PathBuf;
 
@@ -90,7 +91,13 @@ mod tests {
             resume_session_id: None,
             initial_input: None,
         };
-        App::new(options, &Config::default())
+        let cfg = Config {
+            provider: Some("deepseek".to_string()),
+            ..Default::default()
+        };
+        let mut app = App::new(options, &cfg);
+        app.ui_locale = Locale::En;
+        app
     }
 
     #[test]

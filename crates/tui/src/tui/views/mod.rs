@@ -513,16 +513,20 @@ enum ConfigSection {
 }
 
 impl ConfigSection {
-    fn label(self) -> &'static str {
-        match self {
-            ConfigSection::Model => "Model",
-            ConfigSection::Permissions => "Permissions",
-            ConfigSection::Display => "Display",
-            ConfigSection::Composer => "Composer",
-            ConfigSection::Sidebar => "Sidebar",
-            ConfigSection::History => "History",
-            ConfigSection::Mcp => "MCP",
-        }
+    fn label(self, locale: crate::localization::Locale) -> &'static str {
+        use crate::localization::MessageId;
+        crate::localization::tr(
+            locale,
+            match self {
+                ConfigSection::Model => MessageId::ConfigSectionModel,
+                ConfigSection::Permissions => MessageId::ConfigSectionPermissions,
+                ConfigSection::Display => MessageId::ConfigSectionDisplay,
+                ConfigSection::Composer => MessageId::ConfigSectionComposer,
+                ConfigSection::Sidebar => MessageId::ConfigSectionSidebar,
+                ConfigSection::History => MessageId::ConfigSectionHistory,
+                ConfigSection::Mcp => MessageId::ConfigSectionMcp,
+            },
+        )
     }
 }
 
@@ -718,7 +722,7 @@ impl ConfigView {
             return true;
         }
 
-        let section = row.section.label().to_lowercase();
+        let section = row.section.label(self.locale).to_lowercase();
         let key = row.key.to_lowercase();
         let value = row.value.to_lowercase();
         let scope = row.scope.label().to_lowercase();
@@ -1270,7 +1274,7 @@ impl ModalView for ConfigView {
                 match item {
                     ConfigListItem::Section(section) => {
                         lines.push(Line::from(Span::styled(
-                            format!("  {}", section.label()),
+                            format!("  {}", section.label(self.locale)),
                             Style::default().fg(palette::DEEPSEEK_SKY).bold(),
                         )));
                     }
@@ -1775,7 +1779,9 @@ mod tests {
             resume_session_id: None,
             initial_input: None,
         };
-        App::new(options, &Config::default())
+        let mut app = App::new(options, &Config::default());
+        app.ui_locale = Locale::En;
+        app
     }
 
     fn type_filter(view: &mut ConfigView, text: &str) {
@@ -1789,7 +1795,7 @@ mod tests {
         view.visible_items()
             .into_iter()
             .filter_map(|item| match item {
-                ConfigListItem::Section(section) => Some(section.label()),
+                ConfigListItem::Section(section) => Some(section.label(view.locale)),
                 ConfigListItem::Row(_) => None,
             })
             .collect()
@@ -1822,13 +1828,13 @@ mod tests {
         assert_eq!(
             visible_section_labels(&view),
             vec![
-                ConfigSection::Model.label(),
-                ConfigSection::Permissions.label(),
-                ConfigSection::Display.label(),
-                ConfigSection::Composer.label(),
-                ConfigSection::Sidebar.label(),
-                ConfigSection::History.label(),
-                ConfigSection::Mcp.label(),
+                ConfigSection::Model.label(view.locale),
+                ConfigSection::Permissions.label(view.locale),
+                ConfigSection::Display.label(view.locale),
+                ConfigSection::Composer.label(view.locale),
+                ConfigSection::Sidebar.label(view.locale),
+                ConfigSection::History.label(view.locale),
+                ConfigSection::Mcp.label(view.locale),
             ]
         );
     }
