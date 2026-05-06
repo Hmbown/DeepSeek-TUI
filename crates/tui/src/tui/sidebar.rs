@@ -457,11 +457,12 @@ fn render_sidebar_subagents(f: &mut Frame, area: Rect, app: &App) {
     }
 
     let content_width = area.width.saturating_sub(4) as usize;
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(usize::from(area.height).max(4));
 
-    // Demoted to navigator (issue #128): the in-transcript DelegateCard /
-    // FanoutCard now carries the live action tree and dot-grid. The sidebar
-    // shows just count + role-mix so the user can scan parallel work at a
-    // glance and scroll to the matching transcript card for detail.
+    // ── Agents workbench (#407) ───────────────────────────────────
+    // Shows each individual sub-agent with status, id, and a summary
+    // of what it's doing. Falls back to the compact navigator view
+    // only when there are fanout-count hints but no cached agents.
     let cached_ids: std::collections::HashSet<&str> = app
         .subagent_cache
         .iter()
@@ -472,34 +473,164 @@ fn render_sidebar_subagents(f: &mut Frame, area: Rect, app: &App) {
         .keys()
         .filter(|id| !cached_ids.contains(id.as_str()))
         .count();
-    let cached_running = app
-        .subagent_cache
-        .iter()
-        .filter(|agent| matches!(agent.status, SubAgentStatus::Running))
-        .count();
-    let role_counts: std::collections::BTreeMap<String, usize> =
-        app.subagent_cache
-            .iter()
-            .fold(std::collections::BTreeMap::new(), |mut acc, agent| {
-                *acc.entry(agent.agent_type.as_str().to_string())
-                    .or_insert(0) += 1;
-                acc
-            });
-    let (fanout_running, fanout_total) = active_fanout_counts(app)
+    let (_fanout_running, fanout_total) = active_fanout_counts(app)
         .map(|(running, total)| (running, Some(total)))
         .unwrap_or((0, None));
     let foreground_rlm_running = foreground_rlm_running(app);
+    let total_agents = app.subagent_cache.len() + progress_only_count;
+    let fanout_total = fanout_total.unwrap_or(0);
 
-    let summary = SidebarSubagentSummary {
-        cached_total: app.subagent_cache.len(),
-        cached_running,
-        progress_only_count,
-        fanout_total,
-        fanout_running,
-        foreground_rlm_running,
-        role_counts,
-    };
-    let lines = subagent_navigator_lines(&summary, content_width);
+    // Empty state
+    if total_agents == 0 && fanout_total == 0 && !foreground_rlm_running {
+        lines.push(Line::from(Span::styled(
+            "No agents",
+            Style::default().fg(palette::TEXT_MUTED),
+        )));
+        render_sidebar_section(f, area, "Agents", lines);
+        return;
+    }
+
+    // ── Summary header ────────────────────────────────────────────
+    let running_count = app
+        .subagent_cache
+        .iter()
+        .filter(|a| matches!(a.status, SubAgentStatus::Running))
+        .count();
+    let done_count = app
+        .subagent_cache
+        .iter()
+        .filter(|a| matches!(a.status, SubAgentStatus::Completed))
+        .count();
+    let failed_count = app
+        .subagent_cache
+        .iter()
+        .filter(|a| matches!(a.status, SubAgentStatus::Failed(_) | SubAgentStatus::Interrupted(_) | SubAgentStatus::Cancelled))
+        .count();
+
+    let mut header_parts = Vec::new();
+    if running_count > 0 {
+        header_parts.push(Span::styled(
+            format!("{running_count} running"),
+            Style::default().fg(palette::DEEPSEEK_SKY).bold(),
+        ));
+    }
+    if done_count > 0 {
+        header_parts.push(Span::styled(
+            format!("{done_count} done"),
+            Style::default().fg(palette::STATUS_SUCCESS),
+        ));
+    }
+    if failed_count > 0 {
+        header_parts.push(Span::styled(
+            format!("{failed_count} failed"),
+            Style::default().fg(palette::STATUS_ERROR),
+        ));
+    }
+    if fanout_total > 0 && total_agents == 0 {
+        header_parts.push(Span::styled(
+            format!("{fanout_total} queued"),
+            Style::default().fg(palette::TEXT_MUTED),
+        ));
+    }
+    if !header_parts.is_empty() {
+        lines.push(Line::from(header_parts));
+    }
+
+    let usable_rows = area.height.saturating_sub(3) as usize;
+    let max_items = usable_rows.saturating_sub(lines.len());
+
+    // ── Individual agent entries ──────────────────────────────────
+    if !app.subagent_cache.is_empty() {
+        // Sort: running first, then completed, then failed
+        let mut agents = app.subagent_cache.clone();
+        crate::tui::subagent_routing::sort_subagents_in_place(&mut agents);
+
+        for agent in agents.iter().take(max_items) {
+            let (status_label, color) = match &agent.status {
+                SubAgentStatus::Running => ("RUN", palette::DEEPSEEK_SKY),
+                SubAgentStatus::Completed => ("DONE", palette::STATUS_SUCCESS),
+                SubAgentStatus::Failed(_) => ("FAIL", palette::STATUS_ERROR),
+                SubAgentStatus::Interrupted(_) => ("INT", palette::STATUS_WARNING),
+                SubAgentStatus::Cancelled => ("CNCL", palette::TEXT_DIM),
+            };
+            let agent_type = agent.agent_type.as_str();
+            let nickname = agent
+                .nickname
+                .as_deref()
+                .unwrap_or(agent_type);
+            let id_short = truncate_line_to_width(&agent.agent_id, 10);
+
+            // Status badge + nickname + id
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!(" {status_label} "),
+                    Style::default().fg(color).bg(palette::DEEPSEEK_INK).bold(),
+                ),
+                Span::styled(
+                    format!(" {nickname}"),
+                    Style::default().fg(palette::TEXT_BODY).bold(),
+                ),
+                Span::styled(
+                    format!(" ({id_short})"),
+                    Style::default().fg(palette::TEXT_DIM),
+                ),
+            ]));
+
+            // Objective/summary line
+            let summary = truncate_line_to_width(
+                &agent.assignment.objective,
+                content_width.saturating_sub(2).max(1),
+            );
+            if !summary.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    format!("  {summary}"),
+                    Style::default().fg(palette::TEXT_MUTED),
+                )));
+            }
+
+            // Duration
+            let duration_str = format!("{:.1}s", agent.duration_ms as f64 / 1000.0);
+            lines.push(Line::from(Span::styled(
+                format!("  {duration_str}"),
+                Style::default().fg(palette::TEXT_DIM),
+            )));
+        }
+    }
+
+    // ── Progress-only entries (agents not yet cached) ─────────────
+    if progress_only_count > 0 && lines.len() < usable_rows {
+        let remaining_slots = usable_rows.saturating_sub(lines.len());
+        for id in app.agent_progress.keys().take(remaining_slots) {
+            let short_id = truncate_line_to_width(id, 10);
+            lines.push(Line::from(vec![
+                Span::styled(
+                    " RUN ",
+                    Style::default().fg(palette::DEEPSEEK_SKY).bg(palette::DEEPSEEK_INK).bold(),
+                ),
+                Span::styled(
+                    format!(" {short_id}"),
+                    Style::default().fg(palette::TEXT_DIM),
+                ),
+            ]));
+        }
+    }
+
+    // ── Fanout / RLM hint ────────────────────────────────────────
+    if fanout_total > 0 && lines.len() < usable_rows {
+        lines.push(Line::from(Span::styled(
+            format!("({fanout_total} fanout slots)"),
+            Style::default().fg(palette::TEXT_DIM).italic(),
+        )));
+    }
+    if foreground_rlm_running && lines.len() < usable_rows {
+        lines.push(Line::from(vec![
+            Span::styled("RLM", Style::default().fg(palette::DEEPSEEK_SKY).bold()),
+            Span::styled(
+                " foreground work active",
+                Style::default().fg(palette::TEXT_DIM),
+            ),
+        ]));
+    }
 
     render_sidebar_section(f, area, "Agents", lines);
 }
