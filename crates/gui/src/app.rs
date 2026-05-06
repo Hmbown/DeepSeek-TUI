@@ -57,6 +57,14 @@ struct FileTreeEntry {
     is_dir: bool,
 }
 
+/// Result of an async file-save operation.
+#[derive(Debug, Clone)]
+struct SaveResult {
+    path: PathBuf,
+    success: bool,
+    error: Option<String>,
+}
+
 pub struct GuiApp {
     config: Config,
     engine: Option<EngineHandle>,
@@ -89,6 +97,9 @@ pub struct GuiApp {
     file_tree_pending: HashSet<PathBuf>,
     file_tree_tx: Sender<(PathBuf, Vec<FileTreeEntry>)>,
     file_tree_rx: Receiver<(PathBuf, Vec<FileTreeEntry>)>,
+    // Async file-save results
+    save_result_tx: Sender<SaveResult>,
+    save_result_rx: Receiver<SaveResult>,
 }
 
 impl GuiApp {
@@ -97,6 +108,7 @@ impl GuiApp {
 
         let (event_tx, event_rx) = std::sync::mpsc::channel::<EngineEvent>();
         let (file_tree_tx, file_tree_rx) = std::sync::mpsc::channel::<(PathBuf, Vec<FileTreeEntry>)>();
+        let (save_result_tx, save_result_rx) = std::sync::mpsc::channel::<SaveResult>();
 
         let (config, engine) = match load_config() {
             Ok(cfg) => {
@@ -153,6 +165,8 @@ impl GuiApp {
             file_tree_pending: HashSet::new(),
             file_tree_tx,
             file_tree_rx,
+            save_result_tx,
+            save_result_rx,
         }
     }
 
@@ -481,13 +495,46 @@ impl GuiApp {
         }
     }
 
+    /// Start an async file-save so the UI thread never blocks on I/O.
     fn save_current_file(&mut self) {
-        if let Some(file) = self.open_files.get_mut(self.active_file_index) {
-            if let Err(e) = std::fs::write(&file.path, &file.content) {
-                self.status = format!("Save failed: {e}");
-            } else {
-                file.dirty = false;
-                self.status = "File saved".to_string();
+        if let Some(file) = self.open_files.get(self.active_file_index) {
+            let path = file.path.clone();
+            let content = file.content.clone();
+            let tx = self.save_result_tx.clone();
+            tokio::spawn(async move {
+                match tokio::fs::write(&path, &content).await {
+                    Ok(_) => {
+                        let _ = tx.send(SaveResult {
+                            path,
+                            success: true,
+                            error: None,
+                        });
+                    }
+                    Err(e) => {
+                        let _ = tx.send(SaveResult {
+                            path,
+                            success: false,
+                            error: Some(e.to_string()),
+                        });
+                    }
+                }
+            });
+        }
+    }
+
+    /// Drain async save results and update dirty flags / status.
+    fn poll_save_results(&mut self) {
+        while let Ok(result) = self.save_result_rx.try_recv() {
+            if let Some(file) = self.open_files.iter_mut().find(|f| f.path == result.path) {
+                if result.success {
+                    file.dirty = false;
+                    self.status = "File saved".to_string();
+                } else {
+                    self.status = format!(
+                        "Save failed: {}",
+                        result.error.unwrap_or_default()
+                    );
+                }
             }
         }
     }
@@ -504,6 +551,7 @@ impl eframe::App for GuiApp {
 
         self.poll_engine_events();
         self.poll_file_tree_results();
+        self.poll_save_results();
 
         // Settings window
         if self.show_settings {
@@ -679,12 +727,8 @@ impl eframe::App for GuiApp {
                 );
                 ui.separator();
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    render_file_tree(
-                        ui,
-                        &self.workspace_path,
-                        &mut self.open_files,
-                        &mut self.active_file_index,
-                    );
+                    let workspace = self.workspace_path.clone();
+                    self.render_file_tree(ui, &workspace);
                 });
             });
 
@@ -1162,23 +1206,21 @@ fn init_engine(
     let handle = spawn_engine(engine_config, config);
 
     // Spawn a background task that forwards engine events to the GUI thread.
+    // Uses recv().await instead of try_recv()+sleep to avoid polling latency.
     let engine_clone = handle.clone();
     tokio::spawn(async move {
         loop {
-            let event = {
+            let evt = {
                 let mut rx = engine_clone.rx_event.write().await;
-                rx.try_recv()
+                rx.recv().await
             };
-            match event {
-                Ok(evt) => {
+            match evt {
+                Some(evt) => {
                     if event_tx.send(evt).is_err() {
                         break; // GUI closed
                     }
                 }
-                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-                }
-                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
+                None => break, // Engine sender dropped
             }
         }
     });
@@ -1237,103 +1279,150 @@ fn update_or_insert_line(content: &str, key: &str, value: &str) -> String {
     result
 }
 
-fn render_file_tree(
-    ui: &mut egui::Ui,
-    path: &std::path::Path,
-    open_files: &mut Vec<OpenFile>,
-    active_file_index: &mut usize,
-) {
-    let name = path.file_name().unwrap_or_default().to_string_lossy();
-    if path.is_dir() {
-        // Skip build artifact directories to avoid rendering thousands of files
-        let skip_dirs = ["target", "node_modules", ".git", "dist", "build"];
-        if skip_dirs.contains(&name.as_ref()) {
-            return;
-        }
-        let id = ui.make_persistent_id(path);
-        let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
-            ui.ctx(),
-            id,
-            false, // default collapsed for performance
-        );
-        let is_open = state.is_open();
-        let arrow = if is_open { "▾" } else { "▸" };
-        let header_text = format!("{} {}", arrow, name);
-        let header_response = ui
-            .horizontal(|ui| {
-                ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(header_text)
-                            .color(DeepSeekColors::TEXT_PRIMARY)
-                            .size(13.0),
-                    )
-                    .sense(egui::Sense::click()),
-                )
-            })
-            .inner;
-        if header_response.clicked() {
-            state.toggle(ui);
-        }
-        state.show_body_indented(&header_response, ui, |ui| {
-            if let Ok(entries) = std::fs::read_dir(path) {
-                let mut entries: Vec<_> = entries.flatten().collect();
-                entries.sort_by(|a, b| {
-                    let a_is_dir = a.path().is_dir();
-                    let b_is_dir = b.path().is_dir();
-                    match b_is_dir.cmp(&a_is_dir) {
-                        std::cmp::Ordering::Equal => a.file_name().cmp(&b.file_name()),
-                        other => other,
-                    }
-                });
-                // Limit to 200 entries per directory to avoid UI lag
-                for entry in entries.iter().take(200) {
-                    render_file_tree(ui, &entry.path(), open_files, active_file_index);
+/// Load directory entries off the main thread (blocking I/O).
+fn load_dir_entries(path: &std::path::Path) -> Vec<FileTreeEntry> {
+    let skip_dirs: std::collections::HashSet<&str> =
+        ["target", "node_modules", ".git", "dist", "build"]
+            .iter()
+            .copied()
+            .collect();
+
+    let mut entries = match std::fs::read_dir(path) {
+        Ok(entries) => entries
+            .flatten()
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                if skip_dirs.contains(name.as_str()) {
+                    return None;
                 }
+                let path = e.path();
+                let is_dir = path.is_dir();
+                Some(FileTreeEntry { path, is_dir })
+            })
+            .collect::<Vec<_>>(),
+        Err(_) => Vec::new(),
+    };
+
+    entries.sort_by(|a, b| {
+        match b.is_dir.cmp(&a.is_dir) {
+            std::cmp::Ordering::Equal => {
+                a.path.file_name().cmp(&b.path.file_name())
             }
-        });
-    } else {
-        let is_open = open_files.iter().position(|f| f.path == path);
-        let is_active = is_open.map(|idx| idx == *active_file_index).unwrap_or(false);
-        let text_color = if is_active {
-            DeepSeekColors::TEXT_PRIMARY
-        } else {
-            file_type_color(path)
-        };
-        let icon = file_type_icon(path);
-        let display = format!("{} {}", icon, name);
-        let desired_size = egui::vec2(ui.available_width(), 18.0);
-        let (rect, response) = ui.allocate_at_least(desired_size, egui::Sense::click());
-        if is_active {
-            ui.painter().rect_filled(rect, 0.0, DeepSeekColors::SURFACE_HOVER);
+            other => other,
         }
-        let text_pos = rect.min + egui::vec2(4.0, rect.height() / 2.0);
-        ui.painter().text(
-            text_pos,
-            egui::Align2::LEFT_CENTER,
-            display,
-            egui::FontId::new(13.0, egui::FontFamily::Proportional),
-            text_color,
-        );
-        if response.clicked() {
-            if let Some(idx) = is_open {
-                *active_file_index = idx;
-            } else if let Ok(content) = std::fs::read_to_string(path) {
-                const MAX_TABS: usize = 12;
-                if open_files.len() >= MAX_TABS {
-                    if let Some(idx) = open_files.iter().position(|f| !f.dirty) {
-                        open_files.remove(idx);
-                        if *active_file_index >= idx && *active_file_index > 0 {
-                            *active_file_index -= 1;
+    });
+    entries.truncate(200);
+    entries
+}
+
+impl GuiApp {
+    fn render_file_tree(&mut self, ui: &mut egui::Ui, path: &std::path::Path) {
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        if path.is_dir() {
+            // Skip build artifact directories to avoid rendering thousands of files
+            let skip_dirs = ["target", "node_modules", ".git", "dist", "build"];
+            if skip_dirs.contains(&name.as_ref()) {
+                return;
+            }
+            let id = ui.make_persistent_id(path);
+            let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
+                ui.ctx(),
+                id,
+                false, // default collapsed for performance
+            );
+            let is_open = state.is_open();
+            let arrow = if is_open { "▾" } else { "▸" };
+            let header_text = format!("{} {}", arrow, name);
+            let header_response = ui
+                .horizontal(|ui| {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(header_text)
+                                .color(DeepSeekColors::TEXT_PRIMARY)
+                                .size(13.0),
+                        )
+                        .sense(egui::Sense::click()),
+                    )
+                })
+                .inner;
+            if header_response.clicked() {
+                state.toggle(ui);
+            }
+
+            // Trigger async load if opening for the first time
+            if is_open
+                && !self.file_tree_cache.contains_key(path)
+                && !self.file_tree_pending.contains(path)
+            {
+                self.file_tree_pending.insert(path.to_path_buf());
+                let path = path.to_path_buf();
+                let tx = self.file_tree_tx.clone();
+                std::thread::spawn(move || {
+                    let entries = load_dir_entries(&path);
+                    let _ = tx.send((path, entries));
+                });
+            }
+
+            let cached = self.file_tree_cache.get(path).cloned();
+            let pending = self.file_tree_pending.contains(path);
+            state.show_body_indented(&header_response, ui, |ui| {
+                if let Some(entries) = cached {
+                    for entry in &entries {
+                        self.render_file_tree(ui, &entry.path);
+                    }
+                } else if pending {
+                    ui.label(
+                        egui::RichText::new("…")
+                            .color(DeepSeekColors::TEXT_SECONDARY)
+                            .size(12.0),
+                    );
+                }
+            });
+        } else {
+            let is_open = self.open_files.iter().position(|f| f.path == path);
+            let is_active =
+                is_open.map(|idx| idx == self.active_file_index).unwrap_or(false);
+            let text_color = if is_active {
+                DeepSeekColors::TEXT_PRIMARY
+            } else {
+                file_type_color(path)
+            };
+            let icon = file_type_icon(path);
+            let display = format!("{} {}", icon, name);
+            let desired_size = egui::vec2(ui.available_width(), 18.0);
+            let (rect, response) = ui.allocate_at_least(desired_size, egui::Sense::click());
+            if is_active {
+                ui.painter().rect_filled(rect, 0.0, DeepSeekColors::SURFACE_HOVER);
+            }
+            let text_pos = rect.min + egui::vec2(4.0, rect.height() / 2.0);
+            ui.painter().text(
+                text_pos,
+                egui::Align2::LEFT_CENTER,
+                display,
+                egui::FontId::new(13.0, egui::FontFamily::Proportional),
+                text_color,
+            );
+            if response.clicked() {
+                if let Some(idx) = is_open {
+                    self.active_file_index = idx;
+                } else if let Ok(content) = std::fs::read_to_string(path) {
+                    const MAX_TABS: usize = 12;
+                    if self.open_files.len() >= MAX_TABS {
+                        if let Some(idx) = self.open_files.iter().position(|f| !f.dirty) {
+                            self.open_files.remove(idx);
+                            if self.active_file_index >= idx && self.active_file_index > 0 {
+                                self.active_file_index -= 1;
+                            }
                         }
                     }
+                    self.open_files.push(OpenFile {
+                        path: path.to_path_buf(),
+                        content,
+                        dirty: false,
+                        highlight_cache: None,
+                    });
+                    self.active_file_index = self.open_files.len() - 1;
                 }
-                open_files.push(OpenFile {
-                    path: path.to_path_buf(),
-                    content,
-                    dirty: false,
-                    highlight_cache: None,
-                });
-                *active_file_index = open_files.len() - 1;
             }
         }
     }

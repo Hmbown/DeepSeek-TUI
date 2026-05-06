@@ -2,6 +2,7 @@
 //! terminal UI and the new GUI frontend.
 
 pub mod audit;
+pub mod auto_reasoning;
 pub mod automation_manager;
 pub mod client;
 pub mod command_safety;
@@ -35,7 +36,6 @@ pub mod project_context;
 pub mod project_doc;
 pub mod prompts;
 pub mod repl;
-pub mod responses_api_proxy;
 pub mod retry_status;
 pub mod rlm;
 pub mod runtime_api;
