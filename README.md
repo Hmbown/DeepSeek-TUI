@@ -215,6 +215,7 @@ deepseek pr <N>                                  # fetch PR and pre-seed review 
 deepseek mcp list                                # list configured MCP servers
 deepseek mcp validate                            # validate MCP config/connectivity
 deepseek mcp-server                              # run dispatcher MCP stdio server
+deepseek update                                  # check for and apply binary updates
 ```
 
 ### Keyboard Shortcuts

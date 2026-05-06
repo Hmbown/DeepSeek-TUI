@@ -64,6 +64,7 @@ mod task_manager;
 mod test_support;
 mod tools;
 mod tui;
+pub mod update_check;
 mod utils;
 mod working_set;
 mod workspace_trust;
@@ -3591,6 +3592,31 @@ async fn run_interactive(
             ?err,
             "spillover prune skipped on boot"
         ),
+    }
+
+    // Non-blocking update check: spawn a background task and race against a
+    // short timeout. If a newer version is available, print a one-line hint
+    // before entering the TUI. This never delays startup by more than 2s
+    // (falls back to cached result if network is slow).
+    {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build();
+        if let Ok(rt) = rt {
+            let result = rt.block_on(async {
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(2),
+                    update_check::spawn_update_check(),
+                )
+                .await
+                .ok()
+                .and_then(|r| r.ok())
+                .flatten()
+            });
+            if let Some(update) = result {
+                eprintln!("\n  {}\n", update.notification_message());
+            }
+        }
     }
 
     tui::run_tui(
