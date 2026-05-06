@@ -1021,12 +1021,15 @@ impl McpPool {
 
     /// Merge global config (~/.deepseek/mcp.json) with workspace config.
     /// Workspace entries override global entries with the same server name.
+    /// Global config is only read when HOME is set and the file exists;
+    /// a missing file is fine, but parse errors are propagated.
     pub fn from_workspace_config(workspace_config_path: &std::path::Path) -> Result<Self> {
-        let global_path = dirs::home_dir()
-            .unwrap_or_default()
-            .join(".deepseek")
-            .join("mcp.json");
-        let mut merged = load_config(&global_path).unwrap_or_default();
+        let mut merged = if let Some(home) = dirs::home_dir() {
+            let global_path = home.join(".deepseek").join("mcp.json");
+            load_config(&global_path)?
+        } else {
+            McpConfig::default()
+        };
         let workspace_cfg = load_config(workspace_config_path)?;
         // workspace overrides global for same-named servers
         for (name, server) in workspace_cfg.servers {
