@@ -17,6 +17,34 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 #[test]
+fn composer_newline_shortcuts_do_not_steal_ctrl_enter() {
+    assert!(is_composer_newline_key(KeyEvent::new(
+        KeyCode::Char('j'),
+        KeyModifiers::CONTROL,
+    )));
+    assert!(is_composer_newline_key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::ALT,
+    )));
+    assert!(is_composer_newline_key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::SHIFT,
+    )));
+    assert!(!is_composer_newline_key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert!(!is_composer_newline_key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::CONTROL,
+    )));
+    assert!(!is_composer_newline_key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    )));
+}
+
+#[test]
 fn selection_point_from_position_ignores_top_padding() {
     let area = Rect {
         x: 10,

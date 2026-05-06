@@ -2370,10 +2370,7 @@ async fn run_event_loop(
                     continue;
                 }
                 // Input handling
-                KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    app.insert_char('\n');
-                }
-                KeyCode::Enter if key.modifiers.contains(KeyModifiers::ALT) => {
+                _ if is_composer_newline_key(key) => {
                     app.insert_char('\n');
                 }
                 KeyCode::Enter
@@ -3105,6 +3102,18 @@ fn next_escape_action(app: &App, slash_menu_open: bool) -> EscapeAction {
         EscapeAction::ClearInput
     } else {
         EscapeAction::Noop
+    }
+}
+
+fn is_composer_newline_key(key: KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Char('j') => key.modifiers.contains(KeyModifiers::CONTROL),
+        KeyCode::Enter => {
+            key.modifiers.contains(KeyModifiers::ALT)
+                || (key.modifiers.contains(KeyModifiers::SHIFT)
+                    && !key.modifiers.contains(KeyModifiers::CONTROL))
+        }
+        _ => false,
     }
 }
 
