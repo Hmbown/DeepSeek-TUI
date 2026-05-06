@@ -55,6 +55,7 @@ mod runtime_threads;
 mod sandbox;
 mod schema_migration;
 mod seam_manager;
+pub mod security;
 mod session_manager;
 mod settings;
 mod skills;
