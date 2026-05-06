@@ -696,7 +696,8 @@ impl Renderable for ComposerWidget<'_> {
             };
             let menu_bottom = (menu_top + menu_visible_rows).min(menu_total);
 
-            for (idx, entry) in self.mention_menu_entries
+            for (idx, entry) in self
+                .mention_menu_entries
                 .iter()
                 .enumerate()
                 .take(menu_bottom)
@@ -746,7 +747,8 @@ impl Renderable for ComposerWidget<'_> {
 
             // Label column width for two-column layout (name + description)
             let label_width = 22.min(content_width.saturating_sub(4));
-            for (idx, entry) in self.slash_menu_entries
+            for (idx, entry) in self
+                .slash_menu_entries
                 .iter()
                 .enumerate()
                 .take(menu_bottom)
@@ -771,7 +773,9 @@ impl Renderable for ComposerWidget<'_> {
 
                 // Description column (muted when not selected, secondary when selected)
                 let desc_style = if is_selected {
-                    Style::default().fg(palette::SELECTION_TEXT).bg(palette::SELECTION_BG)
+                    Style::default()
+                        .fg(palette::SELECTION_TEXT)
+                        .bg(palette::SELECTION_BG)
                 } else {
                     Style::default().fg(palette::TEXT_DIM)
                 };
@@ -783,18 +787,24 @@ impl Renderable for ComposerWidget<'_> {
                         let mut w = 0;
                         for ch in entry.name.chars() {
                             let cw = ch.width().unwrap_or(0);
-                            if w + cw + 1 > label_width { break; }
+                            if w + cw + 1 > label_width {
+                                break;
+                            }
                             s.push(ch);
                             w += cw;
                         }
                         s.push('…');
                         // pad to label_width display cols
-                        while s.width() < label_width { s.push(' '); }
+                        while s.width() < label_width {
+                            s.push(' ');
+                        }
                         s
                     } else {
                         // pad to label_width display cols
                         let mut s = entry.name.clone();
-                        while s.width() < label_width { s.push(' '); }
+                        while s.width() < label_width {
+                            s.push(' ');
+                        }
                         s
                     }
                 };
@@ -813,7 +823,9 @@ impl Renderable for ComposerWidget<'_> {
                         let mut w = 0;
                         for ch in entry.description.chars() {
                             let cw = ch.width().unwrap_or(0);
-                            if w + cw + 1 > desc_capacity { break; }
+                            if w + cw + 1 > desc_capacity {
+                                break;
+                            }
                             s.push(ch);
                             w += cw;
                         }
@@ -1911,10 +1923,10 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
 mod tests {
     use super::{
         COMPOSER_PANEL_HEIGHT, ChatWidget, ComposerWidget, Renderable, SlashMenuEntry,
-        apply_selection_to_line,
-        composer_height, composer_max_height, composer_min_input_rows, composer_top_padding,
-        cursor_row_col, layout_input, pad_lines_to_bottom, placeholder_visual_lines,
-        should_render_empty_state, slash_completion_hints, wrap_input_lines, wrap_text,
+        apply_selection_to_line, composer_height, composer_max_height, composer_min_input_rows,
+        composer_top_padding, cursor_row_col, layout_input, pad_lines_to_bottom,
+        placeholder_visual_lines, should_render_empty_state, slash_completion_hints,
+        wrap_input_lines, wrap_text,
     };
     use crate::config::Config;
     use crate::localization::Locale;
@@ -2125,8 +2137,16 @@ mod tests {
             ("my-review".to_string(), "Review code".to_string()),
         ];
         let hints = slash_completion_hints("/", 128, &cached_skills, Locale::En);
-        assert!(hints.iter().any(|hint| hint.name == "/search-files" && hint.is_skill));
-        assert!(hints.iter().any(|hint| hint.name == "/my-review" && hint.is_skill));
+        assert!(
+            hints
+                .iter()
+                .any(|hint| hint.name == "/search-files" && hint.is_skill)
+        );
+        assert!(
+            hints
+                .iter()
+                .any(|hint| hint.name == "/my-review" && hint.is_skill)
+        );
     }
 
     #[test]
@@ -2136,7 +2156,11 @@ mod tests {
             ("my-review".to_string(), "Review code".to_string()),
         ];
         let hints = slash_completion_hints("/se", 128, &cached_skills, Locale::En);
-        assert!(hints.iter().any(|hint| hint.name == "/search-files" && hint.is_skill));
+        assert!(
+            hints
+                .iter()
+                .any(|hint| hint.name == "/search-files" && hint.is_skill)
+        );
         assert!(!hints.iter().any(|hint| hint.name == "/my-review"));
     }
 
@@ -2293,11 +2317,13 @@ mod tests {
         app.composer_density = ComposerDensity::Comfortable;
         app.input = "/skill".to_string();
 
-        let many_matches: Vec<SlashMenuEntry> = (0..5).map(|i| SlashMenuEntry {
-            name: format!("/skill{i}"),
-            description: String::new(),
-            is_skill: false,
-        }).collect();
+        let many_matches: Vec<SlashMenuEntry> = (0..5)
+            .map(|i| SlashMenuEntry {
+                name: format!("/skill{i}"),
+                description: String::new(),
+                is_skill: false,
+            })
+            .collect();
         let one_match = vec![SlashMenuEntry {
             name: "/skill".to_string(),
             description: String::new(),
