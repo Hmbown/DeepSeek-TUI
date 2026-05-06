@@ -1,19 +1,20 @@
-# 🐳 DeepSeek TUI
+# DeepSeek TUI
 
-> **Terminal-native coding agent built for DeepSeek V4: 1M-token context, thinking-mode streaming, and prefix-cache aware. Ships as self-contained Rust binaries — MCP client, sandbox, and durable task queue included.**
+> Terminal coding agent for DeepSeek V4. It runs from the `deepseek` command, streams reasoning blocks, edits local workspaces with approval gates, and can route each turn between Flash/Pro and thinking levels.
 
 [简体中文 README](README.zh-CN.md)
 
 ## Install
 
-`deepseek` ships as a self-contained Rust binary — **no Node.js or Python
-runtime is required to run it.** Pick whichever path you already have on
-your machine; they all land the same binary on your `PATH`.
+`deepseek` is distributed as Rust binaries: the dispatcher command
+(`deepseek`) and the companion TUI runtime (`deepseek-tui`). Pick whichever
+install path you already use; they all put the same commands on your `PATH`.
+The npm package is an installer/wrapper for the release binaries, not the
+agent runtime itself.
 
 ```bash
-# 1. npm — easiest if you already use Node. The npm package is a thin
-#    installer that downloads the matching prebuilt binary from GitHub
-#    Releases; it does NOT add a Node runtime dependency to deepseek itself.
+# 1. npm — easiest if you already use Node. The package downloads the
+#    matching prebuilt Rust binaries from GitHub Releases.
 npm install -g deepseek-tui
 
 # 2. Cargo — no Node needed.
@@ -24,7 +25,7 @@ cargo install deepseek-tui     --locked   # `deepseek-tui` (TUI binary)
 brew tap Hmbown/deepseek-tui
 brew install deepseek-tui
 
-# 4. Direct download — no Node, no toolchain.
+# 4. Direct download — no package manager or toolchain.
 #    https://github.com/Hmbown/DeepSeek-TUI/releases
 #    Prebuilt for Linux x64/ARM64, macOS x64/ARM64, Windows x64.
 ```
@@ -36,9 +37,7 @@ brew install deepseek-tui
 [![CI](https://github.com/Hmbown/DeepSeek-TUI/actions/workflows/ci.yml/badge.svg)](https://github.com/Hmbown/DeepSeek-TUI/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/deepseek-tui)](https://www.npmjs.com/package/deepseek-tui)
 [![crates.io](https://img.shields.io/crates/v/deepseek-tui-cli?label=crates.io)](https://crates.io/crates/deepseek-tui-cli)
-[![DeepWiki](https://img.shields.io/badge/DeepWiki-Ask_AI-_.svg?style=flat&color=0052D9&labelColor=000000&logo=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACwAAAAyCAYAAAAnWDnqAAAAAXNSR0IArs4c6QAAA05JREFUaEPtmUtyEzEQhtWTQyQLHNak2AB7ZnyXZMEjXMGeK/AIi+QuHrMnbChYY7MIh8g01fJoopFb0uhhEqqcbWTp06/uv1saEDv4O3n3dV60RfP947Mm9/SQc0ICFQgzfc4CYZoTPAswgSJCCUJUnAAoRHOAUOcATwbmVLWdGoH//PB8mnKqScAhsD0kYP3j/Yt5LPQe2KvcXmGvRHcDnpxfL2zOYJ1mFwrryWTz0advv1Ut4CJgf5uhDuDj5eUcAUoahrdY/56ebRWeraTjMt/00Sh3UDtjgHtQNHwcRGOC98BJEAEymycmYcWwOprTgcB6VZ5JK5TAJ+fXGLBm3FDAmn6oPPjR4rKCAoJCal2eAiQp2x0vxTPB3ALO2CRkwmDy5WohzBDwSEFKRwPbknEggCPB/imwrycgxX2NzoMCHhPkDwqYMr9tRcP5qNrMZHkVnOjRMWwLCcr8ohBVb1OMjxLwGCvjTikrsBOiA6fNyCrm8V1rP93iVPpwaE+gO0SsWmPiXB+jikdf6SizrT5qKasx5j8ABbHpFTx+vFXp9EnYQmLx02h1QTTrl6eDqxLnGjporxl3NL3agEvXdT0WmEost648sQOYAeJS9Q7bfUVoMGnjo4AZdUMQku50McDcMWcBPvr0SzbTAFDfvJqwLzgxwATnCgnp4wDl6Aa+Ax283gghmj+vj7feE2KBBRMW3FzOpLOADl0Isb5587h/U4gGvkt5v60Z1VLG8BhYjbzRwyQZemwAd6cCR5/XFWLYZRIMpX39AR0tjaGGiGzLVyhse5C9RKC6ai42ppWPKiBagOvaYk8lO7DajerabOZP46Lby5wKjw1HCRx7p9sVMOWGzb/vA1hwiWc6jm3MvQDTogQkiqIhJV0nBQBTU+3okKCFDy9WwferkHjtxib7t3xIUQtHxnIwtx4mpg26/HfwVNVDb4oI9RHmx5WGelRVlrtiw43zboCLaxv46AZeB3IlTkwouebTr1y2NjSpHz68WNFjHvupy3q8TFn3Hos2IAk4Ju5dCo8B3wP7VPr/FGaKiG+T+v+TQqIrOqMTL1VdWV1DdmcbO8KXBz6esmYWYKPwDL5b5FA1a0hwapHiom0r/cKaoqr+27/XcrS5UwSMbQAAAABJRU5ErkJggg==)](https://deepwiki.com/Hmbown/DeepSeek-TUI)
-
-<a href="https://www.buymeacoffee.com/hmbown" target="_blank"><img src="https://img.shields.io/badge/Buy%20me%20a%20coffee-5F7FFF?style=for-the-badge&logo=buymeacoffee&logoColor=white" alt="Buy me a coffee" /></a>
+[DeepWiki project index](https://deepwiki.com/Hmbown/DeepSeek-TUI)
 
 ![DeepSeek TUI screenshot](assets/screenshot.png)
 
@@ -46,23 +45,24 @@ brew install deepseek-tui
 
 ## What Is It?
 
-DeepSeek TUI is a coding agent that runs entirely in your terminal. It gives DeepSeek's frontier models direct access to your workspace — reading and editing files, running shell commands, searching the web, managing git, and orchestrating sub-agents — all through a fast, keyboard-driven TUI.
+DeepSeek TUI is a coding agent that runs in your terminal. It can read and edit files, run shell commands, search the web, manage git, and coordinate sub-agents from a keyboard-driven TUI.
 
-**Built for DeepSeek V4** (`deepseek-v4-pro` / `deepseek-v4-flash`) with 1M-token context window and native thinking-mode (chain-of-thought) streaming.
+It is built around DeepSeek V4 (`deepseek-v4-pro` / `deepseek-v4-flash`), including 1M-token context windows, streaming reasoning blocks, and prefix-cache-aware cost reporting.
 
 ### Key Features
 
-- **Native RLM** (`rlm_query`) — fans out 1–16 cheap `deepseek-v4-flash` children in parallel for batched analysis and parallel reasoning, all against the existing API client
-- **Thinking-mode streaming** — watch the model's chain-of-thought unfold in real time as it works through your tasks
+- **Auto model router** — `--model auto` / `/model auto` chooses Flash or Pro plus thinking `off` / `high` / `max` per turn
+- **Thinking-mode streaming** — see DeepSeek reasoning blocks as the model works
 - **Full tool suite** — file ops, shell execution, git, web search/browse, apply-patch, sub-agents, MCP servers
-- **1M-token context** — automatic intelligent compaction when context fills up; prefix-cache aware for cost efficiency
+- **1M-token context** — context tracking, manual or configured compaction, and prefix-cache telemetry
 - **Three modes** — Plan (read-only explore), Agent (interactive with approval), YOLO (auto-approved)
 - **Reasoning-effort tiers** — cycle through `off → high → max` with `Shift + Tab`
 - **Session save/resume** — checkpoint and resume long-running sessions
 - **Workspace rollback** — side-git pre/post-turn snapshots with `/restore` and `revert_turn`, without touching your repo's `.git`
-- **Durable task queue** — background tasks survive restarts; think scheduled automation, long-running reviews
+- **Durable task queue** — background tasks can survive restarts
 - **HTTP/SSE runtime API** — `deepseek serve --http` for headless agent workflows
 - **MCP protocol** — connect to Model Context Protocol servers for extended tooling; please see [docs/MCP.md](docs/MCP.md)
+- **Native RLM** (`rlm_query`) — run batched analysis through cheap `deepseek-v4-flash` children using the same API client
 - **LSP diagnostics** — inline error/warning surfacing after every edit via rust-analyzer, pyright, typescript-language-server, gopls, clangd
 - **User memory** — optional persistent note file injected into the system prompt for cross-session preferences
 - **Localized UI** — `en`, `ja`, `zh-Hans`, `pt-BR` with auto-detection
@@ -84,7 +84,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full walkthrough.
 ```bash
 npm install -g deepseek-tui
 deepseek --version
-deepseek
+deepseek --model auto
 ```
 
 Prebuilt binaries are published for **Linux x64**, **Linux ARM64** (v0.8.8+), **macOS x64**, **macOS ARM64**, and **Windows x64**. For other targets (musl, riscv64, FreeBSD, etc.), see [Install from source](#install-from-source) or [docs/INSTALL.md](docs/INSTALL.md).
@@ -103,6 +103,23 @@ deepseek doctor                         # verify setup
 ```
 
 > To rotate or remove a saved key: `deepseek auth clear --provider deepseek`.
+
+### Auto Model Router
+
+Use `deepseek --model auto` or `/model auto` when you want DeepSeek TUI to choose both the model and thinking level for each turn.
+
+`auto` is local routing state. Before the real turn is sent, DeepSeek TUI makes a small `deepseek-v4-flash` request with thinking off and asks it to choose one concrete route:
+
+| Route | Typical use |
+|---|---|
+| `deepseek-v4-flash` + `off` | Short answers, simple edits, quick summaries |
+| `deepseek-v4-flash` + `high` | Normal coding and debugging |
+| `deepseek-v4-flash` + `max` | Harder work where Flash is likely enough |
+| `deepseek-v4-pro` + `off` | Pro model without reasoning overhead |
+| `deepseek-v4-pro` + `high` | Complex multi-file work |
+| `deepseek-v4-pro` + `max` | Ambiguous bugs, architecture, release work, security review |
+
+The upstream API never receives `model: "auto"`. It receives the concrete model selected for that turn. If the router call fails or returns an invalid route, the app falls back to a local heuristic. Sub-agents inherit auto routing unless you assign them an explicit model. Cost tracking is attributed to the concrete model that actually ran.
 
 ### Linux ARM64 (Raspberry Pi, Asahi, Graviton, HarmonyOS PC)
 
@@ -181,18 +198,15 @@ VLLM_BASE_URL="http://localhost:8000/v1" deepseek --provider vllm --model deepse
 
 ---
 
-## What's New In v0.8.13
+## What's New In v0.8.14
 
-A stabilization release focused on DeepSeek V4 runtime reliability, tool-call recovery, and TUI truthfulness. [Full changelog](CHANGELOG.md).
+A stabilization release focused on first-run setup, auto model routing, cost accounting, and provider support. [Full changelog](CHANGELOG.md).
 
-- **No-LLM compaction prune** — old verbose tool results are mechanically summarized before any paid summary call; duplicate reads keep only the freshest full body
-- **Repeated-tool anti-loop guard** — the third identical `(tool, args)` call in a turn becomes a corrective tool result instead of another stuck retry
-- **V4 cache-hit footer telemetry** — the status line now understands `usage.prompt_tokens_details.cached_tokens`
-- **Tool-call recovery** — invalid JSON arguments, hallucinated tool names, and strict schema issues are repaired or sanitized before dispatch
-- **Case-sensitive model IDs** — provider-specific model names keep caller-provided case while compact DeepSeek aliases still normalize
-- **Stale busy-state fix** — failed dispatch before turn start clears `working...` so input does not get stuck in pending state
-- **Prompt-free doctor key checks** — diagnostics no longer read the OS keyring
-- **macOS Terminal color compatibility** — `xterm-256color` sessions no longer render whale blues as green/cyan blocks
+- **Auto model routing restored** — `--model auto`, `/model auto`, config `default_model = "auto"`, one-shot prompts, and sub-agents resolve to concrete Flash/Pro routes before calling the API
+- **Per-turn cost accounting fix** — V4 reasoning tokens are counted as billable output when providers report them separately from completion tokens
+- **First-run setup repair** — missing config files now lead users through API key setup and create `~/.deepseek/config.toml`
+- **Settings navigation fix** — arrow-key selection and click highlighting in the config UI work reliably on Windows terminals
+- **vLLM provider support** — self-hosted vLLM endpoints can be used with `--provider vllm` and `VLLM_BASE_URL`
 
 ---
 
@@ -202,6 +216,7 @@ A stabilization release focused on DeepSeek V4 runtime reliability, tool-call re
 deepseek                                         # interactive TUI
 deepseek "explain this function"                 # one-shot prompt
 deepseek --model deepseek-v4-flash "summarize"   # model override
+deepseek --model auto "fix this bug"             # route model + thinking per turn
 deepseek --yolo                                  # auto-approve tools
 deepseek auth set --provider deepseek            # save API key
 deepseek doctor                                  # check setup & connectivity
@@ -362,6 +377,8 @@ This project ships with help from a growing community of contributors:
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Pull requests welcome — check the [open issues](https://github.com/Hmbown/DeepSeek-TUI/issues) for good first contributions.
+
+Support: [Buy me a coffee](https://www.buymeacoffee.com/hmbown).
 
 > [!Note]
 > *Not affiliated with DeepSeek Inc.*
