@@ -75,7 +75,7 @@ use crate::features::{Feature, render_feature_table};
 use crate::llm_client::LlmClient;
 use crate::mcp::{McpConfig, McpPool, McpServerConfig};
 use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt};
-use crate::session_manager::{SessionManager, create_saved_session};
+use crate::session_manager::{SessionManager, create_saved_session, truncate_id};
 use crate::tui::history::{summarize_tool_args, summarize_tool_output};
 
 #[cfg(windows)]
@@ -2660,6 +2660,19 @@ fn fork_session(session_id: Option<String>, last: bool, workspace: &Path) -> Res
         system_prompt.as_ref(),
     );
     manager.save_session(&forked)?;
+
+    let source_title = saved.metadata.title.trim();
+    let source_label = if source_title.is_empty() {
+        "session".to_string()
+    } else {
+        format!("\"{source_title}\"")
+    };
+    println!(
+        "Forked {source_label} ({source_id}) → new session {new_id}",
+        source_id = truncate_id(&saved.metadata.id),
+        new_id = truncate_id(&forked.metadata.id),
+    );
+
     Ok(forked.metadata.id)
 }
 
