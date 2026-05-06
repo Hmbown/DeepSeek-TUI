@@ -12,9 +12,9 @@ function isVersionFlag() {
 function handleVersionFallback(binaryName) {
   if (isVersionFlag()) {
     const binVersion = pkg.deepseekBinaryVersion || pkg.version;
-    console.log(${binaryName} (npm wrapper) v);
-    console.log(inary version: v);
-    console.log(epo: );
+    console.log(`${binaryName} (npm wrapper) v${pkg.version}`);
+    console.log(`binary version: v${binVersion}`);
+    console.log(`repo: ${pkg.repository?.url || 'N/A'}`);
     process.exit(0);
   }
 }

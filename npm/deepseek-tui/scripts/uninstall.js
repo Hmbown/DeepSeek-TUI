@@ -18,8 +18,8 @@ function removeDir(dir) {
 
 try {
   removeDir(downloadDir);
-  console.log(deepseek-tui: cleaned up );
+  console.log(`deepseek-tui: cleaned up`);
 } catch (err) {
-  console.error(deepseek-tui: cleanup failed (), skipping.);
+  console.error(`deepseek-tui: cleanup failed (${err.message}), skipping.`);
   process.exit(0);
 }

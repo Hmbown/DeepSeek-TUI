@@ -1,49 +1,49 @@
 {
-    "name":  "deepseek-tui",
-    "version":  "0.8.12",
-    "deepseekBinaryVersion":  "0.8.12",
-    "description":  "Install and run deepseek and deepseek-tui binaries from GitHub release artifacts.",
-    "author":  "Hmbown",
-    "license":  "MIT",
-    "homepage":  "https://github.com/Hmbown/DeepSeek-TUI",
-    "repository":  {
-                       "type":  "git",
-                       "url":  "git+https://github.com/Hmbown/DeepSeek-TUI.git"
-                   },
-    "bugs":  {
-                 "url":  "https://github.com/Hmbown/DeepSeek-TUI/issues"
-             },
-    "keywords":  [
-                     "deepseek",
-                     "cli",
-                     "tui",
-                     "rust",
-                     "binary",
-                     "terminal"
-                 ],
-    "type":  "commonjs",
-    "bin":  {
-                "deepseek":  "bin/deepseek.js",
-                "deepseek-tui":  "bin/deepseek-tui.js"
-            },
-    "scripts":  {
-                    "release:check":  "node scripts/verify-release-assets.js",
-                    "postinstall":  "node scripts/install.js",
-                    "prepublishOnly":  "node scripts/verify-release-assets.js",
-                    "prepack":  "node scripts/install.js",
-                    "preuninstall":  "node scripts/uninstall.js"
-                },
-    "engines":  {
-                    "node":  "\u003e=18"
-                },
-    "publishConfig":  {
-                          "access":  "public"
-                      },
-    "preferGlobal":  true,
-    "files":  [
-                  "bin/*.js",
-                  "scripts/*.js",
-                  "README.md",
-                  "package.json"
-              ]
+  "name": "deepseek-tui",
+  "version": "0.8.12",
+  "deepseekBinaryVersion": "0.8.12",
+  "description": "Install and run deepseek and deepseek-tui binaries from GitHub release artifacts.",
+  "author": "Hmbown",
+  "license": "MIT",
+  "homepage": "https://github.com/Hmbown/DeepSeek-TUI",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Hmbown/DeepSeek-TUI.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Hmbown/DeepSeek-TUI/issues"
+  },
+  "keywords": [
+    "deepseek",
+    "cli",
+    "tui",
+    "rust",
+    "binary",
+    "terminal"
+  ],
+  "type": "commonjs",
+  "bin": {
+    "deepseek": "bin/deepseek.js",
+    "deepseek-tui": "bin/deepseek-tui.js"
+  },
+  "scripts": {
+    "release:check": "node scripts/verify-release-assets.js",
+    "postinstall": "node scripts/install.js",
+    "prepublishOnly": "node scripts/verify-release-assets.js",
+    "prepack": "node scripts/install.js",
+    "preuninstall": "node scripts/uninstall.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "preferGlobal": true,
+  "files": [
+    "bin/*.js",
+    "scripts/*.js",
+    "README.md",
+    "package.json"
+  ]
 }

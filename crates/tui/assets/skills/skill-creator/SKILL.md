@@ -1,3 +1,7 @@
+<!--
+This SKILL.md is ported from OpenAI's codex repo (MIT-licensed).
+Source: https://github.com/openai/codex/blob/main/codex-rs/skills/src/assets/samples/skill-creator/SKILL.md
+-->
 ---
 name: skill-creator
 description: Guide for creating effective skills. This skill should be used when users want to create a new skill (or update an existing skill) that extends deepseek's capabilities with specialized knowledge, workflows, or tool integrations.
@@ -60,12 +64,12 @@ Every skill consists of a required SKILL.md file and optional bundled resources:
 ```
 skill-name/
 ├── SKILL.md (required)
-�?  ├── YAML frontmatter metadata (required)
-�?  �?  ├── name: (required)
-�?  �?  └── description: (required)
-�?  └── Markdown instructions (required)
+│   ├── YAML frontmatter metadata (required)
+│   │   ├── name: (required)
+│   │   └── description: (required)
+│   └── Markdown instructions (required)
 ├── agents/ (recommended)
-�?  └── openai.yaml - UI metadata for skill lists and chips
+│   └── openai.yaml - UI metadata for skill lists and chips
 └── Bundled Resources (optional)
     ├── scripts/          - Executable code (Python/Bash/etc.)
     ├── references/       - Documentation intended to be loaded into context as needed
