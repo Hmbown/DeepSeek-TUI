@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
+#[cfg(unix)]
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -9,7 +10,7 @@ pub use deepseek_secrets::Secrets;
 use serde::{Deserialize, Serialize};
 
 #[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 pub const CONFIG_FILE_NAME: &str = "config.toml";
 const DEFAULT_DEEPSEEK_MODEL: &str = "deepseek-v4-pro";
@@ -948,6 +949,13 @@ impl ConfigStore {
                 .with_context(|| format!("failed to write config at {}", self.path.display()))?;
             file.write_all(body.as_bytes())
                 .with_context(|| format!("failed to write config at {}", self.path.display()))?;
+            file.set_permissions(fs::Permissions::from_mode(0o600))
+                .with_context(|| {
+                    format!(
+                        "failed to set config permissions at {}",
+                        self.path.display()
+                    )
+                })?;
         }
         #[cfg(not(unix))]
         {
@@ -1378,6 +1386,51 @@ mod tests {
             values.get("api_key").map(String::as_str),
             Some("sk-d***cret")
         );
+    }
+
+    #[test]
+    fn list_values_fully_redacts_short_api_key() {
+        let config = ConfigToml {
+            api_key: Some("short-key".to_string()),
+            ..ConfigToml::default()
+        };
+
+        let values = config.list_values();
+
+        assert_eq!(values.get("api_key").map(String::as_str), Some("********"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_clamps_existing_config_permissions() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "deepseek-config-perms-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).expect("mkdir");
+        let path = dir.join(CONFIG_FILE_NAME);
+        fs::write(&path, "api_key = \"old\"\n").expect("seed config");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).expect("chmod seed");
+
+        let store = ConfigStore {
+            path: path.clone(),
+            config: ConfigToml {
+                api_key: Some("new-secret".to_string()),
+                ..ConfigToml::default()
+            },
+        };
+        store.save().expect("save");
+
+        let mode = fs::metadata(&path).expect("metadata").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
