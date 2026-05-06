@@ -2987,12 +2987,12 @@ fn notification_settings(
     }
 
     let notif = config.notifications_config();
-    let method = crate::tui::notifications::Method::from_str(match &notif.method {
-        crate::config::NotificationMethod::Auto => "auto",
-        crate::config::NotificationMethod::Osc9 => "osc9",
-        crate::config::NotificationMethod::Bel => "bel",
-        crate::config::NotificationMethod::Off => "off",
-    });
+    let method = match notif.method {
+        crate::config::NotificationMethod::Auto => crate::tui::notifications::Method::Auto,
+        crate::config::NotificationMethod::Osc9 => crate::tui::notifications::Method::Osc9,
+        crate::config::NotificationMethod::Bel => crate::tui::notifications::Method::Bel,
+        crate::config::NotificationMethod::Off => crate::tui::notifications::Method::Off,
+    };
 
     Some((
         method,
@@ -3071,18 +3071,14 @@ fn notification_text_summary(text: &str) -> Option<String> {
         return None;
     }
 
-    let mut out = String::new();
-    let mut chars = trimmed.chars();
-    for _ in 0..MAX_CHARS {
-        let Some(ch) = chars.next() else {
-            return Some(trimmed.to_string());
-        };
-        out.push(ch);
+    if let Some((idx, _)) = trimmed.char_indices().nth(MAX_CHARS) {
+        let mut s = String::with_capacity(idx + 3);
+        s.push_str(&trimmed[..idx]);
+        s.push_str("...");
+        Some(s)
+    } else {
+        Some(trimmed.to_string())
     }
-    if chars.next().is_some() {
-        out.push_str("...");
-    }
-    Some(out)
 }
 
 /// Ensure an in-flight streaming Assistant cell exists in history and return
