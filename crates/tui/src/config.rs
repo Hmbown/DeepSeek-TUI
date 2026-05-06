@@ -3,15 +3,15 @@
 use std::collections::HashMap;
 use std::fmt::Write;
 use std::fs;
+#[cfg(unix)]
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 use crate::audit::log_sensitive_event;
 use crate::features::{Features, FeaturesToml, is_known_feature_key};
@@ -2212,14 +2212,14 @@ pub fn ensure_parent_dir(path: &Path) -> Result<()> {
             .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
             let mut perms = fs::metadata(parent)
                 .with_context(|| format!("Failed to read metadata for {}", parent.display()))?
                 .permissions();
             if perms.mode() & 0o077 != 0 {
                 perms.set_mode(perms.mode() & !0o077);
-                fs::set_permissions(parent, perms)
-                    .with_context(|| format!("Failed to set permissions on {}", parent.display()))?;
+                fs::set_permissions(parent, perms).with_context(|| {
+                    format!("Failed to set permissions on {}", parent.display())
+                })?;
             }
         }
     }
@@ -2238,6 +2238,7 @@ fn write_config_file_secure(path: &Path, content: &str) -> Result<()> {
             .mode(0o600)
             .open(path)?;
         file.write_all(content.as_bytes())?;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
     }
     #[cfg(not(unix))]
     {
@@ -2694,6 +2695,8 @@ mod tests {
     use std::collections::HashMap;
     use std::env;
     use std::ffi::OsString;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     struct EnvGuard {
@@ -2933,6 +2936,17 @@ mod tests {
 
         let contents = fs::read_to_string(&expected)?;
         assert!(contents.contains("api_key = \""));
+
+        #[cfg(unix)]
+        {
+            assert_eq!(fs::metadata(&expected)?.permissions().mode() & 0o777, 0o600);
+            let parent = expected.parent().expect("config has parent dir");
+            assert_eq!(fs::metadata(parent)?.permissions().mode() & 0o077, 0);
+
+            fs::set_permissions(&expected, fs::Permissions::from_mode(0o644))?;
+            save_api_key("second-test-key")?;
+            assert_eq!(fs::metadata(&expected)?.permissions().mode() & 0o777, 0o600);
+        }
         Ok(())
     }
 
