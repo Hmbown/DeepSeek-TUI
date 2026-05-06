@@ -1555,6 +1555,10 @@ fn api_key_paste_shortcut_is_not_plain_text_input() {
     assert!(is_paste_shortcut(&ctrl_v));
     assert!(!is_text_input_key(&ctrl_v));
 
+    let legacy_ctrl_v = KeyEvent::new(KeyCode::Char('\u{16}'), KeyModifiers::NONE);
+    assert!(is_paste_shortcut(&legacy_ctrl_v));
+    assert!(!is_text_input_key(&legacy_ctrl_v));
+
     let shifted = KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT);
     assert!(is_text_input_key(&shifted));
 }
