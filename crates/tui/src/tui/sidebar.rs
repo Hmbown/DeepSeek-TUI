@@ -16,6 +16,7 @@ use ratatui::{
 };
 
 use crate::deepseek_theme::active_theme;
+use crate::localization::{Locale, MessageId, tr};
 use crate::palette;
 use crate::tools::plan::StepStatus;
 use crate::tools::subagent::SubAgentStatus;
@@ -499,7 +500,7 @@ fn render_sidebar_subagents(f: &mut Frame, area: Rect, app: &App) {
         foreground_rlm_running,
         role_counts,
     };
-    let lines = subagent_navigator_lines(&summary, content_width);
+    let lines = subagent_navigator_lines(&summary, content_width, app.ui_locale);
 
     render_sidebar_section(f, area, "Agents", lines);
 }
@@ -535,6 +536,7 @@ fn foreground_rlm_running(app: &App) -> bool {
 pub fn subagent_navigator_lines(
     summary: &SidebarSubagentSummary,
     content_width: usize,
+    locale: Locale,
 ) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(4);
 
@@ -545,7 +547,7 @@ pub fn subagent_navigator_lines(
         && !summary.foreground_rlm_running
     {
         lines.push(Line::from(Span::styled(
-            "No agents",
+            tr(locale, MessageId::SidebarNoAgents),
             Style::default().fg(palette::TEXT_MUTED),
         )));
         return lines;
@@ -785,6 +787,7 @@ fn render_sidebar_section(f: &mut Frame, area: Rect, title: &str, lines: Vec<Lin
 #[cfg(test)]
 mod tests {
     use super::{SidebarSubagentSummary, plan_panel_empty_hint, subagent_navigator_lines};
+    use crate::localization::Locale;
     use ratatui::text::Line;
 
     fn lines_to_text(lines: &[Line<'static>]) -> Vec<String> {
@@ -843,7 +846,7 @@ mod tests {
     #[test]
     fn navigator_empty_state_says_no_agents() {
         let summary = SidebarSubagentSummary::default();
-        let lines = subagent_navigator_lines(&summary, 32);
+        let lines = subagent_navigator_lines(&summary, 32, Locale::En);
         let text = lines_to_text(&lines);
         assert_eq!(text, vec!["No agents".to_string()]);
     }
@@ -863,7 +866,7 @@ mod tests {
             foreground_rlm_running: false,
             role_counts,
         };
-        let text = lines_to_text(&subagent_navigator_lines(&summary, 64));
+        let text = lines_to_text(&subagent_navigator_lines(&summary, 64, Locale::En));
         assert!(text[0].contains("2 running"), "header: {:?}", text[0]);
         assert!(text[0].contains("/ 3"), "total in header: {:?}", text[0]);
         assert!(
@@ -889,7 +892,7 @@ mod tests {
             role_counts: std::collections::BTreeMap::new(),
         };
 
-        let text = lines_to_text(&subagent_navigator_lines(&summary, 64));
+        let text = lines_to_text(&subagent_navigator_lines(&summary, 64, Locale::En));
 
         assert!(text[0].contains("1 running"), "header: {:?}", text[0]);
         assert!(text[0].contains("/ 6"), "fanout total: {:?}", text[0]);
@@ -908,7 +911,7 @@ mod tests {
             foreground_rlm_running: false,
             role_counts,
         };
-        let text = lines_to_text(&subagent_navigator_lines(&summary, 32));
+        let text = lines_to_text(&subagent_navigator_lines(&summary, 32, Locale::En));
         assert!(text[0].contains("1 done"), "settled header: {:?}", text[0]);
     }
 
@@ -928,7 +931,7 @@ mod tests {
             foreground_rlm_running: false,
             role_counts,
         };
-        let lines = subagent_navigator_lines(&summary, 16);
+        let lines = subagent_navigator_lines(&summary, 16, Locale::En);
         let role_line: &str = lines[1]
             .spans
             .first()
@@ -946,7 +949,7 @@ mod tests {
             foreground_rlm_running: true,
             ..SidebarSubagentSummary::default()
         };
-        let text = lines_to_text(&subagent_navigator_lines(&summary, 64));
+        let text = lines_to_text(&subagent_navigator_lines(&summary, 64, Locale::En));
 
         assert!(!text[0].contains("No agents"), "header: {:?}", text);
         assert!(

@@ -9,6 +9,7 @@ use serde_json::Value;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::deepseek_theme::active_theme;
+use crate::localization::Locale;
 use crate::models::{ContentBlock, Message};
 use crate::palette;
 use crate::tools::review::ReviewOutput;
@@ -134,9 +135,15 @@ pub enum SubAgentCell {
 
 impl SubAgentCell {
     pub fn lines(&self, width: u16) -> Vec<Line<'static>> {
+        // No-locale overload — falls back to English. Used by `lines()`
+        // and `transcript_lines()` on `HistoryCell` (test paths).
+        self.lines_with_locale(width, Locale::En)
+    }
+
+    pub fn lines_with_locale(&self, width: u16, locale: Locale) -> Vec<Line<'static>> {
         match self {
-            SubAgentCell::Delegate(card) => card.render_lines(width),
-            SubAgentCell::Fanout(card) => card.render_lines(width),
+            SubAgentCell::Delegate(card) => card.render_lines(width, locale),
+            SubAgentCell::Fanout(card) => card.render_lines(width, locale),
         }
     }
 }
@@ -148,6 +155,7 @@ pub struct TranscriptRenderOptions {
     pub calm_mode: bool,
     pub low_motion: bool,
     pub spacing: TranscriptSpacing,
+    pub locale: Locale,
 }
 
 impl Default for TranscriptRenderOptions {
@@ -158,6 +166,7 @@ impl Default for TranscriptRenderOptions {
             calm_mode: false,
             low_motion: false,
             spacing: TranscriptSpacing::Comfortable,
+            locale: Locale::En,
         }
     }
 }
@@ -275,7 +284,7 @@ impl HistoryCell {
                 width,
             ),
             HistoryCell::System { .. } | HistoryCell::Error { .. } => self.lines(width),
-            HistoryCell::SubAgent(cell) => cell.lines(width),
+            HistoryCell::SubAgent(cell) => cell.lines_with_locale(width, options.locale),
             HistoryCell::ArchivedContext { .. } => {
                 render_archived_context(self, width, options.low_motion)
             }

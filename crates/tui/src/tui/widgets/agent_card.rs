@@ -17,9 +17,10 @@
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
+use crate::localization::{Locale, MessageId, tr};
 use crate::palette;
 use crate::tools::subagent::MailboxMessage;
-use crate::tui::widgets::tool_card::{ToolFamily, family_glyph, family_label};
+use crate::tui::widgets::tool_card::{ToolFamily, family_glyph, family_label_locale};
 
 /// Maximum number of recent actions kept on a `DelegateCard`. Older entries
 /// are dropped from the head; an ellipsis row signals truncation.
@@ -40,14 +41,15 @@ impl AgentLifecycle {
         matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
     }
 
-    fn label(self) -> &'static str {
-        match self {
-            Self::Pending => "pending",
-            Self::Running => "running",
-            Self::Completed => "done",
-            Self::Failed => "failed",
-            Self::Cancelled => "cancelled",
-        }
+    fn label(self, locale: Locale) -> String {
+        let id = match self {
+            Self::Pending => MessageId::AgentLifecyclePending,
+            Self::Running => MessageId::AgentLifecycleRunning,
+            Self::Completed => MessageId::AgentLifecycleDone,
+            Self::Failed => MessageId::AgentLifecycleFailed,
+            Self::Cancelled => MessageId::AgentLifecycleCancelled,
+        };
+        tr(locale, id).to_string()
     }
 
     fn color(self) -> Color {
@@ -99,13 +101,14 @@ impl DelegateCard {
     }
 
     #[must_use]
-    pub fn render_lines(&self, _width: u16) -> Vec<Line<'static>> {
+    pub fn render_lines(&self, _width: u16, locale: Locale) -> Vec<Line<'static>> {
         let mut lines = Vec::with_capacity(self.actions.len() + 3);
         lines.push(card_header(
             ToolFamily::Delegate,
             self.status,
             &self.agent_type,
             &self.agent_id,
+            locale,
         ));
         if self.truncated {
             lines.push(Line::from(Span::styled(
@@ -279,7 +282,7 @@ impl FanoutCard {
     }
 
     #[must_use]
-    pub fn render_lines(&self, _width: u16) -> Vec<Line<'static>> {
+    pub fn render_lines(&self, _width: u16, locale: Locale) -> Vec<Line<'static>> {
         let mut lines = Vec::with_capacity(3);
         let header_status = self.aggregate_status();
         let title = format!("{} ({} workers)", self.kind, self.workers.len());
@@ -288,7 +291,13 @@ impl FanoutCard {
         } else {
             ToolFamily::Fanout
         };
-        lines.push(card_header(family, header_status, &self.kind, &title));
+        lines.push(card_header(
+            family,
+            header_status,
+            &self.kind,
+            &title,
+            locale,
+        ));
         lines.push(Line::from(vec![
             Span::styled("  ", Style::default()),
             Span::styled(
@@ -299,14 +308,15 @@ impl FanoutCard {
             ),
         ]));
         let (done, running, failed, pending) = self.counts();
+        let counts_fmt = tr(locale, MessageId::FanoutCounts);
+        let counts = counts_fmt
+            .replace("{done}", &done.to_string())
+            .replace("{running}", &running.to_string())
+            .replace("{failed}", &failed.to_string())
+            .replace("{pending}", &pending.to_string());
         lines.push(Line::from(vec![
             Span::styled("  ", Style::default()),
-            Span::styled(
-                format!(
-                    "{done} done \u{00B7} {running} running \u{00B7} {failed} failed \u{00B7} {pending} pending"
-                ),
-                Style::default().fg(palette::TEXT_MUTED),
-            ),
+            Span::styled(counts, Style::default().fg(palette::TEXT_MUTED)),
         ]));
         lines
     }
@@ -336,9 +346,10 @@ fn card_header(
     status: AgentLifecycle,
     role: &str,
     detail: &str,
+    locale: Locale,
 ) -> Line<'static> {
     let glyph = family_glyph(family);
-    let verb = family_label(family);
+    let verb = family_label_locale(family, locale);
     let header_color = status.color();
     Line::from(vec![
         Span::styled(
@@ -348,7 +359,7 @@ fn card_header(
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            verb.to_string(),
+            verb,
             Style::default()
                 .fg(header_color)
                 .add_modifier(Modifier::BOLD),
@@ -357,7 +368,7 @@ fn card_header(
         Span::styled(role.to_string(), Style::default().fg(palette::TEXT_PRIMARY)),
         Span::raw(" "),
         Span::styled(
-            format!("[{}]", status.label()),
+            format!("[{}]", status.label(locale)),
             Style::default().fg(header_color),
         ),
         Span::raw(" "),
@@ -507,7 +518,7 @@ mod tests {
             "stable steady-state size"
         );
 
-        let rendered = render_to_strings(&card.render_lines(80));
+        let rendered = render_to_strings(&card.render_lines(80, Locale::En));
         assert!(
             rendered.iter().any(|line| line.contains('\u{2026}')),
             "ellipsis indicator must render: got {rendered:?}"
@@ -541,7 +552,7 @@ mod tests {
         };
         assert!(apply_to_delegate(&mut card, &msg));
         assert_eq!(card.status, AgentLifecycle::Completed);
-        let rendered = render_to_strings(&card.render_lines(80));
+        let rendered = render_to_strings(&card.render_lines(80, Locale::En));
         assert!(
             rendered
                 .iter()
@@ -582,7 +593,7 @@ mod tests {
         card.upsert_worker("w_2", AgentLifecycle::Completed);
         card.upsert_worker("w_3", AgentLifecycle::Completed);
         card.upsert_worker("w_4", AgentLifecycle::Failed);
-        let rendered = render_to_strings(&card.render_lines(80));
+        let rendered = render_to_strings(&card.render_lines(80, Locale::En));
         // The stats row is the one carrying "running" too; the header may
         // mention "done" alone via the lifecycle status badge.
         let stats = rendered

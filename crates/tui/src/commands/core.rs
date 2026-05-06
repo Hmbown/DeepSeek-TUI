@@ -144,8 +144,10 @@ pub fn models(_app: &mut App) -> CommandResult {
 /// List sub-agent status from the engine
 pub fn subagents(app: &mut App) -> CommandResult {
     if app.view_stack.top_kind() != Some(ModalKind::SubAgents) {
-        app.view_stack
-            .push(SubAgentsView::new(app.subagent_cache.clone()));
+        app.view_stack.push(SubAgentsView::new(
+            app.subagent_cache.clone(),
+            app.ui_locale,
+        ));
     }
     app.status_message = Some(tr(app.ui_locale, MessageId::SubagentsFetching).to_string());
     CommandResult::action(AppAction::ListSubAgents)
