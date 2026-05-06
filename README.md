@@ -1,6 +1,6 @@
 # DeepSeek TUI
 
-> Terminal coding agent for DeepSeek V4. It runs from the `deepseek` command, streams reasoning blocks, edits local workspaces with approval gates, and can route each turn between Flash/Pro and thinking levels.
+> Terminal coding agent for DeepSeek V4. It runs from the `deepseek` command, streams reasoning blocks, edits local workspaces with approval gates, and includes an auto mode that chooses both model and thinking level per turn.
 
 [简体中文 README](README.zh-CN.md)
 
@@ -51,7 +51,7 @@ It is built around DeepSeek V4 (`deepseek-v4-pro` / `deepseek-v4-flash`), includ
 
 ### Key Features
 
-- **Auto model router** — `--model auto` / `/model auto` chooses Flash or Pro plus thinking `off` / `high` / `max` per turn
+- **Auto mode** — `--model auto` / `/model auto` chooses both the model and thinking level for each turn
 - **Thinking-mode streaming** — see DeepSeek reasoning blocks as the model works
 - **Full tool suite** — file ops, shell execution, git, web search/browse, apply-patch, sub-agents, MCP servers
 - **1M-token context** — context tracking, manual or configured compaction, and prefix-cache telemetry
@@ -104,22 +104,20 @@ deepseek doctor                         # verify setup
 
 > To rotate or remove a saved key: `deepseek auth clear --provider deepseek`.
 
-### Auto Model Router
+### Auto Mode
 
-Use `deepseek --model auto` or `/model auto` when you want DeepSeek TUI to choose both the model and thinking level for each turn.
+Use `deepseek --model auto` or `/model auto` when you want DeepSeek TUI to decide how much model and reasoning power a turn needs.
 
-`auto` is local routing state. Before the real turn is sent, DeepSeek TUI makes a small `deepseek-v4-flash` request with thinking off and asks it to choose one concrete route:
+Auto mode controls two settings together:
 
-| Route | Typical use |
-|---|---|
-| `deepseek-v4-flash` + `off` | Short answers, simple edits, quick summaries |
-| `deepseek-v4-flash` + `high` | Normal coding and debugging |
-| `deepseek-v4-flash` + `max` | Harder work where Flash is likely enough |
-| `deepseek-v4-pro` + `off` | Pro model without reasoning overhead |
-| `deepseek-v4-pro` + `high` | Complex multi-file work |
-| `deepseek-v4-pro` + `max` | Ambiguous bugs, architecture, release work, security review |
+- Model: `deepseek-v4-flash` or `deepseek-v4-pro`
+- Thinking: `off`, `high`, or `max`
 
-The upstream API never receives `model: "auto"`. It receives the concrete model selected for that turn. If the router call fails or returns an invalid route, the app falls back to a local heuristic. Sub-agents inherit auto routing unless you assign them an explicit model. Cost tracking is attributed to the concrete model that actually ran.
+Before the real turn is sent, the app makes a small `deepseek-v4-flash` routing call with thinking off. That router looks at the latest request and recent context, then selects a concrete model and thinking level for the real request. Short/simple turns can stay on Flash with thinking off; coding, debugging, release work, architecture, security review, or ambiguous multi-step tasks can move up to Pro and/or higher thinking.
+
+`auto` is local to DeepSeek TUI. The upstream API never receives `model: "auto"`; it receives the concrete model and thinking setting chosen for that turn. The TUI shows the selected route, and cost tracking is charged against the model that actually ran. If the router call fails or returns an invalid answer, the app falls back to a local heuristic. Sub-agents inherit auto mode unless you assign them an explicit model.
+
+Use a fixed model or fixed thinking level when you want repeatable benchmarking, a strict cost ceiling, or a specific provider/model mapping.
 
 ### Linux ARM64 (Raspberry Pi, Asahi, Graviton, HarmonyOS PC)
 
@@ -200,9 +198,9 @@ VLLM_BASE_URL="http://localhost:8000/v1" deepseek --provider vllm --model deepse
 
 ## What's New In v0.8.14
 
-A stabilization release focused on first-run setup, auto model routing, cost accounting, and provider support. [Full changelog](CHANGELOG.md).
+A stabilization release focused on first-run setup, auto model + thinking routing, cost accounting, and provider support. [Full changelog](CHANGELOG.md).
 
-- **Auto model routing restored** — `--model auto`, `/model auto`, config `default_model = "auto"`, one-shot prompts, and sub-agents resolve to concrete Flash/Pro routes before calling the API
+- **Auto mode restored** — `--model auto`, `/model auto`, config `default_model = "auto"`, one-shot prompts, and sub-agents resolve to concrete model + thinking routes before calling the API
 - **Per-turn cost accounting fix** — V4 reasoning tokens are counted as billable output when providers report them separately from completion tokens
 - **First-run setup repair** — missing config files now lead users through API key setup and create `~/.deepseek/config.toml`
 - **Settings navigation fix** — arrow-key selection and click highlighting in the config UI work reliably on Windows terminals
@@ -216,7 +214,7 @@ A stabilization release focused on first-run setup, auto model routing, cost acc
 deepseek                                         # interactive TUI
 deepseek "explain this function"                 # one-shot prompt
 deepseek --model deepseek-v4-flash "summarize"   # model override
-deepseek --model auto "fix this bug"             # route model + thinking per turn
+deepseek --model auto "fix this bug"             # auto-select model + thinking
 deepseek --yolo                                  # auto-approve tools
 deepseek auth set --provider deepseek            # save API key
 deepseek doctor                                  # check setup & connectivity
