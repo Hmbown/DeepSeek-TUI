@@ -563,6 +563,8 @@ pub struct StartTurnRequest {
     pub allow_shell: Option<bool>,
     pub trust_mode: Option<bool>,
     pub auto_approve: Option<bool>,
+    #[serde(default)]
+    pub manual_approval: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -574,6 +576,14 @@ pub struct SteerTurnRequest {
 pub struct CompactThreadRequest {
     #[serde(default)]
     pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PendingApprovalRecord {
+    pub id: String,
+    pub tool_name: String,
+    pub description: String,
+    pub requires_full_access: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -639,11 +649,32 @@ fn provider_label_for_model(model: &str) -> &'static str {
 }
 
 #[derive(Debug, Clone)]
+struct PendingApprovalState {
+    id: String,
+    tool_name: String,
+    description: String,
+    requires_full_access: bool,
+}
+
+impl PendingApprovalState {
+    fn into_record(self) -> PendingApprovalRecord {
+        PendingApprovalRecord {
+            id: self.id,
+            tool_name: self.tool_name,
+            description: self.description,
+            requires_full_access: self.requires_full_access,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 struct ActiveTurnState {
     turn_id: String,
     interrupt_requested: bool,
     auto_approve: bool,
     trust_mode: bool,
+    manual_approval: bool,
+    pending_approvals: HashMap<String, PendingApprovalState>,
 }
 
 #[derive(Clone)]
@@ -1452,6 +1483,8 @@ impl RuntimeThreadManager {
                 interrupt_requested: false,
                 auto_approve: req.auto_approve.unwrap_or(thread.auto_approve),
                 trust_mode: req.trust_mode.unwrap_or(thread.trust_mode),
+                manual_approval: req.manual_approval.unwrap_or(false),
+                pending_approvals: HashMap::new(),
             });
             touch_lru(&mut active.lru, thread_id);
         }
@@ -1650,6 +1683,131 @@ impl RuntimeThreadManager {
         Ok(turn)
     }
 
+    pub async fn list_pending_approvals(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+    ) -> Result<Vec<PendingApprovalRecord>> {
+        let active = self.active.lock().await;
+        let Some(active_thread) = active.engines.get(thread_id) else {
+            bail!("Thread is not loaded");
+        };
+        let Some(active_turn) = active_thread.active_turn.as_ref() else {
+            bail!("No active turn on thread {thread_id}");
+        };
+        if active_turn.turn_id != turn_id {
+            bail!("Turn {turn_id} is not active on thread {thread_id}");
+        }
+        Ok(active_turn
+            .pending_approvals
+            .values()
+            .cloned()
+            .map(PendingApprovalState::into_record)
+            .collect())
+    }
+
+    pub async fn approve_pending_approval(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        approval_id: &str,
+    ) -> Result<PendingApprovalRecord> {
+        let (engine, pending) = {
+            let mut active = self.active.lock().await;
+            let Some(active_thread) = active.engines.get_mut(thread_id) else {
+                bail!("Thread is not loaded");
+            };
+            let Some(active_turn) = active_thread.active_turn.as_mut() else {
+                bail!("No active turn on thread {thread_id}");
+            };
+            if active_turn.turn_id != turn_id {
+                bail!("Turn {turn_id} is not active on thread {thread_id}");
+            }
+            let Some(pending) = active_turn.pending_approvals.remove(approval_id) else {
+                bail!("Approval {approval_id} is not pending on turn {turn_id}");
+            };
+            let engine = active_thread.engine.clone();
+            touch_lru(&mut active.lru, thread_id);
+            (engine, pending)
+        };
+
+        let record = pending.clone().into_record();
+        if pending.requires_full_access {
+            engine
+                .retry_tool_with_policy(
+                    pending.id.clone(),
+                    crate::sandbox::SandboxPolicy::DangerFullAccess,
+                )
+                .await
+                .map_err(|e| anyhow!("Failed to retry tool with full access: {e}"))?;
+        } else {
+            engine
+                .approve_tool_call(pending.id.clone())
+                .await
+                .map_err(|e| anyhow!("Failed to approve tool call: {e}"))?;
+        }
+        self.emit_event(
+            thread_id,
+            Some(turn_id),
+            None,
+            "approval.resolved",
+            json!({
+                "id": record.id.clone(),
+                "tool_name": record.tool_name.clone(),
+                "requires_full_access": record.requires_full_access,
+                "decision": if record.requires_full_access { "retry_full_access" } else { "approved" },
+            }),
+        )
+        .await?;
+        Ok(record)
+    }
+
+    pub async fn deny_pending_approval(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        approval_id: &str,
+    ) -> Result<PendingApprovalRecord> {
+        let (engine, pending) = {
+            let mut active = self.active.lock().await;
+            let Some(active_thread) = active.engines.get_mut(thread_id) else {
+                bail!("Thread is not loaded");
+            };
+            let Some(active_turn) = active_thread.active_turn.as_mut() else {
+                bail!("No active turn on thread {thread_id}");
+            };
+            if active_turn.turn_id != turn_id {
+                bail!("Turn {turn_id} is not active on thread {thread_id}");
+            }
+            let Some(pending) = active_turn.pending_approvals.remove(approval_id) else {
+                bail!("Approval {approval_id} is not pending on turn {turn_id}");
+            };
+            let engine = active_thread.engine.clone();
+            touch_lru(&mut active.lru, thread_id);
+            (engine, pending)
+        };
+
+        let record = pending.clone().into_record();
+        engine
+            .deny_tool_call(pending.id.clone())
+            .await
+            .map_err(|e| anyhow!("Failed to deny tool call: {e}"))?;
+        self.emit_event(
+            thread_id,
+            Some(turn_id),
+            None,
+            "approval.resolved",
+            json!({
+                "id": record.id.clone(),
+                "tool_name": record.tool_name.clone(),
+                "requires_full_access": record.requires_full_access,
+                "decision": "denied",
+            }),
+        )
+        .await?;
+        Ok(record)
+    }
+
     pub async fn compact_thread(
         &self,
         thread_id: &str,
@@ -1704,6 +1862,8 @@ impl RuntimeThreadManager {
                 interrupt_requested: false,
                 auto_approve: thread.auto_approve,
                 trust_mode: thread.trust_mode,
+                manual_approval: false,
+                pending_approvals: HashMap::new(),
             });
             touch_lru(&mut active.lru, thread_id);
         }
@@ -2435,6 +2595,24 @@ impl RuntimeThreadManager {
                     description,
                     ..
                 } => {
+                    let (auto_approve, trust_mode, manual_approval) = self
+                        .active_turn_policy(&thread_id, &turn_id)
+                        .await
+                        .unwrap_or((false, false, false));
+                    let pending = manual_approval && !auto_approve;
+                    if pending {
+                        self.register_pending_approval(
+                            &thread_id,
+                            &turn_id,
+                            PendingApprovalState {
+                                id: id.clone(),
+                                tool_name: tool_name.clone(),
+                                description: description.clone(),
+                                requires_full_access: false,
+                            },
+                        )
+                        .await?;
+                    }
                     self.emit_event(
                         &thread_id,
                         Some(&turn_id),
@@ -2444,14 +2622,14 @@ impl RuntimeThreadManager {
                             "id": id,
                             "tool_name": tool_name,
                             "description": description,
+                            "pending": pending,
                         }),
                     )
                     .await?;
 
-                    let (auto_approve, trust_mode) = self
-                        .active_turn_flags(&thread_id, &turn_id)
-                        .await
-                        .unwrap_or((false, false));
+                    if pending {
+                        continue;
+                    }
                     match Self::approval_decision(auto_approve, trust_mode, false) {
                         RuntimeApprovalDecision::ApproveTool => {
                             let _ = engine.approve_tool_call(id).await;
@@ -2468,6 +2646,24 @@ impl RuntimeThreadManager {
                     denial_reason,
                     ..
                 } => {
+                    let (auto_approve, trust_mode, manual_approval) = self
+                        .active_turn_policy(&thread_id, &turn_id)
+                        .await
+                        .unwrap_or((false, false, false));
+                    let pending = manual_approval && !auto_approve;
+                    if pending {
+                        self.register_pending_approval(
+                            &thread_id,
+                            &turn_id,
+                            PendingApprovalState {
+                                id: tool_id.clone(),
+                                tool_name: tool_name.clone(),
+                                description: denial_reason.clone(),
+                                requires_full_access: true,
+                            },
+                        )
+                        .await?;
+                    }
                     self.emit_event(
                         &thread_id,
                         Some(&turn_id),
@@ -2477,13 +2673,13 @@ impl RuntimeThreadManager {
                             "tool_id": tool_id,
                             "tool_name": tool_name,
                             "reason": denial_reason,
+                            "pending": pending,
                         }),
                     )
                     .await?;
-                    let (auto_approve, trust_mode) = self
-                        .active_turn_flags(&thread_id, &turn_id)
-                        .await
-                        .unwrap_or((false, false));
+                    if pending {
+                        continue;
+                    }
                     match Self::approval_decision(auto_approve, trust_mode, true) {
                         RuntimeApprovalDecision::RetryWithFullAccess => {
                             let _ = engine
@@ -2664,14 +2860,47 @@ impl RuntimeThreadManager {
         Ok(turn.turn_id == turn_id && turn.interrupt_requested)
     }
 
+    #[cfg(test)]
     async fn active_turn_flags(&self, thread_id: &str, turn_id: &str) -> Option<(bool, bool)> {
+        self.active_turn_policy(thread_id, turn_id)
+            .await
+            .map(|policy| (policy.0, policy.1))
+    }
+
+    async fn active_turn_policy(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+    ) -> Option<(bool, bool, bool)> {
         let active = self.active.lock().await;
         let state = active.engines.get(thread_id)?;
         let turn = state.active_turn.as_ref()?;
         if turn.turn_id != turn_id {
             return None;
         }
-        Some((turn.auto_approve, turn.trust_mode))
+        Some((turn.auto_approve, turn.trust_mode, turn.manual_approval))
+    }
+
+    async fn register_pending_approval(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        pending: PendingApprovalState,
+    ) -> Result<()> {
+        let mut active = self.active.lock().await;
+        let Some(active_thread) = active.engines.get_mut(thread_id) else {
+            bail!("Thread is not loaded");
+        };
+        let Some(active_turn) = active_thread.active_turn.as_mut() else {
+            bail!("No active turn on thread {thread_id}");
+        };
+        if active_turn.turn_id != turn_id {
+            bail!("Turn {turn_id} is not active on thread {thread_id}");
+        }
+        active_turn
+            .pending_approvals
+            .insert(pending.id.clone(), pending);
+        Ok(())
     }
 
     fn approval_decision(
@@ -3147,6 +3376,8 @@ mod tests {
                     interrupt_requested: false,
                     auto_approve: true,
                     trust_mode: false,
+                    manual_approval: false,
+                    pending_approvals: HashMap::new(),
                 }),
             },
         );
@@ -3159,6 +3390,8 @@ mod tests {
                     interrupt_requested: false,
                     auto_approve: true,
                     trust_mode: false,
+                    manual_approval: false,
+                    pending_approvals: HashMap::new(),
                 }),
             },
         );
@@ -3340,6 +3573,7 @@ mod tests {
                     allow_shell: None,
                     trust_mode: None,
                     auto_approve: None,
+                    manual_approval: None,
                 },
             )
             .await?;
@@ -3425,6 +3659,7 @@ mod tests {
                     allow_shell: None,
                     trust_mode: None,
                     auto_approve: Some(true),
+                    manual_approval: None,
                 },
             )
             .await?;
@@ -3468,6 +3703,7 @@ mod tests {
                     allow_shell: None,
                     trust_mode: None,
                     auto_approve: Some(false),
+                    manual_approval: None,
                 },
             )
             .await?;
@@ -3635,6 +3871,7 @@ mod tests {
                     allow_shell: None,
                     trust_mode: None,
                     auto_approve: None,
+                    manual_approval: None,
                 },
             )
             .await?;
@@ -3652,6 +3889,7 @@ mod tests {
                     allow_shell: None,
                     trust_mode: None,
                     auto_approve: None,
+                    manual_approval: None,
                 },
             )
             .await?;
@@ -3739,6 +3977,7 @@ mod tests {
                     allow_shell: None,
                     trust_mode: None,
                     auto_approve: None,
+                    manual_approval: None,
                 },
             )
             .await?;
@@ -3778,6 +4017,102 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn manual_approval_waits_until_api_resolution() -> Result<()> {
+        let manager = test_manager(test_runtime_dir())?;
+        let thread = manager
+            .create_thread(CreateThreadRequest {
+                model: None,
+                workspace: None,
+                mode: None,
+                allow_shell: None,
+                trust_mode: None,
+                auto_approve: Some(false),
+                archived: false,
+                system_prompt: None,
+                task_id: None,
+            })
+            .await?;
+
+        let mut harness = install_mock_engine(&manager, &thread.id).await;
+        let turn = manager
+            .start_turn(
+                &thread.id,
+                StartTurnRequest {
+                    prompt: "needs manual approval".to_string(),
+                    input_summary: None,
+                    model: None,
+                    mode: None,
+                    allow_shell: None,
+                    trust_mode: None,
+                    auto_approve: Some(false),
+                    manual_approval: Some(true),
+                },
+            )
+            .await?;
+
+        assert!(matches!(
+            harness.rx_op.recv().await,
+            Some(Op::SendMessage { .. })
+        ));
+
+        harness
+            .tx_event
+            .send(EngineEvent::ApprovalRequired {
+                approval_key: "test_key".to_string(),
+                id: "tool_manual".to_string(),
+                tool_name: "exec_command".to_string(),
+                description: "manual approval".to_string(),
+            })
+            .await?;
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), harness.recv_approval_event())
+                .await
+                .is_err(),
+            "manual approval should not auto-deny before API resolution"
+        );
+
+        let pending = manager.list_pending_approvals(&thread.id, &turn.id).await?;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, "tool_manual");
+        assert!(!pending[0].requires_full_access);
+
+        let resolved = manager
+            .approve_pending_approval(&thread.id, &turn.id, "tool_manual")
+            .await?;
+        assert_eq!(resolved.id, "tool_manual");
+        assert_eq!(
+            harness.recv_approval_event().await,
+            Some(MockApprovalEvent::Approved {
+                id: "tool_manual".to_string(),
+            })
+        );
+        assert!(
+            manager
+                .list_pending_approvals(&thread.id, &turn.id)
+                .await?
+                .is_empty()
+        );
+
+        harness
+            .tx_event
+            .send(EngineEvent::TurnComplete {
+                usage: Usage {
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    ..Usage::default()
+                },
+                status: TurnOutcomeStatus::Completed,
+                error: None,
+            })
+            .await?;
+
+        let terminal = wait_for_terminal_turn(&manager, &turn.id, Duration::from_secs(2)).await?;
+        assert_eq!(terminal.status, RuntimeTurnStatus::Completed);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn approval_required_with_stale_active_turn_is_denied() -> Result<()> {
         let manager = test_manager(test_runtime_dir())?;
         let thread = manager
@@ -3806,6 +4141,7 @@ mod tests {
                     allow_shell: None,
                     trust_mode: None,
                     auto_approve: Some(true),
+                    manual_approval: None,
                 },
             )
             .await?;
@@ -3887,6 +4223,7 @@ mod tests {
                     allow_shell: None,
                     trust_mode: Some(true),
                     auto_approve: Some(true),
+                    manual_approval: None,
                 },
             )
             .await?;
@@ -4010,6 +4347,7 @@ mod tests {
                     allow_shell: None,
                     trust_mode: None,
                     auto_approve: None,
+                    manual_approval: None,
                 },
             )
             .await?;
@@ -4156,6 +4494,7 @@ mod tests {
                     allow_shell: None,
                     trust_mode: None,
                     auto_approve: None,
+                    manual_approval: None,
                 },
             )
             .await?;

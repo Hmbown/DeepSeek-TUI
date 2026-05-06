@@ -235,6 +235,7 @@ deepseek resume --last                           # resume the most recent sessio
 deepseek resume <SESSION_ID>                     # resume a specific session by UUID
 deepseek fork <SESSION_ID>                       # fork a session at a chosen turn
 deepseek serve --http                            # HTTP/SSE API server
+deepseek serve --mobile                          # phone-friendly local remote control page
 deepseek serve --acp                             # ACP stdio adapter for Zed/custom agents
 deepseek pr <N>                                  # fetch PR and pre-seed review prompt
 deepseek mcp list                                # list configured MCP servers

@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 use std::convert::Infallible;
 use std::fs;
-use std::net::SocketAddr;
+use std::net::{SocketAddr, UdpSocket};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
@@ -11,8 +11,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use async_stream::stream;
-use axum::extract::{Path, Query, State};
-use axum::http::{HeaderValue, Method, StatusCode};
+use axum::extract::{Path, Query, Request, State};
+use axum::http::{HeaderValue, Method, StatusCode, header};
+use axum::middleware::{self, Next};
+use axum::response::Html;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -24,6 +26,7 @@ use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::{Any, CorsLayer};
+use uuid::Uuid;
 
 use crate::automation_manager::{
     AutomationManager, AutomationRecord, AutomationRunRecord, AutomationSchedulerConfig,
@@ -52,6 +55,8 @@ pub struct RuntimeApiState {
     sessions_dir: PathBuf,
     mcp_config_path: PathBuf,
     automations: SharedAutomationManager,
+    runtime_token: Option<String>,
+    mobile_enabled: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -65,6 +70,11 @@ pub struct RuntimeApiOptions {
     /// `DEEPSEEK_CORS_ORIGINS` (comma-separated), and `[runtime_api]
     /// cors_origins` in `config.toml`. Whalescale#255 / #561.
     pub cors_origins: Vec<String>,
+    /// Enables the built-in mobile control page at `/mobile`.
+    pub mobile: bool,
+    /// Optional bearer token required by API routes. If `mobile` is enabled and
+    /// this is absent, a one-time process-local token is generated.
+    pub auth_token: Option<String>,
 }
 
 impl Default for RuntimeApiOptions {
@@ -74,6 +84,8 @@ impl Default for RuntimeApiOptions {
             port: 7878,
             workers: 2,
             cors_origins: Vec::new(),
+            mobile: false,
+            auth_token: None,
         }
     }
 }
@@ -87,6 +99,7 @@ struct StreamTurnRequest {
     allow_shell: Option<bool>,
     trust_mode: Option<bool>,
     auto_approve: Option<bool>,
+    manual_approval: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -301,6 +314,19 @@ pub async fn run_http_server(
             .map(|h| h.join(".deepseek").join("sessions"))
             .unwrap_or_else(|| PathBuf::from(".deepseek").join("sessions"))
     });
+
+    let mut runtime_token = options
+        .auth_token
+        .clone()
+        .or_else(|| std::env::var("DEEPSEEK_RUNTIME_TOKEN").ok())
+        .filter(|token| !token.trim().is_empty());
+    if options.mobile && runtime_token.is_none() {
+        runtime_token = Some(format!(
+            "dsrt_{}",
+            Uuid::new_v4().to_string().replace('-', "")
+        ));
+    }
+
     let state = RuntimeApiState {
         config: config.clone(),
         workspace,
@@ -310,6 +336,13 @@ pub async fn run_http_server(
         sessions_dir,
         mcp_config_path: config.mcp_config_path(),
         automations,
+        runtime_token,
+        mobile_enabled: options.mobile,
+    };
+    let mobile_token_for_log = if options.mobile {
+        state.runtime_token.clone()
+    } else {
+        None
     };
     let app = build_router(state);
 
@@ -322,6 +355,12 @@ pub async fn run_http_server(
 
     println!("Runtime API listening on http://{addr}");
     println!("Security: this server is local-first. Do not expose it to untrusted networks.");
+    if options.auth_token.is_some() || std::env::var("DEEPSEEK_RUNTIME_TOKEN").is_ok() {
+        println!("Auth: API routes require a bearer token.");
+    }
+    if options.mobile {
+        print_mobile_urls(addr, mobile_token_for_log.as_deref());
+    }
     let serve_result = axum::serve(listener, app)
         .await
         .map_err(|e| anyhow!("Runtime API server error: {e}"));
@@ -331,8 +370,7 @@ pub async fn run_http_server(
 }
 
 pub fn build_router(state: RuntimeApiState) -> Router {
-    Router::new()
-        .route("/health", get(health))
+    let api_routes = Router::new()
         .route("/v1/sessions", get(list_sessions))
         .route("/v1/sessions/{id}", get(get_session).delete(delete_session))
         .route(
@@ -354,6 +392,18 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route(
             "/v1/threads/{id}/turns/{turn_id}/interrupt",
             post(interrupt_thread_turn),
+        )
+        .route(
+            "/v1/threads/{id}/turns/{turn_id}/approvals",
+            get(list_thread_approvals),
+        )
+        .route(
+            "/v1/threads/{id}/turns/{turn_id}/approvals/{approval_id}/approve",
+            post(approve_thread_approval),
+        )
+        .route(
+            "/v1/threads/{id}/turns/{turn_id}/approvals/{approval_id}/deny",
+            post(deny_thread_approval),
         )
         .route("/v1/threads/{id}/compact", post(compact_thread))
         .route("/v1/threads/{id}/events", get(stream_thread_events))
@@ -378,6 +428,16 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/v1/automations/{id}/resume", post(resume_automation))
         .route("/v1/automations/{id}/runs", get(list_automation_runs))
         .route("/v1/usage", get(get_usage))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_runtime_token,
+        ));
+
+    Router::new()
+        .route("/health", get(health))
+        .route("/mobile", get(mobile_page))
+        .route("/mobile/", get(mobile_page))
+        .merge(api_routes)
         .layer(cors_layer(&state.cors_origins))
         .with_state(state)
 }
@@ -388,6 +448,108 @@ async fn health() -> Json<HealthResponse> {
         service: "deepseek-runtime-api",
         mode: "local",
     })
+}
+
+async fn mobile_page(State(state): State<RuntimeApiState>) -> Response {
+    if !state.mobile_enabled {
+        return (
+            StatusCode::NOT_FOUND,
+            "mobile control is disabled; start with `deepseek serve --mobile`",
+        )
+            .into_response();
+    }
+    Html(MOBILE_HTML).into_response()
+}
+
+async fn require_runtime_token(
+    State(state): State<RuntimeApiState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let Some(expected) = state.runtime_token.as_deref() else {
+        return next.run(request).await;
+    };
+
+    let header_token = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|raw| raw.strip_prefix("Bearer "))
+        .map(str::trim)
+        .or_else(|| {
+            request
+                .headers()
+                .get("x-deepseek-runtime-token")
+                .and_then(|value| value.to_str().ok())
+                .map(str::trim)
+        });
+    let query_token = token_from_query(request.uri().query());
+
+    let authorized = header_token.is_some_and(|token| token == expected)
+        || query_token
+            .as_deref()
+            .is_some_and(|token| token == expected);
+
+    if authorized {
+        next.run(request).await
+    } else {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": {
+                    "message": "runtime API token required",
+                    "status": StatusCode::UNAUTHORIZED.as_u16(),
+                }
+            })),
+        )
+            .into_response()
+    }
+}
+
+fn token_from_query(query: Option<&str>) -> Option<String> {
+    let query = query?;
+    for pair in query.split('&') {
+        let mut parts = pair.splitn(2, '=');
+        if parts.next()? != "token" {
+            continue;
+        }
+        let value = parts.next().unwrap_or_default().trim();
+        if !value.is_empty() {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+fn print_mobile_urls(addr: SocketAddr, token: Option<&str>) {
+    let token_query = token
+        .filter(|t| !t.trim().is_empty())
+        .map(|t| format!("?token={t}"))
+        .unwrap_or_default();
+    println!("Mobile control page enabled.");
+    println!("Mobile auth: bearer token required for API routes.");
+
+    let port = addr.port();
+    if addr.ip().is_unspecified() {
+        println!("  Local:   http://127.0.0.1:{port}/mobile{token_query}");
+        if let Some(ip) = detect_lan_ip() {
+            println!("  LAN:     http://{ip}:{port}/mobile{token_query}");
+        } else {
+            println!(
+                "  LAN:     bind is 0.0.0.0; open http://<this-machine-ip>:{port}/mobile{token_query}"
+            );
+        }
+    } else {
+        println!("  URL:     http://{addr}/mobile{token_query}");
+    }
+    println!("Do not expose this port directly to the public internet.");
+}
+
+fn detect_lan_ip() -> Option<String> {
+    let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("8.8.8.8:80").ok()?;
+    let addr = socket.local_addr().ok()?;
+    Some(addr.ip().to_string())
 }
 
 async fn list_sessions(
@@ -979,6 +1141,42 @@ async fn interrupt_thread_turn(
     Ok(Json(turn))
 }
 
+async fn list_thread_approvals(
+    State(state): State<RuntimeApiState>,
+    Path((id, turn_id)): Path<(String, String)>,
+) -> Result<Json<Vec<crate::runtime_threads::PendingApprovalRecord>>, ApiError> {
+    let approvals = state
+        .runtime_threads
+        .list_pending_approvals(&id, &turn_id)
+        .await
+        .map_err(map_thread_err)?;
+    Ok(Json(approvals))
+}
+
+async fn approve_thread_approval(
+    State(state): State<RuntimeApiState>,
+    Path((id, turn_id, approval_id)): Path<(String, String, String)>,
+) -> Result<Json<crate::runtime_threads::PendingApprovalRecord>, ApiError> {
+    let approval = state
+        .runtime_threads
+        .approve_pending_approval(&id, &turn_id, &approval_id)
+        .await
+        .map_err(map_thread_err)?;
+    Ok(Json(approval))
+}
+
+async fn deny_thread_approval(
+    State(state): State<RuntimeApiState>,
+    Path((id, turn_id, approval_id)): Path<(String, String, String)>,
+) -> Result<Json<crate::runtime_threads::PendingApprovalRecord>, ApiError> {
+    let approval = state
+        .runtime_threads
+        .deny_pending_approval(&id, &turn_id, &approval_id)
+        .await
+        .map_err(map_thread_err)?;
+    Ok(Json(approval))
+}
+
 async fn compact_thread(
     State(state): State<RuntimeApiState>,
     Path(id): Path<String>,
@@ -1137,6 +1335,7 @@ async fn stream_turn(
                 allow_shell: Some(allow_shell),
                 trust_mode: Some(trust_mode),
                 auto_approve: Some(auto_approve),
+                manual_approval: req.manual_approval,
             },
         )
         .await
@@ -1468,6 +1667,427 @@ async fn get_usage(
     Ok(Json(json!(aggregation)))
 }
 
+const MOBILE_HTML: &str = r#"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>DeepSeek Mobile Remote</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b0f14;
+      --panel: #121923;
+      --panel-2: #182231;
+      --line: #263345;
+      --text: #e6edf5;
+      --muted: #8ea1b5;
+      --accent: #5fb3ff;
+      --danger: #ff6b6b;
+      --ok: #63d471;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      padding: 14px 16px 10px;
+      background: rgba(11, 15, 20, 0.94);
+      border-bottom: 1px solid var(--line);
+      backdrop-filter: blur(10px);
+    }
+    h1 { margin: 0; font-size: 18px; }
+    .sub { margin-top: 4px; color: var(--muted); font-size: 12px; }
+    main { padding: 12px; display: grid; gap: 12px; }
+    section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    .section-head {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .section-body { padding: 12px; }
+    button, input, textarea {
+      font: inherit;
+      color: var(--text);
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+    }
+    button {
+      padding: 9px 11px;
+      min-height: 40px;
+      font-weight: 650;
+    }
+    button.primary { background: #0f4672; border-color: #24699f; }
+    button.danger { background: #4a1d24; border-color: #8b313a; }
+    input, textarea { width: 100%; padding: 10px; }
+    textarea { min-height: 92px; resize: vertical; }
+    .row { display: flex; gap: 8px; align-items: center; }
+    .row > * { flex: 1; }
+    .toggles {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    label.toggle {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 9px;
+      font-size: 13px;
+    }
+    label.toggle input { width: auto; }
+    #threads { display: grid; gap: 8px; }
+    .thread {
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--panel-2);
+      text-align: left;
+    }
+    .thread.active { border-color: var(--accent); }
+    .thread-title { font-weight: 700; }
+    .thread-meta, .event-meta { color: var(--muted); font-size: 12px; margin-top: 3px; }
+    #events {
+      display: grid;
+      gap: 8px;
+      max-height: 52vh;
+      overflow: auto;
+      padding-right: 2px;
+    }
+    .event {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #0e141d;
+      padding: 9px 10px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    .event.agent { border-color: #2b5f8f; }
+    .event.tool { border-color: #5d4b1f; }
+    .event.error { border-color: #8b313a; }
+    .event.ok { border-color: #2f7142; }
+    .approval-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 8px;
+      flex-wrap: wrap;
+    }
+    .approval-actions button {
+      width: auto;
+      min-width: 92px;
+      padding: 8px 10px;
+    }
+    .status {
+      margin-top: 8px;
+      padding: 8px 10px;
+      color: var(--muted);
+      border-radius: 10px;
+      background: #0e141d;
+      overflow-wrap: anywhere;
+    }
+    .status.ok { color: var(--ok); }
+    .status.bad { color: var(--danger); }
+    .small { font-size: 12px; color: var(--muted); }
+    @media (min-width: 860px) {
+      main { grid-template-columns: 320px 1fr; align-items: start; }
+      section.chat { grid-column: 2; grid-row: 1 / span 3; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>DeepSeek Mobile Remote</h1>
+    <div class="sub">Local-first remote control for the runtime API</div>
+  </header>
+  <main>
+    <section>
+      <div class="section-head">
+        <strong>Connection</strong>
+        <button id="save-token">Save</button>
+      </div>
+      <div class="section-body">
+        <input id="token" autocomplete="off" placeholder="Runtime token" />
+        <div id="conn" class="status">Not connected</div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <strong>Threads</strong>
+        <button id="new-thread">New</button>
+      </div>
+      <div class="section-body"><div id="threads"></div></div>
+    </section>
+
+    <section class="chat">
+      <div class="section-head">
+        <strong id="active-title">No thread selected</strong>
+        <button id="refresh">Refresh</button>
+      </div>
+      <div class="section-body"><div id="events"></div></div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <strong>Composer</strong>
+        <button id="interrupt" class="danger">Interrupt</button>
+      </div>
+      <div class="section-body">
+        <textarea id="prompt" placeholder="Tell DeepSeek what to do..."></textarea>
+        <div class="toggles">
+          <label class="toggle"><input id="allow-shell" type="checkbox" /> allow shell</label>
+          <label class="toggle"><input id="auto-approve" type="checkbox" /> auto approve</label>
+        </div>
+        <div class="row" style="margin-top: 8px;">
+          <button id="send" class="primary">Send</button>
+          <button id="steer">Steer</button>
+        </div>
+        <p class="small">Keep auto approve off unless this server is on a trusted network.</p>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const state = { threadId: "", activeTurnId: "", source: null, threads: [] };
+
+    function takeTokenFromUrl() {
+      const params = new URLSearchParams(location.search);
+      const token = params.get("token");
+      if (token) {
+        localStorage.setItem("deepseek_runtime_token", token);
+        params.delete("token");
+        const qs = params.toString();
+        history.replaceState(null, "", location.pathname + (qs ? "?" + qs : ""));
+      }
+    }
+    function setStatus(message, good) {
+      const el = $("conn");
+      el.textContent = message;
+      el.className = "status " + (good ? "ok" : "bad");
+    }
+    function token() { return $("token").value.trim(); }
+    async function api(path, options = {}) {
+      const headers = Object.assign({}, options.headers || {});
+      headers["Content-Type"] = "application/json";
+      if (token()) headers["Authorization"] = "Bearer " + token();
+      const res = await fetch(path, Object.assign({}, options, { headers }));
+      if (!res.ok) {
+        let detail = await res.text();
+        try { detail = JSON.parse(detail).error?.message || detail; } catch (_) {}
+        throw new Error(detail || ("HTTP " + res.status));
+      }
+      if (res.status === 204) return null;
+      return await res.json();
+    }
+    function escapeHtml(raw) {
+      return String(raw).replace(/[&<>"']/g, (c) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;"
+      }[c]));
+    }
+    function eventText(name, data) {
+      if (name === "item.delta") return data.payload?.delta || "";
+      if (name === "item.started") {
+        const tool = data.payload?.tool;
+        if (tool) return "Tool started: " + tool.name + "\n" + JSON.stringify(tool.input || {}, null, 2);
+      }
+      if (name === "item.completed" || name === "item.failed") {
+        const item = data.payload?.item || {};
+        return (name === "item.completed" ? "Completed: " : "Failed: ") + (item.summary || item.kind || "");
+      }
+      if (name === "approval.required") return "Approval required: " + (data.payload?.tool_name || "") + "\n" + (data.payload?.description || "");
+      if (name === "approval.resolved") return "Approval " + (data.payload?.decision || "resolved") + ": " + (data.payload?.tool_name || data.payload?.id || "");
+      if (name === "sandbox.denied") return "Sandbox denied: " + JSON.stringify(data.payload || data, null, 2);
+      if (name === "turn.completed") return "Turn completed";
+      if (name === "turn.lifecycle") return "Turn status: " + (data.payload?.status || "");
+      return JSON.stringify(data.payload || data, null, 2);
+    }
+    function approvalInfo(name, data) {
+      const payload = data.payload || {};
+      const turnId = data.turn_id || payload.turn_id || state.activeTurnId;
+      if (name === "approval.required" && payload.pending && payload.id && turnId) {
+        return {
+          id: payload.id,
+          turnId,
+          approveLabel: "Allow",
+          denyLabel: "Deny"
+        };
+      }
+      if (name === "sandbox.denied" && payload.pending && payload.tool_id && turnId) {
+        return {
+          id: payload.tool_id,
+          turnId,
+          approveLabel: "Retry full access",
+          denyLabel: "Deny"
+        };
+      }
+      return null;
+    }
+    async function resolveApproval(turnId, approvalId, decision, container) {
+      if (!state.threadId || !turnId || !approvalId) throw new Error("Missing approval context");
+      for (const button of container.querySelectorAll("button")) button.disabled = true;
+      const path = "/v1/threads/" + encodeURIComponent(state.threadId)
+        + "/turns/" + encodeURIComponent(turnId)
+        + "/approvals/" + encodeURIComponent(approvalId)
+        + "/" + decision;
+      const result = await api(path, { method: "POST", body: "{}" });
+      container.innerHTML = "<span class='small'>Decision sent: " + escapeHtml(result.id || approvalId) + "</span>";
+    }
+    function appendEvent(name, data) {
+      const text = eventText(name, data);
+      if (!text) return;
+      const item = document.createElement("div");
+      item.className = "event";
+      if (name === "item.delta") item.classList.add("agent");
+      if (name.includes("tool") || name === "item.started") item.classList.add("tool");
+      if (name.includes("failed") || name.includes("denied")) item.classList.add("error");
+      if (name === "turn.completed") item.classList.add("ok");
+      item.innerHTML = "<div class='event-meta'>" + name + "</div>" + escapeHtml(text);
+      const approval = approvalInfo(name, data);
+      if (approval) {
+        const actions = document.createElement("div");
+        actions.className = "approval-actions";
+        const approve = document.createElement("button");
+        approve.className = "primary";
+        approve.textContent = approval.approveLabel;
+        approve.onclick = () => resolveApproval(approval.turnId, approval.id, "approve", actions)
+          .catch((err) => setStatus(err.message, false));
+        const deny = document.createElement("button");
+        deny.className = "danger";
+        deny.textContent = approval.denyLabel;
+        deny.onclick = () => resolveApproval(approval.turnId, approval.id, "deny", actions)
+          .catch((err) => setStatus(err.message, false));
+        actions.appendChild(approve);
+        actions.appendChild(deny);
+        item.appendChild(actions);
+      }
+      $("events").appendChild(item);
+      $("events").scrollTop = $("events").scrollHeight;
+    }
+    async function loadThreads() {
+      const threads = await api("/v1/threads/summary?limit=50&include_archived=false");
+      state.threads = threads;
+      const list = $("threads");
+      list.innerHTML = "";
+      if (!threads.length) {
+        list.innerHTML = "<div class='small'>No active threads.</div>";
+        return;
+      }
+      for (const thread of threads) {
+        const el = document.createElement("button");
+        el.className = "thread" + (thread.id === state.threadId ? " active" : "");
+        el.innerHTML = "<div class='thread-title'>" + escapeHtml(thread.title || thread.id) + "</div><div class='thread-meta'>" + escapeHtml(thread.mode || "") + " / " + escapeHtml(thread.model || "") + "</div>";
+        el.onclick = () => selectThread(thread.id, thread.title || thread.id);
+        list.appendChild(el);
+      }
+    }
+    async function newThread() {
+      const thread = await api("/v1/threads", {
+        method: "POST",
+        body: JSON.stringify({
+          mode: "agent",
+          allow_shell: $("allow-shell").checked,
+          trust_mode: false,
+          auto_approve: $("auto-approve").checked
+        })
+      });
+      await loadThreads();
+      selectThread(thread.id, thread.title || thread.id);
+    }
+    async function selectThread(id, title) {
+      state.threadId = id;
+      state.activeTurnId = "";
+      $("active-title").textContent = title || id;
+      $("events").innerHTML = "";
+      if (state.source) state.source.close();
+      const qs = "?since_seq=0" + (token() ? "&token=" + encodeURIComponent(token()) : "");
+      const source = new EventSource("/v1/threads/" + encodeURIComponent(id) + "/events" + qs);
+      state.source = source;
+      const names = ["thread.started", "turn.started", "turn.lifecycle", "turn.steered", "turn.interrupt_requested", "turn.completed", "item.started", "item.delta", "item.completed", "item.failed", "approval.required", "approval.resolved", "sandbox.denied", "coherence.state"];
+      for (const name of names) {
+        source.addEventListener(name, (ev) => {
+          let data = {};
+          try { data = JSON.parse(ev.data || "{}"); } catch (_) {}
+          if (data.turn_id) state.activeTurnId = data.turn_id;
+          if (data.payload?.turn?.id) state.activeTurnId = data.payload.turn.id;
+          appendEvent(name, data);
+        });
+      }
+      source.onerror = () => setStatus("Event stream disconnected", false);
+      setStatus("Connected", true);
+      await loadThreads();
+    }
+    async function sendPrompt() {
+      if (!state.threadId) await newThread();
+      const prompt = $("prompt").value.trim();
+      if (!prompt) return;
+      const res = await api("/v1/threads/" + encodeURIComponent(state.threadId) + "/turns", {
+        method: "POST",
+        body: JSON.stringify({
+          prompt,
+          allow_shell: $("allow-shell").checked,
+          trust_mode: false,
+          auto_approve: $("auto-approve").checked,
+          manual_approval: !$("auto-approve").checked
+        })
+      });
+      state.activeTurnId = res.turn?.id || state.activeTurnId;
+      $("prompt").value = "";
+    }
+    async function steerTurn() {
+      if (!state.threadId || !state.activeTurnId) throw new Error("No active turn");
+      const prompt = $("prompt").value.trim();
+      if (!prompt) return;
+      await api("/v1/threads/" + encodeURIComponent(state.threadId) + "/turns/" + encodeURIComponent(state.activeTurnId) + "/steer", {
+        method: "POST",
+        body: JSON.stringify({ prompt })
+      });
+      $("prompt").value = "";
+    }
+    async function interruptTurn() {
+      if (!state.threadId || !state.activeTurnId) throw new Error("No active turn");
+      await api("/v1/threads/" + encodeURIComponent(state.threadId) + "/turns/" + encodeURIComponent(state.activeTurnId) + "/interrupt", { method: "POST", body: "{}" });
+    }
+    async function boot() {
+      takeTokenFromUrl();
+      $("token").value = localStorage.getItem("deepseek_runtime_token") || "";
+      $("save-token").onclick = async () => {
+        localStorage.setItem("deepseek_runtime_token", token());
+        await loadThreads().catch((err) => setStatus(err.message, false));
+      };
+      $("new-thread").onclick = () => newThread().catch((err) => setStatus(err.message, false));
+      $("refresh").onclick = () => loadThreads().catch((err) => setStatus(err.message, false));
+      $("send").onclick = () => sendPrompt().catch((err) => setStatus(err.message, false));
+      $("steer").onclick = () => steerTurn().catch((err) => setStatus(err.message, false));
+      $("interrupt").onclick = () => interruptTurn().catch((err) => setStatus(err.message, false));
+      await loadThreads();
+      setStatus("Connected", true);
+    }
+    boot().catch((err) => setStatus(err.message, false));
+  </script>
+</body>
+</html>"#;
+
 /// Built-in dev origins always allowed by the runtime API (whalescale#255).
 const DEFAULT_CORS_ORIGINS: &[&str] = &[
     "http://localhost:3000",
@@ -1695,6 +2315,8 @@ mod tests {
             sessions_dir,
             mcp_config_path: root.join("mcp.json"),
             automations,
+            runtime_token: None,
+            mobile_enabled: false,
         };
         let app = build_router(state);
         let listener = match TcpListener::bind("127.0.0.1:0").await {

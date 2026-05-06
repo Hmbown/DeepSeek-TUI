@@ -403,6 +403,9 @@ struct ServeArgs {
     /// Start runtime HTTP/SSE API server
     #[arg(long)]
     http: bool,
+    /// Start runtime HTTP server with the built-in mobile control page
+    #[arg(long)]
+    mobile: bool,
     /// Start ACP server over stdio for editor clients such as Zed
     #[arg(long)]
     acp: bool,
@@ -421,6 +424,10 @@ struct ServeArgs {
     /// `[runtime_api] cors_origins` from `config.toml`. Whalescale#255.
     #[arg(long = "cors-origin", value_name = "URL")]
     cors_origin: Vec<String>,
+    /// Bearer token for HTTP runtime API access. If omitted in --mobile mode,
+    /// a one-time token is generated and printed at startup.
+    #[arg(long = "auth-token", value_name = "TOKEN")]
+    auth_token: Option<String>,
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -710,26 +717,34 @@ async fn main() -> Result<()> {
                 let workspace = cli.workspace.clone().unwrap_or_else(|| {
                     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
                 });
-                let selected_modes = [args.mcp, args.http, args.acp]
+                let http_selected = args.http || args.mobile;
+                let selected_modes = [args.mcp, http_selected, args.acp]
                     .into_iter()
                     .filter(|selected| *selected)
                     .count();
                 if selected_modes != 1 {
-                    bail!("Choose exactly one server mode: --mcp, --http, or --acp");
+                    bail!("Choose exactly one server mode: --mcp, --http/--mobile, or --acp");
                 }
                 if args.mcp {
                     mcp_server::run_mcp_server(workspace)
-                } else if args.http {
+                } else if http_selected {
                     let config = load_config_from_cli(&cli)?;
                     let cors_origins = resolve_cors_origins(&config, &args.cors_origin);
+                    let host = if args.mobile && args.host == "127.0.0.1" {
+                        "0.0.0.0".to_string()
+                    } else {
+                        args.host
+                    };
                     runtime_api::run_http_server(
                         config,
                         workspace,
                         runtime_api::RuntimeApiOptions {
-                            host: args.host,
+                            host,
                             port: args.port,
                             workers: args.workers.clamp(1, 8),
                             cors_origins,
+                            mobile: args.mobile,
+                            auth_token: args.auth_token,
                         },
                     )
                     .await

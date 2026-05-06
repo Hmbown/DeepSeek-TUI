@@ -124,6 +124,27 @@ Defaults: host `127.0.0.1`, port `7878`, 2 workers (clamped 1–8).
 The server binds to `localhost` by default. Configuration is via CLI flags —
 there is no `[app_server]` config section.
 
+### Mobile control page
+
+```bash
+deepseek serve --mobile [--port 7878]
+```
+
+`--mobile` starts the same HTTP/SSE runtime API and serves a phone-friendly
+control page at `/mobile`. When `--host` is not supplied, mobile mode binds to
+`0.0.0.0` so a phone on the same LAN can open the printed URL.
+
+Mobile mode requires an API bearer token. Use `--auth-token <token>` or
+`DEEPSEEK_RUNTIME_TOKEN=<token>` to provide one. If neither is set, the process
+generates a one-time token and prints a local/LAN URL that includes it.
+
+The mobile page can list/create threads, send prompts, follow live SSE events,
+steer an active turn, interrupt an active turn, and optionally pass
+`allow_shell` / `auto_approve` flags for a turn. With `auto_approve` off, the
+mobile page submits turns with `manual_approval=true` and shows Allow / Deny
+buttons for runtime tool approvals. Keep `auto_approve` off unless the server
+is reachable only from a trusted network.
+
 ### Endpoints
 
 **Health**
@@ -169,6 +190,9 @@ accept an empty string to clear a previously-set value. Added in v0.8.10 (#562):
 - `POST /v1/threads/{id}/turns`
 - `POST /v1/threads/{id}/turns/{turn_id}/steer`
 - `POST /v1/threads/{id}/turns/{turn_id}/interrupt`
+- `GET /v1/threads/{id}/turns/{turn_id}/approvals`
+- `POST /v1/threads/{id}/turns/{turn_id}/approvals/{approval_id}/approve`
+- `POST /v1/threads/{id}/turns/{turn_id}/approvals/{approval_id}/deny`
 - `POST /v1/threads/{id}/compact` (manual compaction)
 
 **Events** (SSE replay + live stream)
@@ -266,6 +290,13 @@ Events are append-only with a global monotonic `seq` for replay/resume.
   are auto-approved in the non-interactive runtime path, shell safety checks
   run in auto-approved mode, and spawned sub-agents inherit that setting.
 - When omitted, `auto_approve` defaults to `false`.
+- `manual_approval=true` can be supplied on `POST /v1/threads/{id}/turns`.
+  When `auto_approve=false`, approval-required tools are held as pending
+  approvals instead of being immediately denied. Clients can list pending
+  approvals and resolve them through the approval endpoints above.
+- Approving a regular pending approval calls the engine approval bridge.
+  Approving a pending sandbox elevation retries that tool with full-access
+  sandbox policy. Denying either kind sends the normal deny decision.
 
 ### SSE event stream
 
@@ -289,14 +320,17 @@ The SSE event payload shape:
 Common event names: `thread.started`, `thread.forked`, `turn.started`,
 `turn.lifecycle`, `turn.steered`, `turn.interrupt_requested`,
 `turn.completed`, `item.started`, `item.delta`, `item.completed`,
-`item.failed`, `item.interrupted`, `approval.required`, `sandbox.denied`,
-`coherence.state`.
+`item.failed`, `item.interrupted`, `approval.required`, `approval.resolved`,
+`sandbox.denied`, `coherence.state`.
 
 ## Security boundary
 
 - **Localhost only**. The server binds to `127.0.0.1` by default. Set
   `--host 0.0.0.0` only when you have a reverse-proxy / VPN that
-  authenticates — there is no built-in auth, user isolation, or TLS.
+  authenticates. The runtime does not provide user isolation or TLS.
+- **Mobile mode token**. `deepseek serve --mobile` enables bearer-token
+  protection for `/v1/*` API routes. This is a local/LAN convenience guard,
+  not a replacement for TLS, VPN, or a trusted reverse proxy on public networks.
 - **No provider-token custody**. The server never returns the API key. The
   `api_key.source` capability field reports `env`, `config`, or `missing` —
   never the key itself.
