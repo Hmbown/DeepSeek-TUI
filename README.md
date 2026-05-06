@@ -1,6 +1,6 @@
 # DeepSeek TUI
 
-> Terminal coding agent for DeepSeek V4. It runs from the `deepseek` command, streams reasoning blocks, edits local workspaces with approval gates, and includes an auto mode that chooses both model and thinking level per turn.
+> Terminal coding agent for DeepSeek V4. Runs from the `deepseek` command, streams reasoning blocks, edits local workspaces with approval gates, and automatically selects the model and reasoning level for each turn.
 
 [简体中文 README](README.zh-CN.md)
 
@@ -47,23 +47,23 @@ brew install deepseek-tui
 
 DeepSeek TUI is a coding agent that runs in your terminal. It can read and edit files, run shell commands, search the web, manage git, and coordinate sub-agents from a keyboard-driven TUI.
 
-It is built around DeepSeek V4 (`deepseek-v4-pro` / `deepseek-v4-flash`), including 1M-token context windows, streaming reasoning blocks, and prefix-cache-aware cost reporting.
+Built on DeepSeek V4 (`deepseek-v4-pro` / `deepseek-v4-flash`), it provides 1M-token context windows, streaming reasoning blocks, and prefix-cache-aware cost tracking.
 
 ### Key Features
 
-- **Auto mode** — `--model auto` / `/model auto` chooses both the model and thinking level for each turn
+- **Auto mode** — `--model auto` / `/model auto` automatically selects the model and reasoning level for each turn
 - **Thinking-mode streaming** — see DeepSeek reasoning blocks as the model works
 - **Full tool suite** — file ops, shell execution, git, web search/browse, apply-patch, sub-agents, MCP servers
 - **1M-token context** — context tracking, manual or configured compaction, and prefix-cache telemetry
 - **Three modes** — Plan (read-only explore), Agent (interactive with approval), YOLO (auto-approved)
-- **Reasoning-effort tiers** — cycle through `off → high → max` with `Shift + Tab`
+- **Reasoning-effort tiers** — cycle through `off → high → max` with Shift+Tab
 - **Session save/resume** — checkpoint and resume long-running sessions
 - **Workspace rollback** — side-git pre/post-turn snapshots with `/restore` and `revert_turn`, without touching your repo's `.git`
 - **Durable task queue** — background tasks can survive restarts
 - **HTTP/SSE runtime API** — `deepseek serve --http` for headless agent workflows
 - **MCP protocol** — connect to Model Context Protocol servers for extended tooling; please see [docs/MCP.md](docs/MCP.md)
-- **Native RLM** (`rlm_query`) — run batched analysis through cheap `deepseek-v4-flash` children using the same API client
-- **LSP diagnostics** — inline error/warning surfacing after every edit via rust-analyzer, pyright, typescript-language-server, gopls, clangd
+- **Native RLM** (`rlm_query`) — run batched analysis through `deepseek-v4-flash` children via the same API client
+- **LSP diagnostics** — display errors and warnings after each edit via rust-analyzer, pyright, typescript-language-server, gopls, or clangd
 - **User memory** — optional persistent note file injected into the system prompt for cross-session preferences
 - **Localized UI** — `en`, `ja`, `zh-Hans`, `pt-BR` with auto-detection
 - **Live cost tracking** — per-turn and session-level token usage and cost estimates; cache hit/miss breakdown
@@ -73,7 +73,7 @@ It is built around DeepSeek V4 (`deepseek-v4-pro` / `deepseek-v4-flash`), includ
 
 ## How It's Wired
 
-`deepseek` (dispatcher CLI) → `deepseek-tui` (companion binary) → ratatui interface ↔ async engine ↔ OpenAI-compatible streaming client. Tool calls route through a typed registry (shell, file ops, git, web, sub-agents, MCP, RLM) and results stream back into the transcript. The engine manages session state, turn tracking, the durable task queue, and an LSP subsystem that feeds post-edit diagnostics into the model's context before the next reasoning step.
+`deepseek` (dispatcher CLI) → `deepseek-tui` (companion binary) → ratatui interface ↔ async engine ↔ OpenAI-compatible streaming client. Tool calls route through a typed registry (shell, file ops, git, web, sub-agents, MCP, RLM) and results stream back into the transcript. The engine manages session state, turn tracking, task queues, and an LSP subsystem that integrates post-edit diagnostics into the model's context for the next reasoning step.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full walkthrough.
 
@@ -89,7 +89,7 @@ deepseek --model auto
 
 Prebuilt binaries are published for **Linux x64**, **Linux ARM64** (v0.8.8+), **macOS x64**, **macOS ARM64**, and **Windows x64**. For other targets (musl, riscv64, FreeBSD, etc.), see [Install from source](#install-from-source) or [docs/INSTALL.md](docs/INSTALL.md).
 
-On first launch you'll be prompted for your [DeepSeek API key](https://platform.deepseek.com/api_keys). The key is saved to `~/.deepseek/config.toml` so it works from any directory without OS credential prompts.
+On first launch, you will be prompted for your [DeepSeek API key](https://platform.deepseek.com/api_keys). The key is saved to `~/.deepseek/config.toml` and works from any directory without requiring OS credential prompts.
 
 You can also set it ahead of time:
 
@@ -113,9 +113,9 @@ Auto mode controls two settings together:
 - Model: `deepseek-v4-flash` or `deepseek-v4-pro`
 - Thinking: `off`, `high`, or `max`
 
-Before the real turn is sent, the app makes a small `deepseek-v4-flash` routing call with thinking off. That router looks at the latest request and recent context, then selects a concrete model and thinking level for the real request. Short/simple turns can stay on Flash with thinking off; coding, debugging, release work, architecture, security review, or ambiguous multi-step tasks can move up to Pro and/or higher thinking.
+Before sending the full turn, the app makes a small `deepseek-v4-flash` routing call. This router analyzes the latest request and recent context, then selects the appropriate model and reasoning level. Simple turns stay on Flash; coding, debugging, release work, architecture, security reviews, and ambiguous multi-step tasks move to Pro with higher reasoning levels.
 
-`auto` is local to DeepSeek TUI. The upstream API never receives `model: "auto"`; it receives the concrete model and thinking setting chosen for that turn. The TUI shows the selected route, and cost tracking is charged against the model that actually ran. If the router call fails or returns an invalid answer, the app falls back to a local heuristic. Sub-agents inherit auto mode unless you assign them an explicit model.
+`auto` is local to DeepSeek TUI. The upstream API never receives `model: "auto"`; it receives the concrete model and thinking setting chosen for that turn. The TUI shows the selected route, and cost tracking is charged against the model that actually ran. If the router call fails, the app uses a local fallback heuristic. Sub-agents inherit auto mode unless you assign them an explicit model.
 
 Use a fixed model or fixed thinking level when you want repeatable benchmarking, a strict cost ceiling, or a specific provider/model mapping.
 
@@ -153,7 +153,6 @@ Prebuilt binaries can also be downloaded from [GitHub Releases](https://github.c
 ```bash
 scoop install deepseek-tui
 ```
-
 
 <details id="install-from-source">
 <summary>Install from source</summary>
@@ -258,18 +257,18 @@ not exposed through ACP yet.
 
 ### Keyboard Shortcuts
 
-| Key | Action |
-|---|---|
-| `Tab` | Complete `/` or `@` entries; while running, queue draft as follow-up; otherwise cycle mode |
-| `Shift+Tab` | Cycle reasoning-effort: off → high → max |
-| `F1` | Searchable help overlay |
-| `Esc` | Back / dismiss |
-| `Ctrl+K` | Command palette |
-| `Ctrl+R` | Resume an earlier session |
-| `Alt+R` | Search prompt history and recover cleared drafts |
-| `Ctrl+S` | Stash current draft (`/stash list`, `/stash pop` to recover) |
-| `@path` | Attach file/directory context in composer |
-| `↑` (at composer start) | Select attachment row for removal |
+| Key                     | Action                                                                                     |
+| ----------------------- | ------------------------------------------------------------------------------------------ |
+| `Tab`                   | Complete `/` or `@` entries; while running, queue draft as follow-up; otherwise cycle mode |
+| `Shift+Tab`             | Cycle reasoning-effort: off → high → max                                                   |
+| `F1`                    | Searchable help overlay                                                                    |
+| `Esc`                   | Back / dismiss                                                                             |
+| `Ctrl+K`                | Command palette                                                                            |
+| `Ctrl+R`                | Resume an earlier session                                                                  |
+| `Alt+R`                 | Search prompt history and recover cleared drafts                                           |
+| `Ctrl+S`                | Stash current draft (`/stash list`, `/stash pop` to recover)                               |
+| `@path`                 | Attach file/directory context in composer                                                  |
+| `↑` (at composer start) | Select attachment row for removal                                                          |
 
 Full shortcut catalog: [docs/KEYBINDINGS.md](docs/KEYBINDINGS.md).
 
@@ -277,11 +276,11 @@ Full shortcut catalog: [docs/KEYBINDINGS.md](docs/KEYBINDINGS.md).
 
 ## Modes
 
-| Mode | Behavior |
-| --- | --- |
-| **Plan** 🔍 | Read-only investigation — model explores and proposes a plan (`update_plan` + `checklist_write`) before making changes |
-| **Agent** 🤖 | Default interactive mode — multi-step tool use with approval gates; model outlines work via `checklist_write` |
-| **YOLO** ⚡ | Auto-approve all tools in a trusted workspace; still maintains plan and checklist for visibility |
+| Mode         | Behavior                                                                                                               |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| **Plan** 🔍  | Read-only investigation — model explores and proposes a plan (`update_plan` + `checklist_write`) before making changes |
+| **Agent** 🤖 | Default interactive mode — multi-step tool use with approval gates; model outlines work via `checklist_write`          |
+| **YOLO** ⚡  | Auto-approve all tools in a trusted workspace; still maintains plan and checklist for visibility                       |
 
 ---
 
@@ -291,19 +290,19 @@ User config: `~/.deepseek/config.toml`. Project overlay: `<workspace>/.deepseek/
 
 Key environment variables:
 
-| Variable | Purpose |
-|---|---|
-| `DEEPSEEK_API_KEY` | API key |
-| `DEEPSEEK_BASE_URL` | API base URL |
-| `DEEPSEEK_MODEL` | Default model |
-| `DEEPSEEK_PROVIDER` | `deepseek` (default), `nvidia-nim`, `fireworks`, `sglang`, `vllm` |
-| `DEEPSEEK_PROFILE` | Config profile name |
-| `DEEPSEEK_MEMORY` | Set to `on` to enable user memory |
-| `NVIDIA_API_KEY` / `FIREWORKS_API_KEY` / `SGLANG_API_KEY` / `VLLM_API_KEY` | Provider auth |
-| `SGLANG_BASE_URL` | Self-hosted SGLang endpoint |
-| `VLLM_BASE_URL` | Self-hosted vLLM endpoint |
-| `NO_ANIMATIONS=1` | Force accessibility mode at startup |
-| `SSL_CERT_FILE` | Custom CA bundle for corporate proxies |
+| Variable                                                                   | Purpose                                                           |
+| -------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `DEEPSEEK_API_KEY`                                                         | API key                                                           |
+| `DEEPSEEK_BASE_URL`                                                        | API base URL                                                      |
+| `DEEPSEEK_MODEL`                                                           | Default model                                                     |
+| `DEEPSEEK_PROVIDER`                                                        | `deepseek` (default), `nvidia-nim`, `fireworks`, `sglang`, `vllm` |
+| `DEEPSEEK_PROFILE`                                                         | Config profile name                                               |
+| `DEEPSEEK_MEMORY`                                                          | Set to `on` to enable user memory                                 |
+| `NVIDIA_API_KEY` / `FIREWORKS_API_KEY` / `SGLANG_API_KEY` / `VLLM_API_KEY` | Provider auth                                                     |
+| `SGLANG_BASE_URL`                                                          | Self-hosted SGLang endpoint                                       |
+| `VLLM_BASE_URL`                                                            | Self-hosted vLLM endpoint                                         |
+| `NO_ANIMATIONS=1`                                                          | Force accessibility mode at startup                               |
+| `SSL_CERT_FILE`                                                            | Custom CA bundle for corporate proxies                            |
 
 UI locale is separate from model language — set `locale` in `settings.toml`, use `/config locale zh-Hans`, or rely on `LC_ALL`/`LANG`. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) and [docs/MCP.md](docs/MCP.md).
 
@@ -311,14 +310,14 @@ UI locale is separate from model language — set `locale` in `settings.toml`, u
 
 ## Models & Pricing
 
-| Model | Context | Input (cache hit) | Input (cache miss) | Output |
-|---|---|---|---|---|
-| `deepseek-v4-pro` | 1M | $0.003625 / 1M* | $0.435 / 1M* | $0.87 / 1M* |
-| `deepseek-v4-flash` | 1M | $0.0028 / 1M | $0.14 / 1M | $0.28 / 1M |
+| Model               | Context | Input (cache hit) | Input (cache miss) | Output       |
+| ------------------- | ------- | ----------------- | ------------------ | ------------ |
+| `deepseek-v4-pro`   | 1M      | $0.003625 / 1M\*  | $0.435 / 1M\*      | $0.87 / 1M\* |
+| `deepseek-v4-flash` | 1M      | $0.0028 / 1M      | $0.14 / 1M         | $0.28 / 1M   |
 
 Legacy aliases `deepseek-chat` / `deepseek-reasoner` map to `deepseek-v4-flash`. NVIDIA NIM variants use your NVIDIA account terms.
 
-*DeepSeek Pro rates currently reflect a limited-time 75% discount, which remains valid until 15:59 UTC on 31 May 2026. After that time, the TUI cost estimator will revert to the base Pro rates.*
+_DeepSeek Pro rates currently reflect a limited-time 75% discount, which remains valid until 15:59 UTC on 31 May 2026. After that time, the TUI cost estimator will revert to the base Pro rates._
 
 > [!Note]
 > For the latest DeepSeek-V4-Pro pricing, including the current 75% discount valid until 15:59 UTC on 31 May 2026, please consult the official [DeepSeek pricing page](https://api-docs.deepseek.com/zh-cn/quick_start/pricing). All rates listed in the README correspond to the officially published values.
@@ -343,6 +342,7 @@ description: Use this when DeepSeek should follow my custom workflow.
 ---
 
 # My Skill
+
 Instructions for the agent go here.
 ```
 
@@ -352,20 +352,20 @@ Commands: `/skills` (list), `/skill <name>` (activate), `/skill new` (scaffold),
 
 ## Documentation
 
-| Doc | Topic |
-|---|---|
-| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Codebase internals |
-| [CONFIGURATION.md](docs/CONFIGURATION.md) | Full config reference |
-| [MODES.md](docs/MODES.md) | Plan / Agent / YOLO modes |
-| [MCP.md](docs/MCP.md) | Model Context Protocol integration |
-| [RUNTIME_API.md](docs/RUNTIME_API.md) | HTTP/SSE API server |
-| [INSTALL.md](docs/INSTALL.md) | Platform-specific install guide |
-| [MEMORY.md](docs/MEMORY.md) | User memory feature guide |
-| [SUBAGENTS.md](docs/SUBAGENTS.md) | Sub-agent role taxonomy and lifecycle |
-| [KEYBINDINGS.md](docs/KEYBINDINGS.md) | Full shortcut catalog |
-| [RELEASE_RUNBOOK.md](docs/RELEASE_RUNBOOK.md) | Release process |
-| [LOCALIZATION.md](docs/LOCALIZATION.md) | UI locale matrix & switching |
-| [OPERATIONS_RUNBOOK.md](docs/OPERATIONS_RUNBOOK.md) | Ops & recovery |
+| Doc                                                 | Topic                                 |
+| --------------------------------------------------- | ------------------------------------- |
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md)             | Codebase internals                    |
+| [CONFIGURATION.md](docs/CONFIGURATION.md)           | Full config reference                 |
+| [MODES.md](docs/MODES.md)                           | Plan / Agent / YOLO modes             |
+| [MCP.md](docs/MCP.md)                               | Model Context Protocol integration    |
+| [RUNTIME_API.md](docs/RUNTIME_API.md)               | HTTP/SSE API server                   |
+| [INSTALL.md](docs/INSTALL.md)                       | Platform-specific install guide       |
+| [MEMORY.md](docs/MEMORY.md)                         | User memory feature guide             |
+| [SUBAGENTS.md](docs/SUBAGENTS.md)                   | Sub-agent role taxonomy and lifecycle |
+| [KEYBINDINGS.md](docs/KEYBINDINGS.md)               | Full shortcut catalog                 |
+| [RELEASE_RUNBOOK.md](docs/RELEASE_RUNBOOK.md)       | Release process                       |
+| [LOCALIZATION.md](docs/LOCALIZATION.md)             | UI locale matrix & switching          |
+| [OPERATIONS_RUNBOOK.md](docs/OPERATIONS_RUNBOOK.md) | Ops & recovery                        |
 
 Full Changelog: [CHANGELOG.md](CHANGELOG.md).
 
@@ -404,8 +404,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Pull requests welcome — check the [ope
 
 Support: [Buy me a coffee](https://www.buymeacoffee.com/hmbown).
 
-> [!Note]
-> *Not affiliated with DeepSeek Inc.*
+> [!Note] > _Not affiliated with DeepSeek Inc._
 
 ## License
 

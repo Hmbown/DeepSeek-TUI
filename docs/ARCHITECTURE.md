@@ -3,11 +3,12 @@
 This document provides an overview of the DeepSeek TUI architecture for developers and contributors.
 
 Current boundary note (v0.8.6):
-- `crates/tui` is still the live end-user runtime for the TUI, runtime API, task manager, and tool execution loop.
-- Other workspace crates are being split out incrementally, but they are not yet the sole runtime source of truth.
-- The LSP subsystem (`crates/tui/src/lsp/`) is fully wired into the engine's post-tool-execution path
+
+- `crates/tui` is the active end-user runtime for the TUI, runtime API, task manager, and tool loop.
+- Other workspace crates are being extracted incrementally but are not yet the sole source of truth.
+- The LSP subsystem (`crates/tui/src/lsp/`) is fully integrated into the engine's post-tool-execution path
   (`core/engine/lsp_hooks.rs`), providing inline diagnostics after every edit_file/apply_patch/write_file.
-- The swarm agent system was removed in v0.8.5 in favour of sub-agents (agent_spawn) and RLM (rlm_query).
+- The swarm agent system was removed in v0.8.5 in favor of sub-agents (agent_spawn) and RLM (rlm_query).
   No model-visible swarm tool remains in the active codebase.
 
 ## High-Level Overview
@@ -108,15 +109,15 @@ Current boundary note (v0.8.6):
 
 #### DeepSeek API Endpoints
 
-DeepSeek exposes OpenAI-compatible endpoints. The CLI uses:
-- `https://api.deepseek.com/v1/chat/completions` - normal and streaming model turns
-- `https://api.deepseek.com/v1/models` - live model discovery and health checks
+DeepSeek exposes OpenAI-compatible endpoints:
 
-`https://api.deepseek.com/v1` is accepted for OpenAI SDK compatibility, and
-`https://api.deepseek.com/beta` can be configured for beta-only features such as
-strict tool mode, chat prefix completion, and FIM completion. The public
-DeepSeek docs do not document a Responses API path for this workflow; the engine
-drives turns through Chat Completions.
+- `https://api.deepseek.com/v1/chat/completions` — for normal and streaming model turns
+- `https://api.deepseek.com/v1/models` — for live model discovery and health checks
+
+`https://api.deepseek.com/v1` is accepted for OpenAI SDK compatibility. Use
+`https://api.deepseek.com/beta` for beta-only features such as strict tool mode,
+chat prefix completion, and FIM completion. Chat Completions is the documented
+api path for all workflows.
 
 ### Tool System
 
@@ -142,6 +143,7 @@ drives turns through Chat Completions.
 ### User Interface
 
 - **`tui/`** - Terminal UI components (ratatui-based)
+
   - `app.rs` - Application state and message handling
   - `ui.rs` - Event handling, streaming state, and rendering logic
   - `approval.rs` - Tool approval dialog

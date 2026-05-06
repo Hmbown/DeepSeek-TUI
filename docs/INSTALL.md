@@ -1,8 +1,8 @@
 # Installing DeepSeek TUI
 
-This page covers every supported install path and the most common
-"it didn't install" failures, including **Linux ARM64** and other less
-common platforms.
+This page covers every supported installation method and common
+"installation failed" troubleshooting, including **Linux ARM64** and other
+less common platforms.
 
 If you just want the short version, see the
 [main README](../README.md#quickstart) or
@@ -15,19 +15,19 @@ If you just want the short version, see the
 `deepseek-tui` ships prebuilt binaries for these
 platform/architecture combinations from v0.8.8 onward:
 
-| Platform     | Architecture | npm install | `cargo install` | GitHub release asset                                  |
-| ------------ | ------------ | :---------: | :-------------: | ----------------------------------------------------- |
-| Linux        | x64 (x86_64) |     ✅      |       ✅        | `deepseek-linux-x64`, `deepseek-tui-linux-x64`        |
-| Linux        | arm64        |     ✅      |       ✅        | `deepseek-linux-arm64`, `deepseek-tui-linux-arm64`    |
-| macOS        | x64          |     ✅      |       ✅        | `deepseek-macos-x64`, `deepseek-tui-macos-x64`        |
-| macOS        | arm64 (M-series) | ✅      |       ✅        | `deepseek-macos-arm64`, `deepseek-tui-macos-arm64`    |
-| Windows      | x64          |     ✅      |       ✅        | `deepseek-windows-x64.exe`, `deepseek-tui-windows-x64.exe` |
-| Other Linux (musl, riscv64, …) | — |   ❌¹    |       ✅²       | build from source                                     |
-| FreeBSD / OpenBSD              | — |   ❌      |       ✅²       | build from source                                     |
+| Platform                       | Architecture     | npm install | `cargo install` | GitHub release asset                                       |
+| ------------------------------ | ---------------- | :---------: | :-------------: | ---------------------------------------------------------- |
+| Linux                          | x64 (x86_64)     |     ✅      |       ✅        | `deepseek-linux-x64`, `deepseek-tui-linux-x64`             |
+| Linux                          | arm64            |     ✅      |       ✅        | `deepseek-linux-arm64`, `deepseek-tui-linux-arm64`         |
+| macOS                          | x64              |     ✅      |       ✅        | `deepseek-macos-x64`, `deepseek-tui-macos-x64`             |
+| macOS                          | arm64 (M-series) |     ✅      |       ✅        | `deepseek-macos-arm64`, `deepseek-tui-macos-arm64`         |
+| Windows                        | x64              |     ✅      |       ✅        | `deepseek-windows-x64.exe`, `deepseek-tui-windows-x64.exe` |
+| Other Linux (musl, riscv64, …) | —                |     ❌¹     |       ✅²       | build from source                                          |
+| FreeBSD / OpenBSD              | —                |     ❌      |       ✅²       | build from source                                          |
 
 ¹ The npm package will exit with a clear error and point you here.
 ² Provided your toolchain can compile a recent Rust workspace; see
-  [Build from source](#5-build-from-source) below.
+[Build from source](#5-build-from-source) below.
 
 > **Linux ARM64 note (v0.8.7 and earlier).** v0.8.7 and earlier do **not**
 > publish a Linux ARM64 prebuilt; users on HarmonyOS thin-and-light, Asahi
@@ -46,27 +46,29 @@ npm install -g deepseek-tui
 deepseek
 ```
 
-`postinstall` downloads the right pair of binaries from the matching GitHub
-release, verifies a SHA-256 manifest, and exposes both `deepseek` and
-`deepseek-tui` on your `PATH`.
+`postinstall` downloads the appropriate binary pair from the matching GitHub
+release, verifies a SHA-256 manifest, and adds both `deepseek` and
+`deepseek-tui` to your `PATH`.
 
 Useful environment variables:
 
-| Variable                            | Purpose                                                                                |
-| ----------------------------------- | -------------------------------------------------------------------------------------- |
-| `DEEPSEEK_TUI_VERSION`              | Pin which release the wrapper downloads (defaults to `deepseekBinaryVersion`)          |
-| `DEEPSEEK_TUI_GITHUB_REPO`          | Point the downloader at a fork (`owner/repo`)                                          |
-| `DEEPSEEK_TUI_RELEASE_BASE_URL`     | Override the download root (e.g. an internal mirror or release-asset proxy)            |
-| `DEEPSEEK_TUI_FORCE_DOWNLOAD=1`     | Re-download even if a cached binary marker matches                                     |
-| `DEEPSEEK_TUI_DISABLE_INSTALL=1`    | Skip the `postinstall` download entirely (CI smoke, vendored binaries)                 |
-| `DEEPSEEK_TUI_OPTIONAL_INSTALL=1`   | Don't fail `npm install` on download/extract errors — useful in CI matrices            |
+| Variable                          | Purpose                                                                       |
+| --------------------------------- | ----------------------------------------------------------------------------- |
+| `DEEPSEEK_TUI_VERSION`            | Pin which release the wrapper downloads (defaults to `deepseekBinaryVersion`) |
+| `DEEPSEEK_TUI_GITHUB_REPO`        | Point the downloader at a fork (`owner/repo`)                                 |
+| `DEEPSEEK_TUI_RELEASE_BASE_URL`   | Override the download root (e.g. an internal mirror or release-asset proxy)   |
+| `DEEPSEEK_TUI_FORCE_DOWNLOAD=1`   | Re-download even if a cached binary marker matches                            |
+| `DEEPSEEK_TUI_DISABLE_INSTALL=1`  | Skip the `postinstall` download entirely (CI smoke, vendored binaries)        |
+| `DEEPSEEK_TUI_OPTIONAL_INSTALL=1` | Don't fail `npm install` on download/extract errors — useful in CI matrices   |
 
 > **Slow npm download from mainland China?** If `npm install` itself is slow
 > (not just the postinstall binary download), use an npm registry mirror:
+>
 > ```bash
 > npm config set registry https://registry.npmmirror.com
 > npm install -g deepseek-tui
 > ```
+>
 > See also [Section 3](#3-install-via-cargo-any-tier-1-rust-target) if you
 > prefer Cargo over npm.
 
@@ -74,9 +76,9 @@ Useful environment variables:
 
 ## 3. Install via Cargo (any Tier-1 Rust target)
 
-If GitHub releases are slow, blocked, or you're on an unsupported architecture,
+If GitHub releases are slow, blocked, or you are on an unsupported architecture,
 install from crates.io directly. Both crates are required — the dispatcher
-delegates to the TUI runtime at runtime.
+integrates with the TUI runtime at execution.
 
 ```bash
 # Requires Rust 1.88+ (https://rustup.rs)

@@ -2,15 +2,16 @@
 
 DeepSeek TUI can load additional tools via MCP (Model Context Protocol). MCP servers are local processes that the TUI starts and communicates with over stdio.
 
-Browsing note:
-- `web.run` is the canonical built-in browsing tool.
-- `web_search` remains available as a compatibility alias for older prompts and integrations.
+**Note on browsing:**
 
-Server mode note:
+- `web.run` is the primary built-in browsing tool.
+- `web_search` remains available for backward compatibility.
+
+**Server modes:**
+
 - `deepseek-tui serve --mcp` runs the MCP stdio server.
 - `deepseek-tui serve --http` runs the runtime HTTP/SSE API (separate mode).
-- The `deepseek` dispatcher exposes `deepseek mcp-server` as an equivalent stdio
-  entrypoint used by the split CLI.
+- The `deepseek` dispatcher exposes `deepseek mcp-server` as a stdio entrypoint.
 
 ## Bootstrap MCP Config
 
@@ -37,10 +38,9 @@ deepseek-tui mcp validate
 
 ## In-TUI Manager
 
-Inside the interactive TUI, `/mcp` opens a compact manager for the resolved
-MCP config path. It shows each configured server, whether it is enabled or
-disabled, its transport, command or URL, timeout values, connection errors,
-and discovered tools/resources/prompts when discovery has been run.
+Inside the TUI, `/mcp` opens a compact manager for the MCP config.
+It displays each server's status, transport, command or URL, timeouts,
+connection errors, and discovered tools, resources, and prompts.
 
 Supported in-TUI actions:
 
@@ -56,10 +56,9 @@ Supported in-TUI actions:
 /mcp reload
 ```
 
-`/mcp validate` and `/mcp reload` reconnect for UI discovery and refresh the
-manager snapshot. Config edits made from the TUI are written immediately, but
-the model-visible MCP tool pool is not hot-reloaded; the manager marks this as
-restart-required until the TUI is restarted.
+`/mcp validate` and `/mcp reload` reconnect and refresh the manager.
+Config edits are saved immediately, but the model-visible MCP tool pool
+requires a TUI restart to reflect changes.
 
 ## Config File Location
 
@@ -82,15 +81,14 @@ After editing the file or changing `mcp_config_path`, restart the TUI.
 
 ## Tool Naming
 
-Discovered MCP tools are exposed to the model as:
+Discovered MCP tools use the naming convention:
 
 - `mcp_<server>_<tool>`
 
-Example: a server named `git` with a tool named `status` becomes `mcp_git_status`.
+Example: a `git` server with a `status` tool becomes `mcp_git_status`.
 
-The command palette includes MCP entries grouped by server. It shows disabled
-and failed servers instead of hiding them, and uses the same runtime tool names
-shown to the model.
+The command palette groups MCP entries by server. It displays disabled and
+failed servers and uses the same tool names shown to the model.
 
 ## Resource and Prompt Helpers
 
@@ -178,12 +176,12 @@ For example, the `shell` tool becomes `mcp_deepseek_shell`.
 
 ### MCP Server vs HTTP/SSE API vs ACP
 
-| | `deepseek-tui serve --mcp` | `deepseek-tui serve --http` | `deepseek-tui serve --acp` |
-|---|---|---|---|
-| **Protocol** | MCP stdio | HTTP/SSE JSON-RPC | ACP stdio |
-| **Use case** | Tool server for MCP clients | Runtime API for apps | Editor agent for Zed/custom ACP clients |
-| **Config** | `~/.deepseek/mcp.json` entry | Direct URL connection | Editor `agent_servers` custom command |
-| **Lifecycle** | Spawned per client session | Long-running daemon | Spawned per editor agent session |
+|               | `deepseek-tui serve --mcp`   | `deepseek-tui serve --http` | `deepseek-tui serve --acp`              |
+| ------------- | ---------------------------- | --------------------------- | --------------------------------------- |
+| **Protocol**  | MCP stdio                    | HTTP/SSE JSON-RPC           | ACP stdio                               |
+| **Use case**  | Tool server for MCP clients  | Runtime API for apps        | Editor agent for Zed/custom ACP clients |
+| **Config**    | `~/.deepseek/mcp.json` entry | Direct URL connection       | Editor `agent_servers` custom command   |
+| **Lifecycle** | Spawned per client session   | Long-running daemon         | Spawned per editor agent session        |
 
 Use `mcp add-self` when you want DeepSeek tools available to other MCP clients.
 Use `serve --http` when building applications that consume the API directly.

@@ -1,8 +1,8 @@
 # Configuration
 
 DeepSeek TUI reads configuration from a TOML file plus environment variables.
-At process startup it also loads a workspace-local `.env` file when present.
-Use the tracked `.env.example` as the template; copy it to `.env`, then edit
+At process startup, the TUI also loads a workspace-local `.env` file when present.
+Use the tracked `.env.example` as a template; copy it to `.env`, then edit
 only the provider and safety knobs you need.
 
 ## Where It Looks
@@ -16,55 +16,53 @@ Overrides:
 - CLI: `deepseek --config /path/to/config.toml`
 - Env: `DEEPSEEK_CONFIG_PATH=/path/to/config.toml`
 
-If both are set, `--config` wins. Environment variable overrides are applied after the file is loaded.
+If both `--config` and the environment variable are set, `--config` takes precedence.
 
 ### Per-project overlay (#485)
 
 When the TUI starts in a workspace that contains a
-`<workspace>/.deepseek/config.toml` file, the values declared in that
-file are merged on top of the global config. This lets a repo lock its
-own provider, model, sandbox policy, or approval policy without
-touching the user's `~/.deepseek/config.toml`. Pass
-`--no-project-config` to skip the overlay for one launch.
+`<workspace>/.deepseek/config.toml` file, values from that file are merged on top
+of the global config. This allows a repo to lock its own provider, model, sandbox
+policy, or approval policy without affecting the user's `~/.deepseek/config.toml`.
+Pass `--no-project-config` to skip the overlay for one launch.
 
 Supported keys in the project overlay (top-level fields only):
 
-| Key | Effect |
-|---|---|
-| `provider` | switch backend (e.g. `"nvidia-nim"` for an enterprise repo) |
-| `model` | override `default_text_model` |
-| `api_key` | use a per-repo key (typically read from `.env`, **not committed**) |
-| `base_url` | point at a self-hosted endpoint |
-| `reasoning_effort` | force `"high"` / `"max"` for a complex repo |
-| `approval_policy` | `"never"` / `"on-request"` / `"untrusted"` for opinionated repos |
-| `sandbox_mode` | `"read-only"` / `"workspace-write"` / `"danger-full-access"` |
-| `mcp_config_path` | per-repo MCP server set |
-| `notes_path` | keep notes in-repo |
-| `max_subagents` | clamp concurrency for a constrained repo (clamped to 1..=20) |
-| `allow_shell` | gate shell tool access on `false` |
+| Key                | Effect                                                             |
+| ------------------ | ------------------------------------------------------------------ |
+| `provider`         | switch backend (e.g. `"nvidia-nim"` for an enterprise repo)        |
+| `model`            | override `default_text_model`                                      |
+| `api_key`          | use a per-repo key (typically read from `.env`, **not committed**) |
+| `base_url`         | point at a self-hosted endpoint                                    |
+| `reasoning_effort` | force `"high"` / `"max"` for a complex repo                        |
+| `approval_policy`  | `"never"` / `"on-request"` / `"untrusted"` for opinionated repos   |
+| `sandbox_mode`     | `"read-only"` / `"workspace-write"` / `"danger-full-access"`       |
+| `mcp_config_path`  | per-repo MCP server set                                            |
+| `notes_path`       | keep notes in-repo                                                 |
+| `max_subagents`    | clamp concurrency for a constrained repo (clamped to 1..=20)       |
+| `allow_shell`      | gate shell tool access on `false`                                  |
 
-The overlay is intentionally narrow — it covers the fields a repo
-maintainer is most likely to want to standardize across contributors.
-Other settings (skills_dir, hooks, capacity, retry, etc.) stay
-user-global. If your repo needs more, file an issue describing the
-specific use case.
+The overlay covers only the most commonly needed fields — those a repo
+maintainer is likely to standardize across contributors. Other settings
+(skills_dir, hooks, capacity, retry, etc.) remain user-global. File an issue
+if your repo needs additional fields.
 
-The `deepseek` facade and `deepseek-tui` binary share the same config file for
-DeepSeek auth and model defaults. `deepseek auth set --provider deepseek` (and
-the legacy `deepseek login --api-key ...` alias) saves the key to
-`~/.deepseek/config.toml`, and `deepseek --model deepseek-v4-flash` is forwarded
-to the TUI as `DEEPSEEK_MODEL`.
+The `deepseek` facade and `deepseek-tui` binary share the same config file
+for DeepSeek authentication and model defaults. Use `deepseek auth set --provider deepseek`
+(or the legacy `deepseek login --api-key ...` alias) to save the key to
+`~/.deepseek/config.toml`. Pass `deepseek --model deepseek-v4-flash` to override
+the model; this is forwarded to the TUI as `DEEPSEEK_MODEL`.
 
 For hosted or self-hosted DeepSeek V4 providers, set `provider = "nvidia-nim"`,
-`"fireworks"`, `"sglang"`, or `"vllm"` or pass `deepseek --provider <name>`. The facade
-saves provider credentials to the shared user config and forwards the resolved
-key, base URL, provider, and model to the TUI process. Use
+`"fireworks"`, `"sglang"`, or `"vllm"`, or pass `deepseek --provider <name>`.
+The facade saves provider credentials to the shared user config and forwards
+the resolved key, base URL, provider, and model to the TUI. Use
 `deepseek auth set --provider nvidia-nim --api-key "YOUR_NVIDIA_API_KEY"` or
-`deepseek auth set --provider fireworks --api-key "YOUR_FIREWORKS_API_KEY"` to
-save hosted-provider keys through the facade. SGLang and vLLM are self-hosted and can run
+`deepseek auth set --provider fireworks --api-key "YOUR_FIREWORKS_API_KEY"`
+to save hosted provider credentials. SGLang and vLLM are self-hosted and work
 without an API key by default.
 
-To bootstrap MCP and skills directories at their resolved paths, run `deepseek-tui setup`.
+Use `deepseek-tui setup` to bootstrap MCP and skills directories at their resolved paths.
 To only scaffold MCP, run `deepseek-tui mcp init`.
 
 Note: setup, doctor, mcp, features, sessions, resume/fork, exec, review, and eval
@@ -273,14 +271,14 @@ Readability semantics:
 DeepSeek V4 prefix caching makes token labels matter. These quantities are kept
 separate:
 
-| Quantity | Meaning | Allowed to drive |
-|---|---|---|
-| Active request input estimate | Conservative estimate of the next request's live system prompt and transcript payload. | Header/footer context percent, hard-cycle trigger, opt-in Flash seam trigger, and emergency overflow preflight. |
-| Reserved response headroom | The requested `max_tokens` budget plus safety headroom. v0.7.5 keeps normal turns at `262144` output tokens and adds `1024` safety tokens for context-window checks. | Hard-cycle and emergency overflow budget checks only. |
-| Cumulative API usage | Provider-reported input plus output tokens summed across completed API calls; multi-tool turns may count the same stable prefix more than once. | Session usage and approximate cost telemetry only. |
-| Prompt cache hit/miss | Provider cache telemetry for the most recent call when available. | Cache-hit display and cost estimation only; never compaction, seam, or cycle triggers. |
-| Context percent | Active request input estimate divided by the model context window. | Display only; it mirrors the active-input basis used by context safeguards. |
-| Cost estimate | Approximate spend from provider usage and configured DeepSeek rates. | Display only. |
+| Quantity                      | Meaning                                                                                                                                                              | Allowed to drive                                                                                                |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Active request input estimate | Conservative estimate of the next request's live system prompt and transcript payload.                                                                               | Header/footer context percent, hard-cycle trigger, opt-in Flash seam trigger, and emergency overflow preflight. |
+| Reserved response headroom    | The requested `max_tokens` budget plus safety headroom. v0.7.5 keeps normal turns at `262144` output tokens and adds `1024` safety tokens for context-window checks. | Hard-cycle and emergency overflow budget checks only.                                                           |
+| Cumulative API usage          | Provider-reported input plus output tokens summed across completed API calls; multi-tool turns may count the same stable prefix more than once.                      | Session usage and approximate cost telemetry only.                                                              |
+| Prompt cache hit/miss         | Provider cache telemetry for the most recent call when available.                                                                                                    | Cache-hit display and cost estimation only; never compaction, seam, or cycle triggers.                          |
+| Context percent               | Active request input estimate divided by the model context window.                                                                                                   | Display only; it mirrors the active-input basis used by context safeguards.                                     |
+| Cost estimate                 | Approximate spend from provider usage and configured DeepSeek rates.                                                                                                 | Display only.                                                                                                   |
 
 For the default V4 path, hard cycles fire when active input reaches the smaller
 of the configured cycle threshold (`768000`) and the model window minus reserved
@@ -494,6 +492,7 @@ DeepSeek TUI supports a policy layering model:
 3. requirements validation (if present)
 
 By default on Unix:
+
 - managed config: `/etc/deepseek/managed_config.toml`
 - requirements: `/etc/deepseek/requirements.toml`
 

@@ -1,6 +1,6 @@
 # Contributing to DeepSeek TUI
 
-Thank you for your interest in contributing to DeepSeek TUI! This document provides guidelines and instructions for contributing.
+Thank you for contributing to DeepSeek TUI! This guide outlines contribution guidelines and procedures.
 
 ## Getting Started
 
@@ -13,17 +13,20 @@ Thank you for your interest in contributing to DeepSeek TUI! This document provi
 ### Setting Up Development Environment
 
 1. Fork and clone the repository:
+
    ```bash
    git clone https://github.com/YOUR_USERNAME/DeepSeek-TUI.git
    cd DeepSeek-TUI
    ```
 
 2. Build the project:
+
    ```bash
    cargo build
    ```
 
 3. Run tests:
+
    ```bash
    cargo test
    ```
@@ -46,10 +49,10 @@ Thank you for your interest in contributing to DeepSeek TUI! This document provi
 
 - Write tests for new functionality
 - Ensure all existing tests pass: `cargo test --workspace --all-features`
-- Colocate unit tests beside the code they cover (standard Rust `#[cfg(test)]`
-  modules), and add integration tests under the owning crate's `tests/`
-  directory (for example `crates/tui/tests/` or `crates/state/tests/`). The
-  repository root `tests/` directory is not used
+- Place unit tests next to the code they test using standard Rust `#[cfg(test)]`
+  modules. Add integration tests to the crate's `tests/` directory
+  (for example `crates/tui/tests/` or `crates/state/tests/`). Do not use the
+  repository root `tests/` directory
 
 ### Commit Messages
 
@@ -66,9 +69,9 @@ Example: `feat: add doctor subcommand for system diagnostics`
 
 ## Project Structure
 
-DeepSeek TUI is a Cargo workspace. The live runtime and the majority of TUI,
-engine, and tool code currently live in `crates/tui/src/`. Smaller workspace
-crates provide shared abstractions that are being extracted incrementally.
+DeepSeek TUI is a Cargo workspace. Most of the TUI, engine, and tool code
+lives in `crates/tui/src/`. Smaller workspace crates provide shared abstractions
+that are being extracted incrementally.
 
 ```
 crates/
@@ -93,6 +96,7 @@ these crates and [DEPENDENCY_GRAPH.md](DEPENDENCY_GRAPH.md) for build ordering.
 ## Submitting Changes
 
 1. Create a feature branch from `main`:
+
    ```bash
    git checkout -b feat/your-feature
    ```
@@ -100,6 +104,7 @@ these crates and [DEPENDENCY_GRAPH.md](DEPENDENCY_GRAPH.md) for build ordering.
 2. Make your changes and commit them
 
 3. Ensure CI passes:
+
    ```bash
    cargo fmt --check
    cargo clippy
@@ -131,12 +136,13 @@ A well-structured PR follows a consistent pattern. Recent exemplars include:
   `gh gist create` integration, command registration.
 - **#343/#346** — (v0.8.5) Runtime thread/turn timeline and durable task manager refactors.
 
-Typically each PR touches 1–3 new files, modifies 2–5 existing files for wiring
-(registries, dispatch matches, localization), and adds or updates tests. Changes
-are scoped to a single feature or fix — if you discover related work that needs
-doing, open a separate issue rather than expanding the PR scope.
+Typical PRs touch 1–3 new files, modify 2–5 existing files for integration
+(registries, dispatch matches, localization), and add or update tests. Keep
+changes focused on a single feature or fix. If you discover related work,
+open a separate issue instead of expanding the PR scope.
 
 Before submitting, run:
+
 ```bash
 cargo fmt --check
 cargo clippy --workspace --all-targets --all-features 2>&1 | head -50

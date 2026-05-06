@@ -7,16 +7,15 @@ DeepSeek TUI has two related concepts:
 
 ## TUI Modes
 
-Press `Tab` to complete composer menus, queue a draft as a next-turn follow-up
-while a turn is running, or cycle through the visible modes when the composer is
-otherwise idle: **Plan → Agent → YOLO → Plan**.
-Press `Shift+Tab` to cycle reasoning effort.
+**Tab** completes composer menus, queues drafts as follow-ups while a turn runs,
+or cycles through modes when the composer is idle: **Plan → Agent → YOLO → Plan**.
+**Shift+Tab** cycles reasoning effort: off → high → max.
 
-- **Plan**: design-first prompting. Read-only investigation tools stay available; shell and patch execution stay off. Use this when you want to think out loud and produce a plan to hand to a human (yourself later, or a reviewer).
-- **Agent**: multi-step tool use. Approvals for shell and paid tools (file writes are allowed without a prompt).
-- **YOLO**: enables shell + trust mode and auto-approves all tools. Use only in trusted repos.
+- **Plan**: design-first prompting. Investigation tools remain available; shell and patch execution are disabled. Use this to think through problems and create plans for review.
+- **Agent**: multi-step tool use with approval gates. File writes are auto-approved; shell and API tools require confirmation.
+- **YOLO**: auto-approves all tools and enables trust mode. Use only in trusted repositories.
 
-All three modes have access to the `rlm` tool. Inside its Python REPL, `llm_query_batched` fans out 1–16 cheap parallel child calls pinned to `deepseek-v4-flash`. The model reaches for it when work is decomposable.
+All modes provide access to the `rlm` tool, a Python REPL where `llm_query_batched` runs 1–16 parallel child calls on `deepseek-v4-flash`. The model uses this for decomposable work.
 
 ## Compatibility Notes
 
@@ -44,9 +43,9 @@ You can override approval behavior at runtime:
 
 Legacy note: `/set approval_mode ...` was retired in favor of `/config`.
 
-- `suggest` (default): uses the per-mode rules above.
-- `auto`: auto-approves all tools (similar to YOLO approval behavior, but without forcing YOLO mode).
-- `never`: blocks any tool that isn't considered safe/read-only.
+- `suggest` (default): follows the per-mode rules above.
+- `auto`: auto-approves all tools without entering YOLO mode.
+- `never`: blocks any tool that is not read-only or safe.
 
 ## Small-Screen Status Behavior
 
@@ -58,7 +57,7 @@ When terminal height is constrained, the status area compacts first so header/ch
 
 ## Workspace Boundary and Trust Mode
 
-By default, file tools are restricted to the `--workspace` directory. Enable trust mode to allow file access outside the workspace:
+By default, file tools can only access the `--workspace` directory. Enable trust mode to allow access outside the workspace:
 
 ```text
 /trust
@@ -68,7 +67,7 @@ YOLO mode enables trust mode automatically.
 
 ## MCP Behavior
 
-MCP tools are exposed as `mcp_<server>_<tool>` and use the same approval flow as built-in tools. Read-only MCP helpers may auto-run in suggestive approval modes; MCP tools with possible side effects require approval.
+MCP tools are exposed as `mcp_<server>_<tool>` and follow the same approval flow as built-in tools. Read-only MCP helpers may auto-run in suggest mode; tools with side effects require approval.
 
 See `MCP.md`.
 
