@@ -1,607 +1,706 @@
-//! RepoMapEngine — top-level analysis engine built on top of RepoGraph.
-//!
-//! Provides PageRank computation, ranking, symbol lookup, call-chain
-//! traversal, and entry-point / hotspot detection.
+//! RepoMapEngine — top-level analysis orchestrator with session caching,
+//! file scanning, tree-sitter parsing, import/call resolution, and
+//! PageRank-based ranking.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::Instant;
 
-use crate::ranking::{FileMetrics, HotspotInfo, ModuleInfo, ReadingOrderEntry, SymbolSummary};
-use crate::types::{RepoGraph, ScanStats, Symbol};
+use ignore::WalkBuilder;
+
+use crate::parser::TreeSitterAdapter;
+use crate::ranking::{GraphAnalyzer, HotspotInfo, FileMetrics, ModuleInfo, ReadingOrderEntry, SymbolSummary};
+use crate::resolver::ImportResolver;
+use crate::types::*;
 
 // ---------------------------------------------------------------------------
-// Call-chain result types
+// Edge weight constants
 // ---------------------------------------------------------------------------
 
-/// One node in a call-chain listing.
-#[derive(Debug, Clone)]
-pub struct CallChainEntry {
-    pub symbol_name: String,
-    pub symbol_id: String,
-    pub file: String,
-    pub pagerank: f64,
+const IMPORT_WEIGHT: f64 = 0.35;
+const CALL_WEIGHT: f64 = 0.50;
+const MAX_SCAN_TIME_SECS: f64 = 300.0;
+
+// ---------------------------------------------------------------------------
+// Session cache
+// ---------------------------------------------------------------------------
+
+/// Cached scan result for a single canonical workspace path.
+#[derive(Clone)]
+struct CachedScan {
+    graph: RepoGraph,
+    pagerank: HashMap<String, f64>,
 }
 
-/// Complete call-chain report for a single symbol.
-#[derive(Debug, Clone)]
-pub struct CallChainResult {
-    pub symbol_name: String,
-    pub symbol_file: String,
-    pub symbol_kind: String,
-    pub callers: Vec<CallChainEntry>,
-    pub callees: Vec<CallChainEntry>,
-}
+/// Workspace-level cache keyed by canonical project root path.
+/// Reuse scan results across multiple tool calls within the same process.
+static SCAN_CACHE: std::sync::LazyLock<Mutex<HashMap<PathBuf, CachedScan>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
 // ---------------------------------------------------------------------------
-// Entry-point candidate
+// Scan state
 // ---------------------------------------------------------------------------
 
-/// A single entry-point candidate with a confidence score.
-#[derive(Debug, Clone)]
-pub struct EntryPoint {
-    pub file_path: String,
-    pub score: f64,
-    pub reason: String,
+#[derive(Debug, Clone, PartialEq)]
+enum ScanState {
+    Idle,
+    Scanning,
+    Scanned,
 }
 
 // ---------------------------------------------------------------------------
 // RepoMapEngine
 // ---------------------------------------------------------------------------
 
-/// The main analysis engine, wrapping a [`RepoGraph`] and providing
-/// ranking, query, and reporting methods.
+/// The top-level analysis engine that owns the scanned dependency graph,
+/// the tree-sitter parser, import resolver, and PageRank analyzer.
 pub struct RepoMapEngine {
+    /// Absolute or canonical path to the project root.
+    pub project_root: PathBuf,
+    /// Lazily initialised tree-sitter parser (behind a Mutex so that
+    /// read-only methods can check parser availability).
+    ts: Mutex<Option<TreeSitterAdapter>>,
+    /// The scanned symbol-level dependency graph.
     pub graph: RepoGraph,
-    pub project_path: PathBuf,
-    pub stats: ScanStats,
+    /// File modification-time cache for fast re-scans.
+    mtime_cache: HashMap<PathBuf, std::time::SystemTime>,
+    /// Current scanning state.
+    scan_state: ScanState,
+    /// Maximum file size (in bytes) that the engine will read.
+    max_file_bytes: u64,
+    /// Statistics from the most recent scan.
+    pub scan_stats: ScanStats,
+    /// Import-path resolver (built after scanning).
+    resolver: Option<ImportResolver>,
+    /// PageRank analyser (built after scanning).
+    analyzer: Option<GraphAnalyzer>,
 }
 
 impl RepoMapEngine {
-    /// Build a new engine, run PageRank, and pre-compute file-level
-    /// aggregates.
-    pub fn new(graph: RepoGraph, project_path: PathBuf, stats: ScanStats) -> Self {
-        let mut engine = Self {
-            graph,
-            project_path,
-            stats,
+    // -----------------------------------------------------------------------
+    // Construction
+    // -----------------------------------------------------------------------
+
+    /// Create a new engine for the given project root.
+    ///
+    /// The tree-sitter parser is loaded lazily on the first call to
+    /// [`scan`].  `DEEPMAP_MAX_FILE_BYTES` env-var overrides the default
+    /// 512 KB per-file limit.
+    pub fn new(project_root: &Path) -> Self {
+        let max_file_bytes = std::env::var("DEEPMAP_MAX_FILE_BYTES")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_MAX_FILE_BYTES);
+
+        Self {
+            project_root: project_root.to_path_buf(),
+            ts: Mutex::new(None),
+            graph: RepoGraph::default(),
+            mtime_cache: HashMap::new(),
+            scan_state: ScanState::Idle,
+            max_file_bytes,
+            scan_stats: ScanStats::default(),
+            resolver: None,
+            analyzer: None,
+        }
+    }
+
+    /// Return a cached engine for `project_root` if one exists, otherwise
+    /// scan and cache the result.
+    ///
+    /// The cache is keyed by the canonical path of `project_root` so that
+    /// equivalent paths (e.g. `./foo` and `/absolute/path/to/foo`) map to
+    /// the same entry.
+    pub fn get_or_scan(project_root: &Path, max_files: usize, max_scan_secs: f64) -> Self {
+        let canonical = match project_root.canonicalize() {
+            Ok(p) => p,
+            Err(_) => project_root.to_path_buf(),
         };
-        calculate_pagerank(&mut engine.graph, 0.85, 50);
+
+        // Check cache.
+        {
+            let cache = match SCAN_CACHE.lock() {
+                Ok(g) => g,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+
+            if let Some(cached) = cache.get(&canonical) {
+                let graph = cached.graph.clone();
+                let pagerank = cached.pagerank.clone();
+                let mut engine = Self {
+                    project_root: canonical,
+                    ts: Mutex::new(None),
+                    graph,
+                    mtime_cache: HashMap::new(),
+                    scan_state: ScanState::Scanned,
+                    max_file_bytes: DEFAULT_MAX_FILE_BYTES,
+                    scan_stats: ScanStats::default(),
+                    resolver: None,
+                    analyzer: None,
+                };
+                // Restore PageRank scores into symbols.
+                for (sym_id, score) in &pagerank {
+                    if let Some(sym) = engine.graph.symbols.get_mut(sym_id) {
+                        sym.pagerank = *score;
+                    }
+                }
+                // Rebuild resolver from restored graph.
+                engine.resolver = Some(ImportResolver::new(&engine.project_root, &engine.graph));
+                // Rebuild analyzer with stored scores.
+                let mut analyzer = GraphAnalyzer::new();
+                analyzer.pagerank = pagerank.clone();
+                engine.analyzer = Some(analyzer);
+                return engine;
+            }
+        }
+
+        // Cache miss — scan and store.
+        let mut engine = Self::new(&canonical);
+        engine.scan(max_files, max_scan_secs);
+
+        let pagerank = engine
+            .analyzer
+            .as_ref()
+            .map(|a| a.pagerank_scores().clone())
+            .unwrap_or_default();
+
+        if let Ok(mut cache) = SCAN_CACHE.lock() {
+            cache.insert(
+                canonical,
+                CachedScan {
+                    graph: engine.graph.clone(),
+                    pagerank,
+                },
+            );
+        }
+
         engine
     }
 
-    // ------------------------------------------------------------------
-    // Summary helpers
-    // ------------------------------------------------------------------
-
-    /// Return human-readable scan-statistic lines.
-    pub fn scan_summary_lines(&self) -> Vec<String> {
-        let s = &self.stats;
-        vec![
-            format!("Source files listed: {}", s.listed_source_files),
-            format!("Source files selected: {}", s.selected_source_files),
-            format!("Files processed: {}", s.processed_files),
-            format!("Failed files: {}", s.failed_files.len()),
-            format!("Scan duration: {} ms", s.scan_duration_ms),
-        ]
+    /// Whether the engine has completed at least one scan successfully.
+    pub fn is_scanned(&self) -> bool {
+        self.scan_state == ScanState::Scanned
     }
 
-    /// Return a list of entry-point candidates sorted by confidence.
-    pub fn entry_points(&self) -> Vec<EntryPoint> {
-        let mut candidates: Vec<EntryPoint> = Vec::new();
+    // -----------------------------------------------------------------------
+    // Scanning
+    // -----------------------------------------------------------------------
 
-        for file in self.graph.file_imports.keys() {
-            // Entry-point heuristic: a file that is not imported by
-            // anything else but does export symbols.
-            let imported_by = self
-                .graph
-                .file_imports
-                .iter()
-                .filter(|(_, deps)| deps.contains(file))
-                .count();
+    /// Run a full scan: list source files, parse each file, resolve
+    /// imports and calls, build the edge graph, and compute PageRank.
+    ///
+    /// If the parser has not been initialised yet it will be created
+    /// lazily on the first call.
+    pub fn scan(&mut self, max_files: usize, max_scan_secs: f64) {
+        let start = Instant::now();
+        let deadline = max_scan_secs.min(MAX_SCAN_TIME_SECS);
+        self.scan_state = ScanState::Scanning;
+        let mut stats = ScanStats::default();
 
-            let has_symbols = self
-                .graph
-                .file_symbols
-                .get(file)
-                .map(|ids| !ids.is_empty())
-                .unwrap_or(false);
-
-            if imported_by == 0 && has_symbols {
-                candidates.push(EntryPoint {
-                    file_path: file.clone(),
-                    score: 1.0,
-                    reason: "No incoming imports, has exported symbols".to_string(),
-                });
-                continue;
-            }
-
-            // Also flag files named main/index/entry.
-            let lower = file.to_lowercase();
-            let is_named_entry = lower.ends_with("main.ts")
-                || lower.ends_with("main.rs")
-                || lower.ends_with("main.py")
-                || lower.ends_with("index.ts")
-                || lower.ends_with("index.js")
-                || lower.ends_with("index.tsx")
-                || lower.ends_with("entry.ts")
-                || lower.ends_with("entry.rs")
-                || lower.ends_with("entry.py")
-                || lower.ends_with("app.ts")
-                || lower.ends_with("app.rs")
-                || lower.ends_with("app.py")
-                || lower.ends_with("lib.rs");
-
-            if is_named_entry {
-                candidates.push(EntryPoint {
-                    file_path: file.clone(),
-                    score: 0.9,
-                    reason: "Conventional entry-point filename".to_string(),
-                });
-            }
-        }
-
-        candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
-        candidates
-    }
-
-    /// Return the top-N symbols ranked by PageRank.
-    pub fn top_symbols(&self, n: usize) -> Vec<&Symbol> {
-        let mut syms: Vec<&Symbol> = self.graph.symbols.values().collect();
-        syms.sort_by(|a, b| b.pagerank.partial_cmp(&a.pagerank).unwrap_or(std::cmp::Ordering::Equal));
-        syms.truncate(n);
-        syms
-    }
-
-    /// Return files sorted by a combined importance score.
-    pub fn suggested_reading_order(&self, max_results: usize) -> Vec<ReadingOrderEntry> {
-        let file_scores = compute_file_pagerank(&self.graph);
-        let mut entries: Vec<ReadingOrderEntry> = Vec::new();
-
-        // Score each file that has at least one symbol.
-        for (file, pr) in &file_scores {
-            let sym_count = self
-                .graph
-                .file_symbols
-                .get(file)
-                .map(|v| v.len())
-                .unwrap_or(0);
-            if sym_count == 0 {
-                continue;
-            }
-
-            // Boost files with many outgoing edges (explains a lot).
-            let outgoing = self
-                .graph
-                .outgoing
-                .values()
-                .flat_map(|edges| edges.iter())
-                .filter(|e| {
-                    self.graph
-                        .symbols
-                        .get(&e.source)
-                        .map(|s| s.file.as_str() == file.as_str())
-                        .unwrap_or(false)
-                })
-                .count();
-
-            let centrality = 1.0 + (outgoing as f64).ln_1p();
-            let score = pr * centrality;
-
-            let reason = if outgoing > 5 {
-                format!("Core module with {} outgoing references", outgoing)
-            } else {
-                "Provides foundational types or utilities".to_string()
+        // --- initialise parser lazily ---
+        {
+            let mut guard = match self.ts.lock() {
+                Ok(g) => g,
+                Err(poisoned) => poisoned.into_inner(),
             };
-
-            entries.push(ReadingOrderEntry {
-                file_path: file.clone(),
-                score,
-                reason,
-            });
+            if guard.is_none() {
+                *guard = Some(TreeSitterAdapter::new());
+            }
         }
+        let ts_guard = match self.ts.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        // SAFETY: we just ensured the parser exists above.
+        let ts: &TreeSitterAdapter = ts_guard.as_ref().expect("parser initialised above");
 
-        entries.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
-        entries.truncate(max_results);
-        entries
-    }
+        // --- list source files ---
+        let all_files: Vec<PathBuf> = list_source_files(&self.project_root, max_files);
+        stats.listed_source_files = all_files.len();
 
-    /// Aggregate per-directory statistics at the top level.
-    pub fn module_summary(&self) -> Vec<ModuleInfo> {
-        let mut dirs: HashMap<String, (usize, usize, usize)> = HashMap::new(); // (files, symbols, lines)
-
-        for (file, sym_ids) in &self.graph.file_symbols {
-            let dir = top_level_dir(file, &self.project_path);
-            let entry = dirs.entry(dir).or_default();
-            entry.0 += 1;
-            entry.1 += sym_ids.len();
-
-            // Approximate lines from symbol ranges.
-            let file_lines: usize = sym_ids
-                .iter()
-                .filter_map(|id| self.graph.symbols.get(id))
-                .map(|s| {
-                    if s.end_line > s.line {
-                        s.end_line - s.line
-                    } else {
-                        1
-                    }
-                })
-                .sum();
-            entry.2 += file_lines;
-        }
-
-        let mut modules: Vec<ModuleInfo> = dirs
+        // --- filter by language / parser availability ---
+        let files: Vec<PathBuf> = all_files
             .into_iter()
-            .map(|(dir, (fc, sc, lines))| ModuleInfo {
-                directory: dir,
-                file_count: fc,
-                symbol_count: sc,
-                lines,
+            .filter(|path| {
+                let ext = match path.extension().and_then(|e| e.to_str()) {
+                    Some(e) => format!(".{}", e),
+                    None => return false,
+                };
+                let lang = match ext_to_lang(&ext) {
+                    Some(l) => l,
+                    None => return false,
+                };
+                if ts.has_parser(lang) {
+                    true
+                } else {
+                    stats.filtered_path_files += 1;
+                    false
+                }
             })
             .collect();
+        stats.selected_source_files = files.len();
 
-        modules.sort_by(|a, b| b.file_count.cmp(&a.file_count));
-        modules
-    }
+        // We are done with the parser guard for now; drop it so we can
+        // use it mutably inside the file loop.
+        drop(ts_guard);
 
-    /// Return the top-N high-density files (hotspots).
-    pub fn hotspots(&self, top_n: usize) -> Vec<HotspotInfo> {
-        let mut hotspots: Vec<HotspotInfo> = Vec::new();
+        // --- file processing loop ---
+        let mut graph = RepoGraph::default();
+        let mut processed_count: usize = 0;
 
-        for (file, sym_ids) in &self.graph.file_symbols {
-            if sym_ids.is_empty() {
+        for path in &files {
+            if start.elapsed().as_secs_f64() >= deadline {
+                stats.timeout_triggered = true;
+                break;
+            }
+
+            // MTime check — skip unchanged files.
+            let mtime = match path.metadata().and_then(|m| m.modified()) {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            if let Some(cached_mtime) = self.mtime_cache.get(path) {
+                if *cached_mtime == mtime {
+                    continue;
+                }
+            }
+
+            // Size check.
+            let file_size = match path.metadata() {
+                Ok(meta) => meta.len(),
+                Err(_) => continue,
+            };
+            if file_size > self.max_file_bytes {
+                stats.filtered_large_files += 1;
                 continue;
             }
 
-            // Estimate line count from the last symbol's end_line.
-            let max_line = sym_ids
-                .iter()
-                .filter_map(|id| self.graph.symbols.get(id))
-                .map(|s| s.end_line)
-                .max()
-                .unwrap_or(0);
+            // Read content.
+            let content = match std::fs::read_to_string(path) {
+                Ok(c) => c,
+                Err(_) => {
+                    stats
+                        .failed_files
+                        .push(path.to_string_lossy().to_string());
+                    continue;
+                }
+            };
 
-            let line_count = max_line.max(1);
-            let symbol_count = sym_ids.len();
-            let density = symbol_count as f64 / line_count as f64 * 1000.0;
+            // Truncate oversize content.
+            let max_content_bytes = self.max_file_bytes as usize;
+            let truncated_content = if content.len() > max_content_bytes {
+                stats.truncated_files += 1;
+                &content[..max_content_bytes]
+            } else {
+                &content[..]
+            };
 
-            // Aggregate PageRank and edge degree for this file.
-            let mut file_pr = self.graph.symbols[self.graph.file_symbols[file].first().unwrap_or(&String::new())]
-                .pagerank;
-            if let Some(first_sym) = sym_ids.first().and_then(|id| self.graph.symbols.get(id)) {
-                file_pr = first_sym.pagerank;
+            // Determine language from extension.
+            let ext = match path.extension().and_then(|e| e.to_str()) {
+                Some(e) => format!(".{}", e),
+                None => continue,
+            };
+            let lang = match ext_to_lang(&ext) {
+                Some(l) => l,
+                None => continue,
+            };
+
+            // Parse.
+            let file_str = path.to_string_lossy().to_string();
+            let mut ts_guard = match self.ts.lock() {
+                Ok(g) => g,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            let ts_mut = match ts_guard.as_mut() {
+                Some(t) => t,
+                None => continue,
+            };
+
+            match ts_mut.parse(path, truncated_content, lang) {
+                Ok(()) => {
+                    // Symbols.
+                    for sym in ts_mut.symbols() {
+                        let id = sym.id.clone();
+                        graph
+                            .file_symbols
+                            .entry(file_str.clone())
+                            .or_default()
+                            .push(id.clone());
+                        graph.symbols.insert(id, sym);
+                    }
+
+                    // Imports.
+                    let imports = ts_mut.imports();
+                    if !imports.is_empty() {
+                        graph.file_imports.insert(file_str.clone(), imports);
+                    }
+
+                    // Calls.
+                    let calls = ts_mut.calls();
+                    if !calls.is_empty() {
+                        graph.file_calls.insert(file_str.clone(), calls);
+                    }
+
+                    // JS/TS import bindings.
+                    let bindings = ts_mut.import_bindings();
+                    if !bindings.is_empty() {
+                        graph
+                            .file_import_bindings
+                            .insert(file_str.clone(), bindings);
+                    }
+
+                    // JS/TS exports.
+                    let exports = ts_mut.exports();
+                    if !exports.is_empty() {
+                        graph.file_exports.insert(file_str.clone(), exports);
+                    }
+
+                    // Update mtime cache.
+                    self.mtime_cache.insert(path.clone(), mtime);
+
+                    processed_count += 1;
+                }
+                Err(e) => {
+                    stats
+                        .failed_files
+                        .push(format!("{}: {}", file_str, e));
+                }
             }
+            drop(ts_guard);
+        }
 
-            // Count all incoming + outgoing edges touching symbols in this file.
-            let sym_set: HashSet<&str> = sym_ids.iter().map(|s| s.as_str()).collect();
-            let mut edge_degree = 0usize;
-            for edges in self.graph.outgoing.values() {
-                for e in edges {
-                    if sym_set.contains(e.source.as_str())
-                        || sym_set.contains(e.target.as_str())
-                    {
-                        edge_degree += 1;
+        stats.processed_files = processed_count;
+
+        // Clean stale mtime entries — run ONCE after the file loop.
+        let current_paths: HashSet<PathBuf> = files.iter().cloned().collect();
+        self.mtime_cache
+            .retain(|p, _| current_paths.contains(p));
+
+        // --- build resolver ---
+        self.resolver = Some(ImportResolver::new(&self.project_root, &graph));
+        self.graph = graph;
+
+        // --- build edges ---
+        Self::build_edges_internal(
+            self.resolver.as_ref().expect("resolver just built"),
+            &mut self.graph,
+        );
+
+        // --- compute PageRank ---
+        self.calculate_pagerank();
+
+        // --- finalise stats ---
+        stats.scan_duration_ms = start.elapsed().as_millis() as u64;
+        self.scan_stats = stats;
+        self.scan_state = ScanState::Scanned;
+    }
+
+    // -----------------------------------------------------------------------
+    // Edge construction
+    // -----------------------------------------------------------------------
+
+    /// Build call edges (weighted by CALL_WEIGHT) and import edges
+    /// (weighted by IMPORT_WEIGHT) using the resolver.
+    ///
+    /// Iterates `file_calls` and `file_imports` by reference — no cloning
+    /// of the original vectors.
+    fn build_edges_internal(resolver: &ImportResolver, graph: &mut RepoGraph) {
+        let mut dedup: HashSet<(String, String)> = HashSet::new();
+        let mut pending: Vec<Edge> = Vec::new();
+
+        // --- call edges ---
+        for (file, calls) in &graph.file_calls {
+            // Build local-name map from JS/TS import bindings.
+            let local_names: HashMap<String, String> = graph
+                .file_import_bindings
+                .get(file)
+                .map(|bindings| {
+                    let mut map = HashMap::with_capacity(bindings.len());
+                    for b in bindings {
+                        map.insert(b.local_name.clone(), b.imported_name.clone());
+                    }
+                    map
+                })
+                .unwrap_or_default();
+
+            for call in calls {
+                let (ref call_name, call_line, ref call_kind) = *call;
+                let target_id = match resolver.resolve_call_target(
+                    file,
+                    call_name,
+                    call_line,
+                    call_kind,
+                    &local_names,
+                ) {
+                    Some(id) => id,
+                    None => continue,
+                };
+                let source_id = match resolver.resolve_calling_symbol_with_graph(
+                    file,
+                    call_line,
+                    graph,
+                ) {
+                    Some(id) => id,
+                    None => continue,
+                };
+
+                let key = (source_id.clone(), target_id.clone());
+                if dedup.insert(key) {
+                    pending.push(Edge {
+                        source: source_id,
+                        target: target_id,
+                        weight: CALL_WEIGHT,
+                        kind: "call".to_string(),
+                    });
+                }
+            }
+        }
+
+        // --- import edges ---
+        for (file, imports) in &graph.file_imports {
+            let source_sym_ids: Vec<String> = graph
+                .file_symbols
+                .get(file)
+                .cloned()
+                .unwrap_or_default();
+
+            for import_path in imports {
+                let targets = resolver.resolve_import_targets(file, import_path);
+                for target_file in &targets {
+                    let target_sym_ids = match graph.file_symbols.get(target_file) {
+                        Some(ids) => ids,
+                        None => continue,
+                    };
+                    for source_id in &source_sym_ids {
+                        for target_id in target_sym_ids {
+                            let key = (source_id.clone(), target_id.clone());
+                            if dedup.insert(key) {
+                                pending.push(Edge {
+                                    source: source_id.clone(),
+                                    target: target_id.clone(),
+                                    weight: IMPORT_WEIGHT,
+                                    kind: "import".to_string(),
+                                });
+                            }
+                        }
                     }
                 }
             }
-            let complexity = if edge_grade(edge_degree) > 0.0 {
-                1.0 + edge_grade(edge_degree).ln_1p()
-            } else {
-                1.0
+        }
+
+        // Insert into graph (outgoing + incoming).
+        for edge in pending {
+            let src = edge.source.clone();
+            let tgt = edge.target.clone();
+            graph.outgoing.entry(src).or_default().push(edge.clone());
+            graph.incoming.entry(tgt).or_default().push(edge);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // PageRank computation
+    // -----------------------------------------------------------------------
+
+    /// Compute PageRank scores for all symbols in the current graph and
+    /// write them back into the symbol entries.
+    fn calculate_pagerank(&mut self) {
+        let mut analyzer = GraphAnalyzer::new();
+        analyzer.calculate_pagerank(&self.graph, 0.85, 50, 1e-6);
+
+        // Write scores back into symbols.
+        let scores: Vec<(String, f64)> = analyzer
+            .pagerank_scores()
+            .iter()
+            .map(|(k, v)| (k.clone(), *v))
+            .collect();
+        for (sym_id, score) in &scores {
+            if let Some(sym) = self.graph.symbols.get_mut(sym_id) {
+                sym.pagerank = *score;
+            }
+        }
+
+        self.analyzer = Some(analyzer);
+    }
+
+    // -----------------------------------------------------------------------
+    // Parser query
+    // -----------------------------------------------------------------------
+
+    /// Whether the engine has a parser available for `lang`.
+    ///
+    /// If the parser has not been initialised yet this returns `false`.
+    pub fn has_parser(&self, lang: &str) -> bool {
+        match self.ts.lock() {
+            Ok(guard) => guard
+                .as_ref()
+                .map(|t| t.has_parser(lang))
+                .unwrap_or(false),
+            Err(poisoned) => poisoned
+                .into_inner()
+                .as_ref()
+                .map(|t| t.has_parser(lang))
+                .unwrap_or(false),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Query interface — delegates to GraphAnalyzer
+    // -----------------------------------------------------------------------
+
+    /// Case-insensitive substring symbol search.
+    pub fn query_symbol(&self, name: &str) -> Vec<&Symbol> {
+        match self.analyzer.as_ref() {
+            Some(a) => a.query_symbol(name, &self.graph),
+            None => Vec::new(),
+        }
+    }
+
+    /// BFS call-chain traversal returning depth-grouped symbols.
+    pub fn call_chain(
+        &self,
+        symbol_id: &str,
+        direction: &str,
+        max_depth: usize,
+    ) -> HashMap<String, Vec<Symbol>> {
+        match self.analyzer.as_ref() {
+            Some(a) => a.call_chain(symbol_id, direction, max_depth, &self.graph),
+            None => HashMap::new(),
+        }
+    }
+
+    /// Files with the highest `symbol_count * avg_pagerank`.
+    pub fn hotspots(&self, limit: usize) -> Vec<HotspotInfo> {
+        match self.analyzer.as_ref() {
+            Some(a) => a.hotspots(limit, &self.graph),
+            None => Vec::new(),
+        }
+    }
+
+    /// Entry-point files detected by stem or path pattern.
+    pub fn entry_points(&self) -> Vec<String> {
+        match self.analyzer.as_ref() {
+            Some(a) => a.entry_points(&self.graph),
+            None => Vec::new(),
+        }
+    }
+
+    /// Per-file analysis: symbol count, edge counts, average PageRank.
+    pub fn file_analysis(&self) -> HashMap<String, FileMetrics> {
+        match self.analyzer.as_ref() {
+            Some(a) => a.file_analysis(&self.graph),
+            None => HashMap::new(),
+        }
+    }
+
+    /// Group symbols by top-level directory, sorted by total PageRank.
+    pub fn module_summary(&self, limit: usize) -> Vec<ModuleInfo> {
+        match self.analyzer.as_ref() {
+            Some(a) => a.module_summary(limit, &self.graph),
+            None => Vec::new(),
+        }
+    }
+
+    /// Suggested reading order based on PageRank, symbol density, and
+    /// entry-point boost.
+    pub fn suggested_reading_order(&self, limit: usize) -> Vec<ReadingOrderEntry> {
+        match self.analyzer.as_ref() {
+            Some(a) => a.suggested_reading_order(limit, &self.graph),
+            None => Vec::new(),
+        }
+    }
+
+    /// Compact symbol summary for the top files.
+    pub fn summary_symbols(&self, limit_files: usize, per_file: usize) -> Vec<SymbolSummary> {
+        match self.analyzer.as_ref() {
+            Some(a) => a.summary_symbols(limit_files, per_file, &self.graph),
+            None => Vec::new(),
+        }
+    }
+
+    /// Human-readable scan-statistic lines.
+    pub fn scan_summary_lines(&self) -> Vec<String> {
+        let s = &self.scan_stats;
+        let mut lines = Vec::new();
+
+        lines.push(format!("Scan completed in {} ms", s.scan_duration_ms));
+        lines.push(format!("Listed source files: {}", s.listed_source_files));
+        lines.push(format!(
+            "Selected source files: {}",
+            s.selected_source_files
+        ));
+        lines.push(format!("Processed files: {}", s.processed_files));
+        lines.push(format!(
+            "Filtered path/files: {}",
+            s.filtered_path_files
+        ));
+        lines.push(format!(
+            "Filtered large files: {}",
+            s.filtered_large_files
+        ));
+        lines.push(format!("Truncated files: {}", s.truncated_files));
+        lines.push(format!("Failed files: {}", s.failed_files.len()));
+
+        if s.timeout_triggered {
+            lines.push("Scan was interrupted by timeout.".to_string());
+        }
+
+        lines
+    }
+}
+
+// ===========================================================================
+// Private helpers
+// ===========================================================================
+
+/// Walk the project root and collect source files (respecting .gitignore
+/// via the `ignore` crate), up to `max_files`.
+fn list_source_files(project_root: &Path, max_files: usize) -> Vec<PathBuf> {
+    let walker = WalkBuilder::new(project_root)
+        .standard_filters(true)
+        .filter_entry(|entry| {
+            let path = entry.path();
+            let file_name = match path.file_name().and_then(|n| n.to_str()) {
+                Some(n) => n,
+                None => return true,
             };
 
-            hotspots.push(HotspotInfo {
-                file_path: file.clone(),
-                density,
-                complexity_score: complexity,
-                pagerank: file_pr,
-                line_count,
-                symbol_count,
-            });
-        }
-
-        hotspots.sort_by(|a, b| {
-            b.density
-                .partial_cmp(&a.density)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        hotspots.truncate(top_n);
-        hotspots
-    }
-
-    /// Return the top-N symbols summarised.
-    pub fn summary_symbols(&self, max_symbols: usize) -> Vec<SymbolSummary> {
-        self.top_symbols(max_symbols)
-            .iter()
-            .map(|s| SymbolSummary {
-                name: s.name.clone(),
-                kind: s.kind.clone(),
-                file: s.file.clone(),
-                pagerank: s.pagerank,
-                signature: s.signature.clone(),
-            })
-            .collect()
-    }
-
-    // ------------------------------------------------------------------
-    // Symbol & call-chain queries
-    // ------------------------------------------------------------------
-
-    /// Find all symbols whose name contains `name` (substring match).
-    pub fn query_symbol(&self, name: &str) -> Vec<&Symbol> {
-        let lower = name.to_lowercase();
-        self.graph
-            .symbols
-            .values()
-            .filter(|s| s.name.to_lowercase().contains(&lower))
-            .collect()
-    }
-
-    /// Walk the call graph for `symbol_name` up to `max_depth` levels,
-    /// returning callers (incoming) and callees (outgoing).
-    pub fn call_chain(&self, symbol_name: &str, max_depth: usize) -> CallChainResult {
-        // Find the symbol with highest PageRank matching the name.
-        let matches = self.query_symbol(symbol_name);
-        let target = match matches.into_iter().max_by(|a, b| {
-            a.pagerank
-                .partial_cmp(&b.pagerank)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        }) {
-            Some(s) => s,
-            None => {
-                return CallChainResult {
-                    symbol_name: symbol_name.to_string(),
-                    symbol_file: String::new(),
-                    symbol_kind: String::new(),
-                    callers: Vec::new(),
-                    callees: Vec::new(),
-                };
-            }
-        };
-
-        let target_id = &target.id;
-
-        // --- Collect callers (incoming edges) ---
-        let callers: Vec<CallChainEntry> = self
-            .graph
-            .incoming
-            .get(target_id)
-            .map(|edges| {
-                let mut seen = HashSet::new();
-                edges
-                    .iter()
-                    .filter(|e| seen.insert(e.source.clone()))
-                    .take(max_depth)
-                    .filter_map(|e| {
-                        self.graph
-                            .symbols
-                            .get(&e.source)
-                            .map(|s| CallChainEntry {
-                                symbol_name: s.name.clone(),
-                                symbol_id: s.id.clone(),
-                                file: s.file.clone(),
-                                pagerank: s.pagerank,
-                            })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        // --- Collect callees (outgoing edges) ---
-        let callees: Vec<CallChainEntry> = self
-            .graph
-            .outgoing
-            .get(target_id)
-            .map(|edges| {
-                let mut seen = HashSet::new();
-                edges
-                    .iter()
-                    .filter(|e| seen.insert(e.target.clone()))
-                    .take(max_depth)
-                    .filter_map(|e| {
-                        self.graph
-                            .symbols
-                            .get(&e.target)
-                            .map(|s| CallChainEntry {
-                                symbol_name: s.name.clone(),
-                                symbol_id: s.id.clone(),
-                                file: s.file.clone(),
-                                pagerank: s.pagerank,
-                            })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        CallChainResult {
-            symbol_name: target.name.clone(),
-            symbol_file: target.file.clone(),
-            symbol_kind: target.kind.clone(),
-            callers,
-            callees,
-        }
-    }
-
-    /// Compute metrics for a single file.
-    pub fn get_file_metrics(&self, file_path: &str) -> FileMetrics {
-        let sym_ids = self
-            .graph
-            .file_symbols
-            .get(file_path)
-            .cloned()
-            .unwrap_or_default();
-        let symbol_count = sym_ids.len();
-
-        let max_line = sym_ids
-            .iter()
-            .filter_map(|id| self.graph.symbols.get(id))
-            .map(|s| s.end_line)
-            .max()
-            .unwrap_or(0);
-
-        let avg_pr: f64 = if symbol_count > 0 {
-            sym_ids
-                .iter()
-                .filter_map(|id| self.graph.symbols.get(id))
-                .map(|s| s.pagerank)
-                .sum::<f64>()
-                / symbol_count as f64
-        } else {
-            0.0
-        };
-
-        FileMetrics {
-            file_path: file_path.to_string(),
-            lines: max_line,
-            symbols: symbol_count,
-            complexity: 1.0 + (symbol_count as f64).ln_1p(),
-            pagerank: avg_pr,
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// PageRank
-// ---------------------------------------------------------------------------
-
-/// Compute PageRank for every symbol in the graph using the standard
-/// power-iteration method.
-///
-/// `damping` is the teleport probability (typically 0.85).  `max_iter`
-/// caps the number of iterations.
-pub fn calculate_pagerank(graph: &mut RepoGraph, damping: f64, max_iter: usize) {
-    let n = graph.symbols.len();
-    if n == 0 {
-        return;
-    }
-
-    // Pre-compute out-degree for each node.
-    let out_deg: HashMap<&str, usize> = graph
-        .outgoing
-        .iter()
-        .map(|(k, v)| (k.as_str(), v.len()))
-        .collect();
-
-    let keys: Vec<String> = graph.symbols.keys().cloned().collect();
-    let keys_str: Vec<&str> = keys.iter().map(|s| s.as_str()).collect();
-    let uniform = 1.0 / n as f64;
-    let mut rank: HashMap<&str, f64> = keys_str.iter().map(|k| (*k, uniform)).collect();
-    let mut next: HashMap<&str, f64> = HashMap::with_capacity(n);
-
-    for _ in 0..max_iter {
-        next.clear();
-        let mut diff = 0.0_f64;
-
-        // Dangling-node mass (nodes with no outgoing edges).
-        let dangling = rank
-            .iter()
-            .filter(|(k, _)| out_deg.get(*k).map(|d| *d == 0).unwrap_or(true))
-            .map(|(_, v)| *v)
-            .sum::<f64>()
-            * damping
-            / n as f64;
-
-        let base = (1.0 - damping) / n as f64;
-
-        for node_id in &keys_str {
-            let mut pr = base + dangling;
-
-            // Distribute rank from incoming edges.
-            if let Some(incoming) = graph.incoming.get(*node_id) {
-                for edge in incoming {
-                    let src = edge.source.as_str();
-                    let deg = out_deg.get(src).copied().unwrap_or(1).max(1);
-                    pr += damping * rank.get(src).copied().unwrap_or(0.0) / deg as f64;
+            match entry.file_type() {
+                Some(ft) if ft.is_dir() => {
+                    // Do not descend into skipped directories.
+                    !SKIP_DIR_NAMES.contains(&file_name)
                 }
+                Some(ft) if ft.is_file() => {
+                    // Skip noise file names.
+                    if SKIP_FILE_NAMES.contains(&file_name) {
+                        return false;
+                    }
+                    // Only keep files with a recognised extension.
+                    let ext = match path.extension().and_then(|e| e.to_str()) {
+                        Some(e) => format!(".{}", e),
+                        None => return false,
+                    };
+                    ext_to_lang(&ext).is_some()
+                }
+                _ => true,
             }
+        })
+        .build();
 
-            next.insert(*node_id, pr);
-            diff += (pr - rank.get(node_id).copied().unwrap_or(0.0)).abs();
-        }
-
-        std::mem::swap(&mut rank, &mut next);
-
-        // Convergence threshold.
-        if diff < 1e-8 {
+    let mut files: Vec<PathBuf> = Vec::new();
+    for result in walker {
+        if files.len() >= max_files {
             break;
         }
-    }
-
-    // Write ranks back into symbols.
-    // Collect target IDs first to avoid borrow conflicts.
-    let target_ranks: Vec<(String, f64)> = graph
-        .symbols
-        .keys()
-        .map(|id| {
-            let pr = rank.get(id.as_str()).copied().unwrap_or(0.0);
-            (id.clone(), pr)
-        })
-        .collect();
-    for (id, pr) in target_ranks {
-        if let Some(symbol) = graph.symbols.get_mut(&id) {
-            symbol.pagerank = pr;
+        match result {
+            Ok(entry) => {
+                if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                    files.push(entry.into_path());
+                }
+            }
+            Err(_) => continue,
         }
     }
-}
 
-// ---------------------------------------------------------------------------
-// File-level PageRank aggregate
-// ---------------------------------------------------------------------------
-
-/// Aggregate per-symbol PageRank values to the file level.
-///
-/// Returns the mean PR of all symbols in each file.
-pub fn compute_file_pagerank(graph: &RepoGraph) -> HashMap<String, f64> {
-    let mut file_pr: HashMap<String, (f64, usize)> = HashMap::new();
-
-    for symbol in graph.symbols.values() {
-        let entry = file_pr.entry(symbol.file.clone()).or_default();
-        entry.0 += symbol.pagerank;
-        entry.1 += 1;
-    }
-
-    file_pr
-        .into_iter()
-        .map(|(f, (sum, count))| (f, sum / count.max(1) as f64))
-        .collect()
-}
-
-// ---------------------------------------------------------------------------
-// Private helpers
-// ---------------------------------------------------------------------------
-
-/// Extract the top-level directory name from a file path relative to
-/// `project_root`.
-fn top_level_dir(file_path: &str, _project_root: &Path) -> String {
-    let rel = Path::new(file_path);
-    // If the path is already relative, it may not contain project_root prefix.
-    // Try to get the first component.
-    let first = rel
-        .components()
-        .next()
-        .and_then(|c| c.as_os_str().to_str())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| "root".to_string());
-
-    if first == "." || first.is_empty() {
-        "root".to_string()
-    } else {
-        first
-    }
-}
-
-/// Convert an edge count to a simple numeric grade for complexity
-/// scoring.
-fn edge_grade(count: usize) -> f64 {
-    if count > 50 {
-        100.0
-    } else if count > 20 {
-        50.0
-    } else if count > 10 {
-        20.0
-    } else if count > 5 {
-        10.0
-    } else {
-        count as f64
-    }
+    files
 }
