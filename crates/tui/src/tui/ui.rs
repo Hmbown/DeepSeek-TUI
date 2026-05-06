@@ -2988,12 +2988,12 @@ fn notification_settings(
     }
 
     let notif = config.notifications_config();
-    let method = crate::tui::notifications::Method::from_str(match &notif.method {
-        crate::config::NotificationMethod::Auto => "auto",
-        crate::config::NotificationMethod::Osc9 => "osc9",
-        crate::config::NotificationMethod::Bel => "bel",
-        crate::config::NotificationMethod::Off => "off",
-    });
+    let method = match notif.method {
+        crate::config::NotificationMethod::Auto => crate::tui::notifications::Method::Auto,
+        crate::config::NotificationMethod::Osc9 => crate::tui::notifications::Method::Osc9,
+        crate::config::NotificationMethod::Bel => crate::tui::notifications::Method::Bel,
+        crate::config::NotificationMethod::Off => crate::tui::notifications::Method::Off,
+    };
 
     Some((
         method,
