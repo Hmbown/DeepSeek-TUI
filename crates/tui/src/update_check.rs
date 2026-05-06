@@ -119,16 +119,16 @@ async fn check_for_update() -> Option<UpdateAvailable> {
 fn is_newer(latest: &str, current: &str) -> bool {
     let parse = |v: &str| -> Option<(u32, u32, u32)> {
         let v = v.trim_start_matches('v');
-        let parts: Vec<&str> = v.split('.').collect();
-        if parts.len() >= 3 {
-            Some((
-                parts[0].parse().ok()?,
-                parts[1].parse().ok()?,
-                parts[2].parse().ok()?,
-            ))
-        } else {
-            None
+        let parts: Vec<u32> = v.split('.').filter_map(|p| p.parse().ok()).collect();
+        if parts.is_empty() {
+            return None;
         }
+        // Pad with zeros: "0.9" → (0, 9, 0), "1" → (1, 0, 0)
+        Some((
+            parts.first().copied().unwrap_or(0),
+            parts.get(1).copied().unwrap_or(0),
+            parts.get(2).copied().unwrap_or(0),
+        ))
     };
 
     match (parse(latest), parse(current)) {
@@ -214,6 +214,21 @@ mod tests {
     fn version_with_v_prefix() {
         assert!(is_newer("v0.8.15", "0.8.14"));
         assert!(is_newer("v1.0.0", "v0.8.14"));
+    }
+
+    #[test]
+    fn version_with_two_parts() {
+        // Two-part versions should be zero-padded: "0.9" → (0, 9, 0)
+        assert!(is_newer("0.9", "0.8.14"));
+        assert!(is_newer("1.0", "0.8.14"));
+        assert!(!is_newer("0.8", "0.8.14"));
+    }
+
+    #[test]
+    fn version_with_one_part() {
+        // Single-part versions: "1" → (1, 0, 0)
+        assert!(is_newer("1", "0.8.14"));
+        assert!(!is_newer("0", "0.8.14"));
     }
 
     #[test]
