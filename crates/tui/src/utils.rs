@@ -284,7 +284,7 @@ fn write_panic_dump_to(
 /// panics, a crash dump is written to `~/.deepseek/crashes/` and the panic
 /// is logged at ERROR level rather than being silently swallowed.
 #[track_caller]
-pub fn spawn_blocking_supervised<F>(name: &'static str, f: F)
+pub fn spawn_blocking_supervised<F>(name: &'static str, f: F) -> tokio::task::JoinHandle<()>
 where
     F: FnOnce() + Send + 'static,
 {
@@ -305,7 +305,7 @@ where
             );
             let _ = write_panic_dump(name, location, &msg);
         }
-    });
+    })
 }
 
 #[allow(dead_code)]
@@ -610,6 +610,27 @@ mod spawn_supervised_tests {
         assert!(
             parent_alive.load(Ordering::SeqCst),
             "fixture task must have run before panicking"
+        );
+    }
+
+    #[tokio::test]
+    async fn panicking_blocking_task_does_not_propagate_to_parent() {
+        let parent_alive = Arc::new(AtomicBool::new(false));
+        let parent_alive_clone = parent_alive.clone();
+
+        let handle = spawn_blocking_supervised("blocking-panic-test-fixture", move || {
+            parent_alive_clone.store(true, Ordering::SeqCst);
+            panic!("deliberate panic for spawn_blocking catch-unwind test");
+        });
+
+        let result = handle.await;
+        assert!(
+            result.is_ok(),
+            "spawn_blocking_supervised must convert panic to a normal completion"
+        );
+        assert!(
+            parent_alive.load(Ordering::SeqCst),
+            "fixture blocking task must have run before panicking"
         );
     }
 
