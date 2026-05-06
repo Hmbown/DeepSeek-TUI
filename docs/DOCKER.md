@@ -18,11 +18,11 @@ with Hub credentials to the release workflow if needed.
 
 ## Environment variables
 
-| Variable              | Required | Description                                      |
-|-----------------------|----------|--------------------------------------------------|
-| `DEEPSEEK_API_KEY`    | yes      | DeepSeek API key                                 |
-| `DEEPSEEK_BASE_URL`   | no       | Custom API base URL (e.g. `https://api.deepseek.com`) |
-| `DEEPSEEK_NO_COLOR`   | no       | Set to `1` to disable terminal colour output     |
+| Variable            | Required | Description                                           |
+| ------------------- | -------- | ----------------------------------------------------- |
+| `DEEPSEEK_API_KEY`  | yes      | DeepSeek API key                                      |
+| `DEEPSEEK_BASE_URL` | no       | Custom API base URL (e.g. `https://api.deepseek.com`) |
+| `DEEPSEEK_NO_COLOR` | no       | Set to `1` to disable terminal color output           |
 
 ## Volumes
 
@@ -65,11 +65,11 @@ ready-to-use development environment.
 
 ## Tags
 
-| Tag        | Meaning                  |
-|------------|--------------------------|
-| `latest`   | Latest stable release    |
-| `v0`       | Latest v0.x release      |
-| `0.8.9`    | Specific release version |
+| Tag      | Meaning                  |
+| -------- | ------------------------ |
+| `latest` | Latest stable release    |
+| `v0`     | Latest v0.x release      |
+| `0.8.9`  | Specific release version |
 
 Docker images are built and pushed automatically when a release tag is pushed
 (see [release.yml](../.github/workflows/release.yml)).

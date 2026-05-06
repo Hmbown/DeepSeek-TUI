@@ -4,6 +4,7 @@ This runbook is the source of truth for shipping Rust crates, GitHub release ass
 and the `deepseek-tui` npm wrapper.
 
 Current packaging note:
+
 - `deepseek-tui` is the live runtime and TUI package shipped to users today.
 - `deepseek-tui-core` is a supporting workspace crate for the extraction/parity effort, not a replacement for the shipping runtime.
 
@@ -25,12 +26,12 @@ Current packaging note:
   - `deepseek-core`
   - `deepseek-app-server`
   - `deepseek-tui-core`
-- `deepseek-cli` on crates.io is an unrelated crate and is not part of this release flow.
+- `deepseek-cli` on crates.io is unrelated and excluded from this release workflow.
 
 ## Version Coordination
 
 - Rust crates inherit the shared workspace version from [Cargo.toml](../Cargo.toml).
-- Internal path dependency versions should match the shared workspace version; stale older pins are release blockers once the workspace version moves.
+- Internal path dependency versions should match the shared workspace version; outdated path dependencies are release blockers once the workspace version moves.
 - The npm wrapper version lives in [npm/deepseek-tui/package.json](../npm/deepseek-tui/package.json).
 - `deepseekBinaryVersion` controls which GitHub release binaries the npm wrapper downloads.
 - Packaging-only npm releases are allowed:

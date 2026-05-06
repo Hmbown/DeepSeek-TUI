@@ -2,102 +2,102 @@
 
 This is the source-of-truth catalog of every keyboard shortcut the TUI recognizes. Bindings are grouped by **context** — the focus or modal state they fire in. A binding listed under "Composer" only takes effect when the composer is focused; one under "Transcript" only when the transcript has focus; and so on.
 
-Bindings are not (yet) user-configurable — tracked for a future release (#436, #437). This document is the contract that future config-file overrides will name into.
+Bindings are not currently user-configurable. This is tracked for a future release (#436, #437). This document defines the bindings that future config-file overrides will reference.
 
 ## Global (any context)
 
-| Chord                | Action                                                        |
-|----------------------|---------------------------------------------------------------|
-| `F1` or `Ctrl-?`     | Toggle the help overlay                                       |
-| `Ctrl-K`             | Open the command palette (slash-command finder)                |
-| `Ctrl-C`             | Cancel current turn / dismiss modal / arm-then-confirm quit    |
-| `Ctrl-D`             | Quit (only when the composer is empty)                         |
-| `Tab`                | Cycle TUI mode: Plan → Agent → YOLO → Plan                     |
-| `Shift-Tab`          | Cycle reasoning effort: off → high → max → off                 |
-| `Ctrl-R`             | Open the resume-session picker                                 |
-| `Ctrl-L`             | Refresh / clear the screen                                     |
-| `Ctrl-T`             | Toggle the file-tree sidebar                                   |
-| `Esc`                | Close topmost modal · cancel slash menu · dismiss toast        |
+| Chord            | Action                                                      |
+| ---------------- | ----------------------------------------------------------- |
+| `F1` or `Ctrl-?` | Toggle the help overlay                                     |
+| `Ctrl-K`         | Open the command palette (slash-command finder)             |
+| `Ctrl-C`         | Cancel current turn / dismiss modal / arm-then-confirm quit |
+| `Ctrl-D`         | Quit (only when the composer is empty)                      |
+| `Tab`            | Cycle TUI mode: Plan → Agent → YOLO → Plan                  |
+| `Shift-Tab`      | Cycle reasoning effort: off → high → max → off              |
+| `Ctrl-R`         | Open the resume-session picker                              |
+| `Ctrl-L`         | Refresh / clear the screen                                  |
+| `Ctrl-T`         | Toggle the file-tree sidebar                                |
+| `Esc`            | Close topmost modal · cancel slash menu · dismiss toast     |
 
 ## Composer
 
 Editing the message you're about to send.
 
-| Chord                       | Action                                                  |
-|-----------------------------|---------------------------------------------------------|
-| `Enter`                     | Send the message (or run the slash command)             |
-| `Alt-Enter` / `Ctrl-J`      | Insert a newline without sending                        |
-| `Ctrl-U`                    | Delete to start of line                                 |
-| `Ctrl-W`                    | Delete previous word                                    |
-| `Ctrl-A` / `Home`           | Move to start of line                                   |
-| `Ctrl-E` / `End`            | Move to end of line                                     |
-| `Ctrl-←` / `Alt-←`          | Move backward one word                                  |
-| `Ctrl-→` / `Alt-→`          | Move forward one word                                   |
-| `Ctrl-V` / `Cmd-V`          | Paste from clipboard (also bracketed-paste auto-handled)|
-| `Ctrl-Y`                    | Yank (paste) from kill buffer                           |
-| `↑` / `↓`                   | Cycle composer history (also selects popup/attachment items) |
-| `Ctrl-P` / `Ctrl-N`         | Cycle composer history (alternative)                     |
-| `Ctrl-S`                    | Stash current draft (`/stash list`, `/stash pop` to recover) |
-| `Alt-R`                    | Search prompt history (Alt-R to exit)                  |
-| `Tab`                       | Slash-command / `@`-mention completion (popup-aware)    |
-| `Ctrl-O`                    | Open external editor for the composer draft             |
+| Chord                  | Action                                                       |
+| ---------------------- | ------------------------------------------------------------ |
+| `Enter`                | Send the message (or run the slash command)                  |
+| `Alt-Enter` / `Ctrl-J` | Insert a newline without sending                             |
+| `Ctrl-U`               | Delete to start of line                                      |
+| `Ctrl-W`               | Delete previous word                                         |
+| `Ctrl-A` / `Home`      | Move to start of line                                        |
+| `Ctrl-E` / `End`       | Move to end of line                                          |
+| `Ctrl-←` / `Alt-←`     | Move backward one word                                       |
+| `Ctrl-→` / `Alt-→`     | Move forward one word                                        |
+| `Ctrl-V` / `Cmd-V`     | Paste from clipboard (supports bracketed-paste)              |
+| `Ctrl-Y`               | Yank (paste) from the internal kill buffer                   |
+| `↑` / `↓`              | Cycle composer history (also selects popup/attachment items) |
+| `Ctrl-P` / `Ctrl-N`    | Cycle composer history (alternative)                         |
+| `Ctrl-S`               | Stash current draft (`/stash list`, `/stash pop` to recover) |
+| `Alt-R`                | Search prompt history (Alt-R to exit)                        |
+| `Tab`                  | Slash-command / `@`-mention completion (popup-aware)         |
+| `Ctrl-O`               | Open external editor for the composer draft                  |
 
 ### `@` mentions
 
-Type `@<partial>` to open the file mention popup. `↑`/`↓` cycle the entries, `Tab` or `Enter` accepts. `Esc` hides the popup. As of v0.8.10 (#441), completions are re-ranked by mention frecency — files you mention often + recently float to the top.
+Type `@<partial>` to open the file mention popup. Use `↑`/`↓` to cycle entries, `Tab` or `Enter` to accept, `Esc` to hide. As of v0.8.10 (#441), completions are re-ranked by mention frequency — frequently and recently mentioned files appear first.
 
 ### `#` quick-add (memory)
 
-When `[memory] enabled = true`, typing `# foo` and pressing `Enter` appends `foo` as a timestamped bullet to your memory file *without* sending a turn. See `docs/MEMORY.md`.
+When `[memory] enabled = true`, typing `# foo` and pressing `Enter` appends `foo` as a timestamped bullet to your memory file _without_ sending a turn. See `docs/MEMORY.md`.
 
 ## Transcript (when transcript has focus)
 
-| Chord                | Action                                              |
-|----------------------|-----------------------------------------------------|
-| `↑` / `↓` / `j` / `k`| Scroll one line (v0.8.13+: bare arrows also scroll when composer empty) |
-| `PgUp` / `PgDn`      | Scroll one page                                    |
-| `Home` / `g`         | Jump to top                                         |
-| `End` / `G`          | Jump to bottom                                     |
-| `Esc`                | Return focus to composer                           |
-| `y`                  | Yank selected region to clipboard                  |
-| `v`                  | Begin / extend visual selection                    |
-| `o`                  | Open URL under cursor (OSC 8 capable terminals)    |
+| Chord                 | Action                                                                  |
+| --------------------- | ----------------------------------------------------------------------- |
+| `↑` / `↓` / `j` / `k` | Scroll one line (v0.8.13+: bare arrows also scroll when composer empty) |
+| `PgUp` / `PgDn`       | Scroll one page                                                         |
+| `Home` / `g`          | Jump to top                                                             |
+| `End` / `G`           | Jump to bottom                                                          |
+| `Esc`                 | Return focus to composer                                                |
+| `y`                   | Yank selected region to clipboard                                       |
+| `v`                   | Begin / extend visual selection                                         |
+| `o`                   | Open URL under cursor (OSC 8 capable terminals)                         |
 
 ## Sidebar (when sidebar has focus)
 
-| Chord                | Action                                              |
-|----------------------|-----------------------------------------------------|
-| `↑` / `↓` / `j` / `k`| Move selection                                     |
-| `Enter`              | Activate the selected item (open / focus / cancel) |
-| `Tab`                | Cycle to next sidebar panel (Files → Tasks → Agents → Todos) |
-| `Esc`                | Return focus to composer                           |
+| Chord                 | Action                                                       |
+| --------------------- | ------------------------------------------------------------ |
+| `↑` / `↓` / `j` / `k` | Move selection                                               |
+| `Enter`               | Activate the selected item (open / focus / cancel)           |
+| `Tab`                 | Cycle to next sidebar panel (Files → Tasks → Agents → Todos) |
+| `Esc`                 | Return focus to composer                                     |
 
 ## Slash-command palette (after `Ctrl-K` or typing `/`)
 
-| Chord                | Action                                              |
-|----------------------|-----------------------------------------------------|
-| `↑` / `↓`            | Move selection                                     |
-| `Enter` / `Tab`      | Run / complete the highlighted command             |
-| `Esc`                | Dismiss palette                                     |
+| Chord           | Action                                 |
+| --------------- | -------------------------------------- |
+| `↑` / `↓`       | Move selection                         |
+| `Enter` / `Tab` | Run / complete the highlighted command |
+| `Esc`           | Dismiss palette                        |
 
 ## Approval modal (when a tool requests approval)
 
-| Chord                | Action                                              |
-|----------------------|-----------------------------------------------------|
-| `y` / `Y`            | Approve once                                        |
-| `a` / `A`            | Approve all (auto-approve subsequent calls)        |
-| `n` / `N` / `Esc`    | Deny                                                |
-| `e`                  | Edit the approved input before running              |
+| Chord             | Action                                      |
+| ----------------- | ------------------------------------------- |
+| `y` / `Y`         | Approve once                                |
+| `a` / `A`         | Approve all (auto-approve subsequent calls) |
+| `n` / `N` / `Esc` | Deny                                        |
+| `e`               | Edit the approved input before running      |
 
 ## Onboarding (first-run flow)
 
-| Chord                | Action                                              |
-|----------------------|-----------------------------------------------------|
-| `Enter`              | Advance to next step (Welcome → Language → API → …) |
-| `Esc`                | Step back one screen                                |
-| `1`–`5`              | Pick a language (Language step)                    |
-| `y` / `Y`            | Trust the workspace (Trust step)                   |
-| `n` / `N`            | Skip the trust prompt                              |
+| Chord     | Action                                              |
+| --------- | --------------------------------------------------- |
+| `Enter`   | Advance to next step (Welcome → Language → API → …) |
+| `Esc`     | Step back one screen                                |
+| `1`–`5`   | Pick a language (Language step)                     |
+| `y` / `Y` | Trust the workspace (Trust step)                    |
+| `n` / `N` | Skip the trust prompt                               |
 
 ## v0.8.13 audit notes
 

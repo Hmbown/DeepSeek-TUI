@@ -7,10 +7,9 @@ sessions — "I prefer pytest over unittest", "this codebase uses
 4-space indentation", "always run `cargo fmt` before committing" —
 without having to repeat them in every conversation.
 
-Memory is **opt-in**. When disabled (the default), nothing is loaded,
-nothing is intercepted, and the `remember` tool isn't surfaced to the
-model. This keeps zero-overhead behavior for users who haven't asked
-for the feature.
+Memory is **opt-in**. When disabled (the default), the feature imposes
+zero overhead: nothing is loaded, nothing is intercepted, and the
+`remember` tool is not available. Users must explicitly enable it.
 
 ## Enabling memory
 
@@ -73,7 +72,7 @@ The file is read at every prompt-build call — edits via `/memory`
 or external editors land on the next turn, no restart needed.
 
 Files larger than 100 KiB are loaded but truncated, with a marker
-appended so you can see the cut.
+appended to indicate where the file ends.
 
 ## Three ways to add to memory
 
@@ -98,14 +97,14 @@ submission so you can paste Markdown headings without surprise.
 
 Inspect, clear, or get hints about editing the file:
 
-| Subcommand          | Effect                                                 |
-|---------------------|--------------------------------------------------------|
-| `/memory`           | Show the resolved path and current contents inline    |
-| `/memory show`      | Alias for the no-arg form                              |
-| `/memory path`      | Print just the resolved path                          |
-| `/memory clear`     | Replace the file with an empty marker                 |
-| `/memory edit`      | Print the `${VISUAL:-${EDITOR:-vi}} <path>` shell line |
-| `/memory help`      | Show command-specific help and the current path       |
+| Subcommand      | Effect                                                 |
+| --------------- | ------------------------------------------------------ |
+| `/memory`       | Show the resolved path and current contents inline     |
+| `/memory show`  | Alias for the no-arg form                              |
+| `/memory path`  | Print just the resolved path                           |
+| `/memory clear` | Replace the file with an empty marker                  |
+| `/memory edit`  | Print the `${VISUAL:-${EDITOR:-vi}} <path>` shell line |
+| `/memory help`  | Show command-specific help and the current path        |
 
 The `/memory edit` form intentionally just prints the command rather
 than spawning the editor in-process — that keeps the slash-command
@@ -194,7 +193,7 @@ Memory is for **durable** signal. Things that should NOT live there:
 
 ## Privacy and scope
 
-The memory file lives entirely on your machine in `~/.deepseek/`.
+The memory file resides entirely on your machine in `~/.deepseek/`.
 It's never uploaded to any cloud service — the TUI only ever
 includes it inline in the system prompt that the LLM provider
 receives, and only when memory is enabled. If you switch providers
@@ -217,11 +216,11 @@ enabled = true                    # default false; or set DEEPSEEK_MEMORY=on
 memory_path = "~/.deepseek/memory.md"
 ```
 
-| Setting               | Default                       | Override                              |
-|-----------------------|-------------------------------|---------------------------------------|
-| Memory enabled        | `false`                       | `[memory] enabled = true` or `DEEPSEEK_MEMORY=on` |
-| Memory file path      | `~/.deepseek/memory.md`       | `memory_path = "..."` or `DEEPSEEK_MEMORY_PATH=`  |
-| Max file size         | 100 KiB                       | (none today; truncation marker shows the cut)     |
+| Setting          | Default                 | Override                                          |
+| ---------------- | ----------------------- | ------------------------------------------------- |
+| Memory enabled   | `false`                 | `[memory] enabled = true` or `DEEPSEEK_MEMORY=on` |
+| Memory file path | `~/.deepseek/memory.md` | `memory_path = "..."` or `DEEPSEEK_MEMORY_PATH=`  |
+| Max file size    | 100 KiB                 | (none today; truncation marker shows the cut)     |
 
 ## Related
 

@@ -52,34 +52,34 @@ deepseek doctor --json
 
 ### Response schema (key fields)
 
-| Field | Type | Description |
-|---|---|---|
-| `version` | string | Installed version (e.g. `"0.8.9"`) |
-| `config_path` | string | Resolved config file path |
-| `config_present` | bool | Whether the config file exists |
-| `workspace` | string | Default workspace directory |
-| `api_key.source` | string | `env`, `config`, or `missing` |
-| `base_url` | string | API base URL |
-| `default_text_model` | string | Default model |
-| `memory.enabled` | bool | Whether the memory feature is on |
-| `memory.path` | string | Path to memory file |
-| `memory.file_present` | bool | Whether memory file exists |
-| `mcp.config_path` | string | MCP config file path |
-| `mcp.present` | bool | Whether MCP config exists |
-| `mcp.servers` | array | Per-server health: `{name, enabled, status, detail}` |
-| `skills.selected` | string | Resolved skills directory |
-| `skills.global.path` / `.present` / `.count` | — | DeepSeek global skills dir (`~/.deepseek/skills`) |
-| `skills.agents.path` / `.present` / `.count` | — | Workspace `.agents/skills/` dir |
-| `skills.agents_global.path` / `.present` / `.count` | — | agentskills.io global skills dir (`~/.agents/skills`) |
-| `skills.local.path` / `.present` / `.count` | — | `skills/` dir |
-| `skills.opencode.path` / `.present` / `.count` | — | `.opencode/skills/` dir |
-| `skills.claude.path` / `.present` / `.count` | — | `.claude/skills/` dir |
-| `tools.path` / `.present` / `.count` | — | Global tools directory |
-| `plugins.path` / `.present` / `.count` | — | Global plugins directory |
-| `sandbox.available` | bool | Whether sandbox is supported on this OS |
-| `sandbox.kind` | string or null | Sandbox kind (e.g. `"macos_seatbelt"`) |
-| `storage.spillover.path` / `.present` / `.count` | — | Tool output spillover dir |
-| `storage.stash.path` / `.present` / `.count` | — | Composer stash |
+| Field                                               | Type           | Description                                           |
+| --------------------------------------------------- | -------------- | ----------------------------------------------------- |
+| `version`                                           | string         | Installed version (e.g. `"0.8.9"`)                    |
+| `config_path`                                       | string         | Resolved config file path                             |
+| `config_present`                                    | bool           | Whether the config file exists                        |
+| `workspace`                                         | string         | Default workspace directory                           |
+| `api_key.source`                                    | string         | `env`, `config`, or `missing`                         |
+| `base_url`                                          | string         | API base URL                                          |
+| `default_text_model`                                | string         | Default model                                         |
+| `memory.enabled`                                    | bool           | Whether the memory feature is on                      |
+| `memory.path`                                       | string         | Path to memory file                                   |
+| `memory.file_present`                               | bool           | Whether memory file exists                            |
+| `mcp.config_path`                                   | string         | MCP config file path                                  |
+| `mcp.present`                                       | bool           | Whether MCP config exists                             |
+| `mcp.servers`                                       | array          | Per-server health: `{name, enabled, status, detail}`  |
+| `skills.selected`                                   | string         | Resolved skills directory                             |
+| `skills.global.path` / `.present` / `.count`        | —              | DeepSeek global skills dir (`~/.deepseek/skills`)     |
+| `skills.agents.path` / `.present` / `.count`        | —              | Workspace `.agents/skills/` dir                       |
+| `skills.agents_global.path` / `.present` / `.count` | —              | agentskills.io global skills dir (`~/.agents/skills`) |
+| `skills.local.path` / `.present` / `.count`         | —              | `skills/` dir                                         |
+| `skills.opencode.path` / `.present` / `.count`      | —              | `.opencode/skills/` dir                               |
+| `skills.claude.path` / `.present` / `.count`        | —              | `.claude/skills/` dir                                 |
+| `tools.path` / `.present` / `.count`                | —              | Global tools directory                                |
+| `plugins.path` / `.present` / `.count`              | —              | Global plugins directory                              |
+| `sandbox.available`                                 | bool           | Whether sandbox is supported on this OS               |
+| `sandbox.kind`                                      | string or null | Sandbox kind (e.g. `"macos_seatbelt"`)                |
+| `storage.spillover.path` / `.present` / `.count`    | —              | Tool output spillover dir                             |
+| `storage.stash.path` / `.present` / `.count`        | —              | Composer stash                                        |
 
 ### Example
 
@@ -103,7 +103,12 @@ deepseek doctor --json
     "config_path": "/Users/you/.deepseek/mcp.json",
     "present": true,
     "servers": [
-      {"name": "filesystem", "enabled": true, "status": "ok", "detail": "ready"}
+      {
+        "name": "filesystem",
+        "enabled": true,
+        "status": "ok",
+        "detail": "ready"
+      }
     ]
   },
   "sandbox": {
@@ -127,15 +132,18 @@ there is no `[app_server]` config section.
 ### Endpoints
 
 **Health**
+
 - `GET /health`
 
 **Sessions** (legacy session manager)
+
 - `GET /v1/sessions?limit=50&search=<substring>`
 - `GET /v1/sessions/{id}`
 - `DELETE /v1/sessions/{id}`
 - `POST /v1/sessions/{id}/resume-thread`
 
 **Threads** (durable runtime data model)
+
 - `GET /v1/threads?limit=50&include_archived=false&archived_only=false`
 - `GET /v1/threads/summary?limit=50&search=<optional>&include_archived=false&archived_only=false`
 - `POST /v1/threads`
@@ -166,24 +174,29 @@ accept an empty string to clear a previously-set value. Added in v0.8.10 (#562):
 ```
 
 **Turns** (within a thread)
+
 - `POST /v1/threads/{id}/turns`
 - `POST /v1/threads/{id}/turns/{turn_id}/steer`
 - `POST /v1/threads/{id}/turns/{turn_id}/interrupt`
 - `POST /v1/threads/{id}/compact` (manual compaction)
 
 **Events** (SSE replay + live stream)
+
 - `GET /v1/threads/{id}/events?since_seq=<u64>`
 
 **Compatibility stream** (one-shot, backwards-compatible)
+
 - `POST /v1/stream`
 
 **Tasks** (durable background work)
+
 - `GET /v1/tasks`
 - `POST /v1/tasks`
 - `GET /v1/tasks/{id}`
 - `POST /v1/tasks/{id}/cancel`
 
 **Automations** (scheduled recurring work)
+
 - `GET /v1/automations`
 - `POST /v1/automations`
 - `GET /v1/automations/{id}`
@@ -195,12 +208,14 @@ accept an empty string to clear a previously-set value. Added in v0.8.10 (#562):
 - `GET /v1/automations/{id}/runs?limit=20`
 
 **Introspection**
+
 - `GET /v1/workspace/status`
 - `GET /v1/skills`
 - `GET /v1/apps/mcp/servers`
 - `GET /v1/apps/mcp/tools?server=<optional>`
 
 **Usage** (token/cost aggregation across threads)
+
 - `GET /v1/usage?since=<rfc3339>&until=<rfc3339>&group_by=<day|model|provider|thread>`
 
 `since` / `until` are inclusive RFC 3339 timestamps and may be omitted (no
@@ -244,9 +259,9 @@ The runtime uses a durable Thread/Turn/Item lifecycle.
   `mode`, `task_id`, `coherence_state`, `system_prompt`, `latest_turn_id`,
   `latest_response_bookmark`, `archived`
 - **TurnRecord** — `id`, `thread_id`, `status` (`queued|in_progress|completed|
-  failed|interrupted|canceled`), timestamps, duration, usage, error summary
+failed|interrupted|canceled`), timestamps, duration, usage, error summary
 - **TurnItemRecord** — `id`, `turn_id`, `kind` (`user_message|agent_message|
-  tool_call|file_change|command_execution|context_compaction|status|error`),
+tool_call|file_change|command_execution|context_compaction|status|error`),
   lifecycle `status`, `metadata`
 
 Events are append-only with a global monotonic `seq` for replay/resume.
@@ -255,7 +270,7 @@ Events are append-only with a global monotonic `seq` for replay/resume.
 
 - If the process restarts while a turn or item is `queued` or `in_progress`,
   the recovered record is marked `interrupted` with an `"Interrupted by
-  process restart"` error.
+process restart"` error.
 - Task execution performs its own recovery on top of the same persisted
   thread/turn store.
 
@@ -269,7 +284,7 @@ Events are append-only with a global monotonic `seq` for replay/resume.
 
 ### SSE event stream
 
-The SSE event payload shape:
+SSE event payload structure:
 
 ```json
 {
@@ -303,7 +318,7 @@ Common event names: `thread.started`, `thread.forked`, `turn.started`,
 - **No hosted relay**. The app-server is a local process under the user's
   control. There is no cloud component.
 - **Capability responses** never leak secrets, file contents, or session
-  message bodies. They report *metadata*: presence, counts, status flags.
+  message bodies. They report _metadata_: presence, counts, status flags.
 
 ### CORS allow-list
 
@@ -326,19 +341,19 @@ model is preserved. Added in v0.8.10 (#561).
 
 ## Session lifecycle (native UI supervision)
 
-| Operation | Endpoint |
-|---|---|
-| List sessions | `GET /v1/sessions` |
-| Get session | `GET /v1/sessions/{id}` |
-| Delete session | `DELETE /v1/sessions/{id}` |
-| Resume into thread | `POST /v1/sessions/{id}/resume-thread` |
-| Create thread | `POST /v1/threads` |
-| List threads | `GET /v1/threads` |
-| Attach to events | `GET /v1/threads/{id}/events?since_seq=0` |
-| Send message | `POST /v1/threads/{id}/turns` |
-| Steer | `POST /v1/threads/{id}/turns/{turn_id}/steer` |
-| Interrupt | `POST /v1/threads/{id}/turns/{turn_id}/interrupt` |
-| Compact | `POST /v1/threads/{id}/compact` |
+| Operation          | Endpoint                                          |
+| ------------------ | ------------------------------------------------- |
+| List sessions      | `GET /v1/sessions`                                |
+| Get session        | `GET /v1/sessions/{id}`                           |
+| Delete session     | `DELETE /v1/sessions/{id}`                        |
+| Resume into thread | `POST /v1/sessions/{id}/resume-thread`            |
+| Create thread      | `POST /v1/threads`                                |
+| List threads       | `GET /v1/threads`                                 |
+| Attach to events   | `GET /v1/threads/{id}/events?since_seq=0`         |
+| Send message       | `POST /v1/threads/{id}/turns`                     |
+| Steer              | `POST /v1/threads/{id}/turns/{turn_id}/steer`     |
+| Interrupt          | `POST /v1/threads/{id}/turns/{turn_id}/interrupt` |
+| Compact            | `POST /v1/threads/{id}/compact`                   |
 
 ## Compatibility tests
 
