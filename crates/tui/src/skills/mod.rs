@@ -300,7 +300,8 @@ pub fn resolve_skills_dir(workspace: &Path) -> PathBuf {
 /// 2. `<workspace>/skills` — flat, project-local.
 /// 3. `<workspace>/.opencode/skills` — OpenCode interop.
 /// 4. `<workspace>/.claude/skills` — Claude Code interop.
-/// 5. [`default_skills_dir`] — global, user-installed.
+/// 5. `<workspace>/.cursor/skills` — Cursor interop.
+/// 6. [`default_skills_dir`] — global, user-installed.
 ///
 /// Only directories that exist on disk are returned — callers don't
 /// need to filter further. Returns an empty vec when nothing is
@@ -312,6 +313,7 @@ pub fn skills_directories(workspace: &Path) -> Vec<PathBuf> {
         workspace.join("skills"),
         workspace.join(".opencode").join("skills"),
         workspace.join(".claude").join("skills"),
+        workspace.join(".cursor").join("skills"),
         default_skills_dir(),
     ];
     let mut out = Vec::new();

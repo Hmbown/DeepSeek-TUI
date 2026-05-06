@@ -86,7 +86,8 @@ impl ToolSpec for LoadSkillTool {
 
         // #432: walk every candidate skill directory (workspace
         // .agents/skills, skills, .opencode/skills, .claude/skills,
-        // global default), merging with first-wins precedence. The
+        // .cursor/skills, global default), merging with first-wins
+        // precedence. The
         // tool's lookup mirrors what the system-prompt skills block
         // already lists, so the model never asks for a name it
         // can't find.

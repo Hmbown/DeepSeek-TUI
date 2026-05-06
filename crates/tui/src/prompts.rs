@@ -382,8 +382,8 @@ pub fn system_prompt_for_mode_with_context_skills_session_and_approval(
 
     // 3. Skills block. #432: walks every candidate workspace
     // skills directory (`.agents/skills`, `skills`,
-    // `.opencode/skills`, `.claude/skills`) plus the global
-    // default so skills installed for any AI-tool convention show
+    // `.opencode/skills`, `.claude/skills`, `.cursor/skills`) plus the
+    // global default so skills installed for any AI-tool convention show
     // up in the catalogue. The legacy single-`skills_dir` path is
     // honoured as a fallback for callers that don't supply a
     // workspace-aware view; it falls through to the same merged
