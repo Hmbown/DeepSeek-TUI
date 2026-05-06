@@ -2163,7 +2163,7 @@ fn render_message(
             } else {
                 let mut s = String::with_capacity(prefix_width + 1);
                 s.push('\u{258F}');
-                s.extend(std::iter::repeat(' ').take(prefix_width));
+                s.extend(std::iter::repeat_n(' ', prefix_width));
                 s
             };
             let rail_style = Style::default().fg(palette::TEXT_DIM);
