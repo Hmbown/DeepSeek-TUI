@@ -1511,6 +1511,43 @@ fn resolve_load_config_path(path: Option<PathBuf>) -> Option<PathBuf> {
     home_config_path()
 }
 
+/// Create an inspectable config file on first interactive launch.
+///
+/// The file intentionally omits `api_key`; onboarding or `deepseek auth set`
+/// writes that field after the user supplies a key.
+pub fn ensure_config_file_exists(path: Option<PathBuf>) -> Result<Option<PathBuf>> {
+    let config_path = path
+        .map(expand_pathbuf)
+        .or_else(default_config_path)
+        .context("Failed to resolve config path: home directory not found.")?;
+    if config_path.exists() {
+        return Ok(None);
+    }
+
+    ensure_parent_dir(&config_path)?;
+    let content = format!(
+        r#"# DeepSeek TUI Configuration
+# Get your API key from https://platform.deepseek.com
+# Save it with: deepseek auth set --provider deepseek
+
+# Base URL (default: https://api.deepseek.com)
+# base_url = "https://api.deepseek.com"
+
+# Default model
+default_text_model = "{default_model}"
+
+# Thinking mode (DeepSeek V4 reasoning effort):
+# "auto" | "off" | "low" | "medium" | "high" | "max"
+# Shift+Tab in the TUI cycles between off / high / max.
+reasoning_effort = "auto"
+"#,
+        default_model = DEFAULT_TEXT_MODEL
+    );
+    fs::write(&config_path, content)
+        .with_context(|| format!("Failed to write config to {}", config_path.display()))?;
+    Ok(Some(config_path))
+}
+
 fn default_managed_config_path() -> Option<PathBuf> {
     #[cfg(unix)]
     {
@@ -2336,6 +2373,51 @@ pub fn has_api_key(config: &Config) -> bool {
     false
 }
 
+#[must_use]
+pub fn active_provider_has_config_api_key(config: &Config) -> bool {
+    let provider = config.api_provider();
+
+    if config
+        .provider_config_for(provider)
+        .and_then(|entry| entry.api_key.as_ref())
+        .is_some_and(|k| !k.trim().is_empty() && k != API_KEYRING_SENTINEL)
+    {
+        return true;
+    }
+
+    matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN)
+        && config
+            .api_key
+            .as_ref()
+            .is_some_and(|k| !k.trim().is_empty() && k != API_KEYRING_SENTINEL)
+}
+
+#[must_use]
+pub fn active_provider_has_env_api_key(config: &Config) -> bool {
+    match config.api_provider() {
+        ApiProvider::Deepseek | ApiProvider::DeepseekCN => {
+            std::env::var("DEEPSEEK_API_KEY").is_ok_and(|k| !k.trim().is_empty())
+        }
+        ApiProvider::NvidiaNim => {
+            std::env::var("NVIDIA_API_KEY").is_ok_and(|k| !k.trim().is_empty())
+                || std::env::var("NVIDIA_NIM_API_KEY").is_ok_and(|k| !k.trim().is_empty())
+        }
+        ApiProvider::Openrouter => {
+            std::env::var("OPENROUTER_API_KEY").is_ok_and(|k| !k.trim().is_empty())
+        }
+        ApiProvider::Novita => std::env::var("NOVITA_API_KEY").is_ok_and(|k| !k.trim().is_empty()),
+        ApiProvider::Fireworks => {
+            std::env::var("FIREWORKS_API_KEY").is_ok_and(|k| !k.trim().is_empty())
+        }
+        ApiProvider::Sglang => std::env::var("SGLANG_API_KEY").is_ok_and(|k| !k.trim().is_empty()),
+    }
+}
+
+#[must_use]
+pub fn active_provider_uses_env_only_api_key(config: &Config) -> bool {
+    active_provider_has_env_api_key(config) && !active_provider_has_config_api_key(config)
+}
+
 /// Check whether the given provider has any usable API key — via env var,
 /// provider/root config. Used by the `/provider` picker to decide whether to
 /// prompt for a key inline.
@@ -2748,6 +2830,32 @@ mod tests {
     }
 
     #[test]
+    fn ensure_config_file_exists_creates_first_run_template() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-first-run-config-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        let created = ensure_config_file_exists(None)?.expect("should create config");
+        let content = fs::read_to_string(&created)?;
+
+        assert_eq!(created, temp_root.join(".deepseek").join("config.toml"));
+        assert!(content.contains("default_text_model = \"deepseek-v4-pro\""));
+        assert!(content.contains("reasoning_effort = \"auto\""));
+        assert!(!content.contains("api_key ="));
+        assert!(ensure_config_file_exists(None)?.is_none());
+        Ok(())
+    }
+
+    #[test]
     fn save_api_key_rejects_empty_input() {
         let _lock = lock_test_env();
         let err = save_api_key("   ").expect_err("empty should bail");
@@ -2920,6 +3028,32 @@ api_key = "old-openrouter-key"
             ..Config::default()
         };
         assert_eq!(config.deepseek_api_key()?, "fresh-config-key");
+        unsafe {
+            env::remove_var("DEEPSEEK_API_KEY");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn active_provider_detects_env_only_api_key() -> Result<()> {
+        let _lock = lock_test_env();
+        let temp_root =
+            env::temp_dir().join(format!("deepseek-tui-env-only-key-{}", std::process::id()));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        unsafe {
+            env::set_var("DEEPSEEK_API_KEY", "env-only-key");
+        }
+        let mut config = Config::default();
+        assert!(active_provider_has_env_api_key(&config));
+        assert!(!active_provider_has_config_api_key(&config));
+        assert!(active_provider_uses_env_only_api_key(&config));
+
+        config.api_key = Some("config-key".to_string());
+        assert!(active_provider_has_config_api_key(&config));
+        assert!(!active_provider_uses_env_only_api_key(&config));
+
         unsafe {
             env::remove_var("DEEPSEEK_API_KEY");
         }

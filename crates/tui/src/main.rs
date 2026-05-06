@@ -1572,11 +1572,17 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             if in_config { "yes" } else { "no" }
         );
     }
-    println!("  · credential sources: env, ~/.deepseek/config.toml");
+    println!("  · credential precedence: ~/.deepseek/config.toml, then env");
 
+    let api_key_source = resolve_api_key_source(config);
     let has_api_key = if config.deepseek_api_key().is_ok() {
+        let source_label = match api_key_source {
+            ApiKeySource::Config => "config.toml",
+            ApiKeySource::Env => "environment",
+            ApiKeySource::Missing => "unknown source",
+        };
         println!(
-            "  {} active provider key resolved",
+            "  {} active provider key resolved from {source_label}",
             "✓".truecolor(aqua_r, aqua_g, aqua_b)
         );
         true
@@ -1615,6 +1621,14 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
                 );
                 if error_msg.contains("401") || error_msg.contains("Unauthorized") {
                     println!("    Invalid API key. Check your DEEPSEEK_API_KEY or config.toml");
+                    if matches!(api_key_source, ApiKeySource::Env) {
+                        println!(
+                            "    The rejected key came from DEEPSEEK_API_KEY; no saved config key is present."
+                        );
+                        println!(
+                            "    Run `deepseek auth set --provider deepseek` to save a config key that overrides stale env."
+                        );
+                    }
                 } else if error_msg.contains("403") || error_msg.contains("Forbidden") {
                     println!(
                         "    API key lacks permissions. Verify key is active at platform.deepseek.com"
@@ -3523,6 +3537,17 @@ async fn run_interactive(
         merge_project_config(&mut merged_config, &workspace);
     }
     let config = &merged_config;
+
+    if !cli.skip_onboarding {
+        match crate::config::ensure_config_file_exists(cli.config.clone()) {
+            Ok(Some(path)) => logging::info(format!(
+                "Created first-run config file at {}",
+                path.display()
+            )),
+            Ok(None) => {}
+            Err(err) => logging::warn(format!("Failed to create first-run config file: {err}")),
+        }
+    }
 
     let model = config.default_model();
     let max_subagents = cli.max_subagents.map_or_else(

@@ -2805,6 +2805,36 @@ fn non_recoverable_engine_error_enters_offline_mode() {
     );
 }
 
+#[test]
+fn env_only_auth_failure_reopens_api_key_onboarding() {
+    use crate::error_taxonomy::ErrorEnvelope;
+    let mut app = create_test_app();
+    app.api_key_env_only = true;
+    app.onboarding = crate::tui::app::OnboardingState::None;
+    app.onboarding_needs_api_key = false;
+
+    apply_engine_error_to_app(
+        &mut app,
+        ErrorEnvelope::fatal_auth("Authentication failed: invalid API key"),
+    );
+
+    assert!(app.offline_mode);
+    assert_eq!(
+        app.onboarding,
+        crate::tui::app::OnboardingState::ApiKey,
+        "env-only auth failures should prompt for a saved config key"
+    );
+    assert!(app.onboarding_needs_api_key);
+    let status = app
+        .status_message
+        .as_deref()
+        .expect("auth recovery should explain the env key source");
+    assert!(
+        status.contains("DEEPSEEK_API_KEY"),
+        "expected env-specific recovery hint, got {status:?}"
+    );
+}
+
 // ---- Issue #208: in-flight input routing ----
 
 #[test]
