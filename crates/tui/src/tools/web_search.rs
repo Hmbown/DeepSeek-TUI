@@ -479,8 +479,7 @@ fn decode_html_entities(text: &str) -> String {
 
     static ENTITY_RE: OnceLock<Regex> = OnceLock::new();
     let re = ENTITY_RE.get_or_init(|| {
-        Regex::new(r"&(?:#(\d+)|#x([0-9A-Fa-f]+)|([a-zA-Z]+));")
-            .expect("HTML entity regex")
+        Regex::new(r"&(?:#(\d+)|#x([0-9A-Fa-f]+)|([a-zA-Z]+));").expect("HTML entity regex")
     });
 
     re.replace_all(text, |caps: &regex::Captures| {
