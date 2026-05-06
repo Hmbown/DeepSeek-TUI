@@ -39,7 +39,7 @@ const INSTRUCTIONS_FILE_MAX_BYTES: usize = 100 * 1024;
 /// `lang` is resolved in priority order:
 /// 1. User-configured locale from `Settings` (e.g. `zh-Hans`, `ja`)
 /// 2. System environment variables (`LC_ALL`, `LC_MESSAGES`, `LANG`)
-/// 3. Fallback to `en_US.UTF-8`
+/// 3. Fallback to `en`
 fn render_environment_block(workspace: &Path) -> String {
     let lang = {
         let settings = crate::settings::Settings::load().unwrap_or_default();
