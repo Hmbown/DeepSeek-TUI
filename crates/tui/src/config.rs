@@ -630,7 +630,7 @@ pub struct SubagentsConfig {
 /// This model runs in subagent mode with independent session management.
 #[derive(Debug, Clone, Deserialize)]
 pub struct VisionModelConfig {
-    /// Model identifier (e.g., "gpt-4o", "claude-3-opus-20240229", "deepseek-v4-pro")
+    /// Model identifier (e.g., "gemini-3.1-flash-lite-preview", "claude-3-opus-20240229")
     pub model: String,
     /// API provider for the vision model. If not specified, inherits from main config.
     #[serde(default)]
@@ -647,9 +647,6 @@ pub struct VisionModelConfig {
     /// Temperature for vision model (0.0 - 2.0)
     #[serde(default = "default_vision_temperature")]
     pub temperature: f32,
-    /// Whether to enable independent session management (subagent mode)
-    #[serde(default = "default_vision_subagent_mode")]
-    pub subagent_mode: bool,
     /// Timeout for vision model requests in seconds
     #[serde(default = "default_vision_timeout_secs")]
     pub timeout_secs: u64,
@@ -663,10 +660,6 @@ fn default_vision_temperature() -> f32 {
     0.7
 }
 
-fn default_vision_subagent_mode() -> bool {
-    true
-}
-
 fn default_vision_timeout_secs() -> u64 {
     120
 }
@@ -674,13 +667,12 @@ fn default_vision_timeout_secs() -> u64 {
 impl Default for VisionModelConfig {
     fn default() -> Self {
         Self {
-            model: "gpt-4o".to_string(),
+            model: "gemini-3.1-flash-lite-preview".to_string(),
             provider: None,
             api_key: None,
             base_url: None,
             max_tokens: default_vision_max_tokens(),
             temperature: default_vision_temperature(),
-            subagent_mode: default_vision_subagent_mode(),
             timeout_secs: default_vision_timeout_secs(),
         }
     }

@@ -457,19 +457,18 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 # When enabled, all image-related operations use this model with independent
 # session management (subagent mode).
 #
-# Supported models: GPT-4o, Claude 3 (Opus/Sonnet/Haiku), Gemini Pro Vision,
+# Supported models: Gemini, Claude 4 (Opus/Sonnet/Haiku),
 # or any OpenAI-compatible vision model.
 #
 # If provider/api_key/base_url are not specified, they inherit from the main config.
 #
 # [vision_model]
-# model = "gpt-4o"                    # Required: vision-capable model ID
+# model = "gemini-3.1-flash-lite-preview"  # Required: vision-capable model ID
 # provider = "openai"                 # Optional: defaults to main provider
 # api_key = "YOUR_OPENAI_API_KEY"     # Optional: defaults to main api_key
-# base_url = "https://api.openai.com/v1"  # Optional: defaults to main base_url
+# base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"  # Optional: defaults to OpenAI-compatible endpoint
 # max_tokens = 4096                   # Optional: max response tokens (default: 4096)
 # temperature = 0.7                   # Optional: sampling temperature (default: 0.7)
-# subagent_mode = true                # Optional: use independent sessions (default: true)
 # timeout_secs = 120                  # Optional: request timeout in seconds (default: 120)
 
 # ─────────────────────────────────────────────────────────────────────────

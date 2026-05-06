@@ -17,7 +17,7 @@ vision_model = true
 
 # 配置视觉模型
 [vision_model]
-model = "gpt-4o"                    # 必需：视觉模型ID
+model = "gemini-3.1-flash-lite-preview"  # 必需：视觉模型ID
 api_key = "YOUR_OPENAI_API_KEY"     # 可选：默认继承主配置的api_key
 ```
 
@@ -27,8 +27,6 @@ api_key = "YOUR_OPENAI_API_KEY"     # 可选：默认继承主配置的api_key
 
 - **`vision_analyze`** — 分析图片内容。当用户发送图片或要求分析图片时，模型会自动调用此工具。
 - **`vision_ocr`** — 从图片中提取文字（OCR功能）。
-- **`vision_compare`** — 比较多张图片的差异。
-- **`vision_session`** — 管理视觉会话（创建/列表/关闭/清理）。
 
 ### 3. 使用场景示例
 
@@ -39,8 +37,6 @@ api_key = "YOUR_OPENAI_API_KEY"     # 可选：默认继承主配置的api_key
 用户: 提取这张发票上的文字
 → 模型自动调用 vision_ocr 提取文字
 
-用户: 对比这两张UI设计图有什么不同
-→ 模型自动调用 vision_compare 对比图片
 ```
 
 ## 配置详解
@@ -49,13 +45,12 @@ api_key = "YOUR_OPENAI_API_KEY"     # 可选：默认继承主配置的api_key
 
 ```toml
 [vision_model]
-model = "gpt-4o"                         # 必需：视觉模型ID
+model = "gemini-3.1-flash-lite-preview"   # 必需：视觉模型ID
 provider = "openai"                      # 可选：默认继承主配置的provider
 api_key = "YOUR_API_KEY"                 # 可选：默认继承主配置的api_key
-base_url = "https://api.openai.com/v1"   # 可选：默认继承主配置的base_url
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"  # 可选：默认继承主配置的base_url
 max_tokens = 4096                        # 可选：最大响应token数（默认4096）
 temperature = 0.7                        # 可选：采样温度（默认0.7）
-subagent_mode = true                     # 可选：独立会话模式（默认true）
 timeout_secs = 120                       # 可选：请求超时秒数（默认120）
 ```
 
@@ -69,10 +64,11 @@ timeout_secs = 120                       # 可选：请求超时秒数（默认1
 ### 不同模型的配置示例
 
 ```toml
-# OpenAI GPT-4o（最简单）
+# Gemini（最简单，OpenAI 兼容 API）
 [vision_model]
-model = "gpt-4o"
-api_key = "sk-xxxxx"
+model = "gemini-3.1-flash-lite-preview"
+api_key = "YOUR_GEMINI_API_KEY"
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
 
 # Claude 3 Opus
 [vision_model]
@@ -81,10 +77,10 @@ provider = "anthropic"
 api_key = "sk-ant-xxxxx"
 base_url = "https://api.anthropic.com/v1"
 
-# 复用主配置的API Key（适用于OpenAI兼容API）
+# 复用主配置的API Key
 [vision_model]
-model = "gpt-4o"
-# api_key 自动继承主配置
+model = "gemini-3.1-flash-lite-preview"
+# api_key, base_url 自动继承主配置
 ```
 
 ### Feature Flag
@@ -161,11 +157,10 @@ Vision工具通过项目的标准 `ToolSpec` trait 注册：
 
 | 模型 | 提供商 | 说明 |
 |------|--------|------|
-| `gpt-4o` | OpenAI | 推荐，性价比最高 |
-| `gpt-4-turbo` | OpenAI | 上一代视觉模型 |
+| `gemini-3.1-flash-lite-preview` | Google | 推荐，性价比最高 |
 | `claude-3-opus-20240229` | Anthropic | 高精度分析 |
 | `claude-3-sonnet-20240229` | Anthropic | 平衡性能和成本 |
-| `gemini-1.5-pro` | Google | 大context窗口 |
+| `gemini-2.5-flash` | Google | 新一代Gemini视觉模型 |
 | 任何OpenAI兼容模型 | 自定义 | 通过 `base_url` 配置 |
 
 ## 注意事项

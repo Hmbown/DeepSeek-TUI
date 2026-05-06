@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use crate::tools::spec::{
     ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, required_str, optional_str,
 };
-use crate::vision::session::{ImageData, VisionSessionManager};
+use crate::vision::session::VisionSessionManager;
 
 /// Tool for analyzing images using the vision model.
 pub struct VisionAnalyzeTool {
@@ -214,19 +214,5 @@ impl ToolSpec for VisionOcrTool {
         modified_input["prompt"] = json!(prompt);
 
         analyze_tool.execute(modified_input, context).await
-    }
-}
-
-/// Helper function to encode image bytes to base64.
-pub fn encode_image_to_base64(bytes: &[u8]) -> String {
-    BASE64.encode(bytes)
-}
-
-/// Helper function to create ImageData from file bytes.
-pub fn create_image_data(bytes: Vec<u8>, mime_type: impl Into<String>) -> ImageData {
-    ImageData {
-        base64_data: encode_image_to_base64(&bytes),
-        mime_type: mime_type.into(),
-        description: None,
     }
 }

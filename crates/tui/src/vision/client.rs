@@ -3,14 +3,12 @@
 //! This client handles image processing tasks using vision-capable models
 //! with support for base64-encoded images and multi-modal conversations.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::sync::Mutex;
 
 use crate::config::VisionModelConfig;
 use crate::llm_client::{LlmError, RetryConfig, with_retry};
@@ -80,19 +78,6 @@ impl VisionRequest {
         self
     }
 
-    /// Set max tokens
-    #[must_use]
-    pub fn with_max_tokens(mut self, max_tokens: u32) -> Self {
-        self.max_tokens = Some(max_tokens);
-        self
-    }
-
-    /// Set temperature
-    #[must_use]
-    pub fn with_temperature(mut self, temperature: f32) -> Self {
-        self.temperature = Some(temperature);
-        self
-    }
 }
 
 /// Response from a vision model
@@ -122,7 +107,6 @@ pub struct VisionUsage {
 pub struct VisionClient {
     http_client: reqwest::Client,
     config: VisionClientConfig,
-    request_count: Arc<Mutex<u64>>,
 }
 
 impl VisionClient {
@@ -136,25 +120,7 @@ impl VisionClient {
         Ok(Self {
             http_client,
             config,
-            request_count: Arc::new(Mutex::new(0)),
         })
-    }
-
-    /// Create a new vision client from VisionModelConfig
-    pub fn from_config(config: VisionModelConfig) -> Result<Self> {
-        let client_config = VisionClientConfig::from(config);
-        Self::new(client_config)
-    }
-
-    /// Get the configured model name
-    #[must_use]
-    pub fn model(&self) -> &str {
-        &self.config.model
-    }
-
-    /// Get the request count
-    pub async fn request_count(&self) -> u64 {
-        *self.request_count.lock().await
     }
 
     /// Send a vision request to the model
@@ -162,16 +128,8 @@ impl VisionClient {
         let max_tokens = request.max_tokens.unwrap_or(self.config.max_tokens);
         let temperature = request.temperature.unwrap_or(self.config.temperature);
 
-        // Build the request payload for OpenAI-compatible API
         let payload = self.build_payload(&request, max_tokens, temperature);
-
-        // Send the request with retry logic
         let response = self.send_request_with_retry(payload).await?;
-
-        // Increment request count
-        *self.request_count.lock().await += 1;
-
-        // Parse the response
         self.parse_response(response).await
     }
 
@@ -309,20 +267,17 @@ mod tests {
 
     #[test]
     fn test_vision_request_builder() {
-        let request = VisionRequest::new(
-            "Describe this image",
-            "base64encodeddata",
-            "image/png"
-        )
-        .with_system_message("You are a helpful assistant")
-        .with_max_tokens(1000)
-        .with_temperature(0.5);
+        let request = VisionRequest {
+            prompt: "Describe this image".to_string(),
+            image_base64: "base64encodeddata".to_string(),
+            image_mime_type: "image/png".to_string(),
+            system_message: Some("You are a helpful assistant".to_string()),
+            max_tokens: Some(1000),
+            temperature: Some(0.5),
+        };
 
         assert_eq!(request.prompt, "Describe this image");
         assert_eq!(request.image_base64, "base64encodeddata");
         assert_eq!(request.image_mime_type, "image/png");
-        assert_eq!(request.system_message, Some("You are a helpful assistant".to_string()));
-        assert_eq!(request.max_tokens, Some(1000));
-        assert_eq!(request.temperature, Some(0.5));
     }
 }
