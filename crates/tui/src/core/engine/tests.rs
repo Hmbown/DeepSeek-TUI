@@ -656,6 +656,36 @@ fn working_set_reaches_model_as_turn_metadata() {
     assert!(text.contains("src/lib.rs"));
 }
 
+#[test]
+fn turn_metadata_includes_current_local_date_without_working_set() {
+    let tmp = tempdir().expect("tempdir");
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(config, &Config::default());
+    engine.session.add_message(Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "what is today's date?".to_string(),
+            cache_control: None,
+        }],
+    });
+
+    let messages = engine.messages_with_turn_metadata();
+    let first_block = messages
+        .last()
+        .and_then(|message| message.content.first())
+        .expect("turn metadata block");
+    let ContentBlock::Text { text, .. } = first_block else {
+        panic!("expected text metadata block");
+    };
+
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    assert!(text.starts_with("<turn_meta>\n"));
+    assert!(text.contains(&format!("Current local date: {today}")));
+}
+
 /// v0.8.11 regression: tool-result messages serialize to role="tool" on
 /// the wire but are stored as role="user" internally. Prepending
 /// `<turn_meta>` text onto a tool-result message broke the

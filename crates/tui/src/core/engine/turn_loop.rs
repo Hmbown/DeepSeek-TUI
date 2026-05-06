@@ -1713,14 +1713,18 @@ impl Engine {
     }
 
     pub(super) fn messages_with_turn_metadata(&self) -> Vec<Message> {
-        let Some(summary) = self
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let working_set_summary = self
             .session
             .working_set
             .summary_block(&self.config.workspace)
             .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-        else {
-            return self.session.messages.clone();
+            .filter(|s| !s.is_empty());
+
+        let summary = if let Some(working_set_summary) = working_set_summary {
+            format!("Current local date: {today}\n{working_set_summary}")
+        } else {
+            format!("Current local date: {today}")
         };
 
         let mut messages = self.session.messages.clone();
