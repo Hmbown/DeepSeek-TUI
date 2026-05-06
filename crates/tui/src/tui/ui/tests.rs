@@ -699,10 +699,12 @@ async fn model_change_update_syncs_engine_model_before_compaction() {
 async fn dispatch_user_message_failed_send_clears_loading_state() {
     let mut app = create_test_app();
     let engine = mock_engine_handle();
+    let config = Config::default();
     drop(engine.rx_op);
 
     let result = dispatch_user_message(
         &mut app,
+        &config,
         &engine.handle,
         QueuedMessage::new("hello".to_string(), None),
     )
@@ -1469,8 +1471,9 @@ async fn dismissed_plan_prompt_leaves_non_numeric_input_for_normal_send_path() {
     app.offline_mode = true;
 
     let engine = crate::core::engine::mock_engine_handle();
+    let config = Config::default();
 
-    let handled = handle_plan_choice(&mut app, &engine.handle, "yolo")
+    let handled = handle_plan_choice(&mut app, &config, &engine.handle, "yolo")
         .await
         .expect("plan choice");
 
@@ -1479,7 +1482,7 @@ async fn dismissed_plan_prompt_leaves_non_numeric_input_for_normal_send_path() {
     assert_eq!(app.mode, AppMode::Plan);
 
     let queued = build_queued_message(&mut app, "yolo".to_string());
-    submit_or_steer_message(&mut app, &engine.handle, queued)
+    submit_or_steer_message(&mut app, &config, &engine.handle, queued)
         .await
         .expect("submit normal message");
 
@@ -1504,8 +1507,9 @@ async fn numeric_plan_choice_still_queues_follow_up_when_busy() {
     app.is_loading = true;
 
     let engine = crate::core::engine::mock_engine_handle();
+    let config = Config::default();
 
-    let handled = handle_plan_choice(&mut app, &engine.handle, "2")
+    let handled = handle_plan_choice(&mut app, &config, &engine.handle, "2")
         .await
         .expect("plan choice");
 

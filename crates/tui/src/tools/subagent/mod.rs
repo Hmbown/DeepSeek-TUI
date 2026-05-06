@@ -557,6 +557,9 @@ pub const DEFAULT_MAX_SPAWN_DEPTH: u32 = 3;
 pub struct SubAgentRuntime {
     pub client: DeepSeekClient,
     pub model: String,
+    pub auto_model: bool,
+    pub reasoning_effort: Option<String>,
+    pub reasoning_effort_auto: bool,
     pub role_models: HashMap<String, String>,
     pub context: ToolContext,
     pub allow_shell: bool,
@@ -597,6 +600,9 @@ impl SubAgentRuntime {
         Self {
             client,
             model,
+            auto_model: false,
+            reasoning_effort: None,
+            reasoning_effort_auto: false,
             role_models: HashMap::new(),
             context,
             allow_shell,
@@ -646,6 +652,27 @@ impl SubAgentRuntime {
         self
     }
 
+    /// Preserve whether the parent session is using per-turn model routing.
+    #[must_use]
+    pub fn with_auto_model(mut self, auto_model: bool) -> Self {
+        self.auto_model = auto_model;
+        self
+    }
+
+    /// Preserve the parent's thinking configuration. `reasoning_effort_auto`
+    /// stays true even when the parent turn itself was sent with a concrete
+    /// flash-router recommendation, so children can resolve their own tier.
+    #[must_use]
+    pub fn with_reasoning_effort(
+        mut self,
+        reasoning_effort: Option<String>,
+        reasoning_effort_auto: bool,
+    ) -> Self {
+        self.reasoning_effort = reasoning_effort;
+        self.reasoning_effort_auto = reasoning_effort_auto;
+        self
+    }
+
     /// Return a child runtime that is deliberately detached from the parent
     /// turn cancellation token. Background sub-agents should keep running when
     /// the parent turn is cancelled; explicit agent cancellation still
@@ -675,6 +702,9 @@ impl SubAgentRuntime {
         Self {
             client: self.client.clone(),
             model: self.model.clone(),
+            auto_model: self.auto_model,
+            reasoning_effort: self.reasoning_effort.clone(),
+            reasoning_effort_auto: self.reasoning_effort_auto,
             role_models: self.role_models.clone(),
             context: child_context,
             allow_shell: self.allow_shell,
@@ -1621,16 +1651,14 @@ impl ToolSpec for AgentSpawnTool {
         if let Some(cwd) = validated_cwd {
             child_runtime.context.workspace = cwd;
         }
-        let effective_model = match spawn_request.model.clone() {
-            Some(model) => model,
+        let configured_model = match spawn_request.model.clone() {
+            Some(model) => Some(model),
             None => configured_model_for_role_or_type(
                 &self.runtime,
                 spawn_request.assignment.role.as_deref(),
                 &spawn_request.agent_type,
-            )?
-            .unwrap_or_else(|| self.runtime.model.clone()),
+            )?,
         };
-        child_runtime.model = effective_model.clone();
 
         // Cache-aware resident mode (#529): prepend file contents to the prompt
         // so the child's prefix is byte-stable for DeepSeek prefix caching.
@@ -1665,6 +1693,14 @@ impl ToolSpec for AgentSpawnTool {
             } else {
                 (spawn_request.prompt, None)
             };
+
+        let route =
+            resolve_subagent_assignment_route(&self.runtime, configured_model, &effective_prompt)
+                .await;
+        child_runtime.model = route.model.clone();
+        child_runtime.reasoning_effort = route.reasoning_effort.clone();
+        child_runtime.reasoning_effort_auto = false;
+        let effective_model = route.model;
 
         let mut manager = self.manager.write().await;
 
@@ -2743,7 +2779,7 @@ async fn run_subagent(
             tool_choice: Some(json!({ "type": "auto" })),
             metadata: None,
             thinking: None,
-            reasoning_effort: None,
+            reasoning_effort: runtime.reasoning_effort.clone(),
             stream: Some(false),
             temperature: None,
             top_p: None,
@@ -3270,6 +3306,167 @@ pub(crate) fn configured_model_for_role_or_type(
         }
     }
     Ok(None)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SubAgentResolvedRoute {
+    pub(crate) model: String,
+    pub(crate) reasoning_effort: Option<String>,
+}
+
+pub(crate) async fn resolve_subagent_assignment_route(
+    runtime: &SubAgentRuntime,
+    configured_model: Option<String>,
+    prompt: &str,
+) -> SubAgentResolvedRoute {
+    let explicit_model = configured_model.is_some();
+    let mut route = fallback_subagent_assignment_route(runtime, configured_model, prompt);
+
+    if (runtime.auto_model || runtime.reasoning_effort_auto)
+        && let Ok(Some(recommendation)) = subagent_flash_router(runtime, prompt).await
+    {
+        if runtime.auto_model && !explicit_model {
+            route.model = recommendation.model;
+        }
+        if runtime.reasoning_effort_auto {
+            route.reasoning_effort = recommendation
+                .reasoning_effort
+                .map(|effort| effort.as_setting().to_string())
+                .or(route.reasoning_effort);
+        }
+    }
+
+    route
+}
+
+fn fallback_subagent_assignment_route(
+    runtime: &SubAgentRuntime,
+    configured_model: Option<String>,
+    prompt: &str,
+) -> SubAgentResolvedRoute {
+    let model = if let Some(model) = configured_model {
+        model
+    } else if runtime.auto_model {
+        crate::commands::auto_model_heuristic(prompt, &runtime.model)
+    } else {
+        runtime.model.clone()
+    };
+
+    let reasoning_effort = if runtime.reasoning_effort_auto {
+        let effort = match crate::auto_reasoning::select(false, prompt) {
+            crate::tui::app::ReasoningEffort::Low | crate::tui::app::ReasoningEffort::Medium => {
+                crate::tui::app::ReasoningEffort::High
+            }
+            other => other,
+        };
+        Some(effort.as_setting().to_string())
+    } else {
+        runtime.reasoning_effort.clone()
+    };
+
+    SubAgentResolvedRoute {
+        model,
+        reasoning_effort,
+    }
+}
+
+async fn subagent_flash_router(
+    runtime: &SubAgentRuntime,
+    prompt: &str,
+) -> Result<Option<crate::commands::AutoRouteRecommendation>> {
+    if cfg!(test) {
+        return Ok(None);
+    }
+
+    let request = MessageRequest {
+        model: "deepseek-v4-flash".to_string(),
+        messages: vec![Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: subagent_router_prompt(runtime, prompt),
+                cache_control: None,
+            }],
+        }],
+        max_tokens: 96,
+        system: Some(SystemPrompt::Text(
+            SUBAGENT_ROUTER_SYSTEM_PROMPT.to_string(),
+        )),
+        tools: None,
+        tool_choice: None,
+        metadata: None,
+        thinking: None,
+        reasoning_effort: Some("off".to_string()),
+        stream: Some(false),
+        temperature: Some(0.0),
+        top_p: None,
+    };
+
+    let response = tokio::time::timeout(
+        Duration::from_secs(4),
+        runtime.client.create_message(request),
+    )
+    .await??;
+    Ok(crate::commands::parse_auto_route_recommendation(
+        &message_response_text(&response.content),
+    ))
+}
+
+const SUBAGENT_ROUTER_SYSTEM_PROMPT: &str = "\
+You are the DeepSeek TUI sub-agent routing manager. Return only compact JSON: \
+{\"model\":\"deepseek-v4-flash|deepseek-v4-pro\",\"thinking\":\"off|high|max\"}. \
+Treat each child assignment like a customer request entering a team queue: decide the least \
+sufficient worker and thinking budget for that assignment. Do not treat being a sub-agent as \
+important by itself. Use Flash for trivial, read-only, status, lookup, or single-step work. \
+Use Pro for coding, debugging, release work, multi-file changes, security, architecture, \
+high-risk decisions, ambiguous requests, or work likely to need tool-call judgment. Use thinking \
+off for trivial no-tool work, high for ordinary reasoning, and max only for hard, risky, \
+multi-step, uncertain, or tool-heavy work.";
+
+fn subagent_router_prompt(runtime: &SubAgentRuntime, prompt: &str) -> String {
+    format!(
+        "Parent selected model mode: {}\nParent selected thinking mode: {}\n\nSub-agent assignment:\n{}\n\nReturn JSON only.",
+        if runtime.auto_model { "auto" } else { "fixed" },
+        if runtime.reasoning_effort_auto {
+            "auto"
+        } else {
+            runtime
+                .reasoning_effort
+                .as_deref()
+                .unwrap_or("provider-default")
+        },
+        truncate_subagent_router_prompt(prompt, 4_000)
+    )
+}
+
+fn truncate_subagent_router_prompt(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let mut out = text.chars().take(max_chars).collect::<String>();
+    out.push_str("\n[truncated]");
+    out
+}
+
+fn message_response_text(blocks: &[ContentBlock]) -> String {
+    let mut out = String::new();
+    for block in blocks {
+        match block {
+            ContentBlock::Text { text, .. } => {
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(text);
+            }
+            ContentBlock::Thinking { thinking } => {
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(thinking);
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 fn parse_optional_subagent_model(input: &Value, key: &str) -> Result<Option<String>, ToolError> {

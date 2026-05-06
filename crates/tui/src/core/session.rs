@@ -19,6 +19,11 @@ pub struct Session {
     /// `"off" | "low" | "medium" | "high" | "max"`. `None` lets the provider
     /// apply its own defaults.
     pub reasoning_effort: Option<String>,
+    /// Whether the user selected automatic reasoning effort.
+    pub reasoning_effort_auto: bool,
+
+    /// Whether the user selected automatic model routing.
+    pub auto_model: bool,
 
     /// Workspace directory
     pub workspace: PathBuf,
@@ -118,6 +123,8 @@ impl Session {
         Self {
             model,
             reasoning_effort: None,
+            reasoning_effort_auto: false,
+            auto_model: false,
             workspace,
             system_prompt: None,
             compaction_summary_prompt: None,

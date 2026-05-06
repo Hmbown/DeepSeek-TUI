@@ -399,6 +399,62 @@ fn test_build_assignment_prompt_includes_metadata() {
 }
 
 #[test]
+fn subagent_auto_model_routes_unconfigured_assignments() {
+    let runtime = stub_runtime().with_auto_model(true);
+
+    assert_eq!(
+        fallback_subagent_assignment_route(&runtime, None, "implement the release fix").model,
+        "deepseek-v4-pro"
+    );
+    assert_eq!(
+        fallback_subagent_assignment_route(&runtime, None, "say hello").model,
+        "deepseek-v4-flash"
+    );
+}
+
+#[test]
+fn subagent_auto_route_respects_explicit_or_role_model() {
+    let runtime = stub_runtime().with_auto_model(true);
+
+    assert_eq!(
+        fallback_subagent_assignment_route(
+            &runtime,
+            Some("deepseek-v4-flash".to_string()),
+            "implement the release fix"
+        )
+        .model,
+        "deepseek-v4-flash"
+    );
+}
+
+#[test]
+fn subagent_auto_reasoning_resolves_to_distinct_v4_tiers() {
+    let runtime = stub_runtime().with_reasoning_effort(Some("high".to_string()), true);
+
+    assert_eq!(
+        fallback_subagent_assignment_route(&runtime, None, "quick lookup").reasoning_effort,
+        Some("high".to_string())
+    );
+    assert_eq!(
+        fallback_subagent_assignment_route(&runtime, None, "debug this release failure")
+            .reasoning_effort,
+        Some("max".to_string())
+    );
+}
+
+#[test]
+fn subagent_router_prompt_frames_assignment_as_auto_routing() {
+    let runtime = stub_runtime()
+        .with_auto_model(true)
+        .with_reasoning_effort(Some("high".to_string()), true);
+    let prompt = subagent_router_prompt(&runtime, "inspect one file");
+
+    assert!(prompt.contains("Parent selected model mode: auto"));
+    assert!(prompt.contains("Parent selected thinking mode: auto"));
+    assert!(prompt.contains("inspect one file"));
+}
+
+#[test]
 fn test_subagent_tool_registry_reports_unavailable_tools() {
     let tmp = tempdir().expect("tempdir");
     let mut runtime = stub_runtime();
@@ -1102,6 +1158,9 @@ fn stub_runtime() -> SubAgentRuntime {
     SubAgentRuntime {
         client: stub_client(),
         model: "deepseek-v4-flash".to_string(),
+        auto_model: false,
+        reasoning_effort: None,
+        reasoning_effort_auto: false,
         role_models: std::collections::HashMap::new(),
         context,
         allow_shell: true,

@@ -85,8 +85,8 @@ use crate::tui::user_input::UserInputView;
 
 use super::active_cell::ActiveCell;
 use super::app::{
-    App, AppAction, AppMode, OnboardingState, QueuedMessage, SidebarFocus, StatusToastLevel,
-    SubmitDisposition, TaskPanelEntry, ToolDetailRecord, TuiOptions,
+    App, AppAction, AppMode, OnboardingState, QueuedMessage, ReasoningEffort, SidebarFocus,
+    StatusToastLevel, SubmitDisposition, TaskPanelEntry, ToolDetailRecord, TuiOptions,
 };
 use super::approval::{
     ApprovalMode, ApprovalRequest, ApprovalView, ElevationRequest, ElevationView, ReviewDecision,
@@ -924,8 +924,13 @@ async fn run_event_loop(
                         }
 
                         // Update session cost
+                        let pricing_model = if app.auto_model {
+                            app.last_effective_model.as_deref().unwrap_or(&app.model)
+                        } else {
+                            &app.model
+                        };
                         let turn_cost =
-                            crate::pricing::calculate_turn_cost_from_usage(&app.model, &usage);
+                            crate::pricing::calculate_turn_cost_from_usage(pricing_model, &usage);
                         if let Some(cost) = turn_cost {
                             app.accrue_session_cost(cost);
                         }
@@ -1031,7 +1036,12 @@ async fn run_event_loop(
                     } => {
                         app.api_messages = messages;
                         app.system_prompt = system_prompt;
-                        app.model = model;
+                        if app.auto_model {
+                            app.last_effective_model = Some(model);
+                        } else {
+                            app.model = model;
+                            app.last_effective_model = None;
+                        }
                         app.update_model_compaction_budget();
                         app.workspace = workspace;
                         if (app.is_loading || app.is_compacting)
@@ -1317,7 +1327,8 @@ async fn run_event_loop(
         }
 
         if let Some(next) = queued_to_send {
-            if let Err(err) = dispatch_user_message(app, &engine_handle, next.clone()).await {
+            if let Err(err) = dispatch_user_message(app, config, &engine_handle, next.clone()).await
+            {
                 app.queue_message(next);
                 app.status_message = Some(format!(
                     "Dispatch failed ({err}); kept {} queued message(s)",
@@ -2422,7 +2433,7 @@ async fn run_event_loop(
                         app.close_slash_menu();
                     }
                     if let Some(input) = app.submit_input() {
-                        if handle_plan_choice(app, &engine_handle, &input).await? {
+                        if handle_plan_choice(app, config, &engine_handle, &input).await? {
                             continue;
                         }
                         // `# foo` quick-add (#492) — when memory is enabled,
@@ -2473,7 +2484,7 @@ async fn run_event_loop(
                                     })
                                     .await;
                             }
-                            submit_or_steer_message(app, &engine_handle, queued).await?;
+                            submit_or_steer_message(app, config, &engine_handle, queued).await?;
                         }
                     }
                 }
@@ -3229,6 +3240,7 @@ fn queued_message_content_for_app(
 
 async fn dispatch_user_message(
     app: &mut App,
+    config: &Config,
     engine_handle: &EngineHandle,
     message: QueuedMessage,
 ) -> Result<()> {
@@ -3300,13 +3312,51 @@ async fn dispatch_user_message(
         persistence_actor::persist(PersistRequest::Checkpoint(session));
     }
 
-    // Resolve the effective model: when auto_model is active, use the
-    // heuristic to pick between Pro and Flash based on the user's input.
+    let auto_selection = if app.auto_model || app.reasoning_effort == ReasoningEffort::Auto {
+        Some(resolve_auto_model_selection(app, config, &message, &content).await)
+    } else {
+        None
+    };
+
     let effective_model = if app.auto_model {
-        commands::auto_model_heuristic(&message.display, &app.model)
+        auto_selection
+            .as_ref()
+            .map(|selection| selection.model.clone())
+            .unwrap_or_else(|| commands::auto_model_heuristic(&message.display, &app.model))
     } else {
         app.model.clone()
     };
+
+    let auto_controls_reasoning = app.auto_model || app.reasoning_effort == ReasoningEffort::Auto;
+    let effective_reasoning_effort = if auto_controls_reasoning {
+        let effort = auto_selection
+            .as_ref()
+            .and_then(|selection| selection.reasoning_effort)
+            .unwrap_or_else(|| {
+                normalize_auto_routed_effort(crate::auto_reasoning::select(false, &message.display))
+            });
+        app.last_effective_reasoning_effort = Some(effort);
+        Some(effort.as_setting().to_string())
+    } else {
+        app.last_effective_reasoning_effort = None;
+        app.reasoning_effort.api_value().map(str::to_string)
+    };
+
+    if let Some(selection) = auto_selection.as_ref() {
+        if app.auto_model {
+            app.last_effective_model = Some(effective_model.clone());
+            let mut status = format!(
+                "Auto model selected: {effective_model} via {}",
+                selection.source.label()
+            );
+            if let Some(effort) = app.last_effective_reasoning_effort {
+                status.push_str(&format!("; thinking auto: {}", effort.as_setting()));
+            }
+            app.status_message = Some(status);
+        }
+    } else {
+        app.last_effective_model = None;
+    }
 
     if let Err(err) = engine_handle
         .send(Op::SendMessage {
@@ -3314,7 +3364,9 @@ async fn dispatch_user_message(
             mode: app.mode,
             model: effective_model,
             goal_objective: app.goal.goal_objective.clone(),
-            reasoning_effort: app.reasoning_effort.api_value().map(str::to_string),
+            reasoning_effort: effective_reasoning_effort,
+            reasoning_effort_auto: auto_controls_reasoning,
+            auto_model: app.auto_model,
             allow_shell: app.allow_shell,
             trust_mode: app.trust_mode,
             auto_approve: app.mode == AppMode::Yolo,
@@ -3327,6 +3379,95 @@ async fn dispatch_user_message(
     }
 
     Ok(())
+}
+
+async fn resolve_auto_model_selection(
+    app: &App,
+    config: &Config,
+    message: &QueuedMessage,
+    latest_content: &str,
+) -> commands::AutoRouteSelection {
+    let latest_request = if latest_content.trim().is_empty() {
+        message.display.as_str()
+    } else {
+        latest_content
+    };
+    commands::resolve_auto_route_with_flash(
+        config,
+        latest_request,
+        &recent_auto_router_context(&app.api_messages),
+        if app.auto_model { "auto" } else { "fixed" },
+        app.reasoning_effort.as_setting(),
+    )
+    .await
+}
+
+fn normalize_auto_routed_effort(effort: ReasoningEffort) -> ReasoningEffort {
+    commands::normalize_auto_route_effort(effort)
+}
+
+fn recent_auto_router_context(messages: &[Message]) -> String {
+    let mut rows = Vec::new();
+    for message in messages.iter().rev().skip(1) {
+        if rows.len() >= 6 {
+            break;
+        }
+        let text = content_blocks_text(&message.content);
+        let text = text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        rows.push(format!(
+            "{}: {}",
+            message.role,
+            truncate_for_auto_router(text, 900)
+        ));
+    }
+    rows.reverse();
+    if rows.is_empty() {
+        "No prior context.".to_string()
+    } else {
+        rows.join("\n")
+    }
+}
+
+fn content_blocks_text(blocks: &[ContentBlock]) -> String {
+    let mut out = String::new();
+    for block in blocks {
+        match block {
+            ContentBlock::Text { text, .. } => {
+                append_router_text(&mut out, text);
+            }
+            ContentBlock::Thinking { thinking } => {
+                append_router_text(&mut out, thinking);
+            }
+            ContentBlock::ToolUse { name, .. } => {
+                append_router_text(&mut out, &format!("[tool call: {name}]"));
+            }
+            ContentBlock::ToolResult { content, .. } => {
+                append_router_text(&mut out, &format!("[tool result] {content}"));
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn append_router_text(out: &mut String, text: &str) {
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    out.push_str(text);
+}
+
+fn truncate_for_auto_router(text: &str, max_chars: usize) -> String {
+    let mut chars = text.chars();
+    let truncated: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        format!("{truncated}...")
+    } else {
+        truncated
+    }
 }
 
 async fn apply_model_and_compaction_update(
@@ -3423,11 +3564,15 @@ async fn apply_model_picker_choice(
     app: &mut App,
     engine_handle: &EngineHandle,
     model: String,
-    effort: crate::tui::app::ReasoningEffort,
+    mut effort: crate::tui::app::ReasoningEffort,
     previous_model: String,
     previous_effort: crate::tui::app::ReasoningEffort,
 ) {
-    let model_changed = model != previous_model;
+    let model_is_auto = model.trim().eq_ignore_ascii_case("auto");
+    if model_is_auto {
+        effort = ReasoningEffort::Auto;
+    }
+    let model_changed = model != previous_model || app.auto_model != model_is_auto;
     let effort_changed = effort != previous_effort;
     if !model_changed && !effort_changed {
         app.status_message = Some(format!(
@@ -3438,6 +3583,8 @@ async fn apply_model_picker_choice(
     }
 
     if model_changed {
+        app.auto_model = model_is_auto;
+        app.last_effective_model = None;
         app.model = model.clone();
         app.update_model_compaction_budget();
         app.session.last_prompt_tokens = None;
@@ -3448,6 +3595,7 @@ async fn apply_model_picker_choice(
     }
     if effort_changed {
         app.reasoning_effort = effort;
+        app.last_effective_reasoning_effort = None;
     }
 
     // Best-effort persist; surface a status warning if the settings file
@@ -3474,20 +3622,27 @@ async fn apply_model_picker_choice(
         apply_model_and_compaction_update(engine_handle, app.compaction_config()).await;
     }
 
+    let model_summary = if model_is_auto {
+        "auto (per-turn model)".to_string()
+    } else {
+        model.clone()
+    };
+    let previous_effort_summary = previous_effort.short_label();
+    let effort_summary = if effort == ReasoningEffort::Auto {
+        "auto (per-turn thinking)".to_string()
+    } else {
+        effort.short_label().to_string()
+    };
+
     let mut summary = match (model_changed, effort_changed) {
         (true, true) => format!(
-            "Model: {previous_model} → {model} · thinking: {} → {}",
-            previous_effort.short_label(),
-            effort.short_label()
+            "Model: {previous_model} → {model_summary} · thinking: {previous_effort_summary} → {effort_summary}"
         ),
-        (true, false) => format!(
-            "Model: {previous_model} → {model} · thinking {}",
-            effort.short_label()
-        ),
+        (true, false) => {
+            format!("Model: {previous_model} → {model_summary} · thinking {effort_summary}")
+        }
         (false, true) => format!(
-            "Thinking: {} → {} · model {model}",
-            previous_effort.short_label(),
-            effort.short_label()
+            "Thinking: {previous_effort_summary} → {effort_summary} · model {model_summary}"
         ),
         (false, false) => unreachable!(),
     };
@@ -3896,7 +4051,7 @@ async fn apply_command_result(
             }
             AppAction::SendMessage(content) => {
                 let queued = build_queued_message(app, content);
-                submit_or_steer_message(app, engine_handle, queued).await?;
+                submit_or_steer_message(app, config, engine_handle, queued).await?;
             }
             AppAction::Rlm {
                 prompt,
@@ -4417,11 +4572,14 @@ async fn queue_follow_up(app: &mut App, message: QueuedMessage) -> Result<()> {
 
 async fn submit_or_steer_message(
     app: &mut App,
+    config: &Config,
     engine_handle: &EngineHandle,
     message: QueuedMessage,
 ) -> Result<()> {
     match app.decide_submit_disposition() {
-        SubmitDisposition::Immediate => dispatch_user_message(app, engine_handle, message).await,
+        SubmitDisposition::Immediate => {
+            dispatch_user_message(app, config, engine_handle, message).await
+        }
         SubmitDisposition::Queue => {
             let count = app.queued_message_count().saturating_add(1);
             app.queue_message(message);
@@ -4523,6 +4681,7 @@ fn parse_plan_choice(input: &str) -> Option<PlanChoice> {
 
 async fn apply_plan_choice(
     app: &mut App,
+    config: &Config,
     engine_handle: &EngineHandle,
     choice: PlanChoice,
 ) -> Result<()> {
@@ -4539,7 +4698,7 @@ async fn apply_plan_choice(
                 app.status_message =
                     Some("Queued accepted plan execution (agent mode).".to_string());
             } else {
-                dispatch_user_message(app, engine_handle, followup).await?;
+                dispatch_user_message(app, config, engine_handle, followup).await?;
             }
         }
         PlanChoice::AcceptYolo => {
@@ -4554,7 +4713,7 @@ async fn apply_plan_choice(
                 app.status_message =
                     Some("Queued accepted plan execution (YOLO mode).".to_string());
             } else {
-                dispatch_user_message(app, engine_handle, followup).await?;
+                dispatch_user_message(app, config, engine_handle, followup).await?;
             }
         }
         PlanChoice::RevisePlan => {
@@ -4576,6 +4735,7 @@ async fn apply_plan_choice(
 
 async fn handle_plan_choice(
     app: &mut App,
+    config: &Config,
     engine_handle: &EngineHandle,
     input: &str,
 ) -> Result<bool> {
@@ -4590,7 +4750,7 @@ async fn handle_plan_choice(
         return Ok(false);
     };
 
-    apply_plan_choice(app, engine_handle, choice).await?;
+    apply_plan_choice(app, config, engine_handle, choice).await?;
     Ok(true)
 }
 
@@ -4714,7 +4874,8 @@ fn render(f: &mut Frame, app: &mut App) {
             .and_then(|value| value.to_str())
             .filter(|value| !value.is_empty())
             .unwrap_or("workspace");
-        let effort_label = app.reasoning_effort.short_label();
+        let model_label = app.model_display_label();
+        let effort_label = app.reasoning_effort_display_label();
         let provider_label = match app.api_provider {
             crate::config::ApiProvider::Deepseek => None,
             crate::config::ApiProvider::DeepseekCN => None,
@@ -4726,7 +4887,7 @@ fn render(f: &mut Frame, app: &mut App) {
         };
         let header_data = HeaderData::new(
             app.mode,
-            &app.model,
+            &model_label,
             workspace_name,
             app.is_loading,
             app.ui_theme.header_bg,
@@ -4737,7 +4898,7 @@ fn render(f: &mut Frame, app: &mut App) {
             app.session.session_cost,
             sanitized_prompt_tokens,
         )
-        .with_reasoning_effort(Some(effort_label))
+        .with_reasoning_effort(Some(&effort_label))
         .with_provider(provider_label);
         let header_widget = HeaderWidget::new(header_data);
         let buf = f.buffer_mut();
@@ -5016,7 +5177,8 @@ async fn handle_view_events(
                 if app.plan_prompt_pending {
                     app.plan_prompt_pending = false;
                     if let Some(choice) = plan_choice_from_option(option)
-                        && let Err(err) = apply_plan_choice(app, engine_handle, choice).await
+                        && let Err(err) =
+                            apply_plan_choice(app, config, engine_handle, choice).await
                     {
                         app.status_message = Some(format!("Failed to apply plan selection: {err}"));
                     }
@@ -6496,7 +6658,7 @@ fn estimated_context_tokens(app: &App) -> Option<i64> {
 }
 
 fn context_usage_snapshot(app: &App) -> Option<(i64, u32, f64)> {
-    let max = context_window_for_model(&app.model)?;
+    let max = context_window_for_model(app.effective_model_for_budget())?;
     let max_i64 = i64::from(max);
     let reported = app
         .session

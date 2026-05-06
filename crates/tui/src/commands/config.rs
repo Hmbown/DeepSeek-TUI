@@ -1,14 +1,19 @@
 //! Config commands: config, settings, mode switches, trust, logout
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use super::CommandResult;
+use crate::client::DeepSeekClient;
 use crate::config::{COMMON_DEEPSEEK_MODELS, clear_api_key, normalize_model_name};
 use crate::config_ui::{ConfigUiMode, parse_mode};
+use crate::llm_client::LlmClient;
 use crate::localization::resolve_locale;
+use crate::models::{ContentBlock, Message, MessageRequest, MessageResponse, SystemPrompt};
 use crate::settings::Settings;
-use crate::tui::app::{App, AppAction, AppMode, OnboardingState, SidebarFocus};
+use crate::tui::app::{App, AppAction, AppMode, OnboardingState, ReasoningEffort, SidebarFocus};
 use crate::tui::approval::ApprovalMode;
+use anyhow::Result;
 
 /// Open the interactive config editor.
 ///
@@ -91,7 +96,13 @@ fn show_single_setting(app: &App, key: &str) -> CommandResult {
     let value = match key.as_str() {
         "model" => {
             if app.auto_model {
-                Some("auto (auto-select by request complexity)".to_string())
+                let mut label = "auto (auto-select model per turn)".to_string();
+                if let Some(effective) = app.last_effective_model.as_deref()
+                    && effective != "auto"
+                {
+                    label.push_str(&format!("; last: {effective}"));
+                }
+                Some(label)
             } else {
                 Some(app.model.clone())
             }
@@ -247,16 +258,20 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
             if value.trim().eq_ignore_ascii_case("auto") {
                 app.auto_model = true;
                 app.model = "auto".to_string();
+                app.last_effective_model = None;
+                app.reasoning_effort = ReasoningEffort::Auto;
+                app.last_effective_reasoning_effort = None;
                 app.update_model_compaction_budget();
                 app.session.last_prompt_tokens = None;
                 app.session.last_completion_tokens = None;
                 return CommandResult::with_message_and_action(
-                    "model = auto (auto-select by request complexity)".to_string(),
+                    "model = auto (auto-select model and thinking per turn)".to_string(),
                     AppAction::UpdateCompaction(app.compaction_config()),
                 );
             }
             // Clear auto mode when a specific model is set
             app.auto_model = false;
+            app.last_effective_model = None;
             let Some(model) = normalize_model_name(value) else {
                 return CommandResult::error(format!(
                     "Invalid model '{value}'. Expected a DeepSeek model ID. Common models: {}",
@@ -385,7 +400,13 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
         }
         "default_model" => {
             if let Some(ref model) = settings.default_model {
+                app.auto_model = model.trim().eq_ignore_ascii_case("auto");
                 app.model.clone_from(model);
+                app.last_effective_model = None;
+                if app.auto_model {
+                    app.reasoning_effort = ReasoningEffort::Auto;
+                    app.last_effective_reasoning_effort = None;
+                }
                 app.update_model_compaction_budget();
                 app.session.last_prompt_tokens = None;
                 app.session.last_completion_tokens = None;
@@ -604,14 +625,6 @@ fn expand_tilde(raw: &str) -> String {
 /// Default → Flash (cost savings).
 pub fn auto_model_heuristic(input: &str, _current_model: &str) -> String {
     let len = input.chars().count();
-    // Short messages → Flash
-    if len < 100 {
-        return "deepseek-v4-flash".to_string();
-    }
-    // Long complex requests → Pro
-    if len > 500 {
-        return "deepseek-v4-pro".to_string();
-    }
     let lower = input.to_lowercase();
     let complex_keywords = [
         "refactor",
@@ -630,8 +643,247 @@ pub fn auto_model_heuristic(input: &str, _current_model: &str) -> String {
     if complex_keywords.iter().any(|kw| lower.contains(kw)) {
         return "deepseek-v4-pro".to_string();
     }
+    // Short messages → Flash
+    if len < 100 {
+        return "deepseek-v4-flash".to_string();
+    }
+    // Long complex requests → Pro
+    if len > 500 {
+        return "deepseek-v4-pro".to_string();
+    }
     // Default to Flash for cost savings
     "deepseek-v4-flash".to_string()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutoRouteRecommendation {
+    pub model: String,
+    pub reasoning_effort: Option<ReasoningEffort>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoRouteSource {
+    FlashRouter,
+    Heuristic,
+}
+
+impl AutoRouteSource {
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            AutoRouteSource::FlashRouter => "flash-router",
+            AutoRouteSource::Heuristic => "heuristic",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutoRouteSelection {
+    pub model: String,
+    pub reasoning_effort: Option<ReasoningEffort>,
+    pub source: AutoRouteSource,
+}
+
+pub const AUTO_MODEL_ROUTER_SYSTEM_PROMPT: &str = "\
+You are the DeepSeek TUI auto-routing classifier. Return only compact JSON: \
+{\"model\":\"deepseek-v4-flash|deepseek-v4-pro\",\"thinking\":\"off|high|max\"}. \
+Use deepseek-v4-flash for trivial, conversational, status, or single-step work. \
+Use deepseek-v4-pro for coding, debugging, release work, multi-step tasks, high-risk decisions, \
+tool-heavy work, ambiguous requests, or anything that benefits from deeper reasoning. \
+Use thinking off only for trivial no-tool answers, high for ordinary reasoning, and max for \
+agentic, coding, multi-file, release, architecture, debugging, security, tool-heavy, or uncertain work.";
+
+/// Parse the Flash router's JSON-only response.
+///
+/// The runtime treats classifier output as untrusted: only known V4 model IDs
+/// and supported reasoning tiers are accepted. Anything else falls back to the
+/// deterministic heuristic.
+pub fn parse_auto_route_recommendation(raw: &str) -> Option<AutoRouteRecommendation> {
+    let json = extract_first_json_object(raw)?;
+    let value: serde_json::Value = serde_json::from_str(json).ok()?;
+    let model = value.get("model").and_then(serde_json::Value::as_str)?;
+    let model = normalize_auto_route_model(model)?;
+    let reasoning_effort = value
+        .get("thinking")
+        .or_else(|| value.get("reasoning_effort"))
+        .or_else(|| value.get("effort"))
+        .and_then(serde_json::Value::as_str)
+        .and_then(parse_auto_route_reasoning_effort);
+
+    Some(AutoRouteRecommendation {
+        model: model.to_string(),
+        reasoning_effort,
+    })
+}
+
+fn extract_first_json_object(raw: &str) -> Option<&str> {
+    let start = raw.find('{')?;
+    let end = raw.rfind('}')?;
+    (end >= start).then_some(&raw[start..=end])
+}
+
+fn normalize_auto_route_model(model: &str) -> Option<&'static str> {
+    match model.trim().to_ascii_lowercase().as_str() {
+        "deepseek-v4-pro" | "v4-pro" | "pro" => Some("deepseek-v4-pro"),
+        "deepseek-v4-flash" | "v4-flash" | "flash" => Some("deepseek-v4-flash"),
+        _ => None,
+    }
+}
+
+fn parse_auto_route_reasoning_effort(effort: &str) -> Option<ReasoningEffort> {
+    match effort.trim().to_ascii_lowercase().as_str() {
+        "off" | "disabled" | "none" | "false" => Some(ReasoningEffort::Off),
+        "low" | "minimal" | "medium" | "mid" => Some(ReasoningEffort::High),
+        "high" => Some(ReasoningEffort::High),
+        "max" | "maximum" | "xhigh" => Some(ReasoningEffort::Max),
+        _ => None,
+    }
+}
+
+#[must_use]
+pub fn normalize_auto_route_effort(effort: ReasoningEffort) -> ReasoningEffort {
+    match effort {
+        ReasoningEffort::Low | ReasoningEffort::Medium => ReasoningEffort::High,
+        other => other,
+    }
+}
+
+pub async fn resolve_auto_route_with_flash(
+    config: &crate::config::Config,
+    latest_request: &str,
+    recent_context: &str,
+    selected_model_mode: &str,
+    selected_thinking_mode: &str,
+) -> AutoRouteSelection {
+    match auto_route_flash_recommendation(
+        config,
+        latest_request,
+        recent_context,
+        selected_model_mode,
+        selected_thinking_mode,
+    )
+    .await
+    {
+        Ok(Some(recommendation)) => AutoRouteSelection {
+            model: recommendation.model,
+            reasoning_effort: recommendation.reasoning_effort,
+            source: AutoRouteSource::FlashRouter,
+        },
+        Ok(None) | Err(_) => fallback_auto_route(latest_request, selected_model_mode),
+    }
+}
+
+fn fallback_auto_route(latest_request: &str, selected_model_mode: &str) -> AutoRouteSelection {
+    AutoRouteSelection {
+        model: auto_model_heuristic(latest_request, selected_model_mode),
+        reasoning_effort: Some(normalize_auto_route_effort(crate::auto_reasoning::select(
+            false,
+            latest_request,
+        ))),
+        source: AutoRouteSource::Heuristic,
+    }
+}
+
+async fn auto_route_flash_recommendation(
+    config: &crate::config::Config,
+    latest_request: &str,
+    recent_context: &str,
+    selected_model_mode: &str,
+    selected_thinking_mode: &str,
+) -> Result<Option<AutoRouteRecommendation>> {
+    if cfg!(test) {
+        return Ok(None);
+    }
+
+    let client = DeepSeekClient::new(config)?;
+    let request = MessageRequest {
+        model: "deepseek-v4-flash".to_string(),
+        messages: vec![Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: auto_route_prompt(
+                    latest_request,
+                    recent_context,
+                    selected_model_mode,
+                    selected_thinking_mode,
+                ),
+                cache_control: None,
+            }],
+        }],
+        max_tokens: 96,
+        system: Some(SystemPrompt::Text(
+            AUTO_MODEL_ROUTER_SYSTEM_PROMPT.to_string(),
+        )),
+        tools: None,
+        tool_choice: None,
+        metadata: None,
+        thinking: None,
+        reasoning_effort: Some("off".to_string()),
+        stream: Some(false),
+        temperature: Some(0.0),
+        top_p: None,
+    };
+
+    let response =
+        tokio::time::timeout(Duration::from_secs(4), client.create_message(request)).await??;
+    Ok(parse_auto_route_recommendation(&message_response_text(
+        &response,
+    )))
+}
+
+fn auto_route_prompt(
+    latest_request: &str,
+    recent_context: &str,
+    selected_model_mode: &str,
+    selected_thinking_mode: &str,
+) -> String {
+    format!(
+        "Session mode: agent\nSelected model mode: {}\nSelected thinking mode: {}\n\nRecent context:\n{}\n\nLatest user request:\n{}\n\nReturn JSON only.",
+        selected_model_mode,
+        selected_thinking_mode,
+        if recent_context.trim().is_empty() {
+            "No prior context."
+        } else {
+            recent_context
+        },
+        truncate_for_auto_router(latest_request, 4_000)
+    )
+}
+
+fn message_response_text(response: &MessageResponse) -> String {
+    let mut out = String::new();
+    for block in &response.content {
+        match block {
+            ContentBlock::Text { text, .. } | ContentBlock::ToolResult { content: text, .. } => {
+                append_router_text(&mut out, text);
+            }
+            ContentBlock::Thinking { thinking } => {
+                append_router_text(&mut out, thinking);
+            }
+            ContentBlock::ToolUse { name, .. } => {
+                append_router_text(&mut out, &format!("[tool call: {name}]"));
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn append_router_text(out: &mut String, text: &str) {
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    out.push_str(text);
+}
+
+fn truncate_for_auto_router(text: &str, max_chars: usize) -> String {
+    let mut chars = text.chars();
+    let truncated: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        format!("{truncated}...")
+    } else {
+        truncated
+    }
 }
 
 /// Toggle LSP diagnostics on/off or show status.
@@ -865,6 +1117,21 @@ mod tests {
     }
 
     #[test]
+    fn test_set_model_auto_enables_auto_thinking() {
+        let mut app = create_test_app();
+        app.reasoning_effort = ReasoningEffort::Off;
+
+        let result = set_config(&mut app, Some("model auto"));
+
+        assert!(result.message.is_some());
+        assert!(app.auto_model);
+        assert_eq!(app.model, "auto");
+        assert_eq!(app.reasoning_effort, ReasoningEffort::Auto);
+        assert!(app.last_effective_model.is_none());
+        assert!(app.last_effective_reasoning_effort.is_none());
+    }
+
+    #[test]
     fn test_set_model_accepts_future_deepseek_model_id() {
         let mut app = create_test_app();
         let result = set_config(&mut app, Some("model deepseek-v4"));
@@ -881,6 +1148,45 @@ mod tests {
         // Note: This test may fail in environments where settings can't be saved
         // The important thing is that the model is updated
         assert_eq!(app.model, "deepseek-v4-flash");
+    }
+
+    #[test]
+    fn auto_route_recommendation_parses_strict_json() {
+        let rec =
+            parse_auto_route_recommendation(r#"{"model":"deepseek-v4-pro","thinking":"max"}"#)
+                .expect("valid router response should parse");
+
+        assert_eq!(rec.model, "deepseek-v4-pro");
+        assert_eq!(rec.reasoning_effort, Some(ReasoningEffort::Max));
+    }
+
+    #[test]
+    fn auto_route_recommendation_accepts_wrapped_json_aliases() {
+        let rec =
+            parse_auto_route_recommendation(r#"route: {"model":"flash","reasoning_effort":"off"}"#)
+                .expect("wrapped router response should parse");
+
+        assert_eq!(rec.model, "deepseek-v4-flash");
+        assert_eq!(rec.reasoning_effort, Some(ReasoningEffort::Off));
+    }
+
+    #[test]
+    fn auto_route_recommendation_normalizes_legacy_low_medium_to_high() {
+        let rec = parse_auto_route_recommendation(
+            r#"{"model":"deepseek-v4-pro","reasoning_effort":"medium"}"#,
+        )
+        .expect("medium should parse for back-compat");
+
+        assert_eq!(rec.model, "deepseek-v4-pro");
+        assert_eq!(rec.reasoning_effort, Some(ReasoningEffort::High));
+    }
+
+    #[test]
+    fn auto_route_recommendation_rejects_unknown_model() {
+        assert!(
+            parse_auto_route_recommendation(r#"{"model":"some-other-model","thinking":"max"}"#,)
+                .is_none()
+        );
     }
 
     #[test]

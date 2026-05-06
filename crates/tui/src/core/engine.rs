@@ -48,6 +48,7 @@ use crate::tools::spec::RuntimeToolServices;
 use crate::tools::spec::{ApprovalRequirement, ToolError, ToolResult};
 use crate::tools::subagent::{
     Mailbox, SharedSubAgentManager, SubAgentRuntime, SubAgentType, new_shared_subagent_manager,
+    resolve_subagent_assignment_route,
 };
 use crate::tools::todo::{SharedTodoList, new_shared_todo_list};
 use crate::tools::user_input::{UserInputRequest, UserInputResponse};
@@ -515,6 +516,8 @@ impl Engine {
                     model,
                     goal_objective,
                     reasoning_effort,
+                    reasoning_effort_auto,
+                    auto_model,
                     allow_shell,
                     trust_mode,
                     auto_approve,
@@ -525,6 +528,8 @@ impl Engine {
                         model,
                         goal_objective,
                         reasoning_effort,
+                        reasoning_effort_auto,
+                        auto_model,
                         allow_shell,
                         trust_mode,
                         auto_approve,
@@ -564,7 +569,7 @@ impl Engine {
                         continue;
                     };
 
-                    let runtime = SubAgentRuntime::new(
+                    let mut runtime = SubAgentRuntime::new(
                         client,
                         self.session.model.clone(),
                         // Sub-agents don't inherit YOLO mode - use Agent mode defaults
@@ -574,8 +579,17 @@ impl Engine {
                         Arc::clone(&self.subagent_manager),
                     )
                     .with_role_models(self.config.subagent_model_overrides.clone())
+                    .with_auto_model(self.session.auto_model)
+                    .with_reasoning_effort(
+                        self.session.reasoning_effort.clone(),
+                        self.session.reasoning_effort_auto,
+                    )
                     .with_max_spawn_depth(self.config.max_spawn_depth)
                     .background_runtime();
+                    let route = resolve_subagent_assignment_route(&runtime, None, &prompt).await;
+                    runtime.model = route.model;
+                    runtime.reasoning_effort = route.reasoning_effort;
+                    runtime.reasoning_effort_auto = false;
 
                     let result = {
                         let mut manager = self.subagent_manager.write().await;
@@ -623,6 +637,7 @@ impl Engine {
                         .await;
                 }
                 Op::SetModel { model } => {
+                    self.session.auto_model = model.trim().eq_ignore_ascii_case("auto");
                     self.session.model = model;
                     self.config.model.clone_from(&self.session.model);
                     let _ = self
@@ -654,6 +669,7 @@ impl Engine {
                     self.session.compaction_summary_prompt =
                         extract_compaction_summary_prompt(system_prompt.clone());
                     self.session.system_prompt = system_prompt;
+                    self.session.auto_model = model.trim().eq_ignore_ascii_case("auto");
                     self.session.model = model;
                     self.session.workspace = workspace.clone();
                     self.config.model.clone_from(&self.session.model);
@@ -709,6 +725,8 @@ impl Engine {
                         self.session.model.clone(),
                         self.config.goal_objective.clone(),
                         self.session.reasoning_effort.clone(),
+                        self.session.reasoning_effort_auto,
+                        self.session.auto_model,
                         self.session.allow_shell,
                         self.session.trust_mode,
                         self.session.auto_approve,
@@ -758,6 +776,8 @@ impl Engine {
         model: String,
         goal_objective: Option<String>,
         reasoning_effort: Option<String>,
+        reasoning_effort_auto: bool,
+        auto_model: bool,
         allow_shell: bool,
         trust_mode: bool,
         auto_approve: bool,
@@ -838,6 +858,8 @@ impl Engine {
         self.config.model.clone_from(&self.session.model);
         self.config.goal_objective = goal_objective;
         self.session.reasoning_effort = reasoning_effort;
+        self.session.reasoning_effort_auto = reasoning_effort_auto;
+        self.session.auto_model = auto_model;
         self.session.allow_shell = allow_shell;
         self.config.allow_shell = allow_shell;
         self.session.trust_mode = trust_mode;
@@ -900,6 +922,11 @@ impl Engine {
                             Arc::clone(&self.subagent_manager),
                         )
                         .with_role_models(self.config.subagent_model_overrides.clone())
+                        .with_auto_model(self.session.auto_model)
+                        .with_reasoning_effort(
+                            self.session.reasoning_effort.clone(),
+                            self.session.reasoning_effort_auto,
+                        )
                         .with_max_spawn_depth(self.config.max_spawn_depth);
                         if let Some((mailbox, cancel_token)) = mailbox_for_runtime.as_ref() {
                             rt = rt

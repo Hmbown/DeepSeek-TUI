@@ -539,7 +539,9 @@ pub fn open_browser(url: &str) -> Result<()> {
 }
 
 fn validate_document(doc: &ConfigUiDocument) -> Result<()> {
-    if normalize_model_name(&doc.runtime.model).is_none() {
+    if !doc.runtime.model.trim().eq_ignore_ascii_case("auto")
+        && normalize_model_name(&doc.runtime.model).is_none()
+    {
         bail!("invalid model '{}'", doc.runtime.model);
     }
     if doc.config.mcp_config_path.trim().is_empty() {
@@ -557,6 +559,7 @@ fn reload_runtime_config(app: &mut App, config: &mut Config) -> Result<()> {
             .reasoning_effort()
             .unwrap_or_else(|| app.reasoning_effort.as_setting()),
     );
+    app.last_effective_reasoning_effort = None;
     app.update_model_compaction_budget();
     app.mcp_config_path = reloaded.mcp_config_path();
     app.skills_dir = reloaded.skills_dir();
@@ -584,6 +587,7 @@ fn apply_reasoning_effort(
 ) -> Result<()> {
     let effort: ReasoningEffort = value.into();
     app.reasoning_effort = effort;
+    app.last_effective_reasoning_effort = None;
     app.update_model_compaction_budget();
     if persist {
         commands::persist_root_string_key("reasoning_effort", effort.as_setting())?;
@@ -844,7 +848,10 @@ mod tests {
 
     #[test]
     fn build_document_reflects_app_state() {
-        let app = app();
+        let mut app = app();
+        app.auto_model = false;
+        app.model = "deepseek-v4-pro".to_string();
+        app.reasoning_effort = ReasoningEffort::Max;
         let config = Config::default();
         let doc = build_document(&app, &config).expect("document");
         assert_eq!(doc.runtime.model, app.model);

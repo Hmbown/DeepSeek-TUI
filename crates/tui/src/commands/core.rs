@@ -4,7 +4,7 @@ use std::fmt::Write;
 
 use crate::config::{COMMON_DEEPSEEK_MODELS, normalize_model_name};
 use crate::localization::{MessageId, tr};
-use crate::tui::app::{App, AppAction, AppMode};
+use crate::tui::app::{App, AppAction, AppMode, ReasoningEffort};
 use crate::tui::views::{HelpView, ModalKind, SubAgentsView};
 
 use super::CommandResult;
@@ -91,14 +91,33 @@ pub fn exit() -> CommandResult {
 /// way to flip both knobs without memorising the docs.
 pub fn model(app: &mut App, model_name: Option<&str>) -> CommandResult {
     if let Some(name) = model_name {
+        if name.trim().eq_ignore_ascii_case("auto") {
+            let old_model = app.model_display_label();
+            app.auto_model = true;
+            app.model = "auto".to_string();
+            app.last_effective_model = None;
+            app.reasoning_effort = ReasoningEffort::Auto;
+            app.last_effective_reasoning_effort = None;
+            app.update_model_compaction_budget();
+            app.session.last_prompt_tokens = None;
+            app.session.last_completion_tokens = None;
+            return CommandResult::with_message_and_action(
+                tr(app.ui_locale, MessageId::ModelChanged)
+                    .replace("{old}", &old_model)
+                    .replace("{new}", "auto"),
+                AppAction::UpdateCompaction(app.compaction_config()),
+            );
+        }
         let Some(model_id) = normalize_model_name(name) else {
             return CommandResult::error(format!(
-                "Invalid model '{name}'. Expected a DeepSeek model ID. Common models: {}",
+                "Invalid model '{name}'. Expected auto or a DeepSeek model ID. Common models: {}",
                 COMMON_DEEPSEEK_MODELS.join(", ")
             ));
         };
-        let old_model = app.model.clone();
+        let old_model = app.model_display_label();
+        app.auto_model = false;
         app.model = model_id.clone();
+        app.last_effective_model = None;
         app.update_model_compaction_budget();
         app.session.last_prompt_tokens = None;
         app.session.last_completion_tokens = None;
@@ -425,6 +444,21 @@ mod tests {
         assert_eq!(app.model, "deepseek-v4-flash");
         assert_eq!(app.session.last_prompt_tokens, None);
         assert_eq!(app.session.last_completion_tokens, None);
+    }
+
+    #[test]
+    fn test_model_auto_enables_auto_thinking() {
+        let mut app = create_test_app();
+        app.reasoning_effort = ReasoningEffort::Off;
+
+        let result = model(&mut app, Some("auto"));
+
+        assert!(result.message.is_some());
+        assert!(app.auto_model);
+        assert_eq!(app.model, "auto");
+        assert_eq!(app.reasoning_effort, ReasoningEffort::Auto);
+        assert!(app.last_effective_model.is_none());
+        assert!(app.last_effective_reasoning_effort.is_none());
     }
 
     #[test]
