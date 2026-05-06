@@ -7,6 +7,7 @@ use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     optional_u64, required_str,
 };
+use crate::network_policy::{Decision, host_from_url};
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose};
 use regex::Regex;
@@ -572,7 +573,7 @@ impl ToolSpec for WebRunTool {
                 let ref_id = required_str(open, "ref_id")?.to_string();
                 let lineno = optional_u64(open, "lineno", 1).max(1) as usize;
 
-                let page = resolve_or_fetch_page(&ref_id, DEFAULT_OPEN_TIMEOUT_MS).await?;
+                let page = resolve_or_fetch_page(&ref_id, DEFAULT_OPEN_TIMEOUT_MS, context).await?;
                 view_counter += 1;
                 let view_ref = format!("{scope}turn{turn}view{view_counter}");
                 store_page(&context.state_namespace, &view_ref, page.clone());
@@ -602,7 +603,7 @@ impl ToolSpec for WebRunTool {
                     ))
                 })?;
                 let target = link.url.clone();
-                let fetched = resolve_or_fetch_page(&target, DEFAULT_OPEN_TIMEOUT_MS).await?;
+                let fetched = resolve_or_fetch_page(&target, DEFAULT_OPEN_TIMEOUT_MS, context).await?;
                 click_counter += 1;
                 let click_ref = format!("{scope}turn{turn}click{click_counter}");
                 store_page(&context.state_namespace, &click_ref, fetched.clone());
@@ -687,11 +688,12 @@ fn next_turn_for_namespace(namespace: &str) -> u64 {
     with_state(|state| state.next_turn(namespace))
 }
 
-async fn resolve_or_fetch_page(ref_id: &str, timeout_ms: u64) -> Result<WebPage, ToolError> {
+async fn resolve_or_fetch_page(ref_id: &str, timeout_ms: u64, context: &ToolContext) -> Result<WebPage, ToolError> {
     if let Some(page) = get_page(ref_id) {
         return Ok(page);
     }
     if looks_like_url(ref_id) {
+        check_network_policy(ref_id, context)?;
         return fetch_page(ref_id, timeout_ms).await;
     }
     Err(ToolError::invalid_input(format!(
@@ -1033,6 +1035,27 @@ fn page_from_search(query: &str, results: &[SearchEntry]) -> WebPage {
         lines,
         links,
         pdf_pages: None,
+    }
+}
+
+/// Check network policy for a URL before fetching.
+/// Returns an error if the policy denies access.
+fn check_network_policy(url: &str, context: &ToolContext) -> Result<(), ToolError> {
+    let Some(decider) = context.network_policy.as_ref() else {
+        return Ok(());
+    };
+    let Some(host) = host_from_url(url) else {
+        return Ok(());
+    };
+    match decider.evaluate(&host, "web_run") {
+        Decision::Allow => Ok(()),
+        Decision::Deny => Err(ToolError::permission_denied(format!(
+            "network call to '{host}' blocked by network policy"
+        ))),
+        Decision::Prompt => Err(ToolError::permission_denied(format!(
+            "network call to '{host}' requires approval; \
+             re-run after `/network allow {host}` or set network.default = \"allow\" in config"
+        ))),
     }
 }
 
