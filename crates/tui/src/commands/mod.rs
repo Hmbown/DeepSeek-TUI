@@ -18,6 +18,7 @@ mod network;
 mod note;
 mod provider;
 mod queue;
+mod rename;
 mod restore;
 mod review;
 mod session;
@@ -248,6 +249,12 @@ pub const COMMANDS: &[CommandInfo] = &[
         description_id: MessageId::CmdNetworkDescription,
     },
     // Session commands
+    CommandInfo {
+        name: "rename",
+        aliases: &[],
+        usage: "/rename <new title>",
+        description_id: MessageId::CmdRenameDescription,
+    },
     CommandInfo {
         name: "save",
         aliases: &[],
@@ -503,6 +510,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "network" => network::network(app, arg),
 
         // Session commands
+        "rename" => rename::rename(app, arg),
         "save" => session::save(app, arg),
         "sessions" | "resume" => session::sessions(app, arg),
         "load" => session::load(app, arg),

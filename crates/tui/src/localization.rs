@@ -247,6 +247,7 @@ pub enum MessageId {
     CmdProviderDescription,
     CmdQueueDescription,
     CmdRecallDescription,
+    CmdRenameDescription,
     CmdRestoreDescription,
     CmdRetryDescription,
     CmdReviewDescription,
@@ -435,6 +436,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CmdProviderDescription,
     MessageId::CmdQueueDescription,
     MessageId::CmdRecallDescription,
+    MessageId::CmdRenameDescription,
     MessageId::CmdRestoreDescription,
     MessageId::CmdRetryDescription,
     MessageId::CmdReviewDescription,
@@ -758,6 +760,7 @@ fn english(id: MessageId) -> &'static str {
         }
         MessageId::CmdQueueDescription => "View or edit queued messages",
         MessageId::CmdRecallDescription => "Search prior cycle archives (BM25 over message text)",
+        MessageId::CmdRenameDescription => "Rename the current session",
         MessageId::CmdRestoreDescription => {
             "Roll back the workspace to a prior pre/post-turn snapshot. With no arg, lists recent snapshots."
         }
@@ -1039,6 +1042,7 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::CmdRecallDescription => {
             "過去のサイクルアーカイブを検索（メッセージ本文への BM25 検索）"
         }
+        MessageId::CmdRenameDescription => "現在のセッションの名前を変更",
         MessageId::CmdRestoreDescription => {
             "ワークスペースを以前のターン前/後スナップショットへロールバック。引数なしで最近のスナップショットを一覧表示。"
         }
@@ -1298,6 +1302,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::CmdProviderDescription => "切换或查看当前 LLM 后端（deepseek | nvidia-nim）",
         MessageId::CmdQueueDescription => "查看或编辑已排队的消息",
         MessageId::CmdRecallDescription => "搜索此前的循环归档（基于消息文本的 BM25 检索）",
+        MessageId::CmdRenameDescription => "重命名当前会话",
         MessageId::CmdRestoreDescription => {
             "将工作区回滚到此前的轮次前/后快照。不带参数时列出最近的快照。"
         }
@@ -1559,6 +1564,7 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         MessageId::CmdRecallDescription => {
             "Buscar arquivos de ciclos anteriores (BM25 sobre o texto das mensagens)"
         }
+        MessageId::CmdRenameDescription => "Renomear a sessão atual",
         MessageId::CmdRestoreDescription => {
             "Reverter o workspace a um snapshot pré/pós-turno anterior. Sem argumento, lista os snapshots recentes."
         }
