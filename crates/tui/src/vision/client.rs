@@ -1,0 +1,322 @@
+//! HTTP client for vision-capable models (GPT-4o, Claude 3, Gemini, etc.)
+//!
+//! This client handles image processing tasks using vision-capable models
+//! with support for base64-encoded images and multi-modal conversations.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::{Context, Result};
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use tokio::sync::Mutex;
+
+use crate::config::VisionModelConfig;
+use crate::llm_client::{LlmClient, LlmError, RetryConfig, with_retry};
+
+/// Configuration for the vision client
+#[derive(Debug, Clone)]
+pub struct VisionClientConfig {
+    pub model: String,
+    pub api_key: String,
+    pub base_url: String,
+    pub max_tokens: u32,
+    pub temperature: f32,
+    pub timeout_secs: u64,
+}
+
+impl From<VisionModelConfig> for VisionClientConfig {
+    fn from(config: VisionModelConfig) -> Self {
+        Self {
+            model: config.model,
+            api_key: config.api_key.unwrap_or_default(),
+            base_url: config.base_url.unwrap_or_else(|| "https://api.openai.com/v1".to_string()),
+            max_tokens: config.max_tokens,
+            temperature: config.temperature,
+            timeout_secs: config.timeout_secs,
+        }
+    }
+}
+
+/// A vision request with image content
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VisionRequest {
+    /// Text prompt to accompany the image
+    pub prompt: String,
+    /// Base64-encoded image data
+    pub image_base64: String,
+    /// Image MIME type (e.g., "image/png", "image/jpeg")
+    pub image_mime_type: String,
+    /// Optional system message
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_message: Option<String>,
+    /// Maximum tokens for the response
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    /// Temperature for sampling (0.0 - 2.0)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+}
+
+impl VisionRequest {
+    /// Create a new vision request
+    #[must_use]
+    pub fn new(prompt: impl Into<String>, image_base64: impl Into<String>, image_mime_type: impl Into<String>) -> Self {
+        Self {
+            prompt: prompt.into(),
+            image_base64: image_base64.into(),
+            image_mime_type: image_mime_type.into(),
+            system_message: None,
+            max_tokens: None,
+            temperature: None,
+        }
+    }
+
+    /// Set the system message
+    #[must_use]
+    pub fn with_system_message(mut self, message: impl Into<String>) -> Self {
+        self.system_message = Some(message.into());
+        self
+    }
+
+    /// Set max tokens
+    #[must_use]
+    pub fn with_max_tokens(mut self, max_tokens: u32) -> Self {
+        self.max_tokens = Some(max_tokens);
+        self
+    }
+
+    /// Set temperature
+    #[must_use]
+    pub fn with_temperature(mut self, temperature: f32) -> Self {
+        self.temperature = Some(temperature);
+        self
+    }
+}
+
+/// Response from a vision model
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VisionResponse {
+    /// The generated text response
+    pub content: String,
+    /// Token usage information
+    pub usage: Option<VisionUsage>,
+    /// Model that generated the response
+    pub model: String,
+    /// Raw response for debugging
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_response: Option<Value>,
+}
+
+/// Token usage for vision requests
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VisionUsage {
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    pub total_tokens: u32,
+}
+
+/// HTTP client for vision-capable models
+#[derive(Clone)]
+pub struct VisionClient {
+    http_client: reqwest::Client,
+    config: VisionClientConfig,
+    request_count: Arc<Mutex<u64>>,
+}
+
+impl VisionClient {
+    /// Create a new vision client from configuration
+    pub fn new(config: VisionClientConfig) -> Result<Self> {
+        let http_client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(config.timeout_secs))
+            .build()
+            .context("Failed to build HTTP client")?;
+
+        Ok(Self {
+            http_client,
+            config,
+            request_count: Arc::new(Mutex::new(0)),
+        })
+    }
+
+    /// Create a new vision client from VisionModelConfig
+    pub fn from_config(config: VisionModelConfig) -> Result<Self> {
+        let client_config = VisionClientConfig::from(config);
+        Self::new(client_config)
+    }
+
+    /// Get the configured model name
+    #[must_use]
+    pub fn model(&self) -> &str {
+        &self.config.model
+    }
+
+    /// Get the request count
+    pub async fn request_count(&self) -> u64 {
+        *self.request_count.lock().await
+    }
+
+    /// Send a vision request to the model
+    pub async fn process_image(&self, request: VisionRequest) -> Result<VisionResponse> {
+        let max_tokens = request.max_tokens.unwrap_or(self.config.max_tokens);
+        let temperature = request.temperature.unwrap_or(self.config.temperature);
+
+        // Build the request payload for OpenAI-compatible API
+        let payload = self.build_payload(&request, max_tokens, temperature);
+
+        // Send the request with retry logic
+        let response = self.send_request_with_retry(payload).await?;
+
+        // Increment request count
+        *self.request_count.lock().await += 1;
+
+        // Parse the response
+        self.parse_response(response).await
+    }
+
+    /// Build the API request payload
+    fn build_payload(&self, request: &VisionRequest, max_tokens: u32, temperature: f32) -> Value {
+        let mut messages = Vec::new();
+
+        // Add system message if provided
+        if let Some(system) = &request.system_message {
+            messages.push(json!({
+                "role": "system",
+                "content": system
+            }));
+        }
+
+        // Add user message with image
+        messages.push(json!({
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": request.prompt
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": format!("data:{};base64,{}", request.image_mime_type, request.image_base64)
+                    }
+                }
+            ]
+        }));
+
+        json!({
+            "model": self.config.model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature
+        })
+    }
+
+    /// Send request with retry logic
+    async fn send_request_with_retry(&self, payload: Value) -> Result<reqwest::Response> {
+        let client = self.http_client.clone();
+        let url = format!("{}/chat/completions", self.config.base_url);
+        let api_key = self.config.api_key.clone();
+
+        let retry_config = RetryConfig {
+            max_retries: 3,
+            initial_delay: Duration::from_secs(1),
+            max_delay: Duration::from_secs(30),
+            exponential_base: 2.0,
+        };
+
+        with_retry(retry_config, || async {
+            let mut headers = HeaderMap::new();
+            headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+            headers.insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {}", api_key))
+                    .map_err(|e| LlmError::Http(e.to_string()))?,
+            );
+
+            let response = client
+                .post(&url)
+                .headers(headers)
+                .json(&payload)
+                .send()
+                .await
+                .map_err(|e| LlmError::Http(e.to_string()))?;
+
+            let status = response.status();
+            if !status.is_success() {
+                let error_text = response
+                    .text()
+                    .await
+                    .unwrap_or_else(|_| "Unknown error".to_string());
+                return Err(LlmError::Api(format!("HTTP {}: {}", status, error_text)));
+            }
+
+            Ok(response)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("Vision request failed: {}", e))
+    }
+
+    /// Parse the API response
+    async fn parse_response(&self, response: reqwest::Response) -> Result<VisionResponse> {
+        let json: Value = response
+            .json()
+            .await
+            .context("Failed to parse response JSON")?;
+
+        // Extract content from the response
+        let content = json
+            .get("choices")
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("message"))
+            .and_then(|m| m.get("content"))
+            .and_then(|c| c.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        // Extract usage information
+        let usage = json.get("usage").map(|u| VisionUsage {
+            prompt_tokens: u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+            completion_tokens: u.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+            total_tokens: u.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+        });
+
+        // Extract model information
+        let model = json
+            .get("model")
+            .and_then(|m| m.as_str())
+            .unwrap_or(&self.config.model)
+            .to_string();
+
+        Ok(VisionResponse {
+            content,
+            usage,
+            model,
+            raw_response: Some(json),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_vision_request_builder() {
+        let request = VisionRequest::new(
+            "Describe this image",
+            "base64encodeddata",
+            "image/png"
+        )
+        .with_system_message("You are a helpful assistant")
+        .with_max_tokens(1000)
+        .with_temperature(0.5);
+
+        assert_eq!(request.prompt, "Describe this image");
+        assert_eq!(request.image_base64, "base64encodeddata");
+        assert_eq!(request.image_mime_type, "image/png");
+        assert_eq!(request.system_message, Some("You are a helpful assistant".to_string()));
+        assert_eq!(request.max_tokens, Some(1000));
+        assert_eq!(request.temperature, Some(0.5));
+    }
+}

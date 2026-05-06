@@ -1,0 +1,11 @@
+[package]
+name = "deepseek-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Model/provider registry and fallback strategy for DeepSeek workspace architecture"
+
+[dependencies]
+deepseek-config = { path = "../config", version = "0.8.14" }
+serde.workspace = true

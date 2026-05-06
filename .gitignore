@@ -1,0 +1,83 @@
+# Build artifacts
+/target
+*.pdb
+*.exe
+*.dll
+*.so
+*.dylib
+*.rlib
+*.o
+
+# Development
+.env
+.env.*
+!.env.example
+node_modules/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+venv/
+ENV/
+env/
+.venv/
+*.egg-info/
+dist/
+
+# Logs
+*.log
+
+# Generated
+outputs/
+tmp/
+
+# Reference papers / large research blobs (keep locally if needed, don't ship)
+docs/DeepSeek_V4.pdf
+docs/*.pdf
+
+# Note: Cargo.lock is intentionally NOT ignored for reproducible builds
+
+# Local dev scripts and temp files
+*.sh
+!scripts/**
+test.txt
+TODO*.md
+todo*.md
+CLAUDE.md
+NEXT_SESSION.md
+AI_HANDOFF.md
+result.json
+count_deps.py
+project_overhaul_prompt.md
+.codex/
+.context/
+
+# Local runtime state
+.deepseek/
+**/session_*.json
+*.db
+
+# Companion app (tracked separately)
+apps/
+
+# Claude Code runtime artifacts
+.claude/scheduled_tasks.lock
+.claude/worktrees/
+.worktrees/
+.ace-tool/
+
+# Local-only Claude / ralph notes
+.claude/*.local.md
+.claude/*.local.json
+
+# Maintainer-internal design notes (trade-secret material, never published)
+.private/

@@ -1,0 +1,139 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+  schedule:
+    - cron: '31 6 * * 1'
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -Dwarnings
+
+jobs:
+  versions:
+    name: Version drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          for i in 1 2 3 4 5; do
+            sudo apt-get update && break
+            echo "apt-get update failed (attempt $i); retrying in 15s"
+            sleep 15
+          done
+          sudo apt-get install -y libdbus-1-dev pkg-config
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Check version drift
+        run: ./scripts/release/check-versions.sh
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          for i in 1 2 3 4 5; do
+            sudo apt-get update && break
+            echo "apt-get update failed (attempt $i); retrying in 15s"
+            sleep 15
+          done
+          sudo apt-get install -y libdbus-1-dev pkg-config
+      - uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      # Mirror the release-workflow `parity` gate exactly. Anything that
+      # would fail there must fail here so we never push a `v*` tag that
+      # the npm publish pipeline can't ship. The Release job runs with
+      # `--locked` + `-D warnings`; we do the same.
+      - name: Clippy (release-strict)
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+  test:
+    name: Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          for i in 1 2 3 4 5; do
+            sudo apt-get update && break
+            echo "apt-get update failed (attempt $i); retrying in 15s"
+            sleep 15
+          done
+          sudo apt-get install -y libdbus-1-dev pkg-config
+      - uses: Swatinem/rust-cache@v2
+      - name: Run tests
+        run: cargo test --workspace --all-features --locked
+      - name: Lockfile drift guard
+        run: git diff --exit-code -- Cargo.lock
+      - name: Run Offline Eval Harness
+        run: cargo run -p deepseek-tui --all-features -- eval
+
+  npm-wrapper-smoke:
+    name: npm wrapper smoke
+    if: github.event_name != 'schedule'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-latest"]' || '["ubuntu-latest","macos-latest","windows-latest"]') }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          for i in 1 2 3 4 5; do
+            sudo apt-get update && break
+            echo "apt-get update failed (attempt $i); retrying in 15s"
+            sleep 15
+          done
+          sudo apt-get install -y libdbus-1-dev pkg-config
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: Swatinem/rust-cache@v2
+      - name: Build wrapper binaries
+        run: cargo build --release --locked -p deepseek-tui-cli -p deepseek-tui
+      - name: Smoke wrapper install and delegated entrypoints
+        run: node scripts/release/npm-wrapper-smoke.js
+
+  # Check documentation builds without warnings
+  docs:
+    name: Documentation
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          for i in 1 2 3 4 5; do
+            sudo apt-get update && break
+            echo "apt-get update failed (attempt $i); retrying in 15s"
+            sleep 15
+          done
+          sudo apt-get install -y libdbus-1-dev pkg-config
+      - uses: Swatinem/rust-cache@v2
+      - name: Build docs
+        run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -Dwarnings

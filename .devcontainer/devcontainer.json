@@ -1,0 +1,34 @@
+{
+  "name": "DeepSeek TUI",
+  "dockerFile": "../Dockerfile",
+  "build": {
+    "args": {
+      "RUST_VERSION": "1.88"
+    }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml",
+        "vadimcn.vscode-lldb"
+      ],
+      "settings": {
+        "rust-analyzer.cargo.features": "all",
+        "editor.formatOnSave": true
+      }
+    }
+  },
+  "remoteEnv": {
+    "DEEPSEEK_API_KEY": "${localEnv:DEEPSEEK_API_KEY}"
+  },
+  "mounts": [
+    "source=${localEnv:HOME}/.deepseek,target=/home/deepseek/.deepseek,type=bind,consistency=cached"
+  ],
+  "features": {
+    "ghcr.io/devcontainers/features/rust:1": {},
+    "ghcr.io/devcontainers/features/git:1": {}
+  },
+  "postCreateCommand": "cargo build",
+  "remoteUser": "deepseek"
+}

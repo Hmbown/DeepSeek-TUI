@@ -1,0 +1,893 @@
+use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
+use anyhow::{Context, Result, bail};
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpServerConfig {
+    pub name: String,
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ToolFilter {
+    #[serde(default)]
+    pub allow: Vec<String>,
+    #[serde(default)]
+    pub deny: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpServerDefinition {
+    pub config: McpServerConfig,
+    #[serde(default)]
+    pub filter: ToolFilter,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum McpStartupStatus {
+    Starting,
+    Ready,
+    Failed { error: String },
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpStartupUpdateEvent {
+    pub server_name: String,
+    pub status: McpStartupStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpStartupFailure {
+    pub server_name: String,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpStartupCompleteEvent {
+    pub ready: Vec<String>,
+    pub failed: Vec<McpStartupFailure>,
+    pub cancelled: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpToolDescriptor {
+    pub server_name: String,
+    pub tool_name: String,
+    pub qualified_name: String,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpResourceDescriptor {
+    pub server_name: String,
+    pub uri: String,
+    pub description: Option<String>,
+}
+
+pub trait McpManagedClient: Send + Sync {
+    fn list_tools(&self) -> Result<Vec<McpToolDescriptor>>;
+    fn call_tool(&self, tool_name: &str, arguments: Value) -> Result<Value>;
+    fn list_resources(&self) -> Result<Vec<McpResourceDescriptor>>;
+    fn read_resource(&self, uri: &str) -> Result<Value>;
+}
+
+#[derive(Debug, Default)]
+pub struct InMemoryMcpClient {
+    tools: HashMap<String, Value>,
+    resources: HashMap<String, Value>,
+}
+
+impl InMemoryMcpClient {
+    pub fn with_tool(mut self, name: &str, sample_result: Value) -> Self {
+        self.tools.insert(name.to_string(), sample_result);
+        self
+    }
+
+    pub fn with_resource(mut self, uri: &str, data: Value) -> Self {
+        self.resources.insert(uri.to_string(), data);
+        self
+    }
+}
+
+impl McpManagedClient for InMemoryMcpClient {
+    fn list_tools(&self) -> Result<Vec<McpToolDescriptor>> {
+        Ok(self
+            .tools
+            .keys()
+            .map(|name| McpToolDescriptor {
+                server_name: "in-memory".to_string(),
+                tool_name: name.clone(),
+                qualified_name: name.clone(),
+                description: None,
+            })
+            .collect())
+    }
+
+    fn call_tool(&self, tool_name: &str, _arguments: Value) -> Result<Value> {
+        self.tools
+            .get(tool_name)
+            .cloned()
+            .with_context(|| format!("tool '{tool_name}' not found"))
+    }
+
+    fn list_resources(&self) -> Result<Vec<McpResourceDescriptor>> {
+        Ok(self
+            .resources
+            .keys()
+            .map(|uri| McpResourceDescriptor {
+                server_name: "in-memory".to_string(),
+                uri: uri.clone(),
+                description: None,
+            })
+            .collect())
+    }
+
+    fn read_resource(&self, uri: &str) -> Result<Value> {
+        self.resources
+            .get(uri)
+            .cloned()
+            .with_context(|| format!("resource '{uri}' not found"))
+    }
+}
+
+#[derive(Default)]
+pub struct McpManager {
+    configs: HashMap<String, (McpServerConfig, ToolFilter)>,
+    clients: HashMap<String, Box<dyn McpManagedClient>>,
+}
+
+impl McpManager {
+    pub fn register_server(
+        &mut self,
+        config: McpServerConfig,
+        filter: ToolFilter,
+        client: Box<dyn McpManagedClient>,
+    ) {
+        self.clients.insert(config.name.clone(), client);
+        self.configs.insert(config.name.clone(), (config, filter));
+    }
+
+    pub fn start_all<F>(&self, mut emit: F) -> McpStartupCompleteEvent
+    where
+        F: FnMut(McpStartupUpdateEvent),
+    {
+        let mut ready = Vec::new();
+        let mut failed = Vec::new();
+        let mut cancelled = Vec::new();
+        for (server_name, (cfg, _)) in &self.configs {
+            if !cfg.enabled {
+                emit(McpStartupUpdateEvent {
+                    server_name: server_name.clone(),
+                    status: McpStartupStatus::Cancelled,
+                });
+                cancelled.push(server_name.clone());
+                continue;
+            }
+            emit(McpStartupUpdateEvent {
+                server_name: server_name.clone(),
+                status: McpStartupStatus::Starting,
+            });
+            if self.clients.contains_key(server_name) {
+                emit(McpStartupUpdateEvent {
+                    server_name: server_name.clone(),
+                    status: McpStartupStatus::Ready,
+                });
+                ready.push(server_name.clone());
+            } else {
+                let error = "client not registered".to_string();
+                emit(McpStartupUpdateEvent {
+                    server_name: server_name.clone(),
+                    status: McpStartupStatus::Failed {
+                        error: error.clone(),
+                    },
+                });
+                failed.push(McpStartupFailure {
+                    server_name: server_name.clone(),
+                    error,
+                });
+            }
+        }
+        McpStartupCompleteEvent {
+            ready,
+            failed,
+            cancelled,
+        }
+    }
+
+    pub fn stop_server(&mut self, server_name: &str) -> Result<()> {
+        self.clients
+            .remove(server_name)
+            .with_context(|| format!("server '{server_name}' is not running"))?;
+        Ok(())
+    }
+
+    pub fn unregister_server(&mut self, server_name: &str) -> Result<()> {
+        let had_config = self.configs.remove(server_name).is_some();
+        self.clients.remove(server_name);
+        if !had_config {
+            bail!("server '{server_name}' is not registered");
+        }
+        Ok(())
+    }
+
+    pub fn list_tools(&self) -> Result<Vec<McpToolDescriptor>> {
+        let mut out = Vec::new();
+        for (server_name, (_, filter)) in &self.configs {
+            let Some(client) = self.clients.get(server_name) else {
+                continue;
+            };
+            let tools = client.list_tools()?;
+            for tool in tools {
+                if !allowed_by_filter(&tool.tool_name, filter) {
+                    continue;
+                }
+                let qualified_name = qualify_tool_name(server_name, &tool.tool_name);
+                out.push(McpToolDescriptor {
+                    server_name: server_name.clone(),
+                    tool_name: tool.tool_name,
+                    qualified_name,
+                    description: tool.description,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn call_tool(&self, server_name: &str, tool_name: &str, arguments: Value) -> Result<Value> {
+        let client = self
+            .clients
+            .get(server_name)
+            .with_context(|| format!("MCP server '{server_name}' not available"))?;
+        client.call_tool(tool_name, arguments)
+    }
+
+    pub fn call_qualified_tool(
+        &self,
+        qualified_tool_name: &str,
+        arguments: Value,
+    ) -> Result<Value> {
+        let (server_name, tool_name) = parse_qualified_tool_name(qualified_tool_name)
+            .with_context(|| format!("invalid qualified MCP tool name: {qualified_tool_name}"))?;
+        self.call_tool(&server_name, &tool_name, arguments)
+    }
+
+    pub fn list_resources(&self) -> Result<Vec<McpResourceDescriptor>> {
+        let mut out = Vec::new();
+        for server_name in self.configs.keys() {
+            let Some(client) = self.clients.get(server_name) else {
+                continue;
+            };
+            for mut resource in client.list_resources()? {
+                resource.server_name = server_name.clone();
+                out.push(resource);
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn read_resource(&self, server_name: &str, uri: &str) -> Result<Value> {
+        let client = self
+            .clients
+            .get(server_name)
+            .with_context(|| format!("MCP server '{server_name}' not available"))?;
+        client.read_resource(uri)
+    }
+
+    pub fn update_sandbox_state(&self, sandbox_mode: &str, cwd: &str) -> Result<Vec<Value>> {
+        let mut notices = Vec::new();
+        for server_name in self.configs.keys() {
+            notices.push(json!({
+                "server_name": server_name,
+                "method": "codex/sandbox-state/update",
+                "params": {
+                    "sandbox_mode": sandbox_mode,
+                    "cwd": cwd
+                }
+            }));
+        }
+        Ok(notices)
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn allowed_by_filter(name: &str, filter: &ToolFilter) -> bool {
+    if filter.deny.iter().any(|pattern| pattern == name) {
+        return false;
+    }
+    if filter.allow.is_empty() {
+        return true;
+    }
+    filter.allow.iter().any(|pattern| pattern == name)
+}
+
+fn sanitize_component(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' {
+                ch.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn qualify_tool_name(server: &str, tool: &str) -> String {
+    let mut name = format!(
+        "mcp__{}__{}",
+        sanitize_component(server),
+        sanitize_component(tool)
+    );
+    if name.len() > 64 {
+        let mut hasher = DefaultHasher::new();
+        name.hash(&mut hasher);
+        let hash = format!("{:x}", hasher.finish());
+        name.truncate(48);
+        name.push('_');
+        name.push_str(&hash[..12]);
+    }
+    name
+}
+
+fn parse_qualified_tool_name(value: &str) -> Result<(String, String)> {
+    let Some(stripped) = value.strip_prefix("mcp__") else {
+        bail!("missing mcp__ prefix");
+    };
+    let mut split = stripped.splitn(2, "__");
+    let server = split
+        .next()
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned)
+        .context("missing server segment")?;
+    let tool = split
+        .next()
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned)
+        .context("missing tool segment")?;
+    Ok((server, tool))
+}
+
+#[derive(Debug, Deserialize)]
+struct JsonRpcRequest {
+    #[serde(default)]
+    jsonrpc: Option<String>,
+    #[serde(default)]
+    id: Option<Value>,
+    method: String,
+    #[serde(default)]
+    params: Value,
+}
+
+#[derive(Debug)]
+struct JsonRpcError {
+    code: i64,
+    message: String,
+    data: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ToolsListParams {
+    #[serde(default)]
+    server: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ToolsCallParams {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    tool: Option<String>,
+    #[serde(default)]
+    server: Option<String>,
+    #[serde(default)]
+    arguments: Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResourcesListParams {
+    #[serde(default)]
+    server: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResourcesReadParams {
+    #[serde(default)]
+    server: Option<String>,
+    uri: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ServerRegisterParams {
+    server: McpServerConfig,
+    #[serde(default)]
+    filter: ToolFilter,
+    #[serde(default = "default_true")]
+    start: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct ServerNameParams {
+    name: String,
+}
+
+struct StdioMcpState {
+    manager: McpManager,
+    definitions: HashMap<String, McpServerDefinition>,
+    running: HashMap<String, bool>,
+    lifecycle_state: String,
+}
+
+pub fn run_stdio_server(
+    initial_definitions: Vec<McpServerDefinition>,
+) -> Result<Vec<McpServerDefinition>> {
+    use std::io::{self, BufRead, Write};
+
+    let stdin = io::stdin();
+    let mut stdout = io::stdout();
+    let mut stderr = io::stderr();
+    let mut state = build_stdio_state(initial_definitions);
+
+    for line in stdin.lock().lines() {
+        let line = line.context("failed to read stdio line")?;
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        let request: JsonRpcRequest = match serde_json::from_str(&line) {
+            Ok(value) => value,
+            Err(err) => {
+                let msg = jsonrpc_error(
+                    None,
+                    JsonRpcError::parse_error(format!("invalid json: {err}")),
+                );
+                writeln!(stdout, "{msg}")?;
+                stdout.flush()?;
+                continue;
+            }
+        };
+
+        if request
+            .jsonrpc
+            .as_deref()
+            .is_some_and(|version| version != "2.0")
+        {
+            let response = jsonrpc_error(
+                request.id,
+                JsonRpcError::invalid_request("jsonrpc version must be 2.0"),
+            );
+            writeln!(stdout, "{response}")?;
+            stdout.flush()?;
+            continue;
+        }
+
+        let response = match dispatch_stdio_request(&mut state, &request.method, request.params) {
+            Ok((result, should_exit)) => {
+                let payload = jsonrpc_result(request.id, result);
+                writeln!(stdout, "{payload}")?;
+                stdout.flush()?;
+                if should_exit {
+                    break;
+                }
+                continue;
+            }
+            Err(err) => jsonrpc_error(request.id, err),
+        };
+
+        writeln!(stdout, "{response}")?;
+        stdout.flush()?;
+    }
+
+    state.lifecycle_state = "stopped".to_string();
+    let _ = writeln!(stderr, "deepseek-mcp stdio server exited");
+    let mut definitions: Vec<McpServerDefinition> = state.definitions.into_values().collect();
+    definitions.sort_by(|a, b| a.config.name.cmp(&b.config.name));
+    Ok(definitions)
+}
+
+fn build_stdio_state(initial_definitions: Vec<McpServerDefinition>) -> StdioMcpState {
+    let mut manager = McpManager::default();
+    let mut definitions = HashMap::new();
+    let mut running = HashMap::new();
+
+    for definition in initial_definitions {
+        let name = definition.config.name.clone();
+        let should_start = definition.config.enabled;
+        definitions.insert(name.clone(), definition.clone());
+        if should_start {
+            manager.register_server(
+                definition.config.clone(),
+                definition.filter.clone(),
+                default_stdio_client(&name),
+            );
+            running.insert(name, true);
+        } else {
+            running.insert(name, false);
+        }
+    }
+
+    StdioMcpState {
+        manager,
+        definitions,
+        running,
+        lifecycle_state: "running".to_string(),
+    }
+}
+
+fn default_stdio_client(server_name: &str) -> Box<dyn McpManagedClient> {
+    let health_uri = format!("mcp://{server_name}/health");
+    let capabilities_uri = format!("mcp://{server_name}/capabilities");
+    Box::new(
+        InMemoryMcpClient::default()
+            .with_tool(
+                "health",
+                json!({
+                    "status": "ok",
+                    "server_name": server_name
+                }),
+            )
+            .with_tool(
+                "capabilities",
+                json!({
+                    "tools": ["health", "capabilities"],
+                    "resources": [health_uri.clone(), capabilities_uri.clone()]
+                }),
+            )
+            .with_resource(
+                &health_uri,
+                json!({
+                    "status": "ok",
+                    "server_name": server_name
+                }),
+            )
+            .with_resource(
+                &capabilities_uri,
+                json!({
+                    "server_name": server_name,
+                    "methods": [
+                        "tools/list",
+                        "tools/call",
+                        "resources/list",
+                        "resources/read",
+                        "server/list",
+                        "server/register",
+                        "server/start",
+                        "server/stop",
+                        "server/unregister"
+                    ]
+                }),
+            ),
+    )
+}
+
+fn default_rpc_methods() -> Vec<&'static str> {
+    vec![
+        "initialize",
+        "healthz",
+        "capabilities",
+        "tools/list",
+        "tools/call",
+        "resources/list",
+        "resources/read",
+        "server/list",
+        "server/register",
+        "server/start",
+        "server/stop",
+        "server/unregister",
+        "shutdown",
+    ]
+}
+
+fn lifecycle_snapshot(state: &StdioMcpState) -> Value {
+    let mut servers: Vec<Value> = state
+        .definitions
+        .iter()
+        .map(|(name, definition)| {
+            let is_running = state.running.get(name).copied().unwrap_or(false);
+            json!({
+                "name": name,
+                "enabled": definition.config.enabled,
+                "running": is_running,
+                "command": definition.config.command.clone(),
+                "args": definition.config.args.clone(),
+            })
+        })
+        .collect();
+    servers.sort_by(|a, b| {
+        let a_name = a.get("name").and_then(Value::as_str).unwrap_or_default();
+        let b_name = b.get("name").and_then(Value::as_str).unwrap_or_default();
+        a_name.cmp(b_name)
+    });
+
+    let running_count = state.running.values().filter(|running| **running).count();
+    json!({
+        "status": state.lifecycle_state,
+        "servers": servers,
+        "counts": {
+            "defined": state.definitions.len(),
+            "running": running_count
+        }
+    })
+}
+
+fn params_or_object(params: Value) -> Value {
+    if params.is_null() { json!({}) } else { params }
+}
+
+fn parse_params<T: DeserializeOwned>(params: Value) -> std::result::Result<T, JsonRpcError> {
+    serde_json::from_value(params).map_err(|err| JsonRpcError::invalid_params(err.to_string()))
+}
+
+fn parse_server_from_uri(uri: &str) -> Option<String> {
+    let stripped = uri.strip_prefix("mcp://")?;
+    let server = stripped.split('/').next()?;
+    if server.is_empty() {
+        None
+    } else {
+        Some(server.to_string())
+    }
+}
+
+fn dispatch_stdio_request(
+    state: &mut StdioMcpState,
+    method: &str,
+    params: Value,
+) -> std::result::Result<(Value, bool), JsonRpcError> {
+    match method {
+        "initialize" | "capabilities" => Ok((
+            json!({
+                "server": "deepseek-mcp",
+                "transport": "stdio",
+                "methods": default_rpc_methods(),
+                "lifecycle": lifecycle_snapshot(state)
+            }),
+            false,
+        )),
+        "healthz" => Ok((
+            json!({
+                "status": "ok",
+                "service": "deepseek-mcp",
+                "transport": "stdio",
+                "lifecycle": lifecycle_snapshot(state)
+            }),
+            false,
+        )),
+        "tools/list" => {
+            let parsed: ToolsListParams = parse_params(params_or_object(params))?;
+            let mut tools = state
+                .manager
+                .list_tools()
+                .map_err(|err| JsonRpcError::internal(err.to_string()))?;
+            if let Some(server) = parsed.server {
+                tools.retain(|tool| tool.server_name == server);
+            }
+            Ok((json!({ "tools": tools }), false))
+        }
+        "tools/call" => {
+            let parsed: ToolsCallParams = parse_params(params_or_object(params))?;
+            let ToolsCallParams {
+                name,
+                tool,
+                server,
+                arguments,
+            } = parsed;
+            let tool_name = name
+                .or(tool)
+                .context("missing tool name")
+                .map_err(|err| JsonRpcError::invalid_params(err.to_string()))?;
+            let arguments = if arguments.is_null() {
+                json!({})
+            } else {
+                arguments
+            };
+            let result = if tool_name.starts_with("mcp__") {
+                state
+                    .manager
+                    .call_qualified_tool(&tool_name, arguments)
+                    .map_err(|err| JsonRpcError::internal(err.to_string()))?
+            } else {
+                let server = server
+                    .context("missing server for unqualified tool")
+                    .map_err(|err| JsonRpcError::invalid_params(err.to_string()))?;
+                state
+                    .manager
+                    .call_tool(&server, &tool_name, arguments)
+                    .map_err(|err| JsonRpcError::internal(err.to_string()))?
+            };
+            Ok((json!({ "result": result }), false))
+        }
+        "resources/list" => {
+            let parsed: ResourcesListParams = parse_params(params_or_object(params))?;
+            let mut resources = state
+                .manager
+                .list_resources()
+                .map_err(|err| JsonRpcError::internal(err.to_string()))?;
+            if let Some(server) = parsed.server {
+                resources.retain(|resource| resource.server_name == server);
+            }
+            Ok((json!({ "resources": resources }), false))
+        }
+        "resources/read" => {
+            let parsed: ResourcesReadParams = parse_params(params_or_object(params))?;
+            let ResourcesReadParams { server, uri } = parsed;
+            let server_name = server
+                .or_else(|| parse_server_from_uri(&uri))
+                .context("missing server for resource read")
+                .map_err(|err| JsonRpcError::invalid_params(err.to_string()))?;
+            let value = state
+                .manager
+                .read_resource(&server_name, &uri)
+                .map_err(|err| JsonRpcError::internal(err.to_string()))?;
+            Ok((json!({ "resource": value }), false))
+        }
+        "server/list" | "servers/list" => {
+            Ok((json!({ "lifecycle": lifecycle_snapshot(state) }), false))
+        }
+        "server/register" | "servers/register" => {
+            let parsed: ServerRegisterParams = parse_params(params_or_object(params))?;
+            let name = parsed.server.name.clone();
+            if name.trim().is_empty() {
+                return Err(JsonRpcError::invalid_params(
+                    "server.name must not be empty",
+                ));
+            }
+
+            if state.definitions.contains_key(&name) {
+                let _ = state.manager.unregister_server(&name);
+            }
+            state.definitions.insert(
+                name.clone(),
+                McpServerDefinition {
+                    config: parsed.server.clone(),
+                    filter: parsed.filter.clone(),
+                },
+            );
+            let should_run = parsed.start && parsed.server.enabled;
+            if should_run {
+                state.manager.register_server(
+                    parsed.server.clone(),
+                    parsed.filter.clone(),
+                    default_stdio_client(&name),
+                );
+            }
+            state.running.insert(name, should_run);
+            Ok((json!({ "lifecycle": lifecycle_snapshot(state) }), false))
+        }
+        "server/start" | "servers/start" => {
+            let parsed: ServerNameParams = parse_params(params_or_object(params))?;
+            let definition = state
+                .definitions
+                .get(&parsed.name)
+                .cloned()
+                .with_context(|| format!("server '{}' is not defined", parsed.name))
+                .map_err(|err| JsonRpcError::invalid_params(err.to_string()))?;
+            if !definition.config.enabled {
+                return Err(JsonRpcError::invalid_params(format!(
+                    "server '{}' is disabled",
+                    parsed.name
+                )));
+            }
+            if !state.running.get(&parsed.name).copied().unwrap_or(false) {
+                state.manager.register_server(
+                    definition.config.clone(),
+                    definition.filter.clone(),
+                    default_stdio_client(&parsed.name),
+                );
+                state.running.insert(parsed.name, true);
+            }
+            Ok((json!({ "lifecycle": lifecycle_snapshot(state) }), false))
+        }
+        "server/stop" | "servers/stop" => {
+            let parsed: ServerNameParams = parse_params(params_or_object(params))?;
+            if state.running.get(&parsed.name).copied().unwrap_or(false) {
+                state
+                    .manager
+                    .stop_server(&parsed.name)
+                    .map_err(|err| JsonRpcError::internal(err.to_string()))?;
+            }
+            state.running.insert(parsed.name, false);
+            Ok((json!({ "lifecycle": lifecycle_snapshot(state) }), false))
+        }
+        "server/unregister" | "servers/unregister" => {
+            let parsed: ServerNameParams = parse_params(params_or_object(params))?;
+            if state.definitions.remove(&parsed.name).is_none() {
+                return Err(JsonRpcError::invalid_params(format!(
+                    "server '{}' is not defined",
+                    parsed.name
+                )));
+            }
+            let _ = state.manager.unregister_server(&parsed.name);
+            state.running.remove(&parsed.name);
+            Ok((json!({ "lifecycle": lifecycle_snapshot(state) }), false))
+        }
+        "shutdown" => {
+            state.lifecycle_state = "shutting_down".to_string();
+            Ok((
+                json!({
+                    "ok": true,
+                    "lifecycle": lifecycle_snapshot(state)
+                }),
+                true,
+            ))
+        }
+        _ => Err(JsonRpcError::method_not_found(method)),
+    }
+}
+
+fn jsonrpc_result(id: Option<Value>, result: Value) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id.unwrap_or(Value::Null),
+        "result": result
+    })
+}
+
+fn jsonrpc_error(id: Option<Value>, err: JsonRpcError) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id.unwrap_or(Value::Null),
+        "error": {
+            "code": err.code,
+            "message": err.message,
+            "data": err.data
+        }
+    })
+}
+
+impl JsonRpcError {
+    fn parse_error(message: impl Into<String>) -> Self {
+        Self {
+            code: -32700,
+            message: message.into(),
+            data: None,
+        }
+    }
+
+    fn invalid_request(message: impl Into<String>) -> Self {
+        Self {
+            code: -32600,
+            message: message.into(),
+            data: None,
+        }
+    }
+
+    fn method_not_found(method: &str) -> Self {
+        Self {
+            code: -32601,
+            message: format!("unsupported method: {method}"),
+            data: None,
+        }
+    }
+
+    fn invalid_params(message: impl Into<String>) -> Self {
+        Self {
+            code: -32602,
+            message: message.into(),
+            data: None,
+        }
+    }
+
+    fn internal(message: impl Into<String>) -> Self {
+        Self {
+            code: -32603,
+            message: message.into(),
+            data: None,
+        }
+    }
+}
