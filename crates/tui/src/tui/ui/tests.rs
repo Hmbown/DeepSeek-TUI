@@ -597,6 +597,7 @@ fn terminal_probe_timeout_uses_tui_config_and_clamps() {
             terminal_probe_timeout_ms: Some(750),
             status_items: None,
             osc8_links: None,
+            notification_condition: None,
         }),
         ..Config::default()
     };
@@ -2741,6 +2742,83 @@ fn truncate_line_to_width_respects_display_width_for_tiny_budgets() {
     let trimmed_long = truncate_line_to_width("a long sidebar label", 10);
     assert!(trimmed_long.ends_with("..."));
     assert!(UnicodeWidthStr::width(trimmed_long.as_str()) <= 10);
+}
+
+#[test]
+fn notification_settings_tui_always_forces_osc9_without_threshold() {
+    let config = Config {
+        tui: Some(crate::config::TuiConfig {
+            notification_condition: Some(crate::config::NotificationCondition::Always),
+            ..Default::default()
+        }),
+        ..Config::default()
+    };
+
+    let (method, threshold, include_summary) =
+        notification_settings(&config).expect("notification should be enabled");
+
+    assert_eq!(method, crate::tui::notifications::Method::Osc9);
+    assert_eq!(threshold, Duration::ZERO);
+    assert!(!include_summary);
+}
+
+#[test]
+fn notification_settings_tui_never_disables_notifications() {
+    let config = Config {
+        tui: Some(crate::config::TuiConfig {
+            notification_condition: Some(crate::config::NotificationCondition::Never),
+            ..Default::default()
+        }),
+        ..Config::default()
+    };
+
+    assert!(notification_settings(&config).is_none());
+}
+
+#[test]
+fn completed_turn_notification_uses_current_assistant_text() {
+    let app = create_test_app();
+
+    let msg = completed_turn_notification_message(
+        &app,
+        "你好。\n\n有什么需要我处理的？",
+        false,
+        Duration::from_secs(12),
+        None,
+    );
+
+    assert_eq!(msg, "你好。\n有什么需要我处理的？");
+}
+
+#[test]
+fn completed_turn_notification_falls_back_to_latest_assistant_message() {
+    let mut app = create_test_app();
+    app.api_messages.push(Message {
+        role: "assistant".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "上一轮回复".to_string(),
+            cache_control: None,
+        }],
+    });
+    app.api_messages.push(Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "继续".to_string(),
+            cache_control: None,
+        }],
+    });
+    app.api_messages.push(Message {
+        role: "assistant".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "最新回复内容".to_string(),
+            cache_control: None,
+        }],
+    });
+
+    let msg =
+        completed_turn_notification_message(&app, "", true, Duration::from_secs(75), Some(0.01));
+
+    assert_eq!(msg, "最新回复内容\ndeepseek: turn complete (1m 15s, $0.01)");
 }
 
 /// Regression for #86. A recoverable engine error (stream stall, transient

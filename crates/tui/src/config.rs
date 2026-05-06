@@ -285,6 +285,15 @@ pub struct TuiConfig {
     /// label and ignore the escape. Defaults to `true`; set `false` for
     /// terminals that misrender the sequence.
     pub osc8_links: Option<bool>,
+    #[serde(default)]
+    pub notification_condition: Option<NotificationCondition>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NotificationCondition {
+    Always,
+    Never,
 }
 
 /// Notification delivery method (mirrors `tui::notifications::Method`).

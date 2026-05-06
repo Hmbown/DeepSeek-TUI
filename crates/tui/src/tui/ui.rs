@@ -937,35 +937,25 @@ async fn run_event_loop(
 
                         // Emit OSC 9 / BEL desktop notification for long turns.
                         if status == crate::core::events::TurnOutcomeStatus::Completed {
-                            let notif = config.notifications_config();
-                            let method =
-                                crate::tui::notifications::Method::from_str(match &notif.method {
-                                    crate::config::NotificationMethod::Auto => "auto",
-                                    crate::config::NotificationMethod::Osc9 => "osc9",
-                                    crate::config::NotificationMethod::Bel => "bel",
-                                    crate::config::NotificationMethod::Off => "off",
-                                });
-                            let threshold = std::time::Duration::from_secs(notif.threshold_secs);
-                            let in_tmux = std::env::var("TMUX").is_ok_and(|v| !v.is_empty());
-                            let msg = if notif.include_summary {
-                                let human =
-                                    crate::tui::notifications::humanize_duration(turn_elapsed);
-                                match turn_cost {
-                                    Some(c) => {
-                                        format!("deepseek: turn complete ({human}, ${c:.2})")
-                                    }
-                                    None => format!("deepseek: turn complete ({human})"),
-                                }
-                            } else {
-                                "deepseek: turn complete".to_string()
-                            };
-                            crate::tui::notifications::notify_done(
-                                method,
-                                in_tmux,
-                                &msg,
-                                threshold,
-                                turn_elapsed,
-                            );
+                            if let Some((method, threshold, include_summary)) =
+                                notification_settings(config)
+                            {
+                                let in_tmux = std::env::var("TMUX").is_ok_and(|v| !v.is_empty());
+                                let msg = completed_turn_notification_message(
+                                    app,
+                                    &current_streaming_text,
+                                    include_summary,
+                                    turn_elapsed,
+                                    turn_cost,
+                                );
+                                crate::tui::notifications::notify_done(
+                                    method,
+                                    in_tmux,
+                                    &msg,
+                                    threshold,
+                                    turn_elapsed,
+                                );
+                            }
                         }
 
                         // Auto-save completed turn and clear crash checkpoint.
@@ -2975,6 +2965,122 @@ fn sanitize_stream_chunk(chunk: &str) -> String {
         .chars()
         .filter(|c| *c == '\n' || *c == '\t' || !c.is_control())
         .collect()
+}
+
+fn notification_settings(
+    config: &Config,
+) -> Option<(crate::tui::notifications::Method, Duration, bool)> {
+    if let Some(condition) = config
+        .tui
+        .as_ref()
+        .and_then(|tui| tui.notification_condition)
+    {
+        match condition {
+            crate::config::NotificationCondition::Always => {
+                return Some((
+                    crate::tui::notifications::Method::Osc9,
+                    Duration::ZERO,
+                    false,
+                ));
+            }
+            crate::config::NotificationCondition::Never => return None,
+        }
+    }
+
+    let notif = config.notifications_config();
+    let method = crate::tui::notifications::Method::from_str(match &notif.method {
+        crate::config::NotificationMethod::Auto => "auto",
+        crate::config::NotificationMethod::Osc9 => "osc9",
+        crate::config::NotificationMethod::Bel => "bel",
+        crate::config::NotificationMethod::Off => "off",
+    });
+
+    Some((
+        method,
+        Duration::from_secs(notif.threshold_secs),
+        notif.include_summary,
+    ))
+}
+
+fn completed_turn_notification_message(
+    app: &App,
+    current_streaming_text: &str,
+    include_summary: bool,
+    turn_elapsed: Duration,
+    turn_cost: Option<f64>,
+) -> String {
+    let mut msg = notification_text_summary(current_streaming_text)
+        .or_else(|| latest_assistant_notification_text(&app.api_messages))
+        .unwrap_or_else(|| "deepseek: turn complete".to_string());
+
+    if include_summary {
+        let human = crate::tui::notifications::humanize_duration(turn_elapsed);
+        let summary = match turn_cost {
+            Some(c) => format!("deepseek: turn complete ({human}, ${c:.2})"),
+            None => format!("deepseek: turn complete ({human})"),
+        };
+        if msg == "deepseek: turn complete" {
+            msg = summary;
+        } else {
+            msg.push('\n');
+            msg.push_str(&summary);
+        }
+    }
+
+    msg
+}
+
+fn latest_assistant_notification_text(messages: &[Message]) -> Option<String> {
+    messages
+        .iter()
+        .rev()
+        .find(|message| message.role == "assistant")
+        .and_then(|message| {
+            let text = message
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::Text { text, .. } => Some(text.as_str()),
+                    ContentBlock::Thinking { .. }
+                    | ContentBlock::ToolUse { .. }
+                    | ContentBlock::ToolResult { .. }
+                    | ContentBlock::ServerToolUse { .. }
+                    | ContentBlock::ToolSearchToolResult { .. }
+                    | ContentBlock::CodeExecutionToolResult { .. } => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            notification_text_summary(&text)
+        })
+}
+
+fn notification_text_summary(text: &str) -> Option<String> {
+    const MAX_CHARS: usize = 360;
+
+    let sanitized = sanitize_stream_chunk(text);
+    let collapsed = sanitized
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let trimmed = collapsed.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let mut out = String::new();
+    let mut chars = trimmed.chars();
+    for _ in 0..MAX_CHARS {
+        let Some(ch) = chars.next() else {
+            return Some(trimmed.to_string());
+        };
+        out.push(ch);
+    }
+    if chars.next().is_some() {
+        out.push_str("...");
+    }
+    Some(out)
 }
 
 /// Ensure an in-flight streaming Assistant cell exists in history and return
