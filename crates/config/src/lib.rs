@@ -29,6 +29,8 @@ const DEFAULT_SGLANG_BASE_URL: &str = "http://localhost:30000/v1";
 const DEFAULT_VLLM_MODEL: &str = "deepseek-ai/DeepSeek-V4-Pro";
 const DEFAULT_VLLM_FLASH_MODEL: &str = "deepseek-ai/DeepSeek-V4-Flash";
 const DEFAULT_VLLM_BASE_URL: &str = "http://localhost:8000/v1";
+const DEFAULT_OPENCODE_GO_MODEL: &str = "deepseek-v4-pro";
+const DEFAULT_OPENCODE_GO_BASE_URL: &str = "https://opencode.ai/zen/go/v1";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
@@ -42,6 +44,7 @@ pub enum ProviderKind {
     Fireworks,
     Sglang,
     Vllm,
+    OpencodeGo,
 }
 
 impl ProviderKind {
@@ -56,6 +59,7 @@ impl ProviderKind {
             Self::Fireworks => "fireworks",
             Self::Sglang => "sglang",
             Self::Vllm => "vllm",
+            Self::OpencodeGo => "opencode-go",
         }
     }
 
@@ -70,6 +74,7 @@ impl ProviderKind {
             "fireworks" | "fireworks-ai" => Some(Self::Fireworks),
             "sglang" | "sg-lang" => Some(Self::Sglang),
             "vllm" | "v-llm" => Some(Self::Vllm),
+            "opencode-go" | "opencode_go" | "opencodego" | "go" => Some(Self::OpencodeGo),
             _ => None,
         }
     }
@@ -100,6 +105,8 @@ pub struct ProvidersToml {
     pub sglang: ProviderConfigToml,
     #[serde(default)]
     pub vllm: ProviderConfigToml,
+    #[serde(default)]
+    pub opencode_go: ProviderConfigToml,
 }
 
 impl ProvidersToml {
@@ -114,6 +121,7 @@ impl ProvidersToml {
             ProviderKind::Fireworks => &self.fireworks,
             ProviderKind::Sglang => &self.sglang,
             ProviderKind::Vllm => &self.vllm,
+            ProviderKind::OpencodeGo => &self.opencode_go,
         }
     }
 
@@ -127,6 +135,7 @@ impl ProvidersToml {
             ProviderKind::Fireworks => &mut self.fireworks,
             ProviderKind::Sglang => &mut self.sglang,
             ProviderKind::Vllm => &mut self.vllm,
+            ProviderKind::OpencodeGo => &mut self.opencode_go,
         }
     }
 }
@@ -329,6 +338,10 @@ impl ConfigToml {
         merge_provider_config(&mut self.providers.fireworks, &project.providers.fireworks);
         merge_provider_config(&mut self.providers.sglang, &project.providers.sglang);
         merge_provider_config(&mut self.providers.vllm, &project.providers.vllm);
+        merge_provider_config(
+            &mut self.providers.opencode_go,
+            &project.providers.opencode_go,
+        );
 
         if project.network.is_some() {
             self.network = project.network;
@@ -387,6 +400,9 @@ impl ConfigToml {
             "providers.vllm.api_key" => self.providers.vllm.api_key.clone(),
             "providers.vllm.base_url" => self.providers.vllm.base_url.clone(),
             "providers.vllm.model" => self.providers.vllm.model.clone(),
+            "providers.opencode_go.api_key" => self.providers.opencode_go.api_key.clone(),
+            "providers.opencode_go.base_url" => self.providers.opencode_go.base_url.clone(),
+            "providers.opencode_go.model" => self.providers.opencode_go.model.clone(),
             _ => self.extras.get(key).map(toml::Value::to_string),
         }
     }
@@ -483,6 +499,15 @@ impl ConfigToml {
             "providers.vllm.model" => {
                 self.providers.vllm.model = Some(value.to_string());
             }
+            "providers.opencode_go.api_key" => {
+                self.providers.opencode_go.api_key = Some(value.to_string());
+            }
+            "providers.opencode_go.base_url" => {
+                self.providers.opencode_go.base_url = Some(value.to_string());
+            }
+            "providers.opencode_go.model" => {
+                self.providers.opencode_go.model = Some(value.to_string());
+            }
             _ => {
                 self.extras
                     .insert(key.to_string(), toml::Value::String(value.to_string()));
@@ -539,6 +564,9 @@ impl ConfigToml {
             "providers.vllm.api_key" => self.providers.vllm.api_key = None,
             "providers.vllm.base_url" => self.providers.vllm.base_url = None,
             "providers.vllm.model" => self.providers.vllm.model = None,
+            "providers.opencode_go.api_key" => self.providers.opencode_go.api_key = None,
+            "providers.opencode_go.base_url" => self.providers.opencode_go.base_url = None,
+            "providers.opencode_go.model" => self.providers.opencode_go.model = None,
             _ => {
                 self.extras.remove(key);
             }
@@ -659,6 +687,18 @@ impl ConfigToml {
         if let Some(v) = self.providers.vllm.model.as_ref() {
             out.insert("providers.vllm.model".to_string(), v.clone());
         }
+        if let Some(v) = self.providers.opencode_go.api_key.as_ref() {
+            out.insert(
+                "providers.opencode_go.api_key".to_string(),
+                redact_secret(v),
+            );
+        }
+        if let Some(v) = self.providers.opencode_go.base_url.as_ref() {
+            out.insert("providers.opencode_go.base_url".to_string(), v.clone());
+        }
+        if let Some(v) = self.providers.opencode_go.model.as_ref() {
+            out.insert("providers.opencode_go.model".to_string(), v.clone());
+        }
 
         for (k, v) in &self.extras {
             out.insert(k.clone(), v.to_string());
@@ -731,6 +771,7 @@ impl ConfigToml {
                 ProviderKind::Fireworks => DEFAULT_FIREWORKS_BASE_URL.to_string(),
                 ProviderKind::Sglang => DEFAULT_SGLANG_BASE_URL.to_string(),
                 ProviderKind::Vllm => DEFAULT_VLLM_BASE_URL.to_string(),
+                ProviderKind::OpencodeGo => DEFAULT_OPENCODE_GO_BASE_URL.to_string(),
             });
 
         let model = cli
@@ -749,6 +790,7 @@ impl ConfigToml {
                 ProviderKind::Fireworks => DEFAULT_FIREWORKS_MODEL.to_string(),
                 ProviderKind::Sglang => DEFAULT_SGLANG_MODEL.to_string(),
                 ProviderKind::Vllm => DEFAULT_VLLM_MODEL.to_string(),
+                ProviderKind::OpencodeGo => DEFAULT_OPENCODE_GO_MODEL.to_string(),
             });
         let model = normalize_model_for_provider(provider, &model);
 
@@ -867,6 +909,14 @@ fn normalize_model_for_provider(provider: ProviderKind, model: &str) -> String {
             "deepseek-v4-flash" | "deepseek-v4flash" | "deepseek-chat" | "deepseek-reasoner"
             | "deepseek-r1" | "deepseek-v3" | "deepseek-v3.2",
         ) => DEFAULT_VLLM_FLASH_MODEL.to_string(),
+        (ProviderKind::OpencodeGo, "deepseek-v4-pro" | "deepseek-v4pro") => {
+            "deepseek-v4-pro".to_string()
+        }
+        (
+            ProviderKind::OpencodeGo,
+            "deepseek-v4-flash" | "deepseek-v4flash" | "deepseek-chat" | "deepseek-reasoner"
+            | "deepseek-r1" | "deepseek-v3" | "deepseek-v3.2",
+        ) => "deepseek-v4-flash".to_string(),
         _ => model.to_string(),
     }
 }
@@ -1019,6 +1069,7 @@ struct EnvRuntimeOverrides {
     fireworks_base_url: Option<String>,
     sglang_base_url: Option<String>,
     vllm_base_url: Option<String>,
+    opencode_go_base_url: Option<String>,
 }
 
 impl EnvRuntimeOverrides {
@@ -1062,6 +1113,9 @@ impl EnvRuntimeOverrides {
             vllm_base_url: std::env::var("VLLM_BASE_URL")
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
+            opencode_go_base_url: std::env::var("OPENCODE_GO_BASE_URL")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
         }
     }
 
@@ -1077,6 +1131,7 @@ impl EnvRuntimeOverrides {
             ProviderKind::Fireworks => self.fireworks_base_url.clone(),
             ProviderKind::Sglang => self.sglang_base_url.clone(),
             ProviderKind::Vllm => self.vllm_base_url.clone(),
+            ProviderKind::OpencodeGo => self.opencode_go_base_url.clone(),
         }
     }
 }
@@ -1578,6 +1633,49 @@ mod tests {
 
         assert_eq!(resolved.provider, ProviderKind::Vllm);
         assert_eq!(resolved.model, DEFAULT_VLLM_FLASH_MODEL);
+    }
+
+    #[test]
+    fn opencode_go_provider_normalizes_pro_aliases() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        for alias in ["deepseek-v4-pro", "deepseek-v4pro"] {
+            let cli = CliRuntimeOverrides {
+                provider: Some(ProviderKind::OpencodeGo),
+                model: Some(alias.to_string()),
+                ..CliRuntimeOverrides::default()
+            };
+            let resolved = ConfigToml::default().resolve_runtime_options(&cli);
+            assert_eq!(resolved.provider, ProviderKind::OpencodeGo);
+            assert_eq!(
+                resolved.model, "deepseek-v4-pro",
+                "alias '{alias}' should normalise to deepseek-v4-pro"
+            );
+        }
+    }
+
+    #[test]
+    fn opencode_go_provider_normalizes_flash_aliases() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        for alias in [
+            "deepseek-v4-flash",
+            "deepseek-v4flash",
+            "deepseek-chat",
+            "deepseek-reasoner",
+        ] {
+            let cli = CliRuntimeOverrides {
+                provider: Some(ProviderKind::OpencodeGo),
+                model: Some(alias.to_string()),
+                ..CliRuntimeOverrides::default()
+            };
+            let resolved = ConfigToml::default().resolve_runtime_options(&cli);
+            assert_eq!(resolved.provider, ProviderKind::OpencodeGo);
+            assert_eq!(
+                resolved.model, "deepseek-v4-flash",
+                "alias '{alias}' should normalise to deepseek-v4-flash"
+            );
+        }
     }
 
     #[test]

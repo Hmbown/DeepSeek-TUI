@@ -93,6 +93,7 @@ impl ProviderPickerView {
             ApiProvider::Fireworks => "FIREWORKS_API_KEY",
             ApiProvider::Sglang => "SGLANG_API_KEY",
             ApiProvider::Vllm => "VLLM_API_KEY",
+            ApiProvider::OpencodeGo => "OPENCODE_GO_API_KEY",
         }
     }
 
@@ -358,7 +359,7 @@ mod tests {
     }
 
     #[test]
-    fn picker_lists_all_seven_providers() {
+    fn picker_lists_all_nine_providers() {
         let config = Config::default();
         let picker = ProviderPickerView::new(ApiProvider::Deepseek, &config);
         let names: Vec<_> = picker
@@ -376,7 +377,8 @@ mod tests {
                 "Novita AI",
                 "Fireworks AI",
                 "SGLang",
-                "vLLM"
+                "vLLM",
+                "OpenCode Go"
             ]
         );
     }

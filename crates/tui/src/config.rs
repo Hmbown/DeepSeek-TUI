@@ -34,6 +34,8 @@ pub const DEFAULT_VLLM_MODEL: &str = "deepseek-ai/DeepSeek-V4-Pro";
 pub const DEFAULT_VLLM_FLASH_MODEL: &str = "deepseek-ai/DeepSeek-V4-Flash";
 pub const DEFAULT_VLLM_BASE_URL: &str = "http://localhost:8000/v1";
 pub const DEFAULT_DEEPSEEKCN_BASE_URL: &str = "https://api.deepseeki.com";
+pub const DEFAULT_OPENCODE_GO_MODEL: &str = "deepseek-v4-pro";
+pub const DEFAULT_OPENCODE_GO_BASE_URL: &str = "https://opencode.ai/zen/go/v1";
 const API_KEYRING_SENTINEL: &str = "__KEYRING__";
 pub const COMMON_DEEPSEEK_MODELS: &[&str] = &[
     "deepseek-v4-pro",
@@ -55,6 +57,7 @@ pub enum ApiProvider {
     Fireworks,
     Sglang,
     Vllm,
+    OpencodeGo,
 }
 
 impl ApiProvider {
@@ -71,6 +74,7 @@ impl ApiProvider {
             "fireworks" | "fireworks-ai" => Some(Self::Fireworks),
             "sglang" | "sg-lang" => Some(Self::Sglang),
             "vllm" | "v-llm" => Some(Self::Vllm),
+            "opencode-go" | "opencode_go" | "opencodego" | "go" => Some(Self::OpencodeGo),
             _ => None,
         }
     }
@@ -86,6 +90,7 @@ impl ApiProvider {
             Self::Fireworks => "fireworks",
             Self::Sglang => "sglang",
             Self::Vllm => "vllm",
+            Self::OpencodeGo => "opencode-go",
         }
     }
 
@@ -101,6 +106,7 @@ impl ApiProvider {
             Self::Fireworks => "Fireworks AI",
             Self::Sglang => "SGLang",
             Self::Vllm => "vLLM",
+            Self::OpencodeGo => "OpenCode Go",
         }
     }
 
@@ -116,6 +122,7 @@ impl ApiProvider {
             Self::Fireworks,
             Self::Sglang,
             Self::Vllm,
+            Self::OpencodeGo,
         ]
     }
 }
@@ -192,6 +199,11 @@ pub fn provider_capability(provider: ApiProvider, resolved_model: &str) -> Provi
         provider,
         ApiProvider::Deepseek | ApiProvider::DeepseekCN | ApiProvider::NvidiaNim
     );
+
+    // OpenCode Go supports thinking for DeepSeek V4 models and Kimi K2.6.
+    let thinking_supported = thinking_supported
+        || (matches!(provider, ApiProvider::OpencodeGo)
+            && (is_v4_pro || is_v4_flash || model_lower.contains("kimi-k2.6")));
 
     // Request payload mode: all current providers use chat completions.
     let request_payload_mode = RequestPayloadMode::ChatCompletions;
@@ -912,6 +924,8 @@ pub struct ProvidersConfig {
     pub sglang: ProviderConfig,
     #[serde(default)]
     pub vllm: ProviderConfig,
+    #[serde(default)]
+    pub opencode_go: ProviderConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -971,7 +985,7 @@ impl Config {
             && ApiProvider::parse(provider).is_none()
         {
             anyhow::bail!(
-                "Invalid provider '{provider}': expected deepseek, deepseek-cn, nvidia-nim, openrouter, novita, fireworks, sglang, or vllm."
+                "Invalid provider '{provider}': expected deepseek, deepseek-cn, nvidia-nim, openrouter, novita, fireworks, sglang, vllm, or opencode-go."
             );
         }
         if let Some(ref key) = self.api_key
@@ -986,13 +1000,29 @@ impl Config {
                 }
             }
         }
-        if let Some(model) = self.default_text_model.as_deref()
-            && !model.trim().eq_ignore_ascii_case("auto")
-            && normalize_model_name(model).is_none()
-        {
-            anyhow::bail!(
-                "Invalid default_text_model '{model}': expected auto or a DeepSeek model ID (for example: deepseek-v4-pro, deepseek-v4-flash, deepseek-ai/deepseek-v4-pro)."
-            );
+        if let Some(model) = self.default_text_model.as_deref() {
+            if !model.trim().eq_ignore_ascii_case("auto") {
+                let provider = self.api_provider();
+                let is_deepseek_provider =
+                    matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN);
+                if is_deepseek_provider && normalize_model_name(model).is_none() {
+                    anyhow::bail!(
+                        "Invalid default_text_model '{model}': expected a DeepSeek model ID (for example: deepseek-v4-pro, deepseek-v4-flash, deepseek-ai/deepseek-v4-pro)."
+                    );
+                }
+                // For non-DeepSeek providers, accept any non-empty model string
+                // with reasonable characters.
+                if !is_deepseek_provider
+                    && (model.is_empty()
+                        || !model.chars().all(|ch| {
+                            ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | ':' | '/')
+                        }))
+                {
+                    anyhow::bail!(
+                        "Invalid default_text_model '{model}': expected a valid model ID."
+                    );
+                }
+            }
         }
         if let Some(policy) = self.approval_policy.as_deref() {
             let normalized = policy.trim().to_ascii_lowercase();
@@ -1090,6 +1120,7 @@ impl Config {
             ApiProvider::Fireworks => &providers.fireworks,
             ApiProvider::Sglang => &providers.sglang,
             ApiProvider::Vllm => &providers.vllm,
+            ApiProvider::OpencodeGo => &providers.opencode_go,
         })
     }
 
@@ -1126,6 +1157,7 @@ impl Config {
             ApiProvider::Fireworks => DEFAULT_FIREWORKS_MODEL,
             ApiProvider::Sglang => DEFAULT_SGLANG_MODEL,
             ApiProvider::Vllm => DEFAULT_VLLM_MODEL,
+            ApiProvider::OpencodeGo => DEFAULT_OPENCODE_GO_MODEL,
         }
         .to_string()
     }
@@ -1153,6 +1185,7 @@ impl Config {
             | ApiProvider::Fireworks
             | ApiProvider::Sglang
             | ApiProvider::Vllm => None,
+            ApiProvider::OpencodeGo => None,
         };
         let base = provider_base.or(root_base).unwrap_or_else(|| {
             match provider {
@@ -1164,6 +1197,7 @@ impl Config {
                 ApiProvider::Fireworks => DEFAULT_FIREWORKS_BASE_URL,
                 ApiProvider::Sglang => DEFAULT_SGLANG_BASE_URL,
                 ApiProvider::Vllm => DEFAULT_VLLM_BASE_URL,
+                ApiProvider::OpencodeGo => DEFAULT_OPENCODE_GO_BASE_URL,
             }
             .to_string()
         });
@@ -1188,6 +1222,7 @@ impl Config {
             ApiProvider::Fireworks => "fireworks",
             ApiProvider::Sglang => "sglang",
             ApiProvider::Vllm => "vllm",
+            ApiProvider::OpencodeGo => "opencode-go",
         };
 
         // 0. Explicit in-memory override (set by onboarding / provider
@@ -1252,6 +1287,10 @@ impl Config {
             // localhost. Return an empty key and let the client omit the
             // Authorization header.
             ApiProvider::Sglang | ApiProvider::Vllm => Ok(String::new()),
+            ApiProvider::OpencodeGo => anyhow::bail!(
+                "OpenCode Go API key not found. Run 'deepseek auth set --provider opencode-go', \
+                 set OPENCODE_GO_API_KEY, or add [providers.opencode_go] api_key in ~/.deepseek/config.toml."
+            ),
         }
     }
 
@@ -1937,11 +1976,31 @@ fn normalize_model_config(config: &mut Config) {
         {
             providers.vllm.model = Some(normalized);
         }
+        if let Some(model) = providers.opencode_go.model.as_deref()
+            && let Some(normalized) = normalize_model_for_provider(ApiProvider::OpencodeGo, model)
+        {
+            providers.opencode_go.model = Some(normalized);
+        }
     }
 }
 
-fn normalize_model_for_provider(provider: ApiProvider, model: &str) -> Option<String> {
-    normalize_model_name(model).map(|normalized| model_for_provider(provider, normalized))
+pub fn normalize_model_for_provider(provider: ApiProvider, model: &str) -> Option<String> {
+    normalize_model_name(model)
+        .map(|normalized| model_for_provider(provider, normalized))
+        .or_else(|| {
+            // For non-DeepSeek providers, accept any non-empty model string
+            // with reasonable characters.
+            if !matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN)
+                && !model.is_empty()
+                && model.chars().all(|ch| {
+                    ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | ':' | '/')
+                })
+            {
+                Some(model.to_string())
+            } else {
+                None
+            }
+        })
 }
 
 fn model_for_provider(provider: ApiProvider, normalized: String) -> String {
@@ -1964,6 +2023,12 @@ fn model_for_provider(provider: ApiProvider, normalized: String) -> String {
         (ApiProvider::Sglang, "deepseek-v4-flash") => DEFAULT_SGLANG_FLASH_MODEL.to_string(),
         (ApiProvider::Vllm, "deepseek-v4-pro") => DEFAULT_VLLM_MODEL.to_string(),
         (ApiProvider::Vllm, "deepseek-v4-flash") => DEFAULT_VLLM_FLASH_MODEL.to_string(),
+        (ApiProvider::OpencodeGo, "deepseek-v4-pro") => "deepseek-v4-pro".to_string(),
+        (
+            ApiProvider::OpencodeGo,
+            "deepseek-v4-flash" | "deepseek-chat" | "deepseek-reasoner" | "deepseek-r1"
+            | "deepseek-v3" | "deepseek-v3.2",
+        ) => "deepseek-v4-flash".to_string(),
         _ => normalized,
     }
 }
@@ -2105,6 +2170,7 @@ fn merge_providers(
             fireworks: merge_provider_config(base.fireworks, override_cfg.fireworks),
             sglang: merge_provider_config(base.sglang, override_cfg.sglang),
             vllm: merge_provider_config(base.vllm, override_cfg.vllm),
+            opencode_go: merge_provider_config(base.opencode_go, override_cfg.opencode_go),
         }),
     }
 }
@@ -2455,6 +2521,9 @@ pub fn active_provider_has_env_api_key(config: &Config) -> bool {
         }
         ApiProvider::Sglang => std::env::var("SGLANG_API_KEY").is_ok_and(|k| !k.trim().is_empty()),
         ApiProvider::Vllm => std::env::var("VLLM_API_KEY").is_ok_and(|k| !k.trim().is_empty()),
+        ApiProvider::OpencodeGo => {
+            std::env::var("OPENCODE_GO_API_KEY").is_ok_and(|k| !k.trim().is_empty())
+        }
     }
 }
 
@@ -2476,6 +2545,7 @@ pub fn has_api_key_for(config: &Config, provider: ApiProvider) -> bool {
         ApiProvider::Fireworks => "FIREWORKS_API_KEY",
         ApiProvider::Sglang => "SGLANG_API_KEY",
         ApiProvider::Vllm => "VLLM_API_KEY",
+        ApiProvider::OpencodeGo => "OPENCODE_GO_API_KEY",
     };
     if std::env::var(env_var).is_ok_and(|k| !k.trim().is_empty()) {
         return true;
@@ -2535,6 +2605,7 @@ pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf>
         ApiProvider::Fireworks => "providers.fireworks",
         ApiProvider::Sglang => "providers.sglang",
         ApiProvider::Vllm => "providers.vllm",
+        ApiProvider::OpencodeGo => "providers.opencode_go",
     };
 
     // Parse existing TOML (or start fresh) so we can edit the right table
@@ -2563,6 +2634,7 @@ pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf>
         ApiProvider::Fireworks => "fireworks",
         ApiProvider::Sglang => "sglang",
         ApiProvider::Vllm => "vllm",
+        ApiProvider::OpencodeGo => "opencode_go",
     };
     let entry = providers
         .entry(key_inside.to_string())
@@ -2679,6 +2751,8 @@ mod tests {
         vllm_api_key: Option<OsString>,
         vllm_base_url: Option<OsString>,
         vllm_model: Option<OsString>,
+        opencode_go_api_key: Option<OsString>,
+        opencode_go_base_url: Option<OsString>,
     }
 
     impl EnvGuard {
@@ -2712,6 +2786,8 @@ mod tests {
             let vllm_api_key_prev = env::var_os("VLLM_API_KEY");
             let vllm_base_url_prev = env::var_os("VLLM_BASE_URL");
             let vllm_model_prev = env::var_os("VLLM_MODEL");
+            let opencode_go_api_key_prev = env::var_os("OPENCODE_GO_API_KEY");
+            let opencode_go_base_url_prev = env::var_os("OPENCODE_GO_BASE_URL");
             // Safety: test-only environment mutation guarded by a global mutex.
             unsafe {
                 env::set_var("HOME", &home_str);
@@ -2740,6 +2816,8 @@ mod tests {
                 env::remove_var("VLLM_API_KEY");
                 env::remove_var("VLLM_BASE_URL");
                 env::remove_var("VLLM_MODEL");
+                env::remove_var("OPENCODE_GO_API_KEY");
+                env::remove_var("OPENCODE_GO_BASE_URL");
             }
             Self {
                 home: home_prev,
@@ -2768,6 +2846,8 @@ mod tests {
                 vllm_api_key: vllm_api_key_prev,
                 vllm_base_url: vllm_base_url_prev,
                 vllm_model: vllm_model_prev,
+                opencode_go_api_key: opencode_go_api_key_prev,
+                opencode_go_base_url: opencode_go_base_url_prev,
             }
         }
     }
@@ -2805,6 +2885,8 @@ mod tests {
                 Self::restore_var("VLLM_API_KEY", self.vllm_api_key.take());
                 Self::restore_var("VLLM_BASE_URL", self.vllm_base_url.take());
                 Self::restore_var("VLLM_MODEL", self.vllm_model.take());
+                Self::restore_var("OPENCODE_GO_API_KEY", self.opencode_go_api_key.take());
+                Self::restore_var("OPENCODE_GO_BASE_URL", self.opencode_go_base_url.take());
             }
         }
     }
@@ -4254,5 +4336,78 @@ model = "deepseek-v4-pro"
         let json = serde_json::to_value(&cap).unwrap();
         let deserialized: ProviderCapability = serde_json::from_value(json).unwrap();
         assert_eq!(cap, deserialized);
+    }
+
+    #[test]
+    fn provider_capability_opencode_go_v4_pro_has_thinking_no_cache() {
+        let cap = provider_capability(ApiProvider::OpencodeGo, "deepseek-v4-pro");
+        assert_eq!(
+            cap.context_window,
+            crate::models::DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS
+        );
+        assert_eq!(cap.max_output, 262_144);
+        assert!(cap.thinking_supported);
+        assert!(!cap.cache_telemetry_supported);
+        assert_eq!(
+            cap.request_payload_mode,
+            RequestPayloadMode::ChatCompletions
+        );
+    }
+
+    #[test]
+    fn api_provider_parse_opencode_go_aliases() {
+        assert_eq!(
+            ApiProvider::parse("opencode-go"),
+            Some(ApiProvider::OpencodeGo)
+        );
+        assert_eq!(
+            ApiProvider::parse("opencode_go"),
+            Some(ApiProvider::OpencodeGo)
+        );
+        assert_eq!(
+            ApiProvider::parse("opencodego"),
+            Some(ApiProvider::OpencodeGo)
+        );
+        assert_eq!(ApiProvider::parse("go"), Some(ApiProvider::OpencodeGo));
+        assert_eq!(
+            ApiProvider::parse("OPENCODE-GO"),
+            Some(ApiProvider::OpencodeGo)
+        );
+    }
+
+    #[test]
+    fn api_provider_opencode_go_as_str_and_display_name() {
+        assert_eq!(ApiProvider::OpencodeGo.as_str(), "opencode-go");
+        assert_eq!(ApiProvider::OpencodeGo.display_name(), "OpenCode Go");
+    }
+
+    #[test]
+    fn default_model_for_opencode_go() {
+        let config = Config {
+            provider: Some("opencode-go".to_string()),
+            ..Config::default()
+        };
+        assert_eq!(config.default_model(), "deepseek-v4-pro");
+    }
+
+    #[test]
+    fn deepseek_base_url_for_opencode_go() {
+        let config = Config {
+            provider: Some("opencode-go".to_string()),
+            ..Config::default()
+        };
+        assert_eq!(config.deepseek_base_url(), DEFAULT_OPENCODE_GO_BASE_URL);
+    }
+
+    #[test]
+    fn model_for_provider_opencode_go_passes_through() {
+        assert_eq!(
+            model_for_provider(ApiProvider::OpencodeGo, "deepseek-v4-pro".to_string()),
+            "deepseek-v4-pro"
+        );
+        assert_eq!(
+            model_for_provider(ApiProvider::OpencodeGo, "deepseek-v4-flash".to_string()),
+            "deepseek-v4-flash"
+        );
     }
 }

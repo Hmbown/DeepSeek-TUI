@@ -4886,6 +4886,7 @@ fn render(f: &mut Frame, app: &mut App) {
             crate::config::ApiProvider::Fireworks => Some("Fireworks"),
             crate::config::ApiProvider::Sglang => Some("SGLang"),
             crate::config::ApiProvider::Vllm => Some("vLLM"),
+            crate::config::ApiProvider::OpencodeGo => Some("OpenCode Go"),
         };
         let header_data = HeaderData::new(
             app.mode,
@@ -5513,6 +5514,7 @@ async fn apply_provider_picker_api_key(
             ApiProvider::Fireworks => &mut providers.fireworks,
             ApiProvider::Sglang => &mut providers.sglang,
             ApiProvider::Vllm => &mut providers.vllm,
+            ApiProvider::OpencodeGo => &mut providers.opencode_go,
         };
         entry.api_key = Some(api_key);
     }

@@ -413,6 +413,7 @@ pub fn env_for(name: &str) -> Option<String> {
         "sglang" | "sg-lang" => &["SGLANG_API_KEY"],
         "vllm" | "v-llm" => &["VLLM_API_KEY"],
         "openai" => &["OPENAI_API_KEY"],
+        "opencode-go" | "opencode_go" | "opencodego" | "go" => &["OPENCODE_GO_API_KEY"],
         _ => return None,
     };
     for var in candidates {
@@ -450,6 +451,7 @@ mod tests {
             "SGLANG_API_KEY",
             "VLLM_API_KEY",
             "OPENAI_API_KEY",
+            "OPENCODE_GO_API_KEY",
         ] {
             // Safety: tests serialise on env_lock(); the broader
             // workspace has the same pattern in `crates/config`.
@@ -726,5 +728,26 @@ mod tests {
             "unexpected default path: {}",
             path.display()
         );
+    }
+
+    #[test]
+    fn env_for_opencode_go_reads_opencode_go_api_key() {
+        let _guard = env_lock();
+        clear_known_envs();
+        // Safety: tests serialise on env_lock().
+        unsafe { std::env::set_var("OPENCODE_GO_API_KEY", "sk-opencode-go-test") };
+        assert_eq!(
+            env_for("opencode-go"),
+            Some("sk-opencode-go-test".to_string())
+        );
+        assert_eq!(
+            env_for("opencode_go"),
+            Some("sk-opencode-go-test".to_string())
+        );
+        assert_eq!(
+            env_for("opencodego"),
+            Some("sk-opencode-go-test".to_string())
+        );
+        assert_eq!(env_for("go"), Some("sk-opencode-go-test".to_string()));
     }
 }
