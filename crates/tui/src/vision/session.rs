@@ -59,7 +59,7 @@ pub struct SessionMetadata {
 }
 
 impl VisionSession {
-    pub fn new(config: VisionClientConfig, description: Option<String>) -> Self {
+    pub fn new(description: Option<String>) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
             conversation_history: Vec::new(),
@@ -106,7 +106,7 @@ pub struct VisionSessionHandle {
 impl VisionSessionHandle {
     pub async fn new(config: VisionClientConfig, description: Option<String>) -> Result<Self> {
         let client = VisionClient::new(config.clone())?;
-        let session = VisionSession::new(config, description);
+        let session = VisionSession::new(description);
 
         Ok(Self {
             session: Arc::new(Mutex::new(session)),
@@ -252,7 +252,7 @@ mod tests {
             timeout_secs: 120,
         };
 
-        let session = VisionSession::new(config, Some("Test session".to_string()));
+        let session = VisionSession::new(Some("Test session".to_string()));
 
         assert_eq!(session.conversation_history.len(), 0);
         assert_eq!(
@@ -272,7 +272,7 @@ mod tests {
             timeout_secs: 120,
         };
 
-        let mut session = VisionSession::new(config, None);
+        let mut session = VisionSession::new(None);
 
         session.conversation_history.push(VisionMessage {
             role: MessageRole::System,

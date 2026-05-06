@@ -201,9 +201,9 @@ impl ToolSpec for VisionOcrTool {
         let language_hint = optional_str(&input, "language").unwrap_or("");
 
         let prompt = if language_hint.is_empty() {
-            "Extract all text from this image. Preserve the formatting as much as possible."
+            "Extract all text from this image. Preserve the formatting as much as possible.".to_string()
         } else {
-            "Extract all text from this image. The text is in {language}. Preserve the formatting as much as possible."
+            format!("Extract all text from this image. The text is in {language_hint}. Preserve the formatting as much as possible.")
         };
 
         // Delegate to VisionAnalyzeTool with an OCR-specific prompt
