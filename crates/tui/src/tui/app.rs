@@ -714,6 +714,7 @@ pub struct App {
     pub ui_theme: UiTheme,
     // Onboarding
     pub onboarding: OnboardingState,
+    pub onboarding_steps: Vec<OnboardingState>,
     pub onboarding_needs_api_key: bool,
     pub api_key_env_only: bool,
     pub api_key_input: String,
@@ -1123,6 +1124,14 @@ impl App {
         } else {
             preferred_mode
         };
+        let initial_trust_mode = initial_mode == AppMode::Yolo;
+        let needs_workspace_trust =
+            !initial_trust_mode && crate::tui::onboarding::needs_trust(&workspace);
+        let onboarding_steps = if needs_onboarding {
+            crate::tui::onboarding::steps_for(needs_api_key, needs_workspace_trust)
+        } else {
+            Vec::new()
+        };
 
         let yolo_restore = if initial_mode == AppMode::Yolo {
             Some(YoloRestoreState {
@@ -1257,6 +1266,7 @@ impl App {
             } else {
                 OnboardingState::None
             },
+            onboarding_steps,
             onboarding_needs_api_key: needs_api_key,
             api_key_env_only,
             api_key_input: String::new(),
@@ -1279,7 +1289,7 @@ impl App {
             view_stack: ViewStack::new(),
             backtrack: crate::tui::backtrack::BacktrackState::new(),
             current_session_id: None,
-            trust_mode: initial_mode == AppMode::Yolo,
+            trust_mode: initial_trust_mode,
             status_items: config
                 .tui
                 .as_ref()
@@ -1374,6 +1384,7 @@ impl App {
 
     pub fn finish_onboarding(&mut self) {
         self.onboarding = OnboardingState::None;
+        self.onboarding_steps.clear();
         if let Err(err) = crate::tui::onboarding::mark_onboarded() {
             self.status_message = Some(format!("Failed to mark onboarding: {err}"));
         }

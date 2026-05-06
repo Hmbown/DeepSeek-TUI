@@ -1586,37 +1586,19 @@ async fn run_event_loop(
 
             // Handle onboarding flow
             if app.onboarding != OnboardingState::None {
-                // After Welcome (and the new Language step) we route to either
-                // the API-key step, the trust prompt, or the tips screen
-                // depending on what the user still needs to set up.
-                let advance_after_language = |app: &mut App| {
-                    app.status_message = None;
-                    if app.onboarding_needs_api_key {
-                        app.onboarding = OnboardingState::ApiKey;
-                    } else if !app.trust_mode && onboarding::needs_trust(&app.workspace) {
-                        app.onboarding = OnboardingState::TrustDirectory;
-                    } else {
-                        app.onboarding = OnboardingState::Tips;
-                    }
-                };
-                let advance_onboarding = |app: &mut App| {
-                    app.status_message = None;
-                    app.onboarding = OnboardingState::Language;
-                };
-
                 match key.code {
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         let _ = engine_handle.send(Op::Shutdown).await;
                         return Ok(());
                     }
                     KeyCode::Esc if app.onboarding == OnboardingState::ApiKey => {
-                        app.onboarding = OnboardingState::Welcome;
+                        onboarding::retreat(app);
                         app.api_key_input.clear();
                         app.api_key_cursor = 0;
                         app.status_message = None;
                     }
                     KeyCode::Esc if app.onboarding == OnboardingState::Language => {
-                        app.onboarding = OnboardingState::Welcome;
+                        onboarding::retreat(app);
                         app.status_message = None;
                     }
                     // Language picker hotkeys: 1-5 select + persist (#566).
@@ -1639,7 +1621,7 @@ async fn run_event_loop(
                                         StatusToastLevel::Info,
                                         Some(2_500),
                                     );
-                                    advance_after_language(app);
+                                    onboarding::advance(app);
                                 }
                                 Err(err) => {
                                     app.status_message =
@@ -1650,12 +1632,12 @@ async fn run_event_loop(
                     }
                     KeyCode::Enter => match app.onboarding {
                         OnboardingState::Welcome => {
-                            advance_onboarding(app);
+                            onboarding::advance(app);
                         }
                         OnboardingState::Language => {
                             // Enter without a digit pick keeps the existing
                             // setting (which defaults to "auto").
-                            advance_after_language(app);
+                            onboarding::advance(app);
                         }
                         OnboardingState::ApiKey => {
                             let key = app.api_key_input.trim().to_string();
@@ -1708,7 +1690,7 @@ async fn run_event_loop(
                                             .await;
                                     }
 
-                                    advance_onboarding(app);
+                                    onboarding::advance(app);
                                 }
                                 Err(e) => {
                                     app.status_message = Some(e.to_string());
@@ -1727,8 +1709,7 @@ async fn run_event_loop(
                         match onboarding::mark_trusted(&app.workspace) {
                             Ok(_) => {
                                 app.trust_mode = true;
-                                app.status_message = None;
-                                app.onboarding = OnboardingState::Tips;
+                                onboarding::advance(app);
                             }
                             Err(err) => {
                                 app.status_message =
@@ -1739,8 +1720,7 @@ async fn run_event_loop(
                     KeyCode::Char('n') | KeyCode::Char('N')
                         if app.onboarding == OnboardingState::TrustDirectory =>
                     {
-                        app.status_message = None;
-                        app.onboarding = OnboardingState::Tips;
+                        onboarding::advance(app);
                     }
                     KeyCode::Backspace if app.onboarding == OnboardingState::ApiKey => {
                         app.delete_api_key_char();
@@ -2938,6 +2918,7 @@ pub(crate) fn apply_engine_error_to_app(
         app.offline_mode = true;
         app.onboarding_needs_api_key = true;
         app.onboarding = OnboardingState::ApiKey;
+        onboarding::reset_steps_for_current_needs(app);
         app.status_message = Some(
             "The API key from DEEPSEEK_API_KEY was rejected. Paste a valid key to save it to ~/.deepseek/config.toml, or update the environment variable.".to_string(),
         );

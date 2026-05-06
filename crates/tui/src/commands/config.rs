@@ -13,6 +13,7 @@ use crate::models::{ContentBlock, Message, MessageRequest, MessageResponse, Syst
 use crate::settings::Settings;
 use crate::tui::app::{App, AppAction, AppMode, OnboardingState, ReasoningEffort, SidebarFocus};
 use crate::tui::approval::ApprovalMode;
+use crate::tui::onboarding;
 use anyhow::Result;
 
 /// Open the interactive config editor.
@@ -927,6 +928,7 @@ pub fn logout(app: &mut App) -> CommandResult {
         Ok(()) => {
             app.onboarding = OnboardingState::ApiKey;
             app.onboarding_needs_api_key = true;
+            onboarding::reset_steps_for_current_needs(app);
             app.api_key_input.clear();
             app.api_key_cursor = 0;
             CommandResult::message("Logged out. Enter a new API key to continue.")
