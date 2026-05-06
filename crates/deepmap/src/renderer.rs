@@ -44,7 +44,7 @@ pub fn render_overview_report(engine: &RepoMapEngine, max_chars: usize) -> Strin
         sections.push("_No entry points detected._\n".to_string());
     } else {
         for ep in &entry_points {
-            sections.push(format!("- `{}`  _{}_\n", ep.file_path, ep.reason));
+            sections.push(format!("- `{}`\n", ep));
         }
     }
     sections.push(String::new());
@@ -59,9 +59,9 @@ pub fn render_overview_report(engine: &RepoMapEngine, max_chars: usize) -> Strin
             sections.push(format!(
                 "{}. `{}` (score: {:.2})  {}\n",
                 i + 1,
-                entry.file_path,
+                entry.file,
                 entry.score,
-                entry.reason
+                entry.score
             ));
         }
     }
@@ -69,16 +69,16 @@ pub fn render_overview_report(engine: &RepoMapEngine, max_chars: usize) -> Strin
 
     // -- Module Summary --
     sections.push("## Module Summary\n".to_string());
-    let modules = engine.module_summary();
+    let modules = engine.module_summary(20);
     if modules.is_empty() {
         sections.push("_No modules detected._\n".to_string());
     } else {
-        sections.push("| Directory | Files | Symbols | Lines |\n".to_string());
-        sections.push("|-----------|-------|---------|-------|\n".to_string());
+        sections.push("| Module | Symbols | Total PR |\n".to_string());
+        sections.push("|--------|---------|----------|\n".to_string());
         for m in &modules {
             sections.push(format!(
-                "| {} | {} | {} | {} |\n",
-                m.directory, m.file_count, m.symbol_count, m.lines
+                "| {} | {} | {:.4} |\n",
+                m.module, m.symbol_count, m.total_pagerank
             ));
         }
     }
@@ -92,8 +92,8 @@ pub fn render_overview_report(engine: &RepoMapEngine, max_chars: usize) -> Strin
     } else {
         for h in &hotspots {
             sections.push(format!(
-                "- `{}`: density {:.2}, complexity {:.2}, PR {:.4}\n",
-                h.file_path, h.density, h.complexity_score, h.pagerank
+                "- `{}`: {} symbols, avg PR {:.4}\n",
+                h.file, h.symbol_count, h.avg_pagerank
             ));
         }
     }
@@ -101,7 +101,7 @@ pub fn render_overview_report(engine: &RepoMapEngine, max_chars: usize) -> Strin
 
     // -- Key Symbols (grouped by file) --
     sections.push("## Key Symbols\n".to_string());
-    let syms = engine.summary_symbols(30);
+    let syms = engine.summary_symbols(30, 5);
     if syms.is_empty() {
         sections.push("_No symbols found._\n".to_string());
     } else {
@@ -148,41 +148,41 @@ pub fn render_call_chain_report(
         return out;
     }
 
-    let chain = engine.call_chain(symbol_name, max_depth);
+    let first = matches[0];
+    let callers_map = engine.call_chain(&first.id, "callers", max_depth);
+    let callees_map = engine.call_chain(&first.id, "callees", max_depth);
 
     out.push_str(&format!(
         "## Call Chain: `{}`\n\n- **Kind**: {}\n- **File**: `{}`\n- **PR Score**: {:.4}\n\n",
-        chain.symbol_name, chain.symbol_kind, chain.symbol_file,
-        matches
-            .iter()
-            .find(|s| s.name == chain.symbol_name)
-            .map(|s| s.pagerank)
-            .unwrap_or(0.0)
+        first.name, first.kind, first.file, first.pagerank
     ));
 
+    let all_callers: Vec<&Symbol> = callers_map.values().flatten().collect();
+    let all_callees: Vec<&Symbol> = callees_map.values().flatten().collect();
+
     // Callers.
-    out.push_str(&format!("### Callers ({} found)\n", chain.callers.len()));
-    if chain.callers.is_empty() {
+    out.push_str(&format!("### Callers ({} found)\n", all_callers.len()));
+    if all_callers.is_empty() {
         out.push_str("_None._\n");
     } else {
-        for c in &chain.callers {
+        for c in &all_callers {
             out.push_str(&format!(
                 "- `{}`  file: `{}`  PR: {:.4}\n",
-                c.symbol_name, c.file, c.pagerank
+                c.name, c.file, c.pagerank
             ));
         }
     }
     out.push('\n');
 
     // Callees.
-    out.push_str(&format!("### Callees ({} found)\n", chain.callees.len()));
-    if chain.callees.is_empty() {
+    out.push_str(&format!("### Callees ({} found)\n", all_callees.len()));
+    if all_callees.is_empty() {
         out.push_str("_None._\n");
     } else {
-        for c in &chain.callees {
+        for c in &all_callees {
             out.push_str(&format!(
                 "- `{}`  file: `{}`  PR: {:.4}\n",
-                c.symbol_name, c.file, c.pagerank
+                c.name, c.file, c.pagerank
             ));
         }
     }
@@ -296,7 +296,7 @@ pub fn render_query_report(
     let related = topic::find_related_tests(
         &target_files,
         &engine.graph,
-        &engine.project_path,
+        &engine.project_root,
     );
     out.push_str(&format!(
         "### Related Tests ({} found)\n\n",
@@ -325,7 +325,7 @@ pub fn render_query_report(
 
     // Key Symbols section (highlight matches).
     out.push_str("### Key Symbols\n\n");
-    let all_syms = engine.summary_symbols(30);
+    let all_syms = engine.summary_symbols(30, 5);
     let query_lower = query.to_lowercase();
     let matched_syms: Vec<&crate::ranking::SymbolSummary> = all_syms
         .iter()
@@ -417,12 +417,14 @@ pub fn render_impact_report(
             out.push('\n');
         }
 
-        // File metrics.
-        let metrics = engine.get_file_metrics(target);
-        out.push_str(&format!(
-            "- Lines: {}\n- Symbols: {}\n- Complexity: {:.2}\n- PageRank: {:.4}\n\n",
-            metrics.lines, metrics.symbols, metrics.complexity, metrics.pagerank
-        ));
+        // File metrics via file_analysis.
+        let fa = engine.file_analysis();
+        if let Some(m) = fa.get(target) {
+            out.push_str(&format!(
+                "- Symbols: {}\n- Outgoing edges: {}\n- Incoming edges: {}\n- Avg PR: {:.4}\n\n",
+                m.symbol_count, m.outgoing_edges, m.incoming_edges, m.avg_pagerank
+            ));
+        }
     }
 
     out.push_str(&format!(
@@ -505,12 +507,14 @@ pub fn render_diff_risk_report(
 
     // --- Changed files detail ---
     out.push_str("### Changed Files Detail\n\n");
+    let fa = engine.file_analysis();
     for f in changed_files {
-        let metrics = engine.get_file_metrics(f);
-        out.push_str(&format!(
-            "- `{}`: {} symbols, {} lines, complexity {:.2}\n",
-            f, metrics.symbols, metrics.lines, metrics.complexity
-        ));
+        if let Some(metrics) = fa.get(f) {
+            out.push_str(&format!(
+                "- `{}`: {} symbols, {} outgoing edges, {} incoming edges, avg PR {:.4}\n",
+                f, metrics.symbol_count, metrics.outgoing_edges, metrics.incoming_edges, metrics.avg_pagerank
+            ));
+        }
     }
     out.push('\n');
 
@@ -522,7 +526,7 @@ pub fn render_diff_risk_report(
         .chain(all_affected.iter())
         .map(|f| f.clone())
         .collect();
-    let related_tests = topic::find_related_tests(&test_files, &engine.graph, &engine.project_path);
+    let related_tests = topic::find_related_tests(&test_files, &engine.graph, &engine.project_root);
     if related_tests.is_empty() {
         out.push_str("   _No specific test files identified._\n");
     } else {
