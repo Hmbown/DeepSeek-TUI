@@ -18,7 +18,6 @@ use tokio::process::{Child, ChildStdin, ChildStdout};
 
 use crate::network_policy::{Decision, NetworkPolicyDecider, host_from_url};
 use crate::utils::write_atomic;
-use dirs;
 
 // === Error diagnostics helpers (#71) ===
 
@@ -1002,6 +1001,7 @@ impl McpPool {
     /// Override or set an environment variable on a specific server's config.
     /// The value is only set if the key does not already exist in the server's
     /// env map, preserving any explicit user-configured values.
+    #[allow(dead_code)]
     pub fn with_server_env(mut self, server_name: &str, key: &str, value: &str) -> Self {
         if let Some(server) = self.config.servers.get_mut(server_name) {
             server
@@ -1066,13 +1066,13 @@ impl McpPool {
             .clone();
 
         // Inject workspace directory for context-mode connections
-        if server_name == "context-mode" {
-            if let Some(ref workspace) = self.workspace_dir {
-                server_config
-                    .env
-                    .entry("CONTEXT_MODE_PROJECT_DIR".to_string())
-                    .or_insert_with(|| workspace.display().to_string());
-            }
+        if server_name == "context-mode"
+            && let Some(ref workspace) = self.workspace_dir
+        {
+            server_config
+                .env
+                .entry("CONTEXT_MODE_PROJECT_DIR".to_string())
+                .or_insert_with(|| workspace.display().to_string());
         }
 
         if !server_config.is_enabled() {
