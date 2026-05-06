@@ -5,6 +5,7 @@ members = [
     "crates/cli",
     "crates/config",
     "crates/core",
+    "crates/deepmap",
     "crates/execpolicy",
     "crates/hooks",
     "crates/mcp",
