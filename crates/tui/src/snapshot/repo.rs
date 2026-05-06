@@ -62,15 +62,12 @@ impl SnapshotRepo {
             .canonicalize()
             .unwrap_or_else(|_| workspace.to_path_buf());
 
-        // Refuse to snapshot the user's home directory — `git add -A` on $HOME
+        // Refuse to snapshot the user's home directory: `git add -A` on $HOME
         // can consume unbounded disk/CPU and effectively DoS the TUI (#793).
-        if let Some(home) = dirs::home_dir() {
-            let home_canonical = home.canonicalize().unwrap_or(home);
-            if work_tree == home_canonical {
-                return Err(io_other(
-                    "refusing to snapshot home directory — start deepseek from a project directory instead",
-                ));
-            }
+        if is_home_directory(&work_tree, dirs::home_dir().as_deref()) {
+            return Err(io_other(
+                "refusing to snapshot home directory - start deepseek from a project directory instead",
+            ));
         }
 
         let _ = ensure_snapshot_dir(&work_tree)?;
@@ -418,6 +415,15 @@ fn io_other(msg: impl Into<String>) -> io::Error {
     io::Error::other(msg.into())
 }
 
+fn is_home_directory(work_tree: &Path, home: Option<&Path>) -> bool {
+    let Some(home) = home else {
+        return false;
+    };
+
+    let home_canonical = home.canonicalize().unwrap_or_else(|_| home.to_path_buf());
+    work_tree == home_canonical
+}
+
 fn parse_nul_paths(bytes: &[u8]) -> HashSet<PathBuf> {
     bytes
         .split(|b| *b == 0)
@@ -682,20 +688,16 @@ mod tests {
     }
 
     #[test]
-    fn open_or_init_refuses_home_directory() {
+    fn home_directory_guard_matches_canonical_paths() {
         let tmp = tempdir().unwrap();
-        let guard = scoped_home(tmp.path());
+        let home = tmp.path();
+        let home_canonical = home.canonicalize().unwrap();
+        let workspace = home.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let workspace_canonical = workspace.canonicalize().unwrap();
 
-        // Try to snapshot HOME itself.
-        let result = SnapshotRepo::open_or_init(tmp.path());
-        let err_msg = match result {
-            Ok(_) => panic!("should refuse to snapshot home directory"),
-            Err(err) => err.to_string(),
-        };
-        assert!(
-            err_msg.contains("home directory"),
-            "error should mention home directory: {err_msg}"
-        );
-        drop(guard);
+        assert!(is_home_directory(&home_canonical, Some(home)));
+        assert!(!is_home_directory(&workspace_canonical, Some(home)));
+        assert!(!is_home_directory(&home_canonical, None));
     }
 }
