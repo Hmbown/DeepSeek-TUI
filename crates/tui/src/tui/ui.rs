@@ -252,8 +252,8 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         // Try to load by prefix or full ID
         let load_result: std::io::Result<Option<crate::session_manager::SavedSession>> =
             if session_id == "latest" {
-                // Special case: resume the most recent session
-                match manager.get_latest_session() {
+                // Special case: resume the most recent session in this workspace.
+                match manager.get_latest_session_for_workspace(&options.workspace) {
                     Ok(Some(meta)) => manager.load_session(&meta.id).map(Some),
                     Ok(None) => Ok(None),
                     Err(e) => Err(e),
@@ -929,10 +929,12 @@ async fn run_event_loop(
                         } else {
                             &app.model
                         };
-                        let turn_cost =
-                            crate::pricing::calculate_turn_cost_from_usage(pricing_model, &usage);
+                        let turn_cost = crate::pricing::calculate_turn_cost_estimate_from_usage(
+                            pricing_model,
+                            &usage,
+                        );
                         if let Some(cost) = turn_cost {
-                            app.accrue_session_cost(cost);
+                            app.accrue_session_cost_estimate(cost);
                         }
 
                         // Emit OSC 9 / BEL desktop notification for long turns.
@@ -1383,8 +1385,8 @@ async fn run_event_loop(
         // the pool once per loop iteration so the footer chip matches
         // the DeepSeek website's billing.
         let pending_bg_cost = crate::cost_status::drain();
-        if pending_bg_cost > 0.0 {
-            app.accrue_subagent_cost(pending_bg_cost);
+        if pending_bg_cost.is_positive() {
+            app.accrue_subagent_cost_estimate(pending_bg_cost);
             app.needs_redraw = true;
         }
         // Expire the "Press Ctrl+C again to quit" prompt silently after its
@@ -2354,10 +2356,7 @@ async fn run_event_loop(
                     continue;
                 }
                 // Input handling
-                KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    app.insert_char('\n');
-                }
-                KeyCode::Enter if key.modifiers.contains(KeyModifiers::ALT) => {
+                _ if is_composer_newline_key(key) => {
                     app.insert_char('\n');
                 }
                 KeyCode::Enter
@@ -3007,7 +3006,7 @@ fn completed_turn_notification_message(
     current_streaming_text: &str,
     include_summary: bool,
     turn_elapsed: Duration,
-    turn_cost: Option<f64>,
+    turn_cost: Option<crate::pricing::CostEstimate>,
 ) -> String {
     let mut msg = notification_text_summary(current_streaming_text)
         .or_else(|| latest_assistant_notification_text(&app.api_messages))
@@ -3016,7 +3015,10 @@ fn completed_turn_notification_message(
     if include_summary {
         let human = crate::tui::notifications::humanize_duration(turn_elapsed);
         let summary = match turn_cost {
-            Some(c) => format!("deepseek: turn complete ({human}, ${c:.2})"),
+            Some(c) => {
+                let cost = crate::pricing::format_cost_estimate(c, app.cost_currency);
+                format!("deepseek: turn complete ({human}, {cost})")
+            }
             None => format!("deepseek: turn complete ({human})"),
         };
         if msg == "deepseek: turn complete" {
@@ -3205,6 +3207,18 @@ fn next_escape_action(app: &App, slash_menu_open: bool) -> EscapeAction {
         EscapeAction::ClearInput
     } else {
         EscapeAction::Noop
+    }
+}
+
+fn is_composer_newline_key(key: KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Char('j') => key.modifiers.contains(KeyModifiers::CONTROL),
+        KeyCode::Enter => {
+            key.modifiers.contains(KeyModifiers::ALT)
+                || (key.modifiers.contains(KeyModifiers::SHIFT)
+                    && !key.modifiers.contains(KeyModifiers::CONTROL))
+        }
+        _ => false,
     }
 }
 
@@ -3474,6 +3488,7 @@ async fn dispatch_user_message(
             allow_shell: app.allow_shell,
             trust_mode: app.trust_mode,
             auto_approve: app.mode == AppMode::Yolo,
+            approval_mode: app.approval_mode,
         })
         .await
     {
@@ -5610,7 +5625,10 @@ async fn apply_provider_picker_api_key(
             .providers
             .get_or_insert_with(ProvidersConfig::default);
         let entry: &mut ProviderConfig = match provider {
-            ApiProvider::Deepseek | ApiProvider::DeepseekCN => unreachable!(),
+            ApiProvider::Deepseek | ApiProvider::DeepseekCN => {
+                // Guarded by the outer `if` above; safety net against refactors.
+                return;
+            }
             ApiProvider::NvidiaNim => &mut providers.nvidia_nim,
             ApiProvider::Openrouter => &mut providers.openrouter,
             ApiProvider::Novita => &mut providers.novita,
@@ -6342,10 +6360,10 @@ fn render_footer_from(
     } else {
         Vec::new()
     };
-    let displayed_cost = app.displayed_session_cost();
+    let displayed_cost = app.displayed_session_cost_for_currency(app.cost_currency);
     let cost = if has(S::Cost) && displayed_cost > 0.001 {
         vec![Span::styled(
-            format!("${displayed_cost:.2}"),
+            app.format_cost_amount(displayed_cost),
             Style::default().fg(palette::TEXT_MUTED),
         )]
     } else {
@@ -6438,10 +6456,10 @@ fn footer_auxiliary_spans(app: &App, max_width: usize) -> Vec<Span<'static>> {
         crate::tui::widgets::footer_agents_chip(running_agent_count(app), app.ui_locale);
     let replay_spans = footer_reasoning_replay_spans(app);
     let cache_spans = footer_cache_spans(app);
-    let displayed_cost = app.displayed_session_cost();
+    let displayed_cost = app.displayed_session_cost_for_currency(app.cost_currency);
     let cost_spans = if displayed_cost > 0.001 {
         vec![Span::styled(
-            format!("${displayed_cost:.2}"),
+            app.format_cost_amount(displayed_cost),
             Style::default().fg(palette::TEXT_MUTED),
         )]
     } else {

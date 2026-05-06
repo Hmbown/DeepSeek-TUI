@@ -59,7 +59,31 @@ pub struct SkillRegistry {
 }
 
 impl SkillRegistry {
+    /// Maximum directory-traversal depth when discovering skills.
+    ///
+    /// Defends against pathological configurations (e.g. a user pointing
+    /// `skills_dir` at `~`) without artificially limiting realistic
+    /// vendored layouts like `<root>/<org>/<repo>/<skill>/SKILL.md`.
+    const MAX_DISCOVERY_DEPTH: usize = 8;
+
     /// Discover skills from the given directory.
+    ///
+    /// The search walks `dir` recursively: any directory that contains a
+    /// `SKILL.md` is loaded as a single skill, and the walk does **not**
+    /// descend further into that directory (companion files live next to
+    /// `SKILL.md`, and `tools::skill::collect_companion_files` already
+    /// treats nested subdirs as out-of-scope). This lets users organize
+    /// skills by vendor / category — e.g.
+    /// `<root>/<vendor>/<skill>/SKILL.md` — instead of being forced into
+    /// a flat `<root>/<skill>/SKILL.md` layout.
+    ///
+    /// Hidden subdirectories (names starting with `.`) below the root
+    /// are skipped to avoid descending into VCS / cache trees like
+    /// `.git/`. The provided `dir` itself is always honored, even if
+    /// hidden — that's what the user explicitly configured.
+    /// Symlinked directories are not followed, which keeps the walk
+    /// finite when a skills layout contains symlinks. The depth is also
+    /// capped at [`Self::MAX_DISCOVERY_DEPTH`].
     #[must_use]
     pub fn discover(dir: &Path) -> Self {
         let mut registry = Self::default();
@@ -67,37 +91,94 @@ impl SkillRegistry {
             return registry;
         }
 
-        if let Ok(entries) = fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                if let Ok(ft) = entry.file_type()
-                    && ft.is_dir()
-                {
-                    let skill_path = entry.path().join("SKILL.md");
-                    match fs::read_to_string(&skill_path) {
-                        Ok(content) => match Self::parse_skill(&skill_path, &content) {
-                            Ok(mut skill) => {
-                                skill.path = skill_path.clone();
-                                registry.skills.push(skill);
-                            }
-                            Err(reason) => registry.push_warning(format!(
-                                "Failed to parse {}: {reason}",
-                                skill_path.display()
-                            )),
-                        },
-                        Err(err) if skill_path.exists() => {
-                            registry.push_warning(format!(
-                                "Failed to read {}: {err}",
-                                skill_path.display()
-                            ));
-                        }
-                        Err(_) => {}
+        Self::discover_recursive(dir, 0, &mut registry);
+        registry
+    }
+
+    fn discover_recursive(dir: &Path, depth: usize, registry: &mut Self) {
+        if depth > Self::MAX_DISCOVERY_DEPTH {
+            return;
+        }
+
+        let entries = match fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(err) => {
+                // Only surface a warning for the user-provided root
+                // (depth == 0). Nested permission errors are usually
+                // noise (e.g. a stray `.Trash` inside someone's
+                // `~/.agents/skills`).
+                if depth == 0 {
+                    registry.push_warning(format!(
+                        "Failed to read skills directory {}: {err}",
+                        dir.display()
+                    ));
+                }
+                return;
+            }
+        };
+
+        for entry in entries.flatten() {
+            // Use `file_type()` (which on Unix returns symlink metadata
+            // without following) so we don't traverse into symlinked
+            // directories — that closes the door on cycles.
+            let Ok(ft) = entry.file_type() else { continue };
+            if !ft.is_dir() {
+                continue;
+            }
+
+            let path = entry.path();
+            // Skip hidden subdirectories. Common offenders are `.git`,
+            // `.cache`, `.Trash`. The provided root itself is exempt:
+            // the user explicitly pointed `skills_dir` at it and we
+            // never filter it (it's passed directly to this function,
+            // not iterated). This check applies to *children* of the
+            // current directory at every depth — including depth 0,
+            // because a `.git/` right next to the skills we want is
+            // exactly the kind of noise we must not descend into.
+            if path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .is_some_and(|name| name.starts_with('.'))
+            {
+                continue;
+            }
+
+            let skill_path = path.join("SKILL.md");
+            match fs::read_to_string(&skill_path) {
+                Ok(content) => match Self::parse_skill(&skill_path, &content) {
+                    Ok(mut skill) => {
+                        skill.path = skill_path.clone();
+                        registry.skills.push(skill);
+                        // This directory IS a skill. Don't descend further:
+                        // any nested `SKILL.md` would be a fixture or
+                        // example bundled with the parent skill, not a
+                        // separately-installable skill.
+                        continue;
                     }
+                    Err(reason) => {
+                        registry.push_warning(format!(
+                            "Failed to parse {}: {reason}",
+                            skill_path.display()
+                        ));
+                        // Still treat this directory as "claimed" — a
+                        // malformed SKILL.md shouldn't cause us to
+                        // double-load nested fixtures as skills.
+                        continue;
+                    }
+                },
+                Err(err) if skill_path.exists() => {
+                    registry
+                        .push_warning(format!("Failed to read {}: {err}", skill_path.display()));
+                    continue;
+                }
+                Err(_) => {
+                    // No SKILL.md here — recurse to look for nested
+                    // skill directories (e.g. `<vendor>/<skill>/SKILL.md`).
                 }
             }
-        } else {
-            registry.push_warning(format!("Failed to read skills directory {}", dir.display()));
+
+            Self::discover_recursive(&path, depth + 1, registry);
         }
-        registry
     }
 
     fn push_warning(&mut self, warning: String) {
@@ -689,5 +770,143 @@ mod tests {
         let rendered =
             super::render_available_skills_context_for_workspace(workspace).expect("non-empty");
         assert!(rendered.contains("from-claude"));
+    }
+
+    /// Regression for the GitHub issue where users organize skills under
+    /// vendor / category subdirectories (e.g. cloned skill repos that
+    /// bundle several skills together). The old single-level `read_dir`
+    /// only ever surfaced `<root>/<skill>/SKILL.md` and silently ignored
+    /// `<root>/<vendor>/<skill>/SKILL.md`.
+    #[test]
+    fn discover_finds_skills_nested_under_vendor_subdirectory() {
+        let tmpdir = TempDir::new().unwrap();
+        let root = tmpdir.path().join("skills");
+
+        // Two-level nesting: `<root>/<vendor>/<skill>/SKILL.md`. This
+        // matches the `clawhub-skills/clawhub/SKILL.md` layout in the
+        // bug report.
+        write_skill(
+            &root.join("clawhub-skills"),
+            "clawhub",
+            "claw search",
+            "body",
+        );
+        write_skill(
+            &root.join("clawhub-skills"),
+            "github",
+            "github helpers",
+            "body",
+        );
+        // Three-level nesting: `<root>/<org>/<repo>/<skill>/SKILL.md`.
+        write_skill(
+            &root.join("pasky").join("chrome-cdp-skill"),
+            "chrome-cdp",
+            "browser automation",
+            "body",
+        );
+        // Mixed-depth: a flat skill alongside the nested layout still
+        // works (this is what the bundled `skill-creator` looks like).
+        write_skill(&root, "skill-creator", "make skills", "body");
+
+        let registry = super::SkillRegistry::discover(&root);
+        let names: Vec<&str> = registry.list().iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"clawhub"), "vendor/skill missed: {names:?}");
+        assert!(names.contains(&"github"), "vendor/skill missed: {names:?}");
+        assert!(
+            names.contains(&"chrome-cdp"),
+            "deeply-nested skill missed: {names:?}"
+        );
+        assert!(
+            names.contains(&"skill-creator"),
+            "flat top-level skill must still load: {names:?}"
+        );
+        assert!(
+            registry.warnings().is_empty(),
+            "well-formed nested layout should not warn: {:?}",
+            registry.warnings()
+        );
+    }
+
+    /// Once a directory is identified as a skill (has `SKILL.md`), the
+    /// walker must NOT descend into it: any nested `SKILL.md` would be
+    /// a fixture / example bundled with the parent skill, not a
+    /// separately-installable one. This mirrors the contract that
+    /// `tools::skill::collect_companion_files` already documents
+    /// ("nested directory — skipped").
+    #[test]
+    fn discover_does_not_descend_into_a_skill_directory() {
+        let tmpdir = TempDir::new().unwrap();
+        let root = tmpdir.path().join("skills");
+
+        // Parent skill: <root>/parent/SKILL.md.
+        write_skill(&root, "parent", "outer skill", "outer body");
+        // Fixture bundled inside the parent's directory:
+        // <root>/parent/examples/inner-fixture/SKILL.md. The walker
+        // must NOT descend into <root>/parent/ after finding its
+        // SKILL.md, so `inner-fixture` must not be loaded.
+        write_skill(
+            &root.join("parent").join("examples"),
+            "inner-fixture",
+            "should not load",
+            "fixture body",
+        );
+
+        let registry = super::SkillRegistry::discover(&root);
+        let names: Vec<&str> = registry.list().iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"parent"));
+        assert!(
+            !names.contains(&"inner-fixture"),
+            "nested SKILL.md inside an existing skill must be ignored: {names:?}"
+        );
+    }
+
+    /// Hidden subdirectories below the root (e.g. `.git`, `.cache`) must
+    /// be skipped so a `skills_dir` that lives inside a checked-out repo
+    /// doesn't accidentally load random `SKILL.md`-named fixtures from
+    /// the VCS metadata. The root itself is exempt — the user explicitly
+    /// pointed `skills_dir` at it.
+    #[test]
+    fn discover_skips_hidden_subdirectories_below_root() {
+        let tmpdir = TempDir::new().unwrap();
+        let root = tmpdir.path().join("skills");
+
+        write_skill(&root, "real-skill", "ok", "body");
+        // A `<root>/.git/<junk>/SKILL.md` lookalike that mustn't load.
+        // `.git` is a direct child of the user-provided root (depth 0
+        // of the walk), which is exactly the case the old `depth > 0`
+        // gate missed.
+        write_skill(&root.join(".git"), "vcs-noise", "should not load", "body");
+
+        let registry = super::SkillRegistry::discover(&root);
+        let names: Vec<&str> = registry.list().iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"real-skill"));
+        assert!(
+            !names.contains(&"vcs-noise"),
+            "skills under hidden subdirs must be skipped: {names:?}"
+        );
+    }
+
+    /// The user explicitly chooses the root, so even a hidden path like
+    /// `~/.agents/skills` (the layout in the bug report) must work.
+    #[test]
+    fn discover_honors_a_hidden_root_directory() {
+        let tmpdir = TempDir::new().unwrap();
+        let root = tmpdir.path().join(".agents").join("skills");
+
+        // Matches the bug report: skills_dir = "~/.agents/skills"
+        // with a skill nested at <root>/custom-skills/git-conventions/SKILL.md.
+        write_skill(
+            &root.join("custom-skills"),
+            "git-conventions",
+            "conventions",
+            "body",
+        );
+
+        let registry = super::SkillRegistry::discover(&root);
+        let names: Vec<&str> = registry.list().iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            names.contains(&"git-conventions"),
+            "hidden root must still be walked: {names:?}"
+        );
     }
 }

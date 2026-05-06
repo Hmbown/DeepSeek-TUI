@@ -588,11 +588,21 @@ fn build_metadata_message(
     parts.push("**REPL helpers** (use inside ```repl blocks)".to_string());
     parts.push("- `context` / `ctx`                       — the full input string".to_string());
     parts.push("- `len(context)` / `context[a:b]` / `context.splitlines()` — slice it".to_string());
-    parts.push("- `llm_query(prompt, model=None)`        — one-shot child LLM".to_string());
-    parts.push("- `llm_query_batched([p1, p2, ...])`     — concurrent fan-out".to_string());
-    parts.push("- `rlm_query(prompt, model=None)`        — recursive sub-RLM".to_string());
     parts.push(
-        "- `rlm_query_batched([p1, p2, ...])`     — concurrent recursive sub-RLMs".to_string(),
+        "- `llm_query(prompt, model=None)`        — one-shot child LLM; `model` is ignored and child calls stay pinned to Flash"
+            .to_string(),
+    );
+    parts.push(
+        "- `llm_query_batched([p1, p2, ...])`     — concurrent fan-out; `model` is ignored"
+            .to_string(),
+    );
+    parts.push(
+        "- `rlm_query(prompt, model=None)`        — recursive sub-RLM; `model` is ignored"
+            .to_string(),
+    );
+    parts.push(
+        "- `rlm_query_batched([p1, p2, ...])`     — concurrent recursive sub-RLMs; `model` is ignored"
+            .to_string(),
     );
     parts.push("- `SHOW_VARS()`                          — list user variables".to_string());
     parts.push("- `repl_set(name, value)` / `repl_get(name)` — explicit store".to_string());

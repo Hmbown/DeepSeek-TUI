@@ -10,7 +10,7 @@
 //! Mirrors the [`crate::retry_status`] pattern: background callers
 //! call [`report`] after each `client.create_message`, the TUI
 //! render loop calls [`drain`] every frame, and any drained amount
-//! gets folded into `App::accrue_subagent_cost`.
+//! gets folded into `App::accrue_subagent_cost_estimate`.
 //!
 //! Why a side-channel and not a plumbed callback: the leaky callers
 //! (`compaction.rs`, `seam_manager.rs`, `cycle_manager.rs`) are
@@ -23,37 +23,39 @@
 use std::sync::{Mutex, OnceLock};
 
 use crate::models::Usage;
+use crate::pricing::CostEstimate;
 
-static PENDING: OnceLock<Mutex<f64>> = OnceLock::new();
+static PENDING: OnceLock<Mutex<CostEstimate>> = OnceLock::new();
 
-fn cell() -> &'static Mutex<f64> {
-    PENDING.get_or_init(|| Mutex::new(0.0))
+fn cell() -> &'static Mutex<CostEstimate> {
+    PENDING.get_or_init(|| Mutex::new(CostEstimate::default()))
 }
 
 /// Background callers report their LLM usage here. Computes the
-/// cost via [`crate::pricing::calculate_turn_cost_from_usage`] and
+/// cost via [`crate::pricing::calculate_turn_cost_estimate_from_usage`] and
 /// adds it to the pending pool. Cheap; takes a short-lived lock
 /// and returns. No-op on models the pricing table doesn't know.
 pub fn report(model: &str, usage: &Usage) {
-    let Some(cost) = crate::pricing::calculate_turn_cost_from_usage(model, usage) else {
+    let Some(cost) = crate::pricing::calculate_turn_cost_estimate_from_usage(model, usage) else {
         return;
     };
-    if cost <= 0.0 {
+    if !cost.is_positive() {
         return;
     }
     if let Ok(mut pending) = cell().lock() {
-        *pending += cost;
+        pending.usd += cost.usd;
+        pending.cny += cost.cny;
     }
 }
 
 /// Drain the pending cost. Returns the accumulated amount and resets
 /// the pool to zero. Called by the TUI render / event loop on each
-/// frame; any non-zero result gets folded into `accrue_subagent_cost`.
-pub fn drain() -> f64 {
+/// frame; any non-zero result gets folded into `accrue_subagent_cost_estimate`.
+pub fn drain() -> CostEstimate {
     let Ok(mut pending) = cell().lock() else {
-        return 0.0;
+        return CostEstimate::default();
     };
-    std::mem::replace(&mut *pending, 0.0)
+    std::mem::take(&mut *pending)
 }
 
 /// Reset the pool to zero without consuming. Test-only helper for
@@ -62,7 +64,7 @@ pub fn drain() -> f64 {
 #[cfg(test)]
 pub fn reset_for_tests() {
     if let Ok(mut pending) = cell().lock() {
-        *pending = 0.0;
+        *pending = CostEstimate::default();
     }
 }
 
@@ -94,9 +96,10 @@ mod tests {
         reset_for_tests();
         report("deepseek-v4-flash", &small_usage());
         let first = drain();
-        assert!(first > 0.0, "expected positive cost, got {first}");
+        assert!(first.usd > 0.0, "expected positive USD cost, got {first:?}");
+        assert!(first.cny > 0.0, "expected positive CNY cost, got {first:?}");
         let second = drain();
-        assert_eq!(second, 0.0, "drain must zero the pool");
+        assert_eq!(second, CostEstimate::default(), "drain must zero the pool");
     }
 
     #[test]
@@ -105,7 +108,7 @@ mod tests {
         reset_for_tests();
         // NIM-hosted models intentionally have no DeepSeek pricing.
         report("deepseek-ai/deepseek-v4-pro", &small_usage());
-        assert_eq!(drain(), 0.0);
+        assert_eq!(drain(), CostEstimate::default());
     }
 
     #[test]
@@ -116,9 +119,12 @@ mod tests {
         report("deepseek-v4-flash", &small_usage());
         let total = drain();
         // Two equal reports — total must be 2× a single report.
-        let single =
-            crate::pricing::calculate_turn_cost_from_usage("deepseek-v4-flash", &small_usage())
-                .unwrap();
-        assert!((total - 2.0 * single).abs() < 1e-12);
+        let single = crate::pricing::calculate_turn_cost_estimate_from_usage(
+            "deepseek-v4-flash",
+            &small_usage(),
+        )
+        .unwrap();
+        assert!((total.usd - 2.0 * single.usd).abs() < 1e-12);
+        assert!((total.cny - 2.0 * single.cny).abs() < 1e-12);
     }
 }

@@ -10,6 +10,7 @@
 use crate::models::SystemPrompt;
 use crate::project_context::{ProjectContext, load_project_context_with_parents};
 use crate::tui::app::AppMode;
+use crate::tui::approval::ApprovalMode;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -170,11 +171,23 @@ fn mode_prompt(mode: AppMode) -> &'static str {
     }
 }
 
-fn approval_prompt(mode: AppMode) -> &'static str {
+fn default_approval_mode_for_mode(mode: AppMode) -> ApprovalMode {
     match mode {
-        AppMode::Agent => SUGGEST_APPROVAL,
+        AppMode::Agent => ApprovalMode::Suggest,
+        AppMode::Yolo => ApprovalMode::Auto,
+        AppMode::Plan => ApprovalMode::Never,
+    }
+}
+
+fn approval_prompt_for_mode(mode: AppMode, approval_mode: ApprovalMode) -> &'static str {
+    match mode {
         AppMode::Yolo => AUTO_APPROVAL,
         AppMode::Plan => NEVER_APPROVAL,
+        AppMode::Agent => match approval_mode {
+            ApprovalMode::Auto => AUTO_APPROVAL,
+            ApprovalMode::Suggest => SUGGEST_APPROVAL,
+            ApprovalMode::Never => NEVER_APPROVAL,
+        },
     }
 }
 
@@ -187,11 +200,19 @@ fn approval_prompt(mode: AppMode) -> &'static str {
 /// Each layer is separated by a blank line for readability in the
 /// rendered prompt (the model sees them as contiguous sections).
 pub fn compose_prompt(mode: AppMode, personality: Personality) -> String {
+    compose_prompt_with_approval(mode, personality, default_approval_mode_for_mode(mode))
+}
+
+pub fn compose_prompt_with_approval(
+    mode: AppMode,
+    personality: Personality,
+    approval_mode: ApprovalMode,
+) -> String {
     let parts: [&str; 4] = [
         BASE_PROMPT.trim(),
         personality.prompt().trim(),
         mode_prompt(mode).trim(),
-        approval_prompt(mode).trim(),
+        approval_prompt_for_mode(mode, approval_mode).trim(),
     ];
 
     let mut out =
@@ -209,6 +230,10 @@ pub fn compose_prompt(mode: AppMode, personality: Personality) -> String {
 /// Compose for the default personality (Calm).
 fn compose_mode_prompt(mode: AppMode) -> String {
     compose_prompt(mode, Personality::Calm)
+}
+
+fn compose_mode_prompt_with_approval(mode: AppMode, approval_mode: ApprovalMode) -> String {
+    compose_prompt_with_approval(mode, Personality::Calm, approval_mode)
 }
 
 // ── Public API ────────────────────────────────────────────────────────
@@ -288,7 +313,27 @@ pub fn system_prompt_for_mode_with_context_skills_and_session(
     instructions: Option<&[PathBuf]>,
     session_context: PromptSessionContext<'_>,
 ) -> SystemPrompt {
-    let mode_prompt = compose_mode_prompt(mode);
+    system_prompt_for_mode_with_context_skills_session_and_approval(
+        mode,
+        workspace,
+        _working_set_summary,
+        skills_dir,
+        instructions,
+        session_context,
+        default_approval_mode_for_mode(mode),
+    )
+}
+
+pub fn system_prompt_for_mode_with_context_skills_session_and_approval(
+    mode: AppMode,
+    workspace: &Path,
+    _working_set_summary: Option<&str>,
+    skills_dir: Option<&Path>,
+    instructions: Option<&[PathBuf]>,
+    session_context: PromptSessionContext<'_>,
+    approval_mode: ApprovalMode,
+) -> SystemPrompt {
+    let mode_prompt = compose_mode_prompt_with_approval(mode, approval_mode);
 
     // Load project context from workspace
     let project_context = load_project_context_with_parents(workspace);
@@ -509,6 +554,15 @@ mod tests {
         assert!(
             compose_prompt(AppMode::Plan, Personality::Calm).contains("Approval Policy: Never")
         );
+    }
+
+    #[test]
+    fn agent_prompt_can_reflect_never_approval_policy() {
+        let prompt =
+            compose_prompt_with_approval(AppMode::Agent, Personality::Calm, ApprovalMode::Never);
+        assert!(prompt.contains("Mode: Agent"));
+        assert!(prompt.contains("Approval Policy: Never"));
+        assert!(prompt.contains("/config approval_mode suggest"));
     }
 
     #[test]

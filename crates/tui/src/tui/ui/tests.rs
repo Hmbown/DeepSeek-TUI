@@ -17,6 +17,34 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 #[test]
+fn composer_newline_shortcuts_do_not_steal_ctrl_enter() {
+    assert!(is_composer_newline_key(KeyEvent::new(
+        KeyCode::Char('j'),
+        KeyModifiers::CONTROL,
+    )));
+    assert!(is_composer_newline_key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::ALT,
+    )));
+    assert!(is_composer_newline_key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::SHIFT,
+    )));
+    assert!(!is_composer_newline_key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert!(!is_composer_newline_key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::CONTROL,
+    )));
+    assert!(!is_composer_newline_key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    )));
+}
+
+#[test]
 fn selection_point_from_position_ignores_top_padding() {
     let area = Rect {
         x: 10,
@@ -1063,6 +1091,17 @@ fn footer_auxiliary_spans_show_cache_and_cost_when_roomy() {
         !roomy.contains("ctx"),
         "context % removed from footer — shown in header only"
     );
+}
+
+#[test]
+fn footer_auxiliary_spans_use_configured_cost_currency() {
+    let mut app = create_test_app();
+    app.cost_currency = crate::pricing::CostCurrency::Cny;
+    app.session.session_cost_cny = 2.5;
+
+    let roomy = spans_text(&footer_auxiliary_spans(&app, 32));
+    assert!(roomy.contains("¥2.50"));
+    assert!(!roomy.contains('$'));
 }
 
 #[test]
@@ -2815,8 +2854,16 @@ fn completed_turn_notification_falls_back_to_latest_assistant_message() {
         }],
     });
 
-    let msg =
-        completed_turn_notification_message(&app, "", true, Duration::from_secs(75), Some(0.01));
+    let msg = completed_turn_notification_message(
+        &app,
+        "",
+        true,
+        Duration::from_secs(75),
+        Some(crate::pricing::CostEstimate {
+            usd: 0.01,
+            cny: 0.0,
+        }),
+    );
 
     assert_eq!(msg, "最新回复内容\ndeepseek: turn complete (1m 15s, $0.01)");
 }

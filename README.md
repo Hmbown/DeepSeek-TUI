@@ -223,7 +223,7 @@ deepseek setup --status                          # read-only setup status
 deepseek setup --tools --plugins                 # scaffold tool/plugin dirs
 deepseek models                                  # list live API models
 deepseek sessions                                # list saved sessions
-deepseek resume --last                           # resume the most recent session
+deepseek resume --last                           # resume the most recent session in this workspace
 deepseek resume <SESSION_ID>                     # resume a specific session by UUID
 deepseek fork <SESSION_ID>                       # fork a session at a chosen turn
 deepseek serve --http                            # HTTP/SSE API server
@@ -319,6 +319,9 @@ UI locale is separate from model language — set `locale` in `settings.toml`, u
 Legacy aliases `deepseek-chat` / `deepseek-reasoner` map to `deepseek-v4-flash`. NVIDIA NIM variants use your NVIDIA account terms.
 
 *DeepSeek Pro rates currently reflect a limited-time 75% discount, which remains valid until 15:59 UTC on 31 May 2026. After that time, the TUI cost estimator will revert to the base Pro rates.*
+
+> [!Note]
+> For the latest DeepSeek-V4-Pro pricing, including the current 75% discount valid until 15:59 UTC on 31 May 2026, please consult the official [DeepSeek pricing page](https://api-docs.deepseek.com/zh-cn/quick_start/pricing). All rates listed in the README correspond to the officially published values.
 
 ---
 

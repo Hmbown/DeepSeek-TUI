@@ -16,7 +16,7 @@ Press `Shift+Tab` to cycle reasoning effort.
 - **Agent**: multi-step tool use. Approvals for shell and paid tools (file writes are allowed without a prompt).
 - **YOLO**: enables shell + trust mode and auto-approves all tools. Use only in trusted repos.
 
-All three modes have access to the `rlm_query` tool — a structured tool call that fans out 1–16 cheap parallel children on `deepseek-v4-flash`. The model reaches for it when work is decomposable.
+All three modes have access to the `rlm` tool. Inside its Python REPL, `llm_query_batched` fans out 1–16 cheap parallel child calls pinned to `deepseek-v4-flash`. The model reaches for it when work is decomposable.
 
 ## Compatibility Notes
 
@@ -81,7 +81,7 @@ Run `deepseek --help` for the canonical list. Common flags:
 - `--workspace <DIR>`: workspace root for file tools
 - `--yolo`: start in YOLO mode
 - `-r, --resume <ID|PREFIX|latest>`: resume a saved session
-- `-c, --continue`: resume the most recent session
+- `-c, --continue`: resume the most recent session in this workspace
 - `--max-subagents <N>`: clamp to `1..=20`
 - `--no-alt-screen`: run inline without the alternate screen buffer
 - `--mouse-capture` / `--no-mouse-capture`: opt in or out of internal mouse scrolling, transcript selection, and right-click context actions. Mouse capture is enabled by default on non-Windows terminals so drag selection copies only user/assistant transcript text; hold Shift while dragging or use `--no-mouse-capture` for raw terminal selection. On Windows it defaults off to avoid CMD/terminal mouse escape sequences being inserted into the prompt; use `--mouse-capture` to opt in.

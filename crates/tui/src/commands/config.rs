@@ -236,7 +236,7 @@ pub fn persist_root_string_key(key: &str, value: &str) -> anyhow::Result<PathBuf
 /// Resolve the path to `~/.deepseek/config.toml` (or
 /// `$DEEPSEEK_CONFIG_PATH`). Mirrors what `Config::load` accepts so we
 /// never write to a different file than the one we read.
-fn config_toml_path() -> anyhow::Result<PathBuf> {
+pub(super) fn config_toml_path() -> anyhow::Result<PathBuf> {
     use anyhow::Context;
     if let Ok(env) = std::env::var("DEEPSEEK_CONFIG_PATH") {
         let trimmed = env.trim();
@@ -288,19 +288,14 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
             );
         }
         "approval_mode" | "approval" => {
-            let mode = match value.to_lowercase().as_str() {
-                "auto" => Some(ApprovalMode::Auto),
-                "suggest" | "suggested" | "on-request" | "untrusted" => Some(ApprovalMode::Suggest),
-                "never" => Some(ApprovalMode::Never),
-                _ => None,
-            };
+            let mode = ApprovalMode::from_config_value(value);
             return match mode {
                 Some(m) => {
                     app.approval_mode = m;
                     CommandResult::message(format!("approval_mode = {}", m.label()))
                 }
                 None => CommandResult::error(
-                    "Invalid approval_mode. Use: auto, suggest/on-request/untrusted, never",
+                    "Invalid approval_mode. Use: auto, suggest/on-request/untrusted, never/deny",
                 ),
             };
         }
@@ -371,6 +366,11 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
             app.ui_locale = resolve_locale(&settings.locale);
             app.needs_redraw = true;
         }
+        "cost_currency" | "currency" => {
+            app.cost_currency = crate::pricing::CostCurrency::from_setting(&settings.cost_currency)
+                .unwrap_or(crate::pricing::CostCurrency::Usd);
+            app.needs_redraw = true;
+        }
         "composer_density" | "composer" => {
             app.composer_density =
                 crate::tui::app::ComposerDensity::from_setting(&settings.composer_density);
@@ -425,6 +425,7 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
 
     let display_value = match key.as_str() {
         "default_mode" | "mode" => settings.default_mode.clone(),
+        "cost_currency" | "currency" => settings.cost_currency.clone(),
         _ => value.to_string(),
     };
 
