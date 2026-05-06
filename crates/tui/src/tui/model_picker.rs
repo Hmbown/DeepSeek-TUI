@@ -34,6 +34,7 @@ use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
 /// Models the picker exposes by default. Kept short on purpose — power
 /// users can still type `/model <id>` for anything else.
 const PICKER_MODELS: &[(&str, &str)] = &[
+    ("auto", "select per turn"),
     ("deepseek-v4-pro", "flagship"),
     ("deepseek-v4-flash", "fast / cheap"),
 ];
@@ -41,6 +42,7 @@ const PICKER_MODELS: &[(&str, &str)] = &[
 /// Thinking-effort rows shown in the picker, in the order DeepSeek
 /// behaviorally distinguishes them.
 const PICKER_EFFORTS: &[ReasoningEffort] = &[
+    ReasoningEffort::Auto,
     ReasoningEffort::Off,
     ReasoningEffort::High,
     ReasoningEffort::Max,
@@ -68,7 +70,11 @@ pub struct ModelPickerView {
 impl ModelPickerView {
     #[must_use]
     pub fn new(app: &App) -> Self {
-        let initial_model = app.model.clone();
+        let initial_model = if app.auto_model {
+            "auto".to_string()
+        } else {
+            app.model.clone()
+        };
         let mut selected_model_idx = PICKER_MODELS
             .iter()
             .position(|(id, _)| *id == initial_model);
@@ -88,7 +94,7 @@ impl ModelPickerView {
         let selected_effort_idx = PICKER_EFFORTS
             .iter()
             .position(|e| *e == normalized)
-            .unwrap_or(1); // default to High if somehow unknown
+            .unwrap_or(2); // default to High if somehow unknown
 
         Self {
             initial_model,
@@ -116,6 +122,9 @@ impl ModelPickerView {
     }
 
     fn resolved_effort(&self) -> ReasoningEffort {
+        if self.resolved_model().trim().eq_ignore_ascii_case("auto") {
+            return ReasoningEffort::Auto;
+        }
         PICKER_EFFORTS[self.selected_effort_idx]
     }
 
@@ -318,6 +327,7 @@ impl ModalView for ModelPickerView {
             .map(|effort| {
                 let label = effort.short_label().to_string();
                 let hint = match effort {
+                    ReasoningEffort::Auto => "auto-select per turn".to_string(),
                     ReasoningEffort::Off => "thinking disabled".to_string(),
                     ReasoningEffort::High => "thinking enabled (default)".to_string(),
                     ReasoningEffort::Max => "thinking enabled, max effort".to_string(),
@@ -388,6 +398,37 @@ mod tests {
     }
 
     #[test]
+    fn picker_initial_selection_matches_auto_state() {
+        let mut app = create_test_app();
+        app.model = "auto".to_string();
+        app.auto_model = true;
+        app.reasoning_effort = ReasoningEffort::Auto;
+
+        let view = ModelPickerView::new(&app);
+
+        assert_eq!(view.resolved_model(), "auto");
+        assert_eq!(view.resolved_effort(), ReasoningEffort::Auto);
+    }
+
+    #[test]
+    fn picker_auto_model_forces_auto_effort_on_apply() {
+        let mut app = create_test_app();
+        app.model = "auto".to_string();
+        app.auto_model = true;
+        app.reasoning_effort = ReasoningEffort::Off;
+
+        let mut view = ModelPickerView::new(&app);
+        view.selected_model_idx = 0;
+        view.selected_effort_idx = PICKER_EFFORTS
+            .iter()
+            .position(|effort| *effort == ReasoningEffort::Max)
+            .expect("max effort row");
+
+        assert_eq!(view.resolved_model(), "auto");
+        assert_eq!(view.resolved_effort(), ReasoningEffort::Auto);
+    }
+
+    #[test]
     fn picker_normalizes_low_medium_to_high() {
         let mut app = create_test_app();
         app.reasoning_effort = ReasoningEffort::Medium;
@@ -397,6 +438,21 @@ mod tests {
             ReasoningEffort::High,
             "medium should map to high in the picker"
         );
+    }
+
+    #[test]
+    fn picker_exposes_auto_and_distinct_thinking_tiers() {
+        let model_labels: Vec<_> = PICKER_MODELS.iter().map(|(id, _)| *id).collect();
+        assert_eq!(
+            model_labels,
+            vec!["auto", "deepseek-v4-pro", "deepseek-v4-flash"]
+        );
+
+        let effort_labels: Vec<_> = PICKER_EFFORTS
+            .iter()
+            .map(|effort| effort.as_setting())
+            .collect();
+        assert_eq!(effort_labels, vec!["auto", "off", "high", "max"]);
     }
 
     #[test]
@@ -429,7 +485,7 @@ mod tests {
     #[test]
     fn tab_switches_focus_and_arrow_now_moves_effort() {
         let mut app = create_test_app();
-        // Default is Max (index 2 = last); pin to Off so the Down arrow has
+        // Default is Max; pin to Off so the Down arrow has
         // somewhere to go.
         app.reasoning_effort = ReasoningEffort::Off;
         let mut view = ModelPickerView::new(&app);
@@ -490,11 +546,11 @@ mod tests {
     }
 
     #[test]
-    fn picker_only_exposes_off_high_max() {
+    fn picker_only_exposes_auto_off_high_max() {
         let labels: Vec<&str> = PICKER_EFFORTS
             .iter()
             .map(|effort| effort.short_label())
             .collect();
-        assert_eq!(labels, vec!["off", "high", "max"]);
+        assert_eq!(labels, vec!["auto", "off", "high", "max"]);
     }
 }

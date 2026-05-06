@@ -284,7 +284,7 @@ impl Settings {
             s.locale = normalize_configured_locale(&s.locale)
                 .unwrap_or("en")
                 .to_string();
-            s.default_model = s.default_model.as_deref().and_then(normalize_model_name);
+            s.default_model = s.default_model.as_deref().and_then(normalize_default_model);
             s
         };
         settings.apply_env_overrides();
@@ -444,9 +444,9 @@ impl Settings {
                     return Ok(());
                 }
 
-                let Some(model) = normalize_model_name(trimmed) else {
+                let Some(model) = normalize_default_model(trimmed) else {
                     anyhow::bail!(
-                        "Failed to update setting: invalid model '{value}'. Expected: a DeepSeek model ID (for example deepseek-v4-pro, deepseek-v4-flash), or none/default."
+                        "Failed to update setting: invalid model '{value}'. Expected: auto, a DeepSeek model ID (for example deepseek-v4-pro, deepseek-v4-flash), or none/default."
                     );
                 };
                 self.default_model = Some(model);
@@ -549,9 +549,18 @@ impl Settings {
             ("max_history", "Max input history entries"),
             (
                 "default_model",
-                "Default model: any DeepSeek model ID (e.g. deepseek-v4-pro)",
+                "Default model: auto or any DeepSeek model ID (e.g. deepseek-v4-pro)",
             ),
         ]
+    }
+}
+
+fn normalize_default_model(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.eq_ignore_ascii_case("auto") {
+        Some("auto".to_string())
+    } else {
+        normalize_model_name(trimmed)
     }
 }
 

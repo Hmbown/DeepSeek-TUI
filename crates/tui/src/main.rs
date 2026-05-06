@@ -2504,6 +2504,11 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
         .model
         .or_else(|| config.default_text_model.clone())
         .unwrap_or_else(|| config.default_model());
+    let route = resolve_cli_auto_route(config, &model, &diff).await;
+    let model = route.model;
+    let reasoning_effort = route
+        .reasoning_effort
+        .map(|effort| effort.as_setting().to_string());
 
     let system = SystemPrompt::Text(
         "You are a senior code reviewer. Focus on bugs, risks, behavioral regressions, and missing tests. \
@@ -2529,7 +2534,7 @@ Provide findings ordered by severity with file references, then open questions, 
         tool_choice: None,
         metadata: None,
         thinking: None,
-        reasoning_effort: None,
+        reasoning_effort,
         stream: Some(false),
         temperature: Some(0.2),
         top_p: Some(0.9),
@@ -3620,14 +3625,42 @@ async fn run_interactive(
     .await
 }
 
+struct CliAutoRoute {
+    model: String,
+    reasoning_effort: Option<crate::tui::app::ReasoningEffort>,
+    auto_model: bool,
+}
+
+async fn resolve_cli_auto_route(config: &Config, model: &str, prompt: &str) -> CliAutoRoute {
+    if model.trim().eq_ignore_ascii_case("auto") {
+        let selection =
+            commands::resolve_auto_route_with_flash(config, prompt, "", "auto", "auto").await;
+        CliAutoRoute {
+            model: selection.model,
+            reasoning_effort: selection.reasoning_effort,
+            auto_model: true,
+        }
+    } else {
+        CliAutoRoute {
+            model: model.to_string(),
+            reasoning_effort: None,
+            auto_model: false,
+        }
+    }
+}
+
 async fn run_one_shot(config: &Config, model: &str, prompt: &str) -> Result<()> {
     use crate::client::DeepSeekClient;
     use crate::models::{ContentBlock, Message, MessageRequest};
 
     let client = DeepSeekClient::new(config)?;
+    let route = resolve_cli_auto_route(config, model, prompt).await;
+    let reasoning_effort = route
+        .reasoning_effort
+        .map(|effort| effort.as_setting().to_string());
 
     let request = MessageRequest {
-        model: model.to_string(),
+        model: route.model,
         messages: vec![Message {
             role: "user".to_string(),
             content: vec![ContentBlock::Text {
@@ -3641,7 +3674,7 @@ async fn run_one_shot(config: &Config, model: &str, prompt: &str) -> Result<()> 
         tool_choice: None,
         metadata: None,
         thinking: None,
-        reasoning_effort: None,
+        reasoning_effort,
         stream: Some(false),
         temperature: None,
         top_p: None,
@@ -3663,8 +3696,13 @@ async fn run_one_shot_json(config: &Config, model: &str, prompt: &str) -> Result
     use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt};
 
     let client = DeepSeekClient::new(config)?;
+    let route = resolve_cli_auto_route(config, model, prompt).await;
+    let model = route.model;
+    let reasoning_effort = route
+        .reasoning_effort
+        .map(|effort| effort.as_setting().to_string());
     let request = MessageRequest {
-        model: model.to_string(),
+        model: model.clone(),
         messages: vec![Message {
             role: "user".to_string(),
             content: vec![ContentBlock::Text {
@@ -3680,7 +3718,7 @@ async fn run_one_shot_json(config: &Config, model: &str, prompt: &str) -> Result
         tool_choice: None,
         metadata: None,
         thinking: None,
-        reasoning_effort: None,
+        reasoning_effort,
         stream: Some(false),
         temperature: Some(0.2),
         top_p: Some(0.9),
@@ -3725,6 +3763,13 @@ async fn run_exec_agent(
     use crate::tools::todo::new_shared_todo_list;
     use crate::tui::app::AppMode;
 
+    let route = resolve_cli_auto_route(config, model, prompt).await;
+    let auto_model = route.auto_model;
+    let effective_model = route.model;
+    let effective_reasoning_effort = route
+        .reasoning_effort
+        .map(|effort| effort.as_setting().to_string());
+
     // Compaction defaults to disabled in v0.6.6: the checkpoint-restart cycle
     // architecture (issue #124) handles long-context resets via fresh contexts
     // rather than progressive summarization. The compaction config is still
@@ -3732,8 +3777,8 @@ async fn run_exec_agent(
     // or direct engine config keep their old behavior.
     let compaction = CompactionConfig {
         enabled: false,
-        model: model.to_string(),
-        token_threshold: compaction_threshold_for_model(model),
+        model: effective_model.clone(),
+        token_threshold: compaction_threshold_for_model(&effective_model),
         ..Default::default()
     };
 
@@ -3747,7 +3792,7 @@ async fn run_exec_agent(
         .map(crate::config::LspConfigToml::into_runtime);
 
     let engine_config = EngineConfig {
-        model: model.to_string(),
+        model: effective_model.clone(),
         workspace: workspace.clone(),
         allow_shell: auto_approve || config.allow_shell(),
         trust_mode,
@@ -3784,15 +3829,18 @@ async fn run_exec_agent(
     };
 
     engine_handle
-        .send(Op::send(
-            prompt,
+        .send(Op::SendMessage {
+            content: prompt.to_string(),
             mode,
-            model,
-            None,
-            auto_approve || config.allow_shell(),
+            model: effective_model.clone(),
+            goal_objective: None,
+            reasoning_effort: effective_reasoning_effort,
+            reasoning_effort_auto: auto_model,
+            auto_model,
+            allow_shell: auto_approve || config.allow_shell(),
             trust_mode,
             auto_approve,
-        ))
+        })
         .await?;
 
     #[derive(serde::Serialize)]
@@ -3813,7 +3861,7 @@ async fn run_exec_agent(
     }
     let mut summary = ExecSummary {
         mode: "agent".to_string(),
-        model: model.to_string(),
+        model: effective_model,
         prompt: prompt.to_string(),
         ..ExecSummary::default()
     };

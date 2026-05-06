@@ -1457,21 +1457,43 @@ impl RuntimeThreadManager {
         }
 
         let mode = parse_mode(req.mode.as_deref().unwrap_or(&thread.mode));
-        let model = req.model.unwrap_or_else(|| thread.model.clone());
+        let requested_model = req.model.unwrap_or_else(|| thread.model.clone());
+        let auto_model = requested_model.trim().eq_ignore_ascii_case("auto");
+        let (model, reasoning_effort) = if auto_model {
+            let selection = crate::commands::resolve_auto_route_with_flash(
+                &self.config,
+                &prompt,
+                "",
+                "auto",
+                "auto",
+            )
+            .await;
+            (
+                selection.model,
+                selection
+                    .reasoning_effort
+                    .map(|effort| effort.as_setting().to_string()),
+            )
+        } else {
+            (requested_model, None)
+        };
         let allow_shell = req.allow_shell.unwrap_or(thread.allow_shell);
         let trust_mode = req.trust_mode.unwrap_or(thread.trust_mode);
         let auto_approve = req.auto_approve.unwrap_or(thread.auto_approve);
 
         engine
-            .send(Op::send(
-                prompt,
+            .send(Op::SendMessage {
+                content: prompt,
                 mode,
-                model.clone(),
-                None,
+                model: model.clone(),
+                goal_objective: None,
+                reasoning_effort,
+                reasoning_effort_auto: auto_model,
+                auto_model,
                 allow_shell,
                 trust_mode,
                 auto_approve,
-            ))
+            })
             .await
             .map_err(|e| anyhow!("Failed to start turn: {e}"))?;
 

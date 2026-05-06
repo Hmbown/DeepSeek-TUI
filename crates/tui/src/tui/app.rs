@@ -9,7 +9,9 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::compaction::CompactionConfig;
-use crate::config::{ApiProvider, Config, SavedCredential, has_api_key, save_api_key};
+use crate::config::{
+    ApiProvider, Config, DEFAULT_TEXT_MODEL, SavedCredential, has_api_key, save_api_key,
+};
 use crate::config_ui::ConfigUiMode;
 use crate::core::coherence::CoherenceState;
 use crate::cycle_manager::{CycleBriefing, CycleConfig};
@@ -628,6 +630,8 @@ pub struct App {
     /// `dispatch_user_message` calls `auto_model_heuristic` to resolve the
     /// effective model for each outbound message.
     pub auto_model: bool,
+    /// Last concrete model chosen while `auto_model` is active.
+    pub last_effective_model: Option<String>,
     /// Current API provider (mirrors `Config::api_provider`).
     /// Updated by `/provider` switches so the UI/commands can read the
     /// active backend without re-deriving it from the live config.
@@ -635,6 +639,8 @@ pub struct App {
     /// Current reasoning-effort tier for DeepSeek thinking mode.
     /// Cycled via Shift+Tab; initialized from config at startup.
     pub reasoning_effort: ReasoningEffort,
+    /// Last concrete thinking tier chosen while `reasoning_effort` is auto.
+    pub last_effective_reasoning_effort: Option<ReasoningEffort>,
     pub workspace: PathBuf,
     pub config_path: Option<PathBuf>,
     pub config_profile: Option<String>,
@@ -1080,8 +1086,23 @@ impl App {
         let use_paste_burst_detection = settings.paste_burst_detection;
         let ui_theme = palette::UI_THEME;
         let model = settings.default_model.clone().unwrap_or(model);
+        let auto_model = model.trim().eq_ignore_ascii_case("auto");
+        let threshold_model = if auto_model {
+            DEFAULT_TEXT_MODEL
+        } else {
+            model.as_str()
+        };
         let compact_threshold =
-            compaction_threshold_for_model_and_effort(&model, config.reasoning_effort());
+            compaction_threshold_for_model_and_effort(threshold_model, config.reasoning_effort());
+        let reasoning_effort = if auto_model {
+            ReasoningEffort::Auto
+        } else {
+            config
+                .reasoning_effort()
+                .map_or_else(ReasoningEffort::default, |s| {
+                    ReasoningEffort::from_setting(s)
+                })
+        };
 
         // Start in YOLO mode if --yolo flag was passed
         let preferred_mode = AppMode::from_setting(&settings.default_mode);
@@ -1170,13 +1191,11 @@ impl App {
             sticky_status: None,
             last_status_message_seen: None,
             model,
-            auto_model: false,
+            auto_model,
+            last_effective_model: None,
             api_provider: provider,
-            reasoning_effort: config
-                .reasoning_effort()
-                .map_or_else(ReasoningEffort::default, |s| {
-                    ReasoningEffort::from_setting(s)
-                }),
+            reasoning_effort,
+            last_effective_reasoning_effort: None,
             workspace,
             config_path,
             config_profile,
@@ -1435,6 +1454,7 @@ impl App {
     /// `Off` → `High` → `Max` → `Off`.
     pub fn cycle_effort(&mut self) {
         self.reasoning_effort = self.reasoning_effort.cycle_next();
+        self.last_effective_reasoning_effort = None;
         self.needs_redraw = true;
         self.push_status_toast(
             format!("Thinking: {}", self.reasoning_effort.short_label()),
@@ -3464,10 +3484,42 @@ impl App {
     }
 
     pub fn update_model_compaction_budget(&mut self) {
-        self.compact_threshold = compaction_threshold_for_model_and_effort(
-            &self.model,
-            self.reasoning_effort.api_value(),
-        );
+        let model = self.effective_model_for_budget().to_string();
+        self.compact_threshold =
+            compaction_threshold_for_model_and_effort(&model, self.reasoning_effort.api_value());
+    }
+
+    pub fn effective_model_for_budget(&self) -> &str {
+        if self.auto_model {
+            return self
+                .last_effective_model
+                .as_deref()
+                .filter(|model| *model != "auto")
+                .unwrap_or(DEFAULT_TEXT_MODEL);
+        }
+        &self.model
+    }
+
+    pub fn model_display_label(&self) -> String {
+        if self.auto_model {
+            if let Some(effective) = self.last_effective_model.as_deref()
+                && effective != "auto"
+            {
+                return format!("auto: {effective}");
+            }
+            return "auto".to_string();
+        }
+        self.model.clone()
+    }
+
+    pub fn reasoning_effort_display_label(&self) -> String {
+        if self.auto_model || self.reasoning_effort == ReasoningEffort::Auto {
+            if let Some(effective) = self.last_effective_reasoning_effort {
+                return format!("auto: {}", effective.short_label());
+            }
+            return "auto".to_string();
+        }
+        self.reasoning_effort.short_label().to_string()
     }
 
     pub fn compaction_config(&self) -> CompactionConfig {

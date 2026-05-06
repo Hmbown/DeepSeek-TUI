@@ -977,10 +977,11 @@ impl Config {
             }
         }
         if let Some(model) = self.default_text_model.as_deref()
+            && !model.trim().eq_ignore_ascii_case("auto")
             && normalize_model_name(model).is_none()
         {
             anyhow::bail!(
-                "Invalid default_text_model '{model}': expected a DeepSeek model ID (for example: deepseek-v4-pro, deepseek-v4-flash, deepseek-ai/deepseek-v4-pro)."
+                "Invalid default_text_model '{model}': expected auto or a DeepSeek model ID (for example: deepseek-v4-pro, deepseek-v4-flash, deepseek-ai/deepseek-v4-pro)."
             );
         }
         if let Some(policy) = self.approval_policy.as_deref() {
@@ -1094,6 +1095,11 @@ impl Config {
             && let Some(normalized) = normalize_model_for_provider(provider, model)
         {
             return normalized;
+        }
+        if let Some(model) = self.default_text_model.as_deref()
+            && model.trim().eq_ignore_ascii_case("auto")
+        {
+            return "auto".to_string();
         }
         if let Some(model) = self.default_text_model.as_deref()
             && let Some(normalized) = normalize_model_name(model)
@@ -3417,6 +3423,17 @@ api_key = "old-openrouter-key"
             ..Default::default()
         };
         config.validate()?;
+        Ok(())
+    }
+
+    #[test]
+    fn validate_accepts_auto_default_text_model() -> Result<()> {
+        let config = Config {
+            default_text_model: Some("auto".to_string()),
+            ..Default::default()
+        };
+        config.validate()?;
+        assert_eq!(config.default_model(), "auto");
         Ok(())
     }
 
