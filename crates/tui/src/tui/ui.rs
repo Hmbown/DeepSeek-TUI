@@ -1677,6 +1677,8 @@ async fn run_event_loop(
                                     refreshed_config.api_key = Some(key);
                                     let engine_config = build_engine_config(app, &refreshed_config);
                                     engine_handle = spawn_engine(engine_config, &refreshed_config);
+                                    app.offline_mode = false;
+                                    app.api_key_env_only = false;
 
                                     if !app.api_messages.is_empty() {
                                         let _ = engine_handle
@@ -2916,6 +2918,19 @@ pub(crate) fn apply_engine_error_to_app(
         severity,
     });
     app.is_loading = false;
+    if matches!(
+        envelope.category,
+        crate::error_taxonomy::ErrorCategory::Authentication
+    ) && app.api_key_env_only
+    {
+        app.offline_mode = true;
+        app.onboarding_needs_api_key = true;
+        app.onboarding = OnboardingState::ApiKey;
+        app.status_message = Some(
+            "The API key from DEEPSEEK_API_KEY was rejected. Paste a valid key to save it to ~/.deepseek/config.toml, or update the environment variable.".to_string(),
+        );
+        return;
+    }
     if recoverable {
         app.status_message = Some(format!("Connection interrupted: {message}"));
     } else {
@@ -4338,6 +4353,7 @@ async fn execute_command_input(
             providers.fireworks.api_key = None;
             providers.sglang.api_key = None;
         }
+        app.api_key_env_only = crate::config::active_provider_uses_env_only_api_key(config);
     }
     apply_command_result(
         terminal,
@@ -5304,6 +5320,7 @@ async fn apply_provider_picker_api_key(
                 provider.as_str(),
                 path.display()
             ));
+            app.api_key_env_only = false;
         }
         Err(err) => {
             app.add_message(HistoryCell::System {

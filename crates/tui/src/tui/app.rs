@@ -701,6 +701,7 @@ pub struct App {
     // Onboarding
     pub onboarding: OnboardingState,
     pub onboarding_needs_api_key: bool,
+    pub api_key_env_only: bool,
     pub api_key_input: String,
     pub api_key_cursor: usize,
     // Hooks system
@@ -1055,6 +1056,7 @@ impl App {
 
         // Check if API key exists
         let needs_api_key = !has_api_key(config);
+        let api_key_env_only = crate::config::active_provider_uses_env_only_api_key(config);
         let was_onboarded = crate::tui::onboarding::is_onboarded();
         let needs_onboarding = !skip_onboarding && (!was_onboarded || needs_api_key);
         let settings = Settings::load().unwrap_or_else(|_| Settings::default());
@@ -1222,6 +1224,7 @@ impl App {
                 OnboardingState::None
             },
             onboarding_needs_api_key: needs_api_key,
+            api_key_env_only,
             api_key_input: String::new(),
             api_key_cursor: 0,
             hooks,
@@ -1324,6 +1327,7 @@ impl App {
                 self.api_key_input.clear();
                 self.api_key_cursor = 0;
                 self.onboarding_needs_api_key = false;
+                self.api_key_env_only = false;
                 Ok(saved)
             }
             Err(source) => Err(ApiKeyError::SaveFailed { source }),
