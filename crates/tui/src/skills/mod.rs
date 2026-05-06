@@ -845,6 +845,46 @@ mod tests {
     }
 
     #[test]
+    fn discover_accepts_plain_markdown_heading_without_frontmatter() {
+        let tmpdir = TempDir::new().unwrap();
+        let skill_dir = tmpdir.path().join("plain-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "# Plain Skill\n\nUse this skill without YAML frontmatter.\n",
+        )
+        .unwrap();
+
+        let registry = super::SkillRegistry::discover(tmpdir.path());
+        let skill = registry.get("Plain Skill").expect("plain skill parsed");
+        assert_eq!(skill.description, "");
+        assert!(skill.body.contains("Use this skill"));
+    }
+
+    #[test]
+    fn discover_warns_for_plain_markdown_without_heading() {
+        let tmpdir = TempDir::new().unwrap();
+        let skill_dir = tmpdir.path().join("plain-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "Use this skill without a heading or YAML frontmatter.\n",
+        )
+        .unwrap();
+
+        let registry = super::SkillRegistry::discover(tmpdir.path());
+        assert!(registry.is_empty());
+        assert!(
+            registry
+                .warnings()
+                .iter()
+                .any(|warning| warning.contains("no `# Heading` found")),
+            "expected missing-heading warning, got {:?}",
+            registry.warnings()
+        );
+    }
+
+    #[test]
     fn render_available_skills_context_for_workspace_picks_up_cross_tool_dirs() {
         let tmpdir = TempDir::new().unwrap();
         let workspace = tmpdir.path();
