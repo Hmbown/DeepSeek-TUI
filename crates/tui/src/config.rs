@@ -951,9 +951,31 @@ impl Config {
             if path.exists() {
                 let contents = fs::read_to_string(path)
                     .with_context(|| format!("Failed to read config file: {}", path.display()))?;
-                let parsed: ConfigFile = toml::from_str(&contents)
-                    .with_context(|| format!("Failed to parse config file: {}", path.display()))?;
-                apply_profile(parsed, profile)?
+
+                // Handle empty or whitespace-only config files gracefully
+                if contents.trim().is_empty() {
+                    tracing::warn!(
+                        target: "deepseek_tui::config",
+                        path = %path.display(),
+                        "Config file is empty; using defaults"
+                    );
+                    Config::default()
+                } else {
+                    match toml::from_str::<ConfigFile>(&contents) {
+                        Ok(parsed) => apply_profile(parsed, profile)?,
+                        Err(e) => {
+                            let path_display = path.display();
+                            anyhow::bail!(
+                                "Failed to parse config file at {path_display}\n\n\
+                                 Error: {e}\n\n\
+                                 The config file may be corrupted. You can:\n\
+                                 1. Fix the TOML syntax manually\n\
+                                 2. Delete the file and run `deepseek` again to regenerate it\n\
+                                 3. Run `deepseek config path` to see the file location"
+                            );
+                        }
+                    }
+                }
             } else {
                 Config::default()
             }

@@ -32,7 +32,21 @@ pub struct RuleSet {
 
 impl ExecPolicyConfig {
     pub fn from_str(contents: &str) -> Result<Self> {
-        toml::from_str(contents).context("failed to parse execpolicy.toml")
+        // Handle empty or whitespace-only config files gracefully
+        if contents.trim().is_empty() {
+            return Ok(Self {
+                rules: std::collections::HashMap::new(),
+                allow: Vec::new(),
+                deny: Vec::new(),
+            });
+        }
+
+        toml::from_str(contents).context(
+            "failed to parse execpolicy.toml\n\n\
+             The config file may be corrupted. You can:\n\
+             1. Fix the TOML syntax manually\n\
+             2. Delete the file to reset to defaults",
+        )
     }
 
     pub fn from_path(path: &Path) -> Result<Self> {

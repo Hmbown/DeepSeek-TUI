@@ -43,8 +43,23 @@ impl McpServerSettings {
         if let Some(path) = path.filter(|p| p.exists()) {
             let contents = std::fs::read_to_string(&path)
                 .with_context(|| format!("Failed to read MCP server config: {}", path.display()))?;
+
+            // Handle empty or whitespace-only config files gracefully
+            if contents.trim().is_empty() {
+                return Ok(Self {
+                    expose_tools: default_expose_tools(),
+                    require_approval: false,
+                });
+            }
+
             let config: McpServerConfigFile = toml::from_str(&contents).with_context(|| {
-                format!("Failed to parse MCP server config: {}", path.display())
+                format!(
+                    "Failed to parse MCP server config: {}\n\n\
+                     The config file may be corrupted. You can:\n\
+                     1. Fix the TOML syntax manually\n\
+                     2. Delete the file to reset to defaults",
+                    path.display()
+                )
             })?;
             let expose_tools = config
                 .server

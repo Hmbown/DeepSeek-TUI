@@ -122,8 +122,21 @@ impl TuiPrefs {
         }
         let content = std::fs::read_to_string(&path)
             .with_context(|| format!("Failed to read tui.toml from {}", path.display()))?;
-        let prefs: TuiPrefs = toml::from_str(&content)
-            .with_context(|| format!("Failed to parse tui.toml from {}", path.display()))?;
+
+        // Handle empty or whitespace-only config files gracefully
+        if content.trim().is_empty() {
+            return Ok(Self::default());
+        }
+
+        let prefs: TuiPrefs = toml::from_str(&content).with_context(|| {
+            format!(
+                "Failed to parse tui.toml from {}\n\n\
+                 The settings file may be corrupted. You can:\n\
+                 1. Fix the TOML syntax manually\n\
+                 2. Delete the file to reset settings to defaults",
+                path.display()
+            )
+        })?;
         Ok(prefs)
     }
 

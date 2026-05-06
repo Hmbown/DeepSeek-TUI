@@ -154,7 +154,22 @@ fn load_config_doc(path: &Path) -> anyhow::Result<Value> {
     }
     let raw = fs::read_to_string(path)
         .with_context(|| format!("failed to read config at {}", path.display()))?;
-    toml::from_str(&raw).with_context(|| format!("failed to parse config at {}", path.display()))
+
+    // Handle empty or whitespace-only config files gracefully
+    if raw.trim().is_empty() {
+        return Ok(Value::Table(toml::value::Table::new()));
+    }
+
+    toml::from_str(&raw).with_context(|| {
+        format!(
+            "failed to parse config at {}\n\n\
+             The config file may be corrupted. You can:\n\
+             1. Fix the TOML syntax manually\n\
+             2. Delete the file and run `deepseek` again to regenerate it\n\
+             3. Run `deepseek config path` to see the file location",
+            path.display()
+        )
+    })
 }
 
 fn save_config_doc(path: &Path, doc: &Value) -> anyhow::Result<()> {
