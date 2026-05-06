@@ -1805,10 +1805,9 @@ async fn run_event_loop(
                 continue;
             }
 
-            // Ctrl+E toggles the file-tree pane. Visible even when other
-            // modals are open (the file tree is part of the body layout,
-            // not a modal overlay).
-            if key.code == KeyCode::Char('e') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            // Shifted shortcuts toggle the file-tree pane. Keep plain Ctrl+E
+            // reserved for the composer end-of-line binding used by shells.
+            if is_file_tree_toggle_shortcut(&key) {
                 if let Some(_state) = app.file_tree.as_mut() {
                     // File tree visible → hide it.
                     app.file_tree = None;
@@ -2003,7 +2002,9 @@ async fn run_event_loop(
                     continue;
                 }
                 KeyCode::Char('o')
-                    if key.modifiers == KeyModifiers::CONTROL && open_thinking_pager(app) =>
+                    if key.modifiers == KeyModifiers::CONTROL
+                        && app.input.is_empty()
+                        && open_thinking_pager(app) =>
                 {
                     continue;
                 }
@@ -2562,7 +2563,10 @@ async fn run_event_loop(
                     app.move_cursor_end();
                 }
                 KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    // Ctrl+E: spawn $EDITOR on the composer contents (#91).
+                    app.move_cursor_end();
+                }
+                KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    // Ctrl+O: spawn $EDITOR on the composer contents (#91).
                     // Only fires when no modal is active (the !view_stack
                     // branch above already returns early in that case) and
                     // the composer is the focused input target. We accept the
@@ -7555,6 +7559,25 @@ fn is_copy_shortcut(key: &KeyEvent) -> bool {
     }
 
     key.modifiers.contains(KeyModifiers::CONTROL) && key.modifiers.contains(KeyModifiers::SHIFT)
+}
+
+fn is_file_tree_toggle_shortcut(key: &KeyEvent) -> bool {
+    let is_shifted_e = matches!(key.code, KeyCode::Char('E'))
+        || (matches!(key.code, KeyCode::Char('e')) && key.modifiers.contains(KeyModifiers::SHIFT));
+    if !is_shifted_e {
+        return false;
+    }
+
+    let has_forbidden_modifier =
+        key.modifiers.contains(KeyModifiers::ALT) || key.modifiers.contains(KeyModifiers::SUPER);
+    let ctrl_shift_e = key.modifiers.contains(KeyModifiers::CONTROL) && !has_forbidden_modifier;
+
+    let cmd_shift_e = key.modifiers.contains(KeyModifiers::SUPER)
+        && key.modifiers.contains(KeyModifiers::SHIFT)
+        && !key.modifiers.contains(KeyModifiers::CONTROL)
+        && !key.modifiers.contains(KeyModifiers::ALT);
+
+    ctrl_shift_e || cmd_shift_e
 }
 
 fn details_shortcut_modifiers(modifiers: KeyModifiers) -> bool {

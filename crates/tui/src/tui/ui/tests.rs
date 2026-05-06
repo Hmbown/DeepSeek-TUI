@@ -379,6 +379,26 @@ fn copy_shortcut_accepts_cmd_and_ctrl_shift_only() {
 }
 
 #[test]
+fn file_tree_shortcut_does_not_steal_plain_ctrl_e() {
+    assert!(!is_file_tree_toggle_shortcut(&KeyEvent::new(
+        KeyCode::Char('e'),
+        KeyModifiers::CONTROL,
+    )));
+    assert!(is_file_tree_toggle_shortcut(&KeyEvent::new(
+        KeyCode::Char('E'),
+        KeyModifiers::CONTROL,
+    )));
+    assert!(is_file_tree_toggle_shortcut(&KeyEvent::new(
+        KeyCode::Char('e'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    )));
+    assert!(is_file_tree_toggle_shortcut(&KeyEvent::new(
+        KeyCode::Char('E'),
+        KeyModifiers::SUPER | KeyModifiers::SHIFT,
+    )));
+}
+
+#[test]
 fn parse_plan_choice_accepts_numbers() {
     assert_eq!(parse_plan_choice("1"), Some(PlanChoice::AcceptAgent));
     assert_eq!(parse_plan_choice("2"), Some(PlanChoice::AcceptYolo));
