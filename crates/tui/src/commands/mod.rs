@@ -327,6 +327,12 @@ pub const COMMANDS: &[CommandInfo] = &[
         description_id: MessageId::CmdTrustDescription,
     },
     CommandInfo {
+        name: "think",
+        aliases: &[],
+        usage: "/think <off|high|max>",
+        description_id: MessageId::CmdThinkDescription,
+    },
+    CommandInfo {
         name: "logout",
         aliases: &[],
         usage: "/logout",
@@ -512,6 +518,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "agent" => config::agent_mode(app),
         "plan" => config::plan_mode(app),
         "trust" => config::trust(app, arg),
+        "think" => think(app, arg),
         "logout" => config::logout(app),
 
         // Debug commands
@@ -612,6 +619,45 @@ pub fn persist_root_string_key(key: &str, value: &str) -> anyhow::Result<std::pa
 /// Auto-select a model based on request complexity.
 pub fn auto_model_heuristic(input: &str, current_model: &str) -> String {
     config::auto_model_heuristic(input, current_model)
+}
+
+/// Set the reasoning-effort tier for DeepSeek thinking mode.
+///
+/// `/think off`  — disable thinking (no reasoning)
+/// `/think high` — enable thinking with high effort (maps to `"high"` /
+///                 `{ "type": "enabled" }`)
+/// `/think max`  — enable thinking with maximum effort (maps to `"max"`)
+pub fn think(app: &mut App, arg: Option<&str>) -> CommandResult {
+    use crate::tui::app::ReasoningEffort;
+
+    let effort = match arg {
+        Some("off" | "none" | "false" | "0") => ReasoningEffort::Off,
+        Some("high" | "on" | "true" | "1") => ReasoningEffort::High,
+        Some("max" | "maximum") => ReasoningEffort::Max,
+        _ => {
+            return CommandResult::error(
+                "Usage: /think <off|high|max>\n\
+                 \n\
+                 Set the reasoning-effort tier for DeepSeek thinking mode:\n\
+                 - off   — disable thinking (no reasoning_content)\n\
+                 - high  — enable thinking with high reasoning effort\n\
+                 - max   — enable thinking with maximum reasoning effort\n\
+                 \n\
+                 Current: {current}\n\
+                 \n\
+                 You can also cycle between Off → High → Max with Shift+Tab."
+                    .replace("{current}", app.reasoning_effort.short_label()),
+            );
+        }
+    };
+
+    app.reasoning_effort = effort;
+    app.needs_redraw = true;
+
+    CommandResult::message(format!(
+        "Reasoning effort set to: {}",
+        app.reasoning_effort.short_label(),
+    ))
 }
 
 /// Execute a Recursive Language Model (RLM) turn — Algorithm 1 from
