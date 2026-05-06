@@ -303,7 +303,7 @@ LANG=zh_CN.UTF-8 deepseek run
 *DeepSeek Pro 价格是限时 75% 折扣，有效期到 2026-05-31 15:59 UTC；该时间之后 TUI 成本估算会回退到 Pro 基础价格。*
 
 > [!Note]
-> DeepSeek 发布的一篇[文章](https://mp.weixin.qq.com/s/8bxXqS2R8Fx5-1TLDBiEDg)显示，DeepSeek-V4-Pro 当前的服务吞吐量主要受到高端算力资源有限的制约。预计 2026 年下半年，随着 **Ascend 950 超节点**的大规模商业化部署落地，DeepSeek-V4-Pro 的使用成本还将显著降低。
+> 关于 DeepSeek-V4-Pro 的最新定价信息，请参阅官方 [DeepSeek 定价页面](https://api-docs.deepseek.com/zh-cn/quick_start/pricing)，请注意目前可享受 75% 的折扣，该优惠有效期至 **2026 年 5 月 31 日 23:59（北京时间）**。此外，README 文档中所列出的所有价格，均与官方发布的数值保持一致。
 
 ---
 
