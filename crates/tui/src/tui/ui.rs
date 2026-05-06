@@ -2376,6 +2376,9 @@ async fn run_event_loop(
                 KeyCode::Enter if key.modifiers.contains(KeyModifiers::ALT) => {
                     app.insert_char('\n');
                 }
+                KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                    app.insert_char('\n');
+                }
                 KeyCode::Enter
                     if mention_menu_open
                         && crate::tui::file_mention::apply_mention_menu_selection(
