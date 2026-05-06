@@ -466,6 +466,22 @@ impl VimMode {
     }
 }
 
+/// Cached @-mention completion results to avoid re-walking the filesystem when
+/// the cursor moves inside the same mention token.
+#[derive(Debug, Clone)]
+pub struct MentionCompletionCache {
+    /// Workspace root used for this completion walk.
+    pub workspace: PathBuf,
+    /// Process cwd captured for cwd-relative completion entries.
+    pub cwd: Option<PathBuf>,
+    /// The partial text after `@` that triggered this completion.
+    pub partial: String,
+    /// Candidate limit used for this completion walk.
+    pub limit: usize,
+    /// Cached completion entries.
+    pub entries: Vec<String>,
+}
+
 /// Composer input state — grouped fields for the text input area.
 pub struct ComposerState {
     /// Current composer text content.
@@ -485,6 +501,9 @@ pub struct ComposerState {
     pub slash_menu_hidden: bool,
     pub mention_menu_selected: usize,
     pub mention_menu_hidden: bool,
+    /// Cached @-mention completions to avoid re-walking the filesystem when
+    /// the cursor moves inside the same mention token.
+    pub mention_completion_cache: Option<MentionCompletionCache>,
     /// Whether vim modal editing is enabled for this composer.
     /// Sourced from `Settings::composer_vim_mode` at startup.
     pub vim_enabled: bool,
@@ -513,6 +532,7 @@ impl Default for ComposerState {
             slash_menu_hidden: false,
             mention_menu_selected: 0,
             mention_menu_hidden: false,
+            mention_completion_cache: None,
             vim_enabled: false,
             vim_mode: VimMode::Normal,
             vim_pending_d: false,
@@ -1197,6 +1217,7 @@ impl App {
                 slash_menu_hidden: false,
                 mention_menu_selected: 0,
                 mention_menu_hidden: false,
+                mention_completion_cache: None,
                 vim_enabled: composer_vim_enabled,
                 vim_mode: VimMode::Normal,
                 vim_pending_d: false,
