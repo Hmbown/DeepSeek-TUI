@@ -375,6 +375,8 @@ mod tests {
             yolo: false,
             resume_session_id: None,
             initial_input: None,
+
+            tui_prefs: Default::default(),
         };
         let mut app = App::new(options, &Config::default());
         // App::new merges in `~/.config/deepseek/settings.toml` /
