@@ -398,7 +398,7 @@ pub enum StatusItem {
     Mode,
     /// Model identifier (e.g. `deepseek-v4-pro`).
     Model,
-    /// Session cost in USD ("$0.42").
+    /// Session cost in the configured display currency.
     Cost,
     /// Activity label: "ready" / "draft" / "working".
     Status,
@@ -483,7 +483,7 @@ impl StatusItem {
         match self {
             StatusItem::Mode => "agent · yolo · plan",
             StatusItem::Model => "the model id you'll send to",
-            StatusItem::Cost => "running USD total for this session",
+            StatusItem::Cost => "running total for this session",
             StatusItem::Status => "what the agent is doing right now",
             StatusItem::Coherence => "shown only when the engine intervenes",
             StatusItem::Agents => "agents or RLM work in progress",

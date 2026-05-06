@@ -94,9 +94,10 @@ pub(super) fn handle_subagent_mailbox(app: &mut App, seq: u64, message: &Mailbox
     // Accumulate sub-agent token costs for the real-time footer counter (#166).
     if let MailboxMessage::TokenUsage { model, usage, .. } = message {
         if app.session.subagent_cost_event_seqs.insert(seq)
-            && let Some(cost) = crate::pricing::calculate_turn_cost_from_usage(model, usage)
+            && let Some(cost) =
+                crate::pricing::calculate_turn_cost_estimate_from_usage(model, usage)
         {
-            app.accrue_subagent_cost(cost);
+            app.accrue_subagent_cost_estimate(cost);
         }
         return; // No card visual change needed; the footer handles display.
     }

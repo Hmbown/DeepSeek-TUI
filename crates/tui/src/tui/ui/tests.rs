@@ -1065,6 +1065,17 @@ fn footer_auxiliary_spans_show_cache_and_cost_when_roomy() {
 }
 
 #[test]
+fn footer_auxiliary_spans_use_configured_cost_currency() {
+    let mut app = create_test_app();
+    app.cost_currency = crate::pricing::CostCurrency::Cny;
+    app.session.session_cost_cny = 2.5;
+
+    let roomy = spans_text(&footer_auxiliary_spans(&app, 32));
+    assert!(roomy.contains("¥2.50"));
+    assert!(!roomy.contains('$'));
+}
+
+#[test]
 fn footer_auxiliary_spans_show_reasoning_replay_chip() {
     // Issue #30: when a thinking-mode tool-calling turn replays prior
     // reasoning_content, the footer surfaces the approximate input-token

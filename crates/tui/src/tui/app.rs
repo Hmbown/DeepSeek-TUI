@@ -19,6 +19,7 @@ use crate::hooks::{HookContext, HookEvent, HookExecutor, HookResult};
 use crate::localization::{Locale, MessageId, resolve_locale, tr};
 use crate::models::{Message, SystemPrompt, compaction_threshold_for_model_and_effort};
 use crate::palette::{self, UiTheme};
+use crate::pricing::{CostCurrency, CostEstimate};
 use crate::session_manager::SessionContextReference;
 use crate::settings::Settings;
 use crate::tools::plan::{SharedPlanState, new_shared_plan_state};
@@ -562,9 +563,12 @@ pub struct GoalState {
 #[derive(Debug, Clone)]
 pub struct SessionState {
     pub session_cost: f64,
+    pub session_cost_cny: f64,
     pub subagent_cost: f64,
+    pub subagent_cost_cny: f64,
     pub subagent_cost_event_seqs: HashSet<u64>,
     pub displayed_cost_high_water: f64,
+    pub displayed_cost_high_water_cny: f64,
     pub last_prompt_tokens: Option<u32>,
     pub last_completion_tokens: Option<u32>,
     pub last_prompt_cache_hit_tokens: Option<u32>,
@@ -579,9 +583,12 @@ impl Default for SessionState {
     fn default() -> Self {
         Self {
             session_cost: 0.0,
+            session_cost_cny: 0.0,
             subagent_cost: 0.0,
+            subagent_cost_cny: 0.0,
             subagent_cost_event_seqs: HashSet::new(),
             displayed_cost_high_water: 0.0,
+            displayed_cost_high_water_cny: 0.0,
             last_prompt_tokens: None,
             last_completion_tokens: None,
             last_prompt_cache_hit_tokens: None,
@@ -670,6 +677,7 @@ pub struct App {
     pub show_thinking: bool,
     pub show_tool_details: bool,
     pub ui_locale: Locale,
+    pub cost_currency: CostCurrency,
     pub composer_density: ComposerDensity,
     pub composer_border: bool,
     pub transcript_spacing: TranscriptSpacing,
@@ -1073,6 +1081,8 @@ impl App {
         let show_thinking = settings.show_thinking;
         let show_tool_details = settings.show_tool_details;
         let ui_locale = resolve_locale(&settings.locale);
+        let cost_currency =
+            CostCurrency::from_setting(&settings.cost_currency).unwrap_or(CostCurrency::Usd);
         let composer_density = ComposerDensity::from_setting(&settings.composer_density);
         let composer_border = settings.composer_border;
         let composer_vim_enabled = settings
@@ -1219,6 +1229,7 @@ impl App {
             show_thinking,
             show_tool_details,
             ui_locale,
+            cost_currency,
             composer_density,
             composer_border,
             transcript_spacing,
@@ -1521,15 +1532,29 @@ impl App {
 
     /// Add `delta` to the parent-turn session cost and bump the displayed
     /// high-water mark so the footer total never reverses (#244).
+    #[allow(dead_code)]
     pub fn accrue_session_cost(&mut self, delta: f64) {
-        self.session.session_cost += delta;
+        self.accrue_session_cost_estimate(CostEstimate::usd_only(delta));
+    }
+
+    /// Add a dual-currency parent-turn cost estimate.
+    pub fn accrue_session_cost_estimate(&mut self, estimate: CostEstimate) {
+        self.session.session_cost += estimate.usd;
+        self.session.session_cost_cny += estimate.cny;
         self.refresh_displayed_cost_high_water();
     }
 
     /// Add `delta` to the running sub-agent cost and bump the displayed
     /// high-water mark so the footer total never reverses (#244).
+    #[allow(dead_code)]
     pub fn accrue_subagent_cost(&mut self, delta: f64) {
-        self.session.subagent_cost += delta;
+        self.accrue_subagent_cost_estimate(CostEstimate::usd_only(delta));
+    }
+
+    /// Add a dual-currency sub-agent/background cost estimate.
+    pub fn accrue_subagent_cost_estimate(&mut self, estimate: CostEstimate) {
+        self.session.subagent_cost += estimate.usd;
+        self.session.subagent_cost_cny += estimate.cny;
         self.refresh_displayed_cost_high_water();
     }
 
@@ -1540,14 +1565,54 @@ impl App {
         if current > self.session.displayed_cost_high_water {
             self.session.displayed_cost_high_water = current;
         }
+        let current_cny = self.session.session_cost_cny + self.session.subagent_cost_cny;
+        if current_cny > self.session.displayed_cost_high_water_cny {
+            self.session.displayed_cost_high_water_cny = current_cny;
+        }
     }
 
     /// Read the visible session+sub-agent cost. Guaranteed monotonic across
     /// reconciliation events (cache adjustments, provisional → final swaps)
     /// for the lifetime of one session (#244).
+    #[allow(dead_code)]
     pub fn displayed_session_cost(&self) -> f64 {
-        let current = self.session.session_cost + self.session.subagent_cost;
-        current.max(self.session.displayed_cost_high_water)
+        self.displayed_session_cost_for_currency(CostCurrency::Usd)
+    }
+
+    /// Read the visible session+sub-agent cost in the chosen currency.
+    pub fn displayed_session_cost_for_currency(&self, currency: CostCurrency) -> f64 {
+        match currency {
+            CostCurrency::Usd => {
+                let current = self.session.session_cost + self.session.subagent_cost;
+                current.max(self.session.displayed_cost_high_water)
+            }
+            CostCurrency::Cny => {
+                let current = self.session.session_cost_cny + self.session.subagent_cost_cny;
+                current.max(self.session.displayed_cost_high_water_cny)
+            }
+        }
+    }
+
+    pub fn session_cost_for_currency(&self, currency: CostCurrency) -> f64 {
+        match currency {
+            CostCurrency::Usd => self.session.session_cost,
+            CostCurrency::Cny => self.session.session_cost_cny,
+        }
+    }
+
+    pub fn subagent_cost_for_currency(&self, currency: CostCurrency) -> f64 {
+        match currency {
+            CostCurrency::Usd => self.session.subagent_cost,
+            CostCurrency::Cny => self.session.subagent_cost_cny,
+        }
+    }
+
+    pub fn format_cost_amount(&self, amount: f64) -> String {
+        crate::pricing::format_cost_amount(amount, self.cost_currency)
+    }
+
+    pub fn format_cost_amount_precise(&self, amount: f64) -> String {
+        crate::pricing::format_cost_amount_precise(amount, self.cost_currency)
     }
 
     /// Fold the oldest [`Self::HISTORY_FOLD_BATCH`] cells into a single
