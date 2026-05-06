@@ -958,6 +958,7 @@ mod tests {
 
     #[test]
     fn tui_prefs_path_uses_home_deepseek_subdir_by_default() {
+        let _g = config_path_test_guard();
         // Without DEEPSEEK_CONFIG_PATH the path should end with
         // .deepseek/tui.toml relative to the home directory.
         // We skip this check if home_dir() is unavailable (CI without HOME).
