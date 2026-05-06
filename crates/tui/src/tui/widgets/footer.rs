@@ -39,6 +39,8 @@ pub struct FooterProps {
     pub text_hint_color: Color,
     /// Color used for steady secondary chips such as cost.
     pub text_muted_color: Color,
+    /// Background color for the full footer/status bar row.
+    pub footer_bg: Color,
     /// Status label like `"ready"`, `"thinking ⌫"`, `"working"`. When the
     /// label equals `"ready"` the footer hides the status segment entirely.
     pub state_label: String,
@@ -281,6 +283,7 @@ impl FooterProps {
             text_dim_color: app.ui_theme.text_dim,
             text_hint_color: app.ui_theme.text_hint,
             text_muted_color: app.ui_theme.text_muted,
+            footer_bg: app.ui_theme.footer_bg,
             state_label: state_label.to_string(),
             state_color,
             coherence,
@@ -593,7 +596,8 @@ impl Renderable for FooterWidget {
         all_spans.push(spacer_span);
         all_spans.extend(right_spans);
 
-        let paragraph = Paragraph::new(Line::from(all_spans));
+        let paragraph =
+            Paragraph::new(Line::from(all_spans)).style(Style::default().bg(self.props.footer_bg));
         paragraph.render(area, buf);
     }
 
@@ -811,6 +815,7 @@ mod tests {
         app.ui_theme.text_dim = Color::Rgb(4, 5, 6);
         app.ui_theme.text_hint = Color::Rgb(7, 8, 9);
         app.ui_theme.text_muted = Color::Rgb(10, 11, 12);
+        app.ui_theme.footer_bg = Color::Rgb(13, 14, 15);
 
         let props = idle_props_for(&app);
 
@@ -818,6 +823,23 @@ mod tests {
         assert_eq!(props.text_dim_color, Color::Rgb(4, 5, 6));
         assert_eq!(props.text_hint_color, Color::Rgb(7, 8, 9));
         assert_eq!(props.text_muted_color, Color::Rgb(10, 11, 12));
+        assert_eq!(props.footer_bg, Color::Rgb(13, 14, 15));
+    }
+
+    #[test]
+    fn render_applies_footer_background_to_full_row() {
+        let mut app = make_app();
+        app.ui_theme.footer_bg = Color::Rgb(13, 14, 15);
+        let props = idle_props_for(&app);
+        let widget = FooterWidget::new(props);
+        let area = ratatui::layout::Rect::new(0, 0, 60, 1);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+
+        widget.render(area, &mut buf);
+
+        for x in 0..area.width {
+            assert_eq!(buf[(x, 0)].bg, Color::Rgb(13, 14, 15));
+        }
     }
 
     // ---- agents chip wording ----
