@@ -139,8 +139,10 @@ generates a one-time token and prints a local/LAN URL that includes it.
 
 The mobile page can list/create threads, send prompts, follow live SSE events,
 steer an active turn, interrupt an active turn, and optionally pass
-`allow_shell` / `auto_approve` flags for a turn. Keep `auto_approve` off unless
-the server is reachable only from a trusted network.
+`allow_shell` / `auto_approve` flags for a turn. With `auto_approve` off, the
+mobile page submits turns with `manual_approval=true` and shows Allow / Deny
+buttons for runtime tool approvals. Keep `auto_approve` off unless the server
+is reachable only from a trusted network.
 
 ### Endpoints
 
@@ -187,6 +189,9 @@ accept an empty string to clear a previously-set value. Added in v0.8.10 (#562):
 - `POST /v1/threads/{id}/turns`
 - `POST /v1/threads/{id}/turns/{turn_id}/steer`
 - `POST /v1/threads/{id}/turns/{turn_id}/interrupt`
+- `GET /v1/threads/{id}/turns/{turn_id}/approvals`
+- `POST /v1/threads/{id}/turns/{turn_id}/approvals/{approval_id}/approve`
+- `POST /v1/threads/{id}/turns/{turn_id}/approvals/{approval_id}/deny`
 - `POST /v1/threads/{id}/compact` (manual compaction)
 
 **Events** (SSE replay + live stream)
@@ -284,6 +289,13 @@ Events are append-only with a global monotonic `seq` for replay/resume.
   are auto-approved in the non-interactive runtime path, shell safety checks
   run in auto-approved mode, and spawned sub-agents inherit that setting.
 - When omitted, `auto_approve` defaults to `false`.
+- `manual_approval=true` can be supplied on `POST /v1/threads/{id}/turns`.
+  When `auto_approve=false`, approval-required tools are held as pending
+  approvals instead of being immediately denied. Clients can list pending
+  approvals and resolve them through the approval endpoints above.
+- Approving a regular pending approval calls the engine approval bridge.
+  Approving a pending sandbox elevation retries that tool with full-access
+  sandbox policy. Denying either kind sends the normal deny decision.
 
 ### SSE event stream
 
@@ -307,8 +319,8 @@ The SSE event payload shape:
 Common event names: `thread.started`, `thread.forked`, `turn.started`,
 `turn.lifecycle`, `turn.steered`, `turn.interrupt_requested`,
 `turn.completed`, `item.started`, `item.delta`, `item.completed`,
-`item.failed`, `item.interrupted`, `approval.required`, `sandbox.denied`,
-`coherence.state`.
+`item.failed`, `item.interrupted`, `approval.required`, `approval.resolved`,
+`sandbox.denied`, `coherence.state`.
 
 ## Security boundary
 

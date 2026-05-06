@@ -99,6 +99,7 @@ struct StreamTurnRequest {
     allow_shell: Option<bool>,
     trust_mode: Option<bool>,
     auto_approve: Option<bool>,
+    manual_approval: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -391,6 +392,18 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route(
             "/v1/threads/{id}/turns/{turn_id}/interrupt",
             post(interrupt_thread_turn),
+        )
+        .route(
+            "/v1/threads/{id}/turns/{turn_id}/approvals",
+            get(list_thread_approvals),
+        )
+        .route(
+            "/v1/threads/{id}/turns/{turn_id}/approvals/{approval_id}/approve",
+            post(approve_thread_approval),
+        )
+        .route(
+            "/v1/threads/{id}/turns/{turn_id}/approvals/{approval_id}/deny",
+            post(deny_thread_approval),
         )
         .route("/v1/threads/{id}/compact", post(compact_thread))
         .route("/v1/threads/{id}/events", get(stream_thread_events))
@@ -1128,6 +1141,42 @@ async fn interrupt_thread_turn(
     Ok(Json(turn))
 }
 
+async fn list_thread_approvals(
+    State(state): State<RuntimeApiState>,
+    Path((id, turn_id)): Path<(String, String)>,
+) -> Result<Json<Vec<crate::runtime_threads::PendingApprovalRecord>>, ApiError> {
+    let approvals = state
+        .runtime_threads
+        .list_pending_approvals(&id, &turn_id)
+        .await
+        .map_err(map_thread_err)?;
+    Ok(Json(approvals))
+}
+
+async fn approve_thread_approval(
+    State(state): State<RuntimeApiState>,
+    Path((id, turn_id, approval_id)): Path<(String, String, String)>,
+) -> Result<Json<crate::runtime_threads::PendingApprovalRecord>, ApiError> {
+    let approval = state
+        .runtime_threads
+        .approve_pending_approval(&id, &turn_id, &approval_id)
+        .await
+        .map_err(map_thread_err)?;
+    Ok(Json(approval))
+}
+
+async fn deny_thread_approval(
+    State(state): State<RuntimeApiState>,
+    Path((id, turn_id, approval_id)): Path<(String, String, String)>,
+) -> Result<Json<crate::runtime_threads::PendingApprovalRecord>, ApiError> {
+    let approval = state
+        .runtime_threads
+        .deny_pending_approval(&id, &turn_id, &approval_id)
+        .await
+        .map_err(map_thread_err)?;
+    Ok(Json(approval))
+}
+
 async fn compact_thread(
     State(state): State<RuntimeApiState>,
     Path(id): Path<String>,
@@ -1286,6 +1335,7 @@ async fn stream_turn(
                 allow_shell: Some(allow_shell),
                 trust_mode: Some(trust_mode),
                 auto_approve: Some(auto_approve),
+                manual_approval: req.manual_approval,
             },
         )
         .await
@@ -1736,6 +1786,17 @@ const MOBILE_HTML: &str = r#"<!doctype html>
     .event.tool { border-color: #5d4b1f; }
     .event.error { border-color: #8b313a; }
     .event.ok { border-color: #2f7142; }
+    .approval-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 8px;
+      flex-wrap: wrap;
+    }
+    .approval-actions button {
+      width: auto;
+      min-width: 92px;
+      padding: 8px 10px;
+    }
     .status {
       margin-top: 8px;
       padding: 8px 10px;
@@ -1855,10 +1916,42 @@ const MOBILE_HTML: &str = r#"<!doctype html>
         return (name === "item.completed" ? "Completed: " : "Failed: ") + (item.summary || item.kind || "");
       }
       if (name === "approval.required") return "Approval required: " + (data.payload?.tool_name || "") + "\n" + (data.payload?.description || "");
+      if (name === "approval.resolved") return "Approval " + (data.payload?.decision || "resolved") + ": " + (data.payload?.tool_name || data.payload?.id || "");
       if (name === "sandbox.denied") return "Sandbox denied: " + JSON.stringify(data.payload || data, null, 2);
       if (name === "turn.completed") return "Turn completed";
       if (name === "turn.lifecycle") return "Turn status: " + (data.payload?.status || "");
       return JSON.stringify(data.payload || data, null, 2);
+    }
+    function approvalInfo(name, data) {
+      const payload = data.payload || {};
+      const turnId = data.turn_id || payload.turn_id || state.activeTurnId;
+      if (name === "approval.required" && payload.pending && payload.id && turnId) {
+        return {
+          id: payload.id,
+          turnId,
+          approveLabel: "Allow",
+          denyLabel: "Deny"
+        };
+      }
+      if (name === "sandbox.denied" && payload.pending && payload.tool_id && turnId) {
+        return {
+          id: payload.tool_id,
+          turnId,
+          approveLabel: "Retry full access",
+          denyLabel: "Deny"
+        };
+      }
+      return null;
+    }
+    async function resolveApproval(turnId, approvalId, decision, container) {
+      if (!state.threadId || !turnId || !approvalId) throw new Error("Missing approval context");
+      for (const button of container.querySelectorAll("button")) button.disabled = true;
+      const path = "/v1/threads/" + encodeURIComponent(state.threadId)
+        + "/turns/" + encodeURIComponent(turnId)
+        + "/approvals/" + encodeURIComponent(approvalId)
+        + "/" + decision;
+      const result = await api(path, { method: "POST", body: "{}" });
+      container.innerHTML = "<span class='small'>Decision sent: " + escapeHtml(result.id || approvalId) + "</span>";
     }
     function appendEvent(name, data) {
       const text = eventText(name, data);
@@ -1870,6 +1963,24 @@ const MOBILE_HTML: &str = r#"<!doctype html>
       if (name.includes("failed") || name.includes("denied")) item.classList.add("error");
       if (name === "turn.completed") item.classList.add("ok");
       item.innerHTML = "<div class='event-meta'>" + name + "</div>" + escapeHtml(text);
+      const approval = approvalInfo(name, data);
+      if (approval) {
+        const actions = document.createElement("div");
+        actions.className = "approval-actions";
+        const approve = document.createElement("button");
+        approve.className = "primary";
+        approve.textContent = approval.approveLabel;
+        approve.onclick = () => resolveApproval(approval.turnId, approval.id, "approve", actions)
+          .catch((err) => setStatus(err.message, false));
+        const deny = document.createElement("button");
+        deny.className = "danger";
+        deny.textContent = approval.denyLabel;
+        deny.onclick = () => resolveApproval(approval.turnId, approval.id, "deny", actions)
+          .catch((err) => setStatus(err.message, false));
+        actions.appendChild(approve);
+        actions.appendChild(deny);
+        item.appendChild(actions);
+      }
       $("events").appendChild(item);
       $("events").scrollTop = $("events").scrollHeight;
     }
@@ -1912,7 +2023,7 @@ const MOBILE_HTML: &str = r#"<!doctype html>
       const qs = "?since_seq=0" + (token() ? "&token=" + encodeURIComponent(token()) : "");
       const source = new EventSource("/v1/threads/" + encodeURIComponent(id) + "/events" + qs);
       state.source = source;
-      const names = ["thread.started", "turn.started", "turn.lifecycle", "turn.steered", "turn.interrupt_requested", "turn.completed", "item.started", "item.delta", "item.completed", "item.failed", "approval.required", "sandbox.denied", "coherence.state"];
+      const names = ["thread.started", "turn.started", "turn.lifecycle", "turn.steered", "turn.interrupt_requested", "turn.completed", "item.started", "item.delta", "item.completed", "item.failed", "approval.required", "approval.resolved", "sandbox.denied", "coherence.state"];
       for (const name of names) {
         source.addEventListener(name, (ev) => {
           let data = {};
@@ -1936,7 +2047,8 @@ const MOBILE_HTML: &str = r#"<!doctype html>
           prompt,
           allow_shell: $("allow-shell").checked,
           trust_mode: false,
-          auto_approve: $("auto-approve").checked
+          auto_approve: $("auto-approve").checked,
+          manual_approval: !$("auto-approve").checked
         })
       });
       state.activeTurnId = res.turn?.id || state.activeTurnId;
