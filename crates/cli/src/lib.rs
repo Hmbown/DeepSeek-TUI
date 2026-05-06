@@ -151,6 +151,8 @@ enum Commands {
     Thread(ThreadArgs),
     /// Evaluate sandbox/approval policy decisions.
     Sandbox(SandboxArgs),
+    /// Attach to a remote deepseek serve instance.
+    Attach(AttachArgs),
     /// Run the app-server transport.
     AppServer(AppServerArgs),
     /// Generate shell completions.
@@ -350,6 +352,12 @@ impl From<ApprovalModeArg> for AskForApproval {
 }
 
 #[derive(Debug, Args)]
+struct AttachArgs {
+    /// Remote server URL (e.g. http://192.168.1.100:7878)
+    url: String,
+}
+
+#[derive(Debug, Args)]
 struct AppServerArgs {
     #[arg(long, default_value = "127.0.0.1")]
     host: String,
@@ -448,6 +456,7 @@ fn run() -> Result<()> {
         Some(Commands::Model(args)) => run_model_command(args.command),
         Some(Commands::Thread(args)) => run_thread_command(args.command),
         Some(Commands::Sandbox(args)) => run_sandbox_command(args.command),
+        Some(Commands::Attach(args)) => run_attach_command(args),
         Some(Commands::AppServer(args)) => run_app_server_command(args),
         Some(Commands::Completion { shell }) => {
             let mut cmd = Cli::command();
@@ -942,6 +951,11 @@ fn run_sandbox_command(command: SandboxCommand) -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn run_attach_command(args: AttachArgs) -> Result<()> {
+    // Delegate to the TUI binary with the attach subcommand and URL.
+    delegate_simple_tui(vec!["attach".to_string(), args.url])
 }
 
 fn run_app_server_command(args: AppServerArgs) -> Result<()> {
@@ -1839,6 +1853,7 @@ mod tests {
             "model",
             "thread",
             "sandbox",
+            "attach",
             "app-server",
             "completion",
             "metrics",
@@ -1884,6 +1899,10 @@ mod tests {
                 ],
             ),
             ("sandbox", vec!["check"]),
+            (
+                "attach",
+                vec!["<URL>"],
+            ),
             (
                 "app-server",
                 vec!["--host", "--port", "--config", "--stdio"],
