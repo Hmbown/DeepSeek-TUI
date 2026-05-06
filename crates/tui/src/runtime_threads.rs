@@ -2860,6 +2860,7 @@ impl RuntimeThreadManager {
         Ok(turn.turn_id == turn_id && turn.interrupt_requested)
     }
 
+    #[cfg(test)]
     async fn active_turn_flags(&self, thread_id: &str, turn_id: &str) -> Option<(bool, bool)> {
         self.active_turn_policy(thread_id, turn_id)
             .await

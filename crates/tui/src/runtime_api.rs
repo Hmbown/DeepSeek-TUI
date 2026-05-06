@@ -2315,6 +2315,8 @@ mod tests {
             sessions_dir,
             mcp_config_path: root.join("mcp.json"),
             automations,
+            runtime_token: None,
+            mobile_enabled: false,
         };
         let app = build_router(state);
         let listener = match TcpListener::bind("127.0.0.1:0").await {

@@ -466,6 +466,7 @@ impl TaskExecutor for EngineTaskExecutor {
                     allow_shell: Some(task.allow_shell),
                     trust_mode: Some(task.trust_mode),
                     auto_approve: Some(task.auto_approve),
+                    manual_approval: None,
                 },
             )
             .await
