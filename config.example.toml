@@ -450,7 +450,7 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Vision Model Configuration (optional)
-# ─────────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────
 # Configure a dedicated vision model for image processing tasks.
 # When enabled, all image-related operations use this model with independent
 # session management (subagent mode).
@@ -470,7 +470,7 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 # subagent_mode = true                # Optional: use independent sessions (default: true)
 # timeout_secs = 120                  # Optional: request timeout in seconds (default: 120)
 
-# ─────────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────
 # Runtime API (`deepseek serve --http`) (#561)
 # ─────────────────────────────────────────────────────────────────────────────────
 # Tuning knobs for the local HTTP/SSE daemon. The server binds to 127.0.0.1
