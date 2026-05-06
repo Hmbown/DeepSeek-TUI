@@ -440,33 +440,41 @@ mod tests {
     use std::sync::MutexGuard;
     use tempfile::tempdir;
 
-    /// Holds HOME pinned to a tempdir for the lifetime of a test. Also
+    /// Holds the home directory pinned to a tempdir for the lifetime of a test. Also
     /// owns the process-wide env-var mutex so tests across modules
-    /// don't trample each other's `HOME`.
+    /// don't trample each other's home env vars.
     pub(super) struct ScopedHome {
-        prev: Option<std::ffi::OsString>,
+        prev_vars: Vec<(&'static str, Option<std::ffi::OsString>)>,
         _guard: MutexGuard<'static, ()>,
     }
     impl Drop for ScopedHome {
         fn drop(&mut self) {
             // SAFETY: process-wide lock still held.
             unsafe {
-                match self.prev.take() {
-                    Some(v) => std::env::set_var("HOME", v),
-                    None => std::env::remove_var("HOME"),
+                for (key, prev) in self.prev_vars.drain(..) {
+                    match prev {
+                        Some(value) => std::env::set_var(key, value),
+                        None => std::env::remove_var(key),
+                    }
                 }
             }
         }
     }
     pub(super) fn scoped_home(home: &Path) -> ScopedHome {
         let guard = lock_test_env();
-        let prev = std::env::var_os("HOME");
+        let prev_vars = ["HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH"]
+            .into_iter()
+            .map(|key| (key, std::env::var_os(key)))
+            .collect();
         // SAFETY: serialised by the global env lock.
         unsafe {
             std::env::set_var("HOME", home);
+            std::env::set_var("USERPROFILE", home);
+            std::env::remove_var("HOMEDRIVE");
+            std::env::remove_var("HOMEPATH");
         }
         ScopedHome {
-            prev,
+            prev_vars,
             _guard: guard,
         }
     }
@@ -680,8 +688,10 @@ mod tests {
 
         // Try to snapshot HOME itself.
         let result = SnapshotRepo::open_or_init(tmp.path());
-        assert!(result.is_err(), "should refuse to snapshot home directory");
-        let err_msg = result.unwrap_err().to_string();
+        let err_msg = match result {
+            Ok(_) => panic!("should refuse to snapshot home directory"),
+            Err(err) => err.to_string(),
+        };
         assert!(
             err_msg.contains("home directory"),
             "error should mention home directory: {err_msg}"
