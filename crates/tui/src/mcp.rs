@@ -1020,7 +1020,8 @@ impl McpPool {
     }
 
     /// Merge global config (~/.deepseek/mcp.json) with workspace config.
-    /// Workspace entries override global entries with the same server name.
+    /// Workspace entries override global entries with the same server name,
+    /// and workspace timeouts override global timeouts.
     /// Global config is only read when HOME is set and the file exists;
     /// a missing file is fine, but parse errors are propagated.
     pub fn from_workspace_config(workspace_config_path: &std::path::Path) -> Result<Self> {
@@ -1035,6 +1036,8 @@ impl McpPool {
         for (name, server) in workspace_cfg.servers {
             merged.servers.insert(name, server);
         }
+        // workspace timeouts override global timeouts
+        merged.timeouts = workspace_cfg.timeouts;
         Ok(Self::new(merged))
     }
 
