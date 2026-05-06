@@ -1342,6 +1342,19 @@ async fn run_event_loop(
                 }
             }
         }
+        if let Some(index) = app.streaming_message_index {
+            let committed = app.streaming_state.commit_text(0);
+            if !committed.is_empty() {
+                append_streaming_text(app, index, &committed);
+                transcript_batch_updated = true;
+            }
+        } else if let Some(entry_idx) = app.streaming_thinking_active_entry {
+            let committed = app.streaming_state.commit_text(0);
+            if !committed.is_empty() {
+                append_streaming_thinking(app, entry_idx, &committed);
+                transcript_batch_updated = true;
+            }
+        }
         if transcript_batch_updated {
             app.mark_history_updated();
         }
