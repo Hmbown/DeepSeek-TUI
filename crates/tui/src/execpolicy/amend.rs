@@ -5,9 +5,15 @@ use std::io::SeekFrom;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
+use std::thread;
+use std::time::Duration;
+use std::time::Instant;
 
 use serde_json;
 use thiserror::Error;
+
+const POLICY_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
+const POLICY_LOCK_RETRY: Duration = Duration::from_millis(25);
 
 #[derive(Debug, Error)]
 pub enum AmendError {
@@ -91,6 +97,7 @@ pub fn blocking_append_allow_prefix_rule(
 }
 
 fn append_locked_line(policy_path: &Path, line: &str) -> Result<(), AmendError> {
+    let _lock = PolicyFileLock::acquire(policy_path)?;
     let mut file = OpenOptions::new()
         .create(true)
         .read(true)
@@ -100,10 +107,6 @@ fn append_locked_line(policy_path: &Path, line: &str) -> Result<(), AmendError> 
             path: policy_path.to_path_buf(),
             source,
         })?;
-    file.lock().map_err(|source| AmendError::LockPolicyFile {
-        path: policy_path.to_path_buf(),
-        source,
-    })?;
 
     let len = file
         .metadata()
@@ -143,6 +146,63 @@ fn append_locked_line(policy_path: &Path, line: &str) -> Result<(), AmendError> 
         })?;
 
     Ok(())
+}
+
+struct PolicyFileLock {
+    path: PathBuf,
+}
+
+impl PolicyFileLock {
+    fn acquire(policy_path: &Path) -> Result<Self, AmendError> {
+        let lock_path = lock_path_for(policy_path);
+        let deadline = Instant::now() + POLICY_LOCK_TIMEOUT;
+
+        loop {
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&lock_path)
+            {
+                Ok(mut file) => {
+                    let _ = writeln!(file, "pid={}", std::process::id());
+                    return Ok(Self { path: lock_path });
+                }
+                Err(source) if source.kind() == std::io::ErrorKind::AlreadyExists => {
+                    if Instant::now() >= deadline {
+                        return Err(AmendError::LockPolicyFile {
+                            path: policy_path.to_path_buf(),
+                            source: std::io::Error::new(
+                                std::io::ErrorKind::TimedOut,
+                                format!("timed out waiting for {}", lock_path.display()),
+                            ),
+                        });
+                    }
+                    thread::sleep(POLICY_LOCK_RETRY);
+                }
+                Err(source) => {
+                    return Err(AmendError::LockPolicyFile {
+                        path: policy_path.to_path_buf(),
+                        source,
+                    });
+                }
+            }
+        }
+    }
+}
+
+impl Drop for PolicyFileLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn lock_path_for(policy_path: &Path) -> PathBuf {
+    let Some(file_name) = policy_path.file_name() else {
+        return policy_path.with_extension("lock");
+    };
+    let mut lock_name = file_name.to_os_string();
+    lock_name.push(".lock");
+    policy_path.with_file_name(lock_name)
 }
 
 #[cfg(test)]
@@ -220,6 +280,20 @@ prefix_rule(pattern=["echo", "Hello, world!"], decision="allow")
             r#"prefix_rule(pattern=["ls"], decision="allow")
 prefix_rule(pattern=["echo", "Hello, world!"], decision="allow")
 "#
+        );
+    }
+
+    #[test]
+    fn removes_policy_lock_file_after_append() {
+        let tmp = tempdir().expect("create temp dir");
+        let policy_path = tmp.path().join("rules").join("default.rules");
+
+        blocking_append_allow_prefix_rule(&policy_path, &[String::from("echo")])
+            .expect("append rule");
+
+        assert!(
+            !lock_path_for(&policy_path).exists(),
+            "policy lock file should be removed after append"
         );
     }
 }
