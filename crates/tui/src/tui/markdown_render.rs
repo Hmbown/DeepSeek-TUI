@@ -749,7 +749,7 @@ mod tests {
     #[test]
     fn table_separator_row_is_dropped() {
         // "|---|---|" must not appear in output
-        let src = "| 项目属性 | 详情 |\n|----------|------|\n| **语言** | Rust 1.85+ |\n";
+        let src = "| 项目属性 | 详情 |\n|----------|------|\n| **语言** | Rust 1.88+ |\n";
         let parsed = parse(src);
         let blocks: Vec<_> = parsed.blocks.iter().collect();
         // Should have 2 TableRow blocks (header + data), no separator

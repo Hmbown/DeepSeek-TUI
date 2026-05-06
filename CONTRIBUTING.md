@@ -6,7 +6,7 @@ Thank you for your interest in contributing to DeepSeek TUI! This document provi
 
 ### Prerequisites
 
-- Rust 1.85 or later (edition 2024)
+- Rust 1.88 or later (edition 2024)
 - Cargo package manager
 - Git
 
