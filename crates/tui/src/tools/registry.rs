@@ -489,6 +489,15 @@ impl ToolRegistryBuilder {
         self.with_tool(Arc::new(ProjectMapTool))
     }
 
+    /// Include DeepMap codebase analysis tools.
+    #[must_use]
+    pub fn with_deepmap_tools(self) -> Self {
+        use super::deepmap::{DeepMapCallChainTool, DeepMapFileDetailTool, DeepMapOverviewTool};
+        self.with_tool(Arc::new(DeepMapOverviewTool))
+            .with_tool(Arc::new(DeepMapCallChainTool))
+            .with_tool(Arc::new(DeepMapFileDetailTool))
+    }
+
     /// Include cargo test runner tool.
     #[must_use]
     pub fn with_test_runner_tool(self) -> Self {

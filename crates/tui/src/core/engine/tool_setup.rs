@@ -35,7 +35,8 @@ impl Engine {
             .with_rlm_tool(self.deepseek_client.clone(), self.session.model.clone())
             .with_fim_tool(self.deepseek_client.clone(), self.session.model.clone())
             .with_user_input_tool()
-            .with_parallel_tool();
+            .with_parallel_tool()
+            .with_deepmap_tools();
 
         if self.config.features.enabled(Feature::ApplyPatch) && mode != AppMode::Plan {
             builder = builder.with_patch_tools();

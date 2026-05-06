@@ -1080,7 +1080,7 @@ dependencies = [
 
 [[package]]
 name = "deepmap"
-version = "0.8.13"
+version = "0.8.14"
 dependencies = [
  "chrono",
  "dirs",
@@ -1254,6 +1254,7 @@ dependencies = [
  "clap_complete",
  "colored",
  "crossterm 0.28.1",
+ "deepmap",
  "deepseek-secrets",
  "deepseek-tools",
  "dirs",
@@ -1307,6 +1308,7 @@ dependencies = [
  "chrono",
  "clap",
  "clap_complete",
+ "deepmap",
  "deepseek-agent",
  "deepseek-app-server",
  "deepseek-config",
