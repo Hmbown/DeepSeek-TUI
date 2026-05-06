@@ -17,6 +17,11 @@ use std::path::{Path, PathBuf};
 pub struct PromptSessionContext<'a> {
     pub user_memory_block: Option<&'a str>,
     pub goal_objective: Option<&'a str>,
+    /// Resolved locale tag for the `## Environment` block (e.g. `"en"`,
+    /// `"zh-Hans"`, `"ja"`). The caller is responsible for loading
+    /// settings and resolving; no file I/O happens inside the prompt
+    /// builder.
+    pub locale_tag: &'a str,
 }
 
 /// Conventional location for the structured session-handoff artifact (#32).
@@ -36,16 +41,10 @@ const INSTRUCTIONS_FILE_MAX_BYTES: usize = 100 * 1024;
 /// system-prompt block (#454). Each path is loaded in declared order;
 /// Render a `## Environment` block with lang / platform / shell / pwd.
 ///
-/// `lang` is resolved in priority order:
-/// 1. User-configured locale from `Settings` (e.g. `zh-Hans`, `ja`)
-/// 2. System environment variables (`LC_ALL`, `LC_MESSAGES`, `LANG`)
-/// 3. Fallback to `en`
-fn render_environment_block(workspace: &Path) -> String {
-    let lang = {
-        let settings = crate::settings::Settings::load().unwrap_or_default();
-        let locale = crate::localization::resolve_locale(&settings.locale);
-        locale.tag().to_string()
-    };
+/// `locale_tag` is a resolved BCP-47 tag (e.g. `"en"`, `"zh-Hans"`)
+/// provided by the caller — no file I/O is performed here.
+fn render_environment_block(workspace: &Path, locale_tag: &str) -> String {
+    let lang = locale_tag;
     let platform = std::env::consts::OS;
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "unknown".to_string());
     let pwd = workspace.display().to_string();
@@ -327,6 +326,7 @@ pub fn system_prompt_for_mode_with_context_and_skills(
         PromptSessionContext {
             user_memory_block,
             goal_objective: None,
+            locale_tag: "en",
         },
     )
 }
@@ -382,7 +382,7 @@ pub fn system_prompt_for_mode_with_context_skills_session_and_approval(
     // so the `## Language` section in base.md can reference it.
     full_prompt = format!(
         "{full_prompt}\n\n{}",
-        render_environment_block(workspace)
+        render_environment_block(workspace, session_context.locale_tag)
     );
 
     // 2.5a. Configured `instructions = [...]` files (#454). Loaded
@@ -640,6 +640,7 @@ mod tests {
             PromptSessionContext {
                 user_memory_block: None,
                 goal_objective: Some("Fix transcript corruption"),
+                locale_tag: "en",
             },
         ) {
             SystemPrompt::Text(text) => text,
@@ -666,6 +667,7 @@ mod tests {
             PromptSessionContext {
                 user_memory_block: None,
                 goal_objective: Some("   "),
+                locale_tag: "en",
             },
         ) {
             SystemPrompt::Text(text) => text,

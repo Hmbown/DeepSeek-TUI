@@ -3845,6 +3845,10 @@ async fn run_exec_agent(
         memory_path: config.memory_path(),
         strict_tool_mode: config.strict_tool_mode.unwrap_or(false),
         goal_objective: None,
+        locale_tag: {
+            let settings = crate::settings::Settings::load().unwrap_or_default();
+            crate::localization::resolve_locale(&settings.locale).tag().to_string()
+        },
         workshop: config.workshop.clone(),
     };
 
