@@ -411,6 +411,7 @@ pub fn env_for(name: &str) -> Option<String> {
         }
         "fireworks" | "fireworks-ai" => &["FIREWORKS_API_KEY"],
         "sglang" | "sg-lang" => &["SGLANG_API_KEY"],
+        "vllm" | "v-llm" => &["VLLM_API_KEY"],
         "openai" => &["OPENAI_API_KEY"],
         _ => return None,
     };
@@ -447,6 +448,7 @@ mod tests {
             "NVIDIA_NIM_API_KEY",
             "FIREWORKS_API_KEY",
             "SGLANG_API_KEY",
+            "VLLM_API_KEY",
             "OPENAI_API_KEY",
         ] {
             // Safety: tests serialise on env_lock(); the broader
@@ -561,6 +563,19 @@ mod tests {
         assert_eq!(env_for("sg-lang").as_deref(), Some("sglang-key"));
         // Safety: env mutation guarded by env_lock().
         unsafe { std::env::remove_var("SGLANG_API_KEY") };
+    }
+
+    #[test]
+    fn vllm_env_aliases_resolve() {
+        let _lock = env_lock();
+        clear_known_envs();
+        // Safety: env mutation guarded by env_lock().
+        unsafe { std::env::set_var("VLLM_API_KEY", "vllm-key") };
+
+        assert_eq!(env_for("vllm").as_deref(), Some("vllm-key"));
+        assert_eq!(env_for("v-llm").as_deref(), Some("vllm-key"));
+        // Safety: env mutation guarded by env_lock().
+        unsafe { std::env::remove_var("VLLM_API_KEY") };
     }
 
     #[cfg(unix)]

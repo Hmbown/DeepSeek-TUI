@@ -30,6 +30,9 @@ pub const DEFAULT_FIREWORKS_BASE_URL: &str = "https://api.fireworks.ai/inference
 pub const DEFAULT_SGLANG_MODEL: &str = "deepseek-ai/DeepSeek-V4-Pro";
 pub const DEFAULT_SGLANG_FLASH_MODEL: &str = "deepseek-ai/DeepSeek-V4-Flash";
 pub const DEFAULT_SGLANG_BASE_URL: &str = "http://localhost:30000/v1";
+pub const DEFAULT_VLLM_MODEL: &str = "deepseek-ai/DeepSeek-V4-Pro";
+pub const DEFAULT_VLLM_FLASH_MODEL: &str = "deepseek-ai/DeepSeek-V4-Flash";
+pub const DEFAULT_VLLM_BASE_URL: &str = "http://localhost:8000/v1";
 pub const DEFAULT_DEEPSEEKCN_BASE_URL: &str = "https://api.deepseeki.com";
 const API_KEYRING_SENTINEL: &str = "__KEYRING__";
 pub const COMMON_DEEPSEEK_MODELS: &[&str] = &[
@@ -51,6 +54,7 @@ pub enum ApiProvider {
     Novita,
     Fireworks,
     Sglang,
+    Vllm,
 }
 
 impl ApiProvider {
@@ -66,6 +70,7 @@ impl ApiProvider {
             "novita" => Some(Self::Novita),
             "fireworks" | "fireworks-ai" => Some(Self::Fireworks),
             "sglang" | "sg-lang" => Some(Self::Sglang),
+            "vllm" | "v-llm" => Some(Self::Vllm),
             _ => None,
         }
     }
@@ -80,6 +85,7 @@ impl ApiProvider {
             Self::Novita => "novita",
             Self::Fireworks => "fireworks",
             Self::Sglang => "sglang",
+            Self::Vllm => "vllm",
         }
     }
 
@@ -94,6 +100,7 @@ impl ApiProvider {
             Self::Novita => "Novita AI",
             Self::Fireworks => "Fireworks AI",
             Self::Sglang => "SGLang",
+            Self::Vllm => "vLLM",
         }
     }
 
@@ -108,6 +115,7 @@ impl ApiProvider {
             Self::Novita,
             Self::Fireworks,
             Self::Sglang,
+            Self::Vllm,
         ]
     }
 }
@@ -902,6 +910,8 @@ pub struct ProvidersConfig {
     pub fireworks: ProviderConfig,
     #[serde(default)]
     pub sglang: ProviderConfig,
+    #[serde(default)]
+    pub vllm: ProviderConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -961,7 +971,7 @@ impl Config {
             && ApiProvider::parse(provider).is_none()
         {
             anyhow::bail!(
-                "Invalid provider '{provider}': expected deepseek, deepseek-cn, nvidia-nim, openrouter, novita, fireworks, or sglang."
+                "Invalid provider '{provider}': expected deepseek, deepseek-cn, nvidia-nim, openrouter, novita, fireworks, sglang, or vllm."
             );
         }
         if let Some(ref key) = self.api_key
@@ -1079,6 +1089,7 @@ impl Config {
             ApiProvider::Novita => &providers.novita,
             ApiProvider::Fireworks => &providers.fireworks,
             ApiProvider::Sglang => &providers.sglang,
+            ApiProvider::Vllm => &providers.vllm,
         })
     }
 
@@ -1114,6 +1125,7 @@ impl Config {
             ApiProvider::Novita => DEFAULT_NOVITA_MODEL,
             ApiProvider::Fireworks => DEFAULT_FIREWORKS_MODEL,
             ApiProvider::Sglang => DEFAULT_SGLANG_MODEL,
+            ApiProvider::Vllm => DEFAULT_VLLM_MODEL,
         }
         .to_string()
     }
@@ -1139,7 +1151,8 @@ impl Config {
             ApiProvider::Openrouter
             | ApiProvider::Novita
             | ApiProvider::Fireworks
-            | ApiProvider::Sglang => None,
+            | ApiProvider::Sglang
+            | ApiProvider::Vllm => None,
         };
         let base = provider_base.or(root_base).unwrap_or_else(|| {
             match provider {
@@ -1150,6 +1163,7 @@ impl Config {
                 ApiProvider::Novita => DEFAULT_NOVITA_BASE_URL,
                 ApiProvider::Fireworks => DEFAULT_FIREWORKS_BASE_URL,
                 ApiProvider::Sglang => DEFAULT_SGLANG_BASE_URL,
+                ApiProvider::Vllm => DEFAULT_VLLM_BASE_URL,
             }
             .to_string()
         });
@@ -1173,6 +1187,7 @@ impl Config {
             ApiProvider::Novita => "novita",
             ApiProvider::Fireworks => "fireworks",
             ApiProvider::Sglang => "sglang",
+            ApiProvider::Vllm => "vllm",
         };
 
         // 0. Explicit in-memory override (set by onboarding / provider
@@ -1236,7 +1251,7 @@ impl Config {
             // Self-hosted SGLang deployments commonly run without auth on
             // localhost. Return an empty key and let the client omit the
             // Authorization header.
-            ApiProvider::Sglang => Ok(String::new()),
+            ApiProvider::Sglang | ApiProvider::Vllm => Ok(String::new()),
         }
     }
 
@@ -1678,8 +1693,23 @@ fn apply_env_overrides(config: &mut Config) {
             .sglang
             .base_url = Some(value);
     }
+    if matches!(config.api_provider(), ApiProvider::Vllm)
+        && let Ok(value) = std::env::var("VLLM_BASE_URL")
+        && !value.trim().is_empty()
+    {
+        config
+            .providers
+            .get_or_insert_with(ProvidersConfig::default)
+            .vllm
+            .base_url = Some(value);
+    }
     if matches!(config.api_provider(), ApiProvider::Sglang)
         && let Ok(value) = std::env::var("SGLANG_MODEL")
+    {
+        config.default_text_model = Some(value);
+    }
+    if matches!(config.api_provider(), ApiProvider::Vllm)
+        && let Ok(value) = std::env::var("VLLM_MODEL")
     {
         config.default_text_model = Some(value);
     }
@@ -1902,6 +1932,11 @@ fn normalize_model_config(config: &mut Config) {
         {
             providers.sglang.model = Some(normalized);
         }
+        if let Some(model) = providers.vllm.model.as_deref()
+            && let Some(normalized) = normalize_model_for_provider(ApiProvider::Vllm, model)
+        {
+            providers.vllm.model = Some(normalized);
+        }
     }
 }
 
@@ -1927,6 +1962,8 @@ fn model_for_provider(provider: ApiProvider, normalized: String) -> String {
         }
         (ApiProvider::Sglang, "deepseek-v4-pro") => DEFAULT_SGLANG_MODEL.to_string(),
         (ApiProvider::Sglang, "deepseek-v4-flash") => DEFAULT_SGLANG_FLASH_MODEL.to_string(),
+        (ApiProvider::Vllm, "deepseek-v4-pro") => DEFAULT_VLLM_MODEL.to_string(),
+        (ApiProvider::Vllm, "deepseek-v4-flash") => DEFAULT_VLLM_FLASH_MODEL.to_string(),
         _ => normalized,
     }
 }
@@ -2067,6 +2104,7 @@ fn merge_providers(
             novita: merge_provider_config(base.novita, override_cfg.novita),
             fireworks: merge_provider_config(base.fireworks, override_cfg.fireworks),
             sglang: merge_provider_config(base.sglang, override_cfg.sglang),
+            vllm: merge_provider_config(base.vllm, override_cfg.vllm),
         }),
     }
 }
@@ -2436,6 +2474,7 @@ pub fn has_api_key_for(config: &Config, provider: ApiProvider) -> bool {
         ApiProvider::Novita => "NOVITA_API_KEY",
         ApiProvider::Fireworks => "FIREWORKS_API_KEY",
         ApiProvider::Sglang => "SGLANG_API_KEY",
+        ApiProvider::Vllm => "VLLM_API_KEY",
     };
     if std::env::var(env_var).is_ok_and(|k| !k.trim().is_empty()) {
         return true;
@@ -2447,7 +2486,7 @@ pub fn has_api_key_for(config: &Config, provider: ApiProvider) -> bool {
     }
 
     // SGLang is self-hosted and typically runs without authentication.
-    if matches!(provider, ApiProvider::Sglang) {
+    if matches!(provider, ApiProvider::Sglang | ApiProvider::Vllm) {
         return true;
     }
 
@@ -2494,6 +2533,7 @@ pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf>
         ApiProvider::Novita => "providers.novita",
         ApiProvider::Fireworks => "providers.fireworks",
         ApiProvider::Sglang => "providers.sglang",
+        ApiProvider::Vllm => "providers.vllm",
     };
 
     // Parse existing TOML (or start fresh) so we can edit the right table
@@ -2521,6 +2561,7 @@ pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf>
         ApiProvider::Novita => "novita",
         ApiProvider::Fireworks => "fireworks",
         ApiProvider::Sglang => "sglang",
+        ApiProvider::Vllm => "vllm",
     };
     let entry = providers
         .entry(key_inside.to_string())
@@ -2634,6 +2675,9 @@ mod tests {
         sglang_api_key: Option<OsString>,
         sglang_base_url: Option<OsString>,
         sglang_model: Option<OsString>,
+        vllm_api_key: Option<OsString>,
+        vllm_base_url: Option<OsString>,
+        vllm_model: Option<OsString>,
     }
 
     impl EnvGuard {
@@ -2664,6 +2708,9 @@ mod tests {
             let sglang_api_key_prev = env::var_os("SGLANG_API_KEY");
             let sglang_base_url_prev = env::var_os("SGLANG_BASE_URL");
             let sglang_model_prev = env::var_os("SGLANG_MODEL");
+            let vllm_api_key_prev = env::var_os("VLLM_API_KEY");
+            let vllm_base_url_prev = env::var_os("VLLM_BASE_URL");
+            let vllm_model_prev = env::var_os("VLLM_MODEL");
             // Safety: test-only environment mutation guarded by a global mutex.
             unsafe {
                 env::set_var("HOME", &home_str);
@@ -2689,6 +2736,9 @@ mod tests {
                 env::remove_var("SGLANG_API_KEY");
                 env::remove_var("SGLANG_BASE_URL");
                 env::remove_var("SGLANG_MODEL");
+                env::remove_var("VLLM_API_KEY");
+                env::remove_var("VLLM_BASE_URL");
+                env::remove_var("VLLM_MODEL");
             }
             Self {
                 home: home_prev,
@@ -2714,6 +2764,9 @@ mod tests {
                 sglang_api_key: sglang_api_key_prev,
                 sglang_base_url: sglang_base_url_prev,
                 sglang_model: sglang_model_prev,
+                vllm_api_key: vllm_api_key_prev,
+                vllm_base_url: vllm_base_url_prev,
+                vllm_model: vllm_model_prev,
             }
         }
     }
@@ -2748,6 +2801,9 @@ mod tests {
                 Self::restore_var("SGLANG_API_KEY", self.sglang_api_key.take());
                 Self::restore_var("SGLANG_BASE_URL", self.sglang_base_url.take());
                 Self::restore_var("SGLANG_MODEL", self.sglang_model.take());
+                Self::restore_var("VLLM_API_KEY", self.vllm_api_key.take());
+                Self::restore_var("VLLM_BASE_URL", self.vllm_base_url.take());
+                Self::restore_var("VLLM_MODEL", self.vllm_model.take());
             }
         }
     }

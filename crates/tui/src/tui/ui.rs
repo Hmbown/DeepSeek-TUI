@@ -4507,6 +4507,7 @@ async fn execute_command_input(
             providers.novita.api_key = None;
             providers.fireworks.api_key = None;
             providers.sglang.api_key = None;
+            providers.vllm.api_key = None;
         }
         app.api_key_env_only = crate::config::active_provider_uses_env_only_api_key(config);
     }
@@ -4884,6 +4885,7 @@ fn render(f: &mut Frame, app: &mut App) {
             crate::config::ApiProvider::Novita => Some("Novita"),
             crate::config::ApiProvider::Fireworks => Some("Fireworks"),
             crate::config::ApiProvider::Sglang => Some("SGLang"),
+            crate::config::ApiProvider::Vllm => Some("vLLM"),
         };
         let header_data = HeaderData::new(
             app.mode,
@@ -5510,6 +5512,7 @@ async fn apply_provider_picker_api_key(
             ApiProvider::Novita => &mut providers.novita,
             ApiProvider::Fireworks => &mut providers.fireworks,
             ApiProvider::Sglang => &mut providers.sglang,
+            ApiProvider::Vllm => &mut providers.vllm,
         };
         entry.api_key = Some(api_key);
     }

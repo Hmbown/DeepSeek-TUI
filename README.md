@@ -174,6 +174,9 @@ deepseek --provider fireworks --model deepseek-v4-pro
 
 # Self-hosted SGLang
 SGLANG_BASE_URL="http://localhost:30000/v1" deepseek --provider sglang --model deepseek-v4-flash
+
+# Self-hosted vLLM
+VLLM_BASE_URL="http://localhost:8000/v1" deepseek --provider vllm --model deepseek-v4-flash
 ```
 
 ---
@@ -257,11 +260,12 @@ Key environment variables:
 | `DEEPSEEK_API_KEY` | API key |
 | `DEEPSEEK_BASE_URL` | API base URL |
 | `DEEPSEEK_MODEL` | Default model |
-| `DEEPSEEK_PROVIDER` | `deepseek` (default), `nvidia-nim`, `fireworks`, `sglang` |
+| `DEEPSEEK_PROVIDER` | `deepseek` (default), `nvidia-nim`, `fireworks`, `sglang`, `vllm` |
 | `DEEPSEEK_PROFILE` | Config profile name |
 | `DEEPSEEK_MEMORY` | Set to `on` to enable user memory |
-| `NVIDIA_API_KEY` / `FIREWORKS_API_KEY` / `SGLANG_API_KEY` | Provider auth |
+| `NVIDIA_API_KEY` / `FIREWORKS_API_KEY` / `SGLANG_API_KEY` / `VLLM_API_KEY` | Provider auth |
 | `SGLANG_BASE_URL` | Self-hosted SGLang endpoint |
+| `VLLM_BASE_URL` | Self-hosted vLLM endpoint |
 | `NO_ANIMATIONS=1` | Force accessibility mode at startup |
 | `SSL_CERT_FILE` | Custom CA bundle for corporate proxies |
 

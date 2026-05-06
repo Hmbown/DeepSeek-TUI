@@ -28,6 +28,7 @@ enum ProviderArg {
     Novita,
     Fireworks,
     Sglang,
+    Vllm,
 }
 
 impl From<ProviderArg> for ProviderKind {
@@ -40,6 +41,7 @@ impl From<ProviderArg> for ProviderKind {
             ProviderArg::Novita => ProviderKind::Novita,
             ProviderArg::Fireworks => ProviderKind::Fireworks,
             ProviderArg::Sglang => ProviderKind::Sglang,
+            ProviderArg::Vllm => ProviderKind::Vllm,
         }
     }
 }
@@ -561,17 +563,19 @@ fn provider_slot(provider: ProviderKind) -> &'static str {
         ProviderKind::Novita => "novita",
         ProviderKind::Fireworks => "fireworks",
         ProviderKind::Sglang => "sglang",
+        ProviderKind::Vllm => "vllm",
     }
 }
 
 /// Provider order used by the `auth list` and `auth status` outputs.
-const PROVIDER_LIST: [ProviderKind; 7] = [
+const PROVIDER_LIST: [ProviderKind; 8] = [
     ProviderKind::Deepseek,
     ProviderKind::NvidiaNim,
     ProviderKind::Openrouter,
     ProviderKind::Novita,
     ProviderKind::Fireworks,
     ProviderKind::Sglang,
+    ProviderKind::Vllm,
     ProviderKind::Openai,
 ];
 
@@ -1045,9 +1049,10 @@ fn delegate_to_tui(
             | ProviderKind::Novita
             | ProviderKind::Fireworks
             | ProviderKind::Sglang
+            | ProviderKind::Vllm
     ) {
         bail!(
-            "The interactive TUI supports DeepSeek, NVIDIA NIM, OpenRouter, Novita, Fireworks, and SGLang providers. Remove --provider {} or use `deepseek model ...` for provider registry inspection.",
+            "The interactive TUI supports DeepSeek, NVIDIA NIM, OpenRouter, Novita, Fireworks, SGLang, and vLLM providers. Remove --provider {} or use `deepseek model ...` for provider registry inspection.",
             resolved_runtime.provider.as_str()
         );
     }
@@ -1558,6 +1563,16 @@ mod tests {
             Some(Commands::Auth(AuthArgs {
                 command: AuthCommand::Get {
                     provider: ProviderArg::Sglang
+                }
+            }))
+        ));
+
+        let cli = parse_ok(&["deepseek", "auth", "get", "--provider", "vllm"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Auth(AuthArgs {
+                command: AuthCommand::Get {
+                    provider: ProviderArg::Vllm
                 }
             }))
         ));

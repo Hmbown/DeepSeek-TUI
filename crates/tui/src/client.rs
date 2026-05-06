@@ -754,7 +754,8 @@ pub(super) fn apply_reasoning_effort(
             | ApiProvider::Openrouter
             | ApiProvider::Novita
             | ApiProvider::Fireworks
-            | ApiProvider::Sglang => {
+            | ApiProvider::Sglang
+            | ApiProvider::Vllm => {
                 body["thinking"] = json!({ "type": "disabled" });
             }
             ApiProvider::NvidiaNim => {
@@ -769,7 +770,8 @@ pub(super) fn apply_reasoning_effort(
             | ApiProvider::Openrouter
             | ApiProvider::Novita
             | ApiProvider::Fireworks
-            | ApiProvider::Sglang => {
+            | ApiProvider::Sglang
+            | ApiProvider::Vllm => {
                 body["reasoning_effort"] = json!("high");
                 body["thinking"] = json!({ "type": "enabled" });
             }
@@ -786,7 +788,8 @@ pub(super) fn apply_reasoning_effort(
             | ApiProvider::Openrouter
             | ApiProvider::Novita
             | ApiProvider::Fireworks
-            | ApiProvider::Sglang => {
+            | ApiProvider::Sglang
+            | ApiProvider::Vllm => {
                 body["reasoning_effort"] = json!("max");
                 body["thinking"] = json!({ "type": "enabled" });
             }
