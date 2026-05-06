@@ -200,10 +200,9 @@ pub fn provider_capability(provider: ApiProvider, resolved_model: &str) -> Provi
         ApiProvider::Deepseek | ApiProvider::DeepseekCN | ApiProvider::NvidiaNim
     );
 
-    // OpenCode Go supports thinking for DeepSeek V4 models and Kimi K2.6.
+    // OpenCode Go supports thinking for DeepSeek V4 models.
     let thinking_supported = thinking_supported
-        || (matches!(provider, ApiProvider::OpencodeGo)
-            && (is_v4_pro || is_v4_flash || model_lower.contains("kimi-k2.6")));
+        || (matches!(provider, ApiProvider::OpencodeGo) && (is_v4_pro || is_v4_flash));
 
     // Request payload mode: all current providers use chat completions.
     let request_payload_mode = RequestPayloadMode::ChatCompletions;
