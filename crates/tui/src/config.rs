@@ -1497,6 +1497,83 @@ fn home_config_path() -> Option<PathBuf> {
     effective_home_dir().map(|home| home.join(".deepseek").join("config.toml"))
 }
 
+#[must_use]
+pub(crate) fn is_workspace_trusted(workspace: &Path) -> bool {
+    let Some(config_path) = default_config_path() else {
+        return false;
+    };
+    let Ok(raw) = fs::read_to_string(config_path) else {
+        return false;
+    };
+    let Ok(doc) = toml::from_str::<toml::Value>(&raw) else {
+        return false;
+    };
+    workspace_trust_level_from_doc(&doc, workspace).is_some_and(is_trusted_level)
+}
+
+pub(crate) fn save_workspace_trust(workspace: &Path) -> Result<PathBuf> {
+    let config_path = default_config_path()
+        .context("Failed to resolve config path: home directory not found.")?;
+    ensure_parent_dir(&config_path)?;
+
+    let mut doc = if config_path.exists() {
+        let raw = fs::read_to_string(&config_path)?;
+        toml::from_str::<toml::Value>(&raw)
+            .with_context(|| format!("Failed to parse config at {}", config_path.display()))?
+    } else {
+        toml::Value::Table(toml::value::Table::new())
+    };
+
+    let root = doc
+        .as_table_mut()
+        .context("Config root must be a TOML table.")?;
+    let projects = root
+        .entry("projects".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::value::Table::new()))
+        .as_table_mut()
+        .context("`projects` must be a table.")?;
+    let project = projects
+        .entry(workspace_config_key(workspace))
+        .or_insert_with(|| toml::Value::Table(toml::value::Table::new()))
+        .as_table_mut()
+        .context("Project entry must be a table.")?;
+    project.insert(
+        "trust_level".to_string(),
+        toml::Value::String("trusted".to_string()),
+    );
+
+    let serialized = toml::to_string_pretty(&doc).context("failed to serialize updated config")?;
+    write_config_file_secure(&config_path, &serialized)
+        .with_context(|| format!("Failed to write config to {}", config_path.display()))?;
+    Ok(config_path)
+}
+
+fn workspace_trust_level_from_doc<'a>(doc: &'a toml::Value, workspace: &Path) -> Option<&'a str> {
+    let workspace = canonicalize_or_keep(workspace);
+    let projects = doc.get("projects")?.as_table()?;
+    for (raw_path, project) in projects {
+        let project_path = canonicalize_or_keep(&expand_path(raw_path));
+        if project_path == workspace {
+            return project.get("trust_level").and_then(toml::Value::as_str);
+        }
+    }
+    None
+}
+
+fn is_trusted_level(level: &str) -> bool {
+    level.trim().eq_ignore_ascii_case("trusted")
+}
+
+fn workspace_config_key(workspace: &Path) -> String {
+    canonicalize_or_keep(workspace)
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn canonicalize_or_keep(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
 fn env_config_path() -> Option<PathBuf> {
     if let Ok(path) = std::env::var("DEEPSEEK_CONFIG_PATH") {
         let trimmed = path.trim();
@@ -2973,6 +3050,73 @@ mod tests {
         assert!(content.contains("reasoning_effort = \"auto\""));
         assert!(!content.contains("api_key ="));
         assert!(ensure_config_file_exists(None)?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_trust_round_trips_through_global_config() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-workspace-trust-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+        let workspace = temp_root.join("project");
+        fs::create_dir_all(&workspace)?;
+
+        assert!(!is_workspace_trusted(&workspace));
+        let saved = save_workspace_trust(&workspace)?;
+
+        assert_eq!(saved, temp_root.join(".deepseek").join("config.toml"));
+        assert!(is_workspace_trusted(&workspace));
+        assert!(!crate::tui::onboarding::needs_trust(&workspace));
+        assert!(
+            !workspace.join(".deepseek").exists(),
+            "trust persistence must not create a project-local .deepseek directory"
+        );
+
+        let parsed: toml::Value = toml::from_str(&fs::read_to_string(saved)?)?;
+        assert_eq!(
+            workspace_trust_level_from_doc(&parsed, &workspace),
+            Some("trusted")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_trust_reads_existing_projects_table() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-existing-project-trust-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+        let workspace = temp_root.join("project");
+        fs::create_dir_all(&workspace)?;
+        let config_path = temp_root.join(".deepseek").join("config.toml");
+        fs::create_dir_all(config_path.parent().unwrap())?;
+        fs::write(
+            &config_path,
+            format!(
+                "[projects.\"{}\"]\ntrust_level = \"trusted\"\n",
+                workspace.display()
+            ),
+        )?;
+
+        assert!(is_workspace_trusted(&workspace));
+        assert!(!crate::tui::onboarding::needs_trust(&workspace));
         Ok(())
     }
 

@@ -1720,14 +1720,19 @@ async fn run_event_loop(
                         }
                         OnboardingState::None => {}
                     },
-                    KeyCode::Char('y') | KeyCode::Char('Y')
+                    KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Char('1')
                         if app.onboarding == OnboardingState::TrustDirectory =>
                     {
                         match onboarding::mark_trusted(&app.workspace) {
                             Ok(_) => {
                                 app.trust_mode = true;
                                 app.status_message = None;
-                                app.onboarding = OnboardingState::Tips;
+                                if app.onboarding_workspace_trust_gate {
+                                    app.onboarding_workspace_trust_gate = false;
+                                    app.onboarding = OnboardingState::None;
+                                } else {
+                                    app.onboarding = OnboardingState::Tips;
+                                }
                             }
                             Err(err) => {
                                 app.status_message =
@@ -1735,11 +1740,11 @@ async fn run_event_loop(
                             }
                         }
                     }
-                    KeyCode::Char('n') | KeyCode::Char('N')
+                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Char('2')
                         if app.onboarding == OnboardingState::TrustDirectory =>
                     {
-                        app.status_message = None;
-                        app.onboarding = OnboardingState::Tips;
+                        let _ = engine_handle.send(Op::Shutdown).await;
+                        return Ok(());
                     }
                     KeyCode::Backspace if app.onboarding == OnboardingState::ApiKey => {
                         app.delete_api_key_char();
