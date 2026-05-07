@@ -137,7 +137,7 @@ pub const COMMANDS: &[CommandInfo] = &[
     // Core commands
     CommandInfo {
         name: "anchor",
-        aliases: &["pin"],
+        aliases: &[],
         usage: "/anchor <text> | /anchor list | /anchor remove <n>",
         description_id: MessageId::CmdAnchorDescription,
     },
@@ -496,7 +496,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
     // Match command or alias
     match command {
         // Core commands
-        "anchor" | "pin" => anchor::anchor(app, arg),
+        "anchor" => anchor::anchor(app, arg),
         "help" | "?" => core::help(app, arg),
         "clear" => core::clear(app),
         "exit" | "quit" | "q" => core::exit(),

@@ -949,6 +949,44 @@ pub async fn compact_messages_safe(
         .unwrap_or_else(|| anyhow::anyhow!("Compaction failed after {MAX_RETRIES} retries")))
 }
 
+fn read_workspace_anchors(workspace: Option<&Path>) -> Vec<String> {
+    let Some(ws) = workspace else {
+        return Vec::new();
+    };
+
+    let anchors_path = ws.join(".deepseek").join("anchors.md");
+    let Ok(content) = std::fs::read_to_string(anchors_path) else {
+        return Vec::new();
+    };
+
+    content
+        .split("\n---\n")
+        .map(str::trim)
+        .filter(|anchor| !anchor.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn anchor_summary_section(workspace: Option<&Path>) -> String {
+    let anchors = read_workspace_anchors(workspace);
+    if anchors.is_empty() {
+        return String::new();
+    }
+
+    let mut section = String::from(
+        "## Pinned Facts (User Anchors)\n\n\
+         The following facts were explicitly anchored by the user with `/anchor`. \
+         Preserve them across compaction cycles.\n\n",
+    );
+
+    for anchor in anchors {
+        let _ = writeln!(section, "- {anchor}");
+    }
+
+    section.push_str("\n---\n\n");
+    section
+}
+
 pub async fn compact_messages(
     client: &DeepSeekClient,
     messages: &[Message],
@@ -984,24 +1022,7 @@ pub async fn compact_messages(
     // Extract workflow context (files touched, tasks in progress, etc.)
     let workflow_context = extract_workflow_context(&to_summarize, workspace);
 
-    // Read user-anchored facts that must survive compaction
-    let anchors_text = if let Some(ws) = workspace {
-        let anchors_path = ws.join(".deepseek").join("anchors.md");
-        std::fs::read_to_string(&anchors_path).unwrap_or_default()
-    } else {
-        String::new()
-    };
-
-    let anchors_section = if !anchors_text.trim().is_empty() {
-        format!(
-            "## 📌 Pinned Facts (User-Anchored — DO NOT discard)\n\n\
-             The following facts were explicitly pinned by the user. \
-             They MUST be preserved across all compaction cycles.\n\n\
-             {anchors_text}\n\n---\n\n"
-        )
-    } else {
-        String::new()
-    };
+    let anchors_section = anchor_summary_section(workspace);
 
     // Build new message list with enhanced summary as system block
     let summary_block = SystemBlock {
@@ -1472,6 +1493,33 @@ mod tests {
                 content_blocks: None,
             }],
         }
+    }
+
+    #[test]
+    fn anchor_summary_section_is_empty_without_workspace_or_file() {
+        assert!(anchor_summary_section(None).is_empty());
+
+        let tmpdir = tempfile::TempDir::new().unwrap();
+        assert!(anchor_summary_section(Some(tmpdir.path())).is_empty());
+    }
+
+    #[test]
+    fn anchor_summary_section_parses_anchor_file_into_bullets() {
+        let tmpdir = tempfile::TempDir::new().unwrap();
+        let deepseek_dir = tmpdir.path().join(".deepseek");
+        std::fs::create_dir_all(&deepseek_dir).unwrap();
+        std::fs::write(
+            deepseek_dir.join("anchors.md"),
+            "\n---\nDo not touch .ssh\n---\nStatus field is unreliable\n",
+        )
+        .unwrap();
+
+        let section = anchor_summary_section(Some(tmpdir.path()));
+
+        assert!(section.contains("## Pinned Facts (User Anchors)"));
+        assert!(section.contains("- Do not touch .ssh\n"));
+        assert!(section.contains("- Status field is unreliable\n"));
+        assert!(!section.contains("\n---\nDo not touch"));
     }
 
     #[test]

@@ -1,7 +1,7 @@
-//! Anchor command: pin critical facts that survive compaction
+//! Anchor command: keep critical facts across compaction.
 //!
-//! Unlike `/note` (active lookup), anchors are passive — they are automatically
-//! re-injected into the context after every compaction cycle. Use anchors to
+//! Unlike `/note` (active lookup), anchors are passive. They are automatically
+//! re-injected into context after every compaction cycle. Use anchors to
 //! preserve invariants like "This API's status field is unreliable" or
 //! ".ssh/ must never be touched".
 
@@ -11,25 +11,25 @@ use std::io::Write;
 
 use super::CommandResult;
 
+const USAGE: &str = "/anchor <text> | /anchor list | /anchor remove <n>";
+
 /// Handle the `/anchor` command with subcommands:
-///   /anchor <text>       — add a new anchor
-///   /anchor list         — list all anchors
-///   /anchor remove <n>   — remove anchor by 1-based index
+///   /anchor <text>       - add a new anchor
+///   /anchor list         - list all anchors
+///   /anchor remove <n>   - remove anchor by 1-based index
 pub fn anchor(app: &mut App, content: Option<&str>) -> CommandResult {
     let input = match content {
         Some(c) => c.trim(),
         None => {
-            return CommandResult::error(
-                "Usage: /anchor <text> | /anchor list | /anchor remove <n>",
-            );
+            return CommandResult::error(format!("Usage: {USAGE}"));
         }
     };
 
     if input.is_empty() {
-        return CommandResult::error("Usage: /anchor <text> | /anchor list | /anchor remove <n>");
+        return CommandResult::error(format!("Usage: {USAGE}"));
     }
 
-    // Parse subcommands
+    // Parse subcommands.
     if input.eq_ignore_ascii_case("list") {
         return list_anchors(app);
     }
@@ -42,7 +42,7 @@ pub fn anchor(app: &mut App, content: Option<&str>) -> CommandResult {
         return remove_anchor(app, rest.trim());
     }
 
-    // Default: add a new anchor
+    // Default: add a new anchor.
     add_anchor(app, input)
 }
 
@@ -81,14 +81,14 @@ fn write_anchors(app: &App, anchors: &[String]) -> Result<(), String> {
 fn add_anchor(app: &mut App, text: &str) -> CommandResult {
     let path = anchors_path(app);
 
-    // Ensure parent directory exists
+    // Ensure parent directory exists.
     if let Some(parent) = path.parent()
         && let Err(e) = fs::create_dir_all(parent)
     {
         return CommandResult::error(format!("Failed to create anchors directory: {e}"));
     }
 
-    // Append to anchors file
+    // Append to anchors file.
     let mut file = match fs::OpenOptions::new().create(true).append(true).open(&path) {
         Ok(f) => f,
         Err(e) => {
@@ -96,7 +96,7 @@ fn add_anchor(app: &mut App, text: &str) -> CommandResult {
         }
     };
 
-    // Write separator and anchor content
+    // Write separator and anchor content.
     if let Err(e) = writeln!(file, "\n---\n{}", text) {
         return CommandResult::error(format!("Failed to write anchor: {e}"));
     }
