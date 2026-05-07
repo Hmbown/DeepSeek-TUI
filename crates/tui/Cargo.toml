@@ -18,6 +18,10 @@ toml = ["schemaui/toml"]
 name = "deepseek-tui"
 path = "src/main.rs"
 
+[[bin]]
+name = "deepseek-windows-sandbox-helper"
+path = "src/bin/deepseek-windows-sandbox-helper.rs"
+
 [dependencies]
 anyhow = "1.0.100"
 arboard = "3.4"
@@ -81,4 +85,12 @@ libc = "0.2"
 libc = "0.2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.60", features = ["Win32_Foundation", "Win32_System_Console", "Win32_UI_WindowsAndMessaging", "Win32_System_Diagnostics_Debug"] }
+windows = { version = "0.60", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Console",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Threading",
+    "Win32_System_JobObjects",
+] }

@@ -10,7 +10,7 @@
 //!
 //! - **macOS**: Uses Seatbelt (sandbox-exec) for mandatory access control
 //! - **Linux**: Uses Landlock (kernel 5.13+) for filesystem access control
-//! - **Windows**: Windows Sandbox/AppContainer/Restricted token (best-effort)
+//! - **Windows**: helper-based Job Object process-tree containment (best-effort)
 //!
 //! # Usage
 //!
@@ -170,7 +170,7 @@ pub enum SandboxType {
     #[cfg(target_os = "linux")]
     LinuxLandlock,
 
-    /// Windows sandboxing (Windows Sandbox/AppContainer/Restricted token).
+    /// Windows Job Object process-tree containment.
     #[cfg(target_os = "windows")]
     Windows,
 }
@@ -184,7 +184,7 @@ impl std::fmt::Display for SandboxType {
             #[cfg(target_os = "linux")]
             SandboxType::LinuxLandlock => write!(f, "linux-landlock"),
             #[cfg(target_os = "windows")]
-            SandboxType::Windows => write!(f, "windows-sandbox"),
+            SandboxType::Windows => write!(f, "windows-job-object"),
         }
     }
 }
@@ -418,17 +418,24 @@ impl SandboxManager {
         }
     }
 
-    /// Prepare a Windows-sandboxed execution environment.
+    /// Prepare a Windows-contained execution environment.
     ///
-    /// Note: Windows sandboxing requires a helper process for full isolation.
-    /// This implementation marks intent and defers enforcement to a helper.
+    /// The current Windows backend is process-tree containment only. It uses a
+    /// helper binary to place the command in a Job Object with kill-on-close
+    /// semantics. It does not enforce filesystem or network access policy.
     #[cfg(target_os = "windows")]
     fn prepare_windows(spec: &CommandSpec) -> ExecEnv {
-        let mut command = vec![spec.program.clone()];
-        command.extend(spec.args.clone());
+        let Some(kind) = windows::select_best_kind(&spec.sandbox_policy, &spec.cwd) else {
+            return Self::prepare_unsandboxed(spec);
+        };
+
+        let Some(command) =
+            windows::build_helper_command(&spec.program, &spec.args, spec.timeout, &spec.cwd)
+        else {
+            return Self::prepare_unsandboxed(spec);
+        };
 
         let mut env = spec.env.clone();
-        let kind = windows::select_best_kind(&spec.sandbox_policy, &spec.cwd);
         env.insert("DEEPSEEK_SANDBOX".to_string(), format!("windows:{kind}"));
         if !spec.sandbox_policy.has_network_access() {
             env.insert(
