@@ -44,6 +44,9 @@ pub struct CapacityMemoryRecord {
     pub source_message_ids: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub replay_info: Option<ReplayInfo>,
+    /// Workspace path for cross-session isolation. Empty string = global/legacy.
+    #[serde(default)]
+    pub workspace: String,
 }
 
 fn capacity_memory_dirs() -> Vec<PathBuf> {
@@ -210,7 +213,10 @@ pub fn now_rfc3339() -> String {
 
 /// Scan all memory directories for the newest record across ALL sessions.
 /// Returns (session_id, record) if any records exist.
-pub fn find_latest_cross_session() -> Option<(String, CapacityMemoryRecord)> {
+///
+/// If `workspace` is non-empty, only records whose `workspace` field matches
+/// (or are empty/legacy records with no workspace set) are considered.
+pub fn find_latest_cross_session(workspace: &str) -> Option<(String, CapacityMemoryRecord)> {
     let dirs = capacity_memory_dirs();
     let mut newest: Option<(SystemTime, String, CapacityMemoryRecord)> = None;
 
@@ -236,6 +242,15 @@ pub fn find_latest_cross_session() -> Option<(String, CapacityMemoryRecord)> {
             let Some(record) = records.into_iter().last() else {
                 continue;
             };
+            // Workspace isolation: skip records whose workspace is set but
+            // doesn't match the current workspace. Empty/legacy records
+            // (workspace = "") are always included for backward compatibility.
+            if !workspace.is_empty()
+                && !record.workspace.is_empty()
+                && record.workspace != workspace
+            {
+                continue;
+            }
             let Ok(meta) = fs::metadata(&path) else {
                 continue;
             };
@@ -280,6 +295,7 @@ mod tests {
             },
             source_message_ids: vec!["m1".to_string()],
             replay_info: None,
+            workspace: String::new(),
         };
 
         append_capacity_record_to_path(&path, &record).expect("append");
@@ -308,6 +324,7 @@ mod tests {
             canonical_state: CanonicalState::default(),
             source_message_ids: vec!["m1".to_string()],
             replay_info: None,
+            workspace: String::new(),
         };
 
         let chosen = append_capacity_record_to_candidates(
@@ -340,6 +357,7 @@ mod tests {
             },
             source_message_ids: vec!["m1".to_string()],
             replay_info: None,
+            workspace: String::new(),
         };
         let new_record = CapacityMemoryRecord {
             id: "cap_new".to_string(),
@@ -356,6 +374,7 @@ mod tests {
             },
             source_message_ids: vec!["m2".to_string()],
             replay_info: None,
+            workspace: String::new(),
         };
 
         append_capacity_record_to_path(&older, &old_record).expect("write older");

@@ -821,6 +821,7 @@ impl Engine {
             },
             source_message_ids: Vec::new(),
             replay_info: None,
+            workspace: self.session.workspace.to_string_lossy().to_string(),
         };
 
         if let Err(e) = append_capacity_record(&self.session.id, &record) {
