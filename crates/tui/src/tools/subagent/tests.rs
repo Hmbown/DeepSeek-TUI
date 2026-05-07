@@ -1224,6 +1224,7 @@ fn stub_runtime() -> SubAgentRuntime {
         cancel_token: CancellationToken::new(),
         mailbox: None,
         parent_completion_tx: None,
+        agent_profiles: None,
     }
 }
 
