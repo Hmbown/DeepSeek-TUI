@@ -16,8 +16,6 @@
 //! | `lsp_document_symbols`    | `textDocument/documentSymbol`   | `Symbol[]`       |
 //! | `lsp_workspace_symbols`   | `workspace/symbol`              | `Symbol[]`       |
 
-use std::path::PathBuf;
-
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
@@ -35,14 +33,6 @@ fn lsp_manager(ctx: &ToolContext) -> Result<&LspManager, ToolError> {
         .as_ref()
         .ok_or_else(|| ToolError::execution_failed("LSP manager is not available"))
         .map(|arc| arc.as_ref())
-}
-
-async fn resolve_and_open(ctx: &ToolContext, file: &str) -> Result<(PathBuf, String), ToolError> {
-    let resolved = ctx.resolve_path(file)?;
-    let text = tokio::fs::read_to_string(&resolved).await.map_err(|e| {
-        ToolError::execution_failed(format!("failed to read {}: {e}", resolved.display()))
-    })?;
-    Ok((resolved, text))
 }
 
 fn format_locations(locs: &[LspLocation]) -> String {
@@ -132,7 +122,7 @@ impl ToolSpec for LspGotoDefinitionTool {
         let column = required_u64(&input, "column")? as u32;
 
         let mgr = lsp_manager(ctx)?;
-        let (resolved, _text) = resolve_and_open(ctx, file).await?;
+        let resolved = ctx.resolve_path(file)?;
 
         match mgr.goto_definition(&resolved, line, column).await {
             Some(locs) => Ok(ToolResult::success(format_locations(&locs))),
@@ -194,7 +184,7 @@ impl ToolSpec for LspFindReferencesTool {
         let column = required_u64(&input, "column")? as u32;
 
         let mgr = lsp_manager(ctx)?;
-        let (resolved, _text) = resolve_and_open(ctx, file).await?;
+        let resolved = ctx.resolve_path(file)?;
 
         match mgr.find_references(&resolved, line, column).await {
             Some(locs) => Ok(ToolResult::success(format_locations(&locs))),
@@ -257,7 +247,7 @@ impl ToolSpec for LspHoverTool {
         let column = required_u64(&input, "column")? as u32;
 
         let mgr = lsp_manager(ctx)?;
-        let (resolved, _text) = resolve_and_open(ctx, file).await?;
+        let resolved = ctx.resolve_path(file)?;
 
         match mgr.hover(&resolved, line, column).await {
             Some(text) => Ok(ToolResult::success(text)),
@@ -310,7 +300,7 @@ impl ToolSpec for LspDocumentSymbolsTool {
         let file = required_str(&input, "file")?;
 
         let mgr = lsp_manager(ctx)?;
-        let (resolved, _text) = resolve_and_open(ctx, file).await?;
+        let resolved = ctx.resolve_path(file)?;
 
         match mgr.document_symbols(&resolved).await {
             Some(syms) => Ok(ToolResult::success(format_symbols(&syms))),
