@@ -26,6 +26,7 @@ chosen over the available shell equivalent. Companion to `crates/tui/src/prompts
 | `write_file` | Create or overwrite a file. |
 | `edit_file` | Search-and-replace inside a single file. Cheaper than a full rewrite. |
 | `apply_patch` | Apply a unified diff. The right tool for multi-hunk edits. |
+| `retrieve_tool_result` | Read summaries or slices of prior large tool outputs spilled to `~/.deepseek/tool_outputs/`; use `summary`, `head`, `tail`, `lines`, or `query` instead of replaying the whole result. |
 
 ### Search
 
