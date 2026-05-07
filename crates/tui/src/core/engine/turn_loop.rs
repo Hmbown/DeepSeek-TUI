@@ -231,9 +231,25 @@ impl Engine {
             };
 
             // Resolve `auto` reasoning_effort to a concrete tier (#663).
+            // Strip turn metadata blocks (#934) so they don't influence the
+            // keyword-based effort classifier.
+            let clean_messages: Vec<Message> = self
+                .session
+                .messages
+                .iter()
+                .map(|msg| Message {
+                    content: msg
+                        .content
+                        .iter()
+                        .filter(|b| !is_turn_meta_block(b))
+                        .cloned()
+                        .collect(),
+                    ..msg.clone()
+                })
+                .collect();
             let effective_reasoning_effort = resolve_auto_effort(
                 self.session.reasoning_effort.as_deref(),
-                &self.session.messages,
+                &clean_messages,
             );
 
             let request = MessageRequest {
@@ -1765,12 +1781,19 @@ impl Engine {
                     self.session
                         .working_set
                         .observe_user_message(&steer, &self.session.workspace);
+                    let steer_meta = self.build_turn_meta_string();
                     self.add_session_message(Message {
                         role: "user".to_string(),
-                        content: vec![ContentBlock::Text {
-                            text: steer,
-                            cache_control: None,
-                        }],
+                        content: vec![
+                            ContentBlock::Text {
+                                text: steer_meta,
+                                cache_control: None,
+                            },
+                            ContentBlock::Text {
+                                text: steer,
+                                cache_control: None,
+                            },
+                        ],
                     })
                     .await;
                 }
@@ -1809,54 +1832,10 @@ impl Engine {
     }
 
     pub(super) fn messages_with_turn_metadata(&self) -> Vec<Message> {
-        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-        let working_set_summary = self
-            .session
-            .working_set
-            .summary_block(&self.config.workspace)
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
-
-        let summary = if let Some(working_set_summary) = working_set_summary {
-            format!("Current local date: {today}\n{working_set_summary}")
-        } else {
-            format!("Current local date: {today}")
-        };
-
-        let mut messages = self.session.messages.clone();
-        // v0.8.11 hotfix: tool-result messages are stored as role="user" in
-        // our internal representation but serialize to role="tool" on the
-        // wire. Prepending a Text block onto a tool-result message breaks
-        // the assistant→tool_result invariant — the API rejects the request
-        // with `"insufficient tool messages following tool_calls"`. Inject
-        // only into actual user-typed messages, recognizable by having at
-        // least one Text content block (and no ToolResult blocks).
-        let Some(last_user) = messages.iter_mut().rev().find(|message| {
-            message.role == "user"
-                && message
-                    .content
-                    .iter()
-                    .all(|block| !matches!(block, ContentBlock::ToolResult { .. }))
-                && message
-                    .content
-                    .iter()
-                    .any(|block| matches!(block, ContentBlock::Text { .. }))
-        }) else {
-            // No real user message in the trailing slice (e.g. mid-turn
-            // after a tool call). Skip injection — the working_set will
-            // surface again on the next genuine user prompt.
-            return messages;
-        };
-
-        let turn_meta = format!("<turn_meta>\n{summary}\n</turn_meta>");
-        last_user.content.insert(
-            0,
-            ContentBlock::Text {
-                text: turn_meta,
-                cache_control: None,
-            },
-        );
-        messages
+        // Messages already carry their <turn_meta> block from storage
+        // time (#934).  Keep this function as a single aggregation point
+        // for any future transient message modifications.
+        self.session.messages.clone()
     }
 }
 
@@ -1903,5 +1882,19 @@ fn resolve_auto_effort(reasoning_effort: Option<&str>, messages: &[Message]) -> 
         }
         Some(other) => Some(other.to_string()),
         None => None,
+    }
+}
+
+/// Check whether a content block is a turn‑metadata block (stored at
+/// message‑creation time for KV prefix‑cache stability, #934).
+///
+/// Rendering and analysis paths that need "clean" messages (without meta)
+/// should filter blocks through this predicate rather than re‑implementing
+/// the sentinel check themselves.
+fn is_turn_meta_block(block: &ContentBlock) -> bool {
+    if let ContentBlock::Text { text, .. } = block {
+        text.starts_with("<!-- DSTUI_TURN_META")
+    } else {
+        false
     }
 }

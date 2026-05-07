@@ -824,6 +824,37 @@ impl Engine {
             .await;
     }
 
+    /// Build the turn‑metadata block for KV prefix‑cache stability (#934).
+    ///
+    /// The sentinel prefix `<!-- DSTUI_TURN_META` lets the transcript
+    /// renderer identify and skip this block so it never appears in the
+    /// user‑visible history.
+    ///
+    /// Contents are deliberately limited to information the model cannot
+    /// infer from V4's retained reasoning chain or Quick Instruction
+    /// mechanism (DeepSeek-V4 Technical Report §5.1.1, Table 5, Fig. 7a).
+    ///
+    /// - turn counter (machine‑readable identifier)
+    /// - working‑set paths (model can't reconstruct from its own output)
+    ///
+    /// DateTime, intent classification, and state summaries are omitted
+    /// because V4 handles those internally via Quick Instruction tokens.
+    fn build_turn_meta_string(&self) -> String {
+        let working_set_summary = self
+            .session
+            .working_set
+            .summary_block(&self.config.workspace)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        let summary = working_set_summary.unwrap_or_default();
+
+        format!(
+            "<!-- DSTUI_TURN_META turn_id={} -->\n<turn_meta>\n{summary}\n</turn_meta>",
+            self.turn_counter
+        )
+    }
+
     async fn add_session_message(&mut self, message: Message) {
         self.session.add_message(message);
         self.emit_session_updated().await;
@@ -907,13 +938,23 @@ impl Engine {
             .observe_user_message(&content, &self.session.workspace);
         let force_update_plan_first = should_force_update_plan_first(mode, &content);
 
-        // Add user message to session
+        // Build turn metadata at storage time (#934). Storing the meta
+        // block as part of the message means replayed messages sent in
+        // subsequent turns are byte-identical to their originals, enabling
+        // DeepSeek's KV prefix cache to hit.
+        let turn_meta = self.build_turn_meta_string();
         let user_msg = Message {
             role: "user".to_string(),
-            content: vec![ContentBlock::Text {
-                text: content,
-                cache_control: None,
-            }],
+            content: vec![
+                ContentBlock::Text {
+                    text: turn_meta,
+                    cache_control: None,
+                },
+                ContentBlock::Text {
+                    text: content,
+                    cache_control: None,
+                },
+            ],
         };
         self.session.add_message(user_msg);
 

@@ -509,6 +509,14 @@ pub fn history_cells_from_message(msg: &Message) -> Vec<HistoryCell> {
     for block in &msg.content {
         match block {
             ContentBlock::Text { text, .. } => {
+                // Skip turn‑metadata blocks stored for KV prefix‑cache
+                // stability (#934).  Identified by the DSTUI_TURN_META
+                // sentinel so we never swallow user content regardless
+                // of how many Text blocks a message carries.
+                if text.starts_with("<!-- DSTUI_TURN_META") {
+                    continue;
+                }
+
                 // Check if this is an `<archived_context>` block.
                 if msg.role == "assistant"
                     && let Some(archived) = parse_archived_context(text)
@@ -3508,6 +3516,58 @@ mod tests {
         let text = "Line one\nLine two";
         let summary = extract_reasoning_summary(text).expect("summary should exist");
         assert_eq!(summary, "Line one\nLine two");
+    }
+
+    #[test]
+    fn old_session_without_turn_meta_renders_normally() {
+        // Simulate a message saved before #934 — a single Text block
+        // without any turn_meta sentinel.
+        let old_msg = Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "fix src/main.rs by adding error handling".to_string(),
+                cache_control: None,
+            }],
+        };
+
+        let cells = super::history_cells_from_message(&old_msg);
+        assert_eq!(cells.len(), 1);
+        let HistoryCell::User { content } = &cells[0] else {
+            panic!("expected User history cell");
+        };
+        // The full user input must be present — nothing swallowed.
+        assert_eq!(content, "fix src/main.rs by adding error handling");
+        assert!(!content.contains("DSTUI_TURN_META"));
+        assert!(!content.contains("<turn_meta>"));
+    }
+
+    #[test]
+    fn turn_meta_block_is_skipped_during_render() {
+        // A message stored after #934 has a turn_meta block at content[0]
+        // and the real user input at content[1].
+        let new_msg = Message {
+            role: "user".to_string(),
+            content: vec![
+                ContentBlock::Text {
+                    text: "<!-- DSTUI_TURN_META turn_id=3 -->\n<turn_meta>\n## Repo Working Set\nWorkspace: /test\n- src/main.rs (file)\n</turn_meta>".to_string(),
+                    cache_control: None,
+                },
+                ContentBlock::Text {
+                    text: "fix src/main.rs".to_string(),
+                    cache_control: None,
+                },
+            ],
+        };
+
+        let cells = super::history_cells_from_message(&new_msg);
+        assert_eq!(cells.len(), 1);
+        let HistoryCell::User { content } = &cells[0] else {
+            panic!("expected User history cell");
+        };
+        // Only the real user input; no turn_meta leaked.
+        assert_eq!(content, "fix src/main.rs");
+        assert!(!content.contains("DSTUI_TURN_META"));
+        assert!(!content.contains("<turn_meta>"));
     }
 
     #[test]

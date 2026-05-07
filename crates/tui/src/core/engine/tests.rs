@@ -1,7 +1,7 @@
 use super::*;
 
 use crate::models::SystemBlock;
-use crate::test_support::lock_test_env;
+use crate::test_support::{assert_byte_identical, lock_test_env};
 use serde_json::json;
 use std::collections::HashSet;
 use std::ffi::OsString;
@@ -681,7 +681,7 @@ fn refresh_system_prompt_leaves_working_set_out_of_system_prompt() {
 }
 
 #[test]
-fn working_set_reaches_model_as_turn_metadata() {
+fn turn_meta_string_includes_working_set_and_sentinel() {
     let tmp = tempdir().expect("tempdir");
     fs::create_dir_all(tmp.path().join("src")).expect("mkdir");
     fs::write(tmp.path().join("src/lib.rs"), "pub fn sample() {}").expect("write");
@@ -691,71 +691,21 @@ fn working_set_reaches_model_as_turn_metadata() {
         ..Default::default()
     };
     let (mut engine, _handle) = Engine::new(config, &Config::default());
+    engine.turn_counter = 3;
     engine
         .session
         .working_set
         .observe_user_message("please inspect src/lib.rs", tmp.path());
-    engine.session.add_message(Message {
-        role: "user".to_string(),
-        content: vec![ContentBlock::Text {
-            text: "please inspect src/lib.rs".to_string(),
-            cache_control: None,
-        }],
-    });
 
-    let messages = engine.messages_with_turn_metadata();
-    let first_block = messages
-        .last()
-        .and_then(|message| message.content.first())
-        .expect("turn metadata block");
-    let ContentBlock::Text { text, .. } = first_block else {
-        panic!("expected text metadata block");
-    };
-    assert!(text.starts_with("<turn_meta>\n"));
-    assert!(text.contains(WORKING_SET_SUMMARY_MARKER));
-    assert!(text.contains("src/lib.rs"));
+    // build_turn_meta_string is used at storage time (#934).
+    let meta = engine.build_turn_meta_string();
+    assert!(meta.starts_with("<!-- DSTUI_TURN_META turn_id=3"));
+    assert!(meta.contains(WORKING_SET_SUMMARY_MARKER));
+    assert!(meta.contains("src/lib.rs"));
 }
 
 #[test]
-fn turn_metadata_includes_current_local_date_without_working_set() {
-    let tmp = tempdir().expect("tempdir");
-    let config = EngineConfig {
-        workspace: tmp.path().to_path_buf(),
-        ..Default::default()
-    };
-    let (mut engine, _handle) = Engine::new(config, &Config::default());
-    engine.session.add_message(Message {
-        role: "user".to_string(),
-        content: vec![ContentBlock::Text {
-            text: "what is today's date?".to_string(),
-            cache_control: None,
-        }],
-    });
-
-    let messages = engine.messages_with_turn_metadata();
-    let first_block = messages
-        .last()
-        .and_then(|message| message.content.first())
-        .expect("turn metadata block");
-    let ContentBlock::Text { text, .. } = first_block else {
-        panic!("expected text metadata block");
-    };
-
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-    assert!(text.starts_with("<turn_meta>\n"));
-    assert!(text.contains(&format!("Current local date: {today}")));
-}
-
-/// v0.8.11 regression: tool-result messages serialize to role="tool" on
-/// the wire but are stored as role="user" internally. Prepending
-/// `<turn_meta>` text onto a tool-result message broke the
-/// assistant→tool_result invariant and caused HTTP 400 from DeepSeek's
-/// API ("insufficient tool messages following tool_calls"). The fix:
-/// inject only into messages that have a Text content block and no
-/// ToolResult blocks; mid-turn (tool-result is the trailing user
-/// message) the injection skips.
-#[test]
-fn turn_metadata_skips_tool_result_messages() {
+fn turn_meta_string_omits_date_includes_working_set() {
     let tmp = tempdir().expect("tempdir");
     fs::create_dir_all(tmp.path().join("src")).expect("mkdir");
     fs::write(tmp.path().join("src/lib.rs"), "pub fn sample() {}").expect("write");
@@ -765,30 +715,53 @@ fn turn_metadata_skips_tool_result_messages() {
         ..Default::default()
     };
     let (mut engine, _handle) = Engine::new(config, &Config::default());
+    engine.turn_counter = 7;
     engine
         .session
         .working_set
         .observe_user_message("inspect src/lib.rs", tmp.path());
 
-    // Real user message — should be eligible for injection.
+    let meta = engine.build_turn_meta_string();
+    // Date is intentionally omitted — V4 handles temporal awareness
+    // internally (Quick Instruction, Table 5 in §5.1.1).
+    assert!(!meta.contains("Current local date"));
+    assert!(!meta.contains("chrono"));
+    // Machine-readable identifiers present.
+    assert!(meta.starts_with("<!-- DSTUI_TURN_META turn_id=7"));
+    assert!(meta.contains(WORKING_SET_SUMMARY_MARKER));
+    assert!(meta.contains("src/lib.rs"));
+}
+
+/// Turn metadata is stored at storage time (#934) rather than injected at
+/// send time.  Tool‑result messages (stored as role="user" internally) do
+/// NOT get a turn_meta block — they have no Text content.  Verify that
+/// `messages_with_turn_metadata()` returns stored messages unchanged.
+#[test]
+fn messages_with_turn_metadata_returns_stored_messages_as_is() {
+    let tmp = tempdir().expect("tempdir");
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(config, &Config::default());
+    engine.turn_counter = 1;
+
+    // User message stored through the normal path now includes turn_meta.
     engine.session.add_message(Message {
         role: "user".to_string(),
-        content: vec![ContentBlock::Text {
-            text: "inspect src/lib.rs".to_string(),
-            cache_control: None,
-        }],
+        content: vec![
+            ContentBlock::Text {
+                text: engine.build_turn_meta_string(),
+                cache_control: None,
+            },
+            ContentBlock::Text {
+                text: "inspect src/lib.rs".to_string(),
+                cache_control: None,
+            },
+        ],
     });
-    // Assistant tool-call.
-    engine.session.add_message(Message {
-        role: "assistant".to_string(),
-        content: vec![ContentBlock::ToolUse {
-            id: "call_42".to_string(),
-            name: "read_file".to_string(),
-            input: serde_json::json!({"path": "src/lib.rs"}),
-            caller: None,
-        }],
-    });
-    // Tool result, stored as role="user" internally.
+
+    // Tool result stored as role="user" (no turn_meta).
     engine.session.add_message(Message {
         role: "user".to_string(),
         content: vec![ContentBlock::ToolResult {
@@ -801,52 +774,45 @@ fn turn_metadata_skips_tool_result_messages() {
 
     let messages = engine.messages_with_turn_metadata();
 
-    // The trailing message is the tool result and MUST be untouched —
-    // no Text block sneaking in front of the ToolResult block.
-    let trailing = messages.last().expect("trailing message");
-    assert_eq!(trailing.role, "user");
-    assert_eq!(trailing.content.len(), 1);
+    // messages_with_turn_metadata is now a simple clone (#934).
+    assert_eq!(messages.len(), 2);
+
+    // User message: content[0] = turn_meta, content[1] = user input.
+    let user_msg = &messages[0];
+    assert_eq!(user_msg.role, "user");
+    assert_eq!(user_msg.content.len(), 2);
+    let ContentBlock::Text { text: t0, .. } = &user_msg.content[0] else {
+        panic!("expected turn_meta block");
+    };
+    assert!(t0.starts_with("<!-- DSTUI_TURN_META"));
+    let ContentBlock::Text { text: t1, .. } = &user_msg.content[1] else {
+        panic!("expected user input block");
+    };
+    assert_eq!(t1, "inspect src/lib.rs");
+
+    // Tool result: untouched, no Text blocks added.
+    let tool_msg = &messages[1];
+    assert_eq!(tool_msg.role, "user");
+    assert_eq!(tool_msg.content.len(), 1);
     assert!(matches!(
-        trailing.content.first(),
+        tool_msg.content.first(),
         Some(ContentBlock::ToolResult { .. })
     ));
-
-    // The earlier real user message receives the turn_meta prefix.
-    let real_user = messages.first().expect("first user message");
-    assert_eq!(real_user.role, "user");
-    let ContentBlock::Text { text, .. } = real_user.content.first().expect("user text content")
-    else {
-        panic!("expected Text block on real user message");
-    };
-    assert!(text.starts_with("<turn_meta>\n"));
-    assert!(text.contains("src/lib.rs"));
 }
 
-/// When the turn is mid-execution and the trailing user message is a
-/// tool result, no turn_meta is injected at all (rather than landing on
-/// some earlier user message and confusing the API's tool-call
-/// continuity check). The working_set surfaces again on the next
-/// genuine user prompt.
+/// When only tool‑result messages exist in history (no user Text message),
+/// `messages_with_turn_metadata()` returns them unchanged — no turn_meta
+/// block is injected anywhere because none were stored (#934).
 #[test]
-fn turn_metadata_skips_when_only_tool_results_trail() {
+fn messages_with_turn_metadata_returns_tool_only_history_unchanged() {
     let tmp = tempdir().expect("tempdir");
-    fs::create_dir_all(tmp.path().join("src")).expect("mkdir");
-    fs::write(tmp.path().join("src/lib.rs"), "pub fn sample() {}").expect("write");
-
     let config = EngineConfig {
         workspace: tmp.path().to_path_buf(),
         ..Default::default()
     };
     let (mut engine, _handle) = Engine::new(config, &Config::default());
-    engine
-        .session
-        .working_set
-        .observe_user_message("inspect src/lib.rs", tmp.path());
 
-    // Only a tool-result message in history — simulates the corner case
-    // where the prior real user message has already been compacted away
-    // but a tool-result is still pending. We must not retroactively
-    // inject.
+    // Only a tool-result message in history.
     engine.session.add_message(Message {
         role: "user".to_string(),
         content: vec![ContentBlock::ToolResult {
@@ -859,8 +825,7 @@ fn turn_metadata_skips_when_only_tool_results_trail() {
 
     let messages = engine.messages_with_turn_metadata();
 
-    // Returned unchanged: the single tool-result message, no Text
-    // prefix, content length == 1.
+    // Returned unchanged: single tool-result, content length == 1.
     let only = messages.last().expect("trailing message");
     assert_eq!(only.content.len(), 1);
     assert!(matches!(
@@ -921,6 +886,226 @@ fn compaction_summary_stays_in_stable_system_prompt() {
 
     assert!(prompt.contains(COMPACTION_SUMMARY_MARKER));
     assert!(!prompt.contains(WORKING_SET_SUMMARY_MARKER));
+}
+
+/// Simulate a multi‑turn conversation and verify that the JSON‑serialized
+/// messages array is prefix‑stable across turns.  If this test fails, the
+/// KV cache will miss on every turn and DeepSeek API costs will spike.
+///
+/// After the fix for #934, user messages carry their `<turn_meta>` block
+/// from storage time onward, so replayed historical messages are always
+/// byte‑identical to their original wire representation.
+#[test]
+fn messages_prefix_is_stable_across_turns() {
+    let tmp = tempdir().expect("tempdir");
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(config, &Config::default());
+
+    // ── Turn 1 ──────────────────────────────────────────────────────────
+    engine.turn_counter = 1;
+    let meta1 = engine.build_turn_meta_string();
+    engine.session.add_message(Message {
+        role: "user".to_string(),
+        content: vec![
+            ContentBlock::Text { text: meta1,  cache_control: None },
+            ContentBlock::Text { text: "hello".to_string(), cache_control: None },
+        ],
+    });
+    engine.session.add_message(Message {
+        role: "assistant".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "Hi! How can I help?".to_string(),
+            cache_control: None,
+        }],
+    });
+
+    // ── Turn 2 ──────────────────────────────────────────────────────────
+    engine.turn_counter = 2;
+    let meta2 = engine.build_turn_meta_string();
+    engine.session.add_message(Message {
+        role: "user".to_string(),
+        content: vec![
+            ContentBlock::Text { text: meta2,  cache_control: None },
+            ContentBlock::Text { text: "fix src/main.rs".to_string(), cache_control: None },
+        ],
+    });
+    engine.session.add_message(Message {
+        role: "assistant".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "Sure, let me look at it.".to_string(),
+            cache_control: None,
+        }],
+    });
+
+    let turn2_messages = engine.messages_with_turn_metadata();
+    let turn2_json = serde_json::to_string(&turn2_messages).expect("serialize turn2");
+
+    // ── Turn 3 ──────────────────────────────────────────────────────────
+    engine.turn_counter = 3;
+    let meta3 = engine.build_turn_meta_string();
+    engine.session.add_message(Message {
+        role: "user".to_string(),
+        content: vec![
+            ContentBlock::Text { text: meta3,  cache_control: None },
+            ContentBlock::Text { text: "now edit the tests".to_string(), cache_control: None },
+        ],
+    });
+
+    let turn3_messages = engine.messages_with_turn_metadata();
+    let turn3_json = serde_json::to_string(&turn3_messages).expect("serialize turn3");
+
+    // ── Assert prefix stability ─────────────────────────────────────────
+    // turn2_json ends with "]".  turn3_json has everything turn2 has plus
+    // turn 3's user message at the end.  The shared prefix (everything
+    // before the trailing "]") must be byte-identical — otherwise the KV
+    // prefix cache misses on every turn after the first.
+    let shared_len = turn2_json.len() - 1; // exclude the trailing ']'
+    assert_byte_identical(
+        "turn2 and turn3 messages share a common prefix",
+        &turn2_json[..shared_len],
+        &turn3_json[..shared_len],
+    );
+    // Sanity: turn3_json has more elements
+    assert!(
+        turn3_json.len() > turn2_json.len(),
+        "turn3 should be longer than turn2"
+    );
+}
+
+/// Same prefix‑stability check but with V4 thinking traces, tool calls,
+/// and tool results interleaved — the real‑world pattern that exercises
+/// the assistant→tool_result invariant (v0.8.11 hotfix).
+///
+/// V4's on‑disk KV cache (§3.5.2) penalises any byte drift in the
+/// conversation prefix: even a single changed character forces a full
+/// re‑compute of everything after the divergence point.  This test
+/// ensures that the turn‑meta block (stored at creation time, #934)
+/// survives multi‑turn tool‑interleaved sessions without drifting.
+#[test]
+fn messages_prefix_is_stable_across_turns_with_tool_calls() {
+    let tmp = tempdir().expect("tempdir");
+    fs::create_dir_all(tmp.path().join("src")).expect("mkdir");
+    fs::write(tmp.path().join("src/lib.rs"), "pub fn sample() {}").expect("write");
+
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(config, &Config::default());
+
+    // ── Turn 1: user → thinking + tool_call → tool_result → text ─────────
+    engine.turn_counter = 1;
+    let meta1 = engine.build_turn_meta_string();
+    engine.session.add_message(Message {
+        role: "user".to_string(),
+        content: vec![
+            ContentBlock::Text { text: meta1,  cache_control: None },
+            ContentBlock::Text { text: "inspect src/lib.rs".to_string(), cache_control: None },
+        ],
+    });
+    engine.session.add_message(Message {
+        role: "assistant".to_string(),
+        content: vec![
+            ContentBlock::Thinking { thinking: "User wants me to inspect src/lib.rs. I should read the file first.".to_string() },
+            ContentBlock::ToolUse {
+                id: "call_1a".to_string(),
+                name: "read_file".to_string(),
+                input: serde_json::json!({"path": "src/lib.rs"}),
+                caller: None,
+            },
+        ],
+    });
+    engine.session.add_message(Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::ToolResult {
+            tool_use_id: "call_1a".to_string(),
+            content: "pub fn sample() {}".to_string(),
+            is_error: None,
+            content_blocks: None,
+        }],
+    });
+    engine.session.add_message(Message {
+        role: "assistant".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "The file contains a sample function.".to_string(),
+            cache_control: None,
+        }],
+    });
+
+    // ── Turn 2: user → thinking + tool_call → tool_result → text ─────────
+    engine.turn_counter = 2;
+    let meta2 = engine.build_turn_meta_string();
+    engine.session.add_message(Message {
+        role: "user".to_string(),
+        content: vec![
+            ContentBlock::Text { text: meta2,  cache_control: None },
+            ContentBlock::Text { text: "fix src/main.rs".to_string(), cache_control: None },
+        ],
+    });
+    engine.session.add_message(Message {
+        role: "assistant".to_string(),
+        content: vec![
+            ContentBlock::Thinking { thinking: "Let me read the file and apply a fix.".to_string() },
+            ContentBlock::ToolUse {
+                id: "call_2a".to_string(),
+                name: "read_file".to_string(),
+                input: serde_json::json!({"path": "src/main.rs"}),
+                caller: None,
+            },
+        ],
+    });
+    engine.session.add_message(Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::ToolResult {
+            tool_use_id: "call_2a".to_string(),
+            content: "fn main() { println!(\"hello\"); }".to_string(),
+            is_error: None,
+            content_blocks: None,
+        }],
+    });
+    engine.session.add_message(Message {
+        role: "assistant".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "I've read the file. Ready to make changes.".to_string(),
+            cache_control: None,
+        }],
+    });
+
+    let turn2_messages = engine.messages_with_turn_metadata();
+    let turn2_json = serde_json::to_string(&turn2_messages).expect("serialize turn2");
+
+    // ── Turn 3: user only — shares prefix with turn 2 ────────────────────
+    engine.turn_counter = 3;
+    let meta3 = engine.build_turn_meta_string();
+    engine.session.add_message(Message {
+        role: "user".to_string(),
+        content: vec![
+            ContentBlock::Text { text: meta3,  cache_control: None },
+            ContentBlock::Text { text: "now apply the fix".to_string(), cache_control: None },
+        ],
+    });
+
+    let turn3_messages = engine.messages_with_turn_metadata();
+    let turn3_json = serde_json::to_string(&turn3_messages).expect("serialize turn3");
+
+    // ── Assert prefix stability ─────────────────────────────────────────
+    // The entire turn‑2 prefix must be byte‑identical in turn 3's request.
+    // V4's on‑disk KV cache requires strict prefix matching (§3.5.2);
+    // anything short of this forces a full re‑compute of the suffix.
+    let shared_len = turn2_json.len() - 1; // exclude turn2's trailing ']'
+    assert_byte_identical(
+        "turn2 and turn3 messages share a common prefix\n\
+         (tool-call pattern — see DeepSeek V4 §3.5.2, §5.1.1, Fig. 7a)",
+        &turn2_json[..shared_len],
+        &turn3_json[..shared_len],
+    );
+    assert!(
+        turn3_json.len() > turn2_json.len(),
+        "turn3 should be longer than turn2"
+    );
 }
 
 #[tokio::test]
