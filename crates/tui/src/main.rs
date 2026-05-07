@@ -1451,7 +1451,7 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
     println!("  {} {}", "·".dimmed(), dotenv_status_line(workspace));
 
     println!();
-    println!("Run `deepseek-tui doctor --json` for a machine-readable check.");
+    println!("Run `deepseek doctor --json` for a machine-readable check.");
     Ok(())
 }
 
@@ -1979,7 +1979,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             "·".dimmed(),
             crate::utils::display_path(&tools_dir)
         );
-        println!("    Run `deepseek-tui setup --tools` to scaffold a starter dir.");
+        println!("    Run `deepseek setup --tools` to scaffold a starter dir.");
     }
 
     // Plugins directory
@@ -2000,7 +2000,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             "·".dimmed(),
             crate::utils::display_path(&plugins_dir)
         );
-        println!("    Run `deepseek-tui setup --plugins` to scaffold a starter dir.");
+        println!("    Run `deepseek setup --plugins` to scaffold a starter dir.");
     }
 
     // Storage surfaces (#422 / #440 / #500)
@@ -2291,7 +2291,7 @@ fn run_doctor_json(
         },
         "api_connectivity": {
             "checked": false,
-            "note": "Skipped in --json mode; run `deepseek-tui doctor` for a live check.",
+            "note": "Skipped in --json mode; run `deepseek doctor` for a live check.",
         },
         "capability": provider_capability_report(config),
     });
