@@ -34,11 +34,7 @@ impl ExecPolicyConfig {
     pub fn from_str(contents: &str) -> Result<Self> {
         // Handle empty or whitespace-only config files gracefully
         if contents.trim().is_empty() {
-            return Ok(Self {
-                rules: std::collections::HashMap::new(),
-                allow: Vec::new(),
-                deny: Vec::new(),
-            });
+            return Ok(Self::default());
         }
 
         toml::from_str(contents).context(
