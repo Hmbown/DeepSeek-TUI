@@ -24,7 +24,7 @@ Symptoms:
 Checks:
 1. Inspect retry/health logs (`deepseek_cli::client`)
 2. Verify endpoint connectivity:
-   - `curl -sS https://api.deepseek.com/v1/models -H "Authorization: Bearer $DEEPSEEK_API_KEY"`
+   - `curl -sS https://api.deepseek.com/beta/models -H "Authorization: Bearer $DEEPSEEK_API_KEY"`
 3. Confirm no local sandbox/permission deadlock in tool output
 
 Actions:

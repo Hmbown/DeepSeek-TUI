@@ -20,6 +20,7 @@ use crate::hooks::HooksConfig;
 pub const DEFAULT_MAX_SUBAGENTS: usize = 10;
 pub const MAX_SUBAGENTS: usize = 20;
 pub const DEFAULT_TEXT_MODEL: &str = "deepseek-v4-pro";
+pub const DEFAULT_DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com/beta";
 pub const DEFAULT_NVIDIA_NIM_MODEL: &str = "deepseek-ai/deepseek-v4-pro";
 pub const DEFAULT_NVIDIA_NIM_FLASH_MODEL: &str = "deepseek-ai/deepseek-v4-flash";
 pub const DEFAULT_NVIDIA_NIM_BASE_URL: &str = "https://integrate.api.nvidia.com/v1";
@@ -148,7 +149,10 @@ pub struct ProviderCapability {
     pub resolved_model: String,
     /// Context window in tokens (the maximum input the model can accept).
     pub context_window: u32,
-    /// Recommended maximum output tokens (`max_tokens`) for this combo.
+    /// Official maximum output tokens for this combo.
+    ///
+    /// This is model metadata for diagnostics and CI policy. Normal turns use
+    /// a separate, more conservative request cap in the engine.
     pub max_output: u32,
     /// Whether the provider+model supports thinking/reasoning mode.
     pub thinking_supported: bool,
@@ -199,9 +203,10 @@ pub fn provider_capability(provider: ApiProvider, resolved_model: &str) -> Provi
             .unwrap_or(crate::models::LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS)
     };
 
-    // Max output tokens: DeepSeek V4 models allow 262K; others get 4096.
+    // Max output tokens: official DeepSeek V4 API metadata lists 384K;
+    // runtime request caps remain separate and more conservative.
     let max_output = if is_v4_pro || is_v4_flash {
-        262_144
+        384_000
     } else {
         4096
     };
@@ -1231,7 +1236,7 @@ impl Config {
         };
         let base = provider_base.or(root_base).unwrap_or_else(|| {
             match provider {
-                ApiProvider::Deepseek => "https://api.deepseek.com",
+                ApiProvider::Deepseek => DEFAULT_DEEPSEEK_BASE_URL,
                 ApiProvider::DeepseekCN => DEFAULT_DEEPSEEKCN_BASE_URL,
                 ApiProvider::NvidiaNim => DEFAULT_NVIDIA_NIM_BASE_URL,
                 ApiProvider::Openrouter => DEFAULT_OPENROUTER_BASE_URL,
@@ -1704,8 +1709,9 @@ pub fn ensure_config_file_exists(path: Option<PathBuf>) -> Result<Option<PathBuf
 # Get your API key from https://platform.deepseek.com
 # Save it with: deepseek auth set --provider deepseek
 
-# Base URL (default: https://api.deepseek.com)
-# base_url = "https://api.deepseek.com"
+# Base URL (default: https://api.deepseek.com/beta)
+# Set https://api.deepseek.com to opt out of beta features.
+# base_url = "https://api.deepseek.com/beta"
 
 # Default model
 default_text_model = "{default_model}"
@@ -2651,8 +2657,9 @@ fn save_api_key_to_config_file(api_key: &str) -> Result<PathBuf> {
 
 api_key = "{key_to_write}"
 
-# Base URL (default: https://api.deepseek.com)
-# base_url = "https://api.deepseek.com"
+# Base URL (default: https://api.deepseek.com/beta)
+# Set https://api.deepseek.com to opt out of beta features.
+# base_url = "https://api.deepseek.com/beta"
 
 # Default model
 default_text_model = "{default_model}"
@@ -3917,6 +3924,25 @@ api_key = "old-openrouter-key"
     }
 
     #[test]
+    fn deepseek_provider_defaults_to_beta_endpoint() {
+        let config = Config::default();
+
+        assert_eq!(config.api_provider(), ApiProvider::Deepseek);
+        assert_eq!(config.deepseek_base_url(), DEFAULT_DEEPSEEK_BASE_URL);
+    }
+
+    #[test]
+    fn explicit_deepseek_base_url_overrides_beta_default() {
+        let config = Config {
+            base_url: Some("https://api.deepseek.com".to_string()),
+            ..Default::default()
+        };
+
+        assert_eq!(config.api_provider(), ApiProvider::Deepseek);
+        assert_eq!(config.deepseek_base_url(), "https://api.deepseek.com");
+    }
+
+    #[test]
     fn deepseek_model_env_overrides_default_text_model() -> Result<()> {
         let _lock = lock_test_env();
         let nanos = SystemTime::now()
@@ -4752,7 +4778,7 @@ model = "deepseek-v4-pro"
             cap.context_window,
             crate::models::DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS
         );
-        assert_eq!(cap.max_output, 262_144);
+        assert_eq!(cap.max_output, 384_000);
         assert!(cap.thinking_supported);
         assert!(cap.cache_telemetry_supported);
         assert_eq!(
@@ -4768,7 +4794,7 @@ model = "deepseek-v4-pro"
             cap.context_window,
             crate::models::DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS
         );
-        assert_eq!(cap.max_output, 262_144);
+        assert_eq!(cap.max_output, 384_000);
         assert!(cap.thinking_supported);
         assert!(cap.cache_telemetry_supported);
     }
@@ -4780,7 +4806,7 @@ model = "deepseek-v4-pro"
             cap.context_window,
             crate::models::DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS
         );
-        assert_eq!(cap.max_output, 262_144);
+        assert_eq!(cap.max_output, 384_000);
         assert!(cap.thinking_supported);
         assert!(cap.cache_telemetry_supported);
         assert_eq!(
@@ -4796,7 +4822,7 @@ model = "deepseek-v4-pro"
             cap.context_window,
             crate::models::DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS
         );
-        assert_eq!(cap.max_output, 262_144);
+        assert_eq!(cap.max_output, 384_000);
         assert!(cap.thinking_supported);
         assert!(cap.cache_telemetry_supported);
     }
@@ -4808,7 +4834,7 @@ model = "deepseek-v4-pro"
             cap.context_window,
             crate::models::DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS
         );
-        assert_eq!(cap.max_output, 262_144);
+        assert_eq!(cap.max_output, 384_000);
         assert!(cap.thinking_supported);
         // OpenRouter does not return DeepSeek prompt-cache telemetry.
         assert!(!cap.cache_telemetry_supported);
@@ -4825,7 +4851,7 @@ model = "deepseek-v4-pro"
             cap.context_window,
             crate::models::DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS
         );
-        assert_eq!(cap.max_output, 262_144);
+        assert_eq!(cap.max_output, 384_000);
         assert!(cap.thinking_supported);
         assert!(!cap.cache_telemetry_supported);
     }
@@ -4837,7 +4863,7 @@ model = "deepseek-v4-pro"
             cap.context_window,
             crate::models::DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS
         );
-        assert_eq!(cap.max_output, 262_144);
+        assert_eq!(cap.max_output, 384_000);
         assert!(cap.thinking_supported);
         assert!(!cap.cache_telemetry_supported);
     }
@@ -4849,7 +4875,7 @@ model = "deepseek-v4-pro"
             cap.context_window,
             crate::models::DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS
         );
-        assert_eq!(cap.max_output, 262_144);
+        assert_eq!(cap.max_output, 384_000);
         assert!(cap.thinking_supported);
         assert!(!cap.cache_telemetry_supported);
     }

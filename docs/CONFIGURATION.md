@@ -94,7 +94,7 @@ default_text_model = "deepseek-v4-pro"
 
 [profiles.work]
 api_key = "WORK_KEY"
-base_url = "https://api.deepseek.com"
+base_url = "https://api.deepseek.com/beta"
 
 [profiles.nvidia-nim]
 provider = "nvidia-nim"
@@ -296,7 +296,7 @@ separate:
 | Quantity | Meaning | Allowed to drive |
 |---|---|---|
 | Active request input estimate | Conservative estimate of the next request's live system prompt and transcript payload. | Header/footer context percent, hard-cycle trigger, opt-in Flash seam trigger, and emergency overflow preflight. |
-| Reserved response headroom | The requested `max_tokens` budget plus safety headroom. v0.7.5 keeps normal turns at `262144` output tokens and adds `1024` safety tokens for context-window checks. | Hard-cycle and emergency overflow budget checks only. |
+| Reserved response headroom | The internal turn budget plus safety headroom. v0.8.16 keeps normal turns at `262144` reserved output tokens and adds `1024` safety tokens for context-window checks, even though V4 capability metadata reports the official `384000` max output. | Hard-cycle and emergency overflow budget checks only. |
 | Cumulative API usage | Provider-reported input plus output tokens summed across completed API calls; multi-tool turns may count the same stable prefix more than once. | Session usage and approximate cost telemetry only. |
 | Prompt cache hit/miss | Provider cache telemetry for the most recent call when available. | Cache-hit display and cost estimation only; never compaction, seam, or cycle triggers. |
 | Context percent | Active request input estimate divided by the model context window. | Display only; it mirrors the active-input basis used by context safeguards. |
@@ -327,8 +327,8 @@ If you are upgrading from older releases:
 
 - `provider` (string, optional): `deepseek` (default), `deepseek-cn`, `nvidia-nim`, `openrouter`, `novita`, `fireworks`, `sglang`, `vllm`, or `ollama`. `deepseek-cn` uses DeepSeek's mainland China endpoint (`https://api.deepseeki.com`); `nvidia-nim` targets NVIDIA's NIM-hosted DeepSeek endpoints through `https://integrate.api.nvidia.com/v1`; `fireworks` targets `https://api.fireworks.ai/inference/v1`; `sglang` targets a self-hosted OpenAI-compatible endpoint, defaulting to `http://localhost:30000/v1`; `vllm` targets a self-hosted vLLM OpenAI-compatible endpoint, defaulting to `http://localhost:8000/v1`; `ollama` targets Ollama's OpenAI-compatible endpoint, defaulting to `http://localhost:11434/v1`.
 - `api_key` (string, required for hosted providers): must be non-empty for DeepSeek/hosted providers (or set the provider API key env var). Self-hosted SGLang, vLLM, and Ollama can omit it.
-- `base_url` (string, optional): defaults to `https://api.deepseek.com` for DeepSeek's OpenAI-compatible Chat Completions API, `https://api.deepseeki.com` for `provider = "deepseek-cn"`, or the provider-specific endpoint for hosted/self-hosted providers. `https://api.deepseek.com/v1` is also accepted for SDK compatibility; use `https://api.deepseek.com/beta` only for DeepSeek beta features such as strict tool mode, chat prefix completion, and FIM completion.
-- `default_text_model` (string, optional): defaults to `deepseek-v4-pro` for DeepSeek, `deepseek-ai/deepseek-v4-pro` for NVIDIA NIM, `accounts/fireworks/models/deepseek-v4-pro` for Fireworks, `deepseek-ai/DeepSeek-V4-Pro` for SGLang/vLLM, and `deepseek-coder:1.3b` for Ollama. Current public DeepSeek IDs are `deepseek-v4-pro` and `deepseek-v4-flash`, both with 1M context windows and thinking mode enabled by default. Legacy `deepseek-chat` and `deepseek-reasoner` remain compatibility aliases for `deepseek-v4-flash`. Provider-specific mappings translate `deepseek-v4-pro` / `deepseek-v4-flash` to each provider's model ID where supported. Ollama model tags are passed through unchanged. Use `/models` or `deepseek models` to discover live IDs from your configured endpoint. `DEEPSEEK_MODEL` overrides this for a single process.
+- `base_url` (string, optional): defaults to `https://api.deepseek.com/beta` for DeepSeek's OpenAI-compatible Chat Completions API in v0.8.16, `https://api.deepseeki.com` for `provider = "deepseek-cn"`, or the provider-specific endpoint for hosted/self-hosted providers. Set `https://api.deepseek.com` or `https://api.deepseek.com/v1` explicitly to opt out of DeepSeek beta features.
+- `default_text_model` (string, optional): defaults to `deepseek-v4-pro` for DeepSeek, `deepseek-ai/deepseek-v4-pro` for NVIDIA NIM, `accounts/fireworks/models/deepseek-v4-pro` for Fireworks, `deepseek-ai/DeepSeek-V4-Pro` for SGLang/vLLM, and `deepseek-coder:1.3b` for Ollama. Current public DeepSeek IDs are `deepseek-v4-pro` and `deepseek-v4-flash`, both with 1M context windows, 384K max output, and thinking mode enabled by default. Legacy `deepseek-chat` and `deepseek-reasoner` remain compatibility aliases for `deepseek-v4-flash` until July 24, 2026. Provider-specific mappings translate `deepseek-v4-pro` / `deepseek-v4-flash` to each provider's model ID where supported. Ollama model tags are passed through unchanged. Use `/models` or `deepseek models` to discover live IDs from your configured endpoint. `DEEPSEEK_MODEL` overrides this for a single process.
 - `reasoning_effort` (string, optional): `off`, `low`, `medium`, `high`, or `max`; defaults to the configured UI tier. DeepSeek Platform receives top-level `thinking` / `reasoning_effort` fields. NVIDIA NIM receives equivalent settings through `chat_template_kwargs`.
 - `allow_shell` (bool, optional): defaults to `true` (sandboxed).
 - `approval_policy` (string, optional): `on-request`, `untrusted`, or `never`. Runtime `approval_mode` editing in `/config` also accepts `on-request` and `untrusted` aliases.
@@ -550,14 +550,12 @@ The `capability` key contains per-provider capability info derived from
 static knowledge (release docs, API guides) rather than live API probes.
 Top-level sub-keys: `resolved_provider`, `resolved_model`, `context_window`,
 `max_output`, `thinking_supported`, `cache_telemetry_supported`,
-`request_payload_mode`, and `deprecation`. When the resolved model is a known
-legacy alias (e.g. `deepseek-chat`, `deepseek-reasoner`), the `deprecation`
-sub-object carries `alias`, `replacement`, and `notice` fields.
+and `request_payload_mode`.
 
-Use `capability.context_window` and `capability.max_output` for context-window
-budgeting in CI scripts. Use `capability.thinking_supported` to decide whether
-to configure reasoning effort. Use `capability.deprecation` to warn users about
-legacy model aliases.
+Use `capability.context_window` and `capability.max_output` for model-limit
+checks in CI scripts; do not treat `capability.max_output` as the per-turn
+request budget. Use `capability.thinking_supported` to decide whether to
+configure reasoning effort.
 
 ## Setup status, clean, and extension dirs
 

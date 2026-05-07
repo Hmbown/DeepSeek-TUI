@@ -18,7 +18,7 @@ const DEFAULT_DEEPSEEK_MODEL: &str = "deepseek-v4-pro";
 const DEFAULT_NVIDIA_NIM_MODEL: &str = "deepseek-ai/deepseek-v4-pro";
 const DEFAULT_NVIDIA_NIM_FLASH_MODEL: &str = "deepseek-ai/deepseek-v4-flash";
 const DEFAULT_OPENAI_MODEL: &str = "gpt-4.1";
-const DEFAULT_DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com";
+const DEFAULT_DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com/beta";
 const DEFAULT_NVIDIA_NIM_BASE_URL: &str = "https://integrate.api.nvidia.com/v1";
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_OPENROUTER_MODEL: &str = "deepseek/deepseek-v4-pro";
@@ -1490,6 +1490,19 @@ mod tests {
         assert_eq!(resolved.api_key.as_deref(), Some("root-key"));
         assert_eq!(resolved.base_url, "https://api.deepseek.com");
         assert_eq!(resolved.model, "deepseek-v4-pro");
+    }
+
+    #[test]
+    fn deepseek_runtime_defaults_to_beta_endpoint() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let config = ConfigToml::default();
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Deepseek);
+        assert_eq!(resolved.base_url, DEFAULT_DEEPSEEK_BASE_URL);
+        assert_eq!(resolved.model, DEFAULT_DEEPSEEK_MODEL);
     }
 
     #[test]

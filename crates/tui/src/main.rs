@@ -1379,13 +1379,7 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
             );
         }
     }
-    println!(
-        "  · base_url: {}",
-        config
-            .base_url
-            .as_deref()
-            .unwrap_or("https://api.deepseek.com")
-    );
+    println!("  · base_url: {}", config.deepseek_base_url());
     let model = config
         .default_text_model
         .clone()
@@ -4278,7 +4272,7 @@ mod doctor_endpoint_tests {
         let target = doctor_api_target(&config);
 
         assert_eq!(target.provider, "deepseek");
-        assert_eq!(target.base_url, "https://api.deepseek.com");
+        assert_eq!(target.base_url, crate::config::DEFAULT_DEEPSEEK_BASE_URL);
         assert_eq!(target.model, crate::config::DEFAULT_TEXT_MODEL);
     }
 

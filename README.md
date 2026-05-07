@@ -332,7 +332,9 @@ UI locale is separate from model language — set `locale` in `settings.toml`, u
 | `deepseek-v4-pro` | 1M | $0.003625 / 1M* | $0.435 / 1M* | $0.87 / 1M* |
 | `deepseek-v4-flash` | 1M | $0.0028 / 1M | $0.14 / 1M | $0.28 / 1M |
 
-Legacy aliases `deepseek-chat` / `deepseek-reasoner` map to `deepseek-v4-flash`. NVIDIA NIM variants use your NVIDIA account terms.
+DeepSeek Platform defaults to `https://api.deepseek.com/beta` in v0.8.16 so beta-gated API features can be tested without extra setup. Set `base_url = "https://api.deepseek.com"` to opt out.
+
+Legacy aliases `deepseek-chat` / `deepseek-reasoner` map to `deepseek-v4-flash` and retire after July 24, 2026. NVIDIA NIM variants use your NVIDIA account terms.
 
 *DeepSeek Pro rates currently reflect a limited-time 75% discount, which remains valid until 15:59 UTC on 31 May 2026. After that time, the TUI cost estimator will revert to the base Pro rates.*
 

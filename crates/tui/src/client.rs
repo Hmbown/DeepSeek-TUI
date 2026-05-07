@@ -367,11 +367,24 @@ pub(super) fn versioned_base_url(base_url: &str) -> String {
     }
 }
 
+fn unversioned_base_url(base_url: &str) -> String {
+    let trimmed = base_url.trim_end_matches('/');
+    trimmed
+        .strip_suffix("/v1")
+        .or_else(|| trimmed.strip_suffix("/beta"))
+        .unwrap_or(trimmed)
+        .to_string()
+}
+
 pub(super) fn api_url(base_url: &str, path: &str) -> String {
+    let path = path.trim_start_matches('/');
+    if path.starts_with("beta/") {
+        return format!("{}/{}", unversioned_base_url(base_url), path);
+    }
     format!(
         "{}/{}",
         versioned_base_url(base_url).trim_end_matches('/'),
-        path.trim_start_matches('/')
+        path
     )
 }
 
@@ -1018,6 +1031,22 @@ mod tests {
         assert_eq!(
             api_url("https://api.deepseek.com/beta", "chat/completions"),
             "https://api.deepseek.com/beta/chat/completions"
+        );
+    }
+
+    #[test]
+    fn api_url_routes_beta_paths_from_any_deepseek_base() {
+        assert_eq!(
+            api_url("https://api.deepseek.com", "beta/completions"),
+            "https://api.deepseek.com/beta/completions"
+        );
+        assert_eq!(
+            api_url("https://api.deepseek.com/v1", "beta/completions"),
+            "https://api.deepseek.com/beta/completions"
+        );
+        assert_eq!(
+            api_url("https://api.deepseek.com/beta", "beta/completions"),
+            "https://api.deepseek.com/beta/completions"
         );
     }
 

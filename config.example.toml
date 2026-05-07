@@ -17,9 +17,9 @@
 # defaults when `[providers.deepseek]` is absent (backward compatibility).
 provider = "deepseek" # deepseek | nvidia-nim | openrouter | novita | fireworks | sglang | vllm | ollama
 api_key = "YOUR_DEEPSEEK_API_KEY" # must be non-empty
-base_url = "https://api.deepseek.com"
+base_url = "https://api.deepseek.com/beta"
 # base_url = "https://api.deepseeki.com"         # China users
-# base_url = "https://api.deepseek.com/beta"     # DeepSeek beta features such as strict tool mode
+# base_url = "https://api.deepseek.com"          # opt out of DeepSeek beta features
 # Optional custom model request headers for OpenAI-compatible gateways.
 # Authorization and Content-Type are managed by the client and cannot be overridden here.
 # http_headers = { "X-Model-Provider-Id" = "your-model-provider" }
@@ -163,7 +163,7 @@ max_subagents = 10 # optional (1-20)
 # DeepSeek Platform (https://platform.deepseek.com)
 [providers.deepseek]
 # api_key = "YOUR_DEEPSEEK_API_KEY"
-# base_url = "https://api.deepseek.com"
+# base_url = "https://api.deepseek.com/beta"
 # model = "deepseek-v4-pro"
 # http_headers = { "X-Model-Provider-Id" = "your-model-provider" } # optional custom request headers
 
@@ -296,8 +296,8 @@ verbatim_window_turns = 16
 l1_threshold = 192000
 l2_threshold = 384000
 l3_threshold = 576000
-# Hard cycle also reserves the normal 262144-token output budget plus 1024
-# safety tokens against the model window.
+# Hard cycle reserves the normal 262144-token internal turn budget plus 1024
+# safety tokens, separate from V4's official 384000 max-output metadata.
 cycle_threshold = 768000
 seam_model = "deepseek-v4-flash"
 
@@ -347,7 +347,7 @@ fallback_default_prior = 3.8
 # Select a profile with `deepseek --profile <name>` or `DEEPSEEK_PROFILE=<name>`.
 [profiles.work]
 api_key = "WORK_DEEPSEEK_API_KEY"
-base_url = "https://api.deepseek.com"
+base_url = "https://api.deepseek.com/beta"
 
 [profiles.dev]
 api_key = "DEV_DEEPSEEK_API_KEY"

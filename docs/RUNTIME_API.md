@@ -92,7 +92,7 @@ deepseek doctor --json
   "api_key": {
     "source": "env"
   },
-  "base_url": "https://api.deepseek.com",
+  "base_url": "https://api.deepseek.com/beta",
   "default_text_model": "deepseek-v4-pro",
   "memory": {
     "enabled": false,
