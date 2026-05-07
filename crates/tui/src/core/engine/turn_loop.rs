@@ -1815,38 +1815,19 @@ impl Engine {
         };
 
         let mut messages = self.session.messages.clone();
-        // v0.8.11 hotfix: tool-result messages are stored as role="user" in
-        // our internal representation but serialize to role="tool" on the
-        // wire. Prepending a Text block onto a tool-result message breaks
-        // the assistant→tool_result invariant — the API rejects the request
-        // with `"insufficient tool messages following tool_calls"`. Inject
-        // only into actual user-typed messages, recognizable by having at
-        // least one Text content block (and no ToolResult blocks).
-        let Some(last_user) = messages.iter_mut().rev().find(|message| {
-            message.role == "user"
-                && message
-                    .content
-                    .iter()
-                    .all(|block| !matches!(block, ContentBlock::ToolResult { .. }))
-                && message
-                    .content
-                    .iter()
-                    .any(|block| matches!(block, ContentBlock::Text { .. }))
-        }) else {
-            // No real user message in the trailing slice (e.g. mid-turn
-            // after a tool call). Skip injection — the working_set will
-            // surface again on the next genuine user prompt.
-            return messages;
-        };
-
         let turn_meta = format!("<turn_meta>\n{summary}\n</turn_meta>");
-        last_user.content.insert(
-            0,
-            ContentBlock::Text {
+        // Append turn_meta as a standalone user message instead of inserting
+        // it into an existing message. Inserting at position 0 mutates the
+        // byte sequence of a prior message, which invalidates DeepSeek V4's
+        // KV prefix cache (~90% discount on cached tokens) for all preceding
+        // messages on every turn (#934).
+        messages.push(Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
                 text: turn_meta,
                 cache_control: None,
-            },
-        );
+            }],
+        });
         messages
     }
 }

@@ -746,14 +746,11 @@ fn turn_metadata_includes_current_local_date_without_working_set() {
     assert!(text.contains(&format!("Current local date: {today}")));
 }
 
-/// v0.8.11 regression: tool-result messages serialize to role="tool" on
-/// the wire but are stored as role="user" internally. Prepending
-/// `<turn_meta>` text onto a tool-result message broke the
-/// assistant→tool_result invariant and caused HTTP 400 from DeepSeek's
-/// API ("insufficient tool messages following tool_calls"). The fix:
-/// inject only into messages that have a Text content block and no
-/// ToolResult blocks; mid-turn (tool-result is the trailing user
-/// message) the injection skips.
+/// #934 fix: turn_meta is appended as a standalone user message so it
+/// does not mutate existing message byte sequences and therefore
+/// preserves DeepSeek V4's KV prefix cache. This also naturally avoids
+/// the v0.8.11 regression where inserting Text onto a tool-result
+/// message broke the assistant→tool_result invariant.
 #[test]
 fn turn_metadata_skips_tool_result_messages() {
     let tmp = tempdir().expect("tempdir");
@@ -770,7 +767,7 @@ fn turn_metadata_skips_tool_result_messages() {
         .working_set
         .observe_user_message("inspect src/lib.rs", tmp.path());
 
-    // Real user message — should be eligible for injection.
+    // Real user message.
     engine.session.add_message(Message {
         role: "user".to_string(),
         content: vec![ContentBlock::Text {
@@ -801,32 +798,52 @@ fn turn_metadata_skips_tool_result_messages() {
 
     let messages = engine.messages_with_turn_metadata();
 
-    // The trailing message is the tool result and MUST be untouched —
-    // no Text block sneaking in front of the ToolResult block.
-    let trailing = messages.last().expect("trailing message");
-    assert_eq!(trailing.role, "user");
-    assert_eq!(trailing.content.len(), 1);
+    // The turn_meta is appended as a NEW standalone message at the end.
+    // All existing messages remain byte-identical — prefix cache stays hot.
+    let original_count = 3;
+    assert_eq!(
+        messages.len(),
+        original_count + 1,
+        "turn_meta creates one extra standalone message"
+    );
+
+    // Existing messages are untouched.
+    assert_eq!(messages[0].role, "user");
     assert!(matches!(
-        trailing.content.first(),
+        messages[0].content.first(),
+        Some(ContentBlock::Text { .. })
+    ));
+    assert_eq!(messages[1].role, "assistant");
+    assert!(matches!(
+        messages[1].content.first(),
+        Some(ContentBlock::ToolUse { .. })
+    ));
+    // The tool-result message is untouched — no Text block injected into it.
+    let tool_result = &messages[2];
+    assert_eq!(tool_result.role, "user");
+    assert_eq!(tool_result.content.len(), 1);
+    assert!(matches!(
+        tool_result.content.first(),
         Some(ContentBlock::ToolResult { .. })
     ));
 
-    // The earlier real user message receives the turn_meta prefix.
-    let real_user = messages.first().expect("first user message");
-    assert_eq!(real_user.role, "user");
-    let ContentBlock::Text { text, .. } = real_user.content.first().expect("user text content")
+    // The appended turn_meta message.
+    let meta = messages.last().expect("turn_meta message");
+    assert_eq!(meta.role, "user");
+    let ContentBlock::Text { text, .. } = meta.content.first().expect("turn_meta text")
     else {
-        panic!("expected Text block on real user message");
+        panic!("expected Text block on turn_meta message");
     };
     assert!(text.starts_with("<turn_meta>\n"));
     assert!(text.contains("src/lib.rs"));
 }
 
-/// When the turn is mid-execution and the trailing user message is a
-/// tool result, no turn_meta is injected at all (rather than landing on
-/// some earlier user message and confusing the API's tool-call
-/// continuity check). The working_set surfaces again on the next
-/// genuine user prompt.
+/// #934 fix: when only a tool-result trails (e.g. mid-turn after prior
+/// messages compacted away), turn_meta is still appended as a standalone
+/// message. The existing tool-result message is untouched — its byte
+/// sequence is unchanged, preserving prefix cache. The tool-call→tool_result
+/// continuity invariant is never broken because we never mutate existing
+/// messages; the new turn_meta message simply sits at position N+1.
 #[test]
 fn turn_metadata_skips_when_only_tool_results_trail() {
     let tmp = tempdir().expect("tempdir");
@@ -845,8 +862,7 @@ fn turn_metadata_skips_when_only_tool_results_trail() {
 
     // Only a tool-result message in history — simulates the corner case
     // where the prior real user message has already been compacted away
-    // but a tool-result is still pending. We must not retroactively
-    // inject.
+    // but a tool-result is still pending.
     engine.session.add_message(Message {
         role: "user".to_string(),
         content: vec![ContentBlock::ToolResult {
@@ -859,14 +875,24 @@ fn turn_metadata_skips_when_only_tool_results_trail() {
 
     let messages = engine.messages_with_turn_metadata();
 
-    // Returned unchanged: the single tool-result message, no Text
-    // prefix, content length == 1.
-    let only = messages.last().expect("trailing message");
-    assert_eq!(only.content.len(), 1);
+    // The original tool-result message is untouched — byte-identical,
+    // content length == 1, no Text block injected.
+    let original = &messages[0];
+    assert_eq!(original.content.len(), 1);
     assert!(matches!(
-        only.content.first(),
+        original.content.first(),
         Some(ContentBlock::ToolResult { .. })
     ));
+
+    // The turn_meta lands as a NEW standalone message at position 1.
+    assert_eq!(messages.len(), 2, "turn_meta creates one extra message");
+    let meta = messages.last().expect("turn_meta message");
+    assert_eq!(meta.role, "user");
+    let ContentBlock::Text { text, .. } = meta.content.first().expect("turn_meta text")
+    else {
+        panic!("expected Text block on turn_meta message");
+    };
+    assert!(text.starts_with("<turn_meta>\n"));
 }
 
 #[test]
