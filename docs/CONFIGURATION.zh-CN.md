@@ -205,7 +205,7 @@ DeepSeek TUI 还将用户偏好存储在：
 - `sidebar_focus`（`auto`、`plan`、`todos`、`tasks`、`agents`、`context`；默认 `auto`）
 - `context_panel`（`true`/`false`，默认 `false`）：启用会话上下文面板（#504），显示工作集、token、费用、MCP/LSP 状态、轮次计数和记忆信息
 - `locale`（`auto`、`en`、`ja`、`zh-Hans`、`pt-BR`；默认 `auto`）：UI 界面语言。`auto` 依次检查 `LC_ALL`、`LC_MESSAGES`、`LANG`；不支持或缺失的语言回退到英语。这不会强制模型输出语言
-- `cost_currency`（`usd`、`cny`；默认 `usd`）：页脚、上下文面板、`/cost`、`/tokens` 和长轮次通知摘要中使用的货币。别名 `rmb` 和 `yuan` 标准化为 `cny`
+- `cost_currency`（`usd`、`cny`；默认 `usd`）：页脚、上下文面板、`/cost`、`/tokens` 和长轮次通知摘要中使用的货币。别名 `rmb` 和 `yuan` 标准化为 `cny`。切换为人民币显示：运行 `/config cost_currency cny`，或在 `~/.deepseek/settings.toml` 中设置 `cost_currency = "cny"`
 - `default_mode`（`agent`、`plan`、`yolo`；旧版 `normal` 被接受并标准化为 `agent`）
 - `max_input_history`（默认 `100`）：保存的输入历史条目数（已清除的草稿也会在本地保留，用于输入框历史搜索）
 - `default_model`（模型名称覆盖）

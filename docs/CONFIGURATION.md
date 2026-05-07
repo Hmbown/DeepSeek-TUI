@@ -264,7 +264,8 @@ Common settings keys:
   language.
 - `cost_currency` (`usd`, `cny`; default `usd`): currency used by the footer,
   context panel, `/cost`, `/tokens`, and long-turn notification summaries. The
-  aliases `rmb` and `yuan` normalize to `cny`.
+  aliases `rmb` and `yuan` normalize to `cny`. Switch to CNY with `/config
+  cost_currency cny` or set `cost_currency = "cny"` in `~/.deepseek/settings.toml`.
 - `default_mode` (agent, plan, yolo; legacy `normal` is accepted and normalized to `agent`)
 - `max_history` (number of submitted input history entries; cleared drafts are
   also kept locally for composer history search)

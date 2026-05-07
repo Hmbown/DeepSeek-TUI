@@ -63,6 +63,18 @@ configuration for VS Code / GitHub Codespaces. It pre-installs the Rust toolchai
 rust-analyzer, and the `deepseek` binary. Open the repo in a devcontainer to get a
 ready-to-use development environment.
 
+## Availability
+
+The image is built and pushed automatically on every release tag via CI.
+If the image is not publicly accessible or the pull fails, verify GHCR
+authentication:
+
+```bash
+echo "$GITHUB_TOKEN" | docker login ghcr.io -u YOUR_USERNAME --password-stdin
+```
+
+See [INSTALL.md](INSTALL.md) for alternative install paths if Docker is unavailable.
+
 ## Tags
 
 | Tag        | Meaning                  |

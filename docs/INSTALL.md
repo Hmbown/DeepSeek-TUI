@@ -295,7 +295,48 @@ Both binaries appear in `target\release\deepseek.exe` and
 
 ---
 
-## 6. Troubleshooting
+## 6. Install via Docker
+
+A multi-arch Docker image (amd64 + arm64) is published to
+[GitHub Container Registry](https://github.com/Hmbown/DeepSeek-TUI/pkgs/container/deepseek-tui).
+
+```bash
+docker pull ghcr.io/hmbown/deepseek-tui:latest
+docker run -it --rm \
+    -v $(pwd):/workspace \
+    -e DEEPSEEK_API_KEY \
+    ghcr.io/hmbown/deepseek-tui:latest
+```
+
+For non-interactive use, set an entrypoint explicitly:
+
+```bash
+docker run --rm \
+    -v $(pwd):/workspace \
+    -e DEEPSEEK_API_KEY \
+    ghcr.io/hmbown/deepseek-tui:latest \
+    deepseek "explain this codebase"
+```
+
+See [docs/DOCKER.md](DOCKER.md) for image tags, local builds, and devcontainer setup.
+
+---
+
+## 7. Install via Scoop (Windows)
+
+[Scoop](https://scoop.sh) users can install from the main Scoop bucket
+(maintained by [ScoopInstaller](https://github.com/ScoopInstaller/Main)):
+
+```bash
+scoop install deepseek-tui
+```
+
+> Scoop manifest updates are not managed by this repo's CI and may lag
+> behind the latest GitHub, npm, and Cargo releases.
+
+---
+
+## 8. Troubleshooting
 
 ### `Unsupported architecture: arm64 on platform linux`
 
@@ -404,7 +445,7 @@ target/debug/build/libsqlite3-sys-*/build-script-build
 
 ---
 
-## 7. Verifying your install
+## 9. Verifying your install
 
 ```bash
 deepseek --version

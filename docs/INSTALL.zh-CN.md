@@ -251,7 +251,47 @@ cargo build --release
 
 ---
 
-## 6. 故障排除
+## 6. 通过 Docker 安装
+
+多架构 Docker 镜像（amd64 + arm64）发布在
+[GitHub Container Registry](https://github.com/Hmbown/DeepSeek-TUI/pkgs/container/deepseek-tui)。
+
+```bash
+docker pull ghcr.io/hmbown/deepseek-tui:latest
+docker run -it --rm \
+    -v $(pwd):/workspace \
+    -e DEEPSEEK_API_KEY \
+    ghcr.io/hmbown/deepseek-tui:latest
+```
+
+非交互式使用，显式指定入口命令：
+
+```bash
+docker run --rm \
+    -v $(pwd):/workspace \
+    -e DEEPSEEK_API_KEY \
+    ghcr.io/hmbown/deepseek-tui:latest \
+    deepseek "explain this codebase"
+```
+
+关于镜像标签、本地构建和 devcontainer 设置，请参见 [docs/DOCKER.md](DOCKER.md)。
+
+---
+
+## 7. 通过 Scoop 安装（Windows）
+
+[Scoop](https://scoop.sh) 用户可以通过 Scoop 主仓库
+（由 [ScoopInstaller](https://github.com/ScoopInstaller/Main) 维护）安装：
+
+```bash
+scoop install deepseek-tui
+```
+
+> Scoop 清单更新不受本仓库 CI 管理，可能滞后于最新的 GitHub、npm 和 Cargo 版本。
+
+---
+
+## 8. 故障排除
 
 ### `Unsupported architecture: arm64 on platform linux`
 
@@ -336,7 +376,7 @@ target/debug/build/libsqlite3-sys-*/build-script-build
 
 ---
 
-## 7. 验证安装
+## 9. 验证安装
 
 ```bash
 deepseek --version
