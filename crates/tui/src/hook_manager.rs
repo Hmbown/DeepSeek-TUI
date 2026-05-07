@@ -34,9 +34,21 @@ impl HookManager {
     ) -> Self {
         let mut rules = Vec::new();
         if let Some(path) = user_config_path {
-            if let Ok(contents) = std::fs::read_to_string(path) {
-                if let Ok(config) = toml::from_str::<HooksConfig>(&contents) {
-                    rules.extend(config.hooks);
+            match std::fs::read_to_string(path) {
+                Ok(contents) => match toml::from_str::<HooksConfig>(&contents) {
+                    Ok(config) => rules.extend(config.hooks),
+                    Err(e) => {
+                        tracing::error!(
+                            "failed to parse hooks config {}: {e}",
+                            path.display()
+                        );
+                    }
+                },
+                Err(e) => {
+                    tracing::error!(
+                        "failed to read hooks config {}: {e}",
+                        path.display()
+                    );
                 }
             }
         }
@@ -50,10 +62,18 @@ impl HookManager {
             if rule.event == event {
                 // Best-effort: spawn shell command, don't block.
                 let cmd = rule.command.clone();
-                let _ = std::process::Command::new("sh")
+                match std::process::Command::new("sh")
                     .arg("-c")
                     .arg(&cmd)
-                    .spawn();
+                    .spawn()
+                {
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::error!(
+                            "hook [{event}] failed to spawn command: {e}"
+                        );
+                    }
+                }
             }
         }
     }
