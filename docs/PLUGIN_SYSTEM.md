@@ -19,7 +19,7 @@ Every plugin directory must contain a `plugin.json` manifest:
   "license": "MIT",
   "main": "index.js",
   "tools": ["my_custom_tool"],
-  "hooks": ["PostToolUse"],
+  "hooks": ["PostToolUse", "SessionStart"],
   "permissions": ["exec_shell"]
 }
 ```

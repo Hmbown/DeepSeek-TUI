@@ -197,7 +197,7 @@ tags = ["rust", "project-config"]
 [[hooks]]
 event = "PostToolUse"
 matcher = { tool = "edit_file", path_pattern = "*.rs" }
-command = "cargo fmt -- ${HOOK_FILE_PATH}"
+command = "cargo fmt"
 timeout_sec = 10
 
 [[hooks]]
@@ -403,7 +403,7 @@ DeepSeek V4 的前缀缓存是 128-token 粒度，缓存命中率决定成本和
   "name": "deepseek-docker",
   "version": "1.0.0",
   "tools": ["docker_build", "docker_run"],
-  "hooks": ["PostToolUse"],
+  "hooks": ["PostToolUse", "SessionStart", "PreCompaction"],
   "permissions": ["exec_shell"]
 }
 ```
