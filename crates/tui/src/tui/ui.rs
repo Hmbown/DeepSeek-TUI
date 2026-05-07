@@ -7357,16 +7357,12 @@ fn scroll_transcript_to_mouse_row(app: &mut App, row: u16) -> bool {
 
     let max_row = usize::from(area.height.saturating_sub(1));
     let relative_row = usize::from(row.saturating_sub(area.y)).min(max_row);
-    let top = if max_row == 0 {
-        0
-    } else {
-        // Round to the nearest transcript offset so short thumbs still feel
-        // responsive on compact terminals.
-        (relative_row
-            .saturating_mul(max_start)
-            .saturating_add(max_row / 2))
-            / max_row
-    };
+    let numerator = relative_row
+        .saturating_mul(max_start)
+        .saturating_add(max_row / 2);
+    // Round to the nearest transcript offset so short thumbs still feel
+    // responsive on compact terminals.
+    let top = numerator.checked_div(max_row).unwrap_or(0);
 
     app.viewport.transcript_scroll = if top >= max_start {
         TranscriptScroll::to_bottom()
