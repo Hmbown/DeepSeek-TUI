@@ -168,6 +168,10 @@ struct Cli {
     /// Skip loading project-level config from $WORKSPACE/.deepseek/config.toml
     #[arg(long = "no-project-config")]
     no_project_config: bool,
+
+    /// Force a specific theme: dark or light
+    #[arg(long, value_enum)]
+    theme: Option<deepseek_theme::ThemeArg>,
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -3871,6 +3875,7 @@ async fn run_interactive(
             resume_session_id,
             initial_input,
             max_subagents,
+            theme: cli.theme,
         },
     )
     .await

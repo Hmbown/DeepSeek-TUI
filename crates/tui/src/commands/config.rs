@@ -44,7 +44,7 @@ pub fn show_config(_app: &mut App, arg: Option<&str>) -> CommandResult {
 /// - `/config tui` / `/config web` / `/config native` — open a specific
 ///   editor mode (web requires the `web` build feature).
 /// - `/config <key>` — shows the current value of a setting.
-/// - `/config <key> <value>` — sets a runtime value (session only, add --save to persist).
+/// - `/config <key> <value>` — sets a runtime value (session only, no --save).
 pub fn config_command(app: &mut App, arg: Option<&str>) -> CommandResult {
     let raw = arg.map(str::trim).unwrap_or("");
     if raw.is_empty() {
@@ -63,18 +63,8 @@ pub fn config_command(app: &mut App, arg: Option<&str>) -> CommandResult {
         // `/config <key>` — show current value
         show_single_setting(app, token)
     } else {
-        // `/config <key> <value> [--save|-s]` — set value, optionally persist
-        let raw_value = parts[1];
-        let persist = raw_value.ends_with(" --save") || raw_value.ends_with(" -s");
-        let value = if persist {
-            raw_value
-                .strip_suffix(" --save")
-                .or_else(|| raw_value.strip_suffix(" -s"))
-                .unwrap_or(raw_value)
-        } else {
-            raw_value
-        };
-        set_config_value(app, parts[0], value, persist)
+        // `/config <key> <value>` — set value
+        set_config_value(app, parts[0], parts[1], false)
     }
 }
 
@@ -137,13 +127,6 @@ fn show_single_setting(app: &App, key: &str) -> CommandResult {
         "transcript_spacing" | "spacing" => {
             Some(spacing_display(app.transcript_spacing).to_string())
         }
-        "cost_currency" | "currency" => Some(
-            match app.cost_currency {
-                crate::pricing::CostCurrency::Usd => "usd",
-                crate::pricing::CostCurrency::Cny => "cny",
-            }
-            .to_string(),
-        ),
         _ => {
             let known = Settings::available_settings()
                 .iter()
@@ -520,6 +503,17 @@ pub fn plan_mode(app: &mut App) -> CommandResult {
     CommandResult::message(
         "Plan mode enabled. Describe your goal and I will create a plan before execution.",
     )
+}
+
+/// Toggle between light and dark theme.
+pub fn theme(app: &mut App) -> CommandResult {
+    app.toggle_theme();
+    let label = if crate::deepseek_theme::active_theme().variant == crate::deepseek_theme::Variant::Light {
+        "light"
+    } else {
+        "dark"
+    };
+    CommandResult::message(format!("Theme switched to {label}."))
 }
 
 /// Manage workspace-level trust and the per-path allowlist.
@@ -1057,6 +1051,7 @@ mod tests {
             yolo: false,
             resume_session_id: None,
             initial_input: None,
+            theme: None,
         };
         App::new(options, &Config::default())
     }
@@ -1231,33 +1226,6 @@ mod tests {
         let settings_path = Settings::path().unwrap();
         let saved = fs::read_to_string(settings_path).unwrap();
         assert!(saved.contains("default_mode = \"agent\""));
-    }
-
-    #[test]
-    fn config_command_cost_currency_save_persists_value() {
-        let _lock = lock_test_env();
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let temp_root = env::temp_dir().join(format!(
-            "deepseek-tui-cost-currency-test-{}-{}",
-            std::process::id(),
-            nanos
-        ));
-        fs::create_dir_all(&temp_root).unwrap();
-        let _guard = EnvGuard::new(&temp_root);
-
-        let mut app = create_test_app();
-        let result = config_command(&mut app, Some("cost_currency cny --save"));
-        let msg = result.message.unwrap();
-
-        assert_eq!(msg, "cost_currency = cny (saved)");
-        assert_eq!(app.cost_currency, crate::pricing::CostCurrency::Cny);
-
-        let settings_path = Settings::path().unwrap();
-        let saved = fs::read_to_string(settings_path).unwrap();
-        assert!(saved.contains("cost_currency = \"cny\""));
     }
 
     #[test]

@@ -452,6 +452,8 @@ pub struct TuiOptions {
     /// session with the PR context already typed — the user can edit
     /// before sending or hit Enter to fire as-is.
     pub initial_input: Option<String>,
+    /// Force a specific theme via CLI flag.
+    pub theme: Option<crate::deepseek_theme::ThemeArg>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1107,6 +1109,7 @@ impl App {
             yolo,
             resume_session_id: _,
             initial_input,
+            theme: _,
         } = options;
 
         // If no provider is explicitly configured AND the system locale
@@ -3693,6 +3696,22 @@ impl App {
     pub fn cycle_config(&self) -> CycleConfig {
         self.cycle.clone()
     }
+
+    /// Toggle between Dark and Light theme, persist to disk.
+    pub fn toggle_theme(&mut self) {
+        use crate::deepseek_theme::{active_theme, set_active_theme, Theme, Variant};
+        let new_theme = match active_theme().variant {
+            Variant::Dark => Theme::light(),
+            Variant::Light => Theme::dark(),
+        };
+        set_active_theme(new_theme);
+        // Update ui_theme to match the new theme variant
+        self.ui_theme = if new_theme.variant == Variant::Light {
+            crate::palette::LIGHT_UI_THEME
+        } else {
+            crate::palette::UI_THEME
+        };
+    }
 }
 
 pub fn media_attachment_reference(kind: &str, path: &Path, description: Option<&str>) -> String {
@@ -3862,6 +3881,7 @@ mod tests {
             yolo,
             resume_session_id: None,
             initial_input: None,
+            theme: None,
         }
     }
 

@@ -251,6 +251,20 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     let config = &mut config;
     let mut app = App::new(options.clone(), config);
 
+    // Apply --theme CLI flag if provided
+    if let Some(theme_arg) = options.theme.as_ref() {
+        let theme = match theme_arg {
+            crate::deepseek_theme::ThemeArg::Dark => crate::deepseek_theme::Theme::dark(),
+            crate::deepseek_theme::ThemeArg::Light => crate::deepseek_theme::Theme::light(),
+        };
+        crate::deepseek_theme::set_active_theme(theme);
+        app.ui_theme = if theme.variant == crate::deepseek_theme::Variant::Light {
+            crate::palette::LIGHT_UI_THEME
+        } else {
+            crate::palette::UI_THEME
+        };
+    }
+
     // Load existing session if resuming.
     if let Some(ref session_id) = options.resume_session_id
         && let Ok(manager) = SessionManager::default_location()
@@ -270,13 +284,40 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
 
         match load_result {
             Ok(Some(saved)) => {
-                let recovered = apply_loaded_session(&mut app, &saved);
-                if !recovered {
-                    app.status_message = Some(format!(
-                        "Resumed session: {}",
-                        crate::session_manager::truncate_id(&saved.metadata.id)
-                    ));
+                app.api_messages.clone_from(&saved.messages);
+                app.model.clone_from(&saved.metadata.model);
+                app.update_model_compaction_budget();
+                app.workspace.clone_from(&saved.metadata.workspace);
+                app.current_session_id = Some(saved.metadata.id.clone());
+                app.session.total_tokens =
+                    u32::try_from(saved.metadata.total_tokens).unwrap_or(u32::MAX);
+                app.session.total_conversation_tokens = app.session.total_tokens;
+                app.session.last_prompt_tokens = None;
+                app.session.last_completion_tokens = None;
+                app.session.last_prompt_cache_hit_tokens = None;
+                app.session.last_prompt_cache_miss_tokens = None;
+                app.session.last_reasoning_replay_tokens = None;
+                if let Some(prompt) = saved.system_prompt {
+                    app.system_prompt = Some(SystemPrompt::Text(prompt));
                 }
+                // Convert saved messages to HistoryCell format for display
+                app.clear_history();
+                app.push_history_cell(HistoryCell::System {
+                    content: format!(
+                        "Resumed session: {} ({})",
+                        saved.metadata.title,
+                        crate::session_manager::truncate_id(&saved.metadata.id),
+                    ),
+                });
+
+                for msg in &saved.messages {
+                    app.extend_history(history_cells_from_message(msg));
+                }
+                app.mark_history_updated();
+                app.status_message = Some(format!(
+                    "Resumed session: {}",
+                    crate::session_manager::truncate_id(&saved.metadata.id)
+                ));
             }
             Ok(None) => {
                 app.status_message = Some("No sessions found to resume".to_string());
@@ -303,10 +344,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
                         .into_iter()
                         .map(queued_session_to_ui)
                         .collect();
-                    let restored_draft = state.draft.map(queued_session_to_ui);
-                    if restored_draft.is_some() || app.queued_draft.is_none() {
-                        app.queued_draft = restored_draft;
-                    }
+                    app.queued_draft = state.draft.map(queued_session_to_ui);
                     if app.status_message.is_none() && app.queued_message_count() > 0 {
                         app.status_message = Some(format!(
                             "Restored {} queued message(s) from previous session — ↑ to edit, Ctrl+X to discard",
@@ -3604,7 +3642,7 @@ async fn dispatch_user_message(
         persistence_actor::persist(PersistRequest::Checkpoint(session));
     }
 
-    let auto_selection = if should_resolve_auto_model_selection(app) {
+    let auto_selection = if app.auto_model || app.reasoning_effort == ReasoningEffort::Auto {
         Some(resolve_auto_model_selection(app, config, &message, &content).await)
     } else {
         None
@@ -3672,10 +3710,6 @@ async fn dispatch_user_message(
     }
 
     Ok(())
-}
-
-fn should_resolve_auto_model_selection(app: &App) -> bool {
-    app.auto_model
 }
 
 async fn resolve_auto_model_selection(
@@ -5502,7 +5536,7 @@ async fn handle_view_events(
 
                 match manager.load_session(&session_id) {
                     Ok(session) => {
-                        let recovered = apply_loaded_session(app, &session);
+                        apply_loaded_session(app, &session);
                         let _ = engine_handle
                             .send(Op::SyncSession {
                                 messages: app.api_messages.clone(),
@@ -5516,12 +5550,10 @@ async fn handle_view_events(
                                 config: app.compaction_config(),
                             })
                             .await;
-                        if !recovered {
-                            app.status_message = Some(format!(
-                                "Session loaded (ID: {})",
-                                &session_id[..8.min(session_id.len())]
-                            ));
-                        }
+                        app.status_message = Some(format!(
+                            "Session loaded (ID: {})",
+                            &session_id[..8.min(session_id.len())]
+                        ));
                     }
                     Err(err) => {
                         app.status_message =
@@ -5825,9 +5857,8 @@ async fn apply_provider_picker_api_key(
     switch_provider(app, engine_handle, config, provider, None).await;
 }
 
-fn apply_loaded_session(app: &mut App, session: &SavedSession) -> bool {
-    let (messages, recovered_draft) = recover_interrupted_user_tail(&session.messages);
-    app.api_messages = messages;
+fn apply_loaded_session(app: &mut App, session: &SavedSession) {
+    app.api_messages.clone_from(&session.messages);
     app.clear_history();
     app.tool_cells.clear();
     app.tool_details_by_cell.clear();
@@ -5886,57 +5917,7 @@ fn apply_loaded_session(app: &mut App, session: &SavedSession) -> bool {
     } else {
         app.system_prompt = None;
     }
-    let recovered = if let Some(draft) = recovered_draft {
-        restore_recovered_retry_draft(app, draft);
-        true
-    } else {
-        false
-    };
     app.scroll_to_bottom();
-    recovered
-}
-
-fn recover_interrupted_user_tail(messages: &[Message]) -> (Vec<Message>, Option<QueuedMessage>) {
-    let mut recovered = messages.to_vec();
-    let Some(last) = recovered.last() else {
-        return (recovered, None);
-    };
-    if last.role != "user" {
-        return (recovered, None);
-    }
-    let Some(display) = retry_display_from_user_message(last) else {
-        return (recovered, None);
-    };
-    recovered.pop();
-    (recovered, Some(QueuedMessage::new(display, None)))
-}
-
-fn retry_display_from_user_message(message: &Message) -> Option<String> {
-    let text = message
-        .content
-        .iter()
-        .filter_map(|block| match block {
-            ContentBlock::Text { text, .. } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    let display = compact_user_context_display(&text).trim().to_string();
-    if display.is_empty() {
-        None
-    } else {
-        Some(display)
-    }
-}
-
-fn restore_recovered_retry_draft(app: &mut App, draft: QueuedMessage) {
-    app.input.clone_from(&draft.display);
-    app.cursor_position = app.input.chars().count();
-    app.queued_draft = Some(draft);
-    app.status_message = Some(
-        "Recovered interrupted prompt as an editable draft; press Enter to retry.".to_string(),
-    );
-    app.needs_redraw = true;
 }
 
 fn compact_user_context_display(content: &str) -> String {
@@ -7249,11 +7230,6 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) -> Vec<ViewEvent> {
             }
         }
         MouseEventKind::Down(MouseButton::Left) => {
-            if mouse_hits_rect(mouse, app.viewport.jump_to_latest_button_area) {
-                app.scroll_to_bottom();
-                return Vec::new();
-            }
-
             if let Some(point) = selection_point_from_mouse(app, mouse) {
                 app.viewport.transcript_selection.anchor = Some(point);
                 app.viewport.transcript_selection.head = Some(point);
@@ -7292,17 +7268,6 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) -> Vec<ViewEvent> {
     }
 
     Vec::new()
-}
-
-fn mouse_hits_rect(mouse: MouseEvent, area: Option<Rect>) -> bool {
-    let Some(area) = area else {
-        return false;
-    };
-
-    mouse.column >= area.x
-        && mouse.column < area.x.saturating_add(area.width)
-        && mouse.row >= area.y
-        && mouse.row < area.y.saturating_add(area.height)
 }
 
 fn open_context_menu(app: &mut App, mouse: MouseEvent) {

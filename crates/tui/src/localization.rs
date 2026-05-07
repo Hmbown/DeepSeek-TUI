@@ -245,6 +245,7 @@ pub enum MessageId {
     CmdNetworkDescription,
     CmdNoteDescription,
     CmdPlanDescription,
+    CmdThemeDescription,
     CmdProviderDescription,
     CmdQueueDescription,
     CmdRecallDescription,
@@ -760,6 +761,9 @@ fn english(id: MessageId) -> &'static str {
         MessageId::CmdPlanDescription => {
             "Switch to plan mode and review suggested implementation steps"
         }
+        MessageId::CmdThemeDescription => {
+            "Toggle between dark and light theme"
+        }
         MessageId::CmdProviderDescription => {
             "Switch or view the active LLM backend (deepseek | nvidia-nim | ollama)"
         }
@@ -1043,6 +1047,7 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::CmdNetworkDescription => "ネットワーク許可・拒否ルールを管理",
         MessageId::CmdNoteDescription => "永続ノートファイル（.deepseek/notes.md）に追記",
         MessageId::CmdPlanDescription => "Plan モードに切り替え、推奨される実装手順を確認",
+        MessageId::CmdThemeDescription => "テーマ（ダーク/ライト）を切り替え",
         MessageId::CmdProviderDescription => {
             "現在の LLM バックエンドを切り替え・確認（deepseek | nvidia-nim | ollama）"
         }
@@ -1308,6 +1313,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::CmdNetworkDescription => "管理网络允许和拒绝规则",
         MessageId::CmdNoteDescription => "将笔记追加到持久笔记文件（.deepseek/notes.md）",
         MessageId::CmdPlanDescription => "切换到 Plan 模式并查看建议的实现步骤",
+        MessageId::CmdThemeDescription => "在浅色和深色主题之间切换",
         MessageId::CmdProviderDescription => {
             "切换或查看当前 LLM 后端（deepseek | nvidia-nim | ollama）"
         }
@@ -1570,6 +1576,9 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         }
         MessageId::CmdPlanDescription => {
             "Mudar para o modo plan e revisar os passos de implementação sugeridos"
+        }
+        MessageId::CmdThemeDescription => {
+            "Alternar entre o tema claro e escuro"
         }
         MessageId::CmdProviderDescription => {
             "Trocar ou exibir o backend LLM ativo (deepseek | nvidia-nim | ollama)"
