@@ -1938,6 +1938,72 @@ fn spillover_pager_section_returns_notice_when_file_missing() {
 }
 
 #[test]
+fn terminal_pause_has_live_owner_only_for_running_exec_cells() {
+    let mut app = create_test_app();
+    assert!(!terminal_pause_has_live_owner(&app));
+
+    let mut active = ActiveCell::new();
+    active.push_tool(
+        "tool-1",
+        HistoryCell::Tool(ToolCell::Exec(ExecCell {
+            command: "python3 -i".to_string(),
+            status: ToolStatus::Running,
+            output: None,
+            started_at: Some(Instant::now()),
+            duration_ms: None,
+            source: ExecSource::Assistant,
+            interaction: Some("interactive".to_string()),
+        })),
+    );
+    app.active_cell = Some(active);
+    assert!(terminal_pause_has_live_owner(&app));
+
+    let mut active = ActiveCell::new();
+    active.push_tool(
+        "tool-2",
+        HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            name: "rlm".to_string(),
+            status: ToolStatus::Running,
+            input_summary: Some("file_path: Cargo.lock".to_string()),
+            output: None,
+            prompts: None,
+            spillover_path: None,
+        })),
+    );
+    app.active_cell = Some(active);
+    assert!(
+        !terminal_pause_has_live_owner(&app),
+        "non-interactive RLM work must not keep the terminal in host-scrollback mode"
+    );
+}
+
+#[test]
+fn active_rlm_task_entries_surface_foreground_rlm_work() {
+    let mut app = create_test_app();
+    app.turn_started_at = Some(Instant::now() - Duration::from_secs(3));
+    let mut active = ActiveCell::new();
+    active.push_tool(
+        "tool-rlm",
+        HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            name: "rlm".to_string(),
+            status: ToolStatus::Running,
+            input_summary: Some("file_path: Cargo.lock".to_string()),
+            output: None,
+            prompts: None,
+            spillover_path: None,
+        })),
+    );
+    app.active_cell = Some(active);
+
+    let entries = active_rlm_task_entries(&app);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].id, "rlm-1");
+    assert_eq!(entries[0].status, "running");
+    assert_eq!(entries[0].prompt_summary, "RLM: file_path: Cargo.lock");
+    assert!(entries[0].duration_ms.unwrap_or_default() >= 3000);
+}
+
+#[test]
 fn details_shortcut_modifiers_accept_plain_shift_and_alt_only() {
     assert!(details_shortcut_modifiers(KeyModifiers::NONE));
     assert!(details_shortcut_modifiers(KeyModifiers::SHIFT));
@@ -3510,4 +3576,30 @@ fn completed_turn_notification_truncates_long_text() {
     assert!(msg.ends_with("..."));
     // 360-char body + 3-char ellipsis
     assert_eq!(msg.chars().count(), 363);
+}
+
+#[test]
+fn subagent_completion_notification_uses_summary_line_not_sentinel() {
+    let msg = super::subagent_completion_notification_message(
+        "agent_live",
+        "Finished the docs audit.\n<deepseek:subagent.done>{}</deepseek:subagent.done>",
+        false,
+        Duration::from_secs(42),
+    );
+
+    assert_eq!(msg, "sub-agent agent_live: Finished the docs audit.");
+    assert!(!msg.contains("deepseek:subagent.done"));
+}
+
+#[test]
+fn subagent_completion_notification_can_include_elapsed_summary() {
+    let msg = super::subagent_completion_notification_message(
+        "agent_live",
+        "",
+        true,
+        Duration::from_secs(65),
+    );
+
+    assert!(msg.contains("deepseek: sub-agent agent_live complete"));
+    assert!(msg.contains("deepseek: sub-agent complete (1m 5s)"));
 }

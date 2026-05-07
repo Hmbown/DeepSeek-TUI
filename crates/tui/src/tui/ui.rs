@@ -82,6 +82,7 @@ use crate::tui::tool_routing::{
 };
 use crate::tui::ui_text::{history_cell_to_text, line_to_plain, slice_text, text_display_width};
 use crate::tui::user_input::UserInputView;
+use crate::tui::views::subagent_view_agents;
 
 use super::active_cell::ActiveCell;
 use super::app::{
@@ -577,6 +578,8 @@ async fn refresh_active_task_panel(app: &mut App, task_manager: &SharedTaskManag
         .map(task_summary_to_panel_entry)
         .collect();
 
+    entries.extend(active_rlm_task_entries(app));
+
     if let Some(shell_mgr) = app.runtime_services.shell_manager.as_ref()
         && let Ok(mut mgr) = shell_mgr.lock()
     {
@@ -594,6 +597,39 @@ async fn refresh_active_task_panel(app: &mut App, task_manager: &SharedTaskManag
     }
 
     app.task_panel = entries;
+}
+
+fn active_rlm_task_entries(app: &App) -> Vec<TaskPanelEntry> {
+    let Some(active) = app.active_cell.as_ref() else {
+        return Vec::new();
+    };
+    let duration_ms = app
+        .turn_started_at
+        .map(|started| u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
+    active
+        .entries()
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, entry)| {
+            let HistoryCell::Tool(ToolCell::Generic(generic)) = entry else {
+                return None;
+            };
+            if generic.name != "rlm" || generic.status != ToolStatus::Running {
+                return None;
+            }
+            let summary = generic
+                .input_summary
+                .as_deref()
+                .filter(|summary| !summary.trim().is_empty())
+                .unwrap_or("running chunked analysis");
+            Some(TaskPanelEntry {
+                id: format!("rlm-{}", idx + 1),
+                status: "running".to_string(),
+                prompt_summary: format!("RLM: {summary}"),
+                duration_ms,
+            })
+        })
+        .collect()
 }
 
 #[allow(clippy::too_many_lines)]
@@ -623,6 +659,7 @@ async fn run_event_loop(
     // #376: native-copy escape — hold Shift to bypass alt-screen mouse capture
     // for terminal-native text selection.
     let mut shift_bypass_active = false;
+    let mut terminal_paused_at: Option<Instant> = None;
 
     loop {
         if !drain_web_config_events(&mut web_config_session, app, config, &engine_handle).await {
@@ -1118,6 +1155,7 @@ async fn run_event_loop(
                                 app.use_bracketed_paste,
                             )?;
                             event_broker.pause_events();
+                            terminal_paused_at = Some(Instant::now());
                         }
                     }
                     EngineEvent::ResumeEvents => {
@@ -1129,6 +1167,7 @@ async fn run_event_loop(
                                 app.use_bracketed_paste,
                             )?;
                             event_broker.resume_events();
+                            terminal_paused_at = None;
                         }
                     }
                     EngineEvent::AgentSpawned { id, prompt } => {
@@ -1157,11 +1196,54 @@ async fn run_event_loop(
                         app.status_message = Some(format!("Sub-agent {id}: {display}"));
                     }
                     EngineEvent::AgentComplete { id, result } => {
+                        let subagent_elapsed = app
+                            .agent_activity_started_at
+                            .or(app.turn_started_at)
+                            .map(|started| started.elapsed())
+                            .unwrap_or_default();
+                        let has_other_running_subagents =
+                            app.agent_progress.keys().any(|agent_id| agent_id != &id)
+                                || app.subagent_cache.iter().any(|agent| {
+                                    agent.agent_id != id
+                                        && matches!(agent.status, SubAgentStatus::Running)
+                                });
                         app.agent_progress.remove(&id);
                         app.status_message = Some(format!(
                             "Sub-agent {id} completed: {}",
                             summarize_tool_output(&result)
                         ));
+                        let should_recapture_terminal =
+                            !has_other_running_subagents && app.use_alt_screen;
+                        if !has_other_running_subagents
+                            && let Some((method, threshold, include_summary)) =
+                                notification_settings(config)
+                        {
+                            let in_tmux = std::env::var("TMUX").is_ok_and(|v| !v.is_empty());
+                            let msg = subagent_completion_notification_message(
+                                &id,
+                                &result,
+                                include_summary,
+                                subagent_elapsed,
+                            );
+                            crate::tui::notifications::notify_done(
+                                method,
+                                in_tmux,
+                                &msg,
+                                threshold,
+                                subagent_elapsed,
+                            );
+                        }
+                        if should_recapture_terminal {
+                            resume_terminal(
+                                terminal,
+                                app.use_alt_screen,
+                                app.use_mouse_capture,
+                                app.use_bracketed_paste,
+                            )?;
+                            event_broker.resume_events();
+                            terminal_paused_at = None;
+                            app.needs_redraw = true;
+                        }
                         let _ = engine_handle.send(Op::ListSubAgents).await;
                     }
                     EngineEvent::AgentList { agents } => {
@@ -1170,9 +1252,10 @@ async fn run_event_loop(
                         sorted.retain(|a| !a.from_prior_session);
                         app.subagent_cache = sorted.clone();
                         reconcile_subagent_activity_state(app);
-                        if app.view_stack.update_subagents(&sorted) {
+                        let view_agents = subagent_view_agents(app, &sorted);
+                        if app.view_stack.update_subagents(&view_agents) {
                             app.status_message =
-                                Some(format!("Sub-agents: {} total", sorted.len()));
+                                Some(format!("Sub-agents: {} total", view_agents.len()));
                         }
                         // Individual spawn/complete events already log to history;
                         // full list available via /agents command.
@@ -1401,8 +1484,23 @@ async fn run_event_loop(
         }
 
         if event_broker.is_paused() {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            continue;
+            let grace_active = terminal_paused_at
+                .map(|paused_at| paused_at.elapsed() < Duration::from_millis(500))
+                .unwrap_or(false);
+            if terminal_pause_has_live_owner(app) || grace_active {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                continue;
+            }
+            resume_terminal(
+                terminal,
+                app.use_alt_screen,
+                app.use_mouse_capture,
+                app.use_bracketed_paste,
+            )?;
+            event_broker.resume_events();
+            terminal_paused_at = None;
+            app.status_message = Some("Terminal controls restored".to_string());
+            app.needs_redraw = true;
         }
 
         let now = Instant::now();
@@ -3085,6 +3183,30 @@ fn completed_turn_notification_message(
             msg.push('\n');
             msg.push_str(&summary);
         }
+    }
+
+    msg
+}
+
+fn subagent_completion_notification_message(
+    id: &str,
+    result: &str,
+    include_summary: bool,
+    elapsed: Duration,
+) -> String {
+    let result_line = result
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with("<deepseek:subagent.done>"));
+    let mut msg = result_line
+        .and_then(notification_text_summary)
+        .map(|summary| format!("sub-agent {id}: {summary}"))
+        .unwrap_or_else(|| format!("deepseek: sub-agent {id} complete"));
+
+    if include_summary {
+        let human = crate::tui::notifications::humanize_duration(elapsed);
+        msg.push('\n');
+        msg.push_str(&format!("deepseek: sub-agent complete ({human})"));
     }
 
     msg
@@ -6315,6 +6437,17 @@ fn active_foreground_shell_running(app: &App) -> bool {
                 cell,
                 HistoryCell::Tool(ToolCell::Exec(exec))
                     if exec.status == ToolStatus::Running && exec.interaction.is_none()
+            )
+        })
+    })
+}
+
+fn terminal_pause_has_live_owner(app: &App) -> bool {
+    app.active_cell.as_ref().is_some_and(|active| {
+        active.entries().iter().any(|cell| {
+            matches!(
+                cell,
+                HistoryCell::Tool(ToolCell::Exec(exec)) if exec.status == ToolStatus::Running
             )
         })
     })

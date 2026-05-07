@@ -205,18 +205,28 @@ deepseek --provider ollama --model deepseek-coder:1.3b
 
 ---
 
-## What's New In v0.8.15
+## What's New In v0.8.16
 
-A community-driven stabilization release focused on auth recovery, Windows
-terminals, Zed/ACP compatibility, setup friction, and clearer cost display.
+A focused hotfix for RLM, sub-agent visibility, and terminal ownership on top
+of v0.8.15.
 [Full changelog](CHANGELOG.md).
 
-- **Friendlier auth recovery** — runtime API-key failures now explain when the active key came only from `DEEPSEEK_API_KEY` and no saved config key is present
-- **Zed / ACP adapter** — `deepseek serve --acp` exposes a local stdio Agent Client Protocol server for Zed and other compatible editors
-- **Windows terminal fixes** — UTF-8 console setup, dispatcher resume handling, clipboard fallback, Ctrl+E composer behavior, and safer Windows mouse defaults
-- **Yuan cost display** — set `cost_currency = "cny"` (or `yuan` / `rmb`) to show footer, `/cost`, `/tokens`, and notification summaries in CNY
-- **Setup and skill polish** — workspace trust persists globally, plain Markdown `SKILL.md` files load correctly, global Agents/Cursor skill paths are discovered, and the TUI shows skills in slash autocomplete
-- **Reliability fixes** — workspace-scoped `resume --last`, capped API `max_tokens`, endpoint diagnostics in `deepseek doctor`, npm `--version` fallback, and current-date turn metadata
+- **RLM no longer has the old 180s wall-clock timeout** — long-input REPL work
+  can keep running while it is still making progress.
+- **RLM reports what happened** — output now includes input size, iteration
+  count, elapsed time, sub-LLM RPC count, and termination state.
+- **RLM chunking is safer for exact answers** — prompts require deterministic
+  Python for counts/aggregation and coverage reporting for whole-input chunks.
+- **Sub-agent visibility is more truthful** — `/subagents`, the transcript, and
+  the right rail include live progress and fanout workers instead of showing
+  false `No agents` or `No active tasks` states.
+- **Sub-agent cards are quieter** — internal scheduler lines are hidden while
+  useful tool activity remains visible.
+- **Sub-agent completion events stay internal** — the parent agent integrates
+  child results without explaining raw sentinel XML back to the user.
+- **Terminal ownership is hardened** — background sub-agents cannot take over
+  the parent terminal, and the TUI restores alternate-screen mode after
+  delegated work drains.
 
 ---
 
