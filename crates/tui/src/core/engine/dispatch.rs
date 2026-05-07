@@ -120,9 +120,19 @@ pub(super) fn format_tool_error(err: &ToolError, tool_name: &str) -> String {
                 )
             }
         }
-        ToolError::PermissionDenied { message } => format!(
-            "Tool '{tool_name}' was denied: {message}. Adjust approval mode or request permission."
-        ),
+        ToolError::PermissionDenied {
+            message,
+            suggestion,
+        } => {
+            let base = format!(
+                "Tool '{tool_name}' was denied: {message}. Adjust approval mode or request permission."
+            );
+            if let Some(suggestion) = suggestion {
+                format!("{base}\nSuggestion: {suggestion}")
+            } else {
+                base
+            }
+        }
     }
 }
 
