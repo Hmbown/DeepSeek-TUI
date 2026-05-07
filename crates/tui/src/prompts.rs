@@ -483,7 +483,13 @@ pub fn build_system_prompt(base: &str, project_context: Option<&ProjectContext>)
             Some(project_block) => format!("{}\n\n{}", base.trim(), project_block),
             None => base.trim().to_string(),
         };
-    SystemPrompt::Text(full_prompt)
+    // Append immutable security anchor to resist prompt injection attacks.
+    let secured = format!(
+        "{}\n\n{}",
+        full_prompt,
+        crate::security::boundary::SECURITY_ANCHOR.trim()
+    );
+    SystemPrompt::Text(secured)
 }
 
 // ── Legacy functions for backwards compatibility ──────────────────────

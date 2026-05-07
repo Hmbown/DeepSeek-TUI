@@ -67,7 +67,27 @@ impl ToolSpec for ReadFileTool {
             ToolError::execution_failed(format!("Failed to read {}: {}", file_path.display(), e))
         })?;
 
-        Ok(ToolResult::success(contents))
+        // Security: wrap file content with boundary markers and assess for threats.
+        let source = crate::security::ContentSource::FileContent {
+            path: file_path.display().to_string(),
+        };
+        let sanitized = crate::security::sanitize_external_content(&contents, &source);
+
+        // Threat assessment — log if suspicious content detected in workspace files.
+        let assessment = crate::security::assess_threat(&contents, &source);
+        if let crate::security::ThreatAction::WarnUser { ref message }
+        | crate::security::ThreatAction::Block { reason: ref message } =
+            assessment.recommended_action
+        {
+            tracing::warn!(
+                target: "security.threat",
+                path = %file_path.display(),
+                score = assessment.score,
+                "{message}"
+            );
+        }
+
+        Ok(ToolResult::success(sanitized))
     }
 }
 

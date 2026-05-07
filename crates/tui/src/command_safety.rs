@@ -5,6 +5,12 @@
 //! This module provides pre-execution analysis of shell commands to detect
 //! potentially dangerous patterns and prevent accidental damage.
 //!
+//! ## Hard-block layer
+//!
+//! Before prefix classification, [`security_hard_block_check`] runs the
+//! security module's hard-block patterns — these catch catastrophically
+//! destructive operations that no configuration or mode can override.
+//!
 //! ## Command prefix classification
 //!
 //! [`classify_command`] maps a token slice to its canonical command prefix.
