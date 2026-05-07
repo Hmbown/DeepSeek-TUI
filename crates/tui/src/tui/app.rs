@@ -1081,6 +1081,15 @@ impl App {
         }
     }
 
+    pub(crate) fn clear_model_scoped_telemetry(&mut self) {
+        self.session.last_prompt_tokens = None;
+        self.session.last_completion_tokens = None;
+        self.session.last_prompt_cache_hit_tokens = None;
+        self.session.last_prompt_cache_miss_tokens = None;
+        self.session.last_reasoning_replay_tokens = None;
+        self.session.turn_cache_history.clear();
+    }
+
     pub fn tr(&self, id: MessageId) -> &'static str {
         tr(self.ui_locale, id)
     }

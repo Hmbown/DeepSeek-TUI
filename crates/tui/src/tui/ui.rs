@@ -3884,11 +3884,7 @@ async fn apply_model_picker_choice(
         app.last_effective_model = None;
         app.model = model.clone();
         app.update_model_compaction_budget();
-        app.session.last_prompt_tokens = None;
-        app.session.last_completion_tokens = None;
-        app.session.last_prompt_cache_hit_tokens = None;
-        app.session.last_prompt_cache_miss_tokens = None;
-        app.session.last_reasoning_replay_tokens = None;
+        app.clear_model_scoped_telemetry();
     }
     if effort_changed {
         app.reasoning_effort = effort;
@@ -4006,11 +4002,16 @@ async fn switch_provider(
     }
 
     let new_model = config.default_model();
+    let cache_scope_changed = previous_provider != target || previous_model != new_model;
     app.api_provider = target;
     app.model = new_model.clone();
     app.update_model_compaction_budget();
-    app.session.last_prompt_tokens = None;
-    app.session.last_completion_tokens = None;
+    if cache_scope_changed {
+        app.clear_model_scoped_telemetry();
+    } else {
+        app.session.last_prompt_tokens = None;
+        app.session.last_completion_tokens = None;
+    }
 
     let _ = engine_handle.send(Op::Shutdown).await;
     let engine_config = build_engine_config(app, config);
