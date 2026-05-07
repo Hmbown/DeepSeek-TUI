@@ -78,10 +78,14 @@ impl CommandSpec {
     /// Create a `CommandSpec` for running a shell command via the platform shell.
     pub fn shell(command: &str, cwd: PathBuf, timeout: Duration) -> Self {
         #[cfg(windows)]
-        let (program, args) = (
-            "cmd".to_string(),
-            vec!["/C".to_string(), command.to_string()],
-        );
+        let (program, args) = {
+            // Force UTF-8 output on Windows by running `chcp 65001` before the
+            // actual command. Without this, subprocesses output in the system's
+            // ANSI code page (e.g. GBK for Chinese locales), causing garbled
+            // text in the shell output panel. See issue #982.
+            let cmd = format!("chcp 65001 >NUL & {command}");
+            ("cmd".to_string(), vec!["/C".to_string(), cmd])
+        };
         #[cfg(not(windows))]
         let (program, args) = (
             "sh".to_string(),
