@@ -1,0 +1,63 @@
+{
+  "name": "deepseek-tui-vscode",
+  "displayName": "DeepSeek TUI — VS Code Chat",
+  "version": "0.1.0",
+  "description": "VS Code chat panel for DeepSeek TUI. Connects to a local deepseek-app-server via HTTP + SSE.",
+  "author": "Hmbown",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Hmbown/DeepSeek-TUI"
+  },
+  "publisher": "deepseek-tui",
+  "categories": [
+    "Chat",
+    "AI"
+  ],
+  "engines": {
+    "vscode": "^1.92.0"
+  },
+  "activationEvents": [
+    "onView:deepseek.chatView"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "deepseek-sidebar",
+          "title": "DeepSeek Chat",
+          "icon": "$(comment-discussion)"
+        }
+      ]
+    },
+    "views": {
+      "deepseek-sidebar": [
+        {
+          "type": "webview",
+          "id": "deepseek.chatView",
+          "name": "Chat"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "DeepSeek",
+      "properties": {
+        "deepseek.serverPort": {
+          "type": "number",
+          "default": 8787,
+          "description": "Port of the local deepseek-app-server."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.92.0",
+    "typescript": "^5.4.0"
+  }
+}
