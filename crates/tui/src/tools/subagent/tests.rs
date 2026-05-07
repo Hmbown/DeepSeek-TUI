@@ -1170,6 +1170,7 @@ fn stub_runtime() -> SubAgentRuntime {
         max_spawn_depth: DEFAULT_MAX_SPAWN_DEPTH,
         cancel_token: CancellationToken::new(),
         mailbox: None,
+        parent_completion_tx: None,
     }
 }
 
@@ -1365,4 +1366,147 @@ fn persist_round_trip_preserves_session_boot_id() {
         .find(|s| s.agent_id == "agent_persist")
         .unwrap();
     assert!(snap.from_prior_session);
+}
+
+// === Issue #756: parent-completion wakeup ===
+//
+// When a direct child of the engine finishes, `run_subagent_task` emits
+// a `SubAgentCompletion` on the runtime's `parent_completion_tx`. The
+// engine's turn loop drains that channel before deciding to end the turn.
+// These tests cover the gating logic in `emit_parent_completion` so the
+// parent isn't flooded with grandchild completions and so the function
+// is safe when no channel is wired.
+
+fn runtime_with_depth(
+    spawn_depth: u32,
+    parent_completion_tx: Option<mpsc::UnboundedSender<SubAgentCompletion>>,
+) -> SubAgentRuntime {
+    let mut rt = stub_runtime();
+    rt.spawn_depth = spawn_depth;
+    rt.parent_completion_tx = parent_completion_tx;
+    rt
+}
+
+#[test]
+fn emit_parent_completion_fires_for_direct_child() {
+    let (tx, mut rx) = mpsc::unbounded_channel::<SubAgentCompletion>();
+    let runtime = runtime_with_depth(1, Some(tx));
+
+    let sent = emit_parent_completion(&runtime, "agent_abc", "summary line\n<sentinel/>");
+
+    assert!(sent, "depth=1 with channel wired should send");
+    let received = rx.try_recv().expect("channel should have one message");
+    assert_eq!(received.agent_id, "agent_abc");
+    assert_eq!(received.payload, "summary line\n<sentinel/>");
+    assert!(rx.try_recv().is_err(), "should be exactly one message");
+}
+
+#[test]
+fn emit_parent_completion_skips_grandchildren() {
+    let (tx, mut rx) = mpsc::unbounded_channel::<SubAgentCompletion>();
+    let runtime = runtime_with_depth(2, Some(tx));
+
+    let sent = emit_parent_completion(&runtime, "agent_grandchild", "ignored");
+
+    assert!(
+        !sent,
+        "depth=2 grandchild must not fire on the parent channel"
+    );
+    assert!(
+        rx.try_recv().is_err(),
+        "channel should remain empty for grandchildren"
+    );
+}
+
+#[test]
+fn emit_parent_completion_skips_engine_self() {
+    // depth 0 is the engine itself — the engine never spawns a task at
+    // depth 0, but defend against accidental misuse.
+    let (tx, mut rx) = mpsc::unbounded_channel::<SubAgentCompletion>();
+    let runtime = runtime_with_depth(0, Some(tx));
+
+    let sent = emit_parent_completion(&runtime, "agent_root", "ignored");
+
+    assert!(
+        !sent,
+        "depth=0 must not fire (only depth=1 direct children)"
+    );
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn emit_parent_completion_no_channel_is_noop() {
+    let runtime = runtime_with_depth(1, None);
+
+    let sent = emit_parent_completion(&runtime, "agent_no_chan", "anything");
+
+    assert!(
+        !sent,
+        "missing channel should be a silent no-op, not a panic"
+    );
+}
+
+#[test]
+fn emit_parent_completion_dropped_receiver_does_not_panic() {
+    let (tx, rx) = mpsc::unbounded_channel::<SubAgentCompletion>();
+    drop(rx);
+    let runtime = runtime_with_depth(1, Some(tx));
+
+    // The send returns an error internally but we discard it — the
+    // caller's run_subagent_task does not care whether the engine is
+    // still listening (it might be shutting down).
+    let sent = emit_parent_completion(&runtime, "agent_orphan", "after-rx-drop");
+
+    assert!(
+        sent,
+        "we still attempt the send; the engine being gone is not our problem"
+    );
+}
+
+#[test]
+fn child_runtime_propagates_completion_tx_for_gating() {
+    // The channel is cloned through `child_runtime()` so descendants carry
+    // it. The gate at the send site (`spawn_depth == 1`) is what limits
+    // who actually fires — `child_runtime` simply must not strand it.
+    let (tx, _rx) = mpsc::unbounded_channel::<SubAgentCompletion>();
+    let parent = runtime_with_depth(0, Some(tx));
+
+    let child = parent.child_runtime();
+
+    assert_eq!(child.spawn_depth, 1, "child increments depth");
+    assert!(
+        child.parent_completion_tx.is_some(),
+        "child carries the wakeup channel forward"
+    );
+}
+
+#[test]
+fn subagent_completion_payload_carries_existing_sentinel_format() {
+    // The payload format is the same one already documented in
+    // prompts/base.md: human summary on line 1, `<deepseek:subagent.done>`
+    // sentinel on line 2. This test pins the format so future refactors
+    // don't silently break the model's parsing contract.
+    let mut snap = make_snapshot(SubAgentStatus::Completed);
+    snap.result = Some("Found three errors.".to_string());
+
+    let summary = summarize_subagent_result(&snap);
+    let sentinel = subagent_done_sentinel("agent_test", &snap);
+    let payload = format!("{summary}\n{sentinel}");
+
+    let mut lines = payload.lines();
+    let first = lines.next().expect("first line is summary");
+    let second = lines.next().expect("second line is sentinel");
+    assert!(
+        !first.starts_with("<deepseek:subagent.done>"),
+        "summary should not be the sentinel itself"
+    );
+    assert!(
+        second.starts_with("<deepseek:subagent.done>"),
+        "second line is the sentinel"
+    );
+    assert!(second.ends_with("</deepseek:subagent.done>"));
+    assert!(
+        second.contains("\"agent_id\":\"agent_test\""),
+        "sentinel JSON includes agent_id"
+    );
 }

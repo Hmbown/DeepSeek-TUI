@@ -7,13 +7,13 @@
 //! # Mental model
 //!
 //! Two gears:
-//! - [`ChunkingMode::Smooth`]: drain one line per commit tick (steady pacing).
-//! - [`ChunkingMode::CatchUp`]: drain the entire queued backlog while pressure exists.
+//! - [`ChunkingMode::Smooth`]: drain one display chunk per commit tick (steady pacing).
+//! - [`ChunkingMode::CatchUp`]: drain a bounded burst while pressure exists.
 //!
 //! # Hysteresis
 //!
 //! - Enter `CatchUp` when `queued_lines >= ENTER_QUEUE_DEPTH_LINES` OR
-//!   the oldest queued line is at least [`ENTER_OLDEST_AGE`].
+//!   the oldest queued chunk is at least [`ENTER_OLDEST_AGE`].
 //! - Exit `CatchUp` only after pressure stays below [`EXIT_QUEUE_DEPTH_LINES`]
 //!   AND [`EXIT_OLDEST_AGE`] for at least [`EXIT_HOLD`].
 //! - After exit, suppress immediate re-entry for [`REENTER_CATCH_UP_HOLD`]
@@ -24,16 +24,16 @@ use std::time::Duration;
 use std::time::Instant;
 
 /// Queue-depth threshold that allows entering catch-up mode.
-pub(crate) const ENTER_QUEUE_DEPTH_LINES: usize = 8;
+pub(crate) const ENTER_QUEUE_DEPTH_LINES: usize = 160;
 
-/// Oldest-line age threshold that allows entering catch-up mode.
-pub(crate) const ENTER_OLDEST_AGE: Duration = Duration::from_millis(120);
+/// Oldest-chunk age threshold that allows entering catch-up mode.
+pub(crate) const ENTER_OLDEST_AGE: Duration = Duration::from_millis(1_200);
 
 /// Queue-depth threshold used when evaluating catch-up exit hysteresis.
-pub(crate) const EXIT_QUEUE_DEPTH_LINES: usize = 2;
+pub(crate) const EXIT_QUEUE_DEPTH_LINES: usize = 32;
 
-/// Oldest-line age threshold used when evaluating catch-up exit hysteresis.
-pub(crate) const EXIT_OLDEST_AGE: Duration = Duration::from_millis(40);
+/// Oldest-chunk age threshold used when evaluating catch-up exit hysteresis.
+pub(crate) const EXIT_OLDEST_AGE: Duration = Duration::from_millis(300);
 
 /// Minimum duration queue pressure must stay below exit thresholds to leave catch-up mode.
 pub(crate) const EXIT_HOLD: Duration = Duration::from_millis(250);
@@ -42,14 +42,14 @@ pub(crate) const EXIT_HOLD: Duration = Duration::from_millis(250);
 pub(crate) const REENTER_CATCH_UP_HOLD: Duration = Duration::from_millis(250);
 
 /// Queue-depth cutoff that marks backlog as severe (bypasses re-entry hold).
-pub(crate) const SEVERE_QUEUE_DEPTH_LINES: usize = 64;
+pub(crate) const SEVERE_QUEUE_DEPTH_LINES: usize = 640;
 
 /// Oldest-line age cutoff that marks backlog as severe.
-pub(crate) const SEVERE_OLDEST_AGE: Duration = Duration::from_millis(300);
+pub(crate) const SEVERE_OLDEST_AGE: Duration = Duration::from_millis(4_000);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ChunkingMode {
-    /// Drain one line per baseline commit tick.
+    /// Drain one display chunk per baseline commit tick.
     #[default]
     Smooth,
     /// Drain the queued backlog according to queue pressure.
@@ -59,9 +59,9 @@ pub enum ChunkingMode {
 /// Captures queue pressure inputs used by adaptive chunking decisions.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct QueueSnapshot {
-    /// Number of queued stream lines waiting to be displayed.
+    /// Number of queued stream chunks waiting to be displayed.
     pub queued_lines: usize,
-    /// Age of the oldest queued line at decision time.
+    /// Age of the oldest queued chunk at decision time.
     pub oldest_age: Option<Duration>,
 }
 
@@ -272,33 +272,39 @@ mod tests {
     }
 
     #[test]
-    fn eight_line_burst_flips_to_catch_up_and_drains_full_backlog() {
-        // A burst of 8 queued lines crosses ENTER_QUEUE_DEPTH_LINES exactly.
+    fn deep_burst_flips_to_catch_up_and_drains_backlog() {
+        // A burst crossing ENTER_QUEUE_DEPTH_LINES enters CatchUp. With
+        // single-grapheme chunks, the threshold stays high enough that
+        // ordinary prose still drips in visibly before catch-up engages.
         // The policy should enter `CatchUp` and request a Batch drain matching
         // the queue depth.
         let mut policy = AdaptiveChunkingPolicy::new();
         let now = Instant::now();
 
-        let decision = policy.decide(snap(8, 10), now);
+        let decision = policy.decide(snap(ENTER_QUEUE_DEPTH_LINES, 10), now);
         assert_eq!(decision.mode, ChunkingMode::CatchUp);
         assert!(decision.entered_catch_up);
-        assert_eq!(decision.drain_plan, DrainPlan::Batch(8));
+        assert_eq!(
+            decision.drain_plan,
+            DrainPlan::Batch(ENTER_QUEUE_DEPTH_LINES)
+        );
 
         // Larger backlog requested next tick: still CatchUp, batch grows to match.
-        let decision = policy.decide(snap(20, 30), now + Duration::from_millis(10));
+        let larger_backlog = ENTER_QUEUE_DEPTH_LINES + 80;
+        let decision = policy.decide(snap(larger_backlog, 30), now + Duration::from_millis(10));
         assert_eq!(decision.mode, ChunkingMode::CatchUp);
         assert!(!decision.entered_catch_up, "no second transition signal");
-        assert_eq!(decision.drain_plan, DrainPlan::Batch(20));
+        assert_eq!(decision.drain_plan, DrainPlan::Batch(larger_backlog));
     }
 
     #[test]
     fn age_threshold_alone_triggers_catch_up() {
-        // Queue depth is small, but the oldest line has been waiting >=120 ms.
+        // Queue depth is small, but the oldest chunk has crossed the age threshold.
         // Either condition is sufficient to enter catch-up.
         let mut policy = AdaptiveChunkingPolicy::new();
         let now = Instant::now();
 
-        let decision = policy.decide(snap(2, 120), now);
+        let decision = policy.decide(snap(2, ENTER_OLDEST_AGE.as_millis() as u64), now);
         assert_eq!(decision.mode, ChunkingMode::CatchUp);
         assert!(decision.entered_catch_up);
         assert_eq!(decision.drain_plan, DrainPlan::Batch(2));
@@ -311,20 +317,29 @@ mod tests {
         let mut policy = AdaptiveChunkingPolicy::new();
         let t0 = Instant::now();
 
-        let _ = policy.decide(snap(10, 20), t0);
+        let _ = policy.decide(snap(ENTER_QUEUE_DEPTH_LINES, 20), t0);
         assert_eq!(policy.mode(), ChunkingMode::CatchUp);
 
-        // Pressure drops to (2 lines, 40 ms) — at the exit thresholds.
+        // Pressure drops to the exit thresholds.
         // Hold begins; not yet 250ms.
-        let pre_hold = policy.decide(snap(2, 40), t0 + Duration::from_millis(50));
+        let pre_hold = policy.decide(
+            snap(EXIT_QUEUE_DEPTH_LINES, EXIT_OLDEST_AGE.as_millis() as u64),
+            t0 + Duration::from_millis(50),
+        );
         assert_eq!(pre_hold.mode, ChunkingMode::CatchUp);
 
         // Still under hold.
-        let mid_hold = policy.decide(snap(2, 40), t0 + Duration::from_millis(200));
+        let mid_hold = policy.decide(
+            snap(EXIT_QUEUE_DEPTH_LINES, EXIT_OLDEST_AGE.as_millis() as u64),
+            t0 + Duration::from_millis(200),
+        );
         assert_eq!(mid_hold.mode, ChunkingMode::CatchUp);
 
         // Past EXIT_HOLD (250 ms) → return to Smooth.
-        let post_hold = policy.decide(snap(2, 40), t0 + Duration::from_millis(320));
+        let post_hold = policy.decide(
+            snap(EXIT_QUEUE_DEPTH_LINES, EXIT_OLDEST_AGE.as_millis() as u64),
+            t0 + Duration::from_millis(320),
+        );
         assert_eq!(post_hold.mode, ChunkingMode::Smooth);
         assert_eq!(post_hold.drain_plan, DrainPlan::Single);
     }
@@ -335,7 +350,7 @@ mod tests {
         let mut policy = AdaptiveChunkingPolicy::new();
         let now = Instant::now();
 
-        let _ = policy.decide(snap(10, 20), now);
+        let _ = policy.decide(snap(ENTER_QUEUE_DEPTH_LINES, 20), now);
         assert_eq!(policy.mode(), ChunkingMode::CatchUp);
 
         let decision = policy.decide(empty_snap(), now + Duration::from_millis(10));
@@ -345,38 +360,53 @@ mod tests {
 
     #[test]
     fn reentry_hold_blocks_immediate_flip_back() {
-        // After exiting CatchUp via idle, an 8-line burst that arrives within
+        // After exiting CatchUp via idle, a threshold-sized burst that arrives within
         // the re-entry hold window should not immediately re-enter CatchUp.
         let mut policy = AdaptiveChunkingPolicy::new();
         let t0 = Instant::now();
 
-        let _ = policy.decide(snap(10, 20), t0);
+        let _ = policy.decide(snap(ENTER_QUEUE_DEPTH_LINES, 20), t0);
         let _ = policy.decide(empty_snap(), t0 + Duration::from_millis(10));
 
         // Within REENTER_CATCH_UP_HOLD (250 ms): hold blocks re-entry.
-        let held = policy.decide(snap(8, 20), t0 + Duration::from_millis(100));
+        let held = policy.decide(
+            snap(ENTER_QUEUE_DEPTH_LINES, 20),
+            t0 + Duration::from_millis(100),
+        );
         assert_eq!(held.mode, ChunkingMode::Smooth);
         assert_eq!(held.drain_plan, DrainPlan::Single);
 
         // Past the hold: re-entry permitted.
-        let reentered = policy.decide(snap(8, 20), t0 + Duration::from_millis(400));
+        let reentered = policy.decide(
+            snap(ENTER_QUEUE_DEPTH_LINES, 20),
+            t0 + Duration::from_millis(400),
+        );
         assert_eq!(reentered.mode, ChunkingMode::CatchUp);
-        assert_eq!(reentered.drain_plan, DrainPlan::Batch(8));
+        assert_eq!(
+            reentered.drain_plan,
+            DrainPlan::Batch(ENTER_QUEUE_DEPTH_LINES)
+        );
     }
 
     #[test]
     fn severe_backlog_bypasses_reentry_hold() {
-        // Even within the hold window, a "severe" backlog (>=64 lines) bypasses
+        // Even within the hold window, a "severe" backlog bypasses
         // the gate so display lag doesn't unbounded-grow.
         let mut policy = AdaptiveChunkingPolicy::new();
         let t0 = Instant::now();
 
-        let _ = policy.decide(snap(10, 20), t0);
+        let _ = policy.decide(snap(ENTER_QUEUE_DEPTH_LINES, 20), t0);
         let _ = policy.decide(empty_snap(), t0 + Duration::from_millis(10));
 
-        let severe = policy.decide(snap(64, 20), t0 + Duration::from_millis(100));
+        let severe = policy.decide(
+            snap(SEVERE_QUEUE_DEPTH_LINES, 20),
+            t0 + Duration::from_millis(100),
+        );
         assert_eq!(severe.mode, ChunkingMode::CatchUp);
-        assert_eq!(severe.drain_plan, DrainPlan::Batch(64));
+        assert_eq!(
+            severe.drain_plan,
+            DrainPlan::Batch(SEVERE_QUEUE_DEPTH_LINES)
+        );
     }
 
     #[test]
@@ -386,19 +416,28 @@ mod tests {
         let t0 = Instant::now();
 
         // Queue depth far above ENTER threshold.
-        let d1 = policy.decide(snap(20, 10), t0);
+        let d1 = policy.decide(snap(ENTER_QUEUE_DEPTH_LINES + 80, 10), t0);
         assert_eq!(d1.mode, ChunkingMode::Smooth);
         assert!(!d1.entered_catch_up);
         assert_eq!(d1.drain_plan, DrainPlan::Single);
 
         // Oldest age far above ENTER threshold.
-        let d2 = policy.decide(snap(5, 500), t0 + Duration::from_millis(100));
+        let d2 = policy.decide(
+            snap(5, ENTER_OLDEST_AGE.as_millis() as u64),
+            t0 + Duration::from_millis(100),
+        );
         assert_eq!(d2.mode, ChunkingMode::Smooth);
         assert!(!d2.entered_catch_up);
         assert_eq!(d2.drain_plan, DrainPlan::Single);
 
         // Severe backlog — still Smooth.
-        let d3 = policy.decide(snap(80, 500), t0 + Duration::from_millis(200));
+        let d3 = policy.decide(
+            snap(
+                SEVERE_QUEUE_DEPTH_LINES + 80,
+                SEVERE_OLDEST_AGE.as_millis() as u64,
+            ),
+            t0 + Duration::from_millis(200),
+        );
         assert_eq!(d3.mode, ChunkingMode::Smooth);
         assert_eq!(d3.drain_plan, DrainPlan::Single);
     }
@@ -410,14 +449,20 @@ mod tests {
         let t0 = Instant::now();
 
         // Low motion blocks catch-up.
-        let d1 = policy.decide(snap(20, 10), t0);
+        let d1 = policy.decide(snap(ENTER_QUEUE_DEPTH_LINES + 80, 10), t0);
         assert_eq!(d1.mode, ChunkingMode::Smooth);
 
         // Turn off low motion — next burst should enter CatchUp.
         policy.set_low_motion(false);
-        let d2 = policy.decide(snap(20, 10), t0 + Duration::from_millis(10));
+        let d2 = policy.decide(
+            snap(ENTER_QUEUE_DEPTH_LINES + 80, 10),
+            t0 + Duration::from_millis(10),
+        );
         assert_eq!(d2.mode, ChunkingMode::CatchUp);
         assert!(d2.entered_catch_up);
-        assert_eq!(d2.drain_plan, DrainPlan::Batch(20));
+        assert_eq!(
+            d2.drain_plan,
+            DrainPlan::Batch(ENTER_QUEUE_DEPTH_LINES + 80)
+        );
     }
 }

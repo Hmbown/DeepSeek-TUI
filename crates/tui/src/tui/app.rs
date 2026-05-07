@@ -19,6 +19,7 @@ use crate::hooks::{HookContext, HookEvent, HookExecutor, HookResult};
 use crate::localization::{Locale, MessageId, resolve_locale, tr};
 use crate::models::{Message, SystemPrompt, compaction_threshold_for_model_and_effort};
 use crate::palette::{self, UiTheme};
+use crate::pricing::{CostCurrency, CostEstimate};
 use crate::session_manager::SessionContextReference;
 use crate::settings::Settings;
 use crate::tools::plan::{SharedPlanState, new_shared_plan_state};
@@ -53,6 +54,34 @@ pub enum OnboardingState {
     TrustDirectory,
     Tips,
     None,
+}
+
+fn initial_onboarding_state(
+    skip_onboarding: bool,
+    was_onboarded: bool,
+    needs_api_key: bool,
+    needs_workspace_trust: bool,
+) -> OnboardingState {
+    if skip_onboarding || (was_onboarded && !needs_api_key && !needs_workspace_trust) {
+        return OnboardingState::None;
+    }
+
+    if was_onboarded && needs_api_key {
+        OnboardingState::ApiKey
+    } else if was_onboarded && needs_workspace_trust {
+        OnboardingState::TrustDirectory
+    } else {
+        OnboardingState::Welcome
+    }
+}
+
+fn onboarding_is_workspace_trust_gate(
+    skip_onboarding: bool,
+    was_onboarded: bool,
+    needs_api_key: bool,
+    needs_workspace_trust: bool,
+) -> bool {
+    !skip_onboarding && was_onboarded && !needs_api_key && needs_workspace_trust
 }
 
 /// Supported application modes for the TUI.
@@ -465,6 +494,22 @@ impl VimMode {
     }
 }
 
+/// Cached @-mention completion results to avoid re-walking the filesystem when
+/// the cursor moves inside the same mention token.
+#[derive(Debug, Clone)]
+pub struct MentionCompletionCache {
+    /// Workspace root used for this completion walk.
+    pub workspace: PathBuf,
+    /// Process cwd captured for cwd-relative completion entries.
+    pub cwd: Option<PathBuf>,
+    /// The partial text after `@` that triggered this completion.
+    pub partial: String,
+    /// Candidate limit used for this completion walk.
+    pub limit: usize,
+    /// Cached completion entries.
+    pub entries: Vec<String>,
+}
+
 /// Composer input state — grouped fields for the text input area.
 pub struct ComposerState {
     /// Current composer text content.
@@ -484,6 +529,9 @@ pub struct ComposerState {
     pub slash_menu_hidden: bool,
     pub mention_menu_selected: usize,
     pub mention_menu_hidden: bool,
+    /// Cached @-mention completions to avoid re-walking the filesystem when
+    /// the cursor moves inside the same mention token.
+    pub mention_completion_cache: Option<MentionCompletionCache>,
     /// Whether vim modal editing is enabled for this composer.
     /// Sourced from `Settings::composer_vim_mode` at startup.
     pub vim_enabled: bool,
@@ -512,6 +560,7 @@ impl Default for ComposerState {
             slash_menu_hidden: false,
             mention_menu_selected: 0,
             mention_menu_hidden: false,
+            mention_completion_cache: None,
             vim_enabled: false,
             vim_mode: VimMode::Normal,
             vim_pending_d: false,
@@ -562,9 +611,12 @@ pub struct GoalState {
 #[derive(Debug, Clone)]
 pub struct SessionState {
     pub session_cost: f64,
+    pub session_cost_cny: f64,
     pub subagent_cost: f64,
+    pub subagent_cost_cny: f64,
     pub subagent_cost_event_seqs: HashSet<u64>,
     pub displayed_cost_high_water: f64,
+    pub displayed_cost_high_water_cny: f64,
     pub last_prompt_tokens: Option<u32>,
     pub last_completion_tokens: Option<u32>,
     pub last_prompt_cache_hit_tokens: Option<u32>,
@@ -579,9 +631,12 @@ impl Default for SessionState {
     fn default() -> Self {
         Self {
             session_cost: 0.0,
+            session_cost_cny: 0.0,
             subagent_cost: 0.0,
+            subagent_cost_cny: 0.0,
             subagent_cost_event_seqs: HashSet::new(),
             displayed_cost_high_water: 0.0,
+            displayed_cost_high_water_cny: 0.0,
             last_prompt_tokens: None,
             last_completion_tokens: None,
             last_prompt_cache_hit_tokens: None,
@@ -670,6 +725,7 @@ pub struct App {
     pub show_thinking: bool,
     pub show_tool_details: bool,
     pub ui_locale: Locale,
+    pub cost_currency: CostCurrency,
     pub composer_density: ComposerDensity,
     pub composer_border: bool,
     pub transcript_spacing: TranscriptSpacing,
@@ -707,6 +763,7 @@ pub struct App {
     // Onboarding
     pub onboarding: OnboardingState,
     pub onboarding_needs_api_key: bool,
+    pub onboarding_workspace_trust_gate: bool,
     pub api_key_env_only: bool,
     pub api_key_input: String,
     pub api_key_cursor: usize,
@@ -767,6 +824,10 @@ pub struct App {
     pub tool_log: Vec<String>,
     /// Active skill to apply to next user message
     pub active_skill: Option<String>,
+    /// Cached (name, description) pairs from the skill registry.
+    /// Populated once at startup and refreshed on install/uninstall so
+    /// the slash menu can show skills without filesystem I/O on every keystroke.
+    pub cached_skills: Vec<(String, String)>,
     /// Tool call cells by tool id (for cells already finalized in `history`).
     /// While a tool call is in flight inside `active_cell`, it is tracked by
     /// `active_tool_entries` instead and migrated here at flush time.
@@ -1064,7 +1125,6 @@ impl App {
         let needs_api_key = !has_api_key(config);
         let api_key_env_only = crate::config::active_provider_uses_env_only_api_key(config);
         let was_onboarded = crate::tui::onboarding::is_onboarded();
-        let needs_onboarding = !skip_onboarding && (!was_onboarded || needs_api_key);
         let settings = Settings::load().unwrap_or_else(|_| Settings::default());
         let auto_compact = settings.auto_compact;
         let calm_mode = settings.calm_mode;
@@ -1073,6 +1133,8 @@ impl App {
         let show_thinking = settings.show_thinking;
         let show_tool_details = settings.show_tool_details;
         let ui_locale = resolve_locale(&settings.locale);
+        let cost_currency =
+            CostCurrency::from_setting(&settings.cost_currency).unwrap_or(CostCurrency::Usd);
         let composer_density = ComposerDensity::from_setting(&settings.composer_density);
         let composer_border = settings.composer_border;
         let composer_vim_enabled = settings
@@ -1084,7 +1146,7 @@ impl App {
         let sidebar_focus = SidebarFocus::from_setting(&settings.sidebar_focus);
         let max_input_history = settings.max_input_history;
         let use_paste_burst_detection = settings.paste_burst_detection;
-        let ui_theme = palette::UI_THEME;
+        let ui_theme = palette::UiTheme::detect();
         let model = settings.default_model.clone().unwrap_or(model);
         let auto_model = model.trim().eq_ignore_ascii_case("auto");
         let threshold_model = if auto_model {
@@ -1113,12 +1175,30 @@ impl App {
         } else {
             preferred_mode
         };
+        let needs_workspace_trust =
+            initial_mode != AppMode::Yolo && crate::tui::onboarding::needs_trust(&workspace);
+        let onboarding = initial_onboarding_state(
+            skip_onboarding,
+            was_onboarded,
+            needs_api_key,
+            needs_workspace_trust,
+        );
+        let onboarding_workspace_trust_gate = onboarding_is_workspace_trust_gate(
+            skip_onboarding,
+            was_onboarded,
+            needs_api_key,
+            needs_workspace_trust,
+        );
 
         let yolo_restore = if initial_mode == AppMode::Yolo {
             Some(YoloRestoreState {
                 allow_shell: config.allow_shell(),
                 trust_mode: false,
-                approval_mode: ApprovalMode::Suggest,
+                approval_mode: config
+                    .approval_policy
+                    .as_deref()
+                    .and_then(ApprovalMode::from_config_value)
+                    .unwrap_or_default(),
             })
         } else {
             None
@@ -1135,13 +1215,20 @@ impl App {
 
         let agents_skills_dir = workspace.join(".agents").join("skills");
         let local_skills_dir = workspace.join("skills");
+        let agents_global_skills_dir = crate::skills::agents_global_skills_dir();
         let skills_dir = if agents_skills_dir.exists() {
             agents_skills_dir
         } else if local_skills_dir.exists() {
             local_skills_dir
+        } else if config.skills_dir.is_none()
+            && let Some(global_agents) = agents_global_skills_dir
+            && global_agents.exists()
+        {
+            global_agents
         } else {
             global_skills_dir
         };
+        let cached_skills = Self::discover_cached_skills(&skills_dir);
 
         let input_history = crate::composer_history::load_history();
         let (initial_input_text, initial_input_cursor) = match initial_input {
@@ -1172,6 +1259,7 @@ impl App {
                 slash_menu_hidden: false,
                 mention_menu_selected: 0,
                 mention_menu_hidden: false,
+                mention_completion_cache: None,
                 vim_enabled: composer_vim_enabled,
                 vim_mode: VimMode::Normal,
                 vim_pending_d: false,
@@ -1215,6 +1303,7 @@ impl App {
             show_thinking,
             show_tool_details,
             ui_locale,
+            cost_currency,
             composer_density,
             composer_border,
             transcript_spacing,
@@ -1233,16 +1322,9 @@ impl App {
             pending_subagent_dispatch: None,
             agent_activity_started_at: None,
             ui_theme,
-            onboarding: if needs_onboarding {
-                if was_onboarded && needs_api_key {
-                    OnboardingState::ApiKey
-                } else {
-                    OnboardingState::Welcome
-                }
-            } else {
-                OnboardingState::None
-            },
+            onboarding,
             onboarding_needs_api_key: needs_api_key,
+            onboarding_workspace_trust_gate,
             api_key_env_only,
             api_key_input: String::new(),
             api_key_cursor: 0,
@@ -1255,7 +1337,11 @@ impl App {
             approval_mode: if matches!(initial_mode, AppMode::Yolo) {
                 ApprovalMode::Auto
             } else {
-                ApprovalMode::Suggest
+                config
+                    .approval_policy
+                    .as_deref()
+                    .and_then(ApprovalMode::from_config_value)
+                    .unwrap_or_default()
             },
             view_stack: ViewStack::new(),
             backtrack: crate::tui::backtrack::BacktrackState::new(),
@@ -1287,6 +1373,7 @@ impl App {
             mcp_restart_required: false,
             tool_log: Vec::new(),
             active_skill: None,
+            cached_skills,
             tool_cells: HashMap::new(),
             tool_details_by_cell: HashMap::new(),
             context_references_by_cell: HashMap::new(),
@@ -1333,6 +1420,18 @@ impl App {
             edit_in_progress: false,
             lsp_enabled: config.lsp.as_ref().and_then(|l| l.enabled).unwrap_or(true),
         }
+    }
+
+    fn discover_cached_skills(skills_dir: &std::path::Path) -> Vec<(String, String)> {
+        crate::skills::SkillRegistry::discover(skills_dir)
+            .list()
+            .iter()
+            .map(|s| (s.name.clone(), s.description.clone()))
+            .collect()
+    }
+
+    pub fn refresh_skill_cache(&mut self) {
+        self.cached_skills = Self::discover_cached_skills(&self.skills_dir);
     }
 
     pub fn submit_api_key(&mut self) -> Result<SavedCredential, ApiKeyError> {
@@ -1513,15 +1612,29 @@ impl App {
 
     /// Add `delta` to the parent-turn session cost and bump the displayed
     /// high-water mark so the footer total never reverses (#244).
+    #[allow(dead_code)]
     pub fn accrue_session_cost(&mut self, delta: f64) {
-        self.session.session_cost += delta;
+        self.accrue_session_cost_estimate(CostEstimate::usd_only(delta));
+    }
+
+    /// Add a dual-currency parent-turn cost estimate.
+    pub fn accrue_session_cost_estimate(&mut self, estimate: CostEstimate) {
+        self.session.session_cost += estimate.usd;
+        self.session.session_cost_cny += estimate.cny;
         self.refresh_displayed_cost_high_water();
     }
 
     /// Add `delta` to the running sub-agent cost and bump the displayed
     /// high-water mark so the footer total never reverses (#244).
+    #[allow(dead_code)]
     pub fn accrue_subagent_cost(&mut self, delta: f64) {
-        self.session.subagent_cost += delta;
+        self.accrue_subagent_cost_estimate(CostEstimate::usd_only(delta));
+    }
+
+    /// Add a dual-currency sub-agent/background cost estimate.
+    pub fn accrue_subagent_cost_estimate(&mut self, estimate: CostEstimate) {
+        self.session.subagent_cost += estimate.usd;
+        self.session.subagent_cost_cny += estimate.cny;
         self.refresh_displayed_cost_high_water();
     }
 
@@ -1532,14 +1645,54 @@ impl App {
         if current > self.session.displayed_cost_high_water {
             self.session.displayed_cost_high_water = current;
         }
+        let current_cny = self.session.session_cost_cny + self.session.subagent_cost_cny;
+        if current_cny > self.session.displayed_cost_high_water_cny {
+            self.session.displayed_cost_high_water_cny = current_cny;
+        }
     }
 
     /// Read the visible session+sub-agent cost. Guaranteed monotonic across
     /// reconciliation events (cache adjustments, provisional → final swaps)
     /// for the lifetime of one session (#244).
+    #[allow(dead_code)]
     pub fn displayed_session_cost(&self) -> f64 {
-        let current = self.session.session_cost + self.session.subagent_cost;
-        current.max(self.session.displayed_cost_high_water)
+        self.displayed_session_cost_for_currency(CostCurrency::Usd)
+    }
+
+    /// Read the visible session+sub-agent cost in the chosen currency.
+    pub fn displayed_session_cost_for_currency(&self, currency: CostCurrency) -> f64 {
+        match currency {
+            CostCurrency::Usd => {
+                let current = self.session.session_cost + self.session.subagent_cost;
+                current.max(self.session.displayed_cost_high_water)
+            }
+            CostCurrency::Cny => {
+                let current = self.session.session_cost_cny + self.session.subagent_cost_cny;
+                current.max(self.session.displayed_cost_high_water_cny)
+            }
+        }
+    }
+
+    pub fn session_cost_for_currency(&self, currency: CostCurrency) -> f64 {
+        match currency {
+            CostCurrency::Usd => self.session.session_cost,
+            CostCurrency::Cny => self.session.session_cost_cny,
+        }
+    }
+
+    pub fn subagent_cost_for_currency(&self, currency: CostCurrency) -> f64 {
+        match currency {
+            CostCurrency::Usd => self.session.subagent_cost,
+            CostCurrency::Cny => self.session.subagent_cost_cny,
+        }
+    }
+
+    pub fn format_cost_amount(&self, amount: f64) -> String {
+        crate::pricing::format_cost_amount(amount, self.cost_currency)
+    }
+
+    pub fn format_cost_amount_precise(&self, amount: f64) -> String {
+        crate::pricing::format_cost_amount_precise(amount, self.cost_currency)
     }
 
     /// Fold the oldest [`Self::HISTORY_FOLD_BATCH`] cells into a single
@@ -3715,6 +3868,37 @@ mod tests {
     }
 
     #[test]
+    fn onboarded_user_still_gets_workspace_trust_prompt_when_needed() {
+        assert_eq!(
+            initial_onboarding_state(false, true, false, true),
+            OnboardingState::TrustDirectory
+        );
+    }
+
+    #[test]
+    fn new_caches_workspace_skills_for_slash_menu() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let workspace = tmp.path().join("workspace");
+        let skill_dir = workspace.join(".agents").join("skills").join("local-skill");
+        std::fs::create_dir_all(&skill_dir).expect("skill dir");
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: local-skill\ndescription: Local workspace skill\n---\nUse the local skill.\n",
+        )
+        .expect("skill file");
+
+        let mut options = test_options(false);
+        options.workspace = workspace.clone();
+        options.skills_dir = tmp.path().join("global-skills");
+        let app = App::new(options, &Config::default());
+
+        assert_eq!(app.skills_dir, workspace.join(".agents").join("skills"));
+        assert!(app.cached_skills.iter().any(|(name, description)| {
+            name == "local-skill" && description == "Local workspace skill"
+        }));
+    }
+
+    #[test]
     fn submit_input_consolidates_oversized_input_into_paste_file() {
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let mut opts = test_options(false);
@@ -3922,6 +4106,21 @@ mod tests {
         assert!(!app.allow_shell);
         assert!(!app.trust_mode);
         assert_eq!(app.approval_mode, ApprovalMode::Suggest);
+    }
+
+    #[test]
+    fn configured_approval_policy_initializes_live_approval_mode() {
+        let config = Config {
+            approval_policy: Some("never".to_string()),
+            ..Default::default()
+        };
+        let mut options = test_options(false);
+        options.start_in_agent_mode = true;
+
+        let app = App::new(options, &config);
+
+        assert_eq!(app.mode, AppMode::Agent);
+        assert_eq!(app.approval_mode, ApprovalMode::Never);
     }
 
     #[test]

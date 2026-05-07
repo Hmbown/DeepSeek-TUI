@@ -36,6 +36,22 @@ pub fn default_skills_dir() -> PathBuf {
     )
 }
 
+/// Global agentskills.io-compatible skills directory (`~/.agents/skills`).
+#[must_use]
+pub fn agents_global_skills_dir() -> Option<PathBuf> {
+    dirs::home_dir().map(|p| p.join(".agents").join("skills"))
+}
+
+/// Global Claude-compatible skills directory (`~/.claude/skills`). The
+/// SKILL.md frontmatter convention is shared across the broader Claude
+/// ecosystem, so picking up the global path lets users inherit skills
+/// they already installed for other Claude-compatible tools without
+/// re-authoring them in DeepSeek's native layout (#902).
+#[must_use]
+pub fn claude_global_skills_dir() -> Option<PathBuf> {
+    dirs::home_dir().map(|p| p.join(".claude").join("skills"))
+}
+
 // === Types ===
 
 /// Parsed representation of a SKILL.md definition.
@@ -59,7 +75,31 @@ pub struct SkillRegistry {
 }
 
 impl SkillRegistry {
+    /// Maximum directory-traversal depth when discovering skills.
+    ///
+    /// Defends against pathological configurations (e.g. a user pointing
+    /// `skills_dir` at `~`) without artificially limiting realistic
+    /// vendored layouts like `<root>/<org>/<repo>/<skill>/SKILL.md`.
+    const MAX_DISCOVERY_DEPTH: usize = 8;
+
     /// Discover skills from the given directory.
+    ///
+    /// The search walks `dir` recursively: any directory that contains a
+    /// `SKILL.md` is loaded as a single skill, and the walk does **not**
+    /// descend further into that directory (companion files live next to
+    /// `SKILL.md`, and `tools::skill::collect_companion_files` already
+    /// treats nested subdirs as out-of-scope). This lets users organize
+    /// skills by vendor / category — e.g.
+    /// `<root>/<vendor>/<skill>/SKILL.md` — instead of being forced into
+    /// a flat `<root>/<skill>/SKILL.md` layout.
+    ///
+    /// Hidden subdirectories (names starting with `.`) below the root
+    /// are skipped to avoid descending into VCS / cache trees like
+    /// `.git/`. The provided `dir` itself is always honored, even if
+    /// hidden — that's what the user explicitly configured.
+    /// Symlinked directories are not followed, which keeps the walk
+    /// finite when a skills layout contains symlinks. The depth is also
+    /// capped at [`Self::MAX_DISCOVERY_DEPTH`].
     #[must_use]
     pub fn discover(dir: &Path) -> Self {
         let mut registry = Self::default();
@@ -67,37 +107,94 @@ impl SkillRegistry {
             return registry;
         }
 
-        if let Ok(entries) = fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                if let Ok(ft) = entry.file_type()
-                    && ft.is_dir()
-                {
-                    let skill_path = entry.path().join("SKILL.md");
-                    match fs::read_to_string(&skill_path) {
-                        Ok(content) => match Self::parse_skill(&skill_path, &content) {
-                            Ok(mut skill) => {
-                                skill.path = skill_path.clone();
-                                registry.skills.push(skill);
-                            }
-                            Err(reason) => registry.push_warning(format!(
-                                "Failed to parse {}: {reason}",
-                                skill_path.display()
-                            )),
-                        },
-                        Err(err) if skill_path.exists() => {
-                            registry.push_warning(format!(
-                                "Failed to read {}: {err}",
-                                skill_path.display()
-                            ));
-                        }
-                        Err(_) => {}
+        Self::discover_recursive(dir, 0, &mut registry);
+        registry
+    }
+
+    fn discover_recursive(dir: &Path, depth: usize, registry: &mut Self) {
+        if depth > Self::MAX_DISCOVERY_DEPTH {
+            return;
+        }
+
+        let entries = match fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(err) => {
+                // Only surface a warning for the user-provided root
+                // (depth == 0). Nested permission errors are usually
+                // noise (e.g. a stray `.Trash` inside someone's
+                // `~/.agents/skills`).
+                if depth == 0 {
+                    registry.push_warning(format!(
+                        "Failed to read skills directory {}: {err}",
+                        dir.display()
+                    ));
+                }
+                return;
+            }
+        };
+
+        for entry in entries.flatten() {
+            // Use `file_type()` (which on Unix returns symlink metadata
+            // without following) so we don't traverse into symlinked
+            // directories — that closes the door on cycles.
+            let Ok(ft) = entry.file_type() else { continue };
+            if !ft.is_dir() {
+                continue;
+            }
+
+            let path = entry.path();
+            // Skip hidden subdirectories. Common offenders are `.git`,
+            // `.cache`, `.Trash`. The provided root itself is exempt:
+            // the user explicitly pointed `skills_dir` at it and we
+            // never filter it (it's passed directly to this function,
+            // not iterated). This check applies to *children* of the
+            // current directory at every depth — including depth 0,
+            // because a `.git/` right next to the skills we want is
+            // exactly the kind of noise we must not descend into.
+            if path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .is_some_and(|name| name.starts_with('.'))
+            {
+                continue;
+            }
+
+            let skill_path = path.join("SKILL.md");
+            match fs::read_to_string(&skill_path) {
+                Ok(content) => match Self::parse_skill(&skill_path, &content) {
+                    Ok(mut skill) => {
+                        skill.path = skill_path.clone();
+                        registry.skills.push(skill);
+                        // This directory IS a skill. Don't descend further:
+                        // any nested `SKILL.md` would be a fixture or
+                        // example bundled with the parent skill, not a
+                        // separately-installable skill.
+                        continue;
                     }
+                    Err(reason) => {
+                        registry.push_warning(format!(
+                            "Failed to parse {}: {reason}",
+                            skill_path.display()
+                        ));
+                        // Still treat this directory as "claimed" — a
+                        // malformed SKILL.md shouldn't cause us to
+                        // double-load nested fixtures as skills.
+                        continue;
+                    }
+                },
+                Err(err) if skill_path.exists() => {
+                    registry
+                        .push_warning(format!("Failed to read {}: {err}", skill_path.display()));
+                    continue;
+                }
+                Err(_) => {
+                    // No SKILL.md here — recurse to look for nested
+                    // skill directories (e.g. `<vendor>/<skill>/SKILL.md`).
                 }
             }
-        } else {
-            registry.push_warning(format!("Failed to read skills directory {}", dir.display()));
+
+            Self::discover_recursive(&path, depth + 1, registry);
         }
-        registry
     }
 
     fn push_warning(&mut self, warning: String) {
@@ -107,7 +204,11 @@ impl SkillRegistry {
 
     fn parse_skill(_path: &Path, content: &str) -> std::result::Result<Skill, String> {
         let trimmed = content.trim_start();
-        let (frontmatter, body) = if trimmed.starts_with("---") {
+
+        // Try to parse frontmatter block first. If absent, fall back to
+        // extracting the first `# Heading` as the skill name so that plain
+        // Markdown files (no `---` fence) are accepted instead of rejected.
+        if trimmed.starts_with("---") {
             let start = content
                 .find("---")
                 .ok_or_else(|| "missing frontmatter opening delimiter".to_string())?;
@@ -115,38 +216,54 @@ impl SkillRegistry {
             let end = rest
                 .find("---")
                 .ok_or_else(|| "missing frontmatter closing delimiter".to_string())?;
-            (&rest[..end], &rest[end + 3..])
-        } else {
-            return Err("missing frontmatter opening delimiter '---'".to_string());
-        };
+            let frontmatter = &rest[..end];
+            let body = &rest[end + 3..];
 
-        let mut metadata = HashMap::new();
-        for raw in frontmatter.lines() {
-            let line = raw.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
+            let mut metadata = HashMap::new();
+            for raw in frontmatter.lines() {
+                let line = raw.trim();
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                if let Some((key, value)) = line.split_once(':') {
+                    metadata.insert(key.trim().to_ascii_lowercase(), value.trim().to_string());
+                }
             }
-            if let Some((key, value)) = line.split_once(':') {
-                metadata.insert(key.trim().to_ascii_lowercase(), value.trim().to_string());
-            }
+
+            let name = metadata
+                .get("name")
+                .filter(|name| !name.is_empty())
+                .cloned()
+                .ok_or_else(|| "missing required frontmatter field: name".to_string())?;
+
+            let description = metadata.get("description").cloned().unwrap_or_default();
+
+            return Ok(Skill {
+                name,
+                description,
+                body: body.trim().to_string(),
+                // Filled in by `discover` after parse succeeds; default to an
+                // empty path so direct constructors (e.g. tests) compile.
+                path: PathBuf::new(),
+            });
         }
 
-        let name = metadata
-            .get("name")
-            .filter(|name| !name.is_empty())
-            .cloned()
-            .ok_or_else(|| "missing required frontmatter field: name".to_string())?;
-
-        let description = metadata.get("description").cloned().unwrap_or_default();
-
-        let body = body.trim().to_string();
+        // Graceful degradation: no frontmatter fence found.
+        // Extract the first `# Heading` as the skill name.
+        let heading_re = regex::Regex::new(r"(?m)^#\s+(.+)$").expect("static regex is valid");
+        let name = heading_re
+            .captures(content)
+            .and_then(|c| c.get(1))
+            .map(|m| m.as_str().trim().to_string())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                "no frontmatter and no `# Heading` found to use as skill name".to_string()
+            })?;
 
         Ok(Skill {
             name,
-            description,
-            body,
-            // Filled in by `discover` after parse succeeds; default to an
-            // empty path so direct constructors (e.g. tests) compile.
+            description: String::new(),
+            body: content.trim().to_string(),
             path: PathBuf::new(),
         })
     }
@@ -184,7 +301,8 @@ impl SkillRegistry {
 /// The full `SKILL.md` body is intentionally not included here. This mirrors
 /// Resolve the active skills directory given a workspace, mirroring the
 /// hierarchy `App::new` walks: `<workspace>/.agents/skills` →
-/// `<workspace>/skills` → [`default_skills_dir`] (`~/.deepseek/skills`).
+/// `<workspace>/skills` → [`agents_global_skills_dir`] (`~/.agents/skills`,
+/// when present) → [`default_skills_dir`] (`~/.deepseek/skills`).
 /// Returns the first directory that exists, or the global default
 /// (which itself falls back to `/tmp/deepseek/skills` if the user
 /// has no home directory).
@@ -204,6 +322,11 @@ pub fn resolve_skills_dir(workspace: &Path) -> PathBuf {
     if local.exists() {
         return local;
     }
+    if let Some(global_agents) = agents_global_skills_dir()
+        && global_agents.exists()
+    {
+        return global_agents;
+    }
     default_skills_dir()
 }
 
@@ -219,20 +342,34 @@ pub fn resolve_skills_dir(workspace: &Path) -> PathBuf {
 /// 2. `<workspace>/skills` — flat, project-local.
 /// 3. `<workspace>/.opencode/skills` — OpenCode interop.
 /// 4. `<workspace>/.claude/skills` — Claude Code interop.
-/// 5. [`default_skills_dir`] — global, user-installed.
+/// 5. `<workspace>/.cursor/skills` — Cursor interop.
+/// 6. [`agents_global_skills_dir`] — agentskills.io global.
+/// 7. [`claude_global_skills_dir`] — Claude-ecosystem global (#902).
+/// 8. [`default_skills_dir`] — DeepSeek global, user-installed.
 ///
 /// Only directories that exist on disk are returned — callers don't
 /// need to filter further. Returns an empty vec when nothing is
 /// installed (the system-prompt skills block is then suppressed).
 #[must_use]
 pub fn skills_directories(workspace: &Path) -> Vec<PathBuf> {
-    let candidates = [
+    let mut candidates = vec![
         workspace.join(".agents").join("skills"),
         workspace.join("skills"),
         workspace.join(".opencode").join("skills"),
         workspace.join(".claude").join("skills"),
-        default_skills_dir(),
+        workspace.join(".cursor").join("skills"),
     ];
+    if let Some(global_agents) = agents_global_skills_dir() {
+        candidates.push(global_agents);
+    }
+    if let Some(global_claude) = claude_global_skills_dir() {
+        candidates.push(global_claude);
+    }
+    candidates.push(default_skills_dir());
+    existing_skill_dirs(candidates)
+}
+
+fn existing_skill_dirs(candidates: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for path in candidates {
         if path.is_dir() && !out.iter().any(|p: &PathBuf| p == &path) {
@@ -584,10 +721,11 @@ mod tests {
         let tmpdir = TempDir::new().unwrap();
         let workspace = tmpdir.path();
 
-        // Create three of the four candidate dirs (skip `.opencode`).
+        // Create four of the five workspace candidate dirs (skip `.opencode`).
         std::fs::create_dir_all(workspace.join(".agents").join("skills")).unwrap();
         std::fs::create_dir_all(workspace.join("skills")).unwrap();
         std::fs::create_dir_all(workspace.join(".claude").join("skills")).unwrap();
+        std::fs::create_dir_all(workspace.join(".cursor").join("skills")).unwrap();
 
         let dirs = super::skills_directories(workspace);
         // We don't assert on the global default position because it's
@@ -596,6 +734,7 @@ mod tests {
         let agents = workspace.join(".agents").join("skills");
         let local = workspace.join("skills");
         let claude = workspace.join(".claude").join("skills");
+        let cursor = workspace.join(".cursor").join("skills");
 
         assert_eq!(dirs.get(idx), Some(&agents), "agents must come first");
         idx += 1;
@@ -609,6 +748,63 @@ mod tests {
             "missing dir must be omitted, got: {dirs:?}"
         );
         assert_eq!(dirs.get(idx), Some(&claude), "claude must come after local");
+        idx += 1;
+        assert_eq!(
+            dirs.get(idx),
+            Some(&cursor),
+            "cursor must come after claude"
+        );
+    }
+
+    #[test]
+    fn claude_global_skills_dir_returns_home_relative_path() {
+        // Smoke test for the #902 helper. We don't assert the exact path
+        // because dirs::home_dir() is host-dependent; we just pin the
+        // suffix shape so a future refactor can't silently rename it.
+        let path = super::claude_global_skills_dir().expect("home dir resolves on test host");
+        assert!(path.ends_with(".claude/skills") || path.ends_with(r".claude\skills"));
+    }
+
+    #[test]
+    fn existing_skill_dirs_orders_globals_agents_then_claude_then_deepseek() {
+        // Pins the precedence among the three global skill roots (#902).
+        // Workspace candidates are tested separately above; here we only
+        // exercise the global ordering at the existing_skill_dirs level
+        // so the assertion is host-independent.
+        let tmpdir = TempDir::new().unwrap();
+        let agents_global = tmpdir.path().join(".agents").join("skills");
+        let claude_global = tmpdir.path().join(".claude").join("skills");
+        let deepseek_global = tmpdir.path().join(".deepseek").join("skills");
+        std::fs::create_dir_all(&agents_global).unwrap();
+        std::fs::create_dir_all(&claude_global).unwrap();
+        std::fs::create_dir_all(&deepseek_global).unwrap();
+
+        let dirs = super::existing_skill_dirs(vec![
+            agents_global.clone(),
+            claude_global.clone(),
+            deepseek_global.clone(),
+        ]);
+
+        assert_eq!(dirs, vec![agents_global, claude_global, deepseek_global]);
+    }
+
+    #[test]
+    fn existing_skill_dirs_keeps_agents_global_before_deepseek_global() {
+        let tmpdir = TempDir::new().unwrap();
+        let agents_global = tmpdir.path().join(".agents").join("skills");
+        let deepseek_global = tmpdir.path().join(".deepseek").join("skills");
+        let missing = tmpdir.path().join("missing").join("skills");
+        std::fs::create_dir_all(&agents_global).unwrap();
+        std::fs::create_dir_all(&deepseek_global).unwrap();
+
+        let dirs = super::existing_skill_dirs(vec![
+            missing,
+            agents_global.clone(),
+            deepseek_global.clone(),
+            agents_global.clone(),
+        ]);
+
+        assert_eq!(dirs, vec![agents_global, deepseek_global]);
     }
 
     #[test]
@@ -677,6 +873,64 @@ mod tests {
     }
 
     #[test]
+    fn discover_in_workspace_pulls_skills_from_cursor_dir() {
+        let tmpdir = TempDir::new().unwrap();
+        let workspace = tmpdir.path();
+        write_skill(
+            &workspace.join(".cursor").join("skills"),
+            "cursor-only",
+            "for cursor interop",
+            "body",
+        );
+
+        let registry = super::discover_in_workspace(workspace);
+        assert!(
+            registry.get("cursor-only").is_some(),
+            ".cursor/skills must be scanned"
+        );
+    }
+
+    #[test]
+    fn discover_accepts_plain_markdown_heading_without_frontmatter() {
+        let tmpdir = TempDir::new().unwrap();
+        let skill_dir = tmpdir.path().join("plain-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "# Plain Skill\n\nUse this skill without YAML frontmatter.\n",
+        )
+        .unwrap();
+
+        let registry = super::SkillRegistry::discover(tmpdir.path());
+        let skill = registry.get("Plain Skill").expect("plain skill parsed");
+        assert_eq!(skill.description, "");
+        assert!(skill.body.contains("Use this skill"));
+    }
+
+    #[test]
+    fn discover_warns_for_plain_markdown_without_heading() {
+        let tmpdir = TempDir::new().unwrap();
+        let skill_dir = tmpdir.path().join("plain-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "Use this skill without a heading or YAML frontmatter.\n",
+        )
+        .unwrap();
+
+        let registry = super::SkillRegistry::discover(tmpdir.path());
+        assert!(registry.is_empty());
+        assert!(
+            registry
+                .warnings()
+                .iter()
+                .any(|warning| warning.contains("no `# Heading` found")),
+            "expected missing-heading warning, got {:?}",
+            registry.warnings()
+        );
+    }
+
+    #[test]
     fn render_available_skills_context_for_workspace_picks_up_cross_tool_dirs() {
         let tmpdir = TempDir::new().unwrap();
         let workspace = tmpdir.path();
@@ -689,5 +943,143 @@ mod tests {
         let rendered =
             super::render_available_skills_context_for_workspace(workspace).expect("non-empty");
         assert!(rendered.contains("from-claude"));
+    }
+
+    /// Regression for the GitHub issue where users organize skills under
+    /// vendor / category subdirectories (e.g. cloned skill repos that
+    /// bundle several skills together). The old single-level `read_dir`
+    /// only ever surfaced `<root>/<skill>/SKILL.md` and silently ignored
+    /// `<root>/<vendor>/<skill>/SKILL.md`.
+    #[test]
+    fn discover_finds_skills_nested_under_vendor_subdirectory() {
+        let tmpdir = TempDir::new().unwrap();
+        let root = tmpdir.path().join("skills");
+
+        // Two-level nesting: `<root>/<vendor>/<skill>/SKILL.md`. This
+        // matches the `clawhub-skills/clawhub/SKILL.md` layout in the
+        // bug report.
+        write_skill(
+            &root.join("clawhub-skills"),
+            "clawhub",
+            "claw search",
+            "body",
+        );
+        write_skill(
+            &root.join("clawhub-skills"),
+            "github",
+            "github helpers",
+            "body",
+        );
+        // Three-level nesting: `<root>/<org>/<repo>/<skill>/SKILL.md`.
+        write_skill(
+            &root.join("pasky").join("chrome-cdp-skill"),
+            "chrome-cdp",
+            "browser automation",
+            "body",
+        );
+        // Mixed-depth: a flat skill alongside the nested layout still
+        // works (this is what the bundled `skill-creator` looks like).
+        write_skill(&root, "skill-creator", "make skills", "body");
+
+        let registry = super::SkillRegistry::discover(&root);
+        let names: Vec<&str> = registry.list().iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"clawhub"), "vendor/skill missed: {names:?}");
+        assert!(names.contains(&"github"), "vendor/skill missed: {names:?}");
+        assert!(
+            names.contains(&"chrome-cdp"),
+            "deeply-nested skill missed: {names:?}"
+        );
+        assert!(
+            names.contains(&"skill-creator"),
+            "flat top-level skill must still load: {names:?}"
+        );
+        assert!(
+            registry.warnings().is_empty(),
+            "well-formed nested layout should not warn: {:?}",
+            registry.warnings()
+        );
+    }
+
+    /// Once a directory is identified as a skill (has `SKILL.md`), the
+    /// walker must NOT descend into it: any nested `SKILL.md` would be
+    /// a fixture / example bundled with the parent skill, not a
+    /// separately-installable one. This mirrors the contract that
+    /// `tools::skill::collect_companion_files` already documents
+    /// ("nested directory — skipped").
+    #[test]
+    fn discover_does_not_descend_into_a_skill_directory() {
+        let tmpdir = TempDir::new().unwrap();
+        let root = tmpdir.path().join("skills");
+
+        // Parent skill: <root>/parent/SKILL.md.
+        write_skill(&root, "parent", "outer skill", "outer body");
+        // Fixture bundled inside the parent's directory:
+        // <root>/parent/examples/inner-fixture/SKILL.md. The walker
+        // must NOT descend into <root>/parent/ after finding its
+        // SKILL.md, so `inner-fixture` must not be loaded.
+        write_skill(
+            &root.join("parent").join("examples"),
+            "inner-fixture",
+            "should not load",
+            "fixture body",
+        );
+
+        let registry = super::SkillRegistry::discover(&root);
+        let names: Vec<&str> = registry.list().iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"parent"));
+        assert!(
+            !names.contains(&"inner-fixture"),
+            "nested SKILL.md inside an existing skill must be ignored: {names:?}"
+        );
+    }
+
+    /// Hidden subdirectories below the root (e.g. `.git`, `.cache`) must
+    /// be skipped so a `skills_dir` that lives inside a checked-out repo
+    /// doesn't accidentally load random `SKILL.md`-named fixtures from
+    /// the VCS metadata. The root itself is exempt — the user explicitly
+    /// pointed `skills_dir` at it.
+    #[test]
+    fn discover_skips_hidden_subdirectories_below_root() {
+        let tmpdir = TempDir::new().unwrap();
+        let root = tmpdir.path().join("skills");
+
+        write_skill(&root, "real-skill", "ok", "body");
+        // A `<root>/.git/<junk>/SKILL.md` lookalike that mustn't load.
+        // `.git` is a direct child of the user-provided root (depth 0
+        // of the walk), which is exactly the case the old `depth > 0`
+        // gate missed.
+        write_skill(&root.join(".git"), "vcs-noise", "should not load", "body");
+
+        let registry = super::SkillRegistry::discover(&root);
+        let names: Vec<&str> = registry.list().iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"real-skill"));
+        assert!(
+            !names.contains(&"vcs-noise"),
+            "skills under hidden subdirs must be skipped: {names:?}"
+        );
+    }
+
+    /// The user explicitly chooses the root, so even a hidden path like
+    /// `~/.agents/skills` (the layout in the bug report) must work.
+    #[test]
+    fn discover_honors_a_hidden_root_directory() {
+        let tmpdir = TempDir::new().unwrap();
+        let root = tmpdir.path().join(".agents").join("skills");
+
+        // Matches the bug report: skills_dir = "~/.agents/skills"
+        // with a skill nested at <root>/custom-skills/git-conventions/SKILL.md.
+        write_skill(
+            &root.join("custom-skills"),
+            "git-conventions",
+            "conventions",
+            "body",
+        );
+
+        let registry = super::SkillRegistry::discover(&root);
+        let names: Vec<&str> = registry.list().iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            names.contains(&"git-conventions"),
+            "hidden root must still be walked: {names:?}"
+        );
     }
 }

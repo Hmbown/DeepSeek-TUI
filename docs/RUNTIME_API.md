@@ -1,10 +1,11 @@
 # Runtime API & Integration Contract
 
 DeepSeek TUI exposes a local runtime API through `deepseek serve --http` and
-machine-readable health via `deepseek doctor --json`. This document is the
-stable integration contract for native macOS workbench applications (and other
-local supervisors) that embed the DeepSeek engine without screen-scraping
-terminal output.
+machine-readable health via `deepseek doctor --json`. It also exposes
+`deepseek serve --acp` for editor clients that speak the Agent Client Protocol
+over stdio. This document is the stable integration contract for native macOS
+workbench applications (and other local supervisors) that embed the DeepSeek
+engine without screen-scraping terminal output.
 
 ## Architecture
 
@@ -13,12 +14,32 @@ macOS workbench (or any local supervisor)
         │
         ├─ deepseek doctor --json   → machine-readable health & capability
         ├─ deepseek serve --http    → HTTP/SSE runtime API
+        ├─ deepseek serve --acp     → ACP stdio agent for editors such as Zed
         ├─ deepseek serve --mcp     → MCP stdio server
         └─ deepseek [args]          → interactive TUI session
 ```
 
 The engine runs as a local-only process. All APIs bind to `localhost` by
 default. No hosted relay, no provider-token custody, no secret leakage.
+
+## ACP stdio adapter: `deepseek serve --acp`
+
+`deepseek serve --acp` speaks JSON-RPC 2.0 over newline-delimited stdio for
+ACP-compatible editor clients. The initial adapter implements the ACP baseline:
+
+- `initialize`
+- `session/new`
+- `session/prompt`
+- `session/cancel`
+
+Prompt requests are routed through the configured DeepSeek client and current
+default model. Responses are emitted as `session/update` agent message chunks
+followed by a `session/prompt` response with `stopReason: "end_turn"`.
+
+The adapter is intentionally conservative: it does not yet expose shell tools,
+file-write tools, checkpoint replay, or session loading through ACP. Use
+`deepseek serve --http` for the full local runtime API and `deepseek serve --mcp`
+when another client needs DeepSeek's tools as MCP tools.
 
 ## Capability endpoint: `deepseek doctor --json`
 
@@ -47,8 +68,9 @@ deepseek doctor --json
 | `mcp.present` | bool | Whether MCP config exists |
 | `mcp.servers` | array | Per-server health: `{name, enabled, status, detail}` |
 | `skills.selected` | string | Resolved skills directory |
-| `skills.global.path` / `.present` / `.count` | — | Global skills dir |
-| `skills.agents.path` / `.present` / `.count` | — | `.agents/skills/` dir |
+| `skills.global.path` / `.present` / `.count` | — | DeepSeek global skills dir (`~/.deepseek/skills`) |
+| `skills.agents.path` / `.present` / `.count` | — | Workspace `.agents/skills/` dir |
+| `skills.agents_global.path` / `.present` / `.count` | — | agentskills.io global skills dir (`~/.agents/skills`) |
 | `skills.local.path` / `.present` / `.count` | — | `skills/` dir |
 | `skills.opencode.path` / `.present` / `.count` | — | `.opencode/skills/` dir |
 | `skills.claude.path` / `.present` / `.count` | — | `.claude/skills/` dir |
@@ -70,7 +92,7 @@ deepseek doctor --json
   "api_key": {
     "source": "env"
   },
-  "base_url": "https://api.deepseek.com",
+  "base_url": "https://api.deepseek.com/beta",
   "default_text_model": "deepseek-v4-pro",
   "memory": {
     "enabled": false,
@@ -94,13 +116,23 @@ deepseek doctor --json
 ## HTTP/SSE runtime API: `deepseek serve --http`
 
 ```bash
-deepseek serve --http [--host 127.0.0.1] [--port 7878] [--workers 2]
+deepseek serve --http [--host 127.0.0.1] [--port 7878] [--workers 2] [--auth-token TOKEN]
 ```
 
 Defaults: host `127.0.0.1`, port `7878`, 2 workers (clamped 1–8).
 
 The server binds to `localhost` by default. Configuration is via CLI flags —
 there is no `[app_server]` config section.
+
+By default, existing local behavior is unchanged and `/v1/*` routes are not
+authenticated. To require a bearer token for `/v1/*` routes, pass
+`--auth-token TOKEN` or set `DEEPSEEK_RUNTIME_TOKEN=TOKEN` before starting the
+server. `/health` remains public for local process supervision and readiness
+checks.
+
+Authenticated clients can provide the token as `Authorization: Bearer TOKEN`,
+`X-DeepSeek-Runtime-Token: TOKEN`, or `?token=TOKEN` for EventSource-style
+clients that cannot set custom headers.
 
 ### Endpoints
 
@@ -274,7 +306,11 @@ Common event names: `thread.started`, `thread.forked`, `turn.started`,
 
 - **Localhost only**. The server binds to `127.0.0.1` by default. Set
   `--host 0.0.0.0` only when you have a reverse-proxy / VPN that
-  authenticates — there is no built-in auth, user isolation, or TLS.
+  authenticates. The runtime does not provide user isolation or TLS.
+- **Optional token guard**. `--auth-token` or `DEEPSEEK_RUNTIME_TOKEN`
+  requires a matching bearer token for `/v1/*` routes. This is a local
+  convenience guard, not a replacement for TLS, VPN, or a trusted reverse
+  proxy on public networks.
 - **No provider-token custody**. The server never returns the API key. The
   `api_key.source` capability field reports `env`, `config`, or `missing` —
   never the key itself.

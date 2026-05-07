@@ -27,12 +27,13 @@ pub fn provider(app: &mut App, args: Option<&str>) -> CommandResult {
 
     let Some(target) = ApiProvider::parse(name) else {
         return CommandResult::error(format!(
-            "Unknown provider '{name}'. Expected: deepseek, nvidia-nim, openrouter, novita, fireworks, sglang, or vllm."
+            "Unknown provider '{name}'. Expected: deepseek, nvidia-nim, openrouter, novita, fireworks, sglang, vllm, or ollama."
         ));
     };
 
     let model = match model_arg {
         None => None,
+        Some(raw) if target == ApiProvider::Ollama => Some(raw.trim().to_string()),
         Some(raw) => match normalize_model_name(&expand_model_alias(raw)) {
             Some(normalized) => Some(normalized),
             None => {
@@ -90,7 +91,10 @@ mod tests {
             resume_session_id: None,
             initial_input: None,
         };
-        App::new(options, &Config::default())
+        let mut app = App::new(options, &Config::default());
+        app.ui_locale = crate::localization::Locale::En;
+        app.api_provider = crate::config::ApiProvider::Deepseek;
+        app
     }
 
     #[test]
@@ -172,6 +176,19 @@ mod tests {
             Some(AppAction::SwitchProvider { provider, model }) => {
                 assert_eq!(provider, ApiProvider::Vllm);
                 assert_eq!(model.as_deref(), Some("deepseek-v4-flash"));
+            }
+            other => panic!("expected SwitchProvider, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn switch_to_ollama_preserves_model_tag() {
+        let mut app = create_test_app();
+        let result = provider(&mut app, Some("ollama qwen2.5-coder:7b"));
+        match result.action {
+            Some(AppAction::SwitchProvider { provider, model }) => {
+                assert_eq!(provider, ApiProvider::Ollama);
+                assert_eq!(model.as_deref(), Some("qwen2.5-coder:7b"));
             }
             other => panic!("expected SwitchProvider, got {other:?}"),
         }

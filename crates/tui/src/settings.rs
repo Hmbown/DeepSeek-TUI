@@ -204,6 +204,8 @@ pub struct Settings {
     /// Enable the session-context panel (#504). Shows working set, tokens,
     /// cost, MCP/LSP status, cycle count, and memory info.
     pub context_panel: bool,
+    /// Cost display currency: usd or cny.
+    pub cost_currency: String,
     /// Maximum number of input history entries to save
     pub max_input_history: usize,
     /// Default model to use
@@ -239,6 +241,7 @@ impl Default for Settings {
             sidebar_width_percent: 28,
             sidebar_focus: "auto".to_string(),
             context_panel: false,
+            cost_currency: "usd".to_string(),
             max_input_history: 100,
             default_model: None,
         }
@@ -424,6 +427,18 @@ impl Settings {
                 };
                 self.sidebar_focus = normalized.to_string();
             }
+            "cost_currency" | "currency" => {
+                let Some(currency) = crate::pricing::CostCurrency::from_setting(value) else {
+                    anyhow::bail!(
+                        "Failed to update setting: invalid cost currency '{value}'. Expected: usd, cny, rmb, yuan."
+                    );
+                };
+                self.cost_currency = match currency {
+                    crate::pricing::CostCurrency::Usd => "usd",
+                    crate::pricing::CostCurrency::Cny => "cny",
+                }
+                .to_string();
+            }
             "max_history" | "history" => {
                 let max: usize = value.parse().map_err(|_| {
                     anyhow::anyhow!(
@@ -486,6 +501,7 @@ impl Settings {
             self.sidebar_width_percent
         ));
         lines.push(format!("  sidebar_focus:      {}", self.sidebar_focus));
+        lines.push(format!("  cost_currency:      {}", self.cost_currency));
         lines.push(format!("  max_history:        {}", self.max_input_history));
         lines.push(format!(
             "  default_model:      {}",
@@ -546,6 +562,7 @@ impl Settings {
                 "sidebar_focus",
                 "Sidebar focus: auto, plan, todos, tasks, agents",
             ),
+            ("cost_currency", "Cost display currency: usd, cny"),
             ("max_history", "Max input history entries"),
             (
                 "default_model",
@@ -691,6 +708,23 @@ mod tests {
             .set("locale", "ar")
             .expect_err("Arabic is planned, not shipped");
         assert!(err.to_string().contains("invalid locale"));
+    }
+
+    #[test]
+    fn cost_currency_normalizes_yuan_aliases_and_rejects_unknowns() {
+        let mut settings = Settings::default();
+        assert_eq!(settings.cost_currency, "usd");
+
+        settings.set("cost_currency", "yuan").expect("set yuan");
+        assert_eq!(settings.cost_currency, "cny");
+
+        settings.set("currency", "rmb").expect("set rmb");
+        assert_eq!(settings.cost_currency, "cny");
+
+        let err = settings
+            .set("cost_currency", "eur")
+            .expect_err("unsupported currency");
+        assert!(err.to_string().contains("invalid cost currency"));
     }
 
     #[test]
@@ -939,6 +973,7 @@ mod tests {
 
     #[test]
     fn tui_prefs_path_uses_home_deepseek_subdir_by_default() {
+        let _g = config_path_test_guard();
         // Without DEEPSEEK_CONFIG_PATH the path should end with
         // .deepseek/tui.toml relative to the home directory.
         // We skip this check if home_dir() is unavailable (CI without HOME).

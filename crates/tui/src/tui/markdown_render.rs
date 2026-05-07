@@ -72,8 +72,11 @@ pub enum Block {
     ListItem { bullet: String, text: String },
     /// A line inside a fenced code block. Fences themselves are dropped.
     Code { line: String },
-    /// A table row: cells split on `|`. Separator rows (`|---|`) are dropped.
+    /// A table row: cells split on `|`.
     TableRow(Vec<String>),
+    /// A table separator row (`|---|---|`). Kept so the renderer can draw
+    /// horizontal rules at the correct positions.
+    TableSeparator,
     /// A non-empty paragraph line that may contain inline links.
     Paragraph { text: String },
     /// An empty source line, preserved so paragraph spacing survives.
@@ -147,7 +150,10 @@ pub fn parse(content: &str) -> ParsedMarkdown {
                 blocks.push(Block::TableRow(cells));
                 continue;
             }
-            None if trimmed.starts_with('|') => continue, // separator row — drop it
+            None if trimmed.starts_with('|') => {
+                blocks.push(Block::TableSeparator);
+                continue;
+            }
             None => {}
         }
 
@@ -175,8 +181,30 @@ pub fn render_parsed(parsed: &ParsedMarkdown, width: u16, base_style: Style) -> 
     let width = width.max(1) as usize;
     let mut out: Vec<Line<'static>> = Vec::with_capacity(parsed.blocks.len());
 
-    for block in &parsed.blocks {
-        match block {
+    let mut i = 0;
+    while i < parsed.blocks.len() {
+        if matches!(
+            &parsed.blocks[i],
+            Block::TableRow(_) | Block::TableSeparator
+        ) {
+            let start = i;
+            while i < parsed.blocks.len()
+                && matches!(
+                    &parsed.blocks[i],
+                    Block::TableRow(_) | Block::TableSeparator
+                )
+            {
+                i += 1;
+            }
+            out.extend(render_table_group(
+                &parsed.blocks[start..i],
+                width,
+                base_style,
+            ));
+            continue;
+        }
+
+        match &parsed.blocks[i] {
             Block::Heading { text, .. } => {
                 let style = Style::default()
                     .fg(palette::DEEPSEEK_SKY)
@@ -194,9 +222,6 @@ pub fn render_parsed(parsed: &ParsedMarkdown, width: u16, base_style: Style) -> 
                     "─".repeat(width.min(60)),
                     Style::default().fg(palette::TEXT_DIM),
                 )));
-            }
-            Block::TableRow(cells) => {
-                out.extend(render_table_row(cells, width, base_style));
             }
             Block::ListItem { bullet, text } => {
                 let bullet_style = Style::default().fg(palette::DEEPSEEK_SKY);
@@ -221,12 +246,11 @@ pub fn render_parsed(parsed: &ParsedMarkdown, width: u16, base_style: Style) -> 
                 out.extend(render_line_with_links(text, width, base_style, link_style));
             }
             Block::Blank => {
-                // Preserve paragraph spacing. The original renderer also pushed
-                // a blank line for empty source lines that fell through the
-                // paragraph branch; mirror that exactly.
                 out.push(Line::from(""));
             }
+            Block::TableRow(_) | Block::TableSeparator => unreachable!(),
         }
+        i += 1;
     }
 
     if out.is_empty() {
@@ -406,10 +430,14 @@ fn render_line_with_links(
 }
 
 /// Parse an entire line into (text, style) segments, handling **bold**,
-/// *italic*, and bare URLs that may span multiple words.
+/// *italic*, `code`, ~~strikethrough~~, [text](url) links, and bare URLs.
 fn parse_inline_spans(line: &str, base_style: Style, link_style: Style) -> Vec<(String, Style)> {
     let bold_style = base_style.add_modifier(Modifier::BOLD);
     let italic_style = base_style.add_modifier(Modifier::ITALIC);
+    let code_style = base_style
+        .add_modifier(Modifier::ITALIC)
+        .bg(palette::SURFACE_ELEVATED);
+    let strike_style = base_style.add_modifier(Modifier::CROSSED_OUT);
     let mut out = Vec::new();
     let mut rest = line;
 
@@ -448,6 +476,40 @@ fn parse_inline_spans(line: &str, base_style: Style, link_style: Style) -> Vec<(
             rest = &rest[1 + end + 1..];
             continue;
         }
+        // `inline code`
+        if let Some(end) = rest.strip_prefix('`').and_then(|s| s.find('`')) {
+            let inner = &rest[1..1 + end];
+            out.push((inner.to_string(), code_style));
+            rest = &rest[1 + end + 1..];
+            continue;
+        }
+        // ~~strikethrough~~
+        if let Some(end) = rest.strip_prefix("~~").and_then(|s| s.find("~~")) {
+            let inner = &rest[2..2 + end];
+            out.push((inner.to_string(), strike_style));
+            rest = &rest[2 + end + 2..];
+            continue;
+        }
+        // [text](url)
+        if rest.starts_with('[')
+            && let Some(bracket_end) = rest.find(']')
+        {
+            let text = &rest[1..bracket_end];
+            let after_bracket = &rest[bracket_end + 1..];
+            if after_bracket.starts_with('(')
+                && let Some(paren_end) = after_bracket.find(')')
+            {
+                let url = &after_bracket[1..paren_end];
+                let content = if osc8::enabled() {
+                    osc8::wrap_link(url, text)
+                } else {
+                    format!("{text} ({url})")
+                };
+                out.push((content, link_style));
+                rest = &after_bracket[paren_end + 1..];
+                continue;
+            }
+        }
         // URL: consume until whitespace
         if rest.starts_with("http://") || rest.starts_with("https://") {
             let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
@@ -479,6 +541,9 @@ fn find_next_marker(s: &str) -> usize {
         let slice = &s[i..];
         if slice.starts_with("**")
             || slice.starts_with("__")
+            || slice.starts_with("~~")
+            || slice.starts_with('`')
+            || slice.starts_with('[')
             || (slice.starts_with('*') && !slice.starts_with("**"))
             || (slice.starts_with('_') && !slice.starts_with("__"))
             || slice.starts_with("http://")
@@ -559,6 +624,98 @@ fn render_table_row(cells: &[String], width: usize, base_style: Style) -> Vec<Li
     vec![Line::from(spans)]
 }
 
+fn table_col_width(num_cols: usize, term_width: usize) -> usize {
+    let col_width = (term_width.saturating_sub(3 * num_cols + 1)) / num_cols;
+    col_width.max(4)
+}
+
+fn render_table_border(
+    num_cols: usize,
+    col_width: usize,
+    sep_style: Style,
+    left: &str,
+    mid: &str,
+    right: &str,
+) -> Line<'static> {
+    let fill = "\u{2500}".repeat(col_width);
+    let mut s = String::new();
+    s.push_str(left);
+    for i in 0..num_cols {
+        s.push_str(&fill);
+        if i + 1 < num_cols {
+            s.push_str(mid);
+        } else {
+            s.push_str(right);
+        }
+    }
+    Line::from(Span::styled(s, sep_style))
+}
+
+fn render_table_group(blocks: &[Block], width: usize, base_style: Style) -> Vec<Line<'static>> {
+    let sep_style = Style::default().fg(palette::TEXT_DIM);
+
+    let num_cols = blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::TableRow(cells) => Some(cells.len()),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(1);
+
+    let col_width = table_col_width(num_cols, width);
+
+    let mut lines = Vec::new();
+
+    // Top border
+    lines.push(render_table_border(
+        num_cols,
+        col_width,
+        sep_style,
+        "\u{250C}\u{2500}",
+        "\u{2500}\u{252C}\u{2500}",
+        "\u{2500}\u{2510}",
+    ));
+
+    let mid_border = || {
+        render_table_border(
+            num_cols,
+            col_width,
+            sep_style,
+            "\u{251C}\u{2500}",
+            "\u{2500}\u{253C}\u{2500}",
+            "\u{2500}\u{2524}",
+        )
+    };
+
+    for i in 0..blocks.len() {
+        match &blocks[i] {
+            Block::TableRow(cells) => {
+                lines.extend(render_table_row(cells, width, base_style));
+                if i + 1 < blocks.len() && matches!(&blocks[i + 1], Block::TableRow(_)) {
+                    lines.push(mid_border());
+                }
+            }
+            Block::TableSeparator => {
+                lines.push(mid_border());
+            }
+            _ => {}
+        }
+    }
+
+    // Bottom border
+    lines.push(render_table_border(
+        num_cols,
+        col_width,
+        sep_style,
+        "\u{2514}\u{2500}",
+        "\u{2500}\u{2534}\u{2500}",
+        "\u{2500}\u{2518}",
+    ));
+
+    lines
+}
+
 fn link_style() -> Style {
     Style::default()
         .fg(palette::DEEPSEEK_BLUE)
@@ -614,20 +771,13 @@ mod tests {
         // flag is identical for both paths.
         let source = "# Title\n\nA paragraph with a https://example.com link.\n\n- one\n- two\n```\ncode\n```";
         let direct = render_with_osc8(false, source);
-        let two_step = {
-            use std::sync::Mutex;
-            static OSC8_GUARD: Mutex<()> = Mutex::new(());
-            let _guard = OSC8_GUARD.lock().unwrap_or_else(|e| e.into_inner());
-            let prior = osc8::enabled();
-            osc8::set_enabled(false);
+        let two_step = with_osc8(false, || {
             let parsed = parse(source);
-            let result: String = render_parsed(&parsed, 80, Style::default())
+            render_parsed(&parsed, 80, Style::default())
                 .iter()
                 .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
-                .collect();
-            osc8::set_enabled(prior);
-            result
-        };
+                .collect::<String>()
+        });
         assert_eq!(direct, two_step);
     }
 
@@ -713,18 +863,23 @@ mod tests {
     /// value. We serialize through a static mutex because `osc8::ENABLED` is
     /// process-wide state and other tests touching it would race otherwise.
     fn render_with_osc8(enabled: bool, source: &str) -> String {
+        with_osc8(enabled, || {
+            render_markdown(source, 80, Style::default())
+                .iter()
+                .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+                .collect::<String>()
+        })
+    }
+
+    fn with_osc8<T>(enabled: bool, f: impl FnOnce() -> T) -> T {
         use std::sync::Mutex;
         static OSC8_GUARD: Mutex<()> = Mutex::new(());
         let _guard = OSC8_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         let prior = osc8::enabled();
         osc8::set_enabled(enabled);
-        let lines = render_markdown(source, 80, Style::default());
-        let joined = lines
-            .iter()
-            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
-            .collect::<String>();
+        let result = f();
         osc8::set_enabled(prior);
-        joined
+        result
     }
 
     #[test]
@@ -747,21 +902,26 @@ mod tests {
     }
 
     #[test]
-    fn table_separator_row_is_dropped() {
-        // "|---|---|" must not appear in output
-        let src = "| 项目属性 | 详情 |\n|----------|------|\n| **语言** | Rust 1.85+ |\n";
+    fn table_separator_row_is_kept() {
+        // Separator rows are now kept as TableSeparator blocks so the
+        // renderer can draw horizontal rules at the correct positions.
+        let src = "| 项目属性 | 详情 |\n|----------|------|\n| **语言** | Rust 1.88+ |\n";
         let parsed = parse(src);
         let blocks: Vec<_> = parsed.blocks.iter().collect();
-        // Should have 2 TableRow blocks (header + data), no separator
+        // Should have 2 TableRow blocks (header + data) + 1 TableSeparator
         let table_rows: Vec<_> = blocks
             .iter()
             .filter(|b| matches!(b, Block::TableRow(_)))
             .collect();
+        assert_eq!(table_rows.len(), 2, "expected 2 table rows: {blocks:?}");
+        let separators: Vec<_> = blocks
+            .iter()
+            .filter(|b| matches!(b, Block::TableSeparator))
+            .collect();
         assert_eq!(
-            table_rows.len(),
-            2,
-            "expected 2 table rows, got {}: {blocks:?}",
-            table_rows.len()
+            separators.len(),
+            1,
+            "expected 1 table separator: {blocks:?}"
         );
     }
 
@@ -781,14 +941,45 @@ mod tests {
     }
 
     #[test]
-    fn table_renders_with_pipe_separator() {
+    fn table_renders_with_box_drawing_borders() {
         let src = "| 文件 | 改动 |\n|---|---|\n| foo.rs | 重写 |\n";
         let lines = render_markdown(src, 60, Style::default());
         let text: String = lines
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
             .collect();
+        // Column pipes still present
         assert!(text.contains('│'), "table pipe separator missing: {text:?}");
-        assert!(!text.contains("|---|"), "separator row leaked: {text:?}");
+        // Separator row rendered as middle border, not raw markdown
+        assert!(
+            !text.contains("|---|"),
+            "raw separator row leaked: {text:?}"
+        );
+        // Top and bottom borders present
+        assert!(
+            text.contains('\u{250C}'),
+            "top-left corner missing: {text:?}"
+        );
+        assert!(
+            text.contains('\u{2510}'),
+            "top-right corner missing: {text:?}"
+        );
+        assert!(
+            text.contains('\u{2514}'),
+            "bottom-left corner missing: {text:?}"
+        );
+        assert!(
+            text.contains('\u{2518}'),
+            "bottom-right corner missing: {text:?}"
+        );
+        // Middle separator present (at the |---|---| position)
+        assert!(
+            text.contains('\u{251C}'),
+            "middle-left junction missing: {text:?}"
+        );
+        assert!(
+            text.contains('\u{2524}'),
+            "middle-right junction missing: {text:?}"
+        );
     }
 }

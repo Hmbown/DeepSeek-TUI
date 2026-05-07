@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::tui::app::App;
+use crate::tui::app::{App, MentionCompletionCache};
 use crate::working_set::Workspace;
 
 /// Maximum number of `@`-mentions whose contents are inlined into one user
@@ -182,7 +182,7 @@ fn workspace_for_app(app: &App) -> Workspace {
 /// Once the composer widget is extended to render this as a popup, it will
 /// pair with `apply_mention_menu_selection` for the Up/Down/Enter flow.
 #[must_use]
-pub fn visible_mention_menu_entries(app: &App, limit: usize) -> Vec<String> {
+pub fn visible_mention_menu_entries(app: &mut App, limit: usize) -> Vec<String> {
     if app.mention_menu_hidden {
         return Vec::new();
     }
@@ -194,8 +194,30 @@ pub fn visible_mention_menu_entries(app: &App, limit: usize) -> Vec<String> {
     if limit == 0 {
         return Vec::new();
     }
-    let ws = workspace_for_app(app);
-    find_file_mention_completions(&ws, &partial, limit)
+
+    let workspace = app.workspace.clone();
+    let cwd = std::env::current_dir().ok();
+    if let Some(ref cache) = app.composer.mention_completion_cache
+        && cache.workspace == workspace
+        && cache.cwd == cwd
+        && cache.partial == partial
+        && cache.limit == limit
+    {
+        return cache.entries.clone();
+    }
+
+    let ws = Workspace::with_cwd(workspace.clone(), cwd.clone());
+    let entries = find_file_mention_completions(&ws, &partial, limit);
+
+    app.composer.mention_completion_cache = Some(MentionCompletionCache {
+        workspace,
+        cwd,
+        partial,
+        limit,
+        entries: entries.clone(),
+    });
+
+    entries
 }
 
 /// Apply the currently selected `@`-mention popup entry to the composer

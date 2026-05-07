@@ -3,11 +3,15 @@
 use std::collections::HashMap;
 use std::fmt::Write;
 use std::fs;
+#[cfg(unix)]
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 use crate::audit::log_sensitive_event;
 use crate::features::{Features, FeaturesToml, is_known_feature_key};
@@ -16,6 +20,7 @@ use crate::hooks::HooksConfig;
 pub const DEFAULT_MAX_SUBAGENTS: usize = 10;
 pub const MAX_SUBAGENTS: usize = 20;
 pub const DEFAULT_TEXT_MODEL: &str = "deepseek-v4-pro";
+pub const DEFAULT_DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com/beta";
 pub const DEFAULT_NVIDIA_NIM_MODEL: &str = "deepseek-ai/deepseek-v4-pro";
 pub const DEFAULT_NVIDIA_NIM_FLASH_MODEL: &str = "deepseek-ai/deepseek-v4-flash";
 pub const DEFAULT_NVIDIA_NIM_BASE_URL: &str = "https://integrate.api.nvidia.com/v1";
@@ -33,6 +38,8 @@ pub const DEFAULT_SGLANG_BASE_URL: &str = "http://localhost:30000/v1";
 pub const DEFAULT_VLLM_MODEL: &str = "deepseek-ai/DeepSeek-V4-Pro";
 pub const DEFAULT_VLLM_FLASH_MODEL: &str = "deepseek-ai/DeepSeek-V4-Flash";
 pub const DEFAULT_VLLM_BASE_URL: &str = "http://localhost:8000/v1";
+pub const DEFAULT_OLLAMA_MODEL: &str = "deepseek-coder:1.3b";
+pub const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434/v1";
 pub const DEFAULT_DEEPSEEKCN_BASE_URL: &str = "https://api.deepseeki.com";
 const API_KEYRING_SENTINEL: &str = "__KEYRING__";
 pub const COMMON_DEEPSEEK_MODELS: &[&str] = &[
@@ -55,6 +62,7 @@ pub enum ApiProvider {
     Fireworks,
     Sglang,
     Vllm,
+    Ollama,
 }
 
 impl ApiProvider {
@@ -71,6 +79,7 @@ impl ApiProvider {
             "fireworks" | "fireworks-ai" => Some(Self::Fireworks),
             "sglang" | "sg-lang" => Some(Self::Sglang),
             "vllm" | "v-llm" => Some(Self::Vllm),
+            "ollama" | "ollama-local" => Some(Self::Ollama),
             _ => None,
         }
     }
@@ -86,6 +95,7 @@ impl ApiProvider {
             Self::Fireworks => "fireworks",
             Self::Sglang => "sglang",
             Self::Vllm => "vllm",
+            Self::Ollama => "ollama",
         }
     }
 
@@ -101,6 +111,7 @@ impl ApiProvider {
             Self::Fireworks => "Fireworks AI",
             Self::Sglang => "SGLang",
             Self::Vllm => "vLLM",
+            Self::Ollama => "Ollama",
         }
     }
 
@@ -116,6 +127,7 @@ impl ApiProvider {
             Self::Fireworks,
             Self::Sglang,
             Self::Vllm,
+            Self::Ollama,
         ]
     }
 }
@@ -137,7 +149,10 @@ pub struct ProviderCapability {
     pub resolved_model: String,
     /// Context window in tokens (the maximum input the model can accept).
     pub context_window: u32,
-    /// Recommended maximum output tokens (`max_tokens`) for this combo.
+    /// Official maximum output tokens for this combo.
+    ///
+    /// This is model metadata for diagnostics and CI policy. Normal turns use
+    /// a separate, more conservative request cap in the engine.
     pub max_output: u32,
     /// Whether the provider+model supports thinking/reasoning mode.
     pub thinking_supported: bool,
@@ -161,6 +176,18 @@ pub enum RequestPayloadMode {
 /// in the API payload (after normalization / provider-specific mapping).
 #[must_use]
 pub fn provider_capability(provider: ApiProvider, resolved_model: &str) -> ProviderCapability {
+    if matches!(provider, ApiProvider::Ollama) {
+        return ProviderCapability {
+            provider,
+            resolved_model: resolved_model.to_string(),
+            context_window: 8192,
+            max_output: 4096,
+            thinking_supported: false,
+            cache_telemetry_supported: false,
+            request_payload_mode: RequestPayloadMode::ChatCompletions,
+        };
+    }
+
     let model_lower = resolved_model.to_ascii_lowercase();
     let is_v4_pro = model_lower.contains("v4-pro") || model_lower == "deepseek-v4pro";
     let is_v4_flash = model_lower.contains("v4-flash")
@@ -176,9 +203,10 @@ pub fn provider_capability(provider: ApiProvider, resolved_model: &str) -> Provi
             .unwrap_or(crate::models::LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS)
     };
 
-    // Max output tokens: DeepSeek V4 models allow 262K; others get 4096.
+    // Max output tokens: official DeepSeek V4 API metadata lists 384K;
+    // runtime request caps remain separate and more conservative.
     let max_output = if is_v4_pro || is_v4_flash {
-        262_144
+        384_000
     } else {
         4096
     };
@@ -237,7 +265,7 @@ pub fn normalize_model_name(model: &str) -> Option<String> {
     }
 
     let normalized = trimmed.to_ascii_lowercase();
-    if !normalized.starts_with("deepseek") {
+    if !normalized.starts_with("deepseek") && !normalized.contains("/deepseek") {
         return None;
     }
 
@@ -285,6 +313,27 @@ pub struct TuiConfig {
     /// label and ignore the escape. Defaults to `true`; set `false` for
     /// terminals that misrender the sequence.
     pub osc8_links: Option<bool>,
+    /// High-level notification trigger condition. When set, overrides the
+    /// `[notifications].threshold_secs` gate from the lower-level
+    /// `[notifications]` block:
+    ///
+    /// - `Always` — fire a turn-completion notification on every successful
+    ///   turn regardless of duration. The configured `[notifications].method`
+    ///   and `include_summary` flag are still respected.
+    /// - `Never` — suppress all turn-completion notifications.
+    /// - Unset (default) — fall back to the `[notifications]` defaults.
+    pub notification_condition: Option<NotificationCondition>,
+}
+
+/// High-level notification trigger override. See
+/// [`TuiConfig::notification_condition`].
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NotificationCondition {
+    /// Notify on every successful turn (no duration threshold).
+    Always,
+    /// Suppress notifications entirely.
+    Never,
 }
 
 /// Notification delivery method (mirrors `tui::notifications::Method`).
@@ -398,7 +447,7 @@ pub enum StatusItem {
     Mode,
     /// Model identifier (e.g. `deepseek-v4-pro`).
     Model,
-    /// Session cost in USD ("$0.42").
+    /// Session cost in the configured display currency.
     Cost,
     /// Activity label: "ready" / "draft" / "working".
     Status,
@@ -483,7 +532,7 @@ impl StatusItem {
         match self {
             StatusItem::Mode => "agent · yolo · plan",
             StatusItem::Model => "the model id you'll send to",
-            StatusItem::Cost => "running USD total for this session",
+            StatusItem::Cost => "running total for this session",
             StatusItem::Status => "what the agent is doing right now",
             StatusItem::Coherence => "shown only when the engine intervenes",
             StatusItem::Agents => "agents or RLM work in progress",
@@ -641,6 +690,8 @@ pub struct Config {
     pub provider: Option<String>,
     pub api_key: Option<String>,
     pub base_url: Option<String>,
+    /// Optional extra HTTP headers sent to model API requests.
+    pub http_headers: Option<HashMap<String, String>>,
     pub default_text_model: Option<String>,
     /// DeepSeek reasoning-effort tier: `"off" | "low" | "medium" | "high" | "max"`.
     /// Defaults to `"max"` at runtime if unset.
@@ -892,6 +943,7 @@ pub struct ProviderConfig {
     pub api_key: Option<String>,
     pub base_url: Option<String>,
     pub model: Option<String>,
+    pub http_headers: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -912,6 +964,8 @@ pub struct ProvidersConfig {
     pub sglang: ProviderConfig,
     #[serde(default)]
     pub vllm: ProviderConfig,
+    #[serde(default)]
+    pub ollama: ProviderConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -971,7 +1025,7 @@ impl Config {
             && ApiProvider::parse(provider).is_none()
         {
             anyhow::bail!(
-                "Invalid provider '{provider}': expected deepseek, deepseek-cn, nvidia-nim, openrouter, novita, fireworks, sglang, or vllm."
+                "Invalid provider '{provider}': expected deepseek, deepseek-cn, nvidia-nim, openrouter, novita, fireworks, sglang, vllm, or ollama."
             );
         }
         if let Some(ref key) = self.api_key
@@ -988,6 +1042,7 @@ impl Config {
         }
         if let Some(model) = self.default_text_model.as_deref()
             && !model.trim().eq_ignore_ascii_case("auto")
+            && !matches!(self.api_provider(), ApiProvider::Ollama)
             && normalize_model_name(model).is_none()
         {
             anyhow::bail!(
@@ -1090,6 +1145,7 @@ impl Config {
             ApiProvider::Fireworks => &providers.fireworks,
             ApiProvider::Sglang => &providers.sglang,
             ApiProvider::Vllm => &providers.vllm,
+            ApiProvider::Ollama => &providers.ollama,
         })
     }
 
@@ -1098,14 +1154,36 @@ impl Config {
     }
 
     #[must_use]
+    pub fn http_headers(&self) -> HashMap<String, String> {
+        let mut headers = self.http_headers.clone().unwrap_or_default();
+        if let Some(provider_headers) = self
+            .provider_config()
+            .and_then(|provider| provider.http_headers.as_ref())
+        {
+            headers.extend(provider_headers.clone());
+        }
+        headers.retain(|name, value| !name.trim().is_empty() && !value.trim().is_empty());
+        headers
+    }
+
+    #[must_use]
     pub fn default_model(&self) -> String {
         let provider = self.api_provider();
         if let Some(model) = self
             .provider_config()
             .and_then(|provider| provider.model.as_deref())
-            && let Some(normalized) = normalize_model_for_provider(provider, model)
         {
-            return normalized;
+            if matches!(provider, ApiProvider::Ollama) {
+                return model.trim().to_string();
+            }
+            if let Some(normalized) = normalize_model_for_provider(provider, model) {
+                return normalized;
+            }
+        }
+        if let Some(model) = self.default_text_model.as_deref()
+            && matches!(provider, ApiProvider::Ollama)
+        {
+            return model.trim().to_string();
         }
         if let Some(model) = self.default_text_model.as_deref()
             && model.trim().eq_ignore_ascii_case("auto")
@@ -1126,6 +1204,7 @@ impl Config {
             ApiProvider::Fireworks => DEFAULT_FIREWORKS_MODEL,
             ApiProvider::Sglang => DEFAULT_SGLANG_MODEL,
             ApiProvider::Vllm => DEFAULT_VLLM_MODEL,
+            ApiProvider::Ollama => DEFAULT_OLLAMA_MODEL,
         }
         .to_string()
     }
@@ -1152,11 +1231,12 @@ impl Config {
             | ApiProvider::Novita
             | ApiProvider::Fireworks
             | ApiProvider::Sglang
-            | ApiProvider::Vllm => None,
+            | ApiProvider::Vllm
+            | ApiProvider::Ollama => None,
         };
         let base = provider_base.or(root_base).unwrap_or_else(|| {
             match provider {
-                ApiProvider::Deepseek => "https://api.deepseek.com",
+                ApiProvider::Deepseek => DEFAULT_DEEPSEEK_BASE_URL,
                 ApiProvider::DeepseekCN => DEFAULT_DEEPSEEKCN_BASE_URL,
                 ApiProvider::NvidiaNim => DEFAULT_NVIDIA_NIM_BASE_URL,
                 ApiProvider::Openrouter => DEFAULT_OPENROUTER_BASE_URL,
@@ -1164,6 +1244,7 @@ impl Config {
                 ApiProvider::Fireworks => DEFAULT_FIREWORKS_BASE_URL,
                 ApiProvider::Sglang => DEFAULT_SGLANG_BASE_URL,
                 ApiProvider::Vllm => DEFAULT_VLLM_BASE_URL,
+                ApiProvider::Ollama => DEFAULT_OLLAMA_BASE_URL,
             }
             .to_string()
         });
@@ -1188,6 +1269,7 @@ impl Config {
             ApiProvider::Fireworks => "fireworks",
             ApiProvider::Sglang => "sglang",
             ApiProvider::Vllm => "vllm",
+            ApiProvider::Ollama => "ollama",
         };
 
         // 0. Explicit in-memory override (set by onboarding / provider
@@ -1248,10 +1330,9 @@ impl Config {
                 "Fireworks AI API key not found. Run 'deepseek auth set --provider fireworks', \
                  set FIREWORKS_API_KEY, or add [providers.fireworks] api_key in ~/.deepseek/config.toml."
             ),
-            // Self-hosted SGLang deployments commonly run without auth on
-            // localhost. Return an empty key and let the client omit the
-            // Authorization header.
-            ApiProvider::Sglang | ApiProvider::Vllm => Ok(String::new()),
+            // Self-hosted deployments commonly run without auth on localhost.
+            // Return an empty key and let the client omit the Authorization header.
+            ApiProvider::Sglang | ApiProvider::Vllm | ApiProvider::Ollama => Ok(String::new()),
         }
     }
 
@@ -1493,6 +1574,83 @@ fn home_config_path() -> Option<PathBuf> {
     effective_home_dir().map(|home| home.join(".deepseek").join("config.toml"))
 }
 
+#[must_use]
+pub(crate) fn is_workspace_trusted(workspace: &Path) -> bool {
+    let Some(config_path) = default_config_path() else {
+        return false;
+    };
+    let Ok(raw) = fs::read_to_string(config_path) else {
+        return false;
+    };
+    let Ok(doc) = toml::from_str::<toml::Value>(&raw) else {
+        return false;
+    };
+    workspace_trust_level_from_doc(&doc, workspace).is_some_and(is_trusted_level)
+}
+
+pub(crate) fn save_workspace_trust(workspace: &Path) -> Result<PathBuf> {
+    let config_path = default_config_path()
+        .context("Failed to resolve config path: home directory not found.")?;
+    ensure_parent_dir(&config_path)?;
+
+    let mut doc = if config_path.exists() {
+        let raw = fs::read_to_string(&config_path)?;
+        toml::from_str::<toml::Value>(&raw)
+            .with_context(|| format!("Failed to parse config at {}", config_path.display()))?
+    } else {
+        toml::Value::Table(toml::value::Table::new())
+    };
+
+    let root = doc
+        .as_table_mut()
+        .context("Config root must be a TOML table.")?;
+    let projects = root
+        .entry("projects".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::value::Table::new()))
+        .as_table_mut()
+        .context("`projects` must be a table.")?;
+    let project = projects
+        .entry(workspace_config_key(workspace))
+        .or_insert_with(|| toml::Value::Table(toml::value::Table::new()))
+        .as_table_mut()
+        .context("Project entry must be a table.")?;
+    project.insert(
+        "trust_level".to_string(),
+        toml::Value::String("trusted".to_string()),
+    );
+
+    let serialized = toml::to_string_pretty(&doc).context("failed to serialize updated config")?;
+    write_config_file_secure(&config_path, &serialized)
+        .with_context(|| format!("Failed to write config to {}", config_path.display()))?;
+    Ok(config_path)
+}
+
+fn workspace_trust_level_from_doc<'a>(doc: &'a toml::Value, workspace: &Path) -> Option<&'a str> {
+    let workspace = canonicalize_or_keep(workspace);
+    let projects = doc.get("projects")?.as_table()?;
+    for (raw_path, project) in projects {
+        let project_path = canonicalize_or_keep(&expand_path(raw_path));
+        if project_path == workspace {
+            return project.get("trust_level").and_then(toml::Value::as_str);
+        }
+    }
+    None
+}
+
+fn is_trusted_level(level: &str) -> bool {
+    level.trim().eq_ignore_ascii_case("trusted")
+}
+
+fn workspace_config_key(workspace: &Path) -> String {
+    canonicalize_or_keep(workspace)
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn canonicalize_or_keep(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
 fn env_config_path() -> Option<PathBuf> {
     if let Ok(path) = std::env::var("DEEPSEEK_CONFIG_PATH") {
         let trimmed = path.trim();
@@ -1551,8 +1709,9 @@ pub fn ensure_config_file_exists(path: Option<PathBuf>) -> Result<Option<PathBuf
 # Get your API key from https://platform.deepseek.com
 # Save it with: deepseek auth set --provider deepseek
 
-# Base URL (default: https://api.deepseek.com)
-# base_url = "https://api.deepseek.com"
+# Base URL (default: https://api.deepseek.com/beta)
+# Set https://api.deepseek.com to opt out of beta features.
+# base_url = "https://api.deepseek.com/beta"
 
 # Default model
 default_text_model = "{default_model}"
@@ -1564,7 +1723,7 @@ reasoning_effort = "auto"
 "#,
         default_model = DEFAULT_TEXT_MODEL
     );
-    fs::write(&config_path, content)
+    write_config_file_secure(&config_path, &content)
         .with_context(|| format!("Failed to write config to {}", config_path.display()))?;
     Ok(Some(config_path))
 }
@@ -1703,6 +1862,43 @@ fn apply_env_overrides(config: &mut Config) {
             .vllm
             .base_url = Some(value);
     }
+    if let Ok(value) = std::env::var("DEEPSEEK_HTTP_HEADERS")
+        && let Ok(headers) = parse_http_headers(&value)
+        && !headers.is_empty()
+    {
+        let mut root_headers = config.http_headers.clone().unwrap_or_default();
+        root_headers.extend(headers.clone());
+        config.http_headers = Some(root_headers);
+
+        let provider = config.api_provider();
+        let providers = config
+            .providers
+            .get_or_insert_with(ProvidersConfig::default);
+        let entry = match provider {
+            ApiProvider::Deepseek => &mut providers.deepseek,
+            ApiProvider::DeepseekCN => &mut providers.deepseek_cn,
+            ApiProvider::NvidiaNim => &mut providers.nvidia_nim,
+            ApiProvider::Openrouter => &mut providers.openrouter,
+            ApiProvider::Novita => &mut providers.novita,
+            ApiProvider::Fireworks => &mut providers.fireworks,
+            ApiProvider::Sglang => &mut providers.sglang,
+            ApiProvider::Vllm => &mut providers.vllm,
+            ApiProvider::Ollama => &mut providers.ollama,
+        };
+        let mut provider_headers = entry.http_headers.clone().unwrap_or_default();
+        provider_headers.extend(headers);
+        entry.http_headers = Some(provider_headers);
+    }
+    if matches!(config.api_provider(), ApiProvider::Ollama)
+        && let Ok(value) = std::env::var("OLLAMA_BASE_URL")
+        && !value.trim().is_empty()
+    {
+        config
+            .providers
+            .get_or_insert_with(ProvidersConfig::default)
+            .ollama
+            .base_url = Some(value);
+    }
     if matches!(config.api_provider(), ApiProvider::Sglang)
         && let Ok(value) = std::env::var("SGLANG_MODEL")
     {
@@ -1710,6 +1906,11 @@ fn apply_env_overrides(config: &mut Config) {
     }
     if matches!(config.api_provider(), ApiProvider::Vllm)
         && let Ok(value) = std::env::var("VLLM_MODEL")
+    {
+        config.default_text_model = Some(value);
+    }
+    if matches!(config.api_provider(), ApiProvider::Ollama)
+        && let Ok(value) = std::env::var("OLLAMA_MODEL")
     {
         config.default_text_model = Some(value);
     }
@@ -1891,6 +2092,7 @@ fn apply_env_overrides(config: &mut Config) {
 
 fn normalize_model_config(config: &mut Config) {
     if let Some(model) = config.default_text_model.as_deref()
+        && !matches!(config.api_provider(), ApiProvider::Ollama)
         && let Some(normalized) = normalize_model_for_provider(config.api_provider(), model)
     {
         config.default_text_model = Some(normalized);
@@ -1941,6 +2143,9 @@ fn normalize_model_config(config: &mut Config) {
 }
 
 fn normalize_model_for_provider(provider: ApiProvider, model: &str) -> Option<String> {
+    if matches!(provider, ApiProvider::Ollama) {
+        return None;
+    }
     normalize_model_name(model).map(|normalized| model_for_provider(provider, normalized))
 }
 
@@ -1980,6 +2185,29 @@ fn normalize_base_url(base: &str) -> String {
     trimmed.to_string()
 }
 
+fn parse_http_headers(raw: &str) -> Result<HashMap<String, String>> {
+    let mut headers = HashMap::new();
+    for pair in raw.trim().split(',') {
+        let pair = pair.trim();
+        if pair.is_empty() {
+            continue;
+        }
+        let Some((name, value)) = pair.split_once('=') else {
+            anyhow::bail!("invalid header pair '{pair}', expected name=value");
+        };
+        let name = name.trim();
+        let value = value.trim();
+        if name.is_empty() {
+            anyhow::bail!("header name cannot be empty");
+        }
+        if value.is_empty() {
+            continue;
+        }
+        headers.insert(name.to_string(), value.to_string());
+    }
+    Ok(headers)
+}
+
 fn apply_profile(config: ConfigFile, profile: Option<&str>) -> Result<Config> {
     if let Some(profile_name) = profile {
         let profiles = config.profiles.as_ref();
@@ -2014,6 +2242,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         provider: override_cfg.provider.or(base.provider),
         api_key: override_cfg.api_key.or(base.api_key),
         base_url: override_cfg.base_url.or(base.base_url),
+        http_headers: override_cfg.http_headers.or(base.http_headers),
         default_text_model: override_cfg.default_text_model.or(base.default_text_model),
         reasoning_effort: override_cfg.reasoning_effort.or(base.reasoning_effort),
         tools_file: override_cfg.tools_file.or(base.tools_file),
@@ -2085,6 +2314,7 @@ fn merge_provider_config(base: ProviderConfig, override_cfg: ProviderConfig) -> 
         api_key: override_cfg.api_key.or(base.api_key),
         base_url: override_cfg.base_url.or(base.base_url),
         model: override_cfg.model.or(base.model),
+        http_headers: override_cfg.http_headers.or(base.http_headers),
     }
 }
 
@@ -2105,6 +2335,7 @@ fn merge_providers(
             fireworks: merge_provider_config(base.fireworks, override_cfg.fireworks),
             sglang: merge_provider_config(base.sglang, override_cfg.sglang),
             vllm: merge_provider_config(base.vllm, override_cfg.vllm),
+            ollama: merge_provider_config(base.ollama, override_cfg.ollama),
         }),
     }
 }
@@ -2206,6 +2437,74 @@ pub fn ensure_parent_dir(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
+        #[cfg(unix)]
+        {
+            // Tighten group/other bits on the parent dir as a hardening pass.
+            // The dir lives under the user's home, so the chmod is best-effort:
+            // filesystems that don't accept Unix permission bits (Docker
+            // bind-mounts of NTFS, network shares, FAT, certain CI volumes —
+            // see #897) return EPERM/ENOTSUP. The dir already exists by the
+            // time we get here, so failing the whole save just because we
+            // couldn't tighten perms strands the user mid-onboarding. Warn
+            // loudly so a security-sensitive operator can still notice via
+            // `RUST_LOG=warn`, then continue.
+            if let Ok(meta) = fs::metadata(parent) {
+                let mode = meta.permissions().mode();
+                if mode & 0o077 != 0 {
+                    let mut perms = meta.permissions();
+                    perms.set_mode(mode & !0o077);
+                    if let Err(err) = fs::set_permissions(parent, perms) {
+                        tracing::warn!(
+                            target: "deepseek::config",
+                            path = %parent.display(),
+                            error = %err,
+                            "could not tighten parent dir permissions; \
+                             filesystem may not support Unix chmod \
+                             (Docker bind-mount, NTFS, network share). \
+                             Continuing — the file will still be written."
+                        );
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Write content to a config file with restrictive permissions (owner-only read/write).
+/// On Unix this sets mode 0o600 before writing.
+fn write_config_file_secure(path: &Path, content: &str) -> Result<()> {
+    #[cfg(unix)]
+    {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        file.write_all(content.as_bytes())?;
+        // The file was already opened with mode 0o600; the explicit
+        // set_permissions re-asserts that on filesystems where mode-at-open
+        // didn't take effect (or where the file already existed with broader
+        // bits). Filesystems that don't accept Unix chmod at all (Docker
+        // bind-mounts of NTFS, network shares — #897) return EPERM. Treat
+        // that as a warning rather than failing the whole save: the file
+        // contents are written, and on Windows/macOS hosts the parent file
+        // system's native ACL model is doing the access control.
+        if let Err(err) = file.set_permissions(fs::Permissions::from_mode(0o600)) {
+            tracing::warn!(
+                target: "deepseek::config",
+                path = %path.display(),
+                error = %err,
+                "could not enforce 0o600 on config file; filesystem may \
+                 not support Unix chmod. File contents written; rely on \
+                 host ACLs for access control."
+            );
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        fs::write(path, content)?;
     }
     Ok(())
 }
@@ -2358,8 +2657,9 @@ fn save_api_key_to_config_file(api_key: &str) -> Result<PathBuf> {
 
 api_key = "{key_to_write}"
 
-# Base URL (default: https://api.deepseek.com)
-# base_url = "https://api.deepseek.com"
+# Base URL (default: https://api.deepseek.com/beta)
+# Set https://api.deepseek.com to opt out of beta features.
+# base_url = "https://api.deepseek.com/beta"
 
 # Default model
 default_text_model = "{default_model}"
@@ -2373,7 +2673,7 @@ reasoning_effort = "max"
         )
     };
 
-    fs::write(&config_path, content)
+    write_config_file_secure(&config_path, &content)
         .with_context(|| format!("Failed to write config to {}", config_path.display()))?;
     log_sensitive_event(
         "credential.save",
@@ -2455,6 +2755,7 @@ pub fn active_provider_has_env_api_key(config: &Config) -> bool {
         }
         ApiProvider::Sglang => std::env::var("SGLANG_API_KEY").is_ok_and(|k| !k.trim().is_empty()),
         ApiProvider::Vllm => std::env::var("VLLM_API_KEY").is_ok_and(|k| !k.trim().is_empty()),
+        ApiProvider::Ollama => std::env::var("OLLAMA_API_KEY").is_ok_and(|k| !k.trim().is_empty()),
     }
 }
 
@@ -2476,6 +2777,7 @@ pub fn has_api_key_for(config: &Config, provider: ApiProvider) -> bool {
         ApiProvider::Fireworks => "FIREWORKS_API_KEY",
         ApiProvider::Sglang => "SGLANG_API_KEY",
         ApiProvider::Vllm => "VLLM_API_KEY",
+        ApiProvider::Ollama => "OLLAMA_API_KEY",
     };
     if std::env::var(env_var).is_ok_and(|k| !k.trim().is_empty()) {
         return true;
@@ -2486,8 +2788,11 @@ pub fn has_api_key_for(config: &Config, provider: ApiProvider) -> bool {
         return true;
     }
 
-    // SGLang is self-hosted and typically runs without authentication.
-    if matches!(provider, ApiProvider::Sglang | ApiProvider::Vllm) {
+    // Self-hosted providers typically run without authentication.
+    if matches!(
+        provider,
+        ApiProvider::Sglang | ApiProvider::Vllm | ApiProvider::Ollama
+    ) {
         return true;
     }
 
@@ -2528,13 +2833,18 @@ pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf>
     ensure_parent_dir(&config_path)?;
 
     let table_name = match provider {
-        ApiProvider::Deepseek | ApiProvider::DeepseekCN => unreachable!(),
+        ApiProvider::Deepseek | ApiProvider::DeepseekCN => {
+            return Err(anyhow::anyhow!(
+                "save_api_key_for: DeepSeek variants must use the root api_key field, not provider-specific storage"
+            ));
+        }
         ApiProvider::NvidiaNim => "providers.nvidia_nim",
         ApiProvider::Openrouter => "providers.openrouter",
         ApiProvider::Novita => "providers.novita",
         ApiProvider::Fireworks => "providers.fireworks",
         ApiProvider::Sglang => "providers.sglang",
         ApiProvider::Vllm => "providers.vllm",
+        ApiProvider::Ollama => "providers.ollama",
     };
 
     // Parse existing TOML (or start fresh) so we can edit the right table
@@ -2556,13 +2866,18 @@ pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf>
         .as_table_mut()
         .context("`providers` must be a table.")?;
     let key_inside = match provider {
-        ApiProvider::Deepseek | ApiProvider::DeepseekCN => unreachable!(),
+        ApiProvider::Deepseek | ApiProvider::DeepseekCN => {
+            return Err(anyhow::anyhow!(
+                "save_api_key_for: DeepSeek variants must use the root api_key field, not provider-specific storage"
+            ));
+        }
         ApiProvider::NvidiaNim => "nvidia_nim",
         ApiProvider::Openrouter => "openrouter",
         ApiProvider::Novita => "novita",
         ApiProvider::Fireworks => "fireworks",
         ApiProvider::Sglang => "sglang",
         ApiProvider::Vllm => "vllm",
+        ApiProvider::Ollama => "ollama",
     };
     let entry = providers
         .entry(key_inside.to_string())
@@ -2575,7 +2890,7 @@ pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf>
     );
 
     let serialized = toml::to_string_pretty(&doc).context("failed to serialize updated config")?;
-    fs::write(&config_path, serialized)
+    write_config_file_secure(&config_path, &serialized)
         .with_context(|| format!("Failed to write config to {}", config_path.display()))?;
     log_sensitive_event(
         "credential.save",
@@ -2629,7 +2944,7 @@ pub fn clear_api_key() -> Result<()> {
         result.push('\n');
     }
 
-    fs::write(&config_path, result)
+    write_config_file_secure(&config_path, &result)
         .with_context(|| format!("Failed to write config to {}", config_path.display()))?;
     log_sensitive_event(
         "credential.clear",
@@ -2650,6 +2965,8 @@ mod tests {
     use std::collections::HashMap;
     use std::env;
     use std::ffi::OsString;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     struct EnvGuard {
@@ -2659,6 +2976,7 @@ mod tests {
         deepseek_provider: Option<OsString>,
         deepseek_api_key: Option<OsString>,
         deepseek_base_url: Option<OsString>,
+        deepseek_http_headers: Option<OsString>,
         deepseek_model: Option<OsString>,
         deepseek_default_text_model: Option<OsString>,
         nvidia_api_key: Option<OsString>,
@@ -2679,6 +2997,9 @@ mod tests {
         vllm_api_key: Option<OsString>,
         vllm_base_url: Option<OsString>,
         vllm_model: Option<OsString>,
+        ollama_api_key: Option<OsString>,
+        ollama_base_url: Option<OsString>,
+        ollama_model: Option<OsString>,
     }
 
     impl EnvGuard {
@@ -2692,6 +3013,7 @@ mod tests {
             let deepseek_provider_prev = env::var_os("DEEPSEEK_PROVIDER");
             let api_key_prev = env::var_os("DEEPSEEK_API_KEY");
             let base_url_prev = env::var_os("DEEPSEEK_BASE_URL");
+            let http_headers_prev = env::var_os("DEEPSEEK_HTTP_HEADERS");
             let model_prev = env::var_os("DEEPSEEK_MODEL");
             let default_text_model_prev = env::var_os("DEEPSEEK_DEFAULT_TEXT_MODEL");
             let nvidia_api_key_prev = env::var_os("NVIDIA_API_KEY");
@@ -2712,6 +3034,9 @@ mod tests {
             let vllm_api_key_prev = env::var_os("VLLM_API_KEY");
             let vllm_base_url_prev = env::var_os("VLLM_BASE_URL");
             let vllm_model_prev = env::var_os("VLLM_MODEL");
+            let ollama_api_key_prev = env::var_os("OLLAMA_API_KEY");
+            let ollama_base_url_prev = env::var_os("OLLAMA_BASE_URL");
+            let ollama_model_prev = env::var_os("OLLAMA_MODEL");
             // Safety: test-only environment mutation guarded by a global mutex.
             unsafe {
                 env::set_var("HOME", &home_str);
@@ -2720,6 +3045,7 @@ mod tests {
                 env::remove_var("DEEPSEEK_PROVIDER");
                 env::remove_var("DEEPSEEK_API_KEY");
                 env::remove_var("DEEPSEEK_BASE_URL");
+                env::remove_var("DEEPSEEK_HTTP_HEADERS");
                 env::remove_var("DEEPSEEK_MODEL");
                 env::remove_var("DEEPSEEK_DEFAULT_TEXT_MODEL");
                 env::remove_var("NVIDIA_API_KEY");
@@ -2740,6 +3066,9 @@ mod tests {
                 env::remove_var("VLLM_API_KEY");
                 env::remove_var("VLLM_BASE_URL");
                 env::remove_var("VLLM_MODEL");
+                env::remove_var("OLLAMA_API_KEY");
+                env::remove_var("OLLAMA_BASE_URL");
+                env::remove_var("OLLAMA_MODEL");
             }
             Self {
                 home: home_prev,
@@ -2748,6 +3077,7 @@ mod tests {
                 deepseek_provider: deepseek_provider_prev,
                 deepseek_api_key: api_key_prev,
                 deepseek_base_url: base_url_prev,
+                deepseek_http_headers: http_headers_prev,
                 deepseek_model: model_prev,
                 deepseek_default_text_model: default_text_model_prev,
                 nvidia_api_key: nvidia_api_key_prev,
@@ -2768,6 +3098,9 @@ mod tests {
                 vllm_api_key: vllm_api_key_prev,
                 vllm_base_url: vllm_base_url_prev,
                 vllm_model: vllm_model_prev,
+                ollama_api_key: ollama_api_key_prev,
+                ollama_base_url: ollama_base_url_prev,
+                ollama_model: ollama_model_prev,
             }
         }
     }
@@ -2782,6 +3115,7 @@ mod tests {
                 Self::restore_var("DEEPSEEK_PROVIDER", self.deepseek_provider.take());
                 Self::restore_var("DEEPSEEK_API_KEY", self.deepseek_api_key.take());
                 Self::restore_var("DEEPSEEK_BASE_URL", self.deepseek_base_url.take());
+                Self::restore_var("DEEPSEEK_HTTP_HEADERS", self.deepseek_http_headers.take());
                 Self::restore_var("DEEPSEEK_MODEL", self.deepseek_model.take());
                 Self::restore_var(
                     "DEEPSEEK_DEFAULT_TEXT_MODEL",
@@ -2805,6 +3139,9 @@ mod tests {
                 Self::restore_var("VLLM_API_KEY", self.vllm_api_key.take());
                 Self::restore_var("VLLM_BASE_URL", self.vllm_base_url.take());
                 Self::restore_var("VLLM_MODEL", self.vllm_model.take());
+                Self::restore_var("OLLAMA_API_KEY", self.ollama_api_key.take());
+                Self::restore_var("OLLAMA_BASE_URL", self.ollama_base_url.take());
+                Self::restore_var("OLLAMA_MODEL", self.ollama_model.take());
             }
         }
     }
@@ -2889,6 +3226,17 @@ mod tests {
 
         let contents = fs::read_to_string(&expected)?;
         assert!(contents.contains("api_key = \""));
+
+        #[cfg(unix)]
+        {
+            assert_eq!(fs::metadata(&expected)?.permissions().mode() & 0o777, 0o600);
+            let parent = expected.parent().expect("config has parent dir");
+            assert_eq!(fs::metadata(parent)?.permissions().mode() & 0o077, 0);
+
+            fs::set_permissions(&expected, fs::Permissions::from_mode(0o644))?;
+            save_api_key("second-test-key")?;
+            assert_eq!(fs::metadata(&expected)?.permissions().mode() & 0o777, 0o600);
+        }
         Ok(())
     }
 
@@ -2915,6 +3263,75 @@ mod tests {
         assert!(content.contains("reasoning_effort = \"auto\""));
         assert!(!content.contains("api_key ="));
         assert!(ensure_config_file_exists(None)?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_trust_round_trips_through_global_config() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-workspace-trust-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+        let workspace = temp_root.join("project");
+        fs::create_dir_all(&workspace)?;
+
+        assert!(!is_workspace_trusted(&workspace));
+        let saved = save_workspace_trust(&workspace)?;
+
+        assert_eq!(saved, temp_root.join(".deepseek").join("config.toml"));
+        assert!(is_workspace_trusted(&workspace));
+        assert!(!crate::tui::onboarding::needs_trust(&workspace));
+        assert!(
+            !workspace.join(".deepseek").exists(),
+            "trust persistence must not create a project-local .deepseek directory"
+        );
+
+        let parsed: toml::Value = toml::from_str(&fs::read_to_string(saved)?)?;
+        assert_eq!(
+            workspace_trust_level_from_doc(&parsed, &workspace),
+            Some("trusted")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_trust_reads_existing_projects_table() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-existing-project-trust-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+        let workspace = temp_root.join("project");
+        fs::create_dir_all(&workspace)?;
+        let config_path = temp_root.join(".deepseek").join("config.toml");
+        fs::create_dir_all(config_path.parent().unwrap())?;
+        fs::write(
+            &config_path,
+            format!(
+                "[projects.\"{}\"]\ntrust_level = \"trusted\"\n",
+                workspace_config_key(&workspace)
+                    .replace('\\', "\\\\")
+                    .replace('"', "\\\"")
+            ),
+        )?;
+
+        assert!(is_workspace_trusted(&workspace));
+        assert!(!crate::tui::onboarding::needs_trust(&workspace));
         Ok(())
     }
 
@@ -3439,6 +3856,18 @@ api_key = "old-openrouter-key"
     }
 
     #[test]
+    fn normalize_model_name_accepts_provider_prefixed_deepseek_ids() {
+        assert_eq!(
+            normalize_model_name("accounts/fireworks/models/deepseek-v4-flash").as_deref(),
+            Some("accounts/fireworks/models/deepseek-v4-flash")
+        );
+        assert_eq!(
+            normalize_model_name("provider/deepseek-ai/deepseek-v4-pro").as_deref(),
+            Some("provider/deepseek-ai/deepseek-v4-pro")
+        );
+    }
+
+    #[test]
     fn default_context_seams_are_opt_in() {
         let config = Config::default();
         assert!(!config.context.enabled.unwrap_or(false));
@@ -3495,6 +3924,25 @@ api_key = "old-openrouter-key"
     }
 
     #[test]
+    fn deepseek_provider_defaults_to_beta_endpoint() {
+        let config = Config::default();
+
+        assert_eq!(config.api_provider(), ApiProvider::Deepseek);
+        assert_eq!(config.deepseek_base_url(), DEFAULT_DEEPSEEK_BASE_URL);
+    }
+
+    #[test]
+    fn explicit_deepseek_base_url_overrides_beta_default() {
+        let config = Config {
+            base_url: Some("https://api.deepseek.com".to_string()),
+            ..Default::default()
+        };
+
+        assert_eq!(config.api_provider(), ApiProvider::Deepseek);
+        assert_eq!(config.deepseek_base_url(), "https://api.deepseek.com");
+    }
+
+    #[test]
     fn deepseek_model_env_overrides_default_text_model() -> Result<()> {
         let _lock = lock_test_env();
         let nanos = SystemTime::now()
@@ -3519,6 +3967,110 @@ api_key = "old-openrouter-key"
         assert_eq!(
             config.default_text_model.as_deref(),
             Some("deepseek-v4-flash-20260423")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn http_headers_load_from_root_config() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-http-headers-root-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        let config_path = temp_root.join(".deepseek").join("config.toml");
+        ensure_parent_dir(&config_path)?;
+        fs::write(
+            &config_path,
+            r#"
+api_key = "test-key"
+http_headers = { "X-Model-Provider-Id" = "tongyi" }
+"#,
+        )?;
+
+        let config = Config::load(None, None)?;
+        assert_eq!(
+            config
+                .http_headers()
+                .get("X-Model-Provider-Id")
+                .map(String::as_str),
+            Some("tongyi")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn provider_http_headers_extend_and_override_root_config() {
+        let mut providers = ProvidersConfig::default();
+        providers.deepseek.http_headers = Some(HashMap::from([
+            ("X-Model-Provider-Id".to_string(), "tongyi".to_string()),
+            ("X-Shared".to_string(), "provider".to_string()),
+        ]));
+        let config = Config {
+            http_headers: Some(HashMap::from([
+                ("X-Root".to_string(), "root".to_string()),
+                ("X-Shared".to_string(), "root".to_string()),
+            ])),
+            providers: Some(providers),
+            ..Default::default()
+        };
+
+        let headers = config.http_headers();
+        assert_eq!(
+            headers.get("X-Model-Provider-Id").map(String::as_str),
+            Some("tongyi")
+        );
+        assert_eq!(headers.get("X-Root").map(String::as_str), Some("root"));
+        assert_eq!(
+            headers.get("X-Shared").map(String::as_str),
+            Some("provider")
+        );
+    }
+
+    #[test]
+    fn http_headers_env_overrides_config() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-http-headers-env-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        let config_path = temp_root.join(".deepseek").join("config.toml");
+        ensure_parent_dir(&config_path)?;
+        fs::write(
+            &config_path,
+            r#"
+api_key = "test-key"
+http_headers = { "X-Model-Provider-Id" = "from-file" }
+"#,
+        )?;
+        // Safety: test-only environment mutation guarded by a global mutex.
+        unsafe {
+            env::set_var("DEEPSEEK_HTTP_HEADERS", "X-Model-Provider-Id=from-env");
+        }
+
+        let config = Config::load(None, None)?;
+        assert_eq!(
+            config
+                .http_headers()
+                .get("X-Model-Provider-Id")
+                .map(String::as_str),
+            Some("from-env")
         );
         Ok(())
     }
@@ -3770,6 +4322,97 @@ api_key = "old-openrouter-key"
         assert_eq!(config.deepseek_base_url(), DEFAULT_SGLANG_BASE_URL);
         assert_eq!(config.deepseek_api_key()?, "");
         assert!(has_api_key_for(&config, ApiProvider::Sglang));
+        Ok(())
+    }
+
+    #[test]
+    fn ollama_provider_uses_local_defaults_without_api_key() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-ollama-defaults-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        let config = Config {
+            provider: Some("ollama".to_string()),
+            ..Default::default()
+        };
+        config.validate()?;
+        assert_eq!(config.api_provider(), ApiProvider::Ollama);
+        assert_eq!(config.default_model(), DEFAULT_OLLAMA_MODEL);
+        assert_eq!(config.deepseek_base_url(), DEFAULT_OLLAMA_BASE_URL);
+        assert_eq!(config.deepseek_api_key()?, "");
+        assert!(has_api_key_for(&config, ApiProvider::Ollama));
+        Ok(())
+    }
+
+    #[test]
+    fn ollama_model_is_passed_through_verbatim() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-ollama-model-test-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        let config_path = temp_root.join(".deepseek").join("config.toml");
+        ensure_parent_dir(&config_path)?;
+        fs::write(
+            &config_path,
+            r#"provider = "ollama"
+
+[providers.ollama]
+base_url = "http://127.0.0.1:11434/v1"
+model = "qwen2.5-coder:7b"
+"#,
+        )?;
+
+        let config = Config::load(None, None)?;
+        assert_eq!(config.api_provider(), ApiProvider::Ollama);
+        assert_eq!(config.default_model(), "qwen2.5-coder:7b");
+        assert_eq!(config.deepseek_base_url(), "http://127.0.0.1:11434/v1");
+        Ok(())
+    }
+
+    #[test]
+    fn ollama_env_overrides_base_url_and_model() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "deepseek-tui-ollama-env-test-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        // Safety: test-only environment mutation guarded by a global mutex.
+        unsafe {
+            env::set_var("DEEPSEEK_PROVIDER", "ollama-local");
+            env::set_var("OLLAMA_BASE_URL", "http://ollama.example/v1");
+            env::set_var("OLLAMA_MODEL", "deepseek-coder-v2:16b");
+        }
+
+        let config = Config::load(None, None)?;
+        assert_eq!(config.api_provider(), ApiProvider::Ollama);
+        assert_eq!(config.deepseek_base_url(), "http://ollama.example/v1");
+        assert_eq!(config.default_model(), "deepseek-coder-v2:16b");
         Ok(())
     }
 
@@ -4135,7 +4778,7 @@ model = "deepseek-v4-pro"
             cap.context_window,
             crate::models::DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS
         );
-        assert_eq!(cap.max_output, 262_144);
+        assert_eq!(cap.max_output, 384_000);
         assert!(cap.thinking_supported);
         assert!(cap.cache_telemetry_supported);
         assert_eq!(
@@ -4151,7 +4794,7 @@ model = "deepseek-v4-pro"
             cap.context_window,
             crate::models::DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS
         );
-        assert_eq!(cap.max_output, 262_144);
+        assert_eq!(cap.max_output, 384_000);
         assert!(cap.thinking_supported);
         assert!(cap.cache_telemetry_supported);
     }
@@ -4163,7 +4806,7 @@ model = "deepseek-v4-pro"
             cap.context_window,
             crate::models::DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS
         );
-        assert_eq!(cap.max_output, 262_144);
+        assert_eq!(cap.max_output, 384_000);
         assert!(cap.thinking_supported);
         assert!(cap.cache_telemetry_supported);
         assert_eq!(
@@ -4179,7 +4822,7 @@ model = "deepseek-v4-pro"
             cap.context_window,
             crate::models::DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS
         );
-        assert_eq!(cap.max_output, 262_144);
+        assert_eq!(cap.max_output, 384_000);
         assert!(cap.thinking_supported);
         assert!(cap.cache_telemetry_supported);
     }
@@ -4191,7 +4834,7 @@ model = "deepseek-v4-pro"
             cap.context_window,
             crate::models::DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS
         );
-        assert_eq!(cap.max_output, 262_144);
+        assert_eq!(cap.max_output, 384_000);
         assert!(cap.thinking_supported);
         // OpenRouter does not return DeepSeek prompt-cache telemetry.
         assert!(!cap.cache_telemetry_supported);
@@ -4208,7 +4851,7 @@ model = "deepseek-v4-pro"
             cap.context_window,
             crate::models::DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS
         );
-        assert_eq!(cap.max_output, 262_144);
+        assert_eq!(cap.max_output, 384_000);
         assert!(cap.thinking_supported);
         assert!(!cap.cache_telemetry_supported);
     }
@@ -4220,7 +4863,7 @@ model = "deepseek-v4-pro"
             cap.context_window,
             crate::models::DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS
         );
-        assert_eq!(cap.max_output, 262_144);
+        assert_eq!(cap.max_output, 384_000);
         assert!(cap.thinking_supported);
         assert!(!cap.cache_telemetry_supported);
     }
@@ -4232,9 +4875,22 @@ model = "deepseek-v4-pro"
             cap.context_window,
             crate::models::DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS
         );
-        assert_eq!(cap.max_output, 262_144);
+        assert_eq!(cap.max_output, 384_000);
         assert!(cap.thinking_supported);
         assert!(!cap.cache_telemetry_supported);
+    }
+
+    #[test]
+    fn provider_capability_ollama_is_openai_compatible_without_thinking() {
+        let cap = provider_capability(ApiProvider::Ollama, "deepseek-v3.1:671b");
+        assert_eq!(cap.context_window, 8192);
+        assert_eq!(cap.max_output, 4096);
+        assert!(!cap.thinking_supported);
+        assert!(!cap.cache_telemetry_supported);
+        assert_eq!(
+            cap.request_payload_mode,
+            RequestPayloadMode::ChatCompletions
+        );
     }
 
     #[test]

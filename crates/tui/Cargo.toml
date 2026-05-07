@@ -21,8 +21,8 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1.0.100"
 arboard = "3.4"
-deepseek-secrets = { path = "../secrets", version = "0.8.14" }
-deepseek-tools = { path = "../tools", version = "0.8.14" }
+deepseek-secrets = { path = "../secrets", version = "0.8.15" }
+deepseek-tools = { path = "../tools", version = "0.8.15" }
 schemaui = { version = "0.12.0", default-features = false, optional = true }
 async-stream = "0.3.6"
 async-trait = "0.1"
@@ -34,6 +34,7 @@ colored = "3.0.0"
 crossterm = "0.28"
 dotenvy = "0.15.7"
 dirs = "6.0.0"
+fd-lock = "4.0.4"
 futures-util = "0.3.31"
 ratatui = "0.29"
 regex = "1.11"
@@ -80,4 +81,4 @@ libc = "0.2"
 libc = "0.2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.60", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_Diagnostics_Debug"] }
+windows = { version = "0.60", features = ["Win32_Foundation", "Win32_System_Console", "Win32_UI_WindowsAndMessaging", "Win32_System_Diagnostics_Debug"] }

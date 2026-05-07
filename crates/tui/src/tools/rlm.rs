@@ -93,10 +93,6 @@ impl ToolSpec for RlmTool {
                     "type": "string",
                     "description": "Inline content to load as PROMPT. Use only when the input isn't a file you can point at. Capped at 200k chars."
                 },
-                "child_model": {
-                    "type": "string",
-                    "description": "Model for sub-LLM (`llm_query`) calls inside the REPL. Default: deepseek-v4-flash."
-                },
                 "max_depth": {
                     "type": "integer",
                     "description": "Recursion budget for `sub_rlm()` calls. 0 disables recursion; default 1 matches paper experiments."
@@ -182,12 +178,10 @@ impl ToolSpec for RlmTool {
             ));
         }
 
-        let child_model = input
-            .get("child_model")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .unwrap_or(DEFAULT_CHILD_MODEL)
-            .to_string();
+        // Pin child calls to Flash so model-generated tool args cannot quietly
+        // turn fanout work into Pro-billed requests. The RLM root still uses
+        // the session model; child helper calls are the cheap batch layer.
+        let child_model = DEFAULT_CHILD_MODEL.to_string();
 
         let max_depth = input
             .get("max_depth")
@@ -353,7 +347,6 @@ mod tests {
         assert!(schema["properties"]["task"].is_object());
         assert!(schema["properties"]["file_path"].is_object());
         assert!(schema["properties"]["content"].is_object());
-        assert!(schema["properties"]["child_model"].is_object());
         assert!(schema["properties"]["max_depth"].is_object());
         let required = schema["required"].as_array().unwrap();
         assert!(required.iter().any(|v| v == "task"));

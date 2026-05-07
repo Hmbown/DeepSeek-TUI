@@ -3,6 +3,7 @@
 //! This module provides a modular command system inspired by Codex-rs.
 //! Commands are organized by category and dispatched through a central registry.
 
+mod anchor;
 mod attachment;
 mod config;
 mod core;
@@ -14,9 +15,11 @@ mod init;
 mod jobs;
 mod mcp;
 mod memory;
+mod network;
 mod note;
 mod provider;
 mod queue;
+mod rename;
 mod restore;
 mod review;
 mod session;
@@ -133,6 +136,12 @@ impl CommandInfo {
 pub const COMMANDS: &[CommandInfo] = &[
     // Core commands
     CommandInfo {
+        name: "anchor",
+        aliases: &[],
+        usage: "/anchor <text> | /anchor list | /anchor remove <n>",
+        description_id: MessageId::CmdAnchorDescription,
+    },
+    CommandInfo {
         name: "help",
         aliases: &["?"],
         usage: "/help [command]",
@@ -240,7 +249,19 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "/mcp [init|add stdio <name> <command> [args...]|add http <name> <url>|enable <name>|disable <name>|remove <name>|validate|reload]",
         description_id: MessageId::CmdMcpDescription,
     },
+    CommandInfo {
+        name: "network",
+        aliases: &[],
+        usage: "/network [list|allow <host>|deny <host>|remove <host>|default <allow|deny|prompt>]",
+        description_id: MessageId::CmdNetworkDescription,
+    },
     // Session commands
+    CommandInfo {
+        name: "rename",
+        aliases: &[],
+        usage: "/rename <new title>",
+        description_id: MessageId::CmdRenameDescription,
+    },
     CommandInfo {
         name: "save",
         aliases: &[],
@@ -475,6 +496,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
     // Match command or alias
     match command {
         // Core commands
+        "anchor" => anchor::anchor(app, arg),
         "help" | "?" => core::help(app, arg),
         "clear" => core::clear(app),
         "exit" | "quit" | "q" => core::exit(),
@@ -493,8 +515,10 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "task" | "tasks" => task::task(app, arg),
         "jobs" | "job" => jobs::jobs(app, arg),
         "mcp" => mcp::mcp(app, arg),
+        "network" => network::network(app, arg),
 
         // Session commands
+        "rename" => rename::rename(app, arg),
         "save" => session::save(app, arg),
         "sessions" | "resume" => session::sessions(app, arg),
         "load" => session::load(app, arg),

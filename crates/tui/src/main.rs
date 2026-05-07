@@ -12,6 +12,7 @@ use dotenvy::dotenv;
 use tempfile::NamedTempFile;
 use wait_timeout::ChildExt;
 
+mod acp_server;
 mod audit;
 mod auto_reasoning;
 mod automation_manager;
@@ -74,8 +75,22 @@ use crate::features::{Feature, render_feature_table};
 use crate::llm_client::LlmClient;
 use crate::mcp::{McpConfig, McpPool, McpServerConfig};
 use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt};
-use crate::session_manager::{SessionManager, create_saved_session};
+use crate::session_manager::{SessionManager, create_saved_session, truncate_id};
 use crate::tui::history::{summarize_tool_args, summarize_tool_output};
+
+#[cfg(windows)]
+fn configure_windows_console_utf8() {
+    use windows::Win32::System::Console::{SetConsoleCP, SetConsoleOutputCP};
+
+    const CP_UTF8: u32 = 65001;
+    unsafe {
+        let _ = SetConsoleCP(CP_UTF8);
+        let _ = SetConsoleOutputCP(CP_UTF8);
+    }
+}
+
+#[cfg(not(windows))]
+fn configure_windows_console_utf8() {}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -125,7 +140,7 @@ struct Cli {
     #[arg(short, long)]
     resume: Option<String>,
 
-    /// Continue the most recent session
+    /// Continue the most recent session in this workspace
     #[arg(short = 'c', long = "continue")]
     continue_session: bool,
 
@@ -134,6 +149,7 @@ struct Cli {
     no_alt_screen: bool,
 
     /// Enable TUI mouse capture for internal scrolling and transcript selection
+    /// (default off on Windows)
     #[arg(long = "mouse-capture", conflicts_with = "no_mouse_capture")]
     mouse_capture: bool,
 
@@ -229,7 +245,7 @@ enum Commands {
         /// Conversation/session id (UUID or prefix)
         #[arg(value_name = "SESSION_ID")]
         session_id: Option<String>,
-        /// Continue the most recent session without a picker
+        /// Continue the most recent session in this workspace without a picker
         #[arg(long = "last", default_value_t = false, conflicts_with = "session_id")]
         last: bool,
     },
@@ -238,7 +254,7 @@ enum Commands {
         /// Conversation/session id (UUID or prefix)
         #[arg(value_name = "SESSION_ID")]
         session_id: Option<String>,
-        /// Fork the most recent session without a picker
+        /// Fork the most recent session in this workspace without a picker
         #[arg(long = "last", default_value_t = false, conflicts_with = "session_id")]
         last: bool,
     },
@@ -387,6 +403,9 @@ struct ServeArgs {
     /// Start runtime HTTP/SSE API server
     #[arg(long)]
     http: bool,
+    /// Start ACP server over stdio for editor clients such as Zed
+    #[arg(long)]
+    acp: bool,
     /// Bind host for HTTP server (default localhost)
     #[arg(long, default_value = "127.0.0.1")]
     host: String,
@@ -402,6 +421,10 @@ struct ServeArgs {
     /// `[runtime_api] cors_origins` from `config.toml`. Whalescale#255.
     #[arg(long = "cors-origin", value_name = "URL")]
     cors_origin: Vec<String>,
+    /// Require this bearer token for `/v1/*` runtime API routes. Also reads
+    /// `DEEPSEEK_RUNTIME_TOKEN` when omitted.
+    #[arg(long = "auth-token", value_name = "TOKEN")]
+    auth_token: Option<String>,
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -538,6 +561,8 @@ enum SandboxCommand {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    configure_windows_console_utf8();
+
     // Set up process panic hook before anything else — writes crash dumps
     // to ~/.deepseek/crashes/ even if the panic happens before tokio is up,
     // and restores the terminal so a panicked TUI doesn't leave the user's
@@ -689,8 +714,12 @@ async fn main() -> Result<()> {
                 let workspace = cli.workspace.clone().unwrap_or_else(|| {
                     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
                 });
-                if args.mcp && args.http {
-                    bail!("Choose exactly one server mode: --mcp or --http");
+                let selected_modes = [args.mcp, args.http, args.acp]
+                    .into_iter()
+                    .filter(|selected| *selected)
+                    .count();
+                if selected_modes != 1 {
+                    bail!("Choose exactly one server mode: --mcp, --http, or --acp");
                 }
                 if args.mcp {
                     mcp_server::run_mcp_server(workspace)
@@ -705,21 +734,28 @@ async fn main() -> Result<()> {
                             port: args.port,
                             workers: args.workers.clamp(1, 8),
                             cors_origins,
+                            auth_token: args.auth_token,
                         },
                     )
                     .await
+                } else if args.acp {
+                    let config = load_config_from_cli(&cli)?;
+                    let model = config.default_model();
+                    acp_server::run_acp_server(config, model, workspace).await
                 } else {
-                    bail!("No server mode specified. Use --mcp or --http.")
+                    unreachable!("server mode count checked above")
                 }
             }
             Commands::Resume { session_id, last } => {
                 let config = load_config_from_cli(&cli)?;
-                let resume_id = resolve_session_id(session_id, last)?;
+                let workspace = resolve_workspace(&cli);
+                let resume_id = resolve_session_id(session_id, last, &workspace)?;
                 run_interactive(&cli, &config, Some(resume_id), None).await
             }
             Commands::Fork { session_id, last } => {
                 let config = load_config_from_cli(&cli)?;
-                let new_session_id = fork_session(session_id, last)?;
+                let workspace = resolve_workspace(&cli);
+                let new_session_id = fork_session(session_id, last, &workspace)?;
                 run_interactive(&cli, &config, Some(new_session_id), None).await
             }
         };
@@ -734,11 +770,8 @@ async fn main() -> Result<()> {
 
     // Handle session resume
     let resume_session_id = if cli.continue_session {
-        // Get most recent session
-        match session_manager::SessionManager::default_location() {
-            Ok(manager) => manager.get_latest_session().ok().flatten().map(|m| m.id),
-            Err(_) => None,
-        }
+        let workspace = resolve_workspace(&cli);
+        latest_session_id_for_workspace(&workspace).ok().flatten()
     } else if let Some(id) = cli.resume.clone() {
         Some(id)
     } else if !cli.fresh {
@@ -1217,10 +1250,23 @@ fn report_write_status(label: &str, path: &Path, status: WriteStatus) {
 enum ApiKeySource {
     Env,
     Config,
+    Keyring,
     Missing,
 }
 
 fn resolve_api_key_source(config: &Config) -> ApiKeySource {
+    if std::env::var("DEEPSEEK_API_KEY")
+        .ok()
+        .filter(|k| !k.trim().is_empty())
+        .is_some()
+    {
+        match std::env::var("DEEPSEEK_API_KEY_SOURCE").ok().as_deref() {
+            Some("config") => return ApiKeySource::Config,
+            Some("keyring") => return ApiKeySource::Keyring,
+            _ => {}
+        }
+    }
+
     if config
         .api_key
         .as_ref()
@@ -1275,6 +1321,10 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
             "  {} api_key: set via DEEPSEEK_API_KEY",
             "✓".truecolor(aqua_r, aqua_g, aqua_b)
         ),
+        ApiKeySource::Keyring => println!(
+            "  {} api_key: set via OS keyring",
+            "✓".truecolor(aqua_r, aqua_g, aqua_b)
+        ),
         ApiKeySource::Config => println!(
             "  {} api_key: set via config",
             "✓".truecolor(aqua_r, aqua_g, aqua_b)
@@ -1305,6 +1355,9 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
                     "VLLM_API_KEY",
                     "deepseek auth set --provider vllm --api-key \"...\"",
                 ),
+                crate::config::ApiProvider::Ollama => {
+                    ("OLLAMA_API_KEY", "deepseek auth set --provider ollama")
+                }
                 crate::config::ApiProvider::Deepseek | crate::config::ApiProvider::DeepseekCN => {
                     ("DEEPSEEK_API_KEY", "deepseek auth set --provider deepseek")
                 }
@@ -1319,19 +1372,14 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
                     crate::config::ApiProvider::Fireworks => "fireworks",
                     crate::config::ApiProvider::Sglang => "sglang",
                     crate::config::ApiProvider::Vllm => "vllm",
+                    crate::config::ApiProvider::Ollama => "ollama",
                     crate::config::ApiProvider::Deepseek
                     | crate::config::ApiProvider::DeepseekCN => "deepseek",
                 }
             );
         }
     }
-    println!(
-        "  · base_url: {}",
-        config
-            .base_url
-            .as_deref()
-            .unwrap_or("https://api.deepseek.com")
-    );
+    println!("  · base_url: {}", config.deepseek_base_url());
     let model = config
         .default_text_model
         .clone()
@@ -1518,6 +1566,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
 
     // Per-provider state: env + config file only (no values printed).
     // Keep doctor/status prompt-free even for unsigned rebuilt binaries.
+    let dispatcher_api_key_source = std::env::var("DEEPSEEK_API_KEY_SOURCE").ok();
     for (provider, slot, env_names) in [
         (
             crate::config::ApiProvider::Deepseek,
@@ -1554,6 +1603,11 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             "vllm",
             &["VLLM_API_KEY"][..],
         ),
+        (
+            crate::config::ApiProvider::Ollama,
+            "ollama",
+            &["OLLAMA_API_KEY"][..],
+        ),
     ] {
         let in_env = env_names.iter().any(|n| {
             std::env::var(n)
@@ -1561,11 +1615,16 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
                 .filter(|v| !v.trim().is_empty())
                 .is_some()
         });
+        let injected_runtime_key = matches!(
+            dispatcher_api_key_source.as_deref(),
+            Some("keyring" | "env" | "cli")
+        );
         let in_config = config
             .provider_config_for(provider)
             .and_then(|entry| entry.api_key.as_ref())
             .is_some_and(|v| !v.trim().is_empty())
             || (matches!(provider, crate::config::ApiProvider::Deepseek)
+                && !injected_runtime_key
                 && config
                     .api_key
                     .as_ref()
@@ -1582,13 +1641,24 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             if in_config { "yes" } else { "no" }
         );
     }
-    println!("  · credential precedence: ~/.deepseek/config.toml, then env");
+    println!("  · credential precedence: ~/.deepseek/config.toml, OS keyring, then env");
 
     let api_key_source = resolve_api_key_source(config);
     let has_api_key = if config.deepseek_api_key().is_ok() {
         let source_label = match api_key_source {
             ApiKeySource::Config => "config.toml",
+            ApiKeySource::Keyring => "OS keyring",
             ApiKeySource::Env => "environment",
+            ApiKeySource::Missing
+                if matches!(
+                    config.api_provider(),
+                    crate::config::ApiProvider::Sglang
+                        | crate::config::ApiProvider::Vllm
+                        | crate::config::ApiProvider::Ollama
+                ) =>
+            {
+                "optional local auth"
+            }
             ApiKeySource::Missing => "unknown source",
         };
         println!(
@@ -1610,8 +1680,12 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     // API connectivity test
     println!();
     println!("{}", "API Connectivity:".bold());
+    let api_target = doctor_api_target(config);
+    println!("  · provider: {}", api_target.provider);
+    println!("  · base_url: {}", api_target.base_url);
+    println!("  · model: {}", api_target.model);
     if has_api_key {
-        print!("  {} Testing connection to DeepSeek API...", "·".dimmed());
+        print!("  {} Testing connection...", "·".dimmed());
         use std::io::Write;
         std::io::stdout().flush().ok();
 
@@ -1630,8 +1704,17 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
                     "✗".truecolor(red_r, red_g, red_b)
                 );
                 if error_msg.contains("401") || error_msg.contains("Unauthorized") {
-                    println!("    Invalid API key. Check your DEEPSEEK_API_KEY or config.toml");
-                    if matches!(api_key_source, ApiKeySource::Env) {
+                    println!(
+                        "    Invalid API key. Check `deepseek auth status`, DEEPSEEK_API_KEY, or config.toml"
+                    );
+                    if matches!(api_key_source, ApiKeySource::Keyring) {
+                        println!(
+                            "    The rejected key came from the OS keyring via the dispatcher."
+                        );
+                        println!(
+                            "    Run `deepseek auth status` to inspect config/keyring/env sources."
+                        );
+                    } else if matches!(api_key_source, ApiKeySource::Env) {
                         println!(
                             "    The rejected key came from DEEPSEEK_API_KEY; no saved config key is present."
                         );
@@ -1644,7 +1727,9 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
                         "    API key lacks permissions. Verify key is active at platform.deepseek.com"
                     );
                 } else if error_msg.contains("timeout") || error_msg.contains("Timeout") {
-                    println!("    Connection timed out. Check your network connection");
+                    for line in doctor_timeout_recovery_lines(config) {
+                        println!("    {line}");
+                    }
                 } else if error_msg.contains("dns") || error_msg.contains("resolve") {
                     println!("    DNS resolution failed. Check your network connection");
                 } else if error_msg.contains("connect") {
@@ -1745,18 +1830,25 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     let global_skills_dir = config.skills_dir();
     let agents_skills_dir = workspace.join(".agents").join("skills");
     let local_skills_dir = workspace.join("skills");
+    let agents_global_skills_dir = crate::skills::agents_global_skills_dir();
     // #432: cross-tool skill discovery dirs. Presence is reported here
     // even though they sit lower in the precedence chain so users can
-    // see at a glance whether a `.opencode/skills/` or `.claude/skills/`
-    // directory is contributing to the merged catalogue.
+    // see at a glance whether a `.opencode/skills/`, `.claude/skills/`,
+    // `.cursor/skills/`, or global agentskills.io directory is contributing
+    // to the merged catalogue.
     let opencode_skills_dir = workspace.join(".opencode").join("skills");
     let claude_skills_dir = workspace.join(".claude").join("skills");
     let selected_skills_dir = if agents_skills_dir.exists() {
-        &agents_skills_dir
+        agents_skills_dir.clone()
     } else if local_skills_dir.exists() {
-        &local_skills_dir
+        local_skills_dir.clone()
+    } else if config.skills_dir.is_none()
+        && let Some(global_agents) = agents_global_skills_dir.as_ref()
+        && global_agents.exists()
+    {
+        global_agents.clone()
     } else {
-        &global_skills_dir
+        global_skills_dir.clone()
     };
 
     let describe_dir = |dir: &Path| -> usize {
@@ -1793,6 +1885,23 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             "·".dimmed(),
             crate::utils::display_path(&agents_skills_dir)
         );
+    }
+
+    if let Some(agents_global_skills_dir) = agents_global_skills_dir.as_ref() {
+        if agents_global_skills_dir.exists() {
+            println!(
+                "  {} global .agents skills dir found at {} ({} items)",
+                "✓".truecolor(aqua_r, aqua_g, aqua_b),
+                crate::utils::display_path(agents_global_skills_dir),
+                describe_dir(agents_global_skills_dir)
+            );
+        } else {
+            println!(
+                "  {} global .agents skills dir not found at {}",
+                "·".dimmed(),
+                crate::utils::display_path(agents_global_skills_dir)
+            );
+        }
     }
 
     if global_skills_dir.exists() {
@@ -1833,9 +1942,15 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     println!(
         "  {} selected skills dir: {}",
         "·".dimmed(),
-        crate::utils::display_path(selected_skills_dir)
+        crate::utils::display_path(&selected_skills_dir)
     );
-    if !agents_skills_dir.exists() && !local_skills_dir.exists() && !global_skills_dir.exists() {
+    if !agents_skills_dir.exists()
+        && !local_skills_dir.exists()
+        && !agents_global_skills_dir
+            .as_ref()
+            .is_some_and(|dir| dir.exists())
+        && !global_skills_dir.exists()
+    {
         println!("    Run `deepseek setup --skills` (or add --local for ./skills).");
     }
 
@@ -1977,6 +2092,7 @@ fn run_doctor_json(
     let api_key_state = match resolve_api_key_source(config) {
         ApiKeySource::Env => "env",
         ApiKeySource::Config => "config",
+        ApiKeySource::Keyring => "keyring",
         ApiKeySource::Missing => "missing",
     };
 
@@ -2019,19 +2135,41 @@ fn run_doctor_json(
     let global_skills_dir = config.skills_dir();
     let agents_skills_dir = workspace.join(".agents").join("skills");
     let local_skills_dir = workspace.join("skills");
+    let agents_global_skills_dir = crate::skills::agents_global_skills_dir();
     // #432: cross-tool skill discovery dirs surface in the JSON
     // report so external dashboards can see whether any
-    // `.opencode/skills/` or `.claude/skills/` content is contributing
-    // to the merged catalogue.
+    // `.opencode/skills/`, `.claude/skills/`, `.cursor/skills/`, or
+    // global agentskills.io content is contributing to the merged catalogue.
     let opencode_skills_dir = workspace.join(".opencode").join("skills");
     let claude_skills_dir = workspace.join(".claude").join("skills");
     let selected_skills_dir = if agents_skills_dir.exists() {
         agents_skills_dir.clone()
     } else if local_skills_dir.exists() {
         local_skills_dir.clone()
+    } else if config.skills_dir.is_none()
+        && let Some(global_agents) = agents_global_skills_dir.as_ref()
+        && global_agents.exists()
+    {
+        global_agents.clone()
     } else {
         global_skills_dir.clone()
     };
+    let agents_global_summary = agents_global_skills_dir
+        .as_ref()
+        .map(|path| {
+            json!({
+                "path": path.display().to_string(),
+                "present": path.exists(),
+                "count": skills_count_for(path),
+            })
+        })
+        .unwrap_or_else(|| {
+            json!({
+                "path": null,
+                "present": false,
+                "count": 0,
+            })
+        });
 
     let tools_dir = default_tools_dir();
     let plugins_dir = default_plugins_dir();
@@ -2061,6 +2199,7 @@ fn run_doctor_json(
         "path": memory_path.display().to_string(),
         "file_present": memory_path.exists(),
     });
+    let api_target = doctor_api_target(config);
 
     let report = json!({
         "version": env!("CARGO_PKG_VERSION"),
@@ -2070,14 +2209,8 @@ fn run_doctor_json(
         "api_key": {
             "source": api_key_state,
         },
-        "base_url": config
-            .base_url
-            .clone()
-            .unwrap_or_else(|| "https://api.deepseek.com".to_string()),
-        "default_text_model": config
-            .default_text_model
-            .clone()
-            .unwrap_or_else(|| DEFAULT_TEXT_MODEL.to_string()),
+        "base_url": api_target.base_url,
+        "default_text_model": api_target.model,
         "memory": memory_summary,
         "mcp": mcp_summary,
         "skills": {
@@ -2092,6 +2225,7 @@ fn run_doctor_json(
                 "present": agents_skills_dir.exists(),
                 "count": skills_count_for(&agents_skills_dir),
             },
+            "agents_global": agents_global_summary,
             "local": {
                 "path": local_skills_dir.display().to_string(),
                 "present": local_skills_dir.exists(),
@@ -2181,6 +2315,60 @@ fn provider_capability_report(config: &Config) -> serde_json::Value {
         "cache_telemetry_supported": cap.cache_telemetry_supported,
         "request_payload_mode": serde_json::to_value(cap.request_payload_mode).unwrap_or_default(),
     })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DoctorApiTarget {
+    provider: &'static str,
+    base_url: String,
+    model: String,
+}
+
+fn doctor_api_target(config: &Config) -> DoctorApiTarget {
+    let provider = config.api_provider();
+    DoctorApiTarget {
+        provider: provider.as_str(),
+        base_url: config.deepseek_base_url(),
+        model: config.default_model(),
+    }
+}
+
+fn doctor_timeout_recovery_lines(config: &Config) -> Vec<String> {
+    let target = doctor_api_target(config);
+    let mut lines = vec![format!(
+        "Connection timed out while reaching {}.",
+        target.base_url
+    )];
+
+    match config.api_provider() {
+        crate::config::ApiProvider::Deepseek
+            if target.base_url.contains("api.deepseek.com")
+                && !target.base_url.contains("api.deepseeki.com") =>
+        {
+            lines.push(
+                "If you are in mainland China, set `provider = \"deepseek-cn\"` or `base_url = \"https://api.deepseeki.com\"` in ~/.deepseek/config.toml, then rerun `deepseek doctor`."
+                    .to_string(),
+            );
+        }
+        crate::config::ApiProvider::Deepseek | crate::config::ApiProvider::DeepseekCN => {
+            lines.push(
+                "If this is a custom DeepSeek-compatible endpoint, confirm it serves `/v1/models` and `/v1/chat/completions` over HTTPS."
+                    .to_string(),
+            );
+        }
+        _ => {
+            lines.push(
+                "Confirm the configured provider endpoint is reachable and OpenAI-compatible for `/v1/models` and `/v1/chat/completions`."
+                    .to_string(),
+            );
+        }
+    }
+
+    lines.push(
+        "Run `deepseek doctor --json` and include `base_url`, `default_text_model`, and `api_connectivity` when filing an issue."
+            .to_string(),
+    );
+    lines
 }
 
 fn run_execpolicy_command(command: ExecpolicyCommand) -> Result<()> {
@@ -2338,7 +2526,7 @@ fn list_sessions(limit: usize, search: Option<String>) -> Result<()> {
         "<session-id>".dimmed()
     );
     println!(
-        "Continue latest: {}",
+        "Continue latest in this workspace: {}",
         "deepseek --continue".truecolor(blue_r, blue_g, blue_b)
     );
 
@@ -2436,9 +2624,14 @@ fn run_logout() -> Result<()> {
     Ok(())
 }
 
-fn resolve_session_id(session_id: Option<String>, last: bool) -> Result<String> {
+fn resolve_session_id(session_id: Option<String>, last: bool, workspace: &Path) -> Result<String> {
     if last {
-        return Ok("latest".to_string());
+        return latest_session_id_for_workspace(workspace)?.ok_or_else(|| {
+            anyhow!(
+                "No saved sessions found for workspace {}. Use `deepseek sessions` to list all sessions, or `deepseek resume <SESSION_ID>` to resume one explicitly.",
+                workspace.display()
+            )
+        });
     }
     if let Some(id) = session_id {
         return Ok(id);
@@ -2446,15 +2639,25 @@ fn resolve_session_id(session_id: Option<String>, last: bool) -> Result<String> 
     pick_session_id()
 }
 
-fn fork_session(session_id: Option<String>, last: bool) -> Result<String> {
+fn latest_session_id_for_workspace(workspace: &Path) -> std::io::Result<Option<String>> {
+    let manager = SessionManager::default_location()?;
+    Ok(manager
+        .get_latest_session_for_workspace(workspace)?
+        .map(|session| session.id))
+}
+
+fn fork_session(session_id: Option<String>, last: bool, workspace: &Path) -> Result<String> {
     let manager = SessionManager::default_location()?;
     let saved = if last {
-        let Some(meta) = manager.get_latest_session()? else {
-            bail!("No saved sessions found.");
+        let Some(meta) = manager.get_latest_session_for_workspace(workspace)? else {
+            bail!(
+                "No saved sessions found for workspace {}.",
+                workspace.display()
+            );
         };
         manager.load_session(&meta.id)?
     } else {
-        let id = resolve_session_id(session_id, false)?;
+        let id = resolve_session_id(session_id, false, workspace)?;
         manager.load_session_by_prefix(&id)?
     };
 
@@ -2470,6 +2673,19 @@ fn fork_session(session_id: Option<String>, last: bool) -> Result<String> {
         system_prompt.as_ref(),
     );
     manager.save_session(&forked)?;
+
+    let source_title = saved.metadata.title.trim();
+    let source_label = if source_title.is_empty() {
+        "session".to_string()
+    } else {
+        format!("\"{source_title}\"")
+    };
+    println!(
+        "Forked {source_label} ({source_id}) → new session {new_id}",
+        source_id = truncate_id(&saved.metadata.id),
+        new_id = truncate_id(&forked.metadata.id),
+    );
+
     Ok(forked.metadata.id)
 }
 
@@ -2605,10 +2821,8 @@ async fn run_pr(
 
     let prompt = format_pr_prompt(number, &view, &diff);
     let resume_session_id = if cli.continue_session {
-        match session_manager::SessionManager::default_location() {
-            Ok(manager) => manager.get_latest_session().ok().flatten().map(|m| m.id),
-            Err(_) => None,
-        }
+        let workspace = resolve_workspace(cli);
+        latest_session_id_for_workspace(&workspace).ok().flatten()
     } else {
         cli.resume.clone()
     };
@@ -3317,6 +3531,16 @@ fn should_use_alt_screen(cli: &Cli, config: &Config) -> bool {
 }
 
 fn should_use_mouse_capture(cli: &Cli, config: &Config, use_alt_screen: bool) -> bool {
+    let terminal_emulator = std::env::var("TERMINAL_EMULATOR").ok();
+    should_use_mouse_capture_with(cli, config, use_alt_screen, terminal_emulator.as_deref())
+}
+
+fn should_use_mouse_capture_with(
+    cli: &Cli,
+    config: &Config,
+    use_alt_screen: bool,
+    terminal_emulator: Option<&str>,
+) -> bool {
     if !use_alt_screen || cli.no_mouse_capture {
         return false;
     }
@@ -3327,7 +3551,26 @@ fn should_use_mouse_capture(cli: &Cli, config: &Config, use_alt_screen: bool) ->
         .tui
         .as_ref()
         .and_then(|tui| tui.mouse_capture)
-        .unwrap_or(true)
+        .unwrap_or_else(|| default_mouse_capture_enabled(terminal_emulator))
+}
+
+/// Whether to enable terminal mouse capture by default for this platform/host.
+///
+/// Returns `false` on Windows (legacy console mouse-mode reporting is flaky;
+/// `--mouse-capture` opts in) and on JetBrains' JediTerm, which advertises
+/// mouse support but delivers SGR mouse-event escape sequences as raw text
+/// in the input stream — visible to users as garbled characters in the
+/// composer when they move the mouse over the TUI (#878, #898). The user
+/// can still opt back in with `[tui] mouse_capture = true` in
+/// `~/.deepseek/config.toml` or `--mouse-capture`.
+fn default_mouse_capture_enabled(terminal_emulator: Option<&str>) -> bool {
+    if cfg!(windows) {
+        return false;
+    }
+    if matches!(terminal_emulator, Some(t) if t.eq_ignore_ascii_case("JetBrains-JediTerm")) {
+        return false;
+    }
+    true
 }
 
 fn is_zellij() -> bool {
@@ -3828,6 +4071,11 @@ async fn run_exec_agent(
         memory_path: config.memory_path(),
         strict_tool_mode: config.strict_tool_mode.unwrap_or(false),
         goal_objective: None,
+        locale_tag: crate::localization::resolve_locale(
+            &crate::settings::Settings::load().unwrap_or_default().locale,
+        )
+        .tag()
+        .to_string(),
         workshop: config.workshop.clone(),
     };
 
@@ -3850,6 +4098,15 @@ async fn run_exec_agent(
             allow_shell: auto_approve || config.allow_shell(),
             trust_mode,
             auto_approve,
+            approval_mode: if auto_approve {
+                crate::tui::approval::ApprovalMode::Auto
+            } else {
+                config
+                    .approval_policy
+                    .as_deref()
+                    .and_then(crate::tui::approval::ApprovalMode::from_config_value)
+                    .unwrap_or_default()
+            },
         })
         .await?;
 
@@ -4005,6 +4262,61 @@ async fn run_exec_agent(
 }
 
 #[cfg(test)]
+mod doctor_endpoint_tests {
+    use super::*;
+
+    #[test]
+    fn doctor_api_target_reports_default_endpoint() {
+        let config = Config::default();
+
+        let target = doctor_api_target(&config);
+
+        assert_eq!(target.provider, "deepseek");
+        assert_eq!(target.base_url, crate::config::DEFAULT_DEEPSEEK_BASE_URL);
+        assert_eq!(target.model, crate::config::DEFAULT_TEXT_MODEL);
+    }
+
+    #[test]
+    fn doctor_api_target_reports_deepseek_cn_endpoint() {
+        let config = Config {
+            provider: Some("deepseek-cn".to_string()),
+            ..Default::default()
+        };
+
+        let target = doctor_api_target(&config);
+
+        assert_eq!(target.provider, "deepseek-cn");
+        assert_eq!(target.base_url, crate::config::DEFAULT_DEEPSEEKCN_BASE_URL);
+        assert_eq!(target.model, crate::config::DEFAULT_TEXT_MODEL);
+    }
+
+    #[test]
+    fn timeout_recovery_points_global_deepseek_users_to_cn_endpoint() {
+        let config = Config::default();
+
+        let text = doctor_timeout_recovery_lines(&config).join("\n");
+
+        assert!(text.contains("api.deepseeki.com"));
+        assert!(text.contains("provider = \"deepseek-cn\""));
+        assert!(text.contains("deepseek doctor --json"));
+    }
+
+    #[test]
+    fn timeout_recovery_for_custom_provider_checks_openai_compatibility() {
+        let config = Config {
+            provider: Some("vllm".to_string()),
+            ..Default::default()
+        };
+
+        let text = doctor_timeout_recovery_lines(&config).join("\n");
+
+        assert!(text.contains("/v1/models"));
+        assert!(text.contains("/v1/chat/completions"));
+        assert!(!text.contains("api.deepseeki.com"));
+    }
+}
+
+#[cfg(test)]
 mod terminal_mode_tests {
     use super::*;
     use clap::Parser;
@@ -4014,11 +4326,21 @@ mod terminal_mode_tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn mouse_capture_defaults_on_when_alternate_screen_is_active() {
         let cli = parse_cli(&["deepseek"]);
         let config = Config::default();
 
-        assert!(should_use_mouse_capture(&cli, &config, true));
+        assert!(should_use_mouse_capture_with(&cli, &config, true, None));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn mouse_capture_defaults_off_on_windows_when_alternate_screen_is_active() {
+        let cli = parse_cli(&["deepseek"]);
+        let config = Config::default();
+
+        assert!(!should_use_mouse_capture_with(&cli, &config, true, None));
     }
 
     #[test]
@@ -4026,7 +4348,7 @@ mod terminal_mode_tests {
         let cli = parse_cli(&["deepseek", "--no-mouse-capture"]);
         let config = Config::default();
 
-        assert!(!should_use_mouse_capture(&cli, &config, true));
+        assert!(!should_use_mouse_capture_with(&cli, &config, true, None));
     }
 
     #[test]
@@ -4039,11 +4361,12 @@ mod terminal_mode_tests {
                 terminal_probe_timeout_ms: None,
                 status_items: None,
                 osc8_links: None,
+                notification_condition: None,
             }),
             ..Config::default()
         };
 
-        assert!(!should_use_mouse_capture(&cli, &config, true));
+        assert!(!should_use_mouse_capture_with(&cli, &config, true, None));
     }
 
     #[test]
@@ -4051,7 +4374,7 @@ mod terminal_mode_tests {
         let cli = parse_cli(&["deepseek", "--mouse-capture"]);
         let config = Config::default();
 
-        assert!(should_use_mouse_capture(&cli, &config, true));
+        assert!(should_use_mouse_capture_with(&cli, &config, true, None));
     }
 
     #[test]
@@ -4064,11 +4387,12 @@ mod terminal_mode_tests {
                 terminal_probe_timeout_ms: None,
                 status_items: None,
                 osc8_links: None,
+                notification_condition: None,
             }),
             ..Config::default()
         };
 
-        assert!(should_use_mouse_capture(&cli, &config, true));
+        assert!(should_use_mouse_capture_with(&cli, &config, true, None));
     }
 
     #[test]
@@ -4076,7 +4400,78 @@ mod terminal_mode_tests {
         let cli = parse_cli(&["deepseek", "--mouse-capture"]);
         let config = Config::default();
 
-        assert!(!should_use_mouse_capture(&cli, &config, false));
+        assert!(!should_use_mouse_capture_with(&cli, &config, false, None));
+    }
+
+    // Issue #878 / #898: JetBrains JediTerm advertises mouse support but
+    // forwards SGR mouse-event escapes as raw input characters, producing
+    // the "input box auto-fills with garbled characters when I move the
+    // mouse" failure mode in PyCharm/IDEA terminals. Default the capture
+    // off when we see TERMINAL_EMULATOR=JetBrains-JediTerm; explicit
+    // config / --mouse-capture still wins.
+
+    #[test]
+    fn mouse_capture_defaults_off_in_jetbrains_jediterm() {
+        let cli = parse_cli(&["deepseek"]);
+        let config = Config::default();
+
+        assert!(!should_use_mouse_capture_with(
+            &cli,
+            &config,
+            true,
+            Some("JetBrains-JediTerm"),
+        ));
+    }
+
+    #[test]
+    fn jetbrains_default_off_is_case_insensitive() {
+        let cli = parse_cli(&["deepseek"]);
+        let config = Config::default();
+
+        // JetBrains has occasionally varied the casing across releases;
+        // a case-insensitive match keeps the protection in place.
+        assert!(!should_use_mouse_capture_with(
+            &cli,
+            &config,
+            true,
+            Some("jetbrains-jediterm"),
+        ));
+    }
+
+    #[test]
+    fn mouse_capture_flag_overrides_jetbrains_default() {
+        let cli = parse_cli(&["deepseek", "--mouse-capture"]);
+        let config = Config::default();
+
+        assert!(should_use_mouse_capture_with(
+            &cli,
+            &config,
+            true,
+            Some("JetBrains-JediTerm"),
+        ));
+    }
+
+    #[test]
+    fn config_mouse_capture_true_overrides_jetbrains_default() {
+        let cli = parse_cli(&["deepseek"]);
+        let config = Config {
+            tui: Some(crate::config::TuiConfig {
+                alternate_screen: None,
+                mouse_capture: Some(true),
+                terminal_probe_timeout_ms: None,
+                status_items: None,
+                osc8_links: None,
+                notification_condition: None,
+            }),
+            ..Config::default()
+        };
+
+        assert!(should_use_mouse_capture_with(
+            &cli,
+            &config,
+            true,
+            Some("JetBrains-JediTerm"),
+        ));
     }
 }
 
@@ -4710,8 +5105,10 @@ mod setup_helper_tests {
     fn resolve_api_key_source_reports_env_when_set() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var("DEEPSEEK_API_KEY").ok();
+        let prev_source = std::env::var("DEEPSEEK_API_KEY_SOURCE").ok();
         unsafe {
             std::env::set_var("DEEPSEEK_API_KEY", "test-helper-value");
+            std::env::remove_var("DEEPSEEK_API_KEY_SOURCE");
         }
         let cfg = Config::default();
         let source = resolve_api_key_source(&cfg);
@@ -4719,15 +5116,43 @@ mod setup_helper_tests {
             Some(value) => unsafe { std::env::set_var("DEEPSEEK_API_KEY", value) },
             None => unsafe { std::env::remove_var("DEEPSEEK_API_KEY") },
         }
+        match prev_source {
+            Some(value) => unsafe { std::env::set_var("DEEPSEEK_API_KEY_SOURCE", value) },
+            None => unsafe { std::env::remove_var("DEEPSEEK_API_KEY_SOURCE") },
+        }
         assert_eq!(source, ApiKeySource::Env);
+    }
+
+    #[test]
+    fn resolve_api_key_source_reports_dispatcher_keyring() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("DEEPSEEK_API_KEY").ok();
+        let prev_source = std::env::var("DEEPSEEK_API_KEY_SOURCE").ok();
+        unsafe {
+            std::env::set_var("DEEPSEEK_API_KEY", "test-helper-value");
+            std::env::set_var("DEEPSEEK_API_KEY_SOURCE", "keyring");
+        }
+        let cfg = Config::default();
+        let source = resolve_api_key_source(&cfg);
+        match prev {
+            Some(value) => unsafe { std::env::set_var("DEEPSEEK_API_KEY", value) },
+            None => unsafe { std::env::remove_var("DEEPSEEK_API_KEY") },
+        }
+        match prev_source {
+            Some(value) => unsafe { std::env::set_var("DEEPSEEK_API_KEY_SOURCE", value) },
+            None => unsafe { std::env::remove_var("DEEPSEEK_API_KEY_SOURCE") },
+        }
+        assert_eq!(source, ApiKeySource::Keyring);
     }
 
     #[test]
     fn resolve_api_key_source_prefers_config_over_env() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var("DEEPSEEK_API_KEY").ok();
+        let prev_source = std::env::var("DEEPSEEK_API_KEY_SOURCE").ok();
         unsafe {
             std::env::set_var("DEEPSEEK_API_KEY", "stale-env-key");
+            std::env::remove_var("DEEPSEEK_API_KEY_SOURCE");
         }
         let cfg = Config {
             api_key: Some("fresh-config-key".to_string()),
@@ -4737,6 +5162,10 @@ mod setup_helper_tests {
         match prev {
             Some(value) => unsafe { std::env::set_var("DEEPSEEK_API_KEY", value) },
             None => unsafe { std::env::remove_var("DEEPSEEK_API_KEY") },
+        }
+        match prev_source {
+            Some(value) => unsafe { std::env::set_var("DEEPSEEK_API_KEY_SOURCE", value) },
+            None => unsafe { std::env::remove_var("DEEPSEEK_API_KEY_SOURCE") },
         }
         assert_eq!(source, ApiKeySource::Config);
     }

@@ -1,11 +1,10 @@
 #![allow(dead_code)]
 
-//! Markdown stream collector for newline-gated rendering.
+//! Markdown stream collector for live micro-chunk rendering.
 //!
 //! This module implements the pattern from codex-rs where:
-//! - Streaming text is buffered until a newline is reached
-//! - Only complete lines are committed to the UI
-//! - This prevents visual flashing of partial words
+//! - Streaming text is split into small grapheme-aligned chunks
+//! - Commit ticks drip chunks into the transcript between provider deltas
 //! - Final content is emitted when the stream ends
 
 use ratatui::style::{Modifier, Style};
@@ -221,19 +220,17 @@ fn wrap_line(line: &str, width: usize) -> Vec<String> {
     }
 }
 
-/// Per-block streaming substate: line-buffer (newline gate) feeding a
-/// collector + chunker/policy for two-gear pacing.
+/// Per-block streaming substate: optional line-buffer feeding a collector +
+/// chunker/policy for two-gear pacing.
 ///
 /// Pipeline:
 /// ```text
 /// raw delta -> LineBuffer.push -> take_committable -> collector + chunker -> commit tick
 /// ```
 ///
-/// The [`LineBuffer`] is upstream of the collector and chunker. It guarantees
-/// that no partial multi-character markdown (e.g. an unfinished ``` fence)
-/// reaches downstream consumers between deltas. Thinking blocks bypass the
-/// gate because thinking is rendered live for responsiveness — its content
-/// often arrives without newlines until a full paragraph is composed.
+/// The [`LineBuffer`] remains available for line-sensitive modes. Normal
+/// assistant prose and thinking blocks bypass it so text can stream in live
+/// micro-chunks instead of waiting for newline boundaries.
 #[derive(Debug, Default)]
 struct BlockState {
     /// Newline gate: holds back trailing partial-line text between deltas.
@@ -265,14 +262,14 @@ impl StreamingState {
         Self::default()
     }
 
-    /// Start a new text block. Assistant text is subject to the newline gate
-    /// so partial code fences and other line-sensitive markdown can never
-    /// briefly appear between deltas.
+    /// Start a new text block. Assistant prose streams live in micro-chunks so
+    /// users can visually track the answer as it forms instead of waiting for
+    /// a newline-terminated line.
     pub fn start_text(&mut self, index: usize, width: Option<usize>) {
         self.ensure_capacity(index);
         self.blocks[index] = Some(BlockState {
             line_buffer: LineBuffer::new(),
-            bypass_gate: false,
+            bypass_gate: true,
             collector: MarkdownStreamCollector::new(width, false),
             chunker: StreamChunker::new(),
             policy: AdaptiveChunkingPolicy::new(),
@@ -298,10 +295,8 @@ impl StreamingState {
 
     /// Push content to a block. Routing depends on the block kind:
     ///
-    /// - Assistant text blocks: incoming bytes go through [`LineBuffer`]
-    ///   first, so only newline-terminated prefixes reach the collector and
-    ///   chunker. This is what protects partial code fences and other
-    ///   line-sensitive markdown from briefly appearing between deltas.
+    /// - Assistant text blocks: incoming bytes normally bypass [`LineBuffer`]
+    ///   and are split into small display chunks downstream.
     /// - Thinking blocks: bytes bypass the gate and go straight to the
     ///   collector/chunker so reasoning stays visually live (long thoughts
     ///   often have no intermediate newlines).
@@ -333,14 +328,14 @@ impl StreamingState {
                 return;
             }
 
-            block.collector.push(&downstream);
-            // The collector's own newline-gating is now redundant for gated
-            // blocks (LineBuffer already enforces it), but we keep the same
-            // call shape so the collector's bookkeeping (committed_line_count)
-            // stays consistent and the bypass path still benefits from it.
-            let committed = block.collector.commit_complete_text();
-            if !committed.is_empty() {
-                block.chunker.push_delta(&committed);
+            if block.bypass_gate {
+                block.chunker.push_delta(&downstream);
+            } else {
+                block.collector.push(&downstream);
+                let committed = block.collector.commit_complete_text();
+                if !committed.is_empty() {
+                    block.chunker.push_delta(&committed);
+                }
             }
         }
     }
@@ -555,5 +550,37 @@ mod tests {
     fn test_wrap_line() {
         let result = wrap_line("This is a long line that should be wrapped", 20);
         assert!(result.len() > 1);
+    }
+
+    #[test]
+    fn assistant_text_streams_before_newline() {
+        let mut state = StreamingState::new();
+        state.start_text(0, None);
+        state.push_content(0, "hello world");
+
+        assert_eq!(state.commit_text(0), "h");
+        assert_eq!(state.commit_text(0), "e");
+        assert!(state.has_pending_chunker_lines(0));
+    }
+
+    #[test]
+    fn thinking_text_streams_before_newline() {
+        let mut state = StreamingState::new();
+        state.start_thinking(0, None);
+        state.push_content(0, "thinking deeply");
+
+        assert_eq!(state.commit_text(0), "t");
+        assert_eq!(state.commit_text(0), "h");
+        assert!(state.has_pending_chunker_lines(0));
+    }
+
+    #[test]
+    fn finalize_preserves_uncommitted_micro_chunks() {
+        let mut state = StreamingState::new();
+        state.start_text(0, None);
+        state.push_content(0, "abc");
+        assert_eq!(state.commit_text(0), "a");
+
+        assert_eq!(state.finalize_block_text(0), "bc");
     }
 }

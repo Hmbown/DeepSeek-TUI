@@ -226,6 +226,7 @@ pub enum MessageId {
     HelpFooterClose,
     CmdAgentDescription,
     CmdAttachDescription,
+    CmdAnchorDescription,
     CmdCacheDescription,
     CmdClearDescription,
     CmdCompactDescription,
@@ -251,11 +252,13 @@ pub enum MessageId {
     CmdMemoryDescription,
     CmdModelDescription,
     CmdModelsDescription,
+    CmdNetworkDescription,
     CmdNoteDescription,
     CmdPlanDescription,
     CmdProviderDescription,
     CmdQueueDescription,
     CmdRecallDescription,
+    CmdRenameDescription,
     CmdRestoreDescription,
     CmdRetryDescription,
     CmdReviewDescription,
@@ -413,6 +416,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::HelpFooterJump,
     MessageId::HelpFooterClose,
     MessageId::CmdAgentDescription,
+    MessageId::CmdAnchorDescription,
     MessageId::CmdAttachDescription,
     MessageId::CmdCacheDescription,
     MessageId::CmdClearDescription,
@@ -438,11 +442,13 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CmdMemoryDescription,
     MessageId::CmdModelDescription,
     MessageId::CmdModelsDescription,
+    MessageId::CmdNetworkDescription,
     MessageId::CmdNoteDescription,
     MessageId::CmdPlanDescription,
     MessageId::CmdProviderDescription,
     MessageId::CmdQueueDescription,
     MessageId::CmdRecallDescription,
+    MessageId::CmdRenameDescription,
     MessageId::CmdRestoreDescription,
     MessageId::CmdRetryDescription,
     MessageId::CmdReviewDescription,
@@ -720,6 +726,9 @@ fn english(id: MessageId) -> &'static str {
         MessageId::HelpFooterJump => " PgUp/PgDn jump ",
         MessageId::HelpFooterClose => " Esc close ",
         MessageId::CmdAgentDescription => "Switch to agent mode",
+        MessageId::CmdAnchorDescription => {
+            "Pin a fact that survives compaction (auto-injected into context)"
+        }
         MessageId::CmdAttachDescription => {
             "Attach image/video media; use @path for text files or directories"
         }
@@ -754,6 +763,7 @@ fn english(id: MessageId) -> &'static str {
         MessageId::CmdMemoryDescription => "Inspect or manage the persistent user-memory file",
         MessageId::CmdModelDescription => "Switch or view current model",
         MessageId::CmdModelsDescription => "List available models from API",
+        MessageId::CmdNetworkDescription => "Manage network allow and deny rules",
         MessageId::CmdNoteDescription => {
             "Append note to persistent notes file (.deepseek/notes.md)"
         }
@@ -761,10 +771,11 @@ fn english(id: MessageId) -> &'static str {
             "Switch to plan mode and review suggested implementation steps"
         }
         MessageId::CmdProviderDescription => {
-            "Switch or view the active LLM backend (deepseek | nvidia-nim)"
+            "Switch or view the active LLM backend (deepseek | nvidia-nim | ollama)"
         }
         MessageId::CmdQueueDescription => "View or edit queued messages",
         MessageId::CmdRecallDescription => "Search prior cycle archives (BM25 over message text)",
+        MessageId::CmdRenameDescription => "Rename the current session",
         MessageId::CmdRestoreDescription => {
             "Roll back the workspace to a prior pre/post-turn snapshot. With no arg, lists recent snapshots."
         }
@@ -820,7 +831,7 @@ fn english(id: MessageId) -> &'static str {
         MessageId::CmdCostReport => {
             "Session Cost:\n\
              ─────────────────────────────\n\
-             Approx total spent: ${cost}\n\n\
+             Approx total spent: {cost}\n\n\
              Cost estimates are approximate and use provider usage telemetry when available.\n\n\
              DeepSeek API Pricing:\n\
              ─────────────────────────────\n\
@@ -851,7 +862,7 @@ fn english(id: MessageId) -> &'static str {
              Last API output:       {output}\n\
              Cache hit/miss:        {cache} (telemetry/cost only)\n\
              Cumulative tokens:     {total} (session usage telemetry)\n\
-             Approx session cost:   ${cost}\n\
+             Approx session cost:   {cost}\n\
              API messages:          {api_messages}\n\
              Chat messages:         {chat_messages}\n\
              Model:                 {model}"
@@ -999,6 +1010,9 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::HelpFooterJump => " PgUp/PgDn ジャンプ ",
         MessageId::HelpFooterClose => " Esc 閉じる ",
         MessageId::CmdAgentDescription => "Agent モードに切り替え",
+        MessageId::CmdAnchorDescription => {
+            "コンパクション後も保持される重要な事実をピン留め（コンテキストに自動注入）"
+        }
         MessageId::CmdAttachDescription => {
             "画像・動画メディアを添付（テキストファイルやディレクトリは @path）"
         }
@@ -1037,15 +1051,17 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::CmdMemoryDescription => "永続ユーザーメモリファイルを確認・管理",
         MessageId::CmdModelDescription => "現在のモデルを切り替え・確認",
         MessageId::CmdModelsDescription => "API から利用可能なモデルを一覧表示",
+        MessageId::CmdNetworkDescription => "ネットワーク許可・拒否ルールを管理",
         MessageId::CmdNoteDescription => "永続ノートファイル（.deepseek/notes.md）に追記",
         MessageId::CmdPlanDescription => "Plan モードに切り替え、推奨される実装手順を確認",
         MessageId::CmdProviderDescription => {
-            "現在の LLM バックエンドを切り替え・確認（deepseek | nvidia-nim）"
+            "現在の LLM バックエンドを切り替え・確認（deepseek | nvidia-nim | ollama）"
         }
         MessageId::CmdQueueDescription => "キューされたメッセージを確認・編集",
         MessageId::CmdRecallDescription => {
             "過去のサイクルアーカイブを検索（メッセージ本文への BM25 検索）"
         }
+        MessageId::CmdRenameDescription => "現在のセッションの名前を変更",
         MessageId::CmdRestoreDescription => {
             "ワークスペースを以前のターン前/後スナップショットへロールバック。引数なしで最近のスナップショットを一覧表示。"
         }
@@ -1100,7 +1116,7 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::CmdCostReport => {
             "セッション費用:\n\
              ─────────────────────────────\n\
-             累計概算: ${cost}\n\n\
+             累計概算: {cost}\n\n\
              費用は概算値。プロバイダの使用量テレメトリがあれば優先して使用します。\n\n\
              DeepSeek API 料金:\n\
              ─────────────────────────────\n\
@@ -1131,7 +1147,7 @@ fn japanese(id: MessageId) -> Option<&'static str> {
              直近の API 出力:        {output}\n\
              キャッシュヒット/ミス:  {cache}（テレメトリ/コスト用のみ）\n\
              累計トークン:           {total}（セッション使用量テレメトリ）\n\
-             セッション費用概算:     ${cost}\n\
+             セッション費用概算:     {cost}\n\
              API メッセージ:         {api_messages}\n\
              チャットメッセージ:     {chat_messages}\n\
              モデル:                 {model}"
@@ -1269,6 +1285,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::HelpFooterJump => " PgUp/PgDn 跳转 ",
         MessageId::HelpFooterClose => " Esc 关闭 ",
         MessageId::CmdAgentDescription => "切换到 Agent 模式",
+        MessageId::CmdAnchorDescription => "钉选关键事实，在压缩后自动注入上下文",
         MessageId::CmdAttachDescription => "附加图片或视频媒体；文本文件或目录请使用 @path",
         MessageId::CmdCacheDescription => "显示最近 N 轮的 DeepSeek 前缀缓存命中/未命中统计",
         MessageId::CmdClearDescription => "清除对话历史",
@@ -1299,11 +1316,15 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::CmdMemoryDescription => "查看或管理持久用户记忆文件",
         MessageId::CmdModelDescription => "切换或查看当前模型",
         MessageId::CmdModelsDescription => "列出 API 中可用的模型",
+        MessageId::CmdNetworkDescription => "管理网络允许和拒绝规则",
         MessageId::CmdNoteDescription => "将笔记追加到持久笔记文件（.deepseek/notes.md）",
         MessageId::CmdPlanDescription => "切换到 Plan 模式并查看建议的实现步骤",
-        MessageId::CmdProviderDescription => "切换或查看当前 LLM 后端（deepseek | nvidia-nim）",
+        MessageId::CmdProviderDescription => {
+            "切换或查看当前 LLM 后端（deepseek | nvidia-nim | ollama）"
+        }
         MessageId::CmdQueueDescription => "查看或编辑已排队的消息",
         MessageId::CmdRecallDescription => "搜索此前的循环归档（基于消息文本的 BM25 检索）",
+        MessageId::CmdRenameDescription => "重命名当前会话",
         MessageId::CmdRestoreDescription => {
             "将工作区回滚到此前的轮次前/后快照。不带参数时列出最近的快照。"
         }
@@ -1348,7 +1369,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::CmdCostReport => {
             "会话费用：\n\
              ─────────────────────────────\n\
-             预估累计消耗：${cost}\n\n\
+             预估累计消耗：{cost}\n\n\
              费用为估算值；如有提供方用量遥测会优先使用。\n\n\
              DeepSeek API 计费：\n\
              ─────────────────────────────\n\
@@ -1379,7 +1400,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
              上次 API 输出：    {output}\n\
              缓存命中/未命中：  {cache}（仅用于遥测/计费）\n\
              累计令牌：         {total}（会话用量遥测）\n\
-             预估会话费用：     ${cost}\n\
+             预估会话费用：     {cost}\n\
              API 消息数：       {api_messages}\n\
              聊天消息数：       {chat_messages}\n\
              模型：             {model}"
@@ -1505,6 +1526,7 @@ fn chinese_traditional(id: MessageId) -> Option<&'static str> {
         MessageId::HelpFooterJump => " PgUp/PgDn 跳轉 ",
         MessageId::HelpFooterClose => " Esc 關閉 ",
         MessageId::CmdAgentDescription => "切換到 Agent 模式",
+        MessageId::CmdAnchorDescription => "釘選壓縮後仍保留的重要事實（自動注入上下文）",
         MessageId::CmdAttachDescription => "附加圖片或影片媒體；文字檔或目錄請使用 @path",
         MessageId::CmdCacheDescription => "顯示最近 N 輪的 DeepSeek 前綴快取命中/未命中統計",
         MessageId::CmdClearDescription => "清除對話歷史",
@@ -1535,11 +1557,15 @@ fn chinese_traditional(id: MessageId) -> Option<&'static str> {
         MessageId::CmdMemoryDescription => "查看或管理持久使用者記憶檔案",
         MessageId::CmdModelDescription => "切換或查看目前模型",
         MessageId::CmdModelsDescription => "列出 API 中可用的模型",
+        MessageId::CmdNetworkDescription => "管理網路允許與拒絕規則",
         MessageId::CmdNoteDescription => "將筆記追加到持久筆記檔案（.deepseek/notes.md）",
         MessageId::CmdPlanDescription => "切換到 Plan 模式並查看建議的實作步驟",
-        MessageId::CmdProviderDescription => "切換或查看目前 LLM 後端（deepseek | nvidia-nim）",
+        MessageId::CmdProviderDescription => {
+            "切換或查看目前 LLM 後端（deepseek | nvidia-nim | ollama）"
+        }
         MessageId::CmdQueueDescription => "查看或編輯已排隊的訊息",
         MessageId::CmdRecallDescription => "搜尋先前的循環封存（基於訊息文字的 BM25 檢索）",
+        MessageId::CmdRenameDescription => "重新命名目前工作階段",
         MessageId::CmdRestoreDescription => {
             "將工作區回復到先前輪次前/後的快照。不帶參數時列出最近的快照。"
         }
@@ -1745,6 +1771,9 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         MessageId::HelpFooterJump => " PgUp/PgDn salta ",
         MessageId::HelpFooterClose => " Esc fecha ",
         MessageId::CmdAgentDescription => "Mudar para o modo agent",
+        MessageId::CmdAnchorDescription => {
+            "Fixar um fato que sobrevive à compactação (injetado automaticamente no contexto)"
+        }
         MessageId::CmdAttachDescription => {
             "Anexar imagem ou vídeo; use @path para arquivos de texto ou diretórios"
         }
@@ -1789,6 +1818,7 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         }
         MessageId::CmdModelDescription => "Trocar ou exibir o modelo atual",
         MessageId::CmdModelsDescription => "Listar os modelos disponíveis pela API",
+        MessageId::CmdNetworkDescription => "Gerenciar regras de rede permitidas e bloqueadas",
         MessageId::CmdNoteDescription => {
             "Adicionar nota ao arquivo persistente (.deepseek/notes.md)"
         }
@@ -1796,12 +1826,13 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
             "Mudar para o modo plan e revisar os passos de implementação sugeridos"
         }
         MessageId::CmdProviderDescription => {
-            "Trocar ou exibir o backend LLM ativo (deepseek | nvidia-nim)"
+            "Trocar ou exibir o backend LLM ativo (deepseek | nvidia-nim | ollama)"
         }
         MessageId::CmdQueueDescription => "Ver ou editar mensagens enfileiradas",
         MessageId::CmdRecallDescription => {
             "Buscar arquivos de ciclos anteriores (BM25 sobre o texto das mensagens)"
         }
+        MessageId::CmdRenameDescription => "Renomear a sessão atual",
         MessageId::CmdRestoreDescription => {
             "Reverter o workspace a um snapshot pré/pós-turno anterior. Sem argumento, lista os snapshots recentes."
         }
@@ -1860,7 +1891,7 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         MessageId::CmdCostReport => {
             "Custo da sessão:\n\
              ─────────────────────────────\n\
-             Total aproximado: ${cost}\n\n\
+             Total aproximado: {cost}\n\n\
              Estimativas de custo são aproximadas e usam a telemetria de uso do provedor quando disponível.\n\n\
              Preços da API DeepSeek:\n\
              ─────────────────────────────\n\
@@ -1891,7 +1922,7 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
              Última saída da API:      {output}\n\
              Hit/miss do cache:        {cache} (apenas para telemetria/custo)\n\
              Tokens acumulados:        {total} (telemetria de uso da sessão)\n\
-             Custo aproximado:         ${cost}\n\
+             Custo aproximado:         {cost}\n\
              Mensagens da API:         {api_messages}\n\
              Mensagens do chat:        {chat_messages}\n\
              Modelo:                   {model}"

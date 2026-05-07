@@ -17,6 +17,51 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 #[test]
+fn format_resume_hint_uses_canonical_resume_command() {
+    assert_eq!(
+        format_resume_hint(Some("019dd9d6-4f44-7c83-9863-59674a12b827")),
+        Some(
+            "To continue this session, run deepseek resume 019dd9d6-4f44-7c83-9863-59674a12b827"
+                .to_string()
+        )
+    );
+}
+
+#[test]
+fn format_resume_hint_omits_missing_session_id() {
+    assert_eq!(format_resume_hint(None), None);
+    assert_eq!(format_resume_hint(Some("   ")), None);
+}
+
+#[test]
+fn composer_newline_shortcuts_do_not_steal_ctrl_enter() {
+    assert!(is_composer_newline_key(KeyEvent::new(
+        KeyCode::Char('j'),
+        KeyModifiers::CONTROL,
+    )));
+    assert!(is_composer_newline_key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::ALT,
+    )));
+    assert!(is_composer_newline_key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::SHIFT,
+    )));
+    assert!(!is_composer_newline_key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert!(!is_composer_newline_key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::CONTROL,
+    )));
+    assert!(!is_composer_newline_key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    )));
+}
+
+#[test]
 fn selection_point_from_position_ignores_top_padding() {
     let area = Rect {
         x: 10,
@@ -94,7 +139,7 @@ fn selection_to_text_handles_multiline_and_reversed_endpoints() {
         column: 6,
     });
 
-    assert_eq!(selection_to_text(&app).as_deref(), Some("a beta\n  gam"));
+    assert_eq!(selection_to_text(&app).as_deref(), Some("a beta\n▏ gam"));
 }
 
 #[test]
@@ -330,6 +375,26 @@ fn copy_shortcut_accepts_cmd_and_ctrl_shift_only() {
     assert!(!is_copy_shortcut(&KeyEvent::new(
         KeyCode::Char('c'),
         KeyModifiers::CONTROL,
+    )));
+}
+
+#[test]
+fn file_tree_shortcut_does_not_steal_plain_ctrl_e() {
+    assert!(!is_file_tree_toggle_shortcut(&KeyEvent::new(
+        KeyCode::Char('e'),
+        KeyModifiers::CONTROL,
+    )));
+    assert!(is_file_tree_toggle_shortcut(&KeyEvent::new(
+        KeyCode::Char('E'),
+        KeyModifiers::CONTROL,
+    )));
+    assert!(is_file_tree_toggle_shortcut(&KeyEvent::new(
+        KeyCode::Char('e'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    )));
+    assert!(is_file_tree_toggle_shortcut(&KeyEvent::new(
+        KeyCode::Char('E'),
+        KeyModifiers::SUPER | KeyModifiers::SHIFT,
     )));
 }
 
@@ -597,6 +662,7 @@ fn terminal_probe_timeout_uses_tui_config_and_clamps() {
             terminal_probe_timeout_ms: Some(750),
             status_items: None,
             osc8_links: None,
+            notification_condition: None,
         }),
         ..Config::default()
     };
@@ -1065,6 +1131,26 @@ fn footer_auxiliary_spans_show_cache_and_cost_when_roomy() {
 }
 
 #[test]
+fn footer_auxiliary_spans_show_tiny_positive_cost_when_roomy() {
+    let mut app = create_test_app();
+    app.session.session_cost = 0.00005;
+
+    let roomy = spans_text(&footer_auxiliary_spans(&app, 32));
+    assert!(roomy.contains("<$0.0001"));
+}
+
+#[test]
+fn footer_auxiliary_spans_use_configured_cost_currency() {
+    let mut app = create_test_app();
+    app.cost_currency = crate::pricing::CostCurrency::Cny;
+    app.session.session_cost_cny = 2.5;
+
+    let roomy = spans_text(&footer_auxiliary_spans(&app, 32));
+    assert!(roomy.contains("¥2.50"));
+    assert!(!roomy.contains('$'));
+}
+
+#[test]
 fn footer_auxiliary_spans_show_reasoning_replay_chip() {
     // Issue #30: when a thinking-mode tool-calling turn replays prior
     // reasoning_content, the footer surfaces the approximate input-token
@@ -1397,19 +1483,57 @@ fn visible_slash_menu_entries_excludes_removed_commands() {
     app.input = "/".to_string();
 
     let entries = visible_slash_menu_entries(&app, 128);
-    assert!(entries.iter().any(|entry| entry == "/config"));
-    assert!(entries.iter().any(|entry| entry == "/links"));
-    assert!(!entries.iter().any(|entry| entry == "/set"));
-    assert!(!entries.iter().any(|entry| entry == "/deepseek"));
+    assert!(entries.iter().any(|entry| entry.name == "/config"));
+    assert!(entries.iter().any(|entry| entry.name == "/links"));
+    assert!(!entries.iter().any(|entry| entry.name == "/set"));
+    assert!(!entries.iter().any(|entry| entry.name == "/deepseek"));
 }
 
 #[test]
 fn apply_slash_menu_selection_appends_space_for_arg_commands() {
     let mut app = create_test_app();
-    let entries = vec!["/model".to_string(), "/settings".to_string()];
+    let entries = vec![
+        crate::tui::widgets::SlashMenuEntry {
+            name: "/model".to_string(),
+            description: String::new(),
+            is_skill: false,
+        },
+        crate::tui::widgets::SlashMenuEntry {
+            name: "/settings".to_string(),
+            description: String::new(),
+            is_skill: false,
+        },
+    ];
     app.slash_menu_selected = 0;
     assert!(apply_slash_menu_selection(&mut app, &entries, true));
     assert_eq!(app.input, "/model ");
+}
+
+#[test]
+fn apply_slash_menu_selection_uses_skill_command_form() {
+    let mut app = create_test_app();
+    let entries = vec![crate::tui::widgets::SlashMenuEntry {
+        name: "/skill search-files".to_string(),
+        description: "Search files".to_string(),
+        is_skill: true,
+    }];
+
+    assert!(apply_slash_menu_selection(&mut app, &entries, true));
+    assert_eq!(app.input, "/skill search-files");
+}
+
+#[test]
+fn try_autocomplete_slash_command_completes_skill_argument() {
+    let mut app = create_test_app();
+    app.cached_skills = vec![
+        ("search-files".to_string(), "Search files".to_string()),
+        ("my-review".to_string(), "Review code".to_string()),
+    ];
+    app.input = "/skill my".to_string();
+    app.cursor_position = app.input.chars().count();
+
+    assert!(try_autocomplete_slash_command(&mut app));
+    assert_eq!(app.input, "/skill my-review");
 }
 
 #[test]
@@ -1550,10 +1674,42 @@ fn api_key_validation_warns_without_blocking_unusual_formats() {
 }
 
 #[test]
+fn onboarding_after_api_key_save_does_not_repeat_language_step() {
+    let mut app = create_test_app();
+    app.onboarding = OnboardingState::ApiKey;
+    app.onboarding_needs_api_key = false;
+    app.trust_mode = true;
+    app.status_message = Some("saved".to_string());
+
+    advance_onboarding_after_language(&mut app);
+
+    assert_eq!(app.onboarding, OnboardingState::Tips);
+    assert_eq!(app.status_message, None);
+}
+
+#[test]
+fn onboarding_after_api_key_save_routes_to_trust_when_needed() {
+    let tmpdir = TempDir::new().expect("tempdir");
+    let mut app = create_test_app();
+    app.workspace = tmpdir.path().to_path_buf();
+    app.onboarding = OnboardingState::ApiKey;
+    app.onboarding_needs_api_key = false;
+    app.trust_mode = false;
+
+    advance_onboarding_after_language(&mut app);
+
+    assert_eq!(app.onboarding, OnboardingState::TrustDirectory);
+}
+
+#[test]
 fn api_key_paste_shortcut_is_not_plain_text_input() {
     let ctrl_v = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
     assert!(is_paste_shortcut(&ctrl_v));
     assert!(!is_text_input_key(&ctrl_v));
+
+    let legacy_ctrl_v = KeyEvent::new(KeyCode::Char('\u{16}'), KeyModifiers::NONE);
+    assert!(is_paste_shortcut(&legacy_ctrl_v));
+    assert!(!is_text_input_key(&legacy_ctrl_v));
 
     let shifted = KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT);
     assert!(is_text_input_key(&shifted));
@@ -1947,7 +2103,7 @@ fn mention_popup_is_empty_when_cursor_is_not_in_a_mention() {
     let mut app = create_test_app();
     app.input = "no mention here".to_string();
     app.cursor_position = app.input.chars().count();
-    assert!(visible_mention_menu_entries(&app, 6).is_empty());
+    assert!(visible_mention_menu_entries(&mut app, 6).is_empty());
 }
 
 #[test]
@@ -1963,11 +2119,46 @@ fn mention_popup_lists_workspace_matches_for_cursor_partial() {
     app.input = "look at @docs/".to_string();
     app.cursor_position = app.input.chars().count();
 
-    let entries = visible_mention_menu_entries(&app, 6);
+    let entries = visible_mention_menu_entries(&mut app, 6);
     assert!(!entries.is_empty(), "popup should surface docs/ entries");
     assert!(entries.iter().any(|e| e.starts_with("docs/")));
     // README.md doesn't match `docs/` — confirm we didn't dump every file.
     assert!(!entries.iter().any(|e| e == "README.md"));
+}
+
+#[test]
+fn mention_popup_reuses_cache_when_cursor_moves_inside_same_token() {
+    let tmpdir = TempDir::new().expect("tempdir");
+    std::fs::create_dir_all(tmpdir.path().join("docs")).unwrap();
+    std::fs::write(tmpdir.path().join("docs/alpha.md"), "x").unwrap();
+
+    let mut app = create_test_app();
+    app.workspace = tmpdir.path().to_path_buf();
+    app.input = "look at @docs/".to_string();
+    app.cursor_position = app.input.chars().count();
+
+    let entries = visible_mention_menu_entries(&mut app, 6);
+    assert!(entries.iter().any(|e| e == "docs/alpha.md"));
+
+    std::fs::write(tmpdir.path().join("docs/beta.md"), "x").unwrap();
+    app.cursor_position = "look at @do".chars().count();
+
+    let entries_after_cursor_move = visible_mention_menu_entries(&mut app, 6);
+    assert_eq!(
+        entries_after_cursor_move, entries,
+        "cursor movement inside one @mention token should not re-walk the workspace",
+    );
+
+    app.input = "look at @docs/b".to_string();
+    app.cursor_position = app.input.chars().count();
+
+    let entries_after_partial_change = visible_mention_menu_entries(&mut app, 6);
+    assert!(
+        entries_after_partial_change
+            .iter()
+            .any(|e| e == "docs/beta.md"),
+        "changing the partial should invalidate the completion cache",
+    );
 }
 
 #[test]
@@ -1982,7 +2173,7 @@ fn mention_popup_respects_hidden_flag() {
     app.mention_menu_hidden = true;
 
     assert!(
-        visible_mention_menu_entries(&app, 6).is_empty(),
+        visible_mention_menu_entries(&mut app, 6).is_empty(),
         "Esc-hidden popup must not surface entries until next input edit",
     );
 }
@@ -1999,7 +2190,7 @@ fn apply_mention_menu_selection_splices_selected_entry() {
     app.input = "open @crates/tui/m".to_string();
     app.cursor_position = app.input.chars().count();
 
-    let entries = visible_mention_menu_entries(&app, 6);
+    let entries = visible_mention_menu_entries(&mut app, 6);
     assert!(!entries.is_empty(), "expected entries for @crates/tui/m");
     // Pick whichever entry appears at index 0; it's deterministic given the
     // workspace setup. Apply it.
@@ -3026,13 +3217,14 @@ fn render_footer_from_with_default_items_renders_mode_and_model() {
     // Default footer composition should show the mode chip and model
     // identifier — whatever the configured default model is.
     let mut app = create_test_app();
-    app.session.session_cost = 0.42;
+    app.session.session_cost = 0.00005;
     let items = crate::config::StatusItem::default_footer();
     let props = render_footer_from(&app, &items, None);
     assert_eq!(props.mode_label, "agent");
     assert!(!props.model.is_empty(), "footer should show a model name");
-    // Cost chip is included whenever cost > 0.001.
+    // Tiny but real costs should render instead of disappearing as "$0.00".
     assert!(!props.cost.is_empty());
+    assert_eq!(spans_text(&props.cost), "<$0.0001");
 }
 
 #[test]
@@ -3198,4 +3390,124 @@ fn scroll_with_arrows_returns_false_when_input_has_text() {
         !super::should_scroll_with_arrows(&app),
         "text in composer: Up/Down should navigate history"
     );
+}
+
+#[test]
+fn notification_settings_tui_always_keeps_configured_method_no_threshold() {
+    let config = Config {
+        tui: Some(crate::config::TuiConfig {
+            notification_condition: Some(crate::config::NotificationCondition::Always),
+            ..Default::default()
+        }),
+        notifications: Some(crate::config::NotificationsConfig {
+            method: crate::config::NotificationMethod::Bel,
+            threshold_secs: 120,
+            include_summary: true,
+        }),
+        ..Config::default()
+    };
+
+    let (method, threshold, include_summary) =
+        super::notification_settings(&config).expect("notification should be enabled");
+    assert_eq!(method, crate::tui::notifications::Method::Bel);
+    assert_eq!(threshold, Duration::ZERO);
+    assert!(include_summary);
+}
+
+#[test]
+fn notification_settings_tui_never_disables_notifications() {
+    let config = Config {
+        tui: Some(crate::config::TuiConfig {
+            notification_condition: Some(crate::config::NotificationCondition::Never),
+            ..Default::default()
+        }),
+        ..Config::default()
+    };
+
+    assert!(super::notification_settings(&config).is_none());
+}
+
+#[test]
+fn notification_settings_no_tui_override_uses_notifications_block() {
+    let config = Config {
+        notifications: Some(crate::config::NotificationsConfig {
+            method: crate::config::NotificationMethod::Osc9,
+            threshold_secs: 45,
+            include_summary: false,
+        }),
+        ..Config::default()
+    };
+
+    let (method, threshold, include_summary) =
+        super::notification_settings(&config).expect("notification should be enabled");
+    assert_eq!(method, crate::tui::notifications::Method::Osc9);
+    assert_eq!(threshold, Duration::from_secs(45));
+    assert!(!include_summary);
+}
+
+#[test]
+fn completed_turn_notification_uses_streaming_text() {
+    let app = create_test_app();
+    let msg = super::completed_turn_notification_message(
+        &app,
+        "Hello there.\n\nWhat's next?",
+        false,
+        Duration::from_secs(12),
+        None,
+    );
+    assert_eq!(msg, "Hello there.\nWhat's next?");
+}
+
+#[test]
+fn completed_turn_notification_falls_back_to_latest_assistant_message() {
+    let mut app = create_test_app();
+    app.api_messages.push(crate::models::Message {
+        role: "assistant".to_string(),
+        content: vec![crate::models::ContentBlock::Text {
+            text: "Earlier turn".to_string(),
+            cache_control: None,
+        }],
+    });
+    app.api_messages.push(crate::models::Message {
+        role: "user".to_string(),
+        content: vec![crate::models::ContentBlock::Text {
+            text: "next".to_string(),
+            cache_control: None,
+        }],
+    });
+    app.api_messages.push(crate::models::Message {
+        role: "assistant".to_string(),
+        content: vec![crate::models::ContentBlock::Text {
+            text: "Latest reply".to_string(),
+            cache_control: None,
+        }],
+    });
+
+    let msg =
+        super::completed_turn_notification_message(&app, "", false, Duration::from_secs(75), None);
+    assert_eq!(msg, "Latest reply");
+}
+
+#[test]
+fn completed_turn_notification_falls_back_to_default_when_empty() {
+    let app = create_test_app();
+    let msg =
+        super::completed_turn_notification_message(&app, "", false, Duration::from_secs(5), None);
+    assert_eq!(msg, "deepseek: turn complete");
+}
+
+#[test]
+fn completed_turn_notification_truncates_long_text() {
+    let app = create_test_app();
+    let long = "a".repeat(500);
+    let msg = super::completed_turn_notification_message(
+        &app,
+        &long,
+        false,
+        Duration::from_secs(5),
+        None,
+    );
+    assert!(msg.ends_with("..."));
+    // 360-char body + 3-char ellipsis
+    assert_eq!(msg.chars().count(), 363);
 }

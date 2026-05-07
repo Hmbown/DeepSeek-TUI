@@ -151,11 +151,11 @@ reflect very different cost classes:
 | Tool | What each child does | Wall-clock | Token cost | Cap |
 |---|---|---|---|---|
 | `agent_spawn` | Full sub-agent loop (planning, tool calls, multi-turn streaming, can spawn children) | minutes | thousands of tokens | 10 in flight by default (`[subagents].max_concurrent`, hard ceiling 20) |
-| `rlm_query` | One-shot non-streaming Chat Completions call to `deepseek-v4-flash` | seconds | ~hundreds of tokens | 16 per call |
+| `rlm` helper `llm_query_batched` | One-shot non-streaming Chat Completions calls pinned to `deepseek-v4-flash` | seconds | ~hundreds of tokens | 16 per call |
 
 The caps appear in each tool's description and error messages so the model
 (and the user) can choose the right tool for the job. If one sub-agent is
-enough but you need parallel lookups, prefer `rlm_query`; if each task needs
+enough but you need parallel lookups, prefer `rlm` with `llm_query_batched`; if each task needs
 its own tool-carrying agent loop, use `agent_spawn` (and cancel completed
 ones to free slots).
 

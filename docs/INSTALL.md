@@ -79,7 +79,7 @@ install from crates.io directly. Both crates are required — the dispatcher
 delegates to the TUI runtime at runtime.
 
 ```bash
-# Requires Rust 1.85+ (https://rustup.rs)
+# Requires Rust 1.88+ (https://rustup.rs)
 cargo install deepseek-tui-cli --locked   # provides `deepseek`
 cargo install deepseek-tui     --locked   # provides `deepseek-tui`
 deepseek --version
@@ -165,7 +165,7 @@ LoongArch, FreeBSD, and pre-2024 ARM64 distros.
 
 ### Prerequisites
 
-- **Rust** 1.85 or later — install with [rustup](https://rustup.rs).
+- **Rust** 1.88 or later — install with [rustup](https://rustup.rs).
 - **Linux build-time deps** (Debian/Ubuntu/openEuler/Kylin):
   ```bash
   sudo apt-get install -y build-essential pkg-config libdbus-1-dev
@@ -240,7 +240,7 @@ Building on Windows requires the **MSVC C toolchain** from
 
 1. Install Visual Studio 2022 Build Tools — select the **"Desktop development
    with C++"** workload.
-2. Install [Rust](https://rustup.rs) 1.85+ (see the
+2. Install [Rust](https://rustup.rs) 1.88+ (see the
    [China mirror instructions](#china--mirror-friendly-install) above if
    downloading from mainland China).
 3. Install [Git for Windows](https://git-scm.com/download/win) (provides `git`

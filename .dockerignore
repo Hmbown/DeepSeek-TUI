@@ -1,0 +1,65 @@
+# Build artifacts
+/target/
+*.pdb
+*.dll
+*.so
+*.dylib
+*.rlib
+
+# Sensitive environment files
+.env
+.env.*
+
+# Development
+/node_modules/
+/.vscode/
+/.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Git
+/.git/
+/.gitignore
+/.gitattributes
+
+# CI/CD
+/.github/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+venv/
+.venv/
+
+# Logs
+*.log
+
+# Generated
+/outputs/
+/tmp/
+
+# Local runtime state
+/.deepseek/
+
+# Claude Code artifacts
+/.claude/
+/.ace-tool/
+
+# Documentation (not needed at runtime)
+/docs/
+/website/
+/*.md
+!/README.md
+
+# Assets (screenshots, etc.)
+/assets/
+
+# Scripts
+/scripts/
+
+# Development configs
+/.devcontainer/
+/config.example.toml
