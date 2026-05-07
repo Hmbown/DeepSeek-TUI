@@ -120,6 +120,47 @@ function logInfo(message) {
   process.stderr.write(`deepseek-tui: ${message}\n`);
 }
 
+function installFailureHint(error) {
+  const message = error && error.message ? String(error.message) : "";
+  const code = error && error.code ? String(error.code) : "";
+  const releaseBase =
+    process.env.DEEPSEEK_TUI_RELEASE_BASE_URL || process.env.DEEPSEEK_RELEASE_BASE_URL;
+  const networkMarkers = [
+    "github.com",
+    "ENOTFOUND",
+    "EAI_AGAIN",
+    "ETIMEDOUT",
+    "ECONNRESET",
+    "ENETUNREACH",
+    "EHOSTUNREACH",
+    "EDOWNLOADTIMEOUT",
+  ];
+  const looksLikeNetworkDownloadFailure = networkMarkers.some(
+    marker => message.includes(marker) || code === marker,
+  );
+  if (!looksLikeNetworkDownloadFailure) {
+    return "";
+  }
+
+  if (releaseBase) {
+    return [
+      "deepseek-tui install hint:",
+      `  DEEPSEEK_TUI_RELEASE_BASE_URL is set to ${releaseBase}`,
+      "  Verify that this directory contains deepseek-artifacts-sha256.txt",
+      "  plus the deepseek/deepseek-tui binary assets for your platform.",
+    ].join("\n");
+  }
+
+  return [
+    "deepseek-tui install hint:",
+    "  The npm package downloads prebuilt binaries from GitHub Releases.",
+    "  If GitHub is unavailable on this network, mirror the release assets and set:",
+    "    DEEPSEEK_TUI_RELEASE_BASE_URL=https://<mirror>/<release-asset-directory>/",
+    "  The directory must contain deepseek-artifacts-sha256.txt and the platform binaries.",
+    "  See docs/INSTALL.md#npm-download-is-slow-or-times-out-from-mainland-china.",
+  ].join("\n");
+}
+
 function envInt(name, fallback) {
   const raw = process.env[name];
   if (!raw) {
@@ -945,12 +986,17 @@ async function getBinaryPath(name) {
 
 module.exports = {
   getBinaryPath,
+  installFailureHint,
   run,
 };
 
 if (require.main === module) {
   run().catch((error) => {
     console.error("deepseek-tui install failed:", error.message);
+    const hint = installFailureHint(error);
+    if (hint) {
+      console.error(hint);
+    }
     if (process.env.DEEPSEEK_TUI_OPTIONAL_INSTALL === "1") {
       console.error(
         "DEEPSEEK_TUI_OPTIONAL_INSTALL=1 set; continuing without a usable binary.",
