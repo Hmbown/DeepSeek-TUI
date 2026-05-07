@@ -48,6 +48,8 @@ pub struct SnapshotRepo {
     work_tree: PathBuf,
 }
 
+const STALE_TMP_PACK_AGE: Duration = Duration::from_secs(60 * 60);
+
 const BUILTIN_EXCLUDES: &str = "\
 # DeepSeek TUI built-in snapshot exclusions
 node_modules/
@@ -185,6 +187,12 @@ impl SnapshotRepo {
         }
 
         write_builtin_excludes(&git_dir)?;
+        if let Err(err) = cleanup_stale_pack_temps(&git_dir, STALE_TMP_PACK_AGE) {
+            tracing::debug!(
+                target: "snapshot",
+                "failed to clean stale snapshot tmp_pack files: {err}"
+            );
+        }
         Ok(Self { git_dir, work_tree })
     }
 
@@ -459,6 +467,19 @@ impl SnapshotRepo {
         Ok(removed)
     }
 
+    /// Drop unreachable loose objects left behind by interrupted or
+    /// orphaned side-repo operations.
+    pub fn prune_unreachable_objects(&self) -> io::Result<()> {
+        let prune = run_git(&self.git_dir, &self.work_tree, &["prune", "--expire=now"])?;
+        if !prune.status.success() {
+            return Err(io_other(format!(
+                "git prune failed: {}",
+                String::from_utf8_lossy(&prune.stderr).trim()
+            )));
+        }
+        Ok(())
+    }
+
     /// Return the side-repo's `.git` directory (for diagnostics).
     #[allow(dead_code)]
     pub fn git_dir(&self) -> &Path {
@@ -476,6 +497,53 @@ fn write_builtin_excludes(git_dir: &Path) -> io::Result<()> {
     let info_dir = git_dir.join("info");
     std::fs::create_dir_all(&info_dir)?;
     std::fs::write(info_dir.join("exclude"), BUILTIN_EXCLUDES)
+}
+
+fn cleanup_stale_pack_temps(git_dir: &Path, stale_age: Duration) -> io::Result<usize> {
+    let pack_dir = git_dir.join("objects").join("pack");
+    if !pack_dir.exists() {
+        return Ok(0);
+    }
+    cleanup_stale_pack_temps_in(&pack_dir, stale_age, SystemTime::now())
+}
+
+fn cleanup_stale_pack_temps_in(
+    pack_dir: &Path,
+    stale_age: Duration,
+    now: SystemTime,
+) -> io::Result<usize> {
+    let mut removed = 0;
+    for entry in std::fs::read_dir(pack_dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !name.starts_with("tmp_pack_") {
+            continue;
+        }
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+
+        let metadata = entry.metadata()?;
+        let Ok(modified) = metadata.modified() else {
+            continue;
+        };
+        let Ok(age) = now.duration_since(modified) else {
+            continue;
+        };
+        if age < stale_age {
+            continue;
+        }
+
+        match std::fs::remove_file(entry.path()) {
+            Ok(()) => removed += 1,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(removed)
 }
 
 fn run_git(git_dir: &Path, work_tree: &Path, args: &[&str]) -> io::Result<Output> {
@@ -554,6 +622,7 @@ fn is_safe_relative_path(path: &Path) -> bool {
 mod tests {
     use super::*;
     use crate::test_support::lock_test_env;
+    use std::fs::{File, FileTimes};
     use std::sync::MutexGuard;
     use tempfile::tempdir;
 
@@ -760,6 +829,35 @@ mod tests {
         let list = repo.list(10).unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].label, "turn:1");
+    }
+
+    #[test]
+    fn open_or_init_removes_stale_tmp_pack_files_only() {
+        let tmp = tempdir().unwrap();
+        let (repo, _home) = make_repo(tmp.path());
+        let workspace = repo.work_tree().to_path_buf();
+        let pack_dir = repo.git_dir().join("objects").join("pack");
+        std::fs::create_dir_all(&pack_dir).unwrap();
+
+        let stale = pack_dir.join("tmp_pack_stale");
+        let fresh = pack_dir.join("tmp_pack_fresh");
+        let ordinary_pack = pack_dir.join("pack-kept.pack");
+        std::fs::write(&stale, b"stale").unwrap();
+        std::fs::write(&fresh, b"fresh").unwrap();
+        std::fs::write(&ordinary_pack, b"pack").unwrap();
+
+        let old_time = SystemTime::now() - STALE_TMP_PACK_AGE - Duration::from_secs(60);
+        {
+            let file = File::options().write(true).open(&stale).unwrap();
+            file.set_times(FileTimes::new().set_modified(old_time))
+                .unwrap();
+        }
+
+        SnapshotRepo::open_or_init(&workspace).unwrap();
+
+        assert!(!stale.exists(), "stale tmp_pack file should be removed");
+        assert!(fresh.exists(), "fresh tmp_pack file should be kept");
+        assert!(ordinary_pack.exists(), "non-temp pack file should be kept");
     }
 
     #[test]
