@@ -143,6 +143,12 @@ See `agent.txt` for the delegation protocol and
 (`general` / `explore` / `plan` / `review` / `implementer` /
 `verifier` / `custom`).
 
+`agent_spawn` defaults to a fresh child conversation. Pass
+`fork_context: true` for continuation-style work that should inherit the
+parent's system prompt and message prefix for DeepSeek prefix-cache reuse.
+The deprecated `delegate_to_agent` compatibility wrapper routes through
+`agent_spawn` and defaults `fork_context` to true.
+
 ### Parallel fan-out: cost-class caps
 
 Two tools offer parallel fan-out with different concurrency limits that
