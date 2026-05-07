@@ -1685,6 +1685,19 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     println!("  · provider: {}", api_target.provider);
     println!("  · base_url: {}", api_target.base_url);
     println!("  · model: {}", api_target.model);
+    let strict_tool_mode = doctor_strict_tool_mode_status(config);
+    let strict_icon = match strict_tool_mode.status {
+        "ready" => "✓".truecolor(aqua_r, aqua_g, aqua_b),
+        "fallback_non_beta" | "custom_endpoint" => "!".truecolor(sky_r, sky_g, sky_b),
+        _ => "·".dimmed(),
+    };
+    println!(
+        "  {} strict_tool_mode: {}",
+        strict_icon, strict_tool_mode.message
+    );
+    if let Some(recommended) = strict_tool_mode.recommended_base_url.as_ref() {
+        println!("    Use `base_url = \"{recommended}\"` for DeepSeek strict schemas.");
+    }
     let capability = crate::config::provider_capability(config.api_provider(), &api_target.model);
     if let Some(alias) = capability.alias_deprecation.as_ref() {
         println!(
@@ -2208,6 +2221,7 @@ fn run_doctor_json(
         "file_present": memory_path.exists(),
     });
     let api_target = doctor_api_target(config);
+    let strict_tool_mode = doctor_strict_tool_mode_status(config);
 
     let report = json!({
         "version": env!("CARGO_PKG_VERSION"),
@@ -2219,6 +2233,13 @@ fn run_doctor_json(
         },
         "base_url": api_target.base_url,
         "default_text_model": api_target.model,
+        "strict_tool_mode": {
+            "enabled": strict_tool_mode.enabled,
+            "status": strict_tool_mode.status,
+            "function_strict_sent": strict_tool_mode.function_strict_sent,
+            "message": strict_tool_mode.message,
+            "recommended_base_url": strict_tool_mode.recommended_base_url,
+        },
         "memory": memory_summary,
         "mcp": mcp_summary,
         "skills": {
@@ -2333,12 +2354,94 @@ struct DoctorApiTarget {
     model: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DoctorStrictToolModeStatus {
+    enabled: bool,
+    status: &'static str,
+    function_strict_sent: bool,
+    message: String,
+    recommended_base_url: Option<String>,
+}
+
 fn doctor_api_target(config: &Config) -> DoctorApiTarget {
     let provider = config.api_provider();
     DoctorApiTarget {
         provider: provider.as_str(),
         base_url: config.deepseek_base_url(),
         model: config.default_model(),
+    }
+}
+
+fn doctor_strict_tool_mode_status(config: &Config) -> DoctorStrictToolModeStatus {
+    if !config.strict_tool_mode.unwrap_or(false) {
+        return DoctorStrictToolModeStatus {
+            enabled: false,
+            status: "disabled",
+            function_strict_sent: false,
+            message: "disabled".to_string(),
+            recommended_base_url: None,
+        };
+    }
+
+    let target = doctor_api_target(config);
+    match known_deepseek_base_url_kind(&target.base_url) {
+        Some(DeepSeekBaseUrlKind::Beta) => DoctorStrictToolModeStatus {
+            enabled: true,
+            status: "ready",
+            function_strict_sent: true,
+            message: "enabled; DeepSeek strict schemas use the beta endpoint".to_string(),
+            recommended_base_url: None,
+        },
+        Some(DeepSeekBaseUrlKind::NonBeta) => {
+            let recommended = recommended_strict_base_url(config, &target.base_url);
+            DoctorStrictToolModeStatus {
+                enabled: true,
+                status: "fallback_non_beta",
+                function_strict_sent: false,
+                message:
+                    "enabled, but function.strict is stripped for this non-beta DeepSeek endpoint"
+                        .to_string(),
+                recommended_base_url: Some(recommended.to_string()),
+            }
+        }
+        None => DoctorStrictToolModeStatus {
+            enabled: true,
+            status: "custom_endpoint",
+            function_strict_sent: true,
+            message: "enabled; function.strict will be sent to this custom endpoint".to_string(),
+            recommended_base_url: None,
+        },
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeepSeekBaseUrlKind {
+    Beta,
+    NonBeta,
+}
+
+fn known_deepseek_base_url_kind(base_url: &str) -> Option<DeepSeekBaseUrlKind> {
+    match base_url.trim_end_matches('/').to_ascii_lowercase().as_str() {
+        "https://api.deepseek.com/beta" | "https://api.deepseeki.com/beta" => {
+            Some(DeepSeekBaseUrlKind::Beta)
+        }
+        "https://api.deepseek.com"
+        | "https://api.deepseek.com/v1"
+        | "https://api.deepseeki.com"
+        | "https://api.deepseeki.com/v1" => Some(DeepSeekBaseUrlKind::NonBeta),
+        _ => None,
+    }
+}
+
+fn recommended_strict_base_url(config: &Config, base_url: &str) -> &'static str {
+    if matches!(
+        config.api_provider(),
+        crate::config::ApiProvider::DeepseekCN
+    ) || base_url.to_ascii_lowercase().contains("api.deepseeki.com")
+    {
+        "https://api.deepseeki.com/beta"
+    } else {
+        crate::config::DEFAULT_DEEPSEEK_BASE_URL
     }
 }
 
@@ -4286,6 +4389,85 @@ mod doctor_endpoint_tests {
         assert_eq!(target.provider, "deepseek-cn");
         assert_eq!(target.base_url, crate::config::DEFAULT_DEEPSEEKCN_BASE_URL);
         assert_eq!(target.model, crate::config::DEFAULT_TEXT_MODEL);
+    }
+
+    #[test]
+    fn strict_tool_mode_doctor_reports_disabled_by_default() {
+        let config = Config::default();
+
+        let status = doctor_strict_tool_mode_status(&config);
+
+        assert!(!status.enabled);
+        assert_eq!(status.status, "disabled");
+        assert!(!status.function_strict_sent);
+        assert!(status.recommended_base_url.is_none());
+    }
+
+    #[test]
+    fn strict_tool_mode_doctor_accepts_default_beta_endpoint() {
+        let config = Config {
+            strict_tool_mode: Some(true),
+            ..Default::default()
+        };
+
+        let status = doctor_strict_tool_mode_status(&config);
+
+        assert!(status.enabled);
+        assert_eq!(status.status, "ready");
+        assert!(status.function_strict_sent);
+        assert!(status.message.contains("beta endpoint"));
+        assert!(status.recommended_base_url.is_none());
+    }
+
+    #[test]
+    fn strict_tool_mode_doctor_warns_for_non_beta_deepseek_endpoint() {
+        let config = Config {
+            strict_tool_mode: Some(true),
+            base_url: Some("https://api.deepseek.com".to_string()),
+            ..Default::default()
+        };
+
+        let status = doctor_strict_tool_mode_status(&config);
+
+        assert_eq!(status.status, "fallback_non_beta");
+        assert!(!status.function_strict_sent);
+        assert_eq!(
+            status.recommended_base_url.as_deref(),
+            Some(crate::config::DEFAULT_DEEPSEEK_BASE_URL)
+        );
+    }
+
+    #[test]
+    fn strict_tool_mode_doctor_warns_for_deepseek_cn_default_endpoint() {
+        let config = Config {
+            provider: Some("deepseek-cn".to_string()),
+            strict_tool_mode: Some(true),
+            ..Default::default()
+        };
+
+        let status = doctor_strict_tool_mode_status(&config);
+
+        assert_eq!(status.status, "fallback_non_beta");
+        assert!(!status.function_strict_sent);
+        assert_eq!(
+            status.recommended_base_url.as_deref(),
+            Some("https://api.deepseeki.com/beta")
+        );
+    }
+
+    #[test]
+    fn strict_tool_mode_doctor_marks_custom_endpoint_as_forwarded() {
+        let config = Config {
+            provider: Some("vllm".to_string()),
+            strict_tool_mode: Some(true),
+            ..Default::default()
+        };
+
+        let status = doctor_strict_tool_mode_status(&config);
+
+        assert_eq!(status.status, "custom_endpoint");
+        assert!(status.function_strict_sent);
+        assert!(status.message.contains("custom endpoint"));
     }
 
     #[test]
