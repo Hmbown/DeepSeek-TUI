@@ -1,6 +1,7 @@
 use super::*;
 
 use crate::models::SystemBlock;
+use crate::test_support::lock_test_env;
 use serde_json::json;
 use std::collections::HashSet;
 use std::ffi::OsString;
@@ -13,8 +14,6 @@ use tempfile::tempdir;
 const WORKING_SET_SUMMARY_MARKER: &str = "## Repo Working Set";
 static CAPACITY_MEMORY_ENV_LOCK: LazyLock<tokio::sync::Mutex<()>> =
     LazyLock::new(|| tokio::sync::Mutex::new(()));
-static API_KEY_ENV_LOCK: LazyLock<std::sync::Mutex<()>> =
-    LazyLock::new(|| std::sync::Mutex::new(()));
 
 struct ScopedCapacityMemoryDir {
     previous: Option<OsString>,
@@ -52,7 +51,7 @@ struct ScopedDeepSeekApiKey {
 impl ScopedDeepSeekApiKey {
     fn set(value: &str) -> Self {
         let previous = std::env::var_os("DEEPSEEK_API_KEY");
-        // Safety: tests using this helper serialize with API_KEY_ENV_LOCK and
+        // Safety: tests using this helper serialize with lock_test_env() and
         // restore the original value in Drop.
         unsafe {
             std::env::set_var("DEEPSEEK_API_KEY", value);
@@ -63,7 +62,7 @@ impl ScopedDeepSeekApiKey {
 
 impl Drop for ScopedDeepSeekApiKey {
     fn drop(&mut self) {
-        // Safety: tests using this helper serialize with API_KEY_ENV_LOCK.
+        // Safety: tests using this helper serialize with lock_test_env().
         unsafe {
             if let Some(previous) = self.previous.take() {
                 std::env::set_var("DEEPSEEK_API_KEY", previous);
@@ -85,7 +84,7 @@ fn build_engine_with_capacity(capacity: CapacityControllerConfig) -> Engine {
 
 #[test]
 fn env_only_auth_error_gets_recovery_hint() {
-    let _guard = API_KEY_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = lock_test_env();
     let _env = ScopedDeepSeekApiKey::set("stale-env-key");
     let (engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
 
@@ -99,7 +98,7 @@ fn env_only_auth_error_gets_recovery_hint() {
 
 #[test]
 fn config_auth_error_does_not_blame_env() {
-    let _guard = API_KEY_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = lock_test_env();
     let _env = ScopedDeepSeekApiKey::set("stale-env-key");
     let cfg = Config {
         api_key: Some("fresh-config-key".to_string()),

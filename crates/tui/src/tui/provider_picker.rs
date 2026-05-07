@@ -1,5 +1,5 @@
 //! `/provider` picker modal — pick a provider (DeepSeek / NVIDIA NIM /
-//! OpenRouter / Novita) and, if it lacks credentials, type the API key
+//! hosted providers / self-hosted providers) and, if it lacks credentials, type the API key
 //! inline before completing the switch (#52).
 //!
 //! The picker is intentionally a single modal with two visible states:
@@ -93,6 +93,19 @@ impl ProviderPickerView {
             ApiProvider::Fireworks => "FIREWORKS_API_KEY",
             ApiProvider::Sglang => "SGLANG_API_KEY",
             ApiProvider::Vllm => "VLLM_API_KEY",
+            ApiProvider::Ollama => "OLLAMA_API_KEY",
+        }
+    }
+
+    fn provider_hint(provider: ApiProvider, has_key: bool) -> String {
+        match provider {
+            ApiProvider::Ollama => "self-hosted; defaults to http://localhost:11434".to_string(),
+            ApiProvider::Sglang | ApiProvider::Vllm if has_key => {
+                "(configured; optional key)".to_string()
+            }
+            ApiProvider::Sglang | ApiProvider::Vllm => "(optional key)".to_string(),
+            _ if has_key => "(configured)".to_string(),
+            _ => "(needs API key)".to_string(),
         }
     }
 
@@ -141,11 +154,7 @@ impl ProviderPickerView {
             } else {
                 Style::default().fg(palette::STATUS_WARNING)
             };
-            let hint = if *has_key {
-                "(configured)".to_string()
-            } else {
-                "(needs API key)".to_string()
-            };
+            let hint = Self::provider_hint(*provider, *has_key);
             lines.push(Line::from(vec![
                 Span::raw(" "),
                 Span::styled(arrow, label_style),
@@ -358,7 +367,7 @@ mod tests {
     }
 
     #[test]
-    fn picker_lists_all_seven_providers() {
+    fn picker_lists_all_providers() {
         let config = Config::default();
         let picker = ProviderPickerView::new(ApiProvider::Deepseek, &config);
         let names: Vec<_> = picker
@@ -376,9 +385,28 @@ mod tests {
                 "Novita AI",
                 "Fireworks AI",
                 "SGLang",
-                "vLLM"
+                "vLLM",
+                "Ollama"
             ]
         );
+    }
+
+    #[test]
+    fn ollama_is_selectable_without_key() {
+        let config = Config::default();
+        let mut picker = ProviderPickerView::new(ApiProvider::Deepseek, &config);
+        for _ in 0..8 {
+            picker.handle_key(key(KeyCode::Down));
+        }
+        assert_eq!(picker.selected_provider(), ApiProvider::Ollama);
+        assert!(picker.selected_has_key());
+        let action = picker.handle_key(key(KeyCode::Enter));
+        match action {
+            ViewAction::EmitAndClose(ViewEvent::ProviderPickerApplied { provider }) => {
+                assert_eq!(provider, ApiProvider::Ollama);
+            }
+            other => panic!("expected ProviderPickerApplied, got {other:?}"),
+        }
     }
 
     #[test]

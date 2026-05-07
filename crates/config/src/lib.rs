@@ -35,6 +35,8 @@ const DEFAULT_SGLANG_BASE_URL: &str = "http://localhost:30000/v1";
 const DEFAULT_VLLM_MODEL: &str = "deepseek-ai/DeepSeek-V4-Pro";
 const DEFAULT_VLLM_FLASH_MODEL: &str = "deepseek-ai/DeepSeek-V4-Flash";
 const DEFAULT_VLLM_BASE_URL: &str = "http://localhost:8000/v1";
+const DEFAULT_OLLAMA_MODEL: &str = "deepseek-coder:1.3b";
+const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434/v1";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
@@ -48,6 +50,7 @@ pub enum ProviderKind {
     Fireworks,
     Sglang,
     Vllm,
+    Ollama,
 }
 
 impl ProviderKind {
@@ -62,6 +65,7 @@ impl ProviderKind {
             Self::Fireworks => "fireworks",
             Self::Sglang => "sglang",
             Self::Vllm => "vllm",
+            Self::Ollama => "ollama",
         }
     }
 
@@ -76,6 +80,7 @@ impl ProviderKind {
             "fireworks" | "fireworks-ai" => Some(Self::Fireworks),
             "sglang" | "sg-lang" => Some(Self::Sglang),
             "vllm" | "v-llm" => Some(Self::Vllm),
+            "ollama" | "ollama-local" => Some(Self::Ollama),
             _ => None,
         }
     }
@@ -108,6 +113,8 @@ pub struct ProvidersToml {
     pub sglang: ProviderConfigToml,
     #[serde(default)]
     pub vllm: ProviderConfigToml,
+    #[serde(default)]
+    pub ollama: ProviderConfigToml,
 }
 
 impl ProvidersToml {
@@ -122,6 +129,7 @@ impl ProvidersToml {
             ProviderKind::Fireworks => &self.fireworks,
             ProviderKind::Sglang => &self.sglang,
             ProviderKind::Vllm => &self.vllm,
+            ProviderKind::Ollama => &self.ollama,
         }
     }
 
@@ -135,6 +143,7 @@ impl ProvidersToml {
             ProviderKind::Fireworks => &mut self.fireworks,
             ProviderKind::Sglang => &mut self.sglang,
             ProviderKind::Vllm => &mut self.vllm,
+            ProviderKind::Ollama => &mut self.ollama,
         }
     }
 }
@@ -343,6 +352,7 @@ impl ConfigToml {
         merge_provider_config(&mut self.providers.fireworks, &project.providers.fireworks);
         merge_provider_config(&mut self.providers.sglang, &project.providers.sglang);
         merge_provider_config(&mut self.providers.vllm, &project.providers.vllm);
+        merge_provider_config(&mut self.providers.ollama, &project.providers.ollama);
 
         if project.network.is_some() {
             self.network = project.network;
@@ -425,6 +435,12 @@ impl ConfigToml {
             "providers.vllm.model" => self.providers.vllm.model.clone(),
             "providers.vllm.http_headers" => {
                 serialize_http_headers(&self.providers.vllm.http_headers)
+            }
+            "providers.ollama.api_key" => self.providers.ollama.api_key.clone(),
+            "providers.ollama.base_url" => self.providers.ollama.base_url.clone(),
+            "providers.ollama.model" => self.providers.ollama.model.clone(),
+            "providers.ollama.http_headers" => {
+                serialize_http_headers(&self.providers.ollama.http_headers)
             }
             _ => self.extras.get(key).map(toml::Value::to_string),
         }
@@ -549,6 +565,18 @@ impl ConfigToml {
             "providers.vllm.http_headers" => {
                 self.providers.vllm.http_headers = parse_http_headers(value)?;
             }
+            "providers.ollama.api_key" => {
+                self.providers.ollama.api_key = Some(value.to_string());
+            }
+            "providers.ollama.base_url" => {
+                self.providers.ollama.base_url = Some(value.to_string());
+            }
+            "providers.ollama.model" => {
+                self.providers.ollama.model = Some(value.to_string());
+            }
+            "providers.ollama.http_headers" => {
+                self.providers.ollama.http_headers = parse_http_headers(value)?;
+            }
             _ => {
                 self.extras
                     .insert(key.to_string(), toml::Value::String(value.to_string()));
@@ -617,6 +645,10 @@ impl ConfigToml {
             "providers.vllm.base_url" => self.providers.vllm.base_url = None,
             "providers.vllm.model" => self.providers.vllm.model = None,
             "providers.vllm.http_headers" => self.providers.vllm.http_headers.clear(),
+            "providers.ollama.api_key" => self.providers.ollama.api_key = None,
+            "providers.ollama.base_url" => self.providers.ollama.base_url = None,
+            "providers.ollama.model" => self.providers.ollama.model = None,
+            "providers.ollama.http_headers" => self.providers.ollama.http_headers.clear(),
             _ => {
                 self.extras.remove(key);
             }
@@ -764,6 +796,18 @@ impl ConfigToml {
         if let Some(v) = serialize_http_headers(&self.providers.vllm.http_headers) {
             out.insert("providers.vllm.http_headers".to_string(), v);
         }
+        if let Some(v) = self.providers.ollama.api_key.as_ref() {
+            out.insert("providers.ollama.api_key".to_string(), redact_secret(v));
+        }
+        if let Some(v) = self.providers.ollama.base_url.as_ref() {
+            out.insert("providers.ollama.base_url".to_string(), v.clone());
+        }
+        if let Some(v) = self.providers.ollama.model.as_ref() {
+            out.insert("providers.ollama.model".to_string(), v.clone());
+        }
+        if let Some(v) = serialize_http_headers(&self.providers.ollama.http_headers) {
+            out.insert("providers.ollama.http_headers".to_string(), v);
+        }
 
         for (k, v) in &self.extras {
             out.insert(k.clone(), v.to_string());
@@ -841,6 +885,7 @@ impl ConfigToml {
                 ProviderKind::Fireworks => DEFAULT_FIREWORKS_BASE_URL.to_string(),
                 ProviderKind::Sglang => DEFAULT_SGLANG_BASE_URL.to_string(),
                 ProviderKind::Vllm => DEFAULT_VLLM_BASE_URL.to_string(),
+                ProviderKind::Ollama => DEFAULT_OLLAMA_BASE_URL.to_string(),
             });
 
         let model = cli
@@ -859,6 +904,7 @@ impl ConfigToml {
                 ProviderKind::Fireworks => DEFAULT_FIREWORKS_MODEL.to_string(),
                 ProviderKind::Sglang => DEFAULT_SGLANG_MODEL.to_string(),
                 ProviderKind::Vllm => DEFAULT_VLLM_MODEL.to_string(),
+                ProviderKind::Ollama => DEFAULT_OLLAMA_MODEL.to_string(),
             });
         let model = normalize_model_for_provider(provider, &model);
 
@@ -944,6 +990,10 @@ pub fn load_project_config(workspace: &Path) -> Option<ConfigToml> {
 }
 
 fn normalize_model_for_provider(provider: ProviderKind, model: &str) -> String {
+    if matches!(provider, ProviderKind::Ollama) {
+        return model.to_string();
+    }
+
     let normalized = model.trim().to_ascii_lowercase();
     match (provider, normalized.as_str()) {
         (ProviderKind::NvidiaNim, "deepseek-v4-pro" | "deepseek-v4pro") => {
@@ -1222,6 +1272,7 @@ struct EnvRuntimeOverrides {
     fireworks_base_url: Option<String>,
     sglang_base_url: Option<String>,
     vllm_base_url: Option<String>,
+    ollama_base_url: Option<String>,
 }
 
 impl EnvRuntimeOverrides {
@@ -1269,6 +1320,9 @@ impl EnvRuntimeOverrides {
             vllm_base_url: std::env::var("VLLM_BASE_URL")
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
+            ollama_base_url: std::env::var("OLLAMA_BASE_URL")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
         }
     }
 
@@ -1284,6 +1338,7 @@ impl EnvRuntimeOverrides {
             ProviderKind::Fireworks => self.fireworks_base_url.clone(),
             ProviderKind::Sglang => self.sglang_base_url.clone(),
             ProviderKind::Vllm => self.vllm_base_url.clone(),
+            ProviderKind::Ollama => self.ollama_base_url.clone(),
         }
     }
 }
@@ -1321,6 +1376,8 @@ mod tests {
         sglang_base_url: Option<OsString>,
         vllm_api_key: Option<OsString>,
         vllm_base_url: Option<OsString>,
+        ollama_api_key: Option<OsString>,
+        ollama_base_url: Option<OsString>,
     }
 
     impl EnvGuard {
@@ -1346,6 +1403,8 @@ mod tests {
                 sglang_base_url: env::var_os("SGLANG_BASE_URL"),
                 vllm_api_key: env::var_os("VLLM_API_KEY"),
                 vllm_base_url: env::var_os("VLLM_BASE_URL"),
+                ollama_api_key: env::var_os("OLLAMA_API_KEY"),
+                ollama_base_url: env::var_os("OLLAMA_BASE_URL"),
             };
             // Safety: test-only environment mutation guarded by a module mutex.
             unsafe {
@@ -1369,6 +1428,8 @@ mod tests {
                 env::remove_var("SGLANG_BASE_URL");
                 env::remove_var("VLLM_API_KEY");
                 env::remove_var("VLLM_BASE_URL");
+                env::remove_var("OLLAMA_API_KEY");
+                env::remove_var("OLLAMA_BASE_URL");
             }
             guard
         }
@@ -1406,6 +1467,8 @@ mod tests {
                 Self::restore_var("SGLANG_BASE_URL", self.sglang_base_url.take());
                 Self::restore_var("VLLM_API_KEY", self.vllm_api_key.take());
                 Self::restore_var("VLLM_BASE_URL", self.vllm_base_url.take());
+                Self::restore_var("OLLAMA_API_KEY", self.ollama_api_key.take());
+                Self::restore_var("OLLAMA_BASE_URL", self.ollama_base_url.take());
             }
         }
     }
@@ -1705,6 +1768,11 @@ mod tests {
         assert_eq!(ProviderKind::parse("sg-lang"), Some(ProviderKind::Sglang));
         assert_eq!(ProviderKind::parse("v-llm"), Some(ProviderKind::Vllm));
         assert_eq!(ProviderKind::parse("vllm"), Some(ProviderKind::Vllm));
+        assert_eq!(ProviderKind::parse("ollama"), Some(ProviderKind::Ollama));
+        assert_eq!(
+            ProviderKind::parse("ollama-local"),
+            Some(ProviderKind::Ollama)
+        );
     }
 
     #[test]
@@ -1785,6 +1853,58 @@ mod tests {
         assert_eq!(resolved.provider, ProviderKind::Vllm);
         assert_eq!(resolved.base_url, DEFAULT_VLLM_BASE_URL);
         assert_eq!(resolved.model, DEFAULT_VLLM_MODEL);
+    }
+
+    #[test]
+    fn ollama_provider_defaults_to_local_endpoint_and_small_model() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let config = ConfigToml {
+            provider: ProviderKind::Ollama,
+            ..ConfigToml::default()
+        };
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Ollama);
+        assert_eq!(resolved.base_url, DEFAULT_OLLAMA_BASE_URL);
+        assert_eq!(resolved.model, DEFAULT_OLLAMA_MODEL);
+        assert_eq!(resolved.api_key, None);
+    }
+
+    #[test]
+    fn ollama_provider_preserves_model_tags() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        let cli = CliRuntimeOverrides {
+            provider: Some(ProviderKind::Ollama),
+            model: Some("deepseek-coder-v2:16b".to_string()),
+            ..CliRuntimeOverrides::default()
+        };
+
+        let resolved = ConfigToml::default().resolve_runtime_options(&cli);
+
+        assert_eq!(resolved.provider, ProviderKind::Ollama);
+        assert_eq!(resolved.model, "deepseek-coder-v2:16b");
+    }
+
+    #[test]
+    fn ollama_env_overrides_provider_base_url_and_optional_key() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
+        // Safety: test-only environment mutation guarded by a module mutex.
+        unsafe {
+            env::set_var("DEEPSEEK_PROVIDER", "ollama-local");
+            env::set_var("OLLAMA_BASE_URL", "http://ollama.example/v1");
+            env::set_var("OLLAMA_API_KEY", "ollama-env-key");
+        }
+
+        let resolved =
+            ConfigToml::default().resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::Ollama);
+        assert_eq!(resolved.base_url, "http://ollama.example/v1");
+        assert_eq!(resolved.api_key.as_deref(), Some("ollama-env-key"));
     }
 
     #[test]

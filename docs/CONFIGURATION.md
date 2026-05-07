@@ -55,14 +55,15 @@ the legacy `deepseek login --api-key ...` alias) saves the key to
 `~/.deepseek/config.toml`, and `deepseek --model deepseek-v4-flash` is forwarded
 to the TUI as `DEEPSEEK_MODEL`.
 
-For hosted or self-hosted DeepSeek V4 providers, set `provider = "nvidia-nim"`,
-`"fireworks"`, `"sglang"`, or `"vllm"` or pass `deepseek --provider <name>`. The facade
+For hosted or self-hosted providers, set `provider = "nvidia-nim"`,
+`"fireworks"`, `"sglang"`, `"vllm"`, or `"ollama"` or pass `deepseek --provider <name>`. The facade
 saves provider credentials to the shared user config and forwards the resolved
 key, base URL, provider, and model to the TUI process. Use
 `deepseek auth set --provider nvidia-nim --api-key "YOUR_NVIDIA_API_KEY"` or
 `deepseek auth set --provider fireworks --api-key "YOUR_FIREWORKS_API_KEY"` to
-save hosted-provider keys through the facade. SGLang and vLLM are self-hosted and can run
-without an API key by default.
+save hosted-provider keys through the facade. SGLang, vLLM, and Ollama are self-hosted and can run
+without an API key by default. Ollama defaults to `http://localhost:11434/v1` and sends model tags
+such as `deepseek-coder:1.3b` or `qwen2.5-coder:7b` unchanged.
 
 Third-party OpenAI-compatible gateways that need extra request headers can set
 `http_headers = { "X-Model-Provider-Id" = "your-model-provider" }` at the top
@@ -114,6 +115,11 @@ default_text_model = "deepseek-ai/DeepSeek-V4-Pro"
 provider = "vllm"
 base_url = "http://localhost:8000/v1"
 default_text_model = "deepseek-ai/DeepSeek-V4-Pro"
+
+[profiles.ollama]
+provider = "ollama"
+base_url = "http://localhost:11434/v1"
+default_text_model = "deepseek-coder:1.3b"
 ```
 
 Select a profile with:
@@ -130,7 +136,7 @@ These override config values:
 - `DEEPSEEK_API_KEY`
 - `DEEPSEEK_BASE_URL`
 - `DEEPSEEK_HTTP_HEADERS` (custom model request headers, comma-separated `name=value` pairs)
-- `DEEPSEEK_PROVIDER` (`deepseek|nvidia-nim|openrouter|novita|fireworks|sglang|vllm`)
+- `DEEPSEEK_PROVIDER` (`deepseek|nvidia-nim|openrouter|novita|fireworks|sglang|vllm|ollama`)
 - `DEEPSEEK_MODEL` or `DEEPSEEK_DEFAULT_TEXT_MODEL`
 - `NVIDIA_API_KEY` or `NVIDIA_NIM_API_KEY` (preferred when provider is `nvidia-nim`; falls back to `DEEPSEEK_API_KEY`)
 - `NVIDIA_NIM_BASE_URL`, `NIM_BASE_URL`, or `NVIDIA_BASE_URL`
@@ -143,6 +149,9 @@ These override config values:
 - `VLLM_BASE_URL`
 - `VLLM_MODEL`
 - `VLLM_API_KEY` (optional; many localhost vLLM servers do not require auth)
+- `OLLAMA_BASE_URL`
+- `OLLAMA_MODEL`
+- `OLLAMA_API_KEY` (optional; many localhost Ollama servers do not require auth)
 - `DEEPSEEK_LOG_LEVEL` or `RUST_LOG` (`info`/`debug`/`trace` enables lightweight verbose logs)
 - `DEEPSEEK_SKILLS_DIR`
 - `DEEPSEEK_MCP_CONFIG`
@@ -316,10 +325,10 @@ If you are upgrading from older releases:
 
 ### Core keys (used by the TUI/engine)
 
-- `provider` (string, optional): `deepseek` (default), `deepseek-cn`, `nvidia-nim`, `openrouter`, `novita`, `fireworks`, `sglang`, or `vllm`. `deepseek-cn` uses DeepSeek's mainland China endpoint (`https://api.deepseeki.com`); `nvidia-nim` targets NVIDIA's NIM-hosted DeepSeek endpoints through `https://integrate.api.nvidia.com/v1`; `fireworks` targets `https://api.fireworks.ai/inference/v1`; `sglang` targets a self-hosted OpenAI-compatible endpoint, defaulting to `http://localhost:30000/v1`; `vllm` targets a self-hosted vLLM OpenAI-compatible endpoint, defaulting to `http://localhost:8000/v1`.
-- `api_key` (string, required): must be non-empty (or set `DEEPSEEK_API_KEY`).
+- `provider` (string, optional): `deepseek` (default), `deepseek-cn`, `nvidia-nim`, `openrouter`, `novita`, `fireworks`, `sglang`, `vllm`, or `ollama`. `deepseek-cn` uses DeepSeek's mainland China endpoint (`https://api.deepseeki.com`); `nvidia-nim` targets NVIDIA's NIM-hosted DeepSeek endpoints through `https://integrate.api.nvidia.com/v1`; `fireworks` targets `https://api.fireworks.ai/inference/v1`; `sglang` targets a self-hosted OpenAI-compatible endpoint, defaulting to `http://localhost:30000/v1`; `vllm` targets a self-hosted vLLM OpenAI-compatible endpoint, defaulting to `http://localhost:8000/v1`; `ollama` targets Ollama's OpenAI-compatible endpoint, defaulting to `http://localhost:11434/v1`.
+- `api_key` (string, required for hosted providers): must be non-empty for DeepSeek/hosted providers (or set the provider API key env var). Self-hosted SGLang, vLLM, and Ollama can omit it.
 - `base_url` (string, optional): defaults to `https://api.deepseek.com` for DeepSeek's OpenAI-compatible Chat Completions API, `https://api.deepseeki.com` for `provider = "deepseek-cn"`, or the provider-specific endpoint for hosted/self-hosted providers. `https://api.deepseek.com/v1` is also accepted for SDK compatibility; use `https://api.deepseek.com/beta` only for DeepSeek beta features such as strict tool mode, chat prefix completion, and FIM completion.
-- `default_text_model` (string, optional): defaults to `deepseek-v4-pro` for DeepSeek, `deepseek-ai/deepseek-v4-pro` for NVIDIA NIM, `accounts/fireworks/models/deepseek-v4-pro` for Fireworks, and `deepseek-ai/DeepSeek-V4-Pro` for SGLang. Current public DeepSeek IDs are `deepseek-v4-pro` and `deepseek-v4-flash`, both with 1M context windows and thinking mode enabled by default. Legacy `deepseek-chat` and `deepseek-reasoner` remain compatibility aliases for `deepseek-v4-flash`. Provider-specific mappings translate `deepseek-v4-pro` / `deepseek-v4-flash` to each provider's model ID where supported. Use `/models` or `deepseek models` to discover live IDs from your configured endpoint. `DEEPSEEK_MODEL` overrides this for a single process.
+- `default_text_model` (string, optional): defaults to `deepseek-v4-pro` for DeepSeek, `deepseek-ai/deepseek-v4-pro` for NVIDIA NIM, `accounts/fireworks/models/deepseek-v4-pro` for Fireworks, `deepseek-ai/DeepSeek-V4-Pro` for SGLang/vLLM, and `deepseek-coder:1.3b` for Ollama. Current public DeepSeek IDs are `deepseek-v4-pro` and `deepseek-v4-flash`, both with 1M context windows and thinking mode enabled by default. Legacy `deepseek-chat` and `deepseek-reasoner` remain compatibility aliases for `deepseek-v4-flash`. Provider-specific mappings translate `deepseek-v4-pro` / `deepseek-v4-flash` to each provider's model ID where supported. Ollama model tags are passed through unchanged. Use `/models` or `deepseek models` to discover live IDs from your configured endpoint. `DEEPSEEK_MODEL` overrides this for a single process.
 - `reasoning_effort` (string, optional): `off`, `low`, `medium`, `high`, or `max`; defaults to the configured UI tier. DeepSeek Platform receives top-level `thinking` / `reasoning_effort` fields. NVIDIA NIM receives equivalent settings through `chat_template_kwargs`.
 - `allow_shell` (bool, optional): defaults to `true` (sandboxed).
 - `approval_policy` (string, optional): `on-request`, `untrusted`, or `never`. Runtime `approval_mode` editing in `/config` also accepts `on-request` and `untrusted` aliases.

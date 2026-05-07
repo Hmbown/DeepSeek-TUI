@@ -12,10 +12,10 @@
 # Choose which provider to use by default. Per-provider credentials live in the
 # `[providers.*]` sections near the bottom of
 # this file — keeping both stored at once means `/provider deepseek` and
-# `/provider nvidia-nim` (or `--provider fireworks`, `/provider sglang`, `/provider vllm`) toggle without having to
+# `/provider nvidia-nim` (or `--provider fireworks`, `/provider sglang`, `/provider vllm`, `/provider ollama`) toggle without having to
 # re-enter keys. Top-level `api_key` / `base_url` are still read as DeepSeek
 # defaults when `[providers.deepseek]` is absent (backward compatibility).
-provider = "deepseek" # deepseek | nvidia-nim | openrouter | novita | fireworks | sglang | vllm
+provider = "deepseek" # deepseek | nvidia-nim | openrouter | novita | fireworks | sglang | vllm | ollama
 api_key = "YOUR_DEEPSEEK_API_KEY" # must be non-empty
 base_url = "https://api.deepseek.com"
 # base_url = "https://api.deepseeki.com"         # China users
@@ -158,6 +158,7 @@ max_subagents = 10 # optional (1-20)
 #   Fireworks: FIREWORKS_API_KEY, FIREWORKS_BASE_URL
 #   SGLang:    SGLANG_BASE_URL, SGLANG_MODEL, optional SGLANG_API_KEY
 #   vLLM:      VLLM_BASE_URL, VLLM_MODEL, optional VLLM_API_KEY
+#   Ollama:    OLLAMA_BASE_URL, OLLAMA_MODEL, optional OLLAMA_API_KEY
 
 # DeepSeek Platform (https://platform.deepseek.com)
 [providers.deepseek]
@@ -189,6 +190,12 @@ max_subagents = 10 # optional (1-20)
 # api_key = "OPTIONAL_VLLM_TOKEN"
 # base_url = "http://localhost:8000/v1"
 # model = "deepseek-ai/DeepSeek-V4-Pro"     # or deepseek-ai/DeepSeek-V4-Flash
+
+# Self-hosted Ollama OpenAI-compatible server
+[providers.ollama]
+# api_key = "OPTIONAL_OLLAMA_TOKEN"
+# base_url = "http://localhost:11434/v1"
+# model = "deepseek-coder:1.3b"             # or any local Ollama tag
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Network Policy (#135)

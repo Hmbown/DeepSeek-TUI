@@ -31,6 +31,7 @@ enum ProviderArg {
     Fireworks,
     Sglang,
     Vllm,
+    Ollama,
 }
 
 impl From<ProviderArg> for ProviderKind {
@@ -44,6 +45,7 @@ impl From<ProviderArg> for ProviderKind {
             ProviderArg::Fireworks => ProviderKind::Fireworks,
             ProviderArg::Sglang => ProviderKind::Sglang,
             ProviderArg::Vllm => ProviderKind::Vllm,
+            ProviderArg::Ollama => ProviderKind::Ollama,
         }
     }
 }
@@ -663,11 +665,12 @@ fn provider_slot(provider: ProviderKind) -> &'static str {
         ProviderKind::Fireworks => "fireworks",
         ProviderKind::Sglang => "sglang",
         ProviderKind::Vllm => "vllm",
+        ProviderKind::Ollama => "ollama",
     }
 }
 
 /// Provider order used by the `auth list` and `auth status` outputs.
-const PROVIDER_LIST: [ProviderKind; 8] = [
+const PROVIDER_LIST: [ProviderKind; 9] = [
     ProviderKind::Deepseek,
     ProviderKind::NvidiaNim,
     ProviderKind::Openrouter,
@@ -675,6 +678,7 @@ const PROVIDER_LIST: [ProviderKind; 8] = [
     ProviderKind::Fireworks,
     ProviderKind::Sglang,
     ProviderKind::Vllm,
+    ProviderKind::Ollama,
     ProviderKind::Openai,
 ];
 
@@ -795,6 +799,19 @@ fn run_auth_command_with_secrets(
         } => {
             let provider: ProviderKind = provider.into();
             let slot = provider_slot(provider);
+            if provider == ProviderKind::Ollama && api_key.is_none() && !api_key_stdin {
+                store.config.provider = provider;
+                let provider_cfg = store.config.providers.for_provider_mut(provider);
+                if provider_cfg.base_url.is_none() {
+                    provider_cfg.base_url = Some("http://localhost:11434/v1".to_string());
+                }
+                store.save()?;
+                println!(
+                    "configured {slot} provider in {} (API key optional)",
+                    store.path().display()
+                );
+                return Ok(());
+            }
             let api_key = match (api_key, api_key_stdin) {
                 (Some(v), _) => v,
                 (None, true) => read_api_key_from_stdin()?,
@@ -1284,9 +1301,10 @@ fn build_tui_command(
             | ProviderKind::Fireworks
             | ProviderKind::Sglang
             | ProviderKind::Vllm
+            | ProviderKind::Ollama
     ) {
         bail!(
-            "The interactive TUI supports DeepSeek, NVIDIA NIM, OpenRouter, Novita, Fireworks, SGLang, and vLLM providers. Remove --provider {} or use `deepseek model ...` for provider registry inspection.",
+            "The interactive TUI supports DeepSeek, NVIDIA NIM, OpenRouter, Novita, Fireworks, SGLang, vLLM, and Ollama providers. Remove --provider {} or use `deepseek model ...` for provider registry inspection.",
             resolved_runtime.provider.as_str()
         );
     }
@@ -1892,6 +1910,18 @@ mod tests {
             }))
         ));
 
+        let cli = parse_ok(&["deepseek", "auth", "set", "--provider", "ollama"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Auth(AuthArgs {
+                command: AuthCommand::Set {
+                    provider: ProviderArg::Ollama,
+                    api_key: None,
+                    api_key_stdin: false,
+                }
+            }))
+        ));
+
         let cli = parse_ok(&["deepseek", "auth", "list"]);
         assert!(matches!(
             cli.command,
@@ -1953,6 +1983,37 @@ mod tests {
             inner.get("deepseek").unwrap().as_deref(),
             Some("sk-keyring")
         );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn auth_set_ollama_accepts_empty_key_and_records_base_url() {
+        let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
+        let path = std::env::temp_dir().join(format!(
+            "deepseek-cli-auth-ollama-test-{}-{nanos}.toml",
+            std::process::id()
+        ));
+        let mut store = ConfigStore::load(Some(path.clone())).expect("store should load");
+        let secrets = no_keyring_secrets();
+
+        run_auth_command_with_secrets(
+            &mut store,
+            AuthCommand::Set {
+                provider: ProviderArg::Ollama,
+                api_key: None,
+                api_key_stdin: false,
+            },
+            &secrets,
+        )
+        .expect("ollama auth set should not require a key");
+
+        assert_eq!(store.config.provider, ProviderKind::Ollama);
+        assert_eq!(
+            store.config.providers.ollama.base_url.as_deref(),
+            Some("http://localhost:11434/v1")
+        );
+        assert_eq!(store.config.providers.ollama.api_key, None);
 
         let _ = std::fs::remove_file(path);
     }

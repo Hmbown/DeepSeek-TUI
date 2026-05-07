@@ -4587,6 +4587,7 @@ async fn execute_command_input(
             providers.fireworks.api_key = None;
             providers.sglang.api_key = None;
             providers.vllm.api_key = None;
+            providers.ollama.api_key = None;
         }
         app.api_key_env_only = crate::config::active_provider_uses_env_only_api_key(config);
     }
@@ -4965,6 +4966,7 @@ fn render(f: &mut Frame, app: &mut App) {
             crate::config::ApiProvider::Fireworks => Some("Fireworks"),
             crate::config::ApiProvider::Sglang => Some("SGLang"),
             crate::config::ApiProvider::Vllm => Some("vLLM"),
+            crate::config::ApiProvider::Ollama => Some("Ollama"),
         };
         let header_data = HeaderData::new(
             app.mode,
@@ -5595,6 +5597,7 @@ async fn apply_provider_picker_api_key(
             ApiProvider::Fireworks => &mut providers.fireworks,
             ApiProvider::Sglang => &mut providers.sglang,
             ApiProvider::Vllm => &mut providers.vllm,
+            ApiProvider::Ollama => &mut providers.ollama,
         };
         entry.api_key = Some(api_key);
     }

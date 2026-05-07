@@ -799,6 +799,7 @@ pub(super) fn apply_reasoning_effort(
             | ApiProvider::Vllm => {
                 body["thinking"] = json!({ "type": "disabled" });
             }
+            ApiProvider::Ollama => {}
             ApiProvider::NvidiaNim => {
                 body["chat_template_kwargs"] = json!({
                     "thinking": false,
@@ -816,6 +817,7 @@ pub(super) fn apply_reasoning_effort(
                 body["reasoning_effort"] = json!("high");
                 body["thinking"] = json!({ "type": "enabled" });
             }
+            ApiProvider::Ollama => {}
             ApiProvider::NvidiaNim => {
                 body["chat_template_kwargs"] = json!({
                     "thinking": true,
@@ -834,6 +836,7 @@ pub(super) fn apply_reasoning_effort(
                 body["reasoning_effort"] = json!("max");
                 body["thinking"] = json!({ "type": "enabled" });
             }
+            ApiProvider::Ollama => {}
             ApiProvider::NvidiaNim => {
                 body["chat_template_kwargs"] = json!({
                     "thinking": true,
@@ -1742,6 +1745,26 @@ mod tests {
                     created: Some(1)
                 }
             ]
+        );
+    }
+
+    #[test]
+    fn parse_models_response_accepts_ollama_tag_ids() {
+        let payload = r#"{
+            "object": "list",
+            "data": [
+                {"id": "qwen2.5-coder:7b", "object": "model", "owned_by": "library"},
+                {"id": "deepseek-coder-v2:16b", "object": "model"}
+            ]
+        }"#;
+
+        let models = parse_models_response(payload).expect("parse models");
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["deepseek-coder-v2:16b", "qwen2.5-coder:7b"]
         );
     }
 
