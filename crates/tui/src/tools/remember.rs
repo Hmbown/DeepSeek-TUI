@@ -73,22 +73,6 @@ impl ToolSpec for RememberTool {
             ToolError::execution_failed(format!("failed to append to {}: {err}", path.display()))
         })?;
 
-        // Also save into the structured memory store (#518).
-        let cleaned = note.trim_start_matches('#').trim();
-        if !cleaned.is_empty() {
-            let hash = Some(crate::memory::store::project_hash(&context.workspace));
-            let memory = crate::memory::store::new_memory(
-                cleaned.to_string(),
-                "manual".to_string(),
-                crate::memory::store::MemoryConfidence::High,
-                Vec::new(),
-                hash,
-            );
-            // Structured save is best-effort — don't fail the whole tool
-            // if the memories dir isn't writable.
-            let _ = crate::memory::store::save_memory(memory, Some(&context.workspace), 0);
-        }
-
         Ok(ToolResult::success(format!(
             "remembered: {}",
             note.trim_start_matches('#').trim()

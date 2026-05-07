@@ -295,6 +295,18 @@ impl ToolContext {
         self
     }
 
+    /// Attach a path-permission engine for file-level access control.
+    #[must_use]
+    #[allow(dead_code)]
+    pub fn with_path_permissions(
+        mut self,
+        engine: crate::execpolicy::path_permission::PathPermissionEngine,
+    ) -> Self {
+        self.path_permissions =
+            Some(Arc::new(tokio::sync::Mutex::new(engine)));
+        self
+    }
+
     /// Resolve a path relative to workspace, validating it doesn't escape.
     ///
     /// This handles both existing files (using canonicalize) and non-existent files
