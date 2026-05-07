@@ -56,8 +56,9 @@ returns `FINAL()`. RLM 2.0 will support:
   a more specific prompt."
 - **`max_steps` parameter**: prevents infinite loops (default: 10).
 
+RLM 2.0 interactive mode (planned API shape):
+
 ```json
-// RLM 2.0 interactive mode (planned API shape)
 {
   "task": "Classify and re-classify until confident",
   "file_path": "data.csv",
