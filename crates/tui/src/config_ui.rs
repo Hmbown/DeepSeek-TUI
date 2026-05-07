@@ -67,6 +67,7 @@ pub struct SettingsSection {
     pub sidebar_focus: SidebarFocusValue,
     #[schemars(range(min = 0))]
     pub max_history: usize,
+    pub cost_currency: CostCurrencyValue,
     pub default_model: Option<String>,
 }
 
@@ -183,6 +184,13 @@ pub enum DefaultModeValue {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum CostCurrencyValue {
+    Usd,
+    Cny,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum SidebarFocusValue {
     Auto,
     Plan,
@@ -267,6 +275,7 @@ pub fn build_document(app: &App, config: &Config) -> Result<ConfigUiDocument> {
             sidebar_width: settings.sidebar_width_percent,
             sidebar_focus: settings.sidebar_focus.as_str().into(),
             max_history: settings.max_input_history,
+            cost_currency: CostCurrencyValue::from_setting(&settings.cost_currency)?,
             default_model,
         },
         config: ConfigSection {
@@ -428,6 +437,7 @@ pub fn apply_document(
         ("sidebar_width", &doc.settings.sidebar_width.to_string()),
         ("sidebar_focus", doc.settings.sidebar_focus.as_setting()),
         ("max_history", &doc.settings.max_history.to_string()),
+        ("cost_currency", doc.settings.cost_currency.as_setting()),
         ("mcp_config_path", doc.config.mcp_config_path.as_str()),
     ] {
         let result = commands::set_config_value(app, key, value, persist);
@@ -660,6 +670,23 @@ impl DefaultModeValue {
             Self::Agent => "agent",
             Self::Plan => "plan",
             Self::Yolo => "yolo",
+        }
+    }
+}
+
+impl CostCurrencyValue {
+    fn from_setting(value: &str) -> Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "usd" => Ok(Self::Usd),
+            "cny" | "rmb" | "yuan" => Ok(Self::Cny),
+            other => anyhow::bail!("Invalid cost_currency '{other}': expected usd, cny, rmb, or yuan"),
+        }
+    }
+
+    fn as_setting(self) -> &'static str {
+        match self {
+            Self::Usd => "usd",
+            Self::Cny => "cny",
         }
     }
 }

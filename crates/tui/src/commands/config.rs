@@ -44,7 +44,7 @@ pub fn show_config(_app: &mut App, arg: Option<&str>) -> CommandResult {
 /// - `/config tui` / `/config web` / `/config native` — open a specific
 ///   editor mode (web requires the `web` build feature).
 /// - `/config <key>` — shows the current value of a setting.
-/// - `/config <key> <value>` — sets a runtime value (session only, no --save).
+/// - `/config <key> <value>` — sets a runtime value (session only, add --save to persist).
 pub fn config_command(app: &mut App, arg: Option<&str>) -> CommandResult {
     let raw = arg.map(str::trim).unwrap_or("");
     if raw.is_empty() {
@@ -63,8 +63,18 @@ pub fn config_command(app: &mut App, arg: Option<&str>) -> CommandResult {
         // `/config <key>` — show current value
         show_single_setting(app, token)
     } else {
-        // `/config <key> <value>` — set value
-        set_config_value(app, parts[0], parts[1], false)
+        // `/config <key> <value> [--save|-s]` — set value, optionally persist
+        let raw_value = parts[1];
+        let persist = raw_value.ends_with(" --save") || raw_value.ends_with(" -s");
+        let value = if persist {
+            raw_value
+                .strip_suffix(" --save")
+                .or_else(|| raw_value.strip_suffix(" -s"))
+                .unwrap_or(raw_value)
+        } else {
+            raw_value
+        };
+        set_config_value(app, parts[0], value, persist)
     }
 }
 
@@ -126,6 +136,13 @@ fn show_single_setting(app: &App, key: &str) -> CommandResult {
         }
         "transcript_spacing" | "spacing" => {
             Some(spacing_display(app.transcript_spacing).to_string())
+        }
+        "cost_currency" | "currency" => {
+            Some(match app.cost_currency {
+                crate::pricing::CostCurrency::Usd => "usd",
+                crate::pricing::CostCurrency::Cny => "cny",
+            }
+            .to_string())
         }
         _ => {
             let known = Settings::available_settings()
