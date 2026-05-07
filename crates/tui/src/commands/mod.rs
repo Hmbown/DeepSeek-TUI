@@ -342,6 +342,12 @@ pub const COMMANDS: &[CommandInfo] = &[
         description_id: MessageId::CmdPlanDescription,
     },
     CommandInfo {
+        name: "theme",
+        aliases: &[],
+        usage: "/theme",
+        description_id: MessageId::CmdThemeDescription,
+    },
+    CommandInfo {
         name: "trust",
         aliases: &[],
         usage: "/trust [on|off|add <path>|remove <path>|list]",
@@ -535,6 +541,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         "yolo" => config::yolo(app),
         "agent" => config::agent_mode(app),
         "plan" => config::plan_mode(app),
+        "theme" => config::theme(app),
         "trust" => config::trust(app, arg),
         "logout" => config::logout(app),
 
