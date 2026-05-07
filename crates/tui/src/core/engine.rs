@@ -343,6 +343,15 @@ pub struct Engine {
     /// Diagnostics collected during the current step's tool calls. Drained
     /// and forwarded as a synthetic user message before the next API call.
     pending_lsp_blocks: Vec<crate::lsp::DiagnosticBlock>,
+    /// Lifecycle hook manager (Phase 5). Initialized from
+    /// `~/.deepseek/hooks.toml`; `None` when no hooks are configured.
+    hook_manager: Option<crate::hook_manager::HookManager>,
+    /// Agent profile manager (Phase 6). Resolves named profiles for
+    /// sub-agent spawning. Built with built-in defaults + user/project config.
+    agent_profiles: crate::agent_profiles::manager::AgentProfileManager,
+    /// Path-permission engine (Phase 3). When `Some`, path-level tool
+    /// permission rules are checked before requesting user approval.
+    path_permissions: Option<Arc<tokio::sync::Mutex<crate::execpolicy::path_permission::PathPermissionEngine>>>,
 }
 
 // === Internal tool helpers ===
@@ -551,6 +560,9 @@ impl Engine {
             pending_lsp_blocks: Vec::new(),
             workshop_vars,
             sandbox_backend,
+            hook_manager: Self::init_hook_manager(),
+            agent_profiles: Self::init_agent_profiles(),
+            path_permissions: Self::init_path_permissions(),
         };
         engine.rehydrate_latest_canonical_state();
 
@@ -642,6 +654,7 @@ impl Engine {
                         Arc::clone(&self.subagent_manager),
                     )
                     .with_role_models(self.config.subagent_model_overrides.clone())
+                    .with_agent_profiles(self.agent_profiles.clone())
                     .with_auto_model(self.session.auto_model)
                     .with_reasoning_effort(
                         self.session.reasoning_effort.clone(),
@@ -798,6 +811,10 @@ impl Engine {
                     .await;
                 }
                 Op::Shutdown => {
+                    // Fire Stop hook (Phase 5).
+                    if let Some(ref hm) = self.hook_manager {
+                        hm.fire("Stop", "user requested shutdown");
+                    }
                     break;
                 }
             }
@@ -811,6 +828,130 @@ impl Engine {
         if let Some(pool) = self.mcp_pool.as_ref() {
             let mut guard = pool.lock().await;
             guard.shutdown_all().await;
+        }
+
+        // Memory auto-extraction (Phase 4). At session shutdown, extract
+        // key learnings from the conversation and save as structured
+        // memories if the feature is enabled and a client is available.
+        self.run_memory_auto_extraction().await;
+    }
+
+    /// Run memory auto-extraction at session end.
+    async fn run_memory_auto_extraction(&mut self) {
+        if !self.config.memory_enabled {
+            return;
+        }
+
+        let Some(ref client) = self.deepseek_client else {
+            return;
+        };
+
+        // Build a summary of recent user/assistant exchanges.
+        let recent: Vec<&Message> = self
+            .session
+            .messages
+            .iter()
+            .rev()
+            .take(20)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+
+        if recent.is_empty() {
+            return;
+        }
+
+        let conversation_text: String = recent
+            .iter()
+            .map(|m| {
+                let text = m.content.iter().filter_map(|block| {
+                    if let ContentBlock::Text { text, .. } = block {
+                        Some(text.as_str())
+                    } else {
+                        None
+                    }
+                }).collect::<Vec<_>>().join(" ");
+                format!("[{}]: {text}", m.role)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let prompt = crate::memory::extract::extraction_prompt(&conversation_text);
+
+        let _ = self
+            .tx_event
+            .send(Event::status("Memory: extracting key learnings...".to_string()))
+            .await;
+
+        match client
+            .create_message(MessageRequest {
+                model: "deepseek-v4-flash".to_string(),
+                messages: vec![Message {
+                    role: "user".to_string(),
+                    content: vec![ContentBlock::Text {
+                        text: prompt,
+                        cache_control: None,
+                    }],
+                }],
+                max_tokens: 1024,
+                system: None,
+                tools: None,
+                tool_choice: None,
+                metadata: None,
+                thinking: None,
+                reasoning_effort: None,
+                stream: Some(false),
+                temperature: None,
+                top_p: None,
+            })
+            .await
+        {
+            Ok(response) => {
+                let extracted: String = response.content.iter()
+                    .filter_map(|block| {
+                        if let ContentBlock::Text { text, .. } = block {
+                            Some(text.as_str())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+
+                if !extracted.is_empty() {
+                    let memory = crate::memory::store::Memory {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        content: extracted,
+                        source: "auto-extract".to_string(),
+                        created: chrono::Utc::now(),
+                        confidence: crate::memory::store::MemoryConfidence::Medium,
+                        tags: vec!["auto-extract".to_string(), "session-end".to_string()],
+                        project_hash: Some(crate::memory::store::project_hash(&self.config.workspace)),
+                    };
+                    match crate::memory::store::save_memory(
+                        memory,
+                        None,
+                        50,
+                    ) {
+                        Ok(()) => {
+                            let _ = self.tx_event.send(
+                                Event::status("Memory: saved extracted learnings".to_string()),
+                            ).await;
+                        }
+                        Err(e) => {
+                            let _ = self.tx_event.send(
+                                Event::status(format!("Memory extraction save failed: {e}")),
+                            ).await;
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                let _ = self.tx_event.send(
+                    Event::status(format!("Memory extraction skipped: {e}")),
+                ).await;
+            }
         }
     }
 
@@ -881,6 +1022,10 @@ impl Engine {
         auto_approve: bool,
         approval_mode: crate::tui::approval::ApprovalMode,
     ) {
+        // Fire UserPromptSubmit hook (Phase 5).
+        if let Some(ref hm) = self.hook_manager {
+            hm.fire("UserPromptSubmit", &content);
+        }
         // Reset cancel token for fresh turn (in case previous was cancelled)
         self.reset_cancel_token();
 
@@ -1020,6 +1165,7 @@ impl Engine {
                             Arc::clone(&self.subagent_manager),
                         )
                         .with_role_models(self.config.subagent_model_overrides.clone())
+                        .with_agent_profiles(self.agent_profiles.clone())
                         .with_auto_model(self.session.auto_model)
                         .with_reasoning_effort(
                             self.session.reasoning_effort.clone(),
@@ -1447,6 +1593,11 @@ impl Engine {
         .with_cancel_token(self.cancel_token.clone())
         .with_trusted_external_paths(trusted.paths().to_vec());
 
+        // Wire path-permission engine (Phase 3).
+        if let Some(pp) = self.path_permissions.as_ref() {
+            ctx.path_permissions = Some(Arc::clone(pp));
+        }
+
         // Hand the user-memory path to tools so the model-callable
         // `remember` tool can append entries (#489). `None` when the
         // feature is disabled — tools short-circuit on that.
@@ -1519,6 +1670,40 @@ impl Engine {
                 ctx.with_elevated_sandbox_policy(crate::sandbox::SandboxPolicy::DangerFullAccess)
             }
         }
+    }
+
+    /// Initialize the lifecycle hook manager (Phase 5).
+    /// Loads hooks from `~/.deepseek/hooks.toml` and
+    /// `<workspace>/.deepseek/hooks.toml`.
+    fn init_hook_manager() -> Option<crate::hook_manager::HookManager> {
+        let home = dirs::home_dir()?;
+        let user_path = home.join(".deepseek").join("hooks.toml");
+        let mgr = crate::hook_manager::HookManager::load(
+            Some(&user_path),
+            None,
+        );
+        Some(mgr)
+    }
+
+    /// Initialize the agent profile manager (Phase 6).
+    /// Loads built-in profiles + user/project config overrides.
+    fn init_agent_profiles() -> crate::agent_profiles::manager::AgentProfileManager {
+        crate::agent_profiles::manager::AgentProfileManager::builtin_only()
+    }
+
+    /// Initialize the path-permission engine (Phase 3).
+    /// Loads rules from `~/.deepseek/permissions.toml`.
+    fn init_path_permissions(
+    ) -> Option<Arc<tokio::sync::Mutex<crate::execpolicy::path_permission::PathPermissionEngine>>>
+    {
+        let home = dirs::home_dir()?;
+        let config_path = home.join(".deepseek").join("permissions.toml");
+        let config = crate::execpolicy::path_permission::PermissionsConfig::load(&config_path);
+        if config.path_rules.is_empty() {
+            return None;
+        }
+        let engine = crate::execpolicy::path_permission::PathPermissionEngine::new(config.path_rules);
+        Some(Arc::new(tokio::sync::Mutex::new(engine)))
     }
 
     async fn ensure_mcp_pool(&mut self) -> Result<Arc<AsyncMutex<McpPool>>, ToolError> {
@@ -1862,8 +2047,26 @@ impl Engine {
 
     /// Refresh the system prompt based on current mode and context.
     fn refresh_system_prompt(&mut self, mode: AppMode) {
-        let user_memory_block =
+        let mvp_block =
             crate::memory::compose_block(self.config.memory_enabled, &self.config.memory_path);
+
+        // Structured memories injection (#518). Loads project-scoped
+        // memories and formats them as a `<user_memories>` block.
+        let structured_block = crate::memory::retrieve::compose_injection_block(
+            self.config.memory_enabled,
+            &self.config.workspace,
+            true,
+            None,
+        );
+
+        // Combine both blocks into one memory section.
+        let combined_memory_block = match (mvp_block.as_deref(), structured_block.as_deref()) {
+            (Some(a), Some(b)) => Some(format!("{a}\n\n{b}")),
+            (Some(a), None) => Some(a.to_string()),
+            (None, Some(b)) => Some(b.to_string()),
+            (None, None) => None,
+        };
+
         let base = prompts::system_prompt_for_mode_with_context_skills_session_and_approval(
             mode,
             &self.config.workspace,
@@ -1871,7 +2074,7 @@ impl Engine {
             Some(&self.config.skills_dir),
             Some(&self.config.instructions),
             prompts::PromptSessionContext {
-                user_memory_block: user_memory_block.as_deref(),
+                user_memory_block: combined_memory_block.as_deref(),
                 goal_objective: self.config.goal_objective.as_deref(),
                 locale_tag: &self.config.locale_tag,
             },

@@ -1186,6 +1186,13 @@ impl Engine {
             outcomes.resize_with(plans.len(), || None);
 
             if parallel_allowed {
+                // Fire PreToolUse hooks for all tools in this batch.
+                for plan in &plans {
+                    if let Some(ref hm) = self.hook_manager {
+                        hm.fire("PreToolUse", &plan.name);
+                    }
+                }
+
                 let mut tool_tasks = FuturesUnordered::new();
                 for plan in plans {
                     if let Some(result) = plan.guard_result.clone() {
@@ -1279,6 +1286,13 @@ impl Engine {
                     outcomes[index] = Some(outcome);
                 }
             } else {
+                // Fire PreToolUse hooks for each sequential tool.
+                for plan in &plans {
+                    if let Some(ref hm) = self.hook_manager {
+                        hm.fire("PreToolUse", &plan.name);
+                    }
+                }
+
                 for plan in plans {
                     let tool_id = plan.id.clone();
                     let tool_name = plan.name.clone();
@@ -1598,6 +1612,12 @@ impl Engine {
             let mut loop_guard_halt: Option<String> = None;
 
             for outcome in outcomes.into_iter().flatten() {
+                // Fire PostToolUse hook for this tool.
+                if let Some(ref hm) = self.hook_manager {
+                    let success = outcome.result.as_ref().map(|r| r.success).unwrap_or(false);
+                    hm.fire("PostToolUse", &format!("{} success={}", outcome.name, success));
+                }
+
                 let duration = outcome.started_at.elapsed();
                 let tool_input = outcome.input.clone();
                 let tool_name_for_ws = outcome.name.clone();
