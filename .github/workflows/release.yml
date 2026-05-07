@@ -125,9 +125,34 @@ jobs:
           sudo apt-get install -y libdbus-1-dev pkg-config
       - name: Install zig
         if: runner.os == 'Linux'
-        uses: goto-bus-stop/setup-zig@v2
-        with:
-          version: '0.13.0'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          case "$(uname -m)" in
+            x86_64) zig_arch="x86_64" ;;
+            aarch64|arm64) zig_arch="aarch64" ;;
+            *)
+              echo "Unsupported Linux architecture for Zig: $(uname -m)" >&2
+              exit 1
+              ;;
+          esac
+
+          zig_version="0.13.0"
+          zig_dir="zig-linux-${zig_arch}-${zig_version}"
+          zig_url="https://ziglang.org/download/${zig_version}/${zig_dir}.tar.xz"
+
+          for attempt in 1 2 3 4 5; do
+            if curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors "${zig_url}" -o zig.tar.xz; then
+              break
+            fi
+            echo "Zig download failed (attempt ${attempt}); retrying in 15s"
+            sleep 15
+          done
+
+          tar -xf zig.tar.xz
+          echo "${PWD}/${zig_dir}" >> "${GITHUB_PATH}"
+          "${PWD}/${zig_dir}/zig" version
       - name: Install cargo-zigbuild
         if: runner.os == 'Linux'
         run: cargo install cargo-zigbuild --locked
