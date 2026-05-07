@@ -2095,6 +2095,7 @@ fn apply_env_overrides(config: &mut Config) {
         deepseek_v4_pro_prior: None,
         deepseek_v4_flash_prior: None,
         fallback_default_prior: None,
+        cross_session_enabled: None,
     });
 
     if let Ok(value) = std::env::var("DEEPSEEK_CAPACITY_ENABLED") {

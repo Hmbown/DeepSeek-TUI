@@ -213,49 +213,44 @@ pub fn now_rfc3339() -> String {
 
 /// Load the most recent capacity record across all sessions.
 /// Used for cross-session recovery when the current session has no records.
-pub fn load_latest_cross_session_record(
-    workspace: &Path,
-) -> Result<Option<CapacityMemoryRecord>> {
+pub fn load_latest_cross_session_record(workspace: &Path) -> Result<Option<CapacityMemoryRecord>> {
     let dirs = capacity_memory_dirs();
     let mut newest: Option<(SystemTime, CapacityMemoryRecord)> = None;
-    
+
     for dir in dirs {
-        let Ok(entries) = fs::read_dir(&dir) else { continue };
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
-            if !path.extension().is_some_and(|ext| ext == "jsonl") {
+            if path.extension().is_none_or(|ext| ext != "jsonl") {
                 continue;
             }
-            
+
             // Skip if this is the current session file
             // (we already checked that in rehydrate_latest_canonical_state)
-            
-            if let Ok(records) = load_last_k_capacity_records_from_path(&path, 1) {
-                if let Some(record) = records.last() {
-                    // Filter by workspace to prevent memory bleed
-                    if record_canonical_matches_workspace(record, workspace) {
-                        let modified = fs::metadata(&path)
-                            .and_then(|m| m.modified())
-                            .unwrap_or(SystemTime::UNIX_EPOCH);
-                        if newest.as_ref().is_none_or(|(t, _)| modified > *t) {
-                            newest = Some((modified, record.clone()));
-                        }
-                    }
+
+            if let Ok(records) = load_last_k_capacity_records_from_path(&path, 1)
+                && let Some(record) = records.last()
+                && record_canonical_matches_workspace(record, workspace)
+            {
+                let modified = fs::metadata(&path)
+                    .and_then(|m| m.modified())
+                    .unwrap_or(SystemTime::UNIX_EPOCH);
+                if newest.as_ref().is_none_or(|(t, _)| modified > *t) {
+                    newest = Some((modified, record.clone()));
                 }
             }
         }
     }
-    
+
     Ok(newest.map(|(_, r)| r))
 }
 
 /// Check if a capacity record matches the given workspace.
 /// Returns true if the record has no workspace_path (legacy records)
 /// or if the workspace_path matches.
-fn record_canonical_matches_workspace(
-    record: &CapacityMemoryRecord,
-    workspace: &Path,
-) -> bool {
+fn record_canonical_matches_workspace(record: &CapacityMemoryRecord, workspace: &Path) -> bool {
     match &record.workspace_path {
         None => true, // Legacy records without workspace are allowed
         Some(path) => {
@@ -290,6 +285,7 @@ mod tests {
             },
             source_message_ids: vec!["m1".to_string()],
             replay_info: None,
+            workspace_path: None,
         };
 
         append_capacity_record_to_path(&path, &record).expect("append");
@@ -318,6 +314,7 @@ mod tests {
             canonical_state: CanonicalState::default(),
             source_message_ids: vec!["m1".to_string()],
             replay_info: None,
+            workspace_path: None,
         };
 
         let chosen = append_capacity_record_to_candidates(
@@ -350,6 +347,7 @@ mod tests {
             },
             source_message_ids: vec!["m1".to_string()],
             replay_info: None,
+            workspace_path: None,
         };
         let new_record = CapacityMemoryRecord {
             id: "cap_new".to_string(),
@@ -366,6 +364,7 @@ mod tests {
             },
             source_message_ids: vec!["m2".to_string()],
             replay_info: None,
+            workspace_path: None,
         };
 
         append_capacity_record_to_path(&older, &old_record).expect("write older");
@@ -654,5 +653,4 @@ mod tests {
         // The important thing is it doesn't panic and filters correctly
         let _ = result;
     }
-}
 }

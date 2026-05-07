@@ -1757,6 +1757,7 @@ mod tests {
             deepseek_v4_pro_prior: None,
             deepseek_v4_flash_prior: None,
             fallback_default_prior: None,
+            cross_session_enabled: None,
         });
         let runtime_threads: SharedRuntimeThreadManager = Arc::new(RuntimeThreadManager::open(
             config,

@@ -932,6 +932,7 @@ impl Engine {
                 source_message_ids
             },
             replay_info,
+            workspace_path: Some(self.session.workspace.to_string_lossy().to_string()),
         }
     }
 
@@ -961,7 +962,7 @@ impl Engine {
     pub(super) fn write_shutdown_checkpoint(&mut self) {
         let canonical = self.extract_current_canonical_state();
         let record = self.build_capacity_record(
-            &TurnContext::default(),
+            &TurnContext::new(0),
             GuardrailAction::NoIntervention,
             None, // no snapshot
             canonical,
@@ -972,21 +973,28 @@ impl Engine {
             tracing::warn!("Failed to write shutdown checkpoint: {err}");
         }
     }
-    
+
     /// Extract current canonical state from session messages.
     fn extract_current_canonical_state(&self) -> CanonicalState {
         let mut state = CanonicalState::default();
-        
+
         // Extract goal from recent messages
         for msg in self.session.messages.iter().rev().take(10) {
-            if let Some(content) = msg.content_as_text() {
-                if content.contains("goal") || content.contains("objective") {
-                    state.goal = content.chars().take(200).collect();
-                    break;
-                }
+            let content: String = msg
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    crate::models::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            if !content.is_empty() && (content.contains("goal") || content.contains("objective")) {
+                state.goal = content.chars().take(200).collect();
+                break;
             }
         }
-        
+
         state
     }
 
@@ -995,7 +1003,7 @@ impl Engine {
         let Ok(records) = load_last_k_capacity_records(&self.session.id, 1) else {
             return;
         };
-        
+
         if let Some(last) = records.last() {
             let pointer = format!("memory://{}/{}", self.session.id, last.id);
             let prompt = self.canonical_prompt(
@@ -1007,19 +1015,19 @@ impl Engine {
             self.merge_compaction_summary(Some(prompt));
             return;
         }
-        
+
         // Fallback: scan cross-session if enabled
-        if self.config.capacity.cross_session_enabled {
-            if let Ok(Some(record)) = load_latest_cross_session_record(&self.session.workspace) {
-                let pointer = format!("memory://cross-session/{}", record.id);
-                let prompt = self.canonical_prompt(
-                    &record.canonical_state,
-                    &pointer,
-                    GuardrailAction::NoIntervention,
-                    Some("Rehydrated canonical state from previous session."),
-                );
-                self.merge_compaction_summary(Some(prompt));
-            }
+        if self.config.capacity.cross_session_enabled
+            && let Ok(Some(record)) = load_latest_cross_session_record(&self.session.workspace)
+        {
+            let pointer = format!("memory://cross-session/{}", record.id);
+            let prompt = self.canonical_prompt(
+                &record.canonical_state,
+                &pointer,
+                GuardrailAction::NoIntervention,
+                Some("Rehydrated canonical state from previous session."),
+            );
+            self.merge_compaction_summary(Some(prompt));
         }
     }
 }
