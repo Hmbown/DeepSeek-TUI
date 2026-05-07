@@ -18,7 +18,7 @@ use crossterm::{
 };
 use ratatui::{
     Frame, Terminal,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout, Rect, Size},
     prelude::Widget,
     style::{Color, Style},
     text::Span,
@@ -1667,11 +1667,29 @@ async fn run_event_loop(
 
                 terminal.clear()?;
                 app.handle_resize(final_w, final_h);
+                // #macos-resize: some terminals (macOS Terminal.app, Windows
+                // ConHost) briefly report stale dimensions via
+                // `terminal::size()` after a resize. ratatui's `draw()` calls
+                // `autoresize()` internally, which queries the backend size;
+                // if it sees the old dimension it shrinks the viewport back,
+                // leaving the newly-expanded area filled with stale content
+                // from the previous frame (duplicate UI panels).
+                //
+                // We force the backend to report the resize-event size for
+                // this single draw so the buffer matches the real viewport.
+                {
+                    let backend = terminal.backend_mut();
+                    backend.force_size(Size::new(final_w, final_h));
+                }
                 // Draw immediately so the cleared screen gets repainted before
                 // any other events can interleave. Without this, the next
                 // iteration's draw can race against fast follow-up input and
                 // leave the user staring at a blank/partial frame.
                 terminal.draw(|f| render(f, app))?;
+                {
+                    let backend = terminal.backend_mut();
+                    backend.clear_forced_size();
+                }
                 app.needs_redraw = false;
                 continue;
             }
