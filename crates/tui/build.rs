@@ -3,6 +3,7 @@ use std::{path::PathBuf, process::Command};
 fn main() {
     println!("cargo:rerun-if-env-changed=DEEPSEEK_BUILD_SHA");
     println!("cargo:rerun-if-env-changed=GITHUB_SHA");
+    configure_windows_stack();
 
     let package_version = env!("CARGO_PKG_VERSION");
     let build_version = build_sha()
@@ -10,6 +11,18 @@ fn main() {
         .unwrap_or_else(|| package_version.to_string());
 
     println!("cargo:rustc-env=DEEPSEEK_BUILD_VERSION={build_version}");
+}
+
+fn configure_windows_stack() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
+    }
+
+    match std::env::var("CARGO_CFG_TARGET_ENV").as_deref() {
+        Ok("msvc") => println!("cargo:rustc-link-arg-bin=deepseek-tui=/STACK:8388608"),
+        Ok("gnu") => println!("cargo:rustc-link-arg-bin=deepseek-tui=-Wl,--stack,8388608"),
+        _ => {}
+    }
 }
 
 fn build_sha() -> Option<String> {

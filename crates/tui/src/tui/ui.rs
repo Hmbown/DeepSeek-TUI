@@ -5179,6 +5179,7 @@ fn render(f: &mut Frame, app: &mut App) {
             crate::config::ApiProvider::Deepseek => None,
             crate::config::ApiProvider::DeepseekCN => None,
             crate::config::ApiProvider::NvidiaNim => Some("NIM"),
+            crate::config::ApiProvider::Openai => Some("OpenAI"),
             crate::config::ApiProvider::Openrouter => Some("OR"),
             crate::config::ApiProvider::Novita => Some("Novita"),
             crate::config::ApiProvider::Fireworks => Some("Fireworks"),
@@ -5812,6 +5813,7 @@ async fn apply_provider_picker_api_key(
                 return;
             }
             ApiProvider::NvidiaNim => &mut providers.nvidia_nim,
+            ApiProvider::Openai => &mut providers.openai,
             ApiProvider::Openrouter => &mut providers.openrouter,
             ApiProvider::Novita => &mut providers.novita,
             ApiProvider::Fireworks => &mut providers.fireworks,
