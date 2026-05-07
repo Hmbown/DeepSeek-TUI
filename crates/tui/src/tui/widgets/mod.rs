@@ -934,11 +934,21 @@ const APPROVAL_CARD_VERTICAL_PAD: u16 = 2;
 /// Minimum card height — anything tighter and the destructive variant's
 /// confirmation banner overlaps the option list.
 const APPROVAL_CARD_MIN_HEIGHT: u16 = 18;
+/// Minimum card width — anything tighter makes approval copy wrap too
+/// aggressively on small terminals.
+const APPROVAL_CARD_MIN_WIDTH: u16 = 40;
+/// Maximum card height — taller cards stop reading like a focused
+/// takeover and waste vertical space on large terminals.
+const APPROVAL_CARD_MAX_HEIGHT: u16 = 28;
 /// Maximum card width — readability craters past this on wide terminals.
 const APPROVAL_CARD_MAX_WIDTH: u16 = 96;
 
 impl Renderable for ApprovalWidget<'_> {
     fn render(&self, area: Rect, buf: &mut Buffer) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+
         let card_area = compute_takeover_area(area);
         Clear.render(card_area, buf);
 
@@ -1160,12 +1170,18 @@ impl Renderable for ApprovalWidget<'_> {
 
 /// Compute the card rect inside `area`. Always centered; pad on every
 /// side so the takeover reads as a takeover but a small terminal still
-/// renders the full card without truncation.
+/// stays inside the buffer. Very small terminals may truncate the card
+/// content, but rendering must never address cells outside `area`.
 fn compute_takeover_area(area: Rect) -> Rect {
     let avail_width = area.width.saturating_sub(APPROVAL_CARD_HORIZONTAL_PAD * 2);
     let avail_height = area.height.saturating_sub(APPROVAL_CARD_VERTICAL_PAD * 2);
-    let card_width = APPROVAL_CARD_MAX_WIDTH.min(avail_width).max(40);
-    let card_height = APPROVAL_CARD_MIN_HEIGHT.max(avail_height.min(28));
+    let card_width = APPROVAL_CARD_MAX_WIDTH
+        .min(avail_width)
+        .max(APPROVAL_CARD_MIN_WIDTH)
+        .min(area.width);
+    let card_height = APPROVAL_CARD_MIN_HEIGHT
+        .max(avail_height.min(APPROVAL_CARD_MAX_HEIGHT))
+        .min(area.height);
     let x = area.x + (area.width.saturating_sub(card_width)) / 2;
     let y = area.y + (area.height.saturating_sub(card_height)) / 2;
     Rect {
@@ -1936,11 +1952,11 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        COMPOSER_PANEL_HEIGHT, ChatWidget, ComposerWidget, Renderable, SlashMenuEntry,
-        apply_selection_to_line, composer_height, composer_max_height, composer_min_input_rows,
-        composer_top_padding, cursor_row_col, layout_input, pad_lines_to_bottom,
-        placeholder_visual_lines, should_render_empty_state, slash_completion_hints,
-        wrap_input_lines, wrap_text,
+        ApprovalWidget, COMPOSER_PANEL_HEIGHT, ChatWidget, ComposerWidget, Renderable,
+        SlashMenuEntry, apply_selection_to_line, composer_height, composer_max_height,
+        composer_min_input_rows, composer_top_padding, compute_takeover_area, cursor_row_col,
+        layout_input, pad_lines_to_bottom, placeholder_visual_lines, should_render_empty_state,
+        slash_completion_hints, wrap_input_lines, wrap_text,
     };
     use crate::config::Config;
     use crate::localization::Locale;
@@ -2653,6 +2669,30 @@ mod tests {
             CoherenceState::RefreshingContext,
             "resize must not mutate engine-owned coherence_state"
         );
+    }
+
+    #[test]
+    fn approval_takeover_clamps_to_short_terminal_height() {
+        let request = crate::tui::approval::ApprovalRequest::new(
+            "approval-1",
+            "exec_shell",
+            "Run git commit",
+            &serde_json::json!({ "command": "git commit -m fix" }),
+            "exec_shell:git commit",
+        );
+        let view = crate::tui::approval::ApprovalView::new(request.clone());
+        let widget = ApprovalWidget::new(&request, &view);
+
+        for area in [Rect::new(0, 0, 162, 17), Rect::new(0, 0, 39, 17)] {
+            let card_area = compute_takeover_area(area);
+            assert!(card_area.x >= area.x);
+            assert!(card_area.y >= area.y);
+            assert!(card_area.right() <= area.right());
+            assert!(card_area.bottom() <= area.bottom());
+
+            let mut buf = Buffer::empty(area);
+            widget.render(area, &mut buf);
+        }
     }
 
     /// Regression for issue #65: after `App::handle_resize`, the chat widget
