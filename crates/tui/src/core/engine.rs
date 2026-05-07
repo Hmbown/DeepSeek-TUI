@@ -1485,8 +1485,9 @@ impl Engine {
         if let Some(pool) = self.mcp_pool.as_ref() {
             return Ok(Arc::clone(pool));
         }
-        let mut pool = McpPool::from_config_path(&self.session.mcp_config_path)
+        let mut pool = McpPool::from_workspace_config(&self.session.mcp_config_path)
             .map_err(|e| ToolError::execution_failed(format!("Failed to load MCP config: {e}")))?;
+        pool = pool.with_workspace(self.session.workspace.clone());
         if let Some(decider) = self.config.network_policy.as_ref() {
             pool = pool.with_network_policy(decider.clone());
         }
