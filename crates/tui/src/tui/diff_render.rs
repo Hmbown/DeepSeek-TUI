@@ -450,4 +450,41 @@ diff --git a/src/a.rs b/src/a.rs
             "deleted line should carry - gutter: {text:?}"
         );
     }
+
+    #[test]
+    fn summarize_edit_file_style_diff() {
+        // edit_file generates diffs without `diff --git` header.
+        let diff = "\
+--- a/src/file.txt
++++ b/src/file.txt
+@@ -1,3 +1,2 @@
+ keep
+-middle
+ last
+";
+        let summaries = summarize_diff(diff);
+        assert_eq!(summaries.len(), 1, "should find one file");
+        assert_eq!(summaries[0].added, 0);
+        assert_eq!(summaries[0].deleted, 1, "one line removed");
+        assert_eq!(summaries[0].hunks, 1);
+        assert_eq!(
+            diff_summary_label(diff).as_deref(),
+            Some("1 file +0 -1"),
+            "diff_summary_label mismatch"
+        );
+    }
+
+    #[test]
+    fn summarize_make_unified_diff_output() {
+        // End-to-end: what make_unified_diff produces → summarize_diff parses.
+        let old = "line1\nline2\nline3\n";
+        let new = "line1\nline3\n";
+        let diff = crate::tools::diff_format::make_unified_diff("test.txt", old, new);
+        assert!(!diff.is_empty(), "diff should not be empty");
+        let summaries = summarize_diff(&diff);
+        assert_eq!(summaries.len(), 1, "diff: {diff}");
+        assert_eq!(summaries[0].added, 0, "diff: {diff}");
+        assert_eq!(summaries[0].deleted, 1, "one line removed; diff: {diff}");
+        assert_eq!(summaries[0].hunks, 1, "diff: {diff}");
+    }
 }

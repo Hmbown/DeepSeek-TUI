@@ -7,6 +7,7 @@ pub mod error;
 pub mod execpolicycheck;
 pub mod matcher;
 pub mod parser;
+pub mod path_permission;
 pub mod policy;
 pub mod rule;
 pub mod rules;

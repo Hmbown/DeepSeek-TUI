@@ -1,0 +1,110 @@
+{
+  "name": "deepseek-tui",
+  "displayName": "DeepSeek TUI — Coding Agent",
+  "description": "DeepSeek TUI coding agent for VS Code. Connects to the deepseek CLI via ACP protocol for AI-assisted editing, code explanation, and refactoring.",
+  "version": "0.1.0",
+  "publisher": "deepseek-tui",
+  "license": "MIT",
+  "repository": "https://github.com/Hmbown/DeepSeek-TUI",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Machine Learning",
+    "Chat",
+    "Programming Languages",
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "deepseek.explainCode",
+        "title": "DeepSeek: Explain This Code"
+      },
+      {
+        "command": "deepseek.fixCode",
+        "title": "DeepSeek: Fix This Code"
+      },
+      {
+        "command": "deepseek.reviewCode",
+        "title": "DeepSeek: Review This Code"
+      },
+      {
+        "command": "deepseek.startSession",
+        "title": "DeepSeek: Start Chat Session"
+      },
+      {
+        "command": "deepseek.sendSelection",
+        "title": "DeepSeek: Send Selection to Chat"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "deepseek.explainCode",
+        "key": "ctrl+shift+e",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "deepseek.fixCode",
+        "key": "ctrl+shift+f",
+        "when": "editorTextFocus"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "deepseek.explainCode",
+          "group": "deepseek",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "deepseek.fixCode",
+          "group": "deepseek",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "deepseek.reviewCode",
+          "group": "deepseek",
+          "when": "editorHasSelection"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "DeepSeek TUI",
+      "properties": {
+        "deepseek.binaryPath": {
+          "type": "string",
+          "default": "deepseek",
+          "description": "Path to the deepseek CLI binary"
+        },
+        "deepseek.model": {
+          "type": "string",
+          "default": "auto",
+          "enum": ["auto", "deepseek-v4-pro", "deepseek-v4-flash"],
+          "description": "Model to use for chat sessions"
+        },
+        "deepseek.autoApprove": {
+          "type": "boolean",
+          "default": false,
+          "description": "Auto-approve tool calls (YOLO mode)"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.90.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0",
+    "eslint": "^8.57.0"
+  }
+}

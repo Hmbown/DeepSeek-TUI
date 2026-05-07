@@ -13,6 +13,7 @@ use tempfile::NamedTempFile;
 use wait_timeout::ChildExt;
 
 mod acp_server;
+mod agent_profiles;
 mod audit;
 mod auto_reasoning;
 mod automation_manager;
@@ -33,6 +34,7 @@ mod eval;
 mod execpolicy;
 mod features;
 mod handoff;
+mod hook_manager;
 mod hooks;
 mod llm_client;
 mod localization;
@@ -61,6 +63,7 @@ mod settings;
 mod skills;
 mod snapshot;
 mod task_manager;
+mod terminal_browser;
 #[cfg(test)]
 mod test_support;
 mod tools;

@@ -855,6 +855,8 @@ pub struct App {
     /// Active exploring cell entry index (within `active_cell.entries`).
     /// `None` once the active cell flushes or no exploring entry exists.
     pub exploring_cell: Option<usize>,
+    /// Terminal browser (Phase 10). Some when browser view is active.
+    pub browser: Option<crate::terminal_browser::TerminalBrowser>,
     /// Mapping of exploring tool ids to `(entry index in active_cell, entry
     /// within ExploringCell)`. Used to update individual exploring entries
     /// when their tools complete.
@@ -1382,6 +1384,7 @@ impl App {
             active_cell_revision: 0,
             active_tool_details: HashMap::new(),
             exploring_cell: None,
+            browser: None,
             exploring_entries: HashMap::new(),
             ignored_tool_calls: HashSet::new(),
             last_exec_wait_command: None,

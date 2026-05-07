@@ -22,8 +22,9 @@ pub fn make_unified_diff(path: &str, old: &str, new: &str) -> String {
     if old == new {
         return String::new();
     }
-    let a = format!("a/{path}");
-    let b = format!("b/{path}");
+    let sanitized = path.trim_start_matches('/');
+    let a = format!("a/{sanitized}");
+    let b = format!("b/{sanitized}");
     let diff = TextDiff::from_lines(old, new);
     diff.unified_diff()
         .context_radius(3)
@@ -73,5 +74,16 @@ mod tests {
             head.iter().any(|line| line.starts_with("@@")),
             "expected hunk header in first 5 lines; got {head:?}"
         );
+    }
+
+    #[test]
+    fn absolute_path_strips_leading_slash() {
+        let diff = make_unified_diff(
+            "/Users/lbcheng/DeepSeek-TUI/file.txt",
+            "old\n",
+            "new\n",
+        );
+        assert!(diff.contains("--- a/Users/"), "{diff}");
+        assert!(!diff.contains("a//"), "double slash in {diff}");
     }
 }

@@ -42,6 +42,8 @@ pub struct ReplRound {
     pub has_error: bool,
     /// Captured `FINAL(value)` payload, if any.
     pub final_value: Option<String>,
+    /// Captured `FINAL_PARTIAL(value)` payloads in order.
+    pub partial_values: Vec<String>,
     /// Number of `llm_query`/`rlm_query` RPCs the round issued.
     pub rpc_count: u32,
     /// Wall-clock duration of the round.
@@ -295,12 +297,14 @@ impl PythonRuntime {
 
         // Sentinels for this session.
         let req_prefix = format!("__RLM_REQ_{}__::", self.session_id);
+        let partial_prefix = format!("__RLM_PARTIAL_{}__::", self.session_id);
         let final_prefix = format!("__RLM_FINAL_{}__::", self.session_id);
         let err_prefix = format!("__RLM_ERR_{}__::", self.session_id);
         let done_prefix = format!("__RLM_DONE_{}__::", self.session_id);
 
         let mut stdout_buf = String::new();
         let mut final_value: Option<String> = None;
+        let mut partial_values: Vec<String> = Vec::new();
         let mut had_error = false;
         let mut rpc_count: u32 = 0;
         let round_timeout = self.round_timeout;
@@ -321,6 +325,12 @@ impl PythonRuntime {
                 if let Some(rest) = trimmed.strip_prefix(&done_prefix) {
                     let _ = rest;
                     break;
+                }
+                if let Some(rest) = trimmed.strip_prefix(&partial_prefix) {
+                    let v =
+                        serde_json::from_str::<String>(rest).unwrap_or_else(|_| rest.to_string());
+                    partial_values.push(v);
+                    continue;
                 }
                 if let Some(rest) = trimmed.strip_prefix(&final_prefix) {
                     // Stored as a JSON-encoded string.
@@ -390,6 +400,7 @@ impl PythonRuntime {
             stderr,
             has_error: had_error,
             final_value,
+            partial_values,
             rpc_count,
             elapsed: started.elapsed(),
         })
@@ -490,6 +501,7 @@ import traceback as _traceback
 _SID = "__SID__"
 _REQ = f"__RLM_REQ_{_SID}__::"
 _RESP = f"__RLM_RESP_{_SID}__::"
+_PARTIAL = f"__RLM_PARTIAL_{_SID}__::"
 _FINAL = f"__RLM_FINAL_{_SID}__::"
 _ERR = f"__RLM_ERR_{_SID}__::"
 _RUN = f"__RLM_RUN_{_SID}__::"
@@ -564,6 +576,12 @@ def rlm_query_batched(prompts, model=None):
         else:
             out.append(r.get("text",""))
     return out
+
+def FINAL_PARTIAL(value):
+    """Signal partial progress — the answer is appended to the output stream
+       but the loop continues. Use for streaming large results incrementally."""
+    _sys.stdout.write(_PARTIAL + _json.dumps(str(value)) + "\n")
+    _sys.stdout.flush()
 
 def FINAL(value):
     """Signal the loop to stop with this final answer."""
@@ -656,11 +674,10 @@ if _ctx_file:
 ctx = context  # short alias matching aleph
 
 _BOOTSTRAP_NAMES = {
-    "_SID","_REQ","_RESP","_FINAL","_ERR","_RUN","_END","_DONE","_READY",
+    "_SID","_REQ","_RESP","_PARTIAL","_FINAL","_ERR","_RUN","_END","_DONE","_READY",
     "_rpc","_ctx_file","_BOOTSTRAP_NAMES","_main_loop",
     "llm_query","llm_query_batched","rlm_query","rlm_query_batched",
-    "FINAL","FINAL_VAR","SHOW_VARS","repl_get","repl_set",
-    "chunk_context","chunk_coverage",
+    "FINAL","FINAL_VAR","FINAL_PARTIAL","SHOW_VARS","repl_get","repl_set",
     "context","ctx",
     "_json","_os","_sys","_traceback",
 }

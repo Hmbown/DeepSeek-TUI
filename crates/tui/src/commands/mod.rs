@@ -479,6 +479,13 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "/cache [count]",
         description_id: MessageId::CmdCacheDescription,
     },
+    // Terminal browser
+    CommandInfo {
+        name: "browse",
+        aliases: &["web"],
+        usage: "/browse <url>",
+        description_id: MessageId::CmdHelpDescription, // reuse for now
+    },
 ];
 
 /// Execute a slash command
@@ -581,6 +588,9 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         // RLM command
         "rlm" | "recursive" => rlm(app, arg),
 
+        // Terminal browser
+        "browse" | "web" => browse(app, arg),
+
         // Legacy command migrations (kept out of registry/autocomplete intentionally).
         "set" => CommandResult::error(
             "The /set command was retired. Use /config to edit settings and /settings to inspect current values.",
@@ -642,6 +652,32 @@ pub use config::{
     AutoRouteRecommendation, AutoRouteSelection, normalize_auto_route_effort,
     parse_auto_route_recommendation, resolve_auto_route_with_flash,
 };
+
+/// Open a URL in the terminal browser.
+pub fn browse(app: &mut App, arg: Option<&str>) -> CommandResult {
+    let url = match arg {
+        Some(u) if !u.trim().is_empty() => {
+            let u = u.trim();
+            if !u.starts_with("http://") && !u.starts_with("https://") {
+                format!("https://{u}")
+            } else {
+                u.to_string()
+            }
+        }
+        _ => {
+            return CommandResult::error(
+                "Usage: /browse <url>\n\nOpens a URL in the terminal browser."
+                    .to_string(),
+            );
+        }
+    };
+
+    let browser = crate::terminal_browser::TerminalBrowser::new();
+    browser.start_load(&url);
+    app.browser = Some(browser);
+
+    CommandResult::message(format!("Opened {url} in terminal browser. Tab to navigate links, Esc to close."))
+}
 
 /// Execute a Recursive Language Model (RLM) turn — Algorithm 1 from
 /// Zhang et al. (arXiv:2512.24601).

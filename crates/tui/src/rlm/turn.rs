@@ -36,6 +36,9 @@ const PROMPT_PREVIEW_LEN: usize = 500;
 const ROOT_TEMPERATURE: f32 = 0.3;
 /// Bound on conversation history we keep across iterations.
 const MAX_HISTORY_MESSAGES: usize = 20;
+/// Max consecutive repl blocks the LLM can emit in one iteration before
+/// the driver forces a metadata refresh (RLM 2.0 interactive mode).
+const MAX_REPL_PER_ITERATION: u32 = 3;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -73,6 +76,8 @@ pub struct RlmRoundTrace {
 #[derive(Debug, Clone)]
 pub struct RlmTurnResult {
     pub answer: String,
+    /// Partial results collected via FINAL_PARTIAL during the run.
+    pub partials: Vec<String>,
     pub iterations: u32,
     pub duration: Duration,
     pub error: Option<String>,
@@ -178,6 +183,7 @@ async fn run_rlm_turn_impl(
     let mut total_usage = Usage::default();
     let mut trace: Vec<RlmRoundTrace> = Vec::new();
     let mut total_rpcs: u32 = 0;
+    let mut partials: Vec<String> = Vec::new();
 
     // 1. Stage `context` to a temp file. The REPL reads it on bootstrap so
     //    the big string never enters the process command line and doesn't
@@ -187,6 +193,7 @@ async fn run_rlm_turn_impl(
         Err(e) => {
             return RlmTurnResult {
                 answer: String::new(),
+                partials: Vec::new(),
                 iterations: 0,
                 duration: start.elapsed(),
                 error: Some(format!("rlm: failed to stage context: {e}")),
@@ -205,6 +212,7 @@ async fn run_rlm_turn_impl(
             let _ = tokio::fs::remove_file(&ctx_path).await;
             return RlmTurnResult {
                 answer: String::new(),
+                partials: Vec::new(),
                 iterations: 0,
                 duration: start.elapsed(),
                 error: Some(format!("rlm: failed to spawn REPL: {e}")),
@@ -217,7 +225,8 @@ async fn run_rlm_turn_impl(
     };
 
     // 3. Build the bridge that services llm_query / rlm_query RPCs.
-    let bridge = RlmBridge::new(Arc::clone(&client), child_model.clone(), max_depth);
+    let bridge = RlmBridge::new(Arc::clone(&client), child_model.clone(), max_depth)
+        .with_parent_context(prompt.chars().count());
     let usage_handle = bridge.usage_handle();
 
     let _ = tx_event
@@ -247,6 +256,7 @@ async fn run_rlm_turn_impl(
             {
                 break 'turn RlmTurnResult {
                     answer: String::new(),
+                partials: Vec::new(),
                     iterations: iteration,
                     duration: start.elapsed(),
                     error: Some(format!("RLM turn timed out after {}s", timeout.as_secs())),
@@ -273,6 +283,7 @@ async fn run_rlm_turn_impl(
                 Err(e) => {
                     break 'turn RlmTurnResult {
                         answer: String::new(),
+                partials: Vec::new(),
                         iterations: iteration + 1,
                         duration: start.elapsed(),
                         error: Some(format!("Root LLM call failed: {e}")),
@@ -307,6 +318,7 @@ async fn run_rlm_turn_impl(
                     if consecutive_no_code >= MAX_CONSECUTIVE_NO_CODE {
                         break 'turn RlmTurnResult {
                             answer: final_val,
+                partials: partials.clone(),
                             iterations: iteration + 1,
                             duration: start.elapsed(),
                             error: None,
@@ -344,6 +356,7 @@ async fn run_rlm_turn_impl(
                     .await;
                 break 'turn RlmTurnResult {
                     answer: final_val,
+                partials: partials.clone(),
                     iterations: iteration + 1,
                     duration: start.elapsed(),
                     error: None,
@@ -366,6 +379,7 @@ async fn run_rlm_turn_impl(
                     if consecutive_no_code >= MAX_CONSECUTIVE_NO_CODE {
                         break 'turn RlmTurnResult {
                             answer: response_text,
+                partials: partials.clone(),
                             iterations: iteration + 1,
                             duration: start.elapsed(),
                             error: Some(format!(
@@ -415,6 +429,7 @@ async fn run_rlm_turn_impl(
                 Err(e) => {
                     break 'turn RlmTurnResult {
                         answer: String::new(),
+                partials: Vec::new(),
                         iterations: iteration + 1,
                         duration: start.elapsed(),
                         error: Some(format!("REPL execution failed: {e}")),
@@ -427,6 +442,9 @@ async fn run_rlm_turn_impl(
             };
 
             total_rpcs = total_rpcs.saturating_add(round.rpc_count);
+            if !round.partial_values.is_empty() {
+                partials.extend(round.partial_values.clone());
+            }
 
             // Trace this round.
             let stdout_preview = truncate_text(round.stdout.trim(), STDOUT_METADATA_PREVIEW_LEN);
@@ -449,7 +467,7 @@ async fn run_rlm_turn_impl(
                 )))
                 .await;
 
-            // 4e. FINAL detection.
+            // 4e. FINAL detection from REPL.
             if let Some(final_val) = round.final_value.clone() {
                 let _ = tx_event
                     .send(Event::status(
@@ -458,6 +476,7 @@ async fn run_rlm_turn_impl(
                     .await;
                 break 'turn RlmTurnResult {
                     answer: final_val,
+                partials: partials.clone(),
                     iterations: iteration + 1,
                     duration: start.elapsed(),
                     error: None,
@@ -468,7 +487,116 @@ async fn run_rlm_turn_impl(
                 };
             }
 
-            // 4f. Build metadata for next iteration.
+            // 4f. Interactive mode (RLM 2.0): append stdout as feedback
+            // and let the LLM emit another repl block or FINAL within the
+            // same iteration, up to MAX_REPL_PER_ITERATION times.
+            messages.push(Message {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: format!("```repl\n{code_to_run}\n```"),
+                    cache_control: None,
+                }],
+            });
+
+            let mut repl_count: u32 = 1;
+            let mut last_stdout = round.stdout.clone();
+            'inner: while repl_count < MAX_REPL_PER_ITERATION {
+                // Append stdout feedback from the most recent execution.
+                let feedback = if last_stdout.trim().is_empty() {
+                    "(no output)".to_string()
+                } else {
+                    let preview = truncate_text(last_stdout.trim(), STDOUT_METADATA_PREVIEW_LEN);
+                    format!("stdout: {preview}")
+                };
+                messages.push(Message {
+                    role: "user".to_string(),
+                    content: vec![ContentBlock::Text {
+                        text: feedback,
+                        cache_control: None,
+                    }],
+                });
+
+                // Call LLM again with the stdout feedback.
+                let inner_request = build_root_request(&model, &messages, &system);
+                let inner_response = match client.create_message_boxed(inner_request).await {
+                    Ok(r) => r,
+                    Err(_) => break 'inner,
+                };
+                total_usage.input_tokens = total_usage
+                    .input_tokens
+                    .saturating_add(inner_response.usage.input_tokens);
+                total_usage.output_tokens = total_usage
+                    .output_tokens
+                    .saturating_add(inner_response.usage.output_tokens);
+
+                let inner_text = extract_text_blocks(&inner_response.content);
+
+                // Check for FINAL.
+                if let Some(final_val) = parse_text_final(&inner_text) {
+                    let _ = tx_event
+                        .send(Event::status(
+                            "RLM: FINAL in interactive mode, ending loop".to_string(),
+                        ))
+                        .await;
+                    break 'turn RlmTurnResult {
+                        answer: final_val,
+                        partials: partials.clone(),
+                        iterations: iteration + 1,
+                        duration: start.elapsed(),
+                        error: None,
+                        usage: total_usage,
+                        termination: RlmTermination::Final,
+                        trace: trace.clone(),
+                        total_rpcs,
+                    };
+                }
+
+                // Check for another repl block.
+                let inner_code = extract_repl_code(&inner_text);
+                let inner_code_str = match inner_code {
+                    Some(c) => c,
+                    None => break 'inner, // no more repl blocks, move to next iteration
+                };
+
+                messages.push(Message {
+                    role: "assistant".to_string(),
+                    content: vec![ContentBlock::Text {
+                        text: format!("```repl\n{inner_code_str}\n```"),
+                        cache_control: None,
+                    }],
+                });
+
+                // Execute it.
+                let inner_round = match repl.run(&inner_code_str, Some(&bridge)).await {
+                    Ok(r) => r,
+                    Err(_) => break 'inner,
+                };
+                total_rpcs = total_rpcs.saturating_add(inner_round.rpc_count);
+                if !inner_round.partial_values.is_empty() {
+                    partials.extend(inner_round.partial_values.clone());
+                }
+
+                // Check for FINAL from inner execution.
+                if let Some(final_val) = inner_round.final_value.clone() {
+                    break 'turn RlmTurnResult {
+                        answer: final_val,
+                        partials: partials.clone(),
+                        iterations: iteration + 1,
+                        duration: start.elapsed(),
+                        error: None,
+                        usage: total_usage,
+                        termination: RlmTermination::Final,
+                        trace: trace.clone(),
+                        total_rpcs,
+                    };
+                }
+
+                // Update for next inner iteration.
+                last_stdout = inner_round.stdout.clone();
+                repl_count += 1;
+            }
+
+            // 4g. Build metadata for next full iteration.
             messages.push(Message {
                 role: "assistant".to_string(),
                 content: vec![ContentBlock::Text {
@@ -495,6 +623,7 @@ async fn run_rlm_turn_impl(
         let _ = last_response_text;
         RlmTurnResult {
             answer: String::new(),
+                partials: Vec::new(),
             iterations: MAX_RLM_ITERATIONS,
             duration: start.elapsed(),
             error: Some(format!(
@@ -520,10 +649,53 @@ async fn run_rlm_turn_impl(
 
     repl.shutdown().await;
 
+    // Memory reuse (RLM Phase 5): auto-save successful results.
+    if result.termination == RlmTermination::Final && !result.answer.is_empty() {
+        save_rlm_result(
+            root_prompt.as_deref().unwrap_or("rlm"),
+            &result.answer,
+            &prompt,
+        );
+    }
+
     RlmTurnResult {
         usage: final_usage,
         ..result
     }
+}
+
+/// Save an RLM result as a persistent memory for future reuse.
+fn save_rlm_result(task: &str, answer: &str, prompt: &str) {
+    // Best-effort: don't fail the turn if memory storage is unavailable.
+    // Load existing memories, check for duplicates, save if new.
+    let task_snippet = prompt.chars().take(200).collect::<String>();
+    let _task_key = task_snippet; // dedup key based on prompt prefix
+
+    if let Ok(mem) = crate::memory::store::load_memories(None, false) {
+        let similar = mem.iter().any(|m| {
+            m.tags.contains(&"rlm".to_string())
+                && m.content.contains(&answer[..answer.len().min(50)])
+        });
+        if !similar {
+            let memory = crate::memory::store::new_memory(
+                format!("RLM result for: {task}\n\nAnswer: {}", truncate_for_memory(answer, 500)),
+                "rlm".to_string(),
+                crate::memory::store::MemoryConfidence::Medium,
+                vec!["rlm".to_string(), "auto".to_string()],
+                None,
+            );
+            let _ = crate::memory::store::save_memory(memory, None, 50);
+        }
+    }
+}
+
+fn truncate_for_memory(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let mut result: String = text.chars().take(max_chars.saturating_sub(3)).collect();
+    result.push_str("...");
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -574,8 +746,13 @@ fn build_metadata_message(
     let prompt_len = prompt.chars().count();
     let prompt_preview = truncate_text(prompt, PROMPT_PREVIEW_LEN);
 
+    // Phase-order: stable content first (for V4 prefix-cache locality),
+    // iteration-dependent content last. The first ~200 bytes are identical
+    // across rounds, maximizing the 128-token prefix-cache hit rate.
     let mut parts = Vec::new();
-    parts.push(format!("## REPL state (round {iteration})"));
+
+    // Stable section (same every round → cache hit)
+    parts.push("## REPL state".to_string());
     parts.push(String::new());
     if let Some(rp) = root_prompt
         && !rp.trim().is_empty()
@@ -605,7 +782,7 @@ fn build_metadata_message(
             .to_string(),
     );
     parts.push(
-        "- `llm_query_batched([p1, p2, ...])`     — concurrent fan-out; `model` is ignored"
+        "- `llm_query_batched([p1, p2, ...])`     — concurrent fan-out; **prefer this** for multi-chunk work"
             .to_string(),
     );
     parts.push(
@@ -627,19 +804,23 @@ fn build_metadata_message(
     );
     parts.push(String::new());
 
+    // Variable section (changes per round → cache miss, but at the tail)
     if iteration > 0 {
-        parts.push("**Previous round**".to_string());
+        parts.push(format!("**Round {iteration} feedback**"));
         if let Some(code) = previous_code {
-            parts.push(format!("- Code: {}", summarize_code(code)));
+            parts.push(format!("- Last code: {}", summarize_code(code)));
         }
         if let Some(stdout) = previous_stdout {
             let stdout_clean = stdout.trim();
             if !stdout_clean.is_empty() {
-                parts.push(format!("- Stdout preview: \"{stdout_clean}\""));
+                parts.push(format!("- Stdout: \"{stdout_clean}\""));
             } else {
                 parts.push("- Stdout: (empty)".to_string());
             }
         }
+    } else {
+        // Round 0: attach iteration counter after stable content
+        parts.push(format!("(round {iteration})"));
     }
 
     let text = parts.join("\n");
@@ -855,7 +1036,7 @@ mod tests {
         let text = extract_text_blocks(&msg.content);
         assert!(text.contains("context"));
         assert!(text.contains("Hello, world!"));
-        assert!(text.contains("round 0"));
+        assert!(text.contains("(round 0)"));
         assert!(text.contains("llm_query"));
         assert!(text.contains("rlm_query"));
         assert!(text.contains("FINAL"));
@@ -903,7 +1084,7 @@ mod tests {
     fn build_metadata_with_iteration_shows_previous_code() {
         let msg = build_metadata_message("Test prompt", None, 3, Some("print('hi')"), Some("hi"));
         let text = extract_text_blocks(&msg.content);
-        assert!(text.contains("round 3"));
+        assert!(text.contains("Round 3 feedback"));
         assert!(text.contains("print('hi')"));
         assert!(text.contains("hi"));
     }

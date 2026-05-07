@@ -1,4 +1,5 @@
 pub mod bash_arity;
+pub mod path_permission;
 
 use std::collections::HashSet;
 

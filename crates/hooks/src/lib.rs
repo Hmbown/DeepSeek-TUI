@@ -2,6 +2,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+
+pub mod hook_manager;
 use async_trait::async_trait;
 use chrono::Utc;
 use deepseek_protocol::EventFrame;
@@ -41,6 +43,41 @@ pub enum HookEvent {
     },
     GenericEventFrame {
         frame: EventFrame,
+    },
+    // === NEW lifecycle events ===
+    /// Fired before a tool executes.
+    PreToolUse {
+        tool_name: String,
+        params: Value,
+    },
+    /// Fired after a tool completes.
+    PostToolUse {
+        tool_name: String,
+        result: Value,
+        duration_ms: u64,
+    },
+    /// Fired when a permission request is made.
+    PermissionRequest {
+        tool_name: String,
+        path: Option<String>,
+        justification: Option<String>,
+    },
+    /// Fired at the start of a session.
+    SessionStart {
+        session_id: String,
+        cwd: String,
+    },
+    /// Fired when the user submits a prompt.
+    UserPromptSubmit {
+        prompt_text: String,
+    },
+    /// Fired when the session is about to stop.
+    Stop {
+        reason: String,
+    },
+    /// Fired before context compaction begins.
+    PreCompaction {
+        token_count: u64,
     },
 }
 

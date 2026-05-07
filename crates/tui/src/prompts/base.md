@@ -151,6 +151,10 @@ Multiple `tool_calls` in one turn run in parallel. `web_search` returns `ref_id`
 
 ### `apply_patch`
 Use `apply_patch` for structural edits, coordinated changes, or cases where line context matters. Use `write_file` for brand-new files or full-file rewrites. Use `edit_file` for a single unambiguous replacement.
+Don't reach for `apply_patch` when:
+- You're creating a brand-new file — use `write_file`.
+- The change is a single search/replace in one location — `edit_file` is simpler and less error-prone.
+- You haven't read the target file yet. Patches written blind almost always fail to apply.
 
 ### `edit_file`
 Use `edit_file` for one clear replacement in one file. Use `apply_patch` when the edit changes whole blocks, touches multiple files, or needs surrounding line context.
