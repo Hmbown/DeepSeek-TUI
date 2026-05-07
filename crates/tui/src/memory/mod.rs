@@ -1,25 +1,33 @@
-//! User-level memory file.
+//! User-level memory file + structured persistent memory system.
 //!
-//! v0.8.8 ships an MVP that lets the user keep a persistent personal
-//! note file the model sees on every turn:
+//! This module contains two layers:
+//! - **MVP memory file** (v0.8.8): simple Markdown append via `memory.md`.
+//! - **Structured memory** (v0.8.15): TOML-backed memories with automatic
+//!   extraction, keyword search, and session-start injection.
 //!
-//! - **Load** `~/.deepseek/memory.md` (path is configurable via
-//!   `memory_path` in `config.toml` and `DEEPSEEK_MEMORY_PATH` env),
-//!   wrap it in a `<user_memory>` block, and prepend it to the system
-//!   prompt alongside the existing `<project_instructions>` block.
-//! - **`# foo`** typed in the composer appends `foo` to the memory
-//!   file as a timestamped bullet — fast capture without leaving the TUI.
-//! - **`/memory`** shows the resolved file path and current contents, and
-//!   **`/memory edit`** prints a copy-pasteable `$VISUAL` / `$EDITOR`
-//!   command for opening the file yourself.
-//! - **`remember` tool** lets the model itself append a bullet when it
-//!   notices a durable preference or convention worth keeping across
-//!   sessions.
+//! ## MVP memory file
+//!
+//! - **Load** `~/.deepseek/memory.md`, wrap it in a `<user_memory>` block,
+//!   and prepend it to the system prompt.
+//! - **`# foo`** in the composer appends a timestamped bullet.
+//! - **`/memory`** shows the file path and contents.
+//! - **`remember` tool** lets the model append a bullet.
+//!
+//! ## Structured memory
+//!
+//! - Memories are stored as TOML files under `~/.deepseek/memories/`.
+//! - Per-project: `project/<hash>.toml` | Global: `global.toml`.
+//! - Auto-extraction from conversations via `extract.rs`.
+//! - Keyword search and recency ranking via `retrieve.rs`.
 //!
 //! Default behavior is **opt-in**: load + use the memory file only when
 //! `[memory] enabled = true` in `config.toml` or `DEEPSEEK_MEMORY=on`.
-//! That keeps existing users on zero-overhead behavior and makes the
-//! feature explicit.
+//! The structured memory layer also respects `[memory] auto_extract` and
+//! `[memory] max_memories`.
+
+pub mod extract;
+pub mod retrieve;
+pub mod store;
 
 use std::fs;
 use std::io::{self, Write};
