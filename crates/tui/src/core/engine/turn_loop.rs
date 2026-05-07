@@ -906,17 +906,8 @@ impl Engine {
                 if !completions.is_empty() {
                     let count = completions.len();
                     for c in completions {
-                        self.session
-                            .working_set
-                            .observe_user_message(&c.payload, &self.session.workspace);
-                        self.add_session_message(Message {
-                            role: "user".to_string(),
-                            content: vec![ContentBlock::Text {
-                                text: c.payload,
-                                cache_control: None,
-                            }],
-                        })
-                        .await;
+                        self.add_session_message(subagent_completion_runtime_message(&c.payload))
+                            .await;
                     }
                     let _ = self
                         .tx_event
@@ -1860,6 +1851,24 @@ impl Engine {
     }
 }
 
+fn subagent_completion_runtime_message(payload: &str) -> Message {
+    Message {
+        role: "system".to_string(),
+        content: vec![ContentBlock::Text {
+            text: format!(
+                "<deepseek:runtime_event kind=\"subagent_completion\" visibility=\"internal\">\n\
+This is an internal runtime event, not user input. Use the sub-agent completion \
+data below to continue coordinating the current task. Do not tell the user they \
+pasted sentinels, do not explain the sentinel protocol, and do not quote the raw \
+XML unless the user explicitly asks to debug sub-agent internals.\n\n\
+{payload}\n\
+</deepseek:runtime_event>"
+            ),
+            cache_control: None,
+        }],
+    }
+}
+
 /// Resolve an `"auto"` reasoning-effort tier to a concrete value.
 ///
 /// When the configured effort is `"auto"`, inspects the last user message
@@ -1903,5 +1912,27 @@ fn resolve_auto_effort(reasoning_effort: Option<&str>, messages: &[Message]) -> 
         }
         Some(other) => Some(other.to_string()),
         None => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn subagent_completion_handoff_is_internal_system_message() {
+        let message = subagent_completion_runtime_message(
+            "Build passed\n<deepseek:subagent.done>{\"agent_id\":\"agent_a\"}</deepseek:subagent.done>",
+        );
+
+        assert_eq!(message.role, "system");
+        let text = match &message.content[0] {
+            ContentBlock::Text { text, .. } => text,
+            other => panic!("expected text block, got {other:?}"),
+        };
+        assert!(text.contains("internal runtime event, not user input"));
+        assert!(text.contains("Do not tell the user they pasted sentinels"));
+        assert!(text.contains("<deepseek:subagent.done>"));
+        assert!(text.contains("Build passed"));
     }
 }

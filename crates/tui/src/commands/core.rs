@@ -5,7 +5,7 @@ use std::fmt::Write;
 use crate::config::{COMMON_DEEPSEEK_MODELS, normalize_model_name};
 use crate::localization::{MessageId, tr};
 use crate::tui::app::{App, AppAction, AppMode, ReasoningEffort};
-use crate::tui::views::{HelpView, ModalKind, SubAgentsView};
+use crate::tui::views::{HelpView, ModalKind, SubAgentsView, subagent_view_agents};
 
 use super::CommandResult;
 
@@ -140,8 +140,8 @@ pub fn models(_app: &mut App) -> CommandResult {
 /// List sub-agent status from the engine
 pub fn subagents(app: &mut App) -> CommandResult {
     if app.view_stack.top_kind() != Some(ModalKind::SubAgents) {
-        app.view_stack
-            .push(SubAgentsView::new(app.subagent_cache.clone()));
+        let agents = subagent_view_agents(app, &app.subagent_cache);
+        app.view_stack.push(SubAgentsView::new(agents));
     }
     app.status_message = Some(tr(app.ui_locale, MessageId::SubagentsFetching).to_string());
     CommandResult::action(AppAction::ListSubAgents)

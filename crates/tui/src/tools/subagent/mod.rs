@@ -3720,11 +3720,28 @@ impl SubAgentToolRegistry {
         if !self.is_tool_allowed(name) {
             return Err(anyhow!("Tool {name} not allowed for this sub-agent"));
         }
+        reject_subagent_terminal_takeover(name, &input)?;
         self.registry
             .execute(name, input)
             .await
             .map_err(|e| anyhow!(e))
     }
+}
+
+fn reject_subagent_terminal_takeover(name: &str, input: &Value) -> Result<()> {
+    let wants_interactive_shell = name == "exec_shell"
+        && input
+            .get("interactive")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+    if wants_interactive_shell {
+        return Err(anyhow!(
+            "Sub-agents run in the background and cannot use exec_shell with interactive=true \
+             because that would take over the parent TUI terminal. Use non-interactive \
+             exec_shell, background=true, tty=true, or task_shell_start instead."
+        ));
+    }
+    Ok(())
 }
 
 /// Resolve the effective allowed-tools list for a child.

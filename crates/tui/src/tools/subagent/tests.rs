@@ -1003,6 +1003,39 @@ fn mailbox_propagates_through_child_runtime_chain() {
     );
 }
 
+#[test]
+fn subagent_rejects_interactive_shell_terminal_takeover() {
+    let err = reject_subagent_terminal_takeover(
+        "exec_shell",
+        &serde_json::json!({
+            "command": "python3 -i",
+            "interactive": true
+        }),
+    )
+    .expect_err("sub-agents must not inherit the parent terminal");
+
+    let msg = err.to_string();
+    assert!(msg.contains("cannot use exec_shell with interactive=true"));
+    assert!(msg.contains("parent TUI terminal"));
+
+    reject_subagent_terminal_takeover(
+        "exec_shell",
+        &serde_json::json!({
+            "command": "cargo check",
+            "interactive": false
+        }),
+    )
+    .expect("non-interactive shell remains allowed");
+    reject_subagent_terminal_takeover(
+        "exec_shell",
+        &serde_json::json!({
+            "command": "cargo test",
+            "background": true
+        }),
+    )
+    .expect("background shell remains allowed");
+}
+
 #[tokio::test]
 async fn mailbox_close_as_cancel_propagates_to_grandchild_runtime() {
     use crate::tools::subagent::mailbox::Mailbox;
