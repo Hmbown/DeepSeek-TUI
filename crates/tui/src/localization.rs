@@ -266,6 +266,7 @@ pub enum MessageId {
     CmdTaskDescription,
     CmdTokensDescription,
     CmdTrustDescription,
+    CmdWhaleDescription,
     CmdLspDescription,
     CmdShareDescription,
     CmdUndoDescription,
@@ -456,6 +457,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CmdTaskDescription,
     MessageId::CmdTokensDescription,
     MessageId::CmdTrustDescription,
+    MessageId::CmdWhaleDescription,
     MessageId::CmdLspDescription,
     MessageId::CmdShareDescription,
     MessageId::CmdUndoDescription,
@@ -797,6 +799,9 @@ fn english(id: MessageId) -> &'static str {
         MessageId::CmdTrustDescription => {
             "Manage workspace trust and per-path allowlist (`/trust add <path>`, `/trust list`, `/trust on|off`)"
         }
+        MessageId::CmdWhaleDescription => {
+            "Ask the short pixel whale pet using Flash with thinking off"
+        }
         MessageId::CmdUndoDescription => "Remove last message pair",
         MessageId::CmdYoloDescription => "Enable YOLO mode (shell + trust + auto-approve)",
         MessageId::CmdCacheAdvice => {
@@ -1082,6 +1087,7 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::CmdTrustDescription => {
             "ワークスペースの信頼設定とパス別許可リストを管理（`/trust add <path>`、`/trust list`、`/trust on|off`）"
         }
+        MessageId::CmdWhaleDescription => "Flash + thinking off で短いピクセル鯨ペットに聞く",
         MessageId::CmdUndoDescription => "最後のメッセージ対を削除",
         MessageId::CmdYoloDescription => "YOLO モードを有効化（shell + 信頼 + 自動承認）",
         MessageId::CmdCacheAdvice => {
@@ -1339,6 +1345,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::CmdTrustDescription => {
             "管理工作区信任与按路径的白名单（`/trust add <path>`、`/trust list`、`/trust on|off`）"
         }
+        MessageId::CmdWhaleDescription => "用 Flash + thinking off 询问短句像素鲸鱼宠物",
         MessageId::CmdUndoDescription => "移除最后一组消息对",
         MessageId::CmdYoloDescription => "启用 YOLO 模式（shell + 信任 + 自动批准）",
         MessageId::CmdCacheAdvice => {
@@ -1612,6 +1619,7 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         MessageId::CmdTrustDescription => {
             "Gerenciar a confiança do workspace e a allowlist por caminho (`/trust add <path>`, `/trust list`, `/trust on|off`)"
         }
+        MessageId::CmdWhaleDescription => "Perguntar ao pet baleia pixel com Flash e thinking off",
         MessageId::CmdUndoDescription => "Remover o último par de mensagens",
         MessageId::CmdYoloDescription => {
             "Ativar o modo YOLO (shell + confiança + aprovação automática)"

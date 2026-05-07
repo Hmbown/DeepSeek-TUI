@@ -66,6 +66,7 @@ mod test_support;
 mod tools;
 mod tui;
 mod utils;
+mod whale_pet;
 mod working_set;
 mod workspace_trust;
 

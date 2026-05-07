@@ -25,7 +25,9 @@ use crate::client::DeepSeekClient;
 use crate::compaction::{
     CompactionConfig, compact_messages_safe, merge_system_prompts, should_compact,
 };
-use crate::config::{ApiProvider, Config, DEFAULT_MAX_SUBAGENTS, DEFAULT_TEXT_MODEL};
+use crate::config::{
+    ApiProvider, Config, DEFAULT_MAX_SUBAGENTS, DEFAULT_TEXT_MODEL, flash_model_for_provider,
+};
 use crate::cycle_manager::{
     CycleBriefing, CycleConfig, StructuredState, archive_cycle, build_seed_messages,
     estimate_briefing_tokens, produce_briefing, should_advance_cycle,
@@ -300,6 +302,7 @@ pub struct Engine {
     config: EngineConfig,
     deepseek_client: Option<DeepSeekClient>,
     deepseek_client_error: Option<String>,
+    whale_flash_model: String,
     api_key_env_only_recovery: Option<String>,
     session: Session,
     subagent_manager: SharedSubAgentManager,
@@ -418,6 +421,8 @@ impl Engine {
             Err(err) => (None, Some(err.to_string())),
         };
         let api_key_env_only_recovery = Self::env_only_api_key_recovery_hint(api_config);
+        let whale_flash_model =
+            flash_model_for_provider(api_config.api_provider(), &api_config.default_model());
 
         let mut session = Session::new(
             config.model.clone(),
@@ -528,6 +533,7 @@ impl Engine {
             config,
             deepseek_client,
             deepseek_client_error,
+            whale_flash_model,
             api_key_env_only_recovery,
             session,
             subagent_manager,
@@ -598,6 +604,9 @@ impl Engine {
                         approval_mode,
                     )
                     .await;
+                }
+                Op::WhalePet { prompt } => {
+                    self.handle_whale_pet(prompt).await;
                 }
                 Op::CancelRequest => {
                     self.cancel_token.cancel();
@@ -862,6 +871,97 @@ impl Engine {
                     cache_control: None,
                 },
             ],
+        }
+    }
+
+    /// Handle a whale pet operation outside the main session transcript.
+    async fn handle_whale_pet(&mut self, prompt: String) {
+        let profile = crate::whale_pet::profile_for_seed(&crate::whale_pet::workspace_seed(
+            &self.config.workspace,
+        ));
+        let inner = crate::whale_pet::fake_inner_os(&prompt);
+        let model = self.whale_flash_model.clone();
+        let Some(client) = self.deepseek_client.clone() else {
+            let _ = self
+                .tx_event
+                .send(Event::WhalePetResponse {
+                    profile,
+                    inner,
+                    content: "API 没接上，我先搁浅一下。".to_string(),
+                    model: "local".to_string(),
+                })
+                .await;
+            return;
+        };
+
+        let _ = self
+            .tx_event
+            .send(Event::status(format!(
+                "Whale pet using {model} with thinking off..."
+            )))
+            .await;
+
+        let request = MessageRequest {
+            model: model.clone(),
+            messages: vec![Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: crate::whale_pet::user_prompt(&prompt),
+                    cache_control: None,
+                }],
+            }],
+            max_tokens: crate::whale_pet::WHALE_MAX_TOKENS,
+            system: Some(crate::whale_pet::system_prompt()),
+            tools: None,
+            tool_choice: None,
+            metadata: Some(json!({
+                "feature": "whale_pet",
+                "text_only": true,
+                "reasoning_effort": "off"
+            })),
+            thinking: None,
+            reasoning_effort: Some("off".to_string()),
+            stream: Some(false),
+            temperature: Some(0.8),
+            top_p: Some(0.9),
+        };
+
+        match client.create_message(request).await {
+            Ok(response) => {
+                let response_model = if response.model.trim().is_empty() {
+                    model
+                } else {
+                    response.model.clone()
+                };
+                let raw = crate::whale_pet::extract_text_only(&response);
+                let content = crate::whale_pet::clamp_output(&raw);
+                let _ = self
+                    .tx_event
+                    .send(Event::WhalePetResponse {
+                        profile,
+                        inner,
+                        content,
+                        model: response_model,
+                    })
+                    .await;
+            }
+            Err(err) => {
+                let _ = self
+                    .tx_event
+                    .send(Event::status(format!(
+                        "Whale pet API request failed: {err}"
+                    )))
+                    .await;
+                let _ = self
+                    .tx_event
+                    .send(Event::WhalePetResponse {
+                        profile,
+                        inner,
+                        content: "API 那边没浮起来，我先吐个气泡。".to_string(),
+                        model,
+                    })
+                    .await;
+            }
         }
     }
 

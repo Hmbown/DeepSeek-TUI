@@ -13,6 +13,7 @@ use crate::models::{Message, SystemPrompt, Usage};
 use crate::tools::spec::{ToolError, ToolResult};
 use crate::tools::subagent::SubAgentResult;
 use crate::tools::user_input::UserInputRequest;
+use crate::whale_pet::WhaleProfile;
 
 /// Final status for a turn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -210,6 +211,15 @@ pub enum Event {
 
     /// Status message for UI display
     Status { message: String },
+
+    /// A completed pixel whale pet reply. This is intentionally separate from
+    /// normal assistant turns so it does not mutate the API conversation.
+    WhalePetResponse {
+        profile: WhaleProfile,
+        inner: String,
+        content: String,
+        model: String,
+    },
 
     /// Pause terminal input events (for interactive subprocesses)
     PauseEvents,
