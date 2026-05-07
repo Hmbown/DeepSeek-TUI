@@ -776,7 +776,8 @@ async fn main() -> Result<()> {
         Some(id)
     } else if !cli.fresh {
         // Check for crash-recovery checkpoint (unless --fresh was passed).
-        try_recover_checkpoint()
+        let workspace = resolve_workspace(&cli);
+        try_recover_checkpoint(&workspace)
     } else {
         None
     };
@@ -3534,7 +3535,7 @@ fn should_use_alt_screen(cli: &Cli, config: &Config) -> bool {
     match mode.as_str() {
         "always" => true,
         "never" => false,
-        _ => !is_zellij(),
+        _ => true,
     }
 }
 
@@ -3581,16 +3582,12 @@ fn default_mouse_capture_enabled(terminal_emulator: Option<&str>) -> bool {
     true
 }
 
-fn is_zellij() -> bool {
-    std::env::var_os("ZELLIJ").is_some()
-}
-
 /// Check for a crash-recovery checkpoint and return the session ID if
 /// recovery is possible *and* the checkpoint belongs to the current
 /// workspace.
 ///
 /// The checkpoint must exist and its file mtime must be within 24 hours.
-/// **The checkpoint's workspace must also match `std::env::current_dir()`
+/// **The checkpoint's workspace must also match the resolved launch workspace
 /// after canonicalisation.** If the workspace doesn't match, the
 /// checkpoint is persisted as a regular session (so the user can find it
 /// via `deepseek sessions` / `deepseek resume <id>`) and cleared, and the
@@ -3601,7 +3598,7 @@ fn is_zellij() -> bool {
 /// On a successful match the checkpoint is persisted as a regular session,
 /// cleared, and a notice is printed to stderr. Returns `None` if there is
 /// nothing to recover or the workspace doesn't match.
-fn try_recover_checkpoint() -> Option<String> {
+fn try_recover_checkpoint(launch_workspace: &Path) -> Option<String> {
     let manager = session_manager::SessionManager::default_location().ok()?;
     let session = manager.load_checkpoint().ok().flatten()?;
 
@@ -3621,21 +3618,13 @@ fn try_recover_checkpoint() -> Option<String> {
         return None;
     }
 
-    // Refuse to silently restore a session from another workspace. We compare
-    // canonicalised paths so that `~/foo` vs `/Users/x/foo` and symlink
-    // variants resolve consistently. If either side fails to canonicalise
-    // (e.g. the saved workspace was deleted), fall back to a strict equality
-    // check on the raw paths.
+    // Refuse to silently restore a session from another workspace. Compare
+    // against the resolved launch workspace, not the shell cwd, so callers
+    // using `--workspace` cannot accidentally recover a checkpoint from the
+    // directory their shell happened to be in.
     let session_workspace = session.metadata.workspace.clone();
-    let current_workspace = std::env::current_dir().ok()?;
-    let workspace_matches = {
-        let lhs = std::fs::canonicalize(&session_workspace).ok();
-        let rhs = std::fs::canonicalize(&current_workspace).ok();
-        match (lhs, rhs) {
-            (Some(a), Some(b)) => a == b,
-            _ => session_workspace == current_workspace,
-        }
-    };
+    let workspace_matches =
+        session_manager::workspace_scope_matches(&session_workspace, launch_workspace);
 
     if !workspace_matches {
         // Persist the checkpoint so the user can find it via `deepseek
@@ -3649,10 +3638,11 @@ fn try_recover_checkpoint() -> Option<String> {
             "Note: an interrupted session ({}…) from another workspace ({}) is \
              available. Run `deepseek resume {}` from there to recover it, or \
              use `deepseek sessions` to list all saved sessions. Starting fresh \
-             here.",
+             in {}.",
             &session_id_for_notice.chars().take(8).collect::<String>(),
             session_workspace.display(),
             session_id_for_notice,
+            launch_workspace.display(),
         );
         return None;
     }
@@ -4366,6 +4356,40 @@ mod terminal_mode_tests {
 
     fn parse_cli(args: &[&str]) -> Cli {
         Cli::try_parse_from(args).expect("CLI args should parse")
+    }
+
+    #[test]
+    fn alternate_screen_defaults_on_in_auto_mode() {
+        let cli = parse_cli(&["deepseek"]);
+        let config = Config::default();
+
+        assert!(should_use_alt_screen(&cli, &config));
+    }
+
+    #[test]
+    fn no_alt_screen_flag_disables_alternate_screen() {
+        let cli = parse_cli(&["deepseek", "--no-alt-screen"]);
+        let config = Config::default();
+
+        assert!(!should_use_alt_screen(&cli, &config));
+    }
+
+    #[test]
+    fn config_can_disable_alternate_screen() {
+        let cli = parse_cli(&["deepseek"]);
+        let config = Config {
+            tui: Some(crate::config::TuiConfig {
+                alternate_screen: Some("never".to_string()),
+                mouse_capture: None,
+                terminal_probe_timeout_ms: None,
+                status_items: None,
+                osc8_links: None,
+                notification_condition: None,
+            }),
+            ..Config::default()
+        };
+
+        assert!(!should_use_alt_screen(&cli, &config));
     }
 
     #[test]

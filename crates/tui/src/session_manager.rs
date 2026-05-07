@@ -460,7 +460,7 @@ impl SessionManager {
     }
 }
 
-fn workspace_scope_matches(saved_workspace: &Path, current_workspace: &Path) -> bool {
+pub(crate) fn workspace_scope_matches(saved_workspace: &Path, current_workspace: &Path) -> bool {
     if paths_equivalent(saved_workspace, current_workspace) {
         return true;
     }
@@ -1120,6 +1120,30 @@ mod tests {
                 .expect("load checkpoint")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn workspace_scope_matches_subdirectories_in_same_git_checkout() {
+        let tmp = tempdir().expect("tempdir");
+        let repo = tmp.path().join("repo");
+        let nested = repo.join("crates").join("tui");
+        fs::create_dir_all(&nested).expect("mkdir nested");
+        fs::write(repo.join(".git"), "gitdir: .git/worktrees/repo").expect("write git marker");
+
+        assert!(workspace_scope_matches(&repo, &nested));
+    }
+
+    #[test]
+    fn workspace_scope_rejects_sibling_git_checkouts() {
+        let tmp = tempdir().expect("tempdir");
+        let first = tmp.path().join("repo-a");
+        let second = tmp.path().join("repo-b");
+        fs::create_dir_all(&first).expect("mkdir first");
+        fs::create_dir_all(&second).expect("mkdir second");
+        fs::write(first.join(".git"), "gitdir: .git/worktrees/a").expect("write first marker");
+        fs::write(second.join(".git"), "gitdir: .git/worktrees/b").expect("write second marker");
+
+        assert!(!workspace_scope_matches(&first, &second));
     }
 
     #[test]
