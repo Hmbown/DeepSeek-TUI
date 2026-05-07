@@ -28,6 +28,11 @@ brew install deepseek-tui
 # 4. Direct download — no package manager or toolchain.
 #    https://github.com/Hmbown/DeepSeek-TUI/releases
 #    Prebuilt for Linux x64/ARM64, macOS x64/ARM64, Windows x64.
+
+# 5. Docker — multi-arch image (amd64 + arm64).
+docker pull ghcr.io/hmbown/deepseek-tui:latest
+docker run -it --rm -v $(pwd):/workspace \
+    -e DEEPSEEK_API_KEY ghcr.io/hmbown/deepseek-tui:latest
 ```
 
 > In mainland China, speed up the npm path with
@@ -155,6 +160,7 @@ Prebuilt binaries can also be downloaded from [GitHub Releases](https://github.c
 
 A Scoop manifest has not been published yet. For now, use npm, Cargo, or the
 prebuilt Windows binaries from [GitHub Releases](https://github.com/Hmbown/DeepSeek-TUI/releases).
+
 
 
 <details id="install-from-source">

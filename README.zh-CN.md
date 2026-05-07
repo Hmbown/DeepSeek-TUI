@@ -26,6 +26,11 @@ brew install deepseek-tui
 # 4. 直接下载 —— 无需任何工具链。
 #    https://github.com/Hmbown/DeepSeek-TUI/releases
 #    覆盖 Linux x64/ARM64、macOS x64/ARM64、Windows x64
+
+# 5. Docker —— 多架构镜像（amd64 + arm64）。
+docker pull ghcr.io/hmbown/deepseek-tui:latest
+docker run -it --rm -v $(pwd):/workspace \
+    -e DEEPSEEK_API_KEY ghcr.io/hmbown/deepseek-tui:latest
 ```
 
 > 中国大陆访问较慢时，npm 可加 `--registry=https://registry.npmmirror.com`，
@@ -130,6 +135,7 @@ deepseek --version
 
 Scoop manifest 还没有正式发布。现在请先使用 npm、Cargo，或者从
 [GitHub Releases](https://github.com/Hmbown/DeepSeek-TUI/releases) 下载 Windows 预编译二进制。
+
 
 
 <details id="install-from-source">
