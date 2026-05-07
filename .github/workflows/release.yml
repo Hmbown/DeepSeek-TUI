@@ -143,7 +143,16 @@ jobs:
           zig_url="https://ziglang.org/download/${zig_version}/${zig_dir}.tar.xz"
 
           for attempt in 1 2 3 4 5; do
-            if curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors "${zig_url}" -o zig.tar.xz; then
+            if curl -fsSL \
+              --connect-timeout 20 \
+              --max-time 180 \
+              --speed-limit 1024 \
+              --speed-time 30 \
+              --retry 2 \
+              --retry-delay 5 \
+              --retry-all-errors \
+              "${zig_url}" \
+              -o zig.tar.xz; then
               break
             fi
             echo "Zig download failed (attempt ${attempt}); retrying in 15s"
