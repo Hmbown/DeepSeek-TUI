@@ -78,10 +78,14 @@ impl CommandSpec {
     /// Create a `CommandSpec` for running a shell command via the platform shell.
     pub fn shell(command: &str, cwd: PathBuf, timeout: Duration) -> Self {
         #[cfg(windows)]
-        let (program, args) = (
-            "cmd".to_string(),
-            vec!["/C".to_string(), command.to_string()],
-        );
+        let (program, args) = {
+            // Force UTF-8 output on Windows by running `chcp 65001` before the
+            // actual command. Without this, subprocesses output in the system's
+            // ANSI code page (e.g. GBK for Chinese locales), causing garbled
+            // text in the shell output panel. See issue #982.
+            let cmd = format!("chcp 65001 >NUL & {command}");
+            ("cmd".to_string(), vec!["/C".to_string(), cmd])
+        };
         #[cfg(not(windows))]
         let (program, args) = (
             "sh".to_string(),
@@ -145,7 +149,12 @@ impl CommandSpec {
             && self.args.len() == 2
             && self.args[0].eq_ignore_ascii_case("/C")
         {
-            self.args[1].clone()
+            // Strip the `chcp 65001 >NUL & ` prefix we add on Windows for
+            // UTF-8 output (issue #982).
+            let raw = &self.args[1];
+            raw.strip_prefix("chcp 65001 >NUL & ")
+                .unwrap_or(raw)
+                .to_string()
         } else {
             // For other commands, join program and args
             let mut parts = vec![self.program.clone()];
@@ -530,7 +539,11 @@ mod tests {
     fn expected_shell_command(command: &str) -> Vec<String> {
         #[cfg(windows)]
         {
-            vec!["cmd".to_string(), "/C".to_string(), command.to_string()]
+            vec![
+                "cmd".to_string(),
+                "/C".to_string(),
+                format!("chcp 65001 >NUL & {command}"),
+            ]
         }
         #[cfg(not(windows))]
         {
@@ -545,7 +558,7 @@ mod tests {
         #[cfg(windows)]
         {
             assert_eq!(spec.program, "cmd");
-            assert_eq!(spec.args, vec!["/C", "echo hello"]);
+            assert_eq!(spec.args, vec!["/C", "chcp 65001 >NUL & echo hello"]);
         }
         #[cfg(not(windows))]
         {
