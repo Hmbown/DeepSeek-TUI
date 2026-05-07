@@ -16,7 +16,7 @@
 # `/provider sglang`, `/provider vllm`, `/provider ollama`) toggle without having to
 # re-enter keys. Top-level `api_key` / `base_url` are still read as DeepSeek
 # defaults when `[providers.deepseek]` is absent (backward compatibility).
-provider = "deepseek" # deepseek | deepseek-cn | nvidia-nim | openai | openrouter | novita | fireworks | sglang | vllm | ollama
+provider = "deepseek" # deepseek | deepseek-cn | nvidia-nim | openai | openrouter | novita | fireworks | sglang | vllm | ollama | opencode-go
 api_key = "YOUR_DEEPSEEK_API_KEY" # must be non-empty
 base_url = "https://api.deepseek.com/beta"
 # base_url = "https://api.deepseeki.com"         # China users
@@ -188,6 +188,12 @@ max_subagents = 10 # optional (1-20)
 # api_key = "YOUR_FIREWORKS_API_KEY"
 # base_url = "https://api.fireworks.ai/inference/v1"
 # model = "accounts/fireworks/models/deepseek-v4-pro"
+
+# OpenCode Go — free DeepSeek V4 endpoint via opencode.ai (https://opencode.ai)
+[providers.opencode_go]
+# api_key = "YOUR_OPENCODE_API_KEY"
+# base_url = "https://opencode.ai/zen/go/v1"
+# model = "deepseek-v4-pro"     # or deepseek-v4-flash
 
 # Self-hosted SGLang OpenAI-compatible server
 [providers.sglang]

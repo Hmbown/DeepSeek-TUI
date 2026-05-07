@@ -42,6 +42,9 @@ pub const DEFAULT_VLLM_FLASH_MODEL: &str = "deepseek-ai/DeepSeek-V4-Flash";
 pub const DEFAULT_VLLM_BASE_URL: &str = "http://localhost:8000/v1";
 pub const DEFAULT_OLLAMA_MODEL: &str = "deepseek-coder:1.3b";
 pub const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434/v1";
+pub const DEFAULT_OPENCODE_GO_MODEL: &str = "deepseek-v4-pro";
+pub const DEFAULT_OPENCODE_GO_FLASH_MODEL: &str = "deepseek-v4-flash";
+pub const DEFAULT_OPENCODE_GO_BASE_URL: &str = "https://opencode.ai/zen/go/v1";
 pub const DEFAULT_DEEPSEEKCN_BASE_URL: &str = "https://api.deepseeki.com";
 const API_KEYRING_SENTINEL: &str = "__KEYRING__";
 pub const COMMON_DEEPSEEK_MODELS: &[&str] = &[
@@ -66,6 +69,7 @@ pub enum ApiProvider {
     Sglang,
     Vllm,
     Ollama,
+    OpencodeGo,
 }
 
 impl ApiProvider {
@@ -84,6 +88,7 @@ impl ApiProvider {
             "sglang" | "sg-lang" => Some(Self::Sglang),
             "vllm" | "v-llm" => Some(Self::Vllm),
             "ollama" | "ollama-local" => Some(Self::Ollama),
+            "opencode-go" | "opencode_go" | "opencodego" => Some(Self::OpencodeGo),
             _ => None,
         }
     }
@@ -101,6 +106,7 @@ impl ApiProvider {
             Self::Sglang => "sglang",
             Self::Vllm => "vllm",
             Self::Ollama => "ollama",
+            Self::OpencodeGo => "opencode-go",
         }
     }
 
@@ -118,6 +124,7 @@ impl ApiProvider {
             Self::Sglang => "SGLang",
             Self::Vllm => "vLLM",
             Self::Ollama => "Ollama",
+            Self::OpencodeGo => "OpenCode Go",
         }
     }
 
@@ -135,6 +142,7 @@ impl ApiProvider {
             Self::Sglang,
             Self::Vllm,
             Self::Ollama,
+            Self::OpencodeGo,
         ]
     }
 }
@@ -1029,6 +1037,8 @@ pub struct ProvidersConfig {
     pub vllm: ProviderConfig,
     #[serde(default)]
     pub ollama: ProviderConfig,
+    #[serde(default)]
+    pub opencode_go: ProviderConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -1088,7 +1098,7 @@ impl Config {
             && ApiProvider::parse(provider).is_none()
         {
             anyhow::bail!(
-                "Invalid provider '{provider}': expected deepseek, deepseek-cn, nvidia-nim, openai, openrouter, novita, fireworks, sglang, vllm, or ollama."
+                "Invalid provider '{provider}': expected deepseek, deepseek-cn, nvidia-nim, openai, openrouter, novita, fireworks, sglang, vllm, ollama, or opencode-go."
             );
         }
         if let Some(ref key) = self.api_key
@@ -1210,6 +1220,7 @@ impl Config {
             ApiProvider::Sglang => &providers.sglang,
             ApiProvider::Vllm => &providers.vllm,
             ApiProvider::Ollama => &providers.ollama,
+            ApiProvider::OpencodeGo => &providers.opencode_go,
         })
     }
 
@@ -1270,6 +1281,7 @@ impl Config {
             ApiProvider::Sglang => DEFAULT_SGLANG_MODEL,
             ApiProvider::Vllm => DEFAULT_VLLM_MODEL,
             ApiProvider::Ollama => DEFAULT_OLLAMA_MODEL,
+            ApiProvider::OpencodeGo => DEFAULT_OPENCODE_GO_MODEL,
         }
         .to_string()
     }
@@ -1298,7 +1310,8 @@ impl Config {
             | ApiProvider::Fireworks
             | ApiProvider::Sglang
             | ApiProvider::Vllm
-            | ApiProvider::Ollama => None,
+            | ApiProvider::Ollama
+            | ApiProvider::OpencodeGo => None,
         };
         let base = provider_base.or(root_base).unwrap_or_else(|| {
             match provider {
@@ -1312,6 +1325,7 @@ impl Config {
                 ApiProvider::Sglang => DEFAULT_SGLANG_BASE_URL,
                 ApiProvider::Vllm => DEFAULT_VLLM_BASE_URL,
                 ApiProvider::Ollama => DEFAULT_OLLAMA_BASE_URL,
+                ApiProvider::OpencodeGo => DEFAULT_OPENCODE_GO_BASE_URL,
             }
             .to_string()
         });
@@ -1338,6 +1352,7 @@ impl Config {
             ApiProvider::Sglang => "sglang",
             ApiProvider::Vllm => "vllm",
             ApiProvider::Ollama => "ollama",
+            ApiProvider::OpencodeGo => "opencode-go",
         };
 
         // 0. Explicit in-memory override (set by onboarding / provider
@@ -1405,6 +1420,10 @@ impl Config {
             // Self-hosted deployments commonly run without auth on localhost.
             // Return an empty key and let the client omit the Authorization header.
             ApiProvider::Sglang | ApiProvider::Vllm | ApiProvider::Ollama => Ok(String::new()),
+            ApiProvider::OpencodeGo => anyhow::bail!(
+                "OpenCode Go API key not found. Run 'deepseek auth set --provider opencode-go', \
+                 set OPENCODE_GO_API_KEY, or add [providers.opencode_go] api_key in ~/.deepseek/config.toml."
+            ),
         }
     }
 
@@ -1978,6 +1997,7 @@ fn apply_env_overrides(config: &mut Config) {
             ApiProvider::Sglang => &mut providers.sglang,
             ApiProvider::Vllm => &mut providers.vllm,
             ApiProvider::Ollama => &mut providers.ollama,
+            ApiProvider::OpencodeGo => &mut providers.opencode_go,
         };
         let mut provider_headers = entry.http_headers.clone().unwrap_or_default();
         provider_headers.extend(headers);
@@ -1991,6 +2011,16 @@ fn apply_env_overrides(config: &mut Config) {
             .providers
             .get_or_insert_with(ProvidersConfig::default)
             .ollama
+            .base_url = Some(value);
+    }
+    if matches!(config.api_provider(), ApiProvider::OpencodeGo)
+        && let Ok(value) = std::env::var("OPENCODE_GO_BASE_URL")
+        && !value.trim().is_empty()
+    {
+        config
+            .providers
+            .get_or_insert_with(ProvidersConfig::default)
+            .opencode_go
             .base_url = Some(value);
     }
     if matches!(config.api_provider(), ApiProvider::Sglang)
@@ -2238,6 +2268,11 @@ fn normalize_model_config(config: &mut Config) {
         {
             providers.vllm.model = Some(normalized);
         }
+        if let Some(model) = providers.opencode_go.model.as_deref()
+            && let Some(normalized) = normalize_model_for_provider(ApiProvider::OpencodeGo, model)
+        {
+            providers.opencode_go.model = Some(normalized);
+        }
     }
 }
 
@@ -2272,6 +2307,8 @@ fn model_for_provider(provider: ApiProvider, normalized: String) -> String {
         (ApiProvider::Sglang, "deepseek-v4-flash") => DEFAULT_SGLANG_FLASH_MODEL.to_string(),
         (ApiProvider::Vllm, "deepseek-v4-pro") => DEFAULT_VLLM_MODEL.to_string(),
         (ApiProvider::Vllm, "deepseek-v4-flash") => DEFAULT_VLLM_FLASH_MODEL.to_string(),
+        (ApiProvider::OpencodeGo, "deepseek-v4-pro") => DEFAULT_OPENCODE_GO_MODEL.to_string(),
+        (ApiProvider::OpencodeGo, "deepseek-v4-flash") => DEFAULT_OPENCODE_GO_FLASH_MODEL.to_string(),
         _ => normalized,
     }
 }
@@ -2440,6 +2477,7 @@ fn merge_providers(
             sglang: merge_provider_config(base.sglang, override_cfg.sglang),
             vllm: merge_provider_config(base.vllm, override_cfg.vllm),
             ollama: merge_provider_config(base.ollama, override_cfg.ollama),
+            opencode_go: merge_provider_config(base.opencode_go, override_cfg.opencode_go),
         }),
     }
 }
@@ -2861,6 +2899,7 @@ pub fn active_provider_has_env_api_key(config: &Config) -> bool {
         ApiProvider::Sglang => std::env::var("SGLANG_API_KEY").is_ok_and(|k| !k.trim().is_empty()),
         ApiProvider::Vllm => std::env::var("VLLM_API_KEY").is_ok_and(|k| !k.trim().is_empty()),
         ApiProvider::Ollama => std::env::var("OLLAMA_API_KEY").is_ok_and(|k| !k.trim().is_empty()),
+        ApiProvider::OpencodeGo => std::env::var("OPENCODE_GO_API_KEY").is_ok_and(|k| !k.trim().is_empty()),
     }
 }
 
@@ -2884,6 +2923,7 @@ pub fn has_api_key_for(config: &Config, provider: ApiProvider) -> bool {
         ApiProvider::Sglang => "SGLANG_API_KEY",
         ApiProvider::Vllm => "VLLM_API_KEY",
         ApiProvider::Ollama => "OLLAMA_API_KEY",
+        ApiProvider::OpencodeGo => "OPENCODE_GO_API_KEY",
     };
     if std::env::var(env_var).is_ok_and(|k| !k.trim().is_empty()) {
         return true;
@@ -2952,6 +2992,7 @@ pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf>
         ApiProvider::Sglang => "providers.sglang",
         ApiProvider::Vllm => "providers.vllm",
         ApiProvider::Ollama => "providers.ollama",
+        ApiProvider::OpencodeGo => "providers.opencode_go",
     };
 
     // Parse existing TOML (or start fresh) so we can edit the right table
@@ -2986,6 +3027,7 @@ pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf>
         ApiProvider::Sglang => "sglang",
         ApiProvider::Vllm => "vllm",
         ApiProvider::Ollama => "ollama",
+        ApiProvider::OpencodeGo => "opencode_go",
     };
     let entry = providers
         .entry(key_inside.to_string())

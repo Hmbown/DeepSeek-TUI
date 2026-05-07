@@ -27,13 +27,13 @@ pub fn provider(app: &mut App, args: Option<&str>) -> CommandResult {
 
     let Some(target) = ApiProvider::parse(name) else {
         return CommandResult::error(format!(
-            "Unknown provider '{name}'. Expected: deepseek, nvidia-nim, openrouter, novita, fireworks, sglang, vllm, or ollama."
+            "Unknown provider '{name}'. Expected: deepseek, nvidia-nim, openrouter, novita, fireworks, sglang, vllm, ollama, or opencode-go."
         ));
     };
 
     let model = match model_arg {
         None => None,
-        Some(raw) if target == ApiProvider::Ollama => Some(raw.trim().to_string()),
+        Some(raw) if target == ApiProvider::Ollama || target == ApiProvider::OpencodeGo => Some(raw.trim().to_string()),
         Some(raw) => match normalize_model_name(&expand_model_alias(raw)) {
             Some(normalized) => Some(normalized),
             None => {
