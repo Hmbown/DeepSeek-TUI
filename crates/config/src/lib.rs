@@ -53,6 +53,41 @@ pub enum ProviderKind {
     Ollama,
 }
 
+/// Context management strategy: how the TUI handles growing conversation context.
+///
+/// `CacheMaximal` (default) prefers appending new content over summarizing old
+/// context, keeping the KV prefix cache hot by avoiding rewrites. Routine
+/// auto-compaction is skipped. Users can still trigger `/compact` manually.
+///
+/// `Compact` enables the legacy summarization-based compaction path, which
+/// periodically summarizes older messages to stay within a token budget.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ContextMode {
+    #[default]
+    CacheMaximal,
+    Compact,
+}
+
+impl ContextMode {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CacheMaximal => "cache-maximal",
+            Self::Compact => "compact",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "cache-maximal" | "cache_maximal" | "cache" => Some(Self::CacheMaximal),
+            "compact" => Some(Self::Compact),
+            _ => None,
+        }
+    }
+}
+
 impl ProviderKind {
     #[must_use]
     pub fn as_str(self) -> &'static str {
@@ -173,6 +208,12 @@ pub struct ConfigToml {
     pub sandbox_mode: Option<String>,
     #[serde(default)]
     pub providers: ProvidersToml,
+    /// Context management mode: `cache-maximal` (default) or `compact`.
+    /// Cache-maximal mode skips routine auto-compaction and prefers appending
+    /// new context, keeping the KV prefix cache hot. Set to `compact` to
+    /// re-enable legacy summarization-based compaction.
+    #[serde(default)]
+    pub context_mode: Option<ContextMode>,
     /// Per-domain network policy (#135). When absent, network tools fall back
     /// to a permissive default that mirrors pre-v0.7.0 behavior.
     #[serde(default)]
@@ -337,6 +378,10 @@ impl ConfigToml {
             self.provider = project.provider;
         }
 
+        if project.context_mode.is_some() {
+            self.context_mode = project.context_mode;
+        }
+
         // Merge provider sub-tables field-by-field.
         merge_provider_config(&mut self.providers.deepseek, &project.providers.deepseek);
         merge_provider_config(
@@ -386,6 +431,7 @@ impl ConfigToml {
             "output_mode" => self.output_mode.clone(),
             "log_level" => self.log_level.clone(),
             "telemetry" => self.telemetry.map(|v| v.to_string()),
+            "context_mode" => self.context_mode.map(|v| v.as_str().to_string()),
             "approval_policy" => self.approval_policy.clone(),
             "sandbox_mode" => self.sandbox_mode.clone(),
             "providers.deepseek.api_key" => self.providers.deepseek.api_key.clone(),
@@ -464,6 +510,12 @@ impl ConfigToml {
             "log_level" => self.log_level = Some(value.to_string()),
             "telemetry" => {
                 self.telemetry = Some(parse_bool(value)?);
+            }
+            "context_mode" => {
+                self.context_mode = Some(
+                    ContextMode::parse(value)
+                        .with_context(|| format!("invalid context_mode '{value}'; expected 'cache-maximal' or 'compact'"))?,
+                );
             }
             "approval_policy" => self.approval_policy = Some(value.to_string()),
             "sandbox_mode" => self.sandbox_mode = Some(value.to_string()),
@@ -599,6 +651,7 @@ impl ConfigToml {
             "output_mode" => self.output_mode = None,
             "log_level" => self.log_level = None,
             "telemetry" => self.telemetry = None,
+            "context_mode" => self.context_mode = None,
             "approval_policy" => self.approval_policy = None,
             "sandbox_mode" => self.sandbox_mode = None,
             "providers.deepseek.api_key" => {
@@ -699,6 +752,9 @@ impl ConfigToml {
         }
         if let Some(v) = self.sandbox_mode.as_ref() {
             out.insert("sandbox_mode".to_string(), v.clone());
+        }
+        if let Some(v) = self.context_mode {
+            out.insert("context_mode".to_string(), v.as_str().to_string());
         }
         if let Some(v) = self.providers.deepseek.api_key.as_ref() {
             out.insert("providers.deepseek.api_key".to_string(), redact_secret(v));
