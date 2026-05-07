@@ -44,6 +44,9 @@ pub struct CapacityMemoryRecord {
     pub source_message_ids: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub replay_info: Option<ReplayInfo>,
+    /// Workspace path for cross-session isolation. Empty string = global/legacy.
+    #[serde(default)]
+    pub workspace: String,
 }
 
 fn capacity_memory_dirs() -> Vec<PathBuf> {
@@ -99,7 +102,7 @@ pub fn load_last_k_capacity_records(
     load_last_k_capacity_records_from_candidates(&candidates, k)
 }
 
-pub fn load_last_k_capacity_records_from_path(
+pub(super) fn load_last_k_capacity_records_from_path(
     path: &Path,
     k: usize,
 ) -> Result<Vec<CapacityMemoryRecord>> {
@@ -208,6 +211,65 @@ pub fn now_rfc3339() -> String {
     Utc::now().to_rfc3339()
 }
 
+/// Scan all memory directories for the newest record across ALL sessions.
+/// Returns (session_id, record) if any records exist.
+///
+/// If `workspace` is non-empty, only records whose `workspace` field matches
+/// (or are empty/legacy records with no workspace set) are considered.
+pub fn find_latest_cross_session(workspace: &str) -> Option<(String, CapacityMemoryRecord)> {
+    let dirs = capacity_memory_dirs();
+    let mut newest: Option<(SystemTime, String, CapacityMemoryRecord)> = None;
+
+    for dir in &dirs {
+        if !dir.exists() {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+            let Some(session_id) = path.file_stem().and_then(|s| s.to_str()).map(String::from)
+            else {
+                continue;
+            };
+            let Ok(records) = load_last_k_capacity_records_from_path(&path, 1) else {
+                continue;
+            };
+            let Some(record) = records.into_iter().last() else {
+                continue;
+            };
+            // Workspace isolation: skip records whose workspace is set but
+            // doesn't match the current workspace. Empty/legacy records
+            // (workspace = "") are always included for backward compatibility.
+            if !workspace.is_empty()
+                && !record.workspace.is_empty()
+                && record.workspace != workspace
+            {
+                continue;
+            }
+            let Ok(meta) = fs::metadata(&path) else {
+                continue;
+            };
+            let Ok(modified) = meta.modified() else {
+                continue;
+            };
+            if newest
+                .as_ref()
+                .map(|(m, _, _)| modified >= *m)
+                .unwrap_or(true)
+            {
+                newest = Some((modified, session_id, record));
+            }
+        }
+    }
+
+    newest.map(|(_, sid, rec)| (sid, rec))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,6 +295,7 @@ mod tests {
             },
             source_message_ids: vec!["m1".to_string()],
             replay_info: None,
+            workspace: String::new(),
         };
 
         append_capacity_record_to_path(&path, &record).expect("append");
@@ -261,6 +324,7 @@ mod tests {
             canonical_state: CanonicalState::default(),
             source_message_ids: vec!["m1".to_string()],
             replay_info: None,
+            workspace: String::new(),
         };
 
         let chosen = append_capacity_record_to_candidates(
@@ -293,6 +357,7 @@ mod tests {
             },
             source_message_ids: vec!["m1".to_string()],
             replay_info: None,
+            workspace: String::new(),
         };
         let new_record = CapacityMemoryRecord {
             id: "cap_new".to_string(),
@@ -309,6 +374,7 @@ mod tests {
             },
             source_message_ids: vec!["m2".to_string()],
             replay_info: None,
+            workspace: String::new(),
         };
 
         append_capacity_record_to_path(&older, &old_record).expect("write older");

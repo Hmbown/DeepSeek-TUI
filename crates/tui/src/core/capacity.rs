@@ -17,6 +17,10 @@ pub struct CapacityControllerConfig {
     pub profile_window: usize,
     pub model_priors: HashMap<String, f64>,
     pub fallback_default: f64,
+    /// Opt-in: restore canonical state from the most recent session's
+    /// shutdown checkpoint when starting a fresh session. Off by default
+    /// to prevent cross-workspace memory bleed.
+    pub cross_session_enabled: bool,
 }
 
 impl Default for CapacityControllerConfig {
@@ -39,6 +43,10 @@ impl Default for CapacityControllerConfig {
             // in via `capacity.enabled = true` in
             // `~/.deepseek/config.toml`.
             enabled: false,
+            // Cross-session memory recovery is opt-in. Off by default to
+            // avoid leaking canonical state (goal, confirmed facts, etc.)
+            // across unrelated workspaces.
+            cross_session_enabled: false,
             // Thresholds retained for the opt-in path; tuning notes live
             // in git history (#63 follow-up).
             low_risk_max: 0.50,
@@ -112,8 +120,25 @@ impl CapacityControllerConfig {
         if let Some(v) = capacity.fallback_default_prior {
             out.fallback_default = v;
         }
+        if let Some(v) = capacity.cross_session_enabled {
+            out.cross_session_enabled = v;
+        }
 
         out
+    }
+
+    /// Whether cross-session memory recovery is enabled.
+    #[must_use]
+    pub fn cross_session_enabled(&self) -> bool {
+        self.cross_session_enabled
+    }
+}
+
+impl CapacityController {
+    /// Delegate to config.
+    #[must_use]
+    pub fn cross_session_enabled(&self) -> bool {
+        self.config.cross_session_enabled()
     }
 }
 

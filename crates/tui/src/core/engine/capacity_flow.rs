@@ -932,6 +932,7 @@ impl Engine {
                 source_message_ids
             },
             replay_info,
+            workspace: self.session.workspace.to_string_lossy().to_string(),
         }
     }
 
@@ -958,19 +959,35 @@ impl Engine {
     }
 
     pub(super) fn rehydrate_latest_canonical_state(&mut self) {
-        let Ok(records) = load_last_k_capacity_records(&self.session.id, 1) else {
+        // First try: load from current session
+        if let Ok(records) = load_last_k_capacity_records(&self.session.id, 1) {
+            if let Some(last) = records.last() {
+                let pointer = format!("memory://{}/{}", self.session.id, last.id);
+                let prompt = self.canonical_prompt(
+                    &last.canonical_state,
+                    &pointer,
+                    GuardrailAction::NoIntervention,
+                    Some("Rehydrated canonical state from memory."),
+                );
+                self.merge_compaction_summary(Some(prompt));
+                return;
+            }
+        }
+
+        // Cross-session recovery: opt-in only, workspace-scoped
+        if !self.capacity_controller.cross_session_enabled() {
             return;
-        };
-        let Some(last) = records.last() else {
-            return;
-        };
-        let pointer = format!("memory://{}/{}", self.session.id, last.id);
-        let prompt = self.canonical_prompt(
-            &last.canonical_state,
-            &pointer,
-            GuardrailAction::NoIntervention,
-            Some("Rehydrated canonical state from memory."),
-        );
-        self.merge_compaction_summary(Some(prompt));
+        }
+        let workspace = self.session.workspace.to_string_lossy().to_string();
+        if let Some((session_id, last)) = find_latest_cross_session(&workspace) {
+            let pointer = format!("memory://{}/{}", session_id, last.id);
+            let prompt = self.canonical_prompt(
+                &last.canonical_state,
+                &pointer,
+                GuardrailAction::NoIntervention,
+                Some("Rehydrated canonical state from cross-session memory."),
+            );
+            self.merge_compaction_summary(Some(prompt));
+        }
     }
 }
