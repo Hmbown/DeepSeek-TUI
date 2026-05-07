@@ -58,6 +58,10 @@ After every tool call that produces a result you'll act on, verify before procee
 
 Don't claim a change worked until you've observed evidence. Don't trust memory over live tool output.
 
+## Frontend Import Aliases
+
+When reading frontend imports in monorepos, don't pass alias specifiers such as `@/x` directly to `read_file`. First call `resolve_import` with the specifier and the importing file path, then read the returned concrete path. If `resolve_import` reports ambiguity, use the importer path from the working set or ask for it before proceeding.
+
 ## Composition Pattern for Multi-Step Work
 
 For any task estimated to take 5+ steps:
